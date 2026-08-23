@@ -77,6 +77,32 @@ function SH_parseDoc(raw) {
   return { kind: kind, ref: ref };
 }
 
+// The three-view console (wiring plan P0 T3). Absent view = studio,
+// which is also how every pre-existing URL parses forward. Nav ids
+// are the designer prototype's PLATNAV/SYSNAV vocabularies verbatim.
+var SH_VIEWS = {
+  studio: [],
+  platform: [
+    "providers", "profiles", "toolsets", "collections", "workspaces",
+    "agents", "graphs", "triggers", "channels", "harnesses",
+    "services", "approvals",
+  ],
+  system: [
+    "dashboard", "users", "apikeys", "sso", "mcp", "internal",
+    "activity", "setup", "profile",
+  ],
+};
+
+function SH_parseView(raw) {
+  if (!raw) return { name: "studio", nav: null };
+  var bits = String(raw).split(":");
+  var name = SH_decode(bits[0]);
+  if (!(name in SH_VIEWS)) return { name: "studio", nav: null };
+  var nav = bits.length > 1 && bits[1] ? SH_decode(bits[1]) : null;
+  if (nav && SH_VIEWS[name].indexOf(nav) < 0) nav = null;
+  return { name: name, nav: nav };
+}
+
 function SH_parseOverlay(raw) {
   if (!raw) return null;
   var bits = String(raw).split(":");
@@ -106,6 +132,7 @@ function SH_parseUrl(hash) {
   if (m) wid = SH_decode(m[1]);
   return {
     wid: wid,
+    view: SH_parseView(params.view),
     doc: SH_parseDoc(params.doc),
     overlay: SH_parseOverlay(params.overlay),
     anchor: anchor,
@@ -125,6 +152,16 @@ function SH_buildUrl(state) {
   // the parser's inverse: drop only the segment that is actually absent.
   var url = s.wid ? "#/w/" + SH_encodeRef(s.wid) : "#/";
   var query = [];
+  // Studio is the unwritten default: only the other views serialize,
+  // so every historical URL round-trips byte-identical.
+  if (s.view && s.view.name && s.view.name !== "studio"
+      && (s.view.name in SH_VIEWS)) {
+    var vv = s.view.name;
+    if (s.view.nav && SH_VIEWS[s.view.name].indexOf(s.view.nav) >= 0) {
+      vv += ":" + SH_encodeRef(s.view.nav);
+    }
+    query.push("view=" + vv);
+  }
   if (s.doc && s.doc.kind && s.doc.ref
       && SH_indexOfIn(SH_DOC_KINDS, s.doc.kind) >= 0) {
     query.push("doc=" + s.doc.kind + ":" + SH_encodeRef(s.doc.ref));
@@ -187,3 +224,5 @@ window.SH_encodeRef = SH_encodeRef;
 window.SH_parseUrl = SH_parseUrl;
 window.SH_buildUrl = SH_buildUrl;
 window.SH_parseAnchor = SH_parseAnchor;
+window.SH_VIEWS = SH_VIEWS;
+window.SH_parseView = SH_parseView;

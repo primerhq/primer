@@ -97,5 +97,32 @@
     "new-session",
     "internal-collections",
     "activity"
-  ]
+  ],
+  "views": {
+    "platform": [
+      "providers",
+      "profiles",
+      "toolsets",
+      "collections",
+      "workspaces",
+      "agents",
+      "graphs",
+      "triggers",
+      "channels",
+      "harnesses",
+      "services",
+      "approvals"
+    ],
+    "system": [
+      "dashboard",
+      "users",
+      "apikeys",
+      "sso",
+      "mcp",
+      "internal",
+      "activity",
+      "setup",
+      "profile"
+    ]
+  }
 }

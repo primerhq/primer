@@ -143,7 +143,13 @@ def test_bare_workspace_url_round_trips() -> None:
     ctx = _ctx()
     assert ctx.eval('SH_buildUrl({wid: "ws-1"})') == "#/w/ws-1"
     out = json.loads(ctx.eval('JSON.stringify(SH_parseUrl("#/w/ws-1"))'))
-    assert out == {"wid": "ws-1", "doc": None, "overlay": None, "anchor": None}
+    assert out == {
+        "wid": "ws-1",
+        "view": {"name": "studio", "nav": None},
+        "doc": None,
+        "overlay": None,
+        "anchor": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +247,38 @@ def test_the_sync_effect_actually_consults_that_rule() -> None:
         encoding="utf-8",
     )
     assert "SH_urlIsAhead(SH_readUrl(), wid)" in shell
+
+
+def test_views_match_the_manifest() -> None:
+    ctx = _ctx()
+    man = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    views = json.loads(ctx.eval("JSON.stringify(SH_VIEWS)"))
+    assert views["platform"] == man["views"]["platform"]
+    assert views["system"] == man["views"]["system"]
+    assert views["studio"] == []
+
+
+def test_view_round_trips_and_studio_stays_unwritten() -> None:
+    """Wiring plan P0 T3: absent view = studio (old URLs parse
+    forward); platform/system serialize as view=name:nav."""
+    ctx = _ctx()
+    # Old-form URL: no view param, parses as studio, rebuilds identically.
+    out = json.loads(ctx.eval(
+        "JSON.stringify(SH_parseUrl('#/w/ws-1?doc=session:s-1'))"))
+    assert out["view"] == {"name": "studio", "nav": None}
+    rebuilt = ctx.eval(
+        "SH_buildUrl(SH_parseUrl('#/w/ws-1?doc=session:s-1'))")
+    assert rebuilt == "#/w/ws-1?doc=session:s-1"
+    # Platform with nav round-trips.
+    url = ctx.eval(
+        "SH_buildUrl({wid:'ws-1', view:{name:'platform', nav:'agents'}})")
+    assert url == "#/w/ws-1?view=platform:agents"
+    back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}))"))
+    assert back["view"] == {"name": "platform", "nav": "agents"}
+    # Unknown nav degrades to the view root, unknown view to studio.
+    bad_nav = json.loads(ctx.eval(
+        "JSON.stringify(SH_parseUrl('#/?view=system:nope'))"))
+    assert bad_nav["view"] == {"name": "system", "nav": None}
+    bad_view = json.loads(ctx.eval(
+        "JSON.stringify(SH_parseUrl('#/?view=garage'))"))
+    assert bad_view["view"] == {"name": "studio", "nav": None}
