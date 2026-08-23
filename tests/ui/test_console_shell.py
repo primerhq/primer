@@ -1,0 +1,72 @@
+"""The three-view chrome (wiring plan P1 T4).
+
+Static pins over the nv- shell skeleton: regions render, affordances
+run registered verbs, view switching rides the URL, the profile
+dropdown role-gates System, and the bundle transpiles the new files.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+UI = ROOT / "ui"
+SHELL = (UI / "components" / "console" / "nv-shell.jsx").read_text(
+    encoding="utf-8")
+CHROME = (UI / "components" / "console" / "nv-chrome.jsx").read_text(
+    encoding="utf-8")
+HTML = (UI / "index.html").read_text(encoding="utf-8")
+APP = (UI / "app.jsx").read_text(encoding="utf-8")
+
+
+def test_regions_render():
+    for tid in ("nv-root", "nv-actbar", "nv-topbar"):
+        src = SHELL if tid == "nv-root" else CHROME
+        assert f'data-testid="{tid}"' in src, tid
+
+
+def test_flag_gates_the_mount():
+    assert "consoleNext" in APP and "NV_Shell" in APP
+    assert "SH_RootGate" in APP, "the current shell stays until flag day"
+
+
+def test_affordances_run_registered_verbs():
+    # Chrome never hardcodes behavior: clicks resolve registry verbs.
+    for verb in ("view.studio", "view.platform", "view.system",
+                 "workspace.switch", "workspace.create", "palette.open",
+                 "terminal.toggle", "events.toggle"):
+        assert verb in SHELL, f"{verb} not registered"
+    assert 'registry.get' in CHROME
+    assert re.search(r'data-verb="view\.studio"', CHROME)
+
+
+def test_toggle_order_terminal_before_events():
+    t = CHROME.index("nv-toggle-terminal")
+    e = CHROME.index("nv-toggle-events")
+    assert t < e, "terminal toggle sits before the events toggle"
+
+
+def test_view_switch_rides_the_url():
+    assert "SH_buildUrl" in SHELL and "SH_parseUrl" in SHELL
+    assert "pushState" in SHELL
+    assert "hashchange" in SHELL and "popstate" in SHELL
+
+
+def test_profile_menu_role_gates_system():
+    m = re.search(r'con\.role !== "restricted"[\s\S]{0,400}', CHROME)
+    assert m and "view.system" in m.group(0)
+
+
+def test_workspace_switch_resets_the_doc():
+    m = re.search(r'id: "workspace.switch"[\s\S]{0,400}', SHELL)
+    assert m and "setDoc(null)" in m.group(0), (
+        "switching workspace must drop the previous workspace's doc"
+    )
+
+
+def test_scripts_registered_before_app():
+    nv = HTML.index("components/console/nv-shell.jsx")
+    app = HTML.index('src="app.jsx"')
+    assert nv < app
+    assert "components/console/nv-chrome.jsx" in HTML
