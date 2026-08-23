@@ -276,3 +276,6 @@ docs/.launch/
 
 # Marketing, spec and planning docs stay local; never commit them.
 docs/marketing/
+
+# Designer prototype deliveries (reference only, never shipped)
+new-ui/
