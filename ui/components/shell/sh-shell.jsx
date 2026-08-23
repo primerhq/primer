@@ -375,6 +375,10 @@ function SH_Shell(props) {
             other altitudes. */}
         {typeof window.SH_Palette === "function" ? <window.SH_Palette /> : null}
         {typeof window.SH_OverlayHost === "function" ? <window.SH_OverlayHost /> : null}
+        {/* Shell-level attention engine: cross-workspace pending fan-out,
+            triage state, interrupt toasts (revamp section 5). */}
+        {typeof window.SH_AttentionEngine === "function"
+          ? <window.SH_AttentionEngine /> : null}
         <SH_ToastHost />
         {/* Themed confirm()/prompt() replacement: one host renders the
             active confirmDialog()/promptDialog() from anywhere below. */}

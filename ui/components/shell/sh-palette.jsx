@@ -14,6 +14,7 @@ var SH_CHORDS = {
   "Ctrl+Tab": "doc.cycleMru",
   "Ctrl+w": "doc.close",
   "Ctrl+Shift+a": "attention.next",
+  "Ctrl+j": "inbox.open",
 };
 
 function SH_chordFor(event) {

@@ -82,6 +82,9 @@ function SH_toAttentionItems(input) {
       preview: SH_previewOf(row.resume_metadata || { prompt: row.prompt }),
       at: row.parked_at || row.yielded_at,
       resolved: false,
+      // Stamped by the cross-workspace fan-out so the Inbox can jump
+      // to a session in another workspace (revamp section 5).
+      workspaceId: row.workspace_id || null,
     };
     item.tier = SH_tierFor(item);
     out.push(item);
@@ -99,6 +102,7 @@ function SH_toAttentionItems(input) {
       preview: rec.reason || "",
       at: rec.decided_at,
       resolved: true,
+      workspaceId: rec.workspace_id || null,
     };
     done.tier = SH_tierFor(done);
     out.push(done);

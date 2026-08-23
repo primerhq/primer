@@ -76,7 +76,8 @@
     "file",
     "diff",
     "wiki",
-    "trace"
+    "trace",
+    "inbox"
   ],
   "overlays": [
     "providers",

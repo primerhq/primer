@@ -7,14 +7,17 @@
 // the authenticated username from /auth/status, because section 1 forbids
 // new backend capability and "per account" cannot mean "per browser".
 
-var SH_RAIL_LISTS = ["sessions", "files", "attention"];
+// "attention" left the rail lists 2026-08-23: the pinned Inbox row +
+// the Inbox doc carry triage now; interrupts toast via the shell-level
+// SH_AttentionEngine.
+var SH_RAIL_LISTS = ["sessions", "files"];
 
 function SH_railPrefsKey(username) {
   return "primer.shell.rail:" + (username || "anon");
 }
 
 var SH_RAIL_DEFAULT_PREFS = {
-  order: ["sessions", "files", "attention"],
+  order: ["sessions", "files"],
   hidden: [],
   badgeStyle: "count",
   collapsed: {},
@@ -337,12 +340,34 @@ function SH_saveTriage(username, triage) {
   } catch (_e) { /* private mode: triage is best-effort, never fatal */ }
 }
 
-function SH_AttentionList() {
+// The attention ENGINE (revamp section 5): headless-ish shell-level
+// component. It fans pending yields across EVERY workspace, merges the
+// approval records, applies triage, publishes the result on
+// shell.attentionRef (the contract the attention.* verbs already use)
+// plus a "sh-attention" window event for reactive badges, and renders
+// ONLY the interrupt toasts. The Inbox doc renders the triage surface
+// from the same published state.
+function SH_AttentionEngine() {
   var shell = SH_useShell();
   var pending = window.primerApi.useResource(
-    SH_api.keys.pending(shell.wid),
-    function (signal) { return SH_api.pendingYields(shell.wid, signal); },
-    { pollMs: 10000, deps: [shell.wid] }
+    "shell-pending-all",
+    function (signal) {
+      return SH_api.workspaces(signal).then(function (ws) {
+        var wids = ((ws && ws.items) || []).map(function (w) { return w.id; });
+        return Promise.all(wids.map(function (wid) {
+          return SH_api.pendingYields(wid, signal).then(function (out) {
+            var items = (out && out.items) || [];
+            for (var i = 0; i < items.length; i++) {
+              items[i].workspace_id = items[i].workspace_id || wid;
+            }
+            return items;
+          }, function () { return []; });
+        })).then(function (lists) {
+          return { items: [].concat.apply([], lists) };
+        });
+      });
+    },
+    { pollMs: 10000 }
   );
   var records = window.primerApi.useResource(
     SH_api.keys.records(),
@@ -377,53 +402,24 @@ function SH_AttentionList() {
   });
   var visible = window.SH_applyTriage(all, triage);
   var interrupts = visible.filter(function (i) { return i.tier === "interrupt"; });
-  var ambient = visible.filter(function (i) { return i.tier === "ambient"; });
-  var digest = visible.filter(function (i) { return i.tier === "digest"; });
-  shell.attentionRef.current = { items: visible, triage: triage, commit: commit };
-
-  // Rendered from the registry, not from three hardcoded buttons: a verb
-  // that is renamed or dropped must disappear here rather than leave a
-  // button that looks live and does nothing.
-  var ATTENTION_RUNNERS = {
-    "attention.resolve": function (item) {
-      shell.openDoc({ kind: "session", ref: item.sessionId, preview: true });
-    },
-    "attention.snooze": function (item) {
-      var next = JSON.parse(JSON.stringify(triage));
-      next.snoozedUntil[item.id] = Date.now() + 60 * 60 * 1000;
-      commit(next);
-    },
-    "attention.mute": function (item) {
-      var next = JSON.parse(JSON.stringify(triage));
-      next.muted[item.toolName] = true;
-      commit(next);
-    },
+  shell.attentionRef.current = {
+    items: visible, triage: triage, commit: commit,
+    refetch: function () { pending.refetch(); records.refetch(); },
   };
+  React.useEffect(function () {
+    try {
+      window.dispatchEvent(new CustomEvent("sh-attention", {
+        detail: { count: visible.length - visible.filter(function (i) {
+          return i.tier === "digest";
+        }).length },
+      }));
+    } catch (_e) { /* CustomEvent unavailable: badges stay poll-late */ }
+  });
 
-  function triageVerbs(item) {
-    return (
-      <span className="sh-triage">
-        {shell.registry.forSurface("attention-item").map(function (verb) {
-          var run = ATTENTION_RUNNERS[verb.id];
-          if (!run) return null;
-          return (
-            <button type="button" key={verb.id} className="sh-verb"
-              data-verb={verb.id}
-              onClick={function () { run(item); }}>{verb.label}</button>
-          );
-        })}
-      </span>
-    );
-  }
-
+  // Interrupts, and only interrupts, get an in-shell toast. No sound at
+  // any tier. Ambient and digest render in the Inbox doc.
   return (
-    <section className="sh-rail-list" data-testid="rail-attention">
-      {/* The count renders ONCE, on the section head's
-          rail-head-badge:attention. A second header here duplicated it
-          (2026-08-23 audit) and is gone. */}
-
-      {/* Interrupts, and only interrupts, get an in-shell toast. No
-          sound at any tier. */}
+    <div className="sh-attention-toasts" data-testid="shell-attention-toasts">
       {interrupts.map(function (item) {
         return (
           <div key={item.id} className="sh-attention-toast"
@@ -431,39 +427,52 @@ function SH_AttentionList() {
             <div data-testid={"attention-item:" + item.sessionId}>
               <window.SH_DecisionCard item={item}
                 onResolved={function () { pending.refetch(); }} />
-              {triageVerbs(item)}
+              <window.SH_TriageVerbs item={item} />
             </div>
           </div>
         );
       })}
+    </div>
+  );
+}
 
-      <ul className="sh-attention-ambient">
-        {ambient.map(function (item) {
-          return (
-            <li key={item.id} data-testid={"attention-item:" + item.sessionId}>
-              <button type="button"
-                onClick={function () {
-                  shell.openDoc({
-                    kind: "session", ref: item.sessionId, preview: true,
-                  });
-                }}>{item.title}</button>
-              {triageVerbs(item)}
-            </li>
-          );
-        })}
-      </ul>
-
-      {digest.length ? (
-        <details className="sh-attention-digest">
-          <summary>Resolved ({digest.length})</summary>
-          <ul>
-            {digest.map(function (item) {
-              return <li key={item.id}>{item.title}</li>;
-            })}
-          </ul>
-        </details>
-      ) : null}
-    </section>
+// The triage strip, rendered from the registry rather than hardcoded
+// buttons: a verb that is renamed or dropped must disappear here rather
+// than leave a button that looks live and does nothing. Shared by the
+// interrupt toasts and the Inbox doc.
+function SH_TriageVerbs(props) {
+  var shell = SH_useShell();
+  var item = props.item;
+  var state = shell.attentionRef.current;
+  var runners = {
+    "attention.resolve": function () {
+      shell.openDoc({ kind: "session", ref: item.sessionId, preview: true });
+    },
+    "attention.snooze": function () {
+      if (!state) return;
+      var next = JSON.parse(JSON.stringify(state.triage));
+      next.snoozedUntil[item.id] = Date.now() + 60 * 60 * 1000;
+      state.commit(next);
+    },
+    "attention.mute": function () {
+      if (!state) return;
+      var next = JSON.parse(JSON.stringify(state.triage));
+      next.muted[item.toolName] = true;
+      state.commit(next);
+    },
+  };
+  return (
+    <span className="sh-triage">
+      {shell.registry.forSurface("attention-item").map(function (verb) {
+        var run = runners[verb.id];
+        if (!run) return null;
+        return (
+          <button type="button" key={verb.id} className="sh-verb"
+            data-verb={verb.id}
+            onClick={function () { run(); }}>{verb.label}</button>
+        );
+      })}
+    </span>
   );
 }
 
@@ -477,12 +486,18 @@ function SH_Rail() {
     setPrefs(SH_loadRailPrefs(username));
   }, [username]);
 
-  var pending = window.primerApi.useResource(
-    SH_api.keys.pending(shell.wid),
-    function (signal) { return SH_api.pendingYields(shell.wid, signal); },
-    { pollMs: 5000, deps: [shell.wid] }
-  );
-  var attentionCount = ((pending.data && pending.data.items) || []).length;
+  // Badge count published by SH_AttentionEngine (shell-level), so the
+  // rail needs no data fetch of its own for it.
+  var inboxState = React.useState(0);
+  var inboxCount = inboxState[0];
+  var setInboxCount = inboxState[1];
+  React.useEffect(function () {
+    function onAttention(ev) {
+      setInboxCount((ev && ev.detail && ev.detail.count) || 0);
+    }
+    window.addEventListener("sh-attention", onAttention);
+    return function () { window.removeEventListener("sh-attention", onAttention); };
+  }, []);
 
   function update(next) {
     setPrefs(next);
@@ -492,12 +507,29 @@ function SH_Rail() {
   var bodies = {
     sessions: <SH_SessionsList prefs={prefs} update={update} />,
     files: <SH_FilesList />,
-    attention: <SH_AttentionList />,
   };
-  var counts = { sessions: 0, files: 0, attention: attentionCount };
+  var counts = { sessions: 0, files: 0 };
 
   return (
     <nav className="sh-rail-nav">
+      {/* The pinned Inbox row: the one "something needs you" entry point
+          (revamp section 3), always above the sections. */}
+      <button
+        type="button"
+        className="sh-rail-inbox"
+        data-testid="rail-inbox"
+        onClick={function () {
+          var verb = shell.registry.get("inbox.open");
+          if (verb) verb.run();
+        }}
+      >
+        Inbox
+        {inboxCount ? (
+          <span className="sh-rail-badge" data-testid="rail-inbox-badge">
+            {inboxCount}
+          </span>
+        ) : null}
+      </button>
       {prefs.order.filter(function (name) {
         return SH_RAIL_LISTS.indexOf(name) >= 0 && prefs.hidden.indexOf(name) < 0;
       }).map(function (name) {
@@ -539,4 +571,5 @@ window.SH_saveRailPrefs = SH_saveRailPrefs;
 window.SH_Rail = SH_Rail;
 window.SH_loadTriage = SH_loadTriage;
 window.SH_saveTriage = SH_saveTriage;
-window.SH_AttentionList = SH_AttentionList;
+window.SH_AttentionEngine = SH_AttentionEngine;
+window.SH_TriageVerbs = SH_TriageVerbs;

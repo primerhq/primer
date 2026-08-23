@@ -40,8 +40,18 @@ function SH_registerCoreVerbs(shell) {
     return state && state.items.length ? state.items[0] : null;
   }
 
+  // The Inbox tab (revamp section 5): Ctrl+j moved here from
+  // attention.next - the tab is the triage surface, next-jumping is a
+  // palette verb.
   shell.registry.register({
-    id: "attention.next", label: "Open Attention", chord: "Ctrl+j",
+    id: "inbox.open", label: "Open Inbox", chord: "Ctrl+j",
+    surfaces: ["rail", "palette"],
+    run: function () {
+      shell.openDoc({ kind: "inbox", ref: "main", title: "Inbox" });
+    },
+  });
+  shell.registry.register({
+    id: "attention.next", label: "Open Attention",
     surfaces: ["rail", "palette"],
     run: function () {
       var item = firstItem();
@@ -310,6 +320,9 @@ function SH_DocBody(props) {
   }
   if (tab.kind === "trace" && typeof window.SH_TraceTab === "function") {
     return <window.SH_TraceTab docRef={tab.ref} />;
+  }
+  if (tab.kind === "inbox" && typeof window.SH_InboxDoc === "function") {
+    return <window.SH_InboxDoc />;
   }
   return <div className="sh-empty">Nothing open. Press Ctrl+K for verbs.</div>;
 }

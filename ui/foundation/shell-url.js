@@ -17,7 +17,7 @@
 // Web APIs are not ECMAScript, and a URL grammar that cannot be executed
 // in a test is a grammar nobody checks.
 
-var SH_DOC_KINDS = ["session", "file", "diff", "wiki", "trace"];
+var SH_DOC_KINDS = ["session", "file", "diff", "wiki", "trace", "inbox"];
 
 var SH_OVERLAYS = [
   "providers", "collections", "agents", "graphs", "triggers",

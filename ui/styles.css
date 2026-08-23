@@ -3070,6 +3070,120 @@ input, textarea, select { font: inherit; color: inherit; }
 
 .sh-rail-children { list-style: none; margin: 0; padding-left: var(--sp-3); }
 
+/* The pinned Inbox row: the one "needs you" entry point (spec 3). */
+.sh-rail-inbox {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-1) var(--sp-2) var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-6);
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.sh-rail-inbox:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.sh-rail-inbox .sh-rail-badge {
+  margin-left: auto;
+  color: var(--attention);
+  background: var(--attention-dim);
+  border-color: var(--attention-border);
+}
+
+/* Interrupt toasts: shell-level fixed stack (the engine renders them
+   even when no Inbox tab is open). */
+.sh-attention-toasts {
+  position: fixed;
+  right: var(--sp-3);
+  bottom: var(--sp-3);
+  z-index: 65;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-width: min(440px, calc(100vw - 32px));
+}
+.sh-attention-toast {
+  background: var(--bg-elev);
+  border: 1px solid var(--attention-border);
+  border-left: 3px solid var(--attention);
+  border-radius: var(--r-9);
+  box-shadow: var(--shadow);
+  padding: var(--sp-3);
+}
+
+/* The Inbox doc. */
+.sh-inbox {
+  padding: var(--sp-4);
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.sh-inbox-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.sh-inbox-count { font-size: var(--fs-13); font-weight: 600; color: var(--text); }
+.sh-inbox-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-12);
+  color: var(--text-3);
+  cursor: pointer;
+}
+.sh-inbox-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.sh-inbox-item {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-9);
+  padding: var(--sp-3);
+}
+.sh-inbox-item[data-active="true"] { border-color: var(--accent-border); }
+.sh-inbox-item[data-kind="approval"] { border-left: 3px solid var(--attention); }
+.sh-inbox-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.sh-inbox-item-head .sh-chip[data-kind="approval"] {
+  color: var(--attention);
+  background: var(--attention-dim);
+  border-color: var(--attention-border);
+}
+.sh-inbox-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-12);
+  color: var(--text);
+}
+.sh-inbox-ws { font-size: var(--fs-11); color: var(--text-3); }
+.sh-inbox-preview {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-12);
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+
 /* Other-workspace groups in the cross-workspace sessions list. */
 .sh-rail-group { list-style: none; margin-top: var(--sp-2); }
 .sh-rail-group > details > summary {

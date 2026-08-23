@@ -46,15 +46,17 @@ def test_only_interrupts_toast_and_ambient_only_badges() -> None:
     src = _rail()
     assert 'data-testid={"attention-toast:"' in src
     assert re.search(r'tier\s*===\s*"interrupt"', src)
-    # The ONE attention count badge lives on the section head (the
-    # in-list h3 duplicate was removed by the 2026-08-23 revamp).
-    assert '"rail-head-badge:" + name' in src
-    assert 'data-testid="rail-badge:attention"' not in src
+    # 2026-08-23 revamp: the ONE attention count badge is the pinned
+    # Inbox row's, attention-colored; the rail attention section is gone.
+    assert 'data-testid="rail-inbox-badge"' in src
+    assert 'data-testid="rail-attention"' not in src
     assert "playSound" not in src and "Audio(" not in src
 
 
 def test_a_digest_row_is_a_collapsed_rollup_not_a_toast() -> None:
-    src = _rail()
+    # Digest moved into the Inbox doc with the 2026-08-23 revamp.
+    src = (UI / "components" / "shell" / "sh-inbox-doc.jsx").read_text(
+        encoding="utf-8")
     assert "<details" in src
     assert re.search(r'tier\s*===\s*"digest"', src)
 

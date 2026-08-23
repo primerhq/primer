@@ -19,12 +19,15 @@ def _src() -> str:
     return SRC.read_text(encoding="utf-8")
 
 
-def test_exactly_three_lists() -> None:
+def test_exactly_two_lists_plus_the_pinned_inbox() -> None:
+    # 2026-08-23 revamp: attention left the rail lists; the pinned
+    # Inbox row above the sections is the "needs you" entry point.
     src = _src()
     m = re.search(r"var SH_RAIL_LISTS = \[([^\]]*)\]", src)
     assert m, "SH_RAIL_LISTS must be a literal so the rail cannot grow quietly"
     names = re.findall(r'"([a-z]+)"', m.group(1))
-    assert names == ["sessions", "files", "attention"]
+    assert names == ["sessions", "files"]
+    assert 'data-testid="rail-inbox"' in src
 
 
 def test_global_utilities_are_not_in_the_rail() -> None:
@@ -50,9 +53,12 @@ def test_sessions_are_frecency_ordered_with_status_and_nesting() -> None:
 
 
 def test_attention_counts_come_from_pending_yields() -> None:
+    # The engine still fans over pendingYields; the badge rides the
+    # pinned Inbox row via the sh-attention event.
     src = _src()
     assert "SH_api.pendingYields" in src
-    assert 'data-testid="rail-attention"' in src
+    assert '"sh-attention"' in src
+    assert 'data-testid="rail-inbox-badge"' in src
 
 
 def test_rows_render_verbs_from_the_registry() -> None:
