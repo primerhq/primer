@@ -5364,3 +5364,244 @@ input, textarea, select { font: inherit; color: inherit; }
 .nv-crumb-sep { color: var(--text-4); }
 .nv-overlay-crumb span:last-child { font-family: var(--font-mono); }
 .nv-legacy-host { min-height: 0; }
+
+/* =========================================================================
+   nv- PLATFORM (wiring plan P4 T10): grouped nav, card pages, provider
+   family pills, approvals audit. Prototype PLATFORM region, extracted.
+   ========================================================================= */
+
+.nv-plat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.nv-plat-nav {
+  width: 210px;
+  flex-shrink: 0;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  padding: 10px 8px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nv-plat-group-label {
+  padding: 10px 10px 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+.nv-plat-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border-radius: var(--r-6);
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-height: calc(var(--hit) - 8px);
+}
+.nv-plat-row:hover { background: var(--bg-hover); color: var(--text); }
+.nv-plat-row[data-active="true"] {
+  background: var(--bg-active);
+  color: var(--text);
+}
+.nv-plat-row-icon { flex-shrink: 0; color: var(--text-4); }
+.nv-plat-row[data-active="true"] .nv-plat-row-icon { color: var(--accent); }
+.nv-plat-main { flex: 1; min-width: 0; overflow-y: auto; }
+.nv-plat-wrap { max-width: 1020px; margin: 0 auto; padding: 20px 24px 50px; }
+.nv-plat-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.nv-plat-title { font-size: 17px; font-weight: 600; }
+.nv-plat-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+.nv-plat-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-6);
+  background: var(--bg-1);
+  padding: 5px 10px;
+  color: var(--text-4);
+  min-height: calc(var(--hit) - 8px);
+}
+.nv-plat-filter input {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 12px;
+  color: var(--text);
+  width: 130px;
+}
+.nv-fam-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 16px;
+}
+.nv-fam-pill {
+  padding: 3px 11px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-3);
+  border-radius: 999px;
+  font-size: 11.5px;
+  cursor: pointer;
+  min-height: calc(var(--hit) - 12px);
+}
+.nv-fam-pill:hover { border-color: var(--border-strong); }
+.nv-fam-pill[data-active="true"] {
+  border-color: var(--accent-border);
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+.nv-plat-empty {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-8);
+  padding: 44px 20px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.nv-pcard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 10px;
+}
+.nv-pcard {
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  padding: 12px 13px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nv-pcard:hover { border-color: var(--accent-border); }
+.nv-pcard-head { display: flex; align-items: center; gap: 8px; }
+.nv-pcard-name {
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nv-pcard-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.nv-pcard-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nv-pcard-facts { display: flex; flex-direction: column; gap: 3px; }
+.nv-fact-row { display: flex; gap: 10px; font-size: 11.5px; }
+.nv-fact-k { color: var(--text-4); width: 88px; flex-shrink: 0; }
+.nv-fact-v {
+  color: var(--text-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nv-pcard-foot { display: flex; gap: 6px; margin-top: 2px; align-items: center; }
+.nv-pcard-open { font-size: 11px; color: var(--accent); }
+.nv-pcard-del {
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  color: var(--text-4);
+  cursor: pointer;
+  padding: 0;
+}
+.nv-pcard-del:hover { color: var(--red); }
+.nv-pager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+.nv-pager-range {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-4);
+}
+.nv-pager-btn {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  border-radius: var(--r-4);
+  color: var(--text-3);
+  cursor: pointer;
+}
+.nv-pager-btn:hover { border-color: var(--border-strong); }
+.nv-pager-btn:disabled { opacity: 0.35; cursor: default; }
+.nv-audit { margin-top: 22px; }
+.nv-audit-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 8px;
+}
+.nv-audit-table {
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  overflow: hidden;
+  background: var(--bg-1);
+}
+.nv-audit-head,
+.nv-audit-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.4fr 0.7fr 1.4fr 0.6fr;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+.nv-audit-head {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+.nv-audit-row { font-size: 12px; }
+.nv-audit-row:last-child { border-bottom: none; }
+.nv-audit-row > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nv-audit-mono { font-family: var(--font-mono); font-size: 11px; }
+.nv-audit-empty { color: var(--text-4); }
