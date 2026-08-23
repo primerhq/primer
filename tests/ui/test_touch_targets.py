@@ -22,8 +22,12 @@ FLOOR_PX = 32
 # Interactive nv- control classes that must size via var(--hit).
 # Extend this list in the task that introduces each control.
 HIT_SIZED: list[str] = [
-    # seeded empty in P0; P1+ tasks append (composer buttons, topbar
-    # controls, activity-bar buttons, ...)
+    "nv-actbar-btn",
+    "nv-avatar",
+    "nv-topbar-toggle",
+    "nv-composer-iconbtn",
+    "nv-stop-btn",
+    "nv-send-btn",
 ]
 
 

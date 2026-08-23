@@ -119,6 +119,19 @@ function NV_Studio() {
   );
 }
 
+// Usage summary for the session header's mini meter. The session row
+// carries usage when the backend provides it; absent data renders an
+// empty meter rather than a lie.
+function NV_usageOf(session) {
+  var u = session && session.usage;
+  if (!u || !u.total_input_tokens) return { pct: 0, label: "" };
+  var ctx = session.context_length || 0;
+  var used = (u.total_input_tokens || 0) + (u.total_output_tokens || 0);
+  var pct = ctx ? Math.min(100, Math.round((used / ctx) * 100)) : 0;
+  return { pct: pct, label: Math.round(used / 1000) + "k" };
+}
+
+window.NV_usageOf = NV_usageOf;
 window.NV_GLYPHS = NV_GLYPHS;
 window.NV_identity = NV_identity;
 window.NV_sessionBands = NV_sessionBands;
