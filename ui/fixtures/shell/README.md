@@ -24,6 +24,10 @@ Four doc kinds, addressed by wire id:
   `trace:<session-id>:<turn-no>`. It opens BESIDE the transcript in a
   split group, never in an overlay, and it is the only place raw tool
   arguments are shown. Fixture: `turn-timeline.json`.
+- `inbox` : the attention triage tab (2026-08-23 revamp): typed items
+  over the cross-workspace pending feed plus approval records, deciding
+  inline. Singleton; its one ref is `main`. Fixtures:
+  `pending-yields.json`, `approval-records.json`.
 
 ## Overlays
 
@@ -32,7 +36,13 @@ addressable in the URL. Names are the registry keys:
 
 `providers`, `collections`, `agents`, `graphs`, `triggers`, `toolsets`,
 `tools`, `workers`, `approvals`, `admin`, `harnesses`, `services`,
-`channels`, `workspaces`, `new-session`, `internal-collections`.
+`channels`, `workspaces`, `new-session`, `internal-collections`,
+`activity`.
+
+`activity` (2026-08-23 revamp) is the admin-gated events console over
+`GET /v1/events`. Since the same revamp these all render inside the
+full-screen STUDIO frame (grouped left nav), still addressed by
+`overlay=<name>`.
 
 `internal-collections` is the SUBSYSTEM: its config, its bootstrap
 control and the off-state that says why search is unavailable. It is not

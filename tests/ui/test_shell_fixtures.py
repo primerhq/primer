@@ -14,12 +14,14 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "ui" / "fixtures" / "shell"
 MANIFEST = FIXTURES / "manifest.json"
 
-DOC_KINDS = ["session", "file", "diff", "wiki", "trace"]
+DOC_KINDS = ["session", "file", "diff", "wiki", "trace", "inbox"]
 OVERLAYS = [
     "providers", "collections", "agents", "graphs", "triggers",
     "toolsets", "tools", "workers", "approvals", "admin",
     "harnesses", "services", "channels", "workspaces", "new-session",
     "internal-collections",
+    # The Activity events console (2026-08-23 revamp).
+    "activity",
 ]
 
 
@@ -127,6 +129,9 @@ def test_every_doc_kind_has_at_least_one_fixture() -> None:
         # The trace doc renders S7's timeline, whose fixture Task 4 already
         # shipped for the attention surfaces.
         "trace": "turn-timeline",
+        # The Inbox renders the pending feed; its stub is the same
+        # pending-yields fixture the attention engine consumes.
+        "inbox": "pending-yields",
     }
     ids = {e["id"] for e in man["surfaces"]}
     for kind in man["doc_kinds"]:

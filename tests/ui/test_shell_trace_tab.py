@@ -23,7 +23,9 @@ def _src() -> str:
 
 def test_trace_became_a_doc_kind_everywhere_at_once() -> None:
     man = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert man["doc_kinds"] == ["session", "file", "diff", "wiki", "trace"]
+    assert man["doc_kinds"] == [
+        "session", "file", "diff", "wiki", "trace", "inbox",
+    ]
     url = (UI / "foundation" / "shell-url.js").read_text(encoding="utf-8")
     assert '"trace"' in url
     assert "`trace`" in (UI / "fixtures" / "shell" / "README.md").read_text(

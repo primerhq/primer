@@ -3896,15 +3896,13 @@ input, textarea, select { font: inherit; color: inherit; }
   padding: var(--sp-1) var(--sp-3);
   min-height: 34px;
 }
-.sh-overlay-title {
-  font-size: var(--fs-13);
+/* One-title rule: the body's h1.page-title IS the surface's single
+   title (the bar carries verbs and Close only). */
+.sh-overlay-body .page-title {
+  font-size: 17px;
   font-weight: 600;
   color: var(--text);
-  flex: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 40%;
+  margin: 0 0 var(--sp-3);
 }
 /* The registry renders every overlay-button verb in this strip; it
    scrolls rather than squeezing the title or the Close button off the

@@ -454,12 +454,10 @@ function SH_OverlayHost() {
       </aside>
       <div className="sh-studio-main">
       <div className="sh-overlay-bar">
-        {/* ONE-TITLE RULE (2026-08-23 revamp): the bar names the SURFACE
-            ("Agents"), never the verb that opened it ("Open Agents" -
-            the audit's wrong-altitude title). */}
-        <span className="sh-overlay-title">
-          {SH_OVERLAY_TITLES[name] || name}
-        </span>
+        {/* ONE-TITLE RULE (2026-08-23 revamp): the ONE title is the
+            body's h1.page-title below; the bar carries verbs and Close
+            only. (The audit's bug was the bar shouting the VERB label
+            above a second h1.) */}
         {/* Rendered from the registry so an overlay-surface verb cannot
             be declared and then never offered anywhere. */}
         <span className="sh-overlay-verbs">
@@ -476,12 +474,11 @@ function SH_OverlayHost() {
           onClick={function () { shell.closeOverlay(); }}>Close Overlay</button>
       </div>
       <div className="sh-overlay-body" data-testid="shell-overlay-body">
-        {/* The crumb survives for detail views (the way back to the
-            list); the h1 that repeated the bar title is gone under the
-            one-title rule (2026-08-23 audit: "Open Agents" + "Agents"
-            double heading). */}
-        {overlay.id || overlay.section ? (
-          <div className="page-header">
+        {/* THE title (one per surface): the surface name on a list
+            view, the record on a detail view - with the crumb as the
+            way back. */}
+        <div className="page-header">
+          {overlay.id || overlay.section ? (
             <div className="crumb">
               <a data-testid="shell-overlay-crumb"
                 onClick={function () { shell.openOverlay(name, null, null); }}
@@ -489,8 +486,9 @@ function SH_OverlayHost() {
               <span className="sep">/</span>
               <span className="mono">{SH_overlayTitle(overlay)}</span>
             </div>
-          </div>
-        ) : null}
+          ) : null}
+          <h1 className="page-title">{SH_overlayTitle(overlay)}</h1>
+        </div>
         {mount.render(overlay, shell)}
       </div>
       </div>

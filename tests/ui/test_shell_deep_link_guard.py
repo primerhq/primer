@@ -24,6 +24,8 @@ REFS = {
     "diff": "9c1f2ab",
     "wiki": "col-1/guides/getting started",
     "trace": "sess-4f1a2b3c:7",
+    # The Inbox is a singleton surface; "main" is its one ref.
+    "inbox": "main",
 }
 
 

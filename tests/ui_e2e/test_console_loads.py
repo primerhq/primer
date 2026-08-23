@@ -23,24 +23,28 @@ import pytest
 from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
-# (legacy route, expected text in the overlay's own title bar)
+# (legacy route, expected text in the surface's single h1.page-title)
 # The console has no sidebar and no page routes: every management
-# surface is an overlay, titled by the verb that opens it. The routes
-# below are what a user deep-links to, translated by the facade.
+# surface renders inside the Studio frame. Since the 2026-08-23 revamp
+# the ONE title is the body's h1 and it names the SURFACE, never the
+# verb that opened it. The routes below are what a user deep-links to,
+# translated by the facade.
 _ROUTES: list[tuple[str, str]] = [
-    ("workspaces",                      "Open Workspaces"),
-    ("agents",                          "Open Agents"),
-    ("graphs",                          "Open Graphs"),
-    ("knowledge/collections",           "Open Collections"),
-    ("toolsets",                        "Open Toolsets"),
-    ("providers/llm",                   "Open Providers Catalog"),
-    ("providers/embedding",             "Open Providers Catalog"),
-    ("providers/cross_encoder",         "Open Providers Catalog"),
+    ("workspaces",                      "Workspaces"),
+    ("agents",                          "Agents"),
+    ("graphs",                          "Graphs"),
+    ("knowledge/collections",           "Collections"),
+    ("toolsets",                        "Toolsets"),
+    ("providers/llm",                   "Providers"),
+    ("providers/embedding",             "Providers"),
+    ("providers/cross_encoder",         "Providers"),
     # The subsystem now has its own overlay; it used to resolve to the
     # knowledge browser, which is a different surface entirely.
-    ("subsystems/internal-collections", "Open Internal Collections"),
-    ("workers",                         "Open Workers"),
-    ("health",                          "Open Workers"),
+    ("subsystems/internal-collections", "Internal collections"),
+    ("workers",                         "Workers"),
+    # health resolves to overlay=workers:health, whose sectioned title
+    # is "Health" (SH_OVERLAY_SECTION_TITLES).
+    ("health",                          "Health"),
 ]
 
 
@@ -61,7 +65,7 @@ def test_route_renders_with_zero_console_errors(
     no unexpected console errors / fetch failures. The ``page`` fixture
     already loaded ``/console/`` and React has bootstrapped."""
     open_legacy_route(page, console_url, route)
-    title_locator = page.locator(".sh-overlay-title").first
+    title_locator = page.locator("h1.page-title").first
     title_locator.wait_for(state="visible", timeout=10_000)
     assert expected_title in title_locator.inner_text()
     # Give the page a moment for any post-load fetches (sidebar IC poll,
