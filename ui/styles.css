@@ -3192,6 +3192,23 @@ input, textarea, select { font: inherit; color: inherit; }
   white-space: pre-wrap;
 }
 
+/* Changed-on-disk banner (revamp section 6): attention-colored, never
+   a modal - the operator keeps reading while deciding. */
+.sh-file-conflict {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-12);
+  color: var(--text);
+  background: var(--attention-dim);
+  border: 1px solid var(--attention-border);
+  border-left: 3px solid var(--attention);
+  border-radius: var(--r-6);
+}
+.sh-file-conflict span { flex: 1; min-width: 0; }
+
 /* File management: header verbs + the hover-revealed row menu. */
 .sh-files-verbs {
   display: flex;

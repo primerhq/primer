@@ -3,6 +3,10 @@
 // section 8 puts comparison and deep editing in the center and reserves
 // overlays for shallow one-decision tasks.
 
+// 1MB: past this the line renderer and textarea both stop being an
+// editor anyone would want; the gate offers download instead.
+var SH_FILE_EDIT_MAX_BYTES = 1024 * 1024;
+
 function SH_FileDoc(props) {
   var shell = SH_useShell();
   var path = props.path;
@@ -14,8 +18,17 @@ function SH_FileDoc(props) {
   var draftState = React.useState(null);
   var draft = draftState[0];
   var setDraft = draftState[1];
+  // "conflict" when a save came back 412: the file changed on disk
+  // under the draft (revamp section 6).
+  var conflictState = React.useState(false);
+  var conflict = conflictState[0];
+  var setConflict = conflictState[1];
 
-  var content = draft == null ? ((read.data && read.data.content) || "") : draft;
+  var meta = read.data || {};
+  var etag = meta.etag || null;
+  var binary = meta.encoding === "base64";
+  var tooBig = (meta.size_bytes || 0) > SH_FILE_EDIT_MAX_BYTES;
+  var content = draft == null ? (meta.content || "") : draft;
   var lines = String(content).split("\n");
   var anchor = SH_parseAnchor(shell.anchor);
   var from = anchor && anchor.kind === "lines" ? anchor.from : null;
@@ -28,20 +41,86 @@ function SH_FileDoc(props) {
     shell.promoteDoc("file:" + path);
   }
 
+  function save(force) {
+    if (draft == null) return;
+    // The etag from the read makes the write conditional; 412 means the
+    // file changed on disk since - never silently clobber it.
+    SH_api.fileWrite(shell.wid, path, draft, force ? null : etag).then(
+      function () {
+        setDraft(null);
+        setConflict(false);
+        read.refetch();
+        shell.toast("Saved " + path);
+      },
+      function (err) {
+        if (err && err.status === 412) { setConflict(true); return; }
+        shell.toast("Save failed: " + (err && err.message));
+      }
+    );
+  }
+
+  // Ctrl+S saves the dirty doc; the browser's own save dialog never
+  // helps anyone edit a workspace file.
+  React.useEffect(function () {
+    function onKey(ev) {
+      if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "s") {
+        ev.preventDefault();
+        save(false);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return function () { window.removeEventListener("keydown", onKey); };
+  });
+
+  if (binary || tooBig) {
+    // The gate: binary or oversized content downloads, never renders.
+    return (
+      <div className="sh-file" data-testid={"shell-file:" + path}>
+        <div className="sh-empty">
+          <span>
+            {path} is {binary ? "binary" : "large"}
+            {meta.size_bytes ? " (" + meta.size_bytes + " bytes)" : ""}
+            {"; it opens outside the editor."}
+          </span>
+          <a className="sh-verb" data-testid="file-download-gate"
+            href={SH_api.fileDownloadUrl(shell.wid, path)} download>
+            Download
+          </a>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="sh-file" data-testid={"shell-file:" + path}>
       <div className="sh-file-bar">
         <span className="sh-file-path" data-testid="file-breadcrumb">{path}</span>
+        {draft != null ? (
+          <span className="sh-chip" data-testid="file-dirty">modified</span>
+        ) : null}
         <button type="button" className="sh-verb" data-testid="shell-doc-save"
           disabled={draft == null}
-          onClick={function () {
-            SH_api.fileWrite(shell.wid, path, draft).then(function () {
-              setDraft(null);
-              read.refetch();
-              shell.toast("Saved " + path);
-            });
-          }}>Save File</button>
+          onClick={function () { save(false); }}>Save File</button>
       </div>
+      {conflict ? (
+        <div className="sh-file-conflict" data-testid="file-conflict-banner">
+          <span>
+            This file changed on disk while you edited it. Reload to take
+            the new version (your draft is lost), or Overwrite to keep
+            yours.
+          </span>
+          <button type="button" className="sh-verb"
+            data-testid="file-conflict-reload"
+            onClick={function () {
+              setDraft(null);
+              setConflict(false);
+              read.refetch();
+            }}>Reload</button>
+          <button type="button" className="sh-verb"
+            data-testid="file-conflict-overwrite"
+            onClick={function () { save(true); }}>Overwrite</button>
+        </div>
+      ) : null}
       <ol className="sh-file-body">
         {lines.map(function (text, i) {
           var n = i + 1;

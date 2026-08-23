@@ -44,8 +44,11 @@ def test_editing_a_file_promotes_its_preview_tab() -> None:
 
 
 def test_the_save_path_matches_the_shipped_handler() -> None:
+    # The 2026-08-23 revamp added the optional etag (conditional write;
+    # 412 raises the changed-on-disk banner).
     api = API.read_text(encoding="utf-8")
-    assert re.search(r"fileWrite:\s*function\s*\(wid,\s*path,\s*content\)", api)
+    assert re.search(
+        r"fileWrite:\s*function\s*\(wid,\s*path,\s*content,\s*etag\)", api)
     assert '"PUT"' in api
     assert 'encoding: "text"' in api
 
