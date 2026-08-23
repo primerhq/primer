@@ -17,10 +17,23 @@ var SH_api = {
   },
 
   // Cross-workspace (revamp section 3): the rail and palette reach every
-  // session; recency ordering happens client-side on last_activity_at.
+  // session. The top-level route's rows differ from the workspace-scoped
+  // ones (id vs session_id; last_turn_at vs last_activity_at), so this
+  // seam NORMALIZES to the workspace-scoped shape every consumer already
+  // reads - the difference must not leak past this file.
   allSessions: function (signal) {
     return window.primerApi.apiFetch(
-      "GET", "/sessions?limit=200", null, { signal: signal });
+      "GET", "/sessions?limit=200", null, { signal: signal }
+    ).then(function (out) {
+      var items = ((out && out.items) || []).map(function (r) {
+        return Object.assign({}, r, {
+          session_id: r.session_id || r.id,
+          last_activity_at: r.last_activity_at || r.last_turn_at
+            || r.created_at,
+        });
+      });
+      return { items: items };
+    });
   },
 
   // response_model=WorkspaceSession (primer/api/routers/sessions.py:643-656):

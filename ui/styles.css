@@ -3347,6 +3347,8 @@ input, textarea, select { font: inherit; color: inherit; }
   border: 1px solid transparent;
   border-bottom: none;
   border-radius: var(--r-6) var(--r-6) 0 0;
+  white-space: nowrap;
+  flex: none;
   padding: 4px 10px;
   cursor: pointer;
   white-space: nowrap;
@@ -3363,6 +3365,13 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .sh-tab[data-preview="true"] { font-style: italic; }
 .sh-tab .sh-verb { padding: 0 3px; }
+
+/* The per-tab verb strip is hover/focus-revealed (the rail-verb idiom):
+   every tab carrying the full strip inline collided with its neighbors
+   (2026-08-23 step-3 gate). */
+.sh-tab .sh-tab-menu { display: none; }
+.sh-tab:hover .sh-tab-menu,
+.sh-tab:focus-within .sh-tab-menu { display: inline-flex; }
 
 .sh-tab-status { font-size: var(--fs-11); }
 .sh-tab-menu { display: inline-flex; gap: 2px; }
