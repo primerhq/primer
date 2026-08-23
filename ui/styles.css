@@ -6,8 +6,9 @@
      IBM Plex Mono (matching the .mono class). */
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
-  /* UI face (spec 2026-08-23 section 9). Mono stays IBM Plex Mono. */
-  --font-ui: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  /* UI face: IBM Plex Sans, per the designer identity (new-ui handoff,
+     2026-08-23). Mono stays IBM Plex Mono. */
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
 
   /* Studio type / spacing / radius scale (FC2). Theme-independent, so declared
      once on the base :root. Names the recurring magic numbers the FE port-map
@@ -23,107 +24,96 @@
   --r-6: 6px;
   --r-9: 9px;
   --r-12: 12px;
+  /* Designer token additions (new-ui handoff): radii the prototype
+     uses, the brand constant, and the touch-target size every
+     interactive control sizes against (the touch-target guard
+     enforces it). */
+  --r-4: 4px;
+  --r-8: 8px;
+  --r-10: 10px;
+  --brand-green: #61d46a;
+  --hit: 36px;
 }
 
+/* Designer identity (new-ui handoff 2026-08-23): ink / paper / primer
+   green, DARK-FIRST - the un-stamped document is dark, which is why
+   the bare :root shares this block. */
+:root,
 :root[data-theme="dark"] {
-  --bg: oklch(0.155 0.005 250);
-  --bg-1: oklch(0.185 0.005 250);
-  --bg-2: oklch(0.22 0.005 250);
-  --bg-hover: oklch(0.235 0.005 250);
-  --bg-active: oklch(0.27 0.005 250);
-  --bg-elev: oklch(0.21 0.005 250);
-  --border: oklch(0.28 0.005 250);
-  --border-strong: oklch(0.38 0.005 250);
-  --text: oklch(0.95 0.005 250);
-  --text-2: oklch(0.72 0.005 250);
-  /* Contrast guard: was oklch(0.55 ...) at 4.03:1 on --bg (fails AA).
-     Raised to 0.62 so tertiary copy (timestamps, meta) stays legible. */
-  --text-3: oklch(0.62 0.005 250);
-  /* FC5b: was oklch(0.4 …) → 2.12:1 on --bg (fails WCAG-AA). Raised to
-     0.58 → 4.56:1 so secondary/placeholder text is legible in dark mode. */
-  --text-4: oklch(0.58 0.005 250);
-  /* Revamp spec section 9: blue primary (#2563EB family), lifted L for
-     dark surfaces. Orange is RESERVED for attention. */
-  --accent: oklch(0.68 0.17 262);
-  --accent-2: oklch(0.76 0.14 262);
-  --accent-dim: oklch(0.68 0.17 262 / 0.14);
-  --accent-border: oklch(0.68 0.17 262 / 0.35);
-  --accent-fg: oklch(0.15 0.005 250);
-
+  --bg: oklch(0.16 0.005 155);
+  --bg-1: oklch(0.19 0.005 155);
+  --bg-2: oklch(0.225 0.006 155);
+  --bg-hover: oklch(0.245 0.007 155);
+  --bg-active: oklch(0.28 0.008 155);
+  --bg-elev: oklch(0.215 0.006 155);
+  --border: oklch(0.29 0.008 155);
+  --border-strong: oklch(0.39 0.01 155);
+  --text: oklch(0.95 0.006 130);
+  --text-2: oklch(0.75 0.01 140);
+  --text-3: oklch(0.64 0.012 140);
+  --text-4: oklch(0.585 0.012 140);
+  --accent: oklch(0.78 0.18 145);
+  --accent-2: oklch(0.84 0.15 145);
+  --accent-dim: oklch(0.78 0.18 145 / 0.13);
+  --accent-border: oklch(0.78 0.18 145 / 0.4);
+  --accent-fg: oklch(0.17 0.02 155);
   --attention: oklch(0.72 0.17 45);
-  --attention-dim: oklch(0.72 0.17 45 / 0.15);
-  --attention-border: oklch(0.72 0.17 45 / 0.4);
-  --attention-fg: oklch(0.15 0.005 250);
-
-  --green: oklch(0.82 0.18 145);
-  --green-dim: oklch(0.82 0.18 145 / 0.14);
-  --blue: oklch(0.74 0.14 240);
-  --blue-dim: oklch(0.74 0.14 240 / 0.14);
-  --amber: oklch(0.82 0.16 75);
-  --amber-dim: oklch(0.82 0.16 75 / 0.14);
-  --red: oklch(0.7 0.2 25);
-  --red-dim: oklch(0.7 0.2 25 / 0.14);
-  --violet: oklch(0.72 0.16 290);
-  --violet-dim: oklch(0.72 0.16 290 / 0.14);
-
-  --shadow: 0 1px 0 rgba(0,0,0,0.4), 0 10px 30px -10px rgba(0,0,0,0.6);
-  --shadow-sm: 0 1px 0 rgba(0,0,0,0.3);
-
+  --attention-dim: oklch(0.72 0.17 45 / 0.13);
+  --attention-border: oklch(0.72 0.17 45 / 0.45);
+  --attention-fg: oklch(0.16 0.03 45);
+  --green: oklch(0.78 0.15 155); --green-dim: oklch(0.78 0.15 155 / 0.13);
+  --red: oklch(0.69 0.19 22);    --red-dim: oklch(0.69 0.19 22 / 0.14);
+  --amber: oklch(0.83 0.14 92);  --amber-dim: oklch(0.83 0.14 92 / 0.14);
+  --blue: oklch(0.74 0.11 240);  --blue-dim: oklch(0.74 0.11 240 / 0.14);
+  --violet: oklch(0.73 0.13 300);--violet-dim: oklch(0.73 0.13 300 / 0.14);
+  --teal: oklch(0.78 0.11 200);  --teal-dim: oklch(0.78 0.11 200 / 0.14);
+  --pink: oklch(0.74 0.13 350);  --pink-dim: oklch(0.74 0.13 350 / 0.14);
+  --scrim: oklch(0 0 0 / 0.55);
+  --shadow: 0 1px 0 oklch(0 0 0 / 0.35), 0 14px 40px -12px oklch(0 0 0 / 0.6);
+  --shadow-sm: 0 1px 0 oklch(0 0 0 / 0.3);
   color-scheme: dark;
 }
 
 :root[data-theme="light"] {
-  --bg: oklch(0.985 0.003 250);
-  --bg-1: oklch(1 0 0);
-  --bg-2: oklch(0.97 0.004 250);
-  --bg-hover: oklch(0.955 0.004 250);
-  --bg-active: oklch(0.93 0.005 250);
-  --bg-elev: oklch(1 0 0);
-  --border: oklch(0.9 0.005 250);
-  --border-strong: oklch(0.8 0.006 250);
-  --text: oklch(0.2 0.01 250);
-  --text-2: oklch(0.42 0.008 250);
-  /* Contrast guard: was oklch(0.58 ...) at 4.10:1 on --bg (fails AA).
-     On near-white contrast rises as L drops; lowered to 0.53. */
-  --text-3: oklch(0.53 0.006 250);
-  /* FC5b: was oklch(0.7 …) → 2.56:1 on --bg (fails WCAG-AA). On a near-white
-     bg contrast rises as L drops, so lowered to 0.55 → 4.65:1. */
-  --text-4: oklch(0.55 0.005 250);
-  /* Revamp spec section 9: accent IS #2563EB; attention IS the
-     #EA580C family (deepened where white text needs 4.5:1). */
-  --accent: oklch(0.546 0.245 262.9);
-  --accent-2: oklch(0.62 0.21 262.9);
-  --accent-dim: oklch(0.546 0.245 262.9 / 0.1);
-  --accent-border: oklch(0.546 0.245 262.9 / 0.35);
-  --accent-fg: oklch(1 0 0);
-
-  /* Contrast guard: #EA580C (L 0.646) is 3.59:1 under white text.
-     Deepened to the orange-700 zone so the fg clears AA. */
-  --attention: oklch(0.56 0.2 40);
-  --attention-dim: oklch(0.56 0.2 40 / 0.12);
-  --attention-border: oklch(0.56 0.2 40 / 0.4);
-  --attention-fg: oklch(1 0 0);
-
-  --green: oklch(0.55 0.16 145);
-  --green-dim: oklch(0.55 0.16 145 / 0.12);
-  --blue: oklch(0.5 0.18 240);
-  --blue-dim: oklch(0.5 0.18 240 / 0.1);
-  --amber: oklch(0.65 0.16 65);
-  --amber-dim: oklch(0.65 0.16 65 / 0.14);
-  --red: oklch(0.55 0.22 25);
-  --red-dim: oklch(0.55 0.22 25 / 0.1);
-  --violet: oklch(0.5 0.18 290);
-  --violet-dim: oklch(0.5 0.18 290 / 0.1);
-
-  --shadow: 0 1px 0 rgba(15,23,42,0.04), 0 12px 32px -16px rgba(15,23,42,0.18);
-  --shadow-sm: 0 1px 0 rgba(15,23,42,0.04);
-
+  --bg: oklch(0.972 0.004 110);
+  --bg-1: oklch(0.988 0.003 110);
+  --bg-2: oklch(0.952 0.005 110);
+  --bg-hover: oklch(0.935 0.006 110);
+  --bg-active: oklch(0.91 0.007 110);
+  --bg-elev: oklch(0.995 0.002 110);
+  --border: oklch(0.89 0.008 120);
+  --border-strong: oklch(0.78 0.01 130);
+  --text: oklch(0.19 0.008 160);
+  --text-2: oklch(0.41 0.01 150);
+  --text-3: oklch(0.51 0.012 150);
+  /* Contrast guard: designer value 0.55 sat at 4.45:1 on --bg; one
+     step deeper clears AA without a visible shift. */
+  --text-4: oklch(0.54 0.012 150);
+  --accent: oklch(0.53 0.14 148);
+  --accent-2: oklch(0.6 0.14 147);
+  --accent-dim: oklch(0.53 0.14 148 / 0.11);
+  --accent-border: oklch(0.53 0.14 148 / 0.4);
+  --accent-fg: oklch(0.99 0.003 110);
+  --attention: oklch(0.56 0.19 42);
+  --attention-dim: oklch(0.56 0.19 42 / 0.11);
+  --attention-border: oklch(0.56 0.19 42 / 0.45);
+  --attention-fg: oklch(0.99 0.003 110);
+  --green: oklch(0.52 0.13 152); --green-dim: oklch(0.52 0.13 152 / 0.11);
+  --red: oklch(0.54 0.2 24);     --red-dim: oklch(0.54 0.2 24 / 0.1);
+  --amber: oklch(0.58 0.12 90);  --amber-dim: oklch(0.58 0.12 90 / 0.14);
+  --blue: oklch(0.5 0.13 240);   --blue-dim: oklch(0.5 0.13 240 / 0.1);
+  --violet: oklch(0.5 0.14 300); --violet-dim: oklch(0.5 0.14 300 / 0.1);
+  --teal: oklch(0.5 0.1 200);    --teal-dim: oklch(0.5 0.1 200 / 0.11);
+  --pink: oklch(0.55 0.15 350);  --pink-dim: oklch(0.55 0.15 350 / 0.1);
+  --scrim: oklch(0.25 0.01 150 / 0.4);
+  --shadow: 0 1px 0 oklch(0.2 0.02 150 / 0.05), 0 14px 40px -14px oklch(0.2 0.02 150 / 0.25);
+  --shadow-sm: 0 1px 0 oklch(0.2 0.02 150 / 0.05);
   color-scheme: light;
 }
 
 /* density */
 :root { --row-h: 36px; --sidebar-w: 248px; --topbar-h: 48px; }
-:root[data-density="compact"] { --row-h: 30px; }
+:root[data-density="compact"] { --row-h: 30px; --hit: 32px; }
 :root[data-density="comfortable"] { --row-h: 40px; }
 
 /* ---------------------------------------------------------------------------
@@ -138,7 +128,8 @@
    --frow-h is declared on both :root and the [data-density] attribute so it
    resolves whether the attribute lands on <html> or on .st-root.
 --------------------------------------------------------------------------- */
-:root { --teal: oklch(0.78 0.12 195); --teal-dim: oklch(0.78 0.12 195 / 0.14); --frow-h: 30px; }
+/* --teal moved into the per-theme blocks with the designer tokens. */
+:root { --frow-h: 30px; }
 :root[data-density="compact"],
 [data-density="compact"] { --frow-h: 24px; }
 :root[data-density="comfortable"],
@@ -1905,14 +1896,15 @@ input, textarea, select { font: inherit; color: inherit; }
    auth-screen's auth-spin keyframes. */
 @keyframes ic-bootstrap-spin { to { transform: rotate(360deg); } }
 
-/* ---- Plus Jakarta Sans + IBM Plex Mono (self-hosted, latin subset) ---- */
-/* Variable font: weights 300..700 in a single ~27KB file (spec 9). */
+/* ---- IBM Plex Sans + Mono (self-hosted, latin subset) ---- */
+/* The designer identity (new-ui handoff) returns to IBM Plex Sans;
+   variable font covers weights 100..700 in a single ~45KB file. */
 @font-face {
-  font-family: 'Plus Jakarta Sans';
+  font-family: 'IBM Plex Sans';
   font-style: normal;
-  font-weight: 300 700;
+  font-weight: 100 700;
   font-display: swap;
-  src: url('vendor/fonts/PlusJakartaSans-VF-latin.woff2') format('woff2');
+  src: url('vendor/fonts/IBMPlexSans-VF-latin.woff2') format('woff2');
 }
 @font-face {
   font-family: 'IBM Plex Mono';

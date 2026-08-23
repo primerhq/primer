@@ -25,7 +25,9 @@ def test_no_static_dark_attribute():
 
 
 def test_bootstrap_script_resolves_theme():
-    assert "prefers-color-scheme: dark" in HTML
+    # Dark-first (designer identity, new-ui handoff): dark unless the
+    # OS explicitly prefers light; persisted choice always wins.
+    assert "prefers-color-scheme: light" in HTML
     assert "primer.tweaks" in HTML  # reads the persisted store key
 
 
