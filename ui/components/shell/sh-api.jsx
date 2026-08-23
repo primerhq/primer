@@ -81,6 +81,14 @@ var SH_api = {
       "PUT", url, { content: content, encoding: "text" });
   },
 
+  // PATCH rename (workspaces.py rename_session): {name}; null clears.
+  renameSession: function (wid, sid, name) {
+    return window.primerApi.apiFetch(
+      "PATCH", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid),
+      { name: name });
+  },
+
   // ---- file management (revamp section 6; routes pre-existing) -----------
   fileDelete: function (wid, path) {
     return window.primerApi.apiFetch(

@@ -52,6 +52,92 @@ function SH_IdentityChip(props) {
   );
 }
 
+// Inline artifacts (revamp decision 4): session artifacts expand IN
+// PLACE, never as forced navigation. A write chip toggles a capped
+// file preview under its row; "Open as Tab" and "Maximize" are the
+// escalations. The lightbox is transient UI and never reaches the URL.
+var SH_ARTIFACT_PREVIEW_LINES = 200;
+
+function SH_Lightbox(props) {
+  React.useEffect(function () {
+    function onKey(ev) { if (ev.key === "Escape") props.onClose(); }
+    window.addEventListener("keydown", onKey);
+    return function () { window.removeEventListener("keydown", onKey); };
+  });
+  return (
+    <div className="sh-lightbox" data-testid="shell-lightbox"
+      onClick={function (ev) {
+        if (ev.target === ev.currentTarget) props.onClose();
+      }}>
+      <div className="sh-lightbox-body">
+        <div className="sh-lightbox-bar">
+          <span className="sh-lightbox-title">{props.title}</span>
+          <button type="button" className="sh-verb"
+            data-testid="shell-lightbox-close"
+            onClick={props.onClose}>Close</button>
+        </div>
+        <pre className="sh-lightbox-content">{props.content}</pre>
+      </div>
+    </div>
+  );
+}
+
+function SH_ArtifactBlock(props) {
+  var shell = SH_useShell();
+  var maxState = React.useState(false);
+  var maximized = maxState[0];
+  var setMaximized = maxState[1];
+  var isFile = !!props.path;
+  var read = window.primerApi.useResource(
+    isFile ? SH_api.keys.file(shell.wid, props.path) : "artifact-none:" + props.seq,
+    function (signal) {
+      return isFile
+        ? SH_api.fileRead(shell.wid, props.path, signal)
+        : Promise.resolve(null);
+    },
+    { pollMs: 0, deps: [shell.wid, props.path || ""] }
+  );
+  var full = isFile
+    ? ((read.data && read.data.content) || "")
+    : String(props.output || "");
+  var lines = full.split("\n");
+  var capped = lines.length > SH_ARTIFACT_PREVIEW_LINES;
+  var preview = capped
+    ? lines.slice(0, SH_ARTIFACT_PREVIEW_LINES).join("\n")
+    : full;
+
+  return (
+    <div className="sh-artifact" data-testid={"shell-artifact:" + props.seq}>
+      <div className="sh-artifact-bar">
+        <span className="sh-artifact-title">
+          {isFile ? props.path : "output"}
+        </span>
+        {capped ? (
+          <span className="sh-artifact-note">
+            first {SH_ARTIFACT_PREVIEW_LINES} of {lines.length} lines
+          </span>
+        ) : null}
+        {isFile ? (
+          <button type="button" className="sh-verb"
+            data-testid="shell-artifact-open-tab"
+            onClick={function () {
+              shell.openDoc({ kind: "file", ref: props.path, preview: true });
+            }}>Open as Tab</button>
+        ) : null}
+        <button type="button" className="sh-verb"
+          data-testid="shell-artifact-maximize"
+          onClick={function () { setMaximized(true); }}>Maximize</button>
+      </div>
+      <pre className="sh-artifact-content">{preview}</pre>
+      {maximized ? (
+        <SH_Lightbox title={isFile ? props.path : "output"}
+          content={full}
+          onClose={function () { setMaximized(false); }} />
+      ) : null}
+    </div>
+  );
+}
+
 // Two-phase: SH_collapseTurns emits {kind:"section"} rows for finished
 // turns and leaves the live turn expanded. Tool chips speak plain
 // language and never carry raw arguments; writes open their doc.
@@ -61,9 +147,14 @@ function SH_IdentityChip(props) {
 // fallback. The "on behalf of" stamp needs the approval records, so it
 // arrives with the approvedBy map in P4 Task 21 and is {} until then.
 function SH_TurnList(props) {
-  var shell = SH_useShell();
   var rows = props.rows || [];
   var approvedBy = props.approvedBy || {};
+  // seq -> expanded artifact descriptor. Inline-only (decision 4): a
+  // chip toggles its artifact IN PLACE; tabs are an explicit escalation
+  // on the block, never the click's side effect.
+  var expandedState = React.useState({});
+  var expanded = expandedState[0];
+  var setExpanded = expandedState[1];
 
   function identityFor(row) {
     return (row.payload && row.payload.agent_id) || props.agentId || "agent";
@@ -74,17 +165,33 @@ function SH_TurnList(props) {
     return tcid ? (approvedBy[tcid] || null) : null;
   }
 
+  function artifactFor(row, info) {
+    if (info.tone === "write" && info.path) return { path: info.path };
+    var payload = row.payload || {};
+    var out = payload.output || payload.result_preview
+      || (typeof payload.result === "string" ? payload.result : null);
+    if (out) return { output: out };
+    return null;
+  }
+
   function chip(row) {
     var info = SH_toolChipLabel(row);
+    var artifact = artifactFor(row, info);
     return (
       <button
         type="button"
         className="sh-chip"
         data-tone={info.tone}
+        data-expandable={artifact ? "true" : "false"}
         key={row.seq}
         onClick={function () {
-          if (info.tone !== "write" || !info.path) return;
-          shell.openDoc({ kind: "file", ref: info.path, preview: true });
+          if (!artifact) return;
+          setExpanded(function (prev) {
+            var next = Object.assign({}, prev);
+            if (next[row.seq]) delete next[row.seq];
+            else next[row.seq] = artifact;
+            return next;
+          });
         }}
       >{info.label}</button>
     );
@@ -109,6 +216,11 @@ function SH_TurnList(props) {
         {row.kind === "tool_call" ? chip(row) : (
           <span className="sh-turn-body">{row.label}</span>
         )}
+        {expanded[row.seq] ? (
+          <SH_ArtifactBlock seq={row.seq}
+            path={expanded[row.seq].path}
+            output={expanded[row.seq].output} />
+        ) : null}
         {row.kind === "assistant_message"
           && typeof window.SH_SpeakerButton === "function" ? (
             <window.SH_SpeakerButton row={row} agentId={identityFor(row)} />
@@ -541,22 +653,50 @@ function SH_SessionDoc(props) {
         ? <window.SH_ClientTools sid={sid} />
         : null}
       <header className="sh-session-head">
+        {/* The chat header (revamp section 4): title first, chips
+            beside it, and the verb strip CALM - one overflow menu
+            instead of a row of thirteen labels. */}
+        <button type="button" className="sh-session-title"
+          data-testid="shell-session-title"
+          title="Rename this session"
+          onClick={function () {
+            window.promptDialog({
+              title: "Rename session",
+              defaultValue: (session && session.name) || "",
+            }).then(function (name) {
+              if (name == null) return;
+              SH_api.renameSession(shell.wid, sid, name || null).then(
+                function () { detail.refetch(); },
+                function (err) { shell.toast("Rename failed: " + err.message); }
+              );
+            });
+          }}
+        >{(session && session.name) || sid}</button>
+        <span className="sh-chip" data-testid="shell-session-workspace">
+          {shell.wid}
+        </span>
         <SH_BindingChip sid={sid} binding={binding}
           epoch={session && session.binding_epoch} />
         <SH_TokenMeter session={session} />
-        {shell.registry.forSurface("tab-menu").map(function (verb) {
-          // The header offers the same verbs as the tab menu, so it has
-          // to answer the same question: a verb that needs a live
-          // session is not offered once the session is over.
-          if (!window.SH_verbApplies(shell, verb, { kind: "session", ref: sid })) {
-            return null;
-          }
-          return (
-            <button key={verb.id} type="button" className="sh-verb"
-              data-verb={verb.id} onClick={function () { verb.run(); }}
-            >{verb.label}</button>
-          );
-        })}
+        <details className="sh-session-menu" data-testid="shell-session-menu">
+          <summary className="sh-verb" aria-label="Session actions">
+            &#8943;
+          </summary>
+          <div className="sh-topbar-menu-panel">
+            {shell.registry.forSurface("tab-menu").map(function (verb) {
+              // Same verbs as the tab menu, same gate: a verb that
+              // needs a live session is not offered once it is over.
+              if (!window.SH_verbApplies(shell, verb, { kind: "session", ref: sid })) {
+                return null;
+              }
+              return (
+                <button key={verb.id} type="button" className="sh-verb"
+                  data-verb={verb.id} onClick={function () { verb.run(); }}
+                >{verb.label}</button>
+              );
+            })}
+          </div>
+        </details>
       </header>
 
       {/* Invoker-supplied tool calls the conversation is blocked on. The
@@ -661,6 +801,8 @@ function SH_SessionDoc(props) {
 
 window.SH_GLYPHS = SH_GLYPHS;
 window.SH_IdentityChip = SH_IdentityChip;
+window.SH_ArtifactBlock = SH_ArtifactBlock;
+window.SH_Lightbox = SH_Lightbox;
 window.SH_TurnList = SH_TurnList;
 window.SH_BindingChip = SH_BindingChip;
 window.SH_QueuedSteers = SH_QueuedSteers;

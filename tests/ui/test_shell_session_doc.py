@@ -53,10 +53,17 @@ def test_enter_queues_a_steer_and_the_queue_is_rendered() -> None:
 
 
 def test_a_queued_chip_renders_parts_not_a_content_field() -> None:
-    """PendingSessionMessage carries `parts`; there is no `content`."""
+    """PendingSessionMessage carries `parts`; there is no `content`.
+
+    Scoped to the steer helpers: other resources in this file (the
+    artifact block's file read) legitimately carry a content field.
+    """
     src = _src()
-    assert "row.parts" in src or "(row.parts || [])" in src
-    assert ".content" not in src
+    start = src.index("function SH_steerText")
+    end = src.index("function SH_SessionComposer")
+    steer_region = src[start:end]
+    assert "row.parts" in steer_region or "(row.parts || [])" in steer_region
+    assert ".content" not in steer_region
 
 
 def test_a_queued_chip_can_be_dismissed() -> None:

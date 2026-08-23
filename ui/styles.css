@@ -3435,8 +3435,30 @@ input, textarea, select { font: inherit; color: inherit; }
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
 }
+.sh-session-title {
+  font: inherit;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-6);
+  padding: 2px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+.sh-session-title:hover { background: var(--bg-hover); border-color: var(--border); }
+.sh-session-menu { position: relative; margin-left: auto; }
+.sh-session-menu > summary { list-style: none; user-select: none; }
+.sh-session-menu > summary::-webkit-details-marker { display: none; }
 
 .sh-transcript {
   flex: 1;
@@ -3444,6 +3466,94 @@ input, textarea, select { font: inherit; color: inherit; }
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+}
+
+/* Inline artifacts (decision 4): expand in place, escalate explicitly. */
+.sh-artifact {
+  margin: var(--sp-2) 0 var(--sp-2) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-9);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+.sh-artifact-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.sh-artifact-title {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-11);
+  color: var(--text-2);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-artifact-note { font-size: var(--fs-11); color: var(--text-3); }
+.sh-artifact-content {
+  margin: 0;
+  padding: var(--sp-3);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+  color: var(--text);
+  overflow-x: auto;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.sh-chip[data-expandable="true"] { cursor: pointer; }
+
+/* The lightbox: transient, never in the URL, Esc closes. */
+.sh-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgb(0 0 0 / 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4vh 4vw;
+}
+.sh-lightbox-body {
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-12);
+  box-shadow: var(--shadow);
+  width: min(1100px, 100%);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sh-lightbox-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.sh-lightbox-title {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-12);
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sh-lightbox-content {
+  margin: 0;
+  padding: var(--sp-3);
+  overflow: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+  color: var(--text);
 }
 
 .sh-turns {
