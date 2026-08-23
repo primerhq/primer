@@ -135,6 +135,16 @@ var SH_api = {
       { signal: signal });
   },
 
+  // Entity lists for the palette's mixed results (wiring plan P1 T5).
+  agents: function (signal) {
+    return window.primerApi.apiFetch("GET", "/agents?limit=200", null,
+      { signal: signal });
+  },
+  graphs: function (signal) {
+    return window.primerApi.apiFetch("GET", "/graphs?limit=200", null,
+      { signal: signal });
+  },
+
   // S2's document-by-path read (ui/components/knowledge.jsx:657-660).
   collectionDocument: function (cid, path, signal) {
     return window.primerApi.apiFetch(

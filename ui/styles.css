@@ -4284,3 +4284,88 @@ input, textarea, select { font: inherit; color: inherit; }
   color: var(--text-3);
   font-size: var(--fs-12);
 }
+
+/* Palette (P1 T5) */
+.nv-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  z-index: 80;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+.nv-palette {
+  width: min(580px, 90vw);
+  max-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-10);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: nv-pop-in 0.14s ease-out;
+}
+.nv-palette-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.nv-palette-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 14px;
+  color: var(--text);
+}
+.nv-palette-body { flex: 1; min-height: 0; overflow-y: auto; padding: 6px; }
+.nv-palette-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-4);
+  font-size: 12.5px;
+}
+.nv-palette-group {
+  padding: 7px 10px 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+.nv-palette-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--r-6);
+  cursor: pointer;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.nv-palette-row:hover, .nv-palette-row[data-active="true"] { background: var(--bg-hover); }
+.nv-palette-label { font-size: 13px; }
+.nv-palette-tag {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: var(--text-4);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  text-transform: uppercase;
+}
+.nv-palette-foot {
+  padding: 7px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  color: var(--text-4);
+}
