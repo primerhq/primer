@@ -153,6 +153,20 @@ function NV_Shell() {
       },
     });
     reg({
+      id: "session.create", label: "Create Session", chord: "Ctrl+n",
+      surfaces: ["rail", "palette"],
+      // The overlay lands in P3; the verb is the shared entry point
+      // from day one (rail "+", empty state, palette).
+      run: function () {
+        if (window.primerApi.toastPush) {
+          window.primerApi.toastPush({
+            kind: "info",
+            text: "Create Session lands with the overlay set (P3).",
+          });
+        }
+      },
+    });
+    reg({
       id: "workspace.create", label: "Create Workspace",
       surfaces: ["topbar", "palette"],
       // Real overlay lands in P3; the verb exists from day one so the

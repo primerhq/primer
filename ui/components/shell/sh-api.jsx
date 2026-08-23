@@ -212,6 +212,12 @@ var SH_api = {
       { instruction: instruction });
   },
 
+  deleteSession: function (wid, sid) {
+    return window.primerApi.apiFetch(
+      "DELETE", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid));
+  },
+
   interrupt: function (wid, sid) {
     return window.primerApi.apiFetch(
       "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"

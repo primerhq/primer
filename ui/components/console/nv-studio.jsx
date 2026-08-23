@@ -1,0 +1,125 @@
+/* global React, NV_useConsole */
+// The Studio frame (wiring plan P2 T6): left sidebar (Sessions|Files
+// tabs), center doc host, terminal panel and events sidebar slots.
+// Also home of the pure helpers the sidebars and tests share: the
+// session BAND sort and the agent identity glyphs.
+
+// The five seeded agents carry the prototype's glyph set; anything
+// else gets a stable hash pick from the same vocabulary. Never
+// human-passing (designer identity rule).
+var NV_GLYPHS = {
+  operator: { d: "M6 1 11 6 6 11 1 6Z", color: "var(--blue)" },
+  builder: { d: "M6 1 10.33 3.5v5L6 11 1.67 8.5v-5Z", color: "var(--violet)" },
+  planner: { d: "M6 1.6 11 10.4H1Z", color: "var(--teal)" },
+  explorer: {
+    d: "M6 0.8 7.4 4.6 11.2 6 7.4 7.4 6 11.2 4.6 7.4 0.8 6 4.6 4.6Z",
+    color: "var(--amber)",
+  },
+  "tool-runner": { d: "M2.2 2.2h7.6v7.6H2.2Z", color: "var(--pink)" },
+};
+var NV_GLYPH_POOL = ["operator", "builder", "planner", "explorer", "tool-runner"];
+var NV_GRAPH_GLYPH = {
+  d: "M1 1.5h4.4v3.6H1Z M6.6 6.9H11v3.6H6.6Z",
+  color: "var(--text-3)",
+};
+
+function NV_identity(binding) {
+  if (!binding) return NV_GLYPHS.operator;
+  if (binding.kind === "graph") return NV_GRAPH_GLYPH;
+  var id = binding.agent_id || "agent";
+  if (NV_GLYPHS[id]) return NV_GLYPHS[id];
+  var sum = 0;
+  for (var i = 0; i < id.length; i++) sum = (sum * 31 + id.charCodeAt(i)) % 997;
+  return NV_GLYPHS[NV_GLYPH_POOL[sum % NV_GLYPH_POOL.length]];
+}
+
+// Band sort (spec: attention first, then running, then idle, then
+// ended; recency within each). Pure so the ordering is unit-tested.
+function NV_sessionBands(sessions, attentionSids) {
+  var bands = {
+    attention: { id: "attention", label: "Needs you", rows: [] },
+    running: { id: "running", label: "In progress", rows: [] },
+    idle: { id: "idle", label: "Idle", rows: [] },
+    ended: { id: "ended", label: "Ended", rows: [] },
+  };
+  (sessions || []).forEach(function (s) {
+    var sid = s.session_id || s.id;
+    if (attentionSids && attentionSids.indexOf(sid) >= 0) {
+      bands.attention.rows.push(s);
+    } else if (s.status === "ended") {
+      bands.ended.rows.push(s);
+    } else if (s.status === "running" || s.status === "waiting"
+        || s.turn_status === "running" || s.parked_status) {
+      bands.running.rows.push(s);
+    } else {
+      bands.idle.rows.push(s);
+    }
+  });
+  function recency(a, b) {
+    return String(b.last_activity_at || "").localeCompare(
+      String(a.last_activity_at || ""));
+  }
+  return [bands.attention, bands.running, bands.idle, bands.ended]
+    .map(function (b) { return { id: b.id, label: b.label, rows: b.rows.sort(recency) }; })
+    .filter(function (b) { return b.rows.length > 0; });
+}
+
+function NV_Studio() {
+  var con = NV_useConsole();
+  var railState = React.useState("sessions");
+  var railTab = railState[0];
+  var setRailTab = railState[1];
+
+  return (
+    <div className="nv-studio" data-testid="nv-studio">
+      <div className="nv-rail" data-testid="nv-rail">
+        <div className="nv-rail-tabs">
+          <button type="button" className="nv-rail-tab"
+            data-active={railTab === "sessions" ? "true" : "false"}
+            data-testid="nv-rail-tab-sessions"
+            onClick={function () { setRailTab("sessions"); }}>Sessions</button>
+          <button type="button" className="nv-rail-tab"
+            data-active={railTab === "files" ? "true" : "false"}
+            data-testid="nv-rail-tab-files"
+            onClick={function () { setRailTab("files"); }}>Files</button>
+          <div style={{ flex: 1 }} />
+          {railTab === "sessions"
+            && typeof window.NV_SessionsSidebarVerbs === "function"
+            ? <window.NV_SessionsSidebarVerbs />
+            : null}
+          {railTab === "files"
+            && typeof window.NV_FilesSidebarVerbs === "function"
+            ? <window.NV_FilesSidebarVerbs />
+            : null}
+        </div>
+        {railTab === "sessions"
+          && typeof window.NV_SessionsSidebar === "function"
+          ? <window.NV_SessionsSidebar />
+          : null}
+        {railTab === "files" && typeof window.NV_FilesSidebar === "function"
+          ? <window.NV_FilesSidebar />
+          : null}
+      </div>
+      <div className="nv-center" data-testid="nv-center">
+        {typeof window.NV_DocHost === "function"
+          ? <window.NV_DocHost />
+          : (
+            <div className="nv-view-pending">
+              <span>The doc host lands in P2 T7.</span>
+            </div>
+          )}
+        {con.panels.terminal && typeof window.NV_Terminal === "function"
+          ? <window.NV_Terminal />
+          : null}
+      </div>
+      {con.panels.events && typeof window.NV_EventsSidebar === "function"
+        ? <window.NV_EventsSidebar />
+        : null}
+    </div>
+  );
+}
+
+window.NV_GLYPHS = NV_GLYPHS;
+window.NV_identity = NV_identity;
+window.NV_sessionBands = NV_sessionBands;
+window.NV_Studio = NV_Studio;
