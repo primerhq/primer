@@ -68,6 +68,9 @@ function NV_Shell() {
     },
     { pollMs: 0 }
   );
+  // Capability probe: speech config gates the voice affordances.
+  var caps = window.primerApi.useCapabilities();
+  var voiceRef = React.useRef(null);
   var wsItems = (workspaces.data && workspaces.data.items) || [];
 
   // Default workspace: the URL's, else the first listed.
@@ -240,6 +243,8 @@ function NV_Shell() {
     workspaces: wsItems,
     username: (status.data && status.data.username) || "anon",
     role: (status.data && status.data.role) || "user",
+    speech: (caps.data && caps.data.speech) || {},
+    voiceRef: voiceRef,
     paletteRef: paletteRef,
     goView: goView,
     setDoc: setDoc,

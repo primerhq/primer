@@ -15,9 +15,10 @@ FIXTURES = ROOT / "ui" / "fixtures" / "shell"
 MANIFEST = FIXTURES / "manifest.json"
 
 DOC_KINDS = ["session", "file", "diff", "wiki", "trace", "inbox"]
+# "admin" died on the flag day: its sections are the System view's navs.
 OVERLAYS = [
     "providers", "collections", "agents", "graphs", "triggers",
-    "toolsets", "tools", "workers", "approvals", "admin",
+    "toolsets", "tools", "workers", "approvals",
     "harnesses", "services", "channels", "workspaces", "new-session",
     # Create-workspace (wiring plan P3).
     "new-workspace",

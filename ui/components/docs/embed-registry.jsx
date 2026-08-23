@@ -40,31 +40,26 @@
       props: { onOpen: function () {}, pushToast: function () {} },
     },
     "sessions-list": {
-      // Sessions live in the workspace shell. The Studio this used to
-      // render was deleted on the S8 flag day, so the harness mounted an
-      // undefined component and the capture never reached "done".
-      //
-      // SH_Shell rather than SH_RootGate: the gate resolves auth and
-      // picks a workspace, which is boot behaviour the embed does not
-      // want, and it takes `wid` exactly as the Studio did. `wid` must
-      // match the workspace + session rows in sessions-list.json.
-      component: "SH_Shell",
+      // Sessions live in the console shell (NV_Shell since the
+      // three-view flag day; the sh shell died with it). The shell
+      // reads the workspace from the hash rather than a prop, so the
+      // hash names the workspace whose rows sessions-list.json holds.
+      component: "NV_Shell",
       fixtures: "sessions-list",
-      props: { wid: "ws-blogassistant" },
+      hash: "#/w/ws-blogassistant",
+      props: {},
     },
     "session-detail": {
       // The same shell with one session open, so the capture shows the
-      // transcript beside the rail. The shell reads the open document
-      // from the url rather than from a prop, which is why this carries
-      // a hash where the Studio version carried `initialOpen`.
+      // transcript beside the rail.
       //
       // The session in session-detail.json is terminal (ended), so the
       // transcript renders fully from GET /sessions/{sid}/messages with
       // no live tap; the harness has no SSE backend.
-      component: "SH_Shell",
+      component: "NV_Shell",
       fixtures: "session-detail",
       hash: "#/w/ws-blogassistant?doc=session:sess-briefwriter",
-      props: { wid: "ws-blogassistant" },
+      props: {},
     },
     // ---- the v2 shell ids the concept pages fence -------------------
     // These reuse the fixture files their surface already has: a fixture
@@ -72,7 +67,7 @@
     // same surface want the same recording.
     "shell-session": {
       // The shell as an operator meets it: rail, tabs, one open session.
-      component: "SH_Shell",
+      component: "NV_Shell",
       fixtures: "session-detail",
       hash: "#/w/ws-blogassistant?doc=session:sess-briefwriter",
       props: { wid: "ws-blogassistant" },
@@ -80,7 +75,7 @@
     "client-tool-open-file": {
       // The same workspace with a FILE open, which is what a client tool
       // delivering "open this" produces.
-      component: "SH_Shell",
+      component: "NV_Shell",
       fixtures: "session-detail",
       hash: "#/w/ws-blogassistant?doc=file:draft.md",
       props: { wid: "ws-blogassistant" },

@@ -1,5 +1,5 @@
-/* global React, SH_api, NV_useConsole, NV_identity, SH_OVERLAY_MOUNTS,
-   SH_overlayTitle, SH_OVERLAY_TITLES, SharedNewSessionSchemaField */
+/* global React, SH_api, NV_useConsole, NV_identity,
+   SharedNewSessionSchemaField */
 // Overlays (wiring plan P3 T9). Three tiers behind one URL-addressed
 // host:
 //
@@ -9,7 +9,7 @@
 //                    Begin.input_schema form where a graph declares one.
 //   new-workspace  - the designer's instantiation panel: template rows,
 //                    optional name, per-instantiation env/init overrides.
-//   everything else- the existing management surfaces (SH_OVERLAY_MOUNTS)
+//   everything else- the existing management surfaces (NV_OVERLAY_MOUNTS)
 //                    re-hosted inside an nv panel via a thin shell
 //                    adapter. They keep their handlers and data logic and
 //                    lose their chrome; the prototype itself stubs these
@@ -556,6 +556,280 @@ function NV_CreateWorkspaceOverlay() {
 }
 
 // ---------------------------------------------------------------------------
+// The management-surface mount table, moved here from the deleted
+// sh-overlay-host on flag day. Each entry is a SHALLOW one-decision
+// surface addressable as overlay=<name>[:<section>[:<id>]]; the
+// no-chrome contract holds: a mount renders the page component and
+// nothing else. The old "admin" entry died with the System view
+// (users/sso/mcp/setup live there now) and "new-session" has its own
+// designer panel above.
+var NV_OVERLAY_MOUNTS = {
+  providers: {
+    // S4's standalone-mountable catalog (provider-catalog.jsx, the
+    // M11d props-only contract). Class off the section segment,
+    // instance off the id segment.
+    render: function (state, shell) {
+      return (
+        <window.ProviderCatalog
+          initialClass={state.section || "llm"}
+          initialInstanceId={state.id || null}
+          onNavigate={function (ref) {
+            if (!ref || typeof ref !== "object") return;
+            if (ref.kind === "provider-class") {
+              shell.openOverlay("providers", ref.classKey, null);
+            } else if (ref.kind === "provider-instance") {
+              shell.openOverlay("providers", ref.classKey, ref.id);
+            }
+          }}
+        />
+      );
+    },
+  },
+  // The subsystem, not the knowledge browser.
+  "internal-collections": {
+    render: function () {
+      return (
+        <window.InternalCollectionsPage
+          pushToast={window.primerApi.toastPush}
+        />
+      );
+    },
+  },
+  activity: {
+    // The event log window rides the admin-gated /v1/events surface.
+    roles: ["admin"],
+    render: function () {
+      return <window.SH_ActivityPanel />;
+    },
+  },
+  collections: {
+    render: function (state, shell) {
+      return (
+        <window.CollectionsPage
+          pushToast={window.primerApi.toastPush}
+          selectedId={state.id || null}
+          onNavigate={function (cid) {
+            shell.openOverlay("collections", null, cid || null);
+          }}
+          onOpen={function (cid) {
+            shell.openDoc({
+              kind: "wiki", ref: cid + "/" + (state.id || ""), preview: false,
+            });
+          }}
+        />
+      );
+    },
+  },
+  // List and record are ONE overlay: the id slot decides which renders.
+  agents: {
+    render: function (state, shell) {
+      if (state.id) {
+        return (
+          <window.AgentDetail
+            agentId={state.id}
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
+      return (
+        <window.AgentsPage
+          pushToast={window.primerApi.toastPush}
+          onOpen={function (aid) {
+            shell.openOverlay("agents", null, aid);
+          }}
+        />
+      );
+    },
+  },
+  graphs: {
+    render: function (state, shell) {
+      if (state.id) {
+        return (
+          <window.GraphDetail
+            graphId={state.id}
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
+      return (
+        <window.GraphsPage
+          pushToast={window.primerApi.toastPush}
+          onOpen={function (gid) {
+            shell.openOverlay("graphs", null, gid);
+          }}
+        />
+      );
+    },
+  },
+  triggers: {
+    render: function (state) {
+      return <window.TR_TriggersPage triggerId={state.id || null} />;
+    },
+  },
+  toolsets: {
+    render: function (state) {
+      if (state.id) {
+        return (
+          <window.ToolsetDetail
+            toolsetId={state.id}
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
+      return <window.ToolsetsPage pushToast={window.primerApi.toastPush} />;
+    },
+  },
+  tools: {
+    render: function () {
+      return <window.ToolsPage pushToast={window.primerApi.toastPush} />;
+    },
+  },
+  // Workers + Health collapse into one overlay; health is a section.
+  workers: {
+    render: function (state) {
+      if (state.section === "health") return <window.HealthPage sessions={null} />;
+      return <window.WorkersPage pushToast={window.primerApi.toastPush} />;
+    },
+  },
+  approvals: {
+    render: function (state, shell) {
+      return (
+        <window.ApprovalsPage
+          pushToast={window.primerApi.toastPush}
+          onNavigate={function (_page, sid) {
+            if (sid) {
+              shell.openDoc({ kind: "session", ref: sid, preview: false });
+            }
+          }}
+        />
+      );
+    },
+  },
+  harnesses: {
+    render: function (state) {
+      return <window.HarnessesPage harnessId={state.id || null} />;
+    },
+  },
+  services: {
+    render: function (state) {
+      return <window.SV_ServicesPage serviceId={state.id || null} />;
+    },
+  },
+  // Instances plus rules, one overlay.
+  channels: {
+    render: function (state) {
+      if (state.section === "rules") {
+        return <window.ChannelRulesPage pushToast={window.primerApi.toastPush} />;
+      }
+      return (
+        <window.ChannelsPage
+          pushToast={window.primerApi.toastPush}
+          onNavigate={function () {}}
+        />
+      );
+    },
+  },
+  workspaces: {
+    render: function (state, shell) {
+      // Templates and workspace providers are workspace-shaped
+      // configuration, so they are sections of this overlay; an id
+      // under either names ONE record. Otherwise an id names ONE
+      // workspace, with the section slot doubling as its tab.
+      if (state.section === "templates") {
+        if (state.id) {
+          return (
+            <window.WorkspaceTemplateDetail
+              templateId={state.id}
+              pushToast={window.primerApi.toastPush}
+            />
+          );
+        }
+        return (
+          <window.WorkspaceTemplatesPage
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
+      if (state.section === "providers") {
+        if (state.id) {
+          return (
+            <window.WorkspaceProviderDetail
+              providerId={state.id}
+              pushToast={window.primerApi.toastPush}
+            />
+          );
+        }
+        return (
+          <window.WorkspaceProvidersPage
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
+      if (state.id) {
+        return (
+          <window.WorkspaceDetail
+            workspaceId={state.id}
+            pushToast={window.primerApi.toastPush}
+            onNavigate={function () {}}
+            onOpenSession={function (sid) {
+              shell.closeOverlay();
+              shell.openDoc({ kind: "session", ref: sid, preview: false });
+            }}
+          />
+        );
+      }
+      return (
+        <window.WorkspacesPage
+          pushToast={window.primerApi.toastPush}
+          onOpen={function (wid) {
+            shell.switchWorkspace(wid);
+          }}
+        />
+      );
+    },
+  },
+};
+
+// The heading each overlay shows above its page.
+var NV_OVERLAY_TITLES = {
+  providers: "Providers",
+  collections: "Collections",
+  agents: "Agents",
+  graphs: "Graphs",
+  triggers: "Triggers",
+  toolsets: "Toolsets",
+  tools: "Tools",
+  workers: "Workers",
+  approvals: "Approvals",
+  harnesses: "Harnesses",
+  services: "Services",
+  channels: "Channels",
+  workspaces: "Workspaces",
+  "internal-collections": "Internal collections",
+  activity: "Activity",
+};
+
+// Surfaces addressed by SECTION show the section's own name:
+// "channels:rules" is the channel rules, not channels.
+var NV_OVERLAY_SECTION_TITLES = {
+  "channels:rules": "Channel rules",
+  "workspaces:templates": "Workspace templates",
+  "workers:health": "Health",
+};
+
+function NV_overlayTitle(overlay) {
+  // A detail view is titled by its record; a list view by the surface.
+  if (overlay.id) return overlay.id;
+  if (overlay.section) {
+    var keyed = NV_OVERLAY_SECTION_TITLES[
+      overlay.name + ":" + overlay.section
+    ];
+    if (keyed) return keyed;
+  }
+  return NV_OVERLAY_TITLES[overlay.name] || overlay.name;
+}
+
+// ---------------------------------------------------------------------------
 // Legacy adapter: the existing management surfaces, re-hosted. The mount
 // table's render(state, shell) contract is served by a thin adapter over
 // the console context; pages keep their own data logic and handlers.
@@ -563,7 +837,7 @@ function NV_LegacyOverlay(props) {
   var con = NV_useConsole();
   var overlay = props.overlay;
   var name = overlay.name;
-  var mount = SH_OVERLAY_MOUNTS[name];
+  var mount = NV_OVERLAY_MOUNTS[name];
   var adapter = {
     wid: con.wid,
     role: con.role,
@@ -583,23 +857,23 @@ function NV_LegacyOverlay(props) {
   };
   if (mount.roles && mount.roles.indexOf(con.role) < 0) {
     return (
-      <NV_OverlayPanel title={SH_OVERLAY_TITLES[name] || name}
+      <NV_OverlayPanel title={NV_OVERLAY_TITLES[name] || name}
         testid={"nv-overlay:" + name} onClose={con.closeOverlay}>
         <div className="nv-bind-empty">This surface needs a different role.</div>
       </NV_OverlayPanel>
     );
   }
   return (
-    <NV_OverlayPanel title={SH_overlayTitle(overlay)} wide
+    <NV_OverlayPanel title={NV_overlayTitle(overlay)} wide
       testid={"nv-overlay:" + name} onClose={con.closeOverlay}>
       {overlay.section || overlay.id ? (
         <div className="nv-overlay-crumb">
           <a data-testid="nv-overlay-crumb"
             onClick={function () { con.openOverlay(name, null, null); }}>
-            {SH_OVERLAY_TITLES[name] || name}
+            {NV_OVERLAY_TITLES[name] || name}
           </a>
           <span className="nv-crumb-sep">/</span>
-          <span>{SH_overlayTitle(overlay)}</span>
+          <span>{NV_overlayTitle(overlay)}</span>
         </div>
       ) : null}
       <div className="nv-legacy-host">
@@ -629,7 +903,7 @@ function NV_OverlayHost() {
   if (!overlay || !overlay.name) return null;
   if (overlay.name === "new-session") return <NV_CreateSessionOverlay />;
   if (overlay.name === "new-workspace") return <NV_CreateWorkspaceOverlay />;
-  if (!SH_OVERLAY_MOUNTS[overlay.name]) return null;
+  if (!NV_OVERLAY_MOUNTS[overlay.name]) return null;
   return <NV_LegacyOverlay overlay={overlay} />;
 }
 
@@ -637,4 +911,7 @@ window.NV_OverlayPanel = NV_OverlayPanel;
 window.NV_Field = NV_Field;
 window.NV_CreateSessionOverlay = NV_CreateSessionOverlay;
 window.NV_CreateWorkspaceOverlay = NV_CreateWorkspaceOverlay;
+window.NV_OVERLAY_MOUNTS = NV_OVERLAY_MOUNTS;
+window.NV_OVERLAY_TITLES = NV_OVERLAY_TITLES;
+window.NV_overlayTitle = NV_overlayTitle;
 window.NV_OverlayHost = NV_OverlayHost;

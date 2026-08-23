@@ -187,16 +187,18 @@ function NV_SessionHeader(props) {
           Graph view
         </button>
       ) : null}
-      <button type="button" className="nv-head-iconbtn"
-        title="Voice replies — final answers only"
-        data-testid="nv-voice-toggle"
-        data-active={props.voiceOn ? "true" : "false"}
-        onClick={props.onToggleVoice}>
-        <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
-          stroke="currentColor" strokeWidth="1.3">
-          <path d="M2 5.5v3h2.5L8 11V3L4.5 5.5Z M10 5a3 3 0 0 1 0 4" />
-        </svg>
-      </button>
+      {props.ttsOk ? (
+        <button type="button" className="nv-head-iconbtn"
+          title="Voice replies — final answers only"
+          data-testid="nv-voice-toggle"
+          data-active={props.voiceOn ? "true" : "false"}
+          onClick={props.onToggleVoice}>
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
+            stroke="currentColor" strokeWidth="1.3">
+            <path d="M2 5.5v3h2.5L8 11V3L4.5 5.5Z M10 5a3 3 0 0 1 0 4" />
+          </svg>
+        </button>
+      ) : null}
       <div className="nv-bind-wrap">
         <button type="button" className="nv-head-iconbtn"
           data-testid="nv-session-overflow"
@@ -566,6 +568,11 @@ function NV_SessionDoc(props) {
   var voiceState = React.useState(false);
   var voiceOn = voiceState[0];
   var setVoiceOn = voiceState[1];
+  // What auto-play may speak (the sh-voice rule, ported on flag day):
+  // FINAL ANSWERS ONLY, and only the newest row - tool narration never
+  // speaks, and toggling on never replays backlog beyond the last
+  // answer. Dictation is the composer's; nothing here commits a gate.
+  var spokenRef = React.useRef({});
   var graphViewState = React.useState(false);
   var graphView = graphViewState[0];
   var setGraphView = graphViewState[1];
@@ -598,6 +605,21 @@ function NV_SessionDoc(props) {
     }
   }
   var rows = SH_collapseTurns(flat, { liveFromSeq: liveFromSeq });
+
+  var ttsOk = !!(con.speech && con.speech.tts_configured);
+  React.useEffect(function () {
+    if (!voiceOn || !ttsOk || !flat.length) return;
+    var last = flat[flat.length - 1];
+    if (last.kind !== "assistant_message" || !last.final) return;
+    if (spokenRef.current[last.seq]) return;
+    spokenRef.current[last.seq] = true;
+    if (typeof window.CT_speakTurn === "function") {
+      con.voiceRef.current = window.CT_speakTurn(
+        String(last.text || last.label || ""),
+        session && session.binding && session.binding.agent_id
+      );
+    }
+  }, [flat.length, voiceOn, ttsOk]);
   var pending = (session && session.pending_messages) || [];
   var gateItems = window.SH_toAttentionItems({
     pending: (gates.data && gates.data.items) || [], records: [],
@@ -756,9 +778,20 @@ function NV_SessionDoc(props) {
 
   return (
     <div className="nv-session-doc" data-testid={"nv-session-doc:" + sid}>
+      {typeof window.NV_ClientTools === "function"
+        ? <window.NV_ClientTools sid={sid} />
+        : null}
       <NV_SessionHeader sid={sid} session={session} usage={usage}
-        voiceOn={voiceOn}
-        onToggleVoice={function () { setVoiceOn(!voiceOn); }}
+        voiceOn={voiceOn} ttsOk={ttsOk}
+        onToggleVoice={function () {
+          // Toggling off is also the stop control (WCAG 1.4.2): pause
+          // whatever is speaking rather than letting it run out.
+          if (voiceOn && con.voiceRef.current
+              && typeof con.voiceRef.current.pause === "function") {
+            con.voiceRef.current.pause();
+          }
+          setVoiceOn(!voiceOn);
+        }}
         onGraphView={function () { setGraphView(true); }}
         onChanged={refetchAll}
         onDeleted={function () { con.setDoc(null); }}

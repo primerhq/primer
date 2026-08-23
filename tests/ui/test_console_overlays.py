@@ -36,7 +36,7 @@ def test_create_verbs_open_the_shared_overlays():
 def test_host_dispatches_three_tiers():
     assert 'overlay.name === "new-session"' in OVERLAYS
     assert 'overlay.name === "new-workspace"' in OVERLAYS
-    assert "SH_OVERLAY_MOUNTS[overlay.name]" in OVERLAYS
+    assert "NV_OVERLAY_MOUNTS[overlay.name]" in OVERLAYS
     assert "NV_LegacyOverlay" in OVERLAYS
     assert "<window.NV_OverlayHost />" in SHELL
 

@@ -19,9 +19,11 @@
 
 var SH_DOC_KINDS = ["session", "file", "diff", "wiki", "trace", "inbox"];
 
+// "admin" died on the flag day: users/sso/mcp/setup are the System
+// view's navs now, so an overlay=admin address drops on parse.
 var SH_OVERLAYS = [
   "providers", "collections", "agents", "graphs", "triggers",
-  "toolsets", "tools", "workers", "approvals", "admin",
+  "toolsets", "tools", "workers", "approvals",
   "harnesses", "services", "channels", "workspaces", "new-session",
   // Create-workspace (wiring plan P3): the designer's instantiation
   // form, distinct from "workspaces" (the management surface).
