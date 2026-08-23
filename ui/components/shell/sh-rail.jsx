@@ -18,6 +18,9 @@ var SH_RAIL_DEFAULT_PREFS = {
   hidden: [],
   badgeStyle: "count",
   collapsed: {},
+  // Collapsed OTHER-workspace groups in the cross-workspace sessions
+  // list, keyed by workspace id (revamp section 3).
+  groups: {},
 };
 
 function SH_loadRailPrefs(username) {
@@ -59,10 +62,16 @@ function SH_RailVerbs(props) {
   );
 }
 
-function SH_SessionsList() {
+// Cross-workspace sessions (revamp section 3): one list over
+// GET /v1/sessions, grouped by workspace. The active workspace's group
+// renders first and expanded; other groups collapse, with the state
+// persisted per account in the rail prefs (groups.<wid>).
+function SH_SessionsList(props) {
   var shell = SH_useShell();
   var tap = window.useWorkspaceTap(shell.wid);
-  var items = (shell.sessions.data && shell.sessions.data.items) || [];
+  var prefs = props && props.prefs;
+  var update = props && props.update;
+  var items = (shell.allSessions.data && shell.allSessions.data.items) || [];
   var frecency = shell.frecency;
   var ordered = items.slice().sort(function (a, b) {
     var delta = frecency.scoreFor("session:" + b.session_id)
@@ -70,25 +79,36 @@ function SH_SessionsList() {
     if (delta) return delta;
     return String(b.last_activity_at).localeCompare(String(a.last_activity_at));
   });
-  var roots = ordered.filter(function (s) { return !s.parent_session_id; });
-  var childrenOf = function (sid) {
-    return ordered.filter(function (s) { return s.parent_session_id === sid; });
-  };
 
-  function row(session, depth) {
-    var live = SH_statusFromTap(tap.events, session.session_id, Date.now());
+  function open(session) {
+    shell.frecency.record("session:" + session.session_id);
+    if (session.workspace_id && session.workspace_id !== shell.wid) {
+      // Another workspace: navigate, the URL is the state.
+      window.location.hash = window.SH_buildUrl({
+        wid: session.workspace_id,
+        doc: { kind: "session", ref: session.session_id },
+      });
+      return;
+    }
+    shell.openDoc({
+      kind: "session", ref: session.session_id,
+      title: session.name || session.session_id, preview: true,
+    });
+  }
+
+  function row(session, depth, inGroup) {
+    var live = session.workspace_id === shell.wid
+      ? SH_statusFromTap(tap.events, session.session_id, Date.now())
+      : null;
+    var children = inGroup.filter(function (s) {
+      return s.parent_session_id === session.session_id;
+    });
     return (
       <li key={session.session_id} className="sh-rail-row" data-depth={depth}>
         <button
           type="button"
           data-testid={"rail-session:" + session.session_id}
-          onClick={function () {
-            shell.frecency.record("session:" + session.session_id);
-            shell.openDoc({
-              kind: "session", ref: session.session_id,
-              title: session.name || session.session_id, preview: true,
-            });
-          }}
+          onClick={function () { open(session); }}
         >
           <span className="sh-rail-title">{session.name || session.session_id}</span>
           <span className="sh-rail-chip" data-testid="session-status-dot"
@@ -102,10 +122,10 @@ function SH_SessionsList() {
           </span>
         </button>
         <SH_RailVerbs target={{ kind: "session", ref: session.session_id }} />
-        {childrenOf(session.session_id).length ? (
+        {children.length ? (
           <ul className="sh-rail-children">
-            {childrenOf(session.session_id).map(function (child) {
-              return row(child, depth + 1);
+            {children.map(function (child) {
+              return row(child, depth + 1, inGroup);
             })}
           </ul>
         ) : null}
@@ -113,13 +133,56 @@ function SH_SessionsList() {
     );
   }
 
+  // Group by workspace; the active group first, others by newest row.
+  var groups = [];
+  var byWid = {};
+  for (var i = 0; i < ordered.length; i++) {
+    var wid = ordered[i].workspace_id || "unknown";
+    if (!byWid[wid]) {
+      byWid[wid] = { wid: wid, items: [] };
+      groups.push(byWid[wid]);
+    }
+    byWid[wid].items.push(ordered[i]);
+  }
+  groups.sort(function (a, b) {
+    if (a.wid === shell.wid) return -1;
+    if (b.wid === shell.wid) return 1;
+    return 0; // stable: already newest-first via ordered
+  });
+
+  function groupBody(group) {
+    var roots = group.items.filter(function (s) { return !s.parent_session_id; });
+    return roots.map(function (s) { return row(s, 0, group.items); });
+  }
+
   return (
     <ul className="sh-rail-list" data-testid="rail-sessions">
-      {roots.map(function (s) { return row(s, 0); })}
+      {groups.map(function (group) {
+        if (group.wid === shell.wid) return groupBody(group);
+        var collapsed = !!(prefs && prefs.groups && prefs.groups[group.wid]);
+        return (
+          <li key={"g:" + group.wid} className="sh-rail-group">
+            <details open={!collapsed} onToggle={function (ev) {
+              if (!prefs || !update) return;
+              var next = Object.assign({}, prefs, {
+                groups: Object.assign({}, prefs.groups),
+              });
+              next.groups[group.wid] = !ev.target.open;
+              if (next.groups[group.wid] !== collapsed) update(next);
+            }}>
+              <summary data-testid={"rail-group:" + group.wid}>
+                {group.wid}
+                <span className="sh-badge">{group.items.length}</span>
+              </summary>
+              <ul className="sh-rail-list">{groupBody(group)}</ul>
+            </details>
+          </li>
+        );
+      })}
       {/* Say what is true, then offer the remedy. A lone button left the
           operator to infer the workspace was empty from the absence of
           rows, which reads the same as a list that has not loaded. */}
-      {roots.length ? null : (
+      {ordered.length ? null : (
         <li className="sh-empty">
           <span>No sessions yet</span>
           <button type="button" data-testid="rail-sessions-empty"
@@ -427,7 +490,7 @@ function SH_Rail() {
   }
 
   var bodies = {
-    sessions: <SH_SessionsList />,
+    sessions: <SH_SessionsList prefs={prefs} update={update} />,
     files: <SH_FilesList />,
     attention: <SH_AttentionList />,
   };

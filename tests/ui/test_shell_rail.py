@@ -107,3 +107,21 @@ def test_a_folder_in_the_file_rail_opens_to_show_what_is_in_it() -> None:
     lst = src[src.index("function SH_FilesList"):]
     assert "toggle(entry.path)" in lst, "a folder row has to open the folder"
     assert "<SH_FilesSubtree path={entry.path} />" in lst
+
+
+def test_sessions_span_every_workspace_grouped() -> None:
+    """Revamp section 3: the sessions list consumes the top-level
+    cross-workspace resource and groups rows by workspace, with the
+    active group first and other groups' collapse state persisted."""
+    src = _src()
+    assert "shell.allSessions" in src
+    assert '"rail-group:" + group.wid' in src
+    assert "prefs.groups" in src
+
+
+def test_other_workspace_rows_navigate_by_url() -> None:
+    src = _src()
+    assert "SH_buildUrl" in src, (
+        "a session in another workspace navigates via the URL grammar"
+    )
+    assert "session.workspace_id !== shell.wid" in src

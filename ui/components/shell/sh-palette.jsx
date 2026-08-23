@@ -40,7 +40,7 @@ function SH_matchSessions(sessions, query) {
     var label = s.name || s.session_id;
     if (String(label).toLowerCase().indexOf(q) >= 0
       || String(s.session_id).toLowerCase().indexOf(q) >= 0) {
-      out.push({ id: s.session_id, label: label });
+      out.push({ id: s.session_id, label: label, wid: s.workspace_id });
     }
   }
   return out;
@@ -61,7 +61,10 @@ function SH_PaletteRows(props) {
       if (group.tabs[i].id === group.activeId) active = group.tabs[i];
     }
   }
-  var sessionRows = SH_matchSessions(shell.sessions, props.query);
+  // Cross-workspace: the palette reaches every session (revamp
+  // section 3), so it matches over allSessions, not the active
+  // workspace's list.
+  var sessionRows = SH_matchSessions(shell.allSessions, props.query);
   var verbRows = SH_rankVerbs(shell.registry, props.query, {
     docKind: active ? active.kind : null,
     frecency: shell.frecency,
@@ -69,9 +72,15 @@ function SH_PaletteRows(props) {
   var total = sessionRows.length + verbRows.length;
 
   function runSession(row) {
-    shell.openDoc({
-      kind: "session", ref: row.id, title: row.label, preview: true,
-    });
+    if (row.wid && row.wid !== shell.wid) {
+      window.location.hash = window.SH_buildUrl({
+        wid: row.wid, doc: { kind: "session", ref: row.id },
+      });
+    } else {
+      shell.openDoc({
+        kind: "session", ref: row.id, title: row.label, preview: true,
+      });
+    }
     if (props.onRun) props.onRun(null);
   }
   function runVerb(verb) {

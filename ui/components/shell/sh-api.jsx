@@ -16,6 +16,13 @@ var SH_api = {
       null, { signal: signal });
   },
 
+  // Cross-workspace (revamp section 3): the rail and palette reach every
+  // session; recency ordering happens client-side on last_activity_at.
+  allSessions: function (signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/sessions?limit=200", null, { signal: signal });
+  },
+
   // response_model=WorkspaceSession (primer/api/routers/sessions.py:643-656):
   // a FLAT row. binding, binding_epoch, turn_status and parked_status are
   // top-level siblings, there is no `session` sub-object, and the bound
@@ -220,6 +227,7 @@ var SH_api = {
   // ---- cache keys ---------------------------------------------------------
   keys: {
     sessions: function (wid) { return "shell-sessions:" + wid; },
+    allSessions: function () { return "shell-all-sessions"; },
     session: function (sid) { return "shell-session:" + sid; },
     pending: function (wid) { return "shell-pending:" + wid; },
     sessionPending: function (sid) { return "shell-session-pending:" + sid; },

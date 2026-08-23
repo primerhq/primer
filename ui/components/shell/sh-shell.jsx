@@ -39,6 +39,16 @@ function SH_Shell(props) {
     { pollMs: 5000, deps: [wid] }
   );
 
+  // Cross-workspace list (revamp section 3): the rail groups it by
+  // workspace and the palette matches across it. The per-workspace
+  // resource above stays: landing/lazy-create reason about the ACTIVE
+  // workspace only.
+  var allSessions = window.primerApi.useResource(
+    SH_api.keys.allSessions(),
+    function (signal) { return SH_api.allSessions(signal); },
+    { pollMs: 5000 }
+  );
+
   var status = window.primerApi.useResource(
     "auth-status",
     function (signal) {
@@ -294,6 +304,7 @@ function SH_Shell(props) {
     wid: wid,
     docs: docs,
     sessions: sessions,
+    allSessions: allSessions,
     registry: registry,
     frecency: frecency,
     overlay: overlay,

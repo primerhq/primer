@@ -58,8 +58,17 @@ def test_the_composer_slash_reuses_the_same_rows() -> None:
 
 
 def test_palette_state_never_reaches_the_url() -> None:
+    # Transient palette state (open flag, query text) is deliberately
+    # unrepresentable in the URL. NAVIGATION from a palette row is a
+    # different thing: a cross-workspace session row writes the URL via
+    # SH_buildUrl, which can only express the four addressable facts.
     src = _src()
-    assert "pushState" not in src and "location.hash" not in src
+    assert "pushState" not in src
+    for hash_write in re.findall(r"location\.hash\s*=\s*([^;]+);", src):
+        assert "SH_buildUrl" in hash_write, hash_write
+    assert "query" not in "".join(
+        re.findall(r"SH_buildUrl\(\{([\s\S]*?)\}\)", src)
+    )
 
 
 def test_sessions_match_beside_verbs() -> None:
