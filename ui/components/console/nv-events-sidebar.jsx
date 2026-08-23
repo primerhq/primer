@@ -3,10 +3,11 @@
 // auto-scrolling tail of the platform event log filtered to the
 // selected workspace, plus the per-workspace streaming opt-in config.
 //
-// SECURITY: until P6 T14 lands (redaction + user-tier reads) the
-// /v1/events window is ADMIN-gated; non-admins see the locked state
-// rather than a broken fetch. P6 flips this to the redacted user feed
-// and deletes the lock.
+// Open to every user since P6 T14: reads are redacted server-side
+// (primer/events/redaction.py) and non-admins get the
+// workspace-scoped safe-kind feed, so no lock lives here. A 403 can
+// still reach a restricted-role session; it renders as the denied
+// note, not a broken fetch.
 
 var NV_EVENT_COLORS = [
   ["approval.", "var(--attention)"],
@@ -47,8 +48,10 @@ function NV_EventsSidebar() {
     function tick() {
       if (stop) return;
       var after = cursorRef.current;
+      // The head probe carries the workspace filter too: a non-admin
+      // read without one is refused by the P6 route.
       var call = after == null
-        ? SH_api.events({ limit: 1 }).then(function (head) {
+        ? SH_api.events({ limit: 1, workspaceId: con.wid }).then(function (head) {
           cursorRef.current = Math.max(0, (head.max_id || 0) - 60);
           return SH_api.events({
             afterId: cursorRef.current, limit: 60, workspaceId: con.wid,
@@ -110,8 +113,7 @@ function NV_EventsSidebar() {
       {locked ? (
         <div className="nv-rail-empty" data-testid="nv-events-locked">
           <div>
-            The event window is admin-gated today. It opens to every
-            user with the redacted workspace feed (wiring plan P6).
+            This account's role cannot read the event feed.
           </div>
         </div>
       ) : (

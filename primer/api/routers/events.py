@@ -20,9 +20,11 @@ from pydantic import BaseModel, Field
 from primer.api.deps import (
     get_event_subscription_storage,
     get_storage_provider,
+    require_user,
 )
 from primer.api.routers._crud import make_crud_router
 from primer.api.errors import common_responses
+from primer.events.redaction import redact_event
 from primer.model.event import Event, EventSubscription
 from primer.model.except_ import (
     NotFoundError,
@@ -30,6 +32,21 @@ from primer.model.except_ import (
 )
 
 events_router = APIRouter(tags=["events"])
+
+# What a non-admin may see of the log: their workspace's operational
+# lifecycle, never entity CRUD (whose payloads mirror stored rows).
+# Prefixes and exact names, checked against the redacted stream - the
+# allowlist bounds the SHAPE of what leaks, redaction bounds the values.
+_USER_SAFE_PREFIXES = ("session.", "workspace.")
+_USER_SAFE_TYPES = frozenset(
+    {"tool.called", "turn.started", "trigger.fired", "llm.called"}
+)
+
+
+def _user_safe(event_type: str) -> bool:
+    return event_type in _USER_SAFE_TYPES or any(
+        event_type.startswith(p) for p in _USER_SAFE_PREFIXES
+    )
 
 
 class EventListResponse(BaseModel):
@@ -56,7 +73,17 @@ async def list_events(
     workspace_id: str | None = Query(None),
     since: datetime | None = Query(None),
     storage_provider=Depends(get_storage_provider),
+    user=Depends(require_user),
 ) -> EventListResponse:
+    # Non-admins read a WORKSPACE feed, not the platform log: the
+    # workspace filter is mandatory and only operational lifecycle
+    # kinds come back (P6 T14; the console's events sidebar is the
+    # consumer).
+    is_admin = user is None or getattr(user, "role", "admin") == "admin"
+    if not is_admin and not workspace_id:
+        raise SemanticValidationError(
+            "non-admin event reads must name a workspace_id"
+        )
     store = storage_provider.get_event_store()
     prefix = None
     if event_type:
@@ -73,6 +100,11 @@ async def list_events(
     )
     if event_type:
         items = [e for e in items if fnmatchcase(e.event_type, event_type)]
+    if not is_admin:
+        items = [e for e in items if _user_safe(e.event_type)]
+    # EVERY read is redacted, the admin's included: the gate is access
+    # control, not an excuse to ship stored secrets to a browser.
+    items = [redact_event(e) for e in items]
     return EventListResponse(items=items, max_id=await store.max_id())
 
 

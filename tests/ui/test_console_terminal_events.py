@@ -32,10 +32,16 @@ def test_events_tail_is_cursor_paged_and_workspace_scoped():
     assert "max_id" in EVENTS
 
 
-def test_events_locked_state_until_p6():
+def test_events_feed_is_open_with_role_denial_fallback():
+    # P6 T14: reads are redacted server-side and open to every user;
+    # the only remaining lock is a restricted-role 403, rendered as a
+    # note rather than a broken fetch. The head probe must carry the
+    # workspace filter too - a non-admin read without one is refused.
     m = re.search(r'status === 403[\s\S]{0,200}', EVENTS)
     assert m and "setLocked" in m.group(0)
     assert 'data-testid="nv-events-locked"' in EVENTS
+    assert "limit: 1, workspaceId: con.wid" in EVENTS
+    assert "admin-gated" not in EVENTS
 
 
 def test_streaming_optin_writes_the_workspace_config():
