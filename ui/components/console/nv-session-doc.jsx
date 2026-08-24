@@ -686,16 +686,31 @@ function NV_SessionDoc(props) {
   var sid = props.sid;
   var tap = window.useWorkspaceTap(con.wid);
   var terminalRef = React.useRef(false);
+  // Declared BEFORE the resources on purpose: a send into an ENDED
+  // session REOPENS it server-side (steer's fourth behaviour), so the
+  // ended-session poll stop must lift while a send is in flight - the
+  // old refetch-once in onSendStarted raced the POST, read the still
+  // ended row, and froze the doc on a session that was actually
+  // running again (BDD round 2, 2026-08-24).
+  var optimisticState = React.useState(null);
+  var optimistic = optimisticState[0];
+  var setOptimistic = optimisticState[1];
+  // Computed BEFORE the resources: the tap knows a reopened session is
+  // running before the (stale, still "ended") detail row does, so the
+  // poll gate must consult it - gating on the stale row alone froze
+  // the doc the moment the live signal cleared the optimistic flag.
+  var live = SH_statusFromTap(tap.events, sid, Date.now());
+  var pollStopped = terminalRef.current && !optimistic && !live;
   var detail = window.primerApi.useResource(
     SH_api.keys.session(sid),
     function (signal) { return SH_api.session(sid, signal); },
-    { pollMs: terminalRef.current ? 0 : 2000, deps: [sid] }
+    { pollMs: pollStopped ? 0 : 2000, deps: [sid] }
   );
   terminalRef.current = !!(detail.data && NV_sessionIsOver(detail.data));
   var history = window.primerApi.useResource(
     SH_api.keys.session(sid) + ":messages",
     function (signal) { return SH_api.messages(sid, 200, null, signal); },
-    { pollMs: terminalRef.current ? 0 : 2000, deps: [sid] }
+    { pollMs: pollStopped ? 0 : 2000, deps: [sid] }
   );
   var gates = window.primerApi.useResource(
     SH_api.keys.sessionPending(sid),
@@ -729,13 +744,21 @@ function NV_SessionDoc(props) {
   var nodeFilterState = React.useState(null);
   var nodeFilter = nodeFilterState[0];
   var setNodeFilter = nodeFilterState[1];
-  var optimisticState = React.useState(null);
-  var optimistic = optimisticState[0];
-  var setOptimistic = optimisticState[1];
 
   var session = detail.data || null;
-  var live = SH_statusFromTap(tap.events, sid, Date.now());
   React.useEffect(function () { if (live) setOptimistic(null); }, [!!live]);
+  // Bounded fallback: a reopen whose turn dies before the tap shows
+  // life would otherwise hold "sending" (and the lifted poll stop)
+  // forever. Once the polled row confirms the session settled back to
+  // ended with no live turn, drop the optimistic flag.
+  React.useEffect(function () {
+    if (!optimistic || !session) return;
+    if (NV_sessionIsOver(session)
+        && session.turn_status === "idle"
+        && Date.now() - optimistic > 10_000) {
+      setOptimistic(null);
+    }
+  }, [detail.data]);
   var shown = live || (optimistic
     ? { verb: "sending", object: "", startedMs: optimistic }
     : null);

@@ -1810,6 +1810,45 @@ async def detach_session(
     return {"detached": removed}
 
 
+@sessions_router.delete(
+    "/workspaces/{workspace_id}/sessions/{session_id}"
+    "/pending_messages/{pending_id}",
+    status_code=204,
+    summary="Dismiss one queued follow-up steer",
+    responses=common_responses(404, 500),
+)
+async def dismiss_pending_message(
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    pending_id: str = Path(...),
+    storage_provider=Depends(get_storage_provider),
+) -> None:
+    """Drop a queued steer before a turn realizes it.
+
+    The console has offered this dismiss since the flag day (a failed
+    turn otherwise leaves the queued follow-up parked forever), but the
+    route never existed: the X on a queued chip threw client-side and
+    the row was undismissable (BDD round 2, 2026-08-24).
+    """
+    from primer.model.workspace_session import PendingSessionMessage
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+    storage = storage_provider.get_storage(PendingSessionMessage)
+    pending = await storage.get(pending_id)
+    if pending is None or pending.session_id != session_id:
+        raise NotFoundError(
+            f"Pending message {pending_id!r} does not exist on session "
+            f"{session_id!r}"
+        )
+    await storage.delete(pending_id)
+
+
 # ===========================================================================
 # Files sub-resource
 # ===========================================================================

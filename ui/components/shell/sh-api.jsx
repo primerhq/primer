@@ -242,6 +242,17 @@ var SH_api = {
         + encodeURIComponent(sid));
   },
 
+  // Drops one queued follow-up steer (the transcript's "queued" chip)
+  // before a turn realizes it. The session doc has called this since
+  // the flag day; the function (and its route) did not exist, so the
+  // chip's X threw and a queued steer was undismissable.
+  dismissQueuedSteer: function (wid, sid, pendingId) {
+    return window.primerApi.apiFetch(
+      "DELETE", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/pending_messages/"
+        + encodeURIComponent(pendingId));
+  },
+
   interrupt: function (wid, sid) {
     return window.primerApi.apiFetch(
       "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"

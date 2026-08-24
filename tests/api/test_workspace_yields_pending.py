@@ -613,3 +613,78 @@ class TestListPendingYields:
         assert resp.status_code == 200
         item = resp.json()["items"][0]
         assert item["tool_call_id"] == "old-tcid"
+
+
+class TestDismissPendingMessage:
+    """DELETE .../sessions/{sid}/pending_messages/{pid} (BDD round 2).
+
+    The console's queued-steer chip has offered a dismiss since the
+    flag day; this route is what makes it real. Scope guards mirror
+    the other session sub-resources: the pending row must belong to
+    the addressed session.
+    """
+
+    @staticmethod
+    def _pending(sid: str) -> "PendingSessionMessage":
+        from primer.model.workspace_session import PendingSessionMessage
+
+        now = datetime.now(timezone.utc)
+        return PendingSessionMessage(
+            id=f"{sid}:pending:{now.isoformat()}:1",
+            session_id=sid,
+            parts=[{"type": "text", "text": "queued follow-up"}],
+            enqueued_at=now,
+            created_at=now,
+        )
+
+    @pytest.mark.asyncio
+    async def test_dismiss_deletes_the_row(self, client, sp) -> None:
+        from primer.model.workspace_session import PendingSessionMessage
+
+        wid = await _create_workspace(client)
+        await sp.get_storage(WorkspaceSession).create(
+            _make_session("sess-dm1", wid)
+        )
+        pend = self._pending("sess-dm1")
+        await sp.get_storage(PendingSessionMessage).create(pend)
+
+        resp = await client.delete(
+            f"/v1/workspaces/{wid}/sessions/sess-dm1"
+            f"/pending_messages/{pend.id}"
+        )
+        assert resp.status_code == 204, resp.text
+        left = await sp.get_storage(PendingSessionMessage).get(pend.id)
+        assert left is None
+
+    @pytest.mark.asyncio
+    async def test_dismiss_unknown_pending_404s(self, client, sp) -> None:
+        wid = await _create_workspace(client)
+        await sp.get_storage(WorkspaceSession).create(
+            _make_session("sess-dm2", wid)
+        )
+        resp = await client.delete(
+            f"/v1/workspaces/{wid}/sessions/sess-dm2/pending_messages/nope"
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_dismiss_cross_session_404s(self, client, sp) -> None:
+        from primer.model.workspace_session import PendingSessionMessage
+
+        wid = await _create_workspace(client)
+        await sp.get_storage(WorkspaceSession).create(
+            _make_session("sess-dm3", wid)
+        )
+        await sp.get_storage(WorkspaceSession).create(
+            _make_session("sess-dm4", wid)
+        )
+        pend = self._pending("sess-dm4")
+        await sp.get_storage(PendingSessionMessage).create(pend)
+
+        resp = await client.delete(
+            f"/v1/workspaces/{wid}/sessions/sess-dm3"
+            f"/pending_messages/{pend.id}"
+        )
+        assert resp.status_code == 404
+        kept = await sp.get_storage(PendingSessionMessage).get(pend.id)
+        assert kept is not None

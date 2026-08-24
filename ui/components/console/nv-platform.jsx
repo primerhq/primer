@@ -510,7 +510,8 @@ function NV_PlatPage() {
         con.toast("Deleted " + (row.id || row.name));
         res.refetch();
       }, function (e) {
-        con.toast("Delete refused: " + (e.detail || e.message));
+        con.toast("Delete refused: " + (e.detail || e.message),
+          { kind: "error", requestId: e.requestId });
       });
     });
   }

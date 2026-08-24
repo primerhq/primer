@@ -236,6 +236,12 @@
       if (entry.timer != null) {
         clearTimer(entry);
         schedule(entry, effectiveKey);
+      } else if (pollMs > 0 && entry.abortCtrl == null && !entry.loading) {
+        // 0 -> N on a SETTLED entry: no timer was ever pending and no
+        // fetch is in flight, so without this the loop never restarts
+        // - a doc that stopped polling at "ended" stayed frozen after
+        // a reopen flipped its cadence back on (BDD round 2).
+        schedule(entry, effectiveKey);
       }
     }, [effectiveKey, pollMs]);
 

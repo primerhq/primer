@@ -334,9 +334,18 @@ function NV_Shell() {
     },
     closeOverlay: function () { setOverlay(null); },
     bump: function () { setTick(function (v) { return v + 1; }); },
-    toast: function (msg) {
+    // extra (optional): { kind, requestId } - an error toast that came
+    // from an ApiError should pass the error so the request id renders
+    // with its copy affordance. A plain string toast never carried one,
+    // which left that affordance dead on every error (BDD round 2).
+    toast: function (msg, extra) {
       if (window.primerApi.toastPush) {
-        window.primerApi.toastPush({ kind: "info", text: String(msg) });
+        window.primerApi.toastPush({
+          kind: (extra && extra.kind) || "info",
+          text: String(msg),
+          requestId: (extra && (extra.requestId || extra.request_id))
+            || null,
+        });
       }
     },
   };

@@ -160,7 +160,14 @@ function NV_Palette() {
         key: e.key,
         label: e.label,
         tag: e.tag,
-        run: runAndClose(function () { con.goView("platform", e.nav); }),
+        // The RECORD, not just its list page: session rows open the
+        // session and file rows open the file, so an entity row
+        // landing on a bare list was the one inconsistent pick (BDD
+        // round 2). Same page+overlay pair a platform card click uses.
+        run: runAndClose(function () {
+          con.goView("platform", e.nav);
+          con.openOverlay(e.nav, null, e.label);
+        }),
       };
     });
     var entGroup = NV_matchRows(ents, q, "Entities");
