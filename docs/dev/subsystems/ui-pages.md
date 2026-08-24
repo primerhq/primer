@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This doc covers the operator console: the shell under `ui/foundation/shell-*.js` and `ui/components/shell/sh-*.jsx`, and the page components under `ui/components/` that it hosts. The console IS the studio. There is no page router, no sidebar and no per-page chrome: one workspace-scoped surface, whose navigation is a verb registry, whose documents are deep-linkable tabs, and whose management surfaces are overlays re-hosting the page components unchanged.
+This doc covers the operator console: the pure shell modules under `ui/foundation/shell-*.js`, the three-view console under `ui/components/console/nv-*.jsx` (plus the two `ui/components/shell/` survivors, `sh-api.jsx` and `sh-activity.jsx`), and the page components under `ui/components/` that it hosts. The console IS the studio. There is no page router, no sidebar and no per-page chrome: one workspace-scoped surface, whose navigation is a verb registry, whose documents are deep-linkable tabs, and whose management surfaces are overlays re-hosting the page components unchanged.
 
 It owns the shell's own model (the URL grammar, the tab semantics, the verb registry, the dual-render rule) and the repeating page shapes those overlays still use: the list-bar plus detail-tabs structure on CRUD entities, the find-bar plus table plus create-modal triad, and the loader/error/empty/confirmation conventions every page reuses.
 
@@ -12,11 +12,11 @@ The backend REST contract these pages consume (the `/v1/*` CRUD surface, the `ma
 
 ## 2. Conceptual model
 
-The console is one surface with four regions: a rail (sessions, files, attention), a centre of document tabs, a status bar, and overlays that open above all of it. A command palette reaches every verb. `ui/app.jsx` is one mount, `AuthGate` wrapping `SH_RootGate`, and nothing else.
+The console is three views over one URL (the 2026-08-23 designer handoff): STUDIO (the default - a rail of session bands and files, a centre of document tabs, the composer, an optional terminal panel and events sidebar), PLATFORM (grouped nav over per-entity card pages), and SYSTEM (dashboard, users, API keys, SSO, MCP, internal collections, activity, setup, profile - reached from the profile menu). Overlays open above whichever view is active, and a command palette reaches every verb. `ui/app.jsx` is one mount, `AuthGate` wrapping `NV_Shell`, and nothing else.
 
 **The verb registry is the routing table.** Every action a user can take is registered once, with an id, a label, the contexts it applies to and the surfaces it renders on (rail, tab menu, palette, overlay button). A surface renders the verbs the registry gives it rather than hard-coding buttons, which is what makes the dual-render rule checkable: a verb declared for a surface but never rendered from the registry, or a doc kind the URL can address that no verb opens, is an orphan, and a static guard fails on it.
 
-**A document is a tab, and a tab is addressable.** Sessions, files, diffs, wiki pages and traces are the five doc kinds. Tabs follow VS Code semantics: a preview tab is replaced by the next preview and is promoted to permanent by an edit or a pin, so browsing a file tree does not accumulate tabs.
+**A document is a tab, and a tab is addressable.** Sessions, files, diffs and wiki pages are the four doc kinds (the trace opens as a split INSIDE the session doc; attention lives in the bands and the System dashboard). Tabs follow VS Code semantics: a preview tab is replaced by the next preview and is promoted to permanent by an edit or a pin, so browsing a file tree does not accumulate tabs.
 
 **A management surface is an overlay, not a page.** The catalogue, agents, graphs, collections, toolsets, workers and the rest re-host their existing page components with no chrome around them. Comparison never goes in an overlay: a trace opens beside its transcript as a tab in a second group, because an overlay cannot be looked at next to anything.
 
@@ -83,7 +83,7 @@ The shell is split by testability. Pure logic lives in `ui/foundation/shell-*.js
 - `shell-walkthrough.js` - the first-run checklist state.
 - `shell-router-shim.js` - `useRouter` over overlay state (see [ui-foundation.md](ui-foundation.md)).
 
-The React surfaces live in `ui/components/shell/sh-*.jsx`: `sh-shell.jsx` (the root, the regions, the toast and confirm hosts), `sh-rail.jsx` (cross-workspace sessions, files with full management, the pinned Inbox row, the attention engine), `sh-doc-host.jsx` and `sh-session-doc.jsx`, `sh-doc-bodies.jsx`, `sh-inbox-doc.jsx` (the Inbox tab), `sh-overlay-host.jsx` (since the 2026-08-23 revamp this renders the full-screen STUDIO: a grouped left nav over the same overlay mounts and `overlay=` addresses), `sh-activity.jsx` (the admin-gated events console over `GET /v1/events`), `sh-admin-overlay.jsx`, `sh-palette.jsx` (search-first: session rows beside verbs), `sh-decision-card.jsx`, `sh-trace-tab.jsx`, `sh-client-tools.jsx`, `sh-voice.jsx` and `sh-walkthrough.jsx`. **`sh-api.jsx` is the only file that names a URL**, so the endpoints the console depends on are enumerable in one place.
+The React surfaces live in `ui/components/console/nv-*.jsx` (the three-view flag day deleted the `sh-*` shell): `nv-shell.jsx` (the root: URL sync, the verb registry and chord dispatcher, the toast and confirm hosts), `nv-chrome.jsx` (activity bar + topbar: workspace menu with settings, search field, panel toggles, profile menu), `nv-palette.jsx`, `nv-studio.jsx` (the studio frame and the pure band sort), `nv-sessions-sidebar.jsx` and `nv-files-sidebar.jsx`, `nv-doc-host.jsx`, `nv-session-doc.jsx` (transcript, binding chip, decision/ask cards, inline artifacts, trace split, composer, voice), `nv-file-docs.jsx`, `nv-terminal.jsx`, `nv-events-sidebar.jsx`, `nv-client-tools.jsx`, `nv-overlays.jsx` (the designer create panels plus the management-surface mount table), `nv-platform.jsx` and `nv-system.jsx`. Two shell-directory files survive: `sh-activity.jsx` (the events console the System view re-hosts) and **`sh-api.jsx`, the only file that names a URL**, so the endpoints the console depends on are enumerable in one place.
 
 All page components live under `ui/components/` as self-invoking `<script type="text/babel">` files that attach `window.<Name>Page` / `window.<Name>Detail` globals; the overlay host mounts them. The workspaces sub-tree (`ui/components/workspaces/`) holds the providers, templates, and shared form-helper files.
 
@@ -114,12 +114,13 @@ Page-by-page index follows. The first column is the overlay target that reaches 
 | `workers` | WorkersPage | `workers.jsx` | `GET /v1/workers`, `POST /v1/workers/{id}/drain` |
 | `workers:health` | HealthPage | `health.jsx` | `GET /v1/health` |
 | `new-session` | SharedNewSessionForm | `new-session-form.jsx` | `GET /v1/agents`, `/v1/graphs`, `POST .../sessions` |
-| `admin:<section>` | SH_AdminOverlay | `shell/sh-admin-overlay.jsx` | one section per admin surface: users, SSO, API tokens, MCP, linked accounts |
+| `new-workspace` | NV_CreateWorkspaceOverlay | `console/nv-overlays.jsx` | `GET /v1/workspace_templates`, `POST /v1/workspaces` |
+| (System view navs) | NV_System re-hosts ADM_AdminUsersPage, AT_ApiTokensPage, SSO_ProvidersPage, MC_McpPage, InternalCollectionsPage, SH_ActivityPanel, SetupWizardSteps | `console/nv-system.jsx` | users, SSO, API tokens, MCP, internal collections, activity, setup, profile |
 | `collections` (subsystem view) | InternalCollectionsPage | `internal-collections.jsx` | `GET/PUT/DELETE /v1/internal_collections/config`, `/bootstrap[/status]` |
 
 The user docs render at `/docs` outside the shell, served by `ui/components/docs.jsx`; they are a reader, not a console surface.
 
-Supporting files not directly routed: `approvals.jsx` also exports the shared `ApprovalBanner` consumed by `session-detail.jsx`; `workspaces/shared.jsx` exports the form-row and list-editor helpers (`WorkspacePairListEditor`, `WorkspaceEnvPairEditor`, `WorkspaceFileRowEditor`, and siblings) reused by the workspace, template, and provider modals; `auth.jsx` is the boot gate that wraps the whole shell; `harness_form.jsx` and `harness_outbound_builder.jsx` are mounted by the harnesses page. The overlay vocabulary lives in `ui/foundation/shell-url.js` (`SH_OVERLAYS`) and the mount table that picks each `window.*` component lives in `ui/components/shell/sh-overlay-host.jsx`.
+Supporting files not directly routed: `approvals.jsx` also exports the shared `ApprovalBanner` consumed by `session-detail.jsx`; `workspaces/shared.jsx` exports the form-row and list-editor helpers (`WorkspacePairListEditor`, `WorkspaceEnvPairEditor`, `WorkspaceFileRowEditor`, and siblings) reused by the workspace, template, and provider modals; `auth.jsx` is the boot gate that wraps the whole shell; `harness_form.jsx` and `harness_outbound_builder.jsx` are mounted by the harnesses page. The overlay vocabulary lives in `ui/foundation/shell-url.js` (`SH_OVERLAYS`) and the mount table that picks each `window.*` component lives in `ui/components/console/nv-overlays.jsx`.
 
 ## 5. Data model
 
@@ -129,13 +130,13 @@ The console's own data model is its URL grammar, which is the only thing it pers
 #/w/{wid}?doc=<kind>:<ref>&overlay=<name>[:<section>[:<id>]]#<anchor>
 ```
 
-Five doc kinds are addressable: `session`, `file`, `diff`, `wiki`, `trace`. Fifteen overlay names are: `providers`, `collections`, `agents`, `graphs`, `triggers`, `toolsets`, `tools`, `workers`, `approvals`, `admin`, `harnesses`, `services`, `channels`, `workspaces`, `new-session`. An anchor is either `turn-<n>` or an `L<from>[-L<to>]` line range. Both lists are pinned against `ui/fixtures/shell/manifest.json` by a test, so the vocabulary cannot drift from what the designer package documents.
+The grammar also carries the view (`view=platform:<nav>` / `view=system:<nav>`; absent means studio, so every historical URL parses forward). Four doc kinds are addressable: `session`, `file`, `diff`, `wiki`. The overlay names are: `providers`, `collections`, `agents`, `graphs`, `triggers`, `toolsets`, `tools`, `workers`, `approvals`, `harnesses`, `services`, `channels`, `workspaces`, `new-session`, `new-workspace`, `internal-collections`, `activity` (the old `admin` overlay's sections are the System view's navs). An anchor is either `turn-<n>` or an `L<from>[-L<to>]` line range. Both lists are pinned against `ui/fixtures/shell/manifest.json` by a test, so the vocabulary cannot drift from what the designer package documents.
 
 Beyond that, pages own no durable server data of their own. The entity schemas they render (Agent, Graph, Collection, Toolset, the provider models, WorkspaceSession, Trigger, ApiToken, and so on) are owned by their backend subsystem docs. The only page-held state is ephemeral React state: the active filter/sort/page, the selected row, the open-modal draft and its `fieldErrors` map, and per-page UI-only data such as the graph editor's `x/y` node coordinates (stripped before `PUT`). Cache keys are page-scoped strings on the foundation `useResource` map, listed per page above; they are an index into the shared cache, not a data model.
 
 ## 6. Lifecycle
 
-**Boot is one gate.** `AuthGate` (`ui/components/auth.jsx`) owns the whole branch: register or login, the forced password change, the restricted screen, and the setup wizard for admins or the waiting screen for everyone else. It returns its children only once the install is complete, and its child is `SH_RootGate`. `SetupWizardGate` is a LEAF that renders the wizard and never renders children, so it never appears in the mount chain; nesting the shell inside it would render the wizard forever. The shell used to carry a `setup_complete` branch of its own while both consoles coexisted, and it was removed with the flag day: two gates disagreeing about one decision is how a console strands itself.
+**Boot is one gate.** `AuthGate` (`ui/components/auth.jsx`) owns the whole branch: register or login, the forced password change, the restricted screen, and the setup wizard for admins or the waiting screen for everyone else. It returns its children only once the install is complete, and its child is `NV_Shell`. `SetupWizardGate` is a LEAF that renders the wizard and never renders children, so it never appears in the mount chain; nesting the shell inside it would render the wizard forever. The shell used to carry a `setup_complete` branch of its own while both consoles coexisted, and it was removed with the flag day: two gates disagreeing about one decision is how a console strands itself.
 
 **Landing.** With a workspace resolved, the shell opens the most recent session as a pinned tab. An empty workspace creates one lazily, bound to the system default agent, so the console is never an empty frame asking what to do.
 
@@ -179,9 +180,9 @@ Pages persist nothing of their own to the server beyond the CRUD mutations enume
 
 ## 8. Public surfaces
 
-The public surface of this layer is the shell's globals plus the page components it hosts. The shell exports `window.SH_RootGate` (the mount), `window.SH_OVERLAY_MOUNTS` and `window.SH_OVERLAY_LABELS` (the overlay table and its verb labels), and the `SH_*` surfaces each `sh-*.jsx` file attaches. The addressable vocabulary is `SH_DOC_KINDS` and `SH_OVERLAYS` in `ui/foundation/shell-url.js`.
+The public surface of this layer is the console's globals plus the page components it hosts. The console exports `window.NV_Shell` (the mount), `window.NV_OVERLAY_MOUNTS` and `window.NV_OVERLAY_TITLES` (the overlay table and its headings), and the `NV_*` surfaces each `nv-*.jsx` file attaches. The addressable vocabulary is `SH_DOC_KINDS` and `SH_OVERLAYS` in `ui/foundation/shell-url.js`.
 
-Each page attaches `window.<Name>Page` and, for entities with a detail view, `window.<Name>Detail`; `ui/components/shell/sh-overlay-host.jsx` is the sole dispatcher that maps an overlay target to one of those globals.
+Each page attaches `window.<Name>Page` and, for entities with a detail view, `window.<Name>Detail`; `ui/components/console/nv-overlays.jsx` is the sole dispatcher that maps an overlay target to one of those globals.
 
 Cross-page exports that other pages depend on:
 

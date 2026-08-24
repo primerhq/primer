@@ -14,12 +14,12 @@ The console is a single-page React app served from the same FastAPI origin as th
 
 Every foundation module attaches its public surface to `window.primerApi`. There is no React context provider wrapping the tree; shared state lives at module scope (the `useResource` cache, the toast queue, the tweaks store) so that non-React callers can read and write it too. Modules load in dependency order from `ui/index.html`: `api.js` then `toast.js` then `use-resource.js` then `use-mutation.js` then `capabilities.js` then `tweaks.js` then `idle.js` then `viewport.js`, followed by the shell's own `shell-*.js` modules, the vendor helpers, shared primitives, and page components.
 
-There is no chrome layer any more. `ui/app.jsx` is one mount: `AuthGate` wrapping `SH_RootGate`. The shell owns its own regions and its own polling, and the foundation is what it and every re-hosted page share underneath. See [ui-pages.md](ui-pages.md) for the shell itself.
+There is no chrome layer any more. `ui/app.jsx` is one mount: `AuthGate` wrapping `NV_Shell`. The shell owns its own regions and its own polling, and the foundation is what it and every re-hosted page share underneath. See [ui-pages.md](ui-pages.md) for the shell itself.
 
 ```mermaid
 graph TD
     App["app.jsx (the mount)"] --> Auth["AuthGate (auth.jsx)"]
-    Auth --> Shell["SH_RootGate (ui-pages.md)"]
+    Auth --> Shell["NV_Shell (ui-pages.md)"]
     Shell --> Toasts["SH_ToastHost -> toast-stack"]
     Shell --> Confirm["ConfirmHost (shared.jsx)"]
     Shell --> Surfaces["rail / tabs / overlays / palette"]
@@ -61,7 +61,7 @@ The shared components:
 
 - `ui/components/shared.jsx` - the shared primitives `Icon`, `Btn`, `Modal`, `StatusPill`, `Banner`, plus `Sparkline`/`relativeTime`/`fmtDate`, all attached to `window`. `Modal` reads `window.primerApi.useViewport` and renders as a bottom sheet on mobile.
 - `ui/components/shared/` - the mobile shells `bottom-sheet.jsx`, `card-list.jsx`, `mobile-tabs.jsx`, `floating-action.jsx`, and `token-meter.jsx`, loaded after `shared.jsx`.
-- `ui/app.jsx` - the mount, and nothing else: `AuthGate` wrapping `SH_RootGate`.
+- `ui/app.jsx` - the mount, and nothing else: `AuthGate` wrapping `NV_Shell`.
 
 The bundling and serving glue lives on the API side (`primer/api/app.py`: `_mount_console`, `_install_console_csp`, `_install_jsx_bundle`, `_install_root_redirect`, `_CachingStaticFiles`; `primer/api/_jsx_bundle.py`: the `JSXBundler`). The vendored dependencies and their audit trail are under `ui/vendor/` with `ui/vendor/MANIFEST.md`.
 
