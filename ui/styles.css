@@ -5834,3 +5834,14 @@ button.nv-commit-row {
   display: flex;
 }
 button.nv-commit-row { flex-direction: column; align-items: stretch; }
+
+/* Row status chip (flag day follow-through): the bands order by
+   consequence; this says created/waiting/ended-why on the row itself. */
+.nv-session-status {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+.nv-session-status[data-status="running"] { color: var(--green); }
+.nv-session-status[data-status="failed"] { color: var(--red); }

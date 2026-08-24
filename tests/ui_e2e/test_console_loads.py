@@ -79,9 +79,14 @@ def test_route_renders_with_zero_console_errors(
 
     # By-design 404s: the sidebar polls /v1/internal_collections/config
     # and a 404 there is the documented "subsystem OFF" signal (per
-    # the console shell and app spec §12). Strip those out before asserting.
+    # the console shell and app spec §12). The workspace TAP likewise
+    # 404s until the workspace has a live on-disk slot - the console
+    # keeps the studio (and its tap poll) mounted under every overlay
+    # since the three-view flag day, so an overlay route in a
+    # session-less workspace sees that probe. Strip both.
     by_design_404_patterns = [
         r"/v1/internal_collections/config",
+        r"/v1/workspaces/[^/]+/tap$",
     ]
     real_failures = [
         r for r in failed_requests

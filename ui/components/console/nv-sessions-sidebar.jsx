@@ -176,6 +176,16 @@ function NV_SessionsSidebar() {
                     <div className="nv-session-name">{s.name || sid}</div>
                     <div className="nv-session-sub">
                       <span>{agentName}</span>
+                      {/* The lifecycle status, legible on the row: the
+                          bands order by consequence but do not say
+                          created vs waiting, nor why a session ended. */}
+                      <span className="nv-session-status"
+                        data-testid="session-status-dot"
+                        data-status={s.status || "created"}>
+                        {(s.status || "created")
+                          + (s.status === "ended" && s.ended_reason
+                            ? " · " + s.ended_reason : "")}
+                      </span>
                       {live ? (
                         <span className="nv-session-live">
                           {live.verb}

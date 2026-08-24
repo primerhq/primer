@@ -41,9 +41,13 @@ def test_channel_rules_route_renders_with_zero_console_errors(
     page.wait_for_timeout(1_500)
 
     # By-design 404s: the sidebar polls the IC subsystem config and a
-    # 404 there is the documented "subsystem OFF" signal.
+    # 404 there is the documented "subsystem OFF" signal; the workspace
+    # TAP likewise 404s until the workspace has a live on-disk slot
+    # (the studio stays mounted under every overlay since the
+    # three-view flag day).
     by_design_404_patterns = [
         r"/v1/internal_collections/config",
+        r"/v1/workspaces/[^/]+/tap$",
     ]
     real_failures = [
         r for r in failed_requests
