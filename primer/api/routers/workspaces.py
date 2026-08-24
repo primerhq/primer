@@ -480,15 +480,11 @@ template_router = make_crud_router(
     on_pre_create=_reject_reserved_workspace_template_create,
     on_pre_update=_reject_reserved_workspace_template_update,
     on_pre_delete_id=_reject_reserved_workspace_template_delete,
-    # Same BDD finding as the provider router above: a template a
-    # materialized workspace still references must refuse deletion.
-    references=[
-        ReferenceCheck(
-            child_kind="workspace",
-            child_storage=_ref_workspace_storage,
-            child_field="template_id",
-        ),
-    ],
+    # Deliberately NO reference guard here: a template is a snapshot
+    # consumed at materialization (spec section 12, pinned by e2e
+    # T0223) - deleting it must not strand live workspaces, and they
+    # keep working without it. Only the provider router above guards,
+    # because a provider IS resolved live at session provisioning.
 )
 
 
