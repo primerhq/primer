@@ -599,6 +599,17 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   const [providerId, setProviderId] = React.useState(existing?.approval?.provider_id || "");
   const [model, setModel] = React.useState(existing?.approval?.model || "");
   const [prompt, setPrompt] = React.useState(existing?.approval?.prompt || "");
+  // Approver routing (P6): who may decide the calls this policy gates.
+  // anyone (default) | roles | users; the list is comma-separated in the
+  // form and an array on the wire. A policy/llm evaluation may still
+  // override this per call from its verdict.
+  const [apprKind, setApprKind] = React.useState(existing?.approvers?.kind || "anyone");
+  const [apprList, setApprList] = React.useState(() => {
+    const spec = existing?.approvers;
+    if (!spec) return "";
+    const arr = spec.kind === "roles" ? spec.roles : spec.users;
+    return (arr || []).join(", ");
+  });
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   // Provider dropdown source — keyed separately from the page-level
@@ -690,6 +701,15 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
       enabled: isEdit ? !!existing.enabled : true,
       approval,
       ...(timeoutSec ? { timeout_seconds: Number(timeoutSec) } : {}),
+      // PUT-replace semantics: omitting approvers on an "anyone" save
+      // clears any stored routing, which is exactly what the segment
+      // says it does.
+      ...(apprKind !== "anyone" ? {
+        approvers: {
+          kind: apprKind,
+          [apprKind]: apprList.split(",").map((s) => s.trim()).filter(Boolean),
+        },
+      } : {}),
     };
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
@@ -697,10 +717,14 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   const requiredOk = id.trim() && toolsetId.trim() && toolName.trim();
   const policyOk = requiredOk && policyRego.trim().length > 0;
   const llmOk = requiredOk && providerId && model && prompt.trim().length > 0;
-  const canSubmit =
+  // A roles/users routing with an empty list would route to nobody
+  // but admins; make the form say so instead of the server.
+  const approversOk = apprKind === "anyone"
+    || apprList.split(",").some((s) => s.trim());
+  const canSubmit = approversOk && (
     (type === "required" && requiredOk) ||
     (type === "policy" && policyOk) ||
-    (type === "llm" && llmOk);
+    (type === "llm" && llmOk));
 
   // Render the inline error for a field path if present.
   const fieldErr = (loc) => fieldErrors[loc] ? (
@@ -817,6 +841,42 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
           data-testid="approval-policy-timeout"
         />
         {fieldErr("body.timeout_seconds")}
+      </div>
+
+      <div className="field">
+        <label className="field-label">
+          who may decide
+          <span className="hint">admins always may; a policy/LLM verdict can override per call</span>
+        </label>
+        <div className="chip-group">
+          {[
+            { v: "anyone", l: "Anyone", h: "Any non-restricted user" },
+            { v: "roles", l: "Roles", h: "Only the listed roles" },
+            { v: "users", l: "Users", h: "Only the listed usernames" },
+          ].map((o) => (
+            <span
+              key={o.v}
+              className={`chip ${apprKind === o.v ? "active" : ""}`}
+              onClick={() => setApprKind(o.v)}
+              title={o.h}
+              data-testid={`approval-policy-approvers-${o.v}`}
+            >
+              {o.l}
+            </span>
+          ))}
+        </div>
+        {apprKind !== "anyone" && (
+          <input
+            className="input mono"
+            style={{ width: "100%", marginTop: 6 }}
+            value={apprList}
+            onChange={(e) => setApprList(e.target.value)}
+            placeholder={apprKind === "roles" ? "user, admin" : "alice, bob"}
+            data-testid="approval-policy-approvers-list"
+          />
+        )}
+        {fieldErr("body.approvers")}
+        {fieldErr("body.approvers.kind")}
       </div>
 
       {type === "policy" && (
