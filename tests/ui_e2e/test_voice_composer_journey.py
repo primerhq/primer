@@ -141,8 +141,8 @@ def test_the_mic_is_absent_with_no_stt_provider(
     _drop_stt(base_url)
     wid, sid = _seed_session(base_url, unique_suffix, tmp_path)
     open_session_in_studio(page, console_url, wid, sid)
-    page.wait_for_selector('[data-testid="chat-send-btn"]')
-    assert page.query_selector('[data-testid="chat-mic-btn"]') is None
+    page.wait_for_selector('[data-testid="nv-send"]')
+    assert page.query_selector('[data-testid="nv-mic"]') is None
 
 
 def test_the_speaker_toggle_is_absent_with_no_tts_provider(
@@ -154,8 +154,8 @@ def test_the_speaker_toggle_is_absent_with_no_tts_provider(
     _drop_tts(base_url)
     wid, sid = _seed_session(base_url, unique_suffix, tmp_path)
     open_session_in_studio(page, console_url, wid, sid)
-    page.wait_for_selector('[data-testid="chat-send-btn"]')
-    assert page.query_selector('[data-testid="chat-speaker-toggle"]') is None
+    page.wait_for_selector('[data-testid="nv-send"]')
+    assert page.query_selector('[data-testid="nv-voice-toggle"]') is None
 
 
 def test_the_mic_appears_once_an_stt_provider_is_registered(
@@ -165,6 +165,6 @@ def test_the_mic_appears_once_an_stt_provider_is_registered(
     try:
         wid, sid = _seed_session(base_url, unique_suffix, tmp_path)
         open_session_in_studio(page, console_url, wid, sid)
-        page.wait_for_selector('[data-testid="chat-mic-btn"]')
+        page.wait_for_selector('[data-testid="nv-mic"]')
     finally:
         _drop_stt(base_url)

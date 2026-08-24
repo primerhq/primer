@@ -224,7 +224,7 @@ def test_u0107_graph_builder_persistence_journey(
         ).to_be_visible(timeout=10_000)
 
         # ----- 7. Click "Graphs" breadcrumb → /graphs list ---------
-        page.locator(".crumb a", has_text="Graphs").click()
+        page.get_by_test_id("nv-overlay-crumb").click()
         wait_for_overlay_url(page, "graphs", timeout=10_000)
         expect(page.locator("h1.page-title")).to_have_text(
             "Graphs", timeout=10_000,

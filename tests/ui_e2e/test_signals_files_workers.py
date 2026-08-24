@@ -144,10 +144,10 @@ def test_u0068_steer_queue_renders_submitted_instruction(
 
         # Send the instruction via the Composer — this IS steering now
         # (no dedicated steer button/popover survives on the agent panel).
-        composer = page.locator("textarea[placeholder='Send a message…']")
+        composer = page.get_by_test_id("nv-composer").locator("input")
         expect(composer).to_be_visible(timeout=10_000)
         composer.fill(instruction)
-        page.locator("[data-testid='chat-send-btn']").click()
+        page.get_by_test_id("nv-send").click()
 
         # The steered instruction renders inline in the session transcript
         # (persisted USER_INPUT on wake) — the surviving positive signal
@@ -259,25 +259,14 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
         worker_id = active[0]["id"]
 
     try:
-        page.goto(console_url, wait_until="domcontentloaded")
-        # The worker pill is the .worker-pill element in the topbar.
-        pill = page.locator(".worker-pill").first
-        pill.wait_for(state="visible", timeout=10_000)
-        # Initial state: 1/1 (assuming the harness has a single
-        # active worker — which is what --run-worker produces).
-        # Tolerate any "{n}/{total}" — we want the active part
-        # specifically.
-        initial_text = (pill.text_content() or "").strip()
-        # Format from the console shell:262 is "{activeWorkers}/{totalWorkers || '—'}"
-        # so it should look like "1/1".
-        assert "/" in initial_text, (
-            f"unexpected pill text format: {initial_text!r}"
-        )
-        active_initial, _, total_initial = initial_text.partition("/")
-        active_initial = active_initial.strip()
-        total_initial = total_initial.strip()
-        assert active_initial.isdigit(), (
-            f"active count not numeric: {active_initial!r}"
+        # Re-pointed (flag day): the worker fleet lives on the System
+        # dashboard now, one row per worker with its live status.
+        page.goto(f"{console_url}#/w/primer?view=system:dashboard",
+                  wait_until="domcontentloaded")
+        row = page.get_by_test_id(f"nv-worker:{worker_id}")
+        row.wait_for(state="visible", timeout=15_000)
+        assert "active" in (row.text_content() or ""), (
+            f"expected an active worker row, got {row.text_content()!r}"
         )
 
         # Drain via API.
@@ -285,24 +274,19 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
             r = c.post(f"/v1/workers/{worker_id}/drain")
             assert r.status_code == 204, r.text
 
-        # Pill polls every ~5s; wait up to 15s for the active count
-        # to drop. The total may stay or decrement depending on how
-        # the row counts drained workers.
-        deadline = time.monotonic() + 15.0
-        active_dropped = False
-        final_text = initial_text
+        # The fleet polls every ~8s; wait up to 20s for the row's
+        # status to leave "active" (draining/drained/dead all count).
+        deadline = time.monotonic() + 20.0
+        left_active = False
+        final_text = ""
         while time.monotonic() < deadline:
             page.wait_for_timeout(500)
-            t = (pill.text_content() or "").strip()
-            if "/" in t:
-                a, _, _ = t.partition("/")
-                if a.strip() != active_initial:
-                    final_text = t
-                    active_dropped = True
-                    break
-        assert active_dropped, (
-            f"worker pill active count never dropped after drain; "
-            f"initial={initial_text!r} final={final_text!r}"
+            final_text = (row.text_content() or "")
+            if "active" not in final_text:
+                left_active = True
+                break
+        assert left_active, (
+            f"worker row never reflected the drain; last: {final_text!r}"
         )
     finally:
         # No restore for the drain — the worker stays in draining

@@ -5845,3 +5845,16 @@ button.nv-commit-row { flex-direction: column; align-items: stretch; }
 }
 .nv-session-status[data-status="running"] { color: var(--green); }
 .nv-session-status[data-status="failed"] { color: var(--red); }
+
+/* Graph node filter banner (flag day port): the canvas selection scopes
+   the transcript; the banner names the node and offers the way back. */
+.nv-node-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  font-size: 11.5px;
+}
+.nv-node-filter .nv-mono { font-family: var(--font-mono); }

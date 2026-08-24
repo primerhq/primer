@@ -61,7 +61,7 @@ def _overflow(page: Page) -> dict:
             scrollWidth: de.scrollWidth,
             // The shell itself must never be a culprit.
             topbar: (() => {
-              const e = document.querySelector('.sh-topbar');
+              const e = document.querySelector('.nv-topbar');
               return e ? Math.round(e.getBoundingClientRect().width) : null;
             })(),
             widest: widest.slice(0, 3),

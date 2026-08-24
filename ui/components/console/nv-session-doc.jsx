@@ -373,6 +373,19 @@ function NV_AskCard(props) {
 // lightbox is transient UI that never reaches the URL.
 var NV_ARTIFACT_PREVIEW_LINES = 200;
 
+// A node filter is a view of the same turns, not a different fetch: the
+// canvas selection scopes what the turn list shows and nothing else. A
+// turn that carries no node attribution is graph-level and stays visible
+// at every filter, otherwise selecting a node would hide the run's own
+// start and finish. (Ported from the sh doc on flag day.)
+function NV_scopeToNode(rows, nodeId) {
+  if (!nodeId) return rows;
+  return (rows || []).filter(function (row) {
+    var n = row && (row.node_id || row.node);
+    return !n || n === nodeId;
+  });
+}
+
 function NV_Lightbox(props) {
   React.useEffect(function () {
     function onKey(ev) { if (ev.key === "Escape") props.onClose(); }
@@ -701,6 +714,11 @@ function NV_SessionDoc(props) {
   var graphViewState = React.useState(false);
   var graphView = graphViewState[0];
   var setGraphView = graphViewState[1];
+  // Selecting a node on the graph canvas filters the transcript to it
+  // (and closes the graph overlay so the filtered transcript shows).
+  var nodeFilterState = React.useState(null);
+  var nodeFilter = nodeFilterState[0];
+  var setNodeFilter = nodeFilterState[1];
   var optimisticState = React.useState(null);
   var optimistic = optimisticState[0];
   var setOptimistic = optimisticState[1];
@@ -946,12 +964,24 @@ function NV_SessionDoc(props) {
         onChanged={refetchAll}
         onDeleted={function () { con.setDoc(null); }}
         onExport={exportTranscript} />
+      {nodeFilter ? (
+        <div className="nv-node-filter" data-testid="graph-node-filter">
+          <span>Showing <span className="nv-mono">{nodeFilter}</span> only</span>
+          <span style={{ flex: 1 }} />
+          <button type="button" className="nv-btn-secondary"
+            data-testid="graph-node-filter-clear"
+            title="Show the full transcript (all nodes)"
+            onClick={function () { setNodeFilter(null); }}>All nodes</button>
+        </div>
+      ) : null}
       <div className="nv-transcript-split">
         <div className="nv-transcript" ref={scrollRef}
           data-testid="nv-transcript"
           onScroll={function () { if (decision.follow) setSeen(rows.length); }}>
           <div className="nv-transcript-inner">
-            {rows.map(function (r) { return renderTurn(r, 0); })}
+            {NV_scopeToNode(rows, nodeFilter).map(function (r) {
+              return renderTurn(r, 0);
+            })}
             {pending.map(function (row) {
               var text = (row.parts || [])
                 .filter(function (p) { return p && p.type === "text"; })
@@ -1010,8 +1040,7 @@ function NV_SessionDoc(props) {
           ? "parked — waiting on " + (session.waiting_reason || "a wake")
           : null}
         terminal={NV_sessionIsOver(session)}
-        micEnabled={!!(window.primerApi.capabilities
-          && window.primerApi.capabilities.stt_configured)}
+        micEnabled={!!(con.speech && con.speech.stt_configured)}
         onInterrupt={function () {
           SH_api.interrupt(con.wid, sid).then(refetchAll);
         }}
@@ -1035,6 +1064,10 @@ function NV_SessionDoc(props) {
               <window.SD_GraphRunView gid={graphId} rid={sid} wid={con.wid}
                 session={session}
                 pushToast={window.primerApi.toastPush}
+                onNodeSelect={function (id) {
+                  setNodeFilter(id);
+                  if (id) setGraphView(false);
+                }}
                 hideInspector={true} />
             </div>
           </div>

@@ -265,7 +265,16 @@ def open_provider_catalog(
         else:
             page.goto(f"{console_url}#/w/?overlay={target}")
     else:
-        run_verb(page, "Open Providers Catalog")
+        # The pointer path (flag day): activity bar -> Platform ->
+        # Providers -> the create affordance opens the shared catalog
+        # overlay. An overlay only the URL can reach is one a user
+        # cannot find, which is what this branch checks.
+        expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
+        page.get_by_test_id("nv-go-platform").click()
+        row = page.get_by_test_id("nv-plat-row:providers")
+        expect(row).to_be_visible(timeout=10_000)
+        row.click()
+        page.get_by_test_id("nv-plat-create").click()
     body = page.get_by_test_id("nv-overlay-body")
     expect(body).to_be_visible(timeout=timeout)
     return body
