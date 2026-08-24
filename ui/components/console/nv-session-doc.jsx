@@ -55,9 +55,14 @@ function NV_BindingChip(props) {
     });
   });
   var needle = q.toLowerCase();
-  rows = rows.filter(function (r) {
+  var matched = rows.filter(function (r) {
     return r.name.toLowerCase().indexOf(needle) >= 0;
-  }).slice(0, 20);
+  });
+  // The list stays short - search is the navigation - but a silent cap
+  // read as "that agent is gone" on installs with >20 bindables (BDD
+  // pass 2026-08-24), so truncation now says so.
+  var hidden = Math.max(0, matched.length - 20);
+  rows = matched.slice(0, 20);
 
   return (
     <div className="nv-bind-wrap">
@@ -113,6 +118,11 @@ function NV_BindingChip(props) {
                 </button>
               );
             })}
+            {hidden ? (
+              <div className="nv-bind-note" data-testid="nv-binding-more">
+                {"+" + hidden + " more - type to narrow"}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

@@ -66,22 +66,28 @@ function NV_WorkspaceMenu() {
   return (
     <div className="nv-menu" data-testid="nv-ws-menu"
       onClick={function (ev) { ev.stopPropagation(); }}>
-      {rows.map(function (w) {
-        return (
-          <button type="button" key={w.id} className="nv-menu-row"
-            data-current={w.id === con.wid ? "true" : "false"}
-            data-testid={"nv-ws-row:" + w.id}
-            onClick={function () {
-              con.toggleMenu(null);
-              NV_run(con, "workspace.switch", { wid: w.id });
-            }}>
-            <span style={{ flex: 1, fontWeight: w.id === con.wid ? 600 : 400 }}>
-              {w.label || w.id}
-            </span>
-            <span className="nv-menu-id">{String(w.id).slice(0, 10)}</span>
-          </button>
-        );
-      })}
+      {/* The workspace list scrolls; settings/new stay pinned below.
+          Without the scroll region a long install pushed both action
+          rows off-viewport, and the shell never scrolls, so they were
+          unreachable (BDD pass 2026-08-24). */}
+      <div className="nv-menu-scroll">
+        {rows.map(function (w) {
+          return (
+            <button type="button" key={w.id} className="nv-menu-row"
+              data-current={w.id === con.wid ? "true" : "false"}
+              data-testid={"nv-ws-row:" + w.id}
+              onClick={function () {
+                con.toggleMenu(null);
+                NV_run(con, "workspace.switch", { wid: w.id });
+              }}>
+              <span style={{ flex: 1, fontWeight: w.id === con.wid ? 600 : 400 }}>
+                {w.name || w.label || w.id}
+              </span>
+              <span className="nv-menu-id">{String(w.id).slice(0, 10)}</span>
+            </button>
+          );
+        })}
+      </div>
       <div className="nv-menu-sep" />
       <button type="button" className="nv-menu-row"
         data-testid="nv-ws-settings"
@@ -163,7 +169,7 @@ function NV_Topbar() {
             stroke="var(--text-3)" strokeWidth="1.3">
             <path d="M1.5 3.5 6 1l4.5 2.5v5L6 11 1.5 8.5Z M6 6v5M1.5 3.5 6 6l4.5-2.5" />
           </svg>
-          <span>{(ws && (ws.label || ws.id)) || con.wid || "workspace"}</span>
+          <span>{(ws && (ws.name || ws.label || ws.id)) || con.wid || "workspace"}</span>
           <svg width="9" height="9" viewBox="0 0 10 10" fill="none"
             stroke="var(--text-3)" strokeWidth="1.5">
             <path d="M2 3.5 5 6.5 8 3.5" />

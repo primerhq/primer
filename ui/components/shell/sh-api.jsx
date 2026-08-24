@@ -21,9 +21,25 @@ var SH_api = {
   // ones (id vs session_id; last_turn_at vs last_activity_at), so this
   // seam NORMALIZES to the workspace-scoped shape every consumer already
   // reads - the difference must not leak past this file.
-  allSessions: function (signal) {
+  // Sessions NEWEST-FIRST via /sessions/find (BDD pass 2026-08-24):
+  // the plain GET list is id-ordered, so past 200 rows the cap
+  // silently dropped the NEWEST sessions - the one you just created
+  // vanished from its own sidebar on any busy install. Ordering desc
+  // makes the cap shed the oldest instead, and an optional wid pushes
+  // the workspace filter server-side for the sidebar's feed.
+  allSessions: function (signal, wid) {
+    var body = {
+      predicate: wid ? {
+        kind: "predicate",
+        left: { kind: "field", name: "workspace_id" },
+        op: "=",
+        right: { kind: "value", value: wid },
+      } : null,
+      page: { kind: "offset", offset: 0, length: 200 },
+      order_by: [{ field: "created_at", direction: "desc" }],
+    };
     return window.primerApi.apiFetch(
-      "GET", "/sessions?limit=200", null, { signal: signal }
+      "POST", "/sessions/find", body, { signal: signal }
     ).then(function (out) {
       var items = ((out && out.items) || []).map(function (r) {
         return Object.assign({}, r, {

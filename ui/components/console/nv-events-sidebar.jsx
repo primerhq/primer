@@ -39,9 +39,17 @@ function NV_EventsSidebar() {
   var setLocked = lockedState[1];
   var bodyRef = React.useRef(null);
 
-  // Streaming config on the workspace row.
+  // Streaming config on the workspace row. The row rides the 15s
+  // workspace poll, so an optimistic override keeps the checkbox honest
+  // between the click and the next poll (BDD pass 2026-08-24: without
+  // it the box visually snapped back for up to 15s after toggling).
   var ws = (con.workspaces || []).find(function (w) { return w.id === con.wid; });
-  var streaming = !!(ws && ws.events && ws.events.enabled);
+  var optimisticState = React.useState(null);
+  var optimistic = optimisticState[0];
+  var setOptimistic = optimisticState[1];
+  var streaming = optimistic != null
+    ? optimistic
+    : !!(ws && ws.events && ws.events.enabled);
 
   React.useEffect(function () {
     var stop = false;
@@ -94,11 +102,19 @@ function NV_EventsSidebar() {
           <input type="checkbox" checked={streaming}
             data-testid="nv-events-optin"
             onChange={function (ev) {
-              SH_api.setWorkspaceEvents(con.wid, ev.target.checked).then(
-                function () { con.toast(ev.target.checked
+              // Read the target SYNCHRONOUSLY: inside the .then the
+              // pooled synthetic event is recycled and the toast said
+              // "on" while actually disabling (BDD pass 2026-08-24).
+              var next = ev.target.checked;
+              setOptimistic(next);
+              SH_api.setWorkspaceEvents(con.wid, next).then(
+                function () { con.toast(next
                   ? "Workspace event streaming on"
                   : "Workspace event streaming off"); },
-                function (err) { con.toast("Toggle failed: " + err.message); }
+                function (err) {
+                  setOptimistic(null);
+                  con.toast("Toggle failed: " + err.message);
+                }
               );
             }} />
           stream

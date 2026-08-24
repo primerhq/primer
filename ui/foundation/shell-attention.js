@@ -77,9 +77,18 @@ function SH_toAttentionItems(input) {
       toolName: SH_yieldKind(row),
       kind: SH_yieldKind(row) === "ask_user" ? "question" : "approval",
       title: SH_titleOf(row),
-      // The route sends the human-facing text as ``prompt``; the older
-      // resume_metadata blob is still read when one is present.
-      preview: SH_previewOf(row.resume_metadata || { prompt: row.prompt }),
+      // Kind decides the preview source (BDD pass 2026-08-24): a
+      // QUESTION shows its prompt - the human-facing text - while an
+      // approval shows the literal gated call from resume_metadata.
+      // (Feeding resume_metadata first for both let the call shadow
+      // the question the moment the route began carrying it.)
+      preview: SH_previewOf(
+        SH_yieldKind(row) === "ask_user"
+          ? { prompt: row.prompt || (row.resume_metadata || {}).prompt }
+          : (row.resume_metadata && row.resume_metadata.original_call
+            ? row.resume_metadata
+            : { prompt: row.prompt })
+      ),
       at: row.parked_at || row.yielded_at,
       resolved: false,
       // Stamped by the cross-workspace fan-out so the Inbox can jump

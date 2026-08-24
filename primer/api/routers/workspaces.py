@@ -54,6 +54,7 @@ from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.api.registries import WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
 from primer.api.routers._crud import make_crud_router
+from primer.api.routers._references import ReferenceCheck
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
 from primer.model.except_ import (
     ConfigError,
@@ -361,6 +362,16 @@ async def _reject_reserved_workspace_provider_update(
         )
 
 
+# ReferenceCheck.child_storage takes the raw Request (the FastAPI deps
+# above are Depends-shaped and receive a StorageProvider instead).
+def _ref_template_storage(request: Request):
+    return get_storage_provider(request).get_storage(WorkspaceTemplate)
+
+
+def _ref_workspace_storage(request: Request):
+    return get_storage_provider(request).get_storage(WorkspaceRow)
+
+
 provider_router = make_crud_router(
     model_cls=WorkspaceProvider,
     storage_dep=get_workspace_provider_storage,
@@ -370,6 +381,22 @@ provider_router = make_crud_router(
     on_pre_create=_reject_reserved_workspace_provider_create,
     on_pre_update=_reject_reserved_workspace_provider_update,
     on_pre_delete_id=_reject_reserved_workspace_provider_delete,
+    # Found by the 2026-08-24 BDD pass: deleting a provider that a
+    # template (or a materialized workspace) still referenced answered
+    # 204 and left every dependent workspace unable to even create a
+    # session (the resolve 404s). Referenced entities refuse deletion.
+    references=[
+        ReferenceCheck(
+            child_kind="workspace_template",
+            child_storage=_ref_template_storage,
+            child_field="provider_id",
+        ),
+        ReferenceCheck(
+            child_kind="workspace",
+            child_storage=_ref_workspace_storage,
+            child_field="provider_id",
+        ),
+    ],
 )
 
 
@@ -453,6 +480,15 @@ template_router = make_crud_router(
     on_pre_create=_reject_reserved_workspace_template_create,
     on_pre_update=_reject_reserved_workspace_template_update,
     on_pre_delete_id=_reject_reserved_workspace_template_delete,
+    # Same BDD finding as the provider router above: a template a
+    # materialized workspace still references must refuse deletion.
+    references=[
+        ReferenceCheck(
+            child_kind="workspace",
+            child_storage=_ref_workspace_storage,
+            child_field="template_id",
+        ),
+    ],
 )
 
 
@@ -2311,6 +2347,12 @@ async def list_pending_yields(
                     "parked_at": parked_at,
                     # Who may decide (P6 approver routing); None = anyone.
                     "approvers": metadata.get("approvers"),
+                    # The literal gated call, so the decision card can
+                    # show the command being judged (design section 8:
+                    # never a free-text question). BDD pass 2026-08-24.
+                    "resume_metadata": {
+                        "original_call": metadata.get("original_call"),
+                    },
                 }
             )
         if len(resp.items) < page_size:
@@ -2360,6 +2402,10 @@ async def list_session_pending_yields(
             ),
             # Who may decide (P6 approver routing); None = anyone.
             "approvers": metadata.get("approvers"),
+            # The literal gated call (see the aggregated route above).
+            "resume_metadata": {
+                "original_call": metadata.get("original_call"),
+            },
         })
     return {"items": items}
 

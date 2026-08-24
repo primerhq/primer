@@ -3069,6 +3069,10 @@ input, textarea, select { font: inherit; color: inherit; }
   z-index: 60;
   animation: nv-pop-in 0.14s ease-out;
 }
+.nv-menu-scroll {
+  max-height: 45vh;
+  overflow-y: auto;
+}
 .nv-menu-row {
   display: flex;
   align-items: center;

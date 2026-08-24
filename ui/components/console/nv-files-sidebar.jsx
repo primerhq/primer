@@ -187,8 +187,11 @@ function NV_FilesSidebar() {
     });
   }
 
-  function openFile(entry) {
+  function openFile(entry, promote) {
     con.setDoc({ kind: "file", ref: entry.path });
+    // VS Code tab semantics (BDD pass 2026-08-24): double-click
+    // promotes the preview to a permanent tab, same as session rows.
+    if (promote && con.promoteDoc) con.promoteDoc("file:" + entry.path);
   }
 
   function row(entry, depth) {
@@ -209,8 +212,11 @@ function NV_FilesSidebar() {
                 return next;
               });
             } else {
-              openFile(entry);
+              openFile(entry, false);
             }
+          }}
+          onDoubleClick={function () {
+            if (!entry.is_dir) openFile(entry, true);
           }}
           onContextMenu={function (ev) {
             ev.preventDefault();
