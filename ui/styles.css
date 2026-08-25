@@ -4457,24 +4457,45 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-pcard-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 12px;
 }
 .nv-pcard {
   border: 1px solid var(--border);
   border-radius: var(--r-8);
   background: var(--bg-1);
-  padding: 12px 13px;
+  padding: 14px 16px 10px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
+  min-height: 118px;
+  transition: border-color 0.12s ease, background 0.12s ease,
+    transform 0.12s ease;
 }
-.nv-pcard:hover { border-color: var(--accent-border); }
+.nv-pcard:hover {
+  border-color: var(--accent-border);
+  background: var(--bg-hover);
+  transform: translateY(-1px);
+}
+.nv-pcard:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.nv-pcard-status {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.nv-pcard-status[data-tone="ok"] { color: var(--green); }
+.nv-pcard-status[data-tone="warn"] { color: var(--attention); }
 .nv-pcard-head { display: flex; align-items: center; gap: 8px; }
 .nv-pcard-name {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 13.5px;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -4486,12 +4507,14 @@ input, textarea, select { font: inherit; color: inherit; }
   white-space: nowrap;
 }
 .nv-pcard-sub {
-  font-size: 11px;
+  font-size: 11.5px;
+  line-height: 1.45;
   color: var(--text-3);
-  font-family: var(--font-mono);
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+  min-height: 2.6em;
 }
 .nv-pcard-facts { display: flex; flex-direction: column; gap: 3px; }
 .nv-fact-row { display: flex; gap: 10px; font-size: 11.5px; }
@@ -4503,8 +4526,13 @@ input, textarea, select { font: inherit; color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.nv-pcard-foot { display: flex; gap: 6px; margin-top: 2px; align-items: center; }
-.nv-pcard-open { font-size: 11px; color: var(--accent); }
+.nv-pcard-foot {
+  display: flex; gap: 6px; align-items: center;
+  margin-top: auto; padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.nv-pcard-open { font-size: 11px; color: var(--accent); opacity: 0.55; transition: opacity 0.12s ease; }
+.nv-pcard:hover .nv-pcard-open { opacity: 1; }
 .nv-pcard-del {
   border: none;
   background: transparent;
@@ -4827,3 +4855,86 @@ button.nv-commit-row { flex-direction: column; align-items: stretch; }
   font-size: 11.5px;
 }
 .nv-node-filter .nv-mono { font-family: var(--font-mono); }
+
+/* ---------------------------------------------------------------------
+   Platform inline modal forms (profiles, templates) - labels above
+   fields, full-width controls, help under the control, error by the
+   field. (ui-ux pass 2026-08-26)
+   ------------------------------------------------------------------ */
+.nv-modal-form { display: flex; flex-direction: column; gap: 14px; }
+.nv-mf-field { display: flex; flex-direction: column; gap: 5px; }
+.nv-mf-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.nv-mf-field input,
+.nv-mf-field select,
+.nv-mf-field textarea {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-6);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+}
+.nv-mf-field input:focus,
+.nv-mf-field select:focus,
+.nv-mf-field textarea:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+.nv-mf-mono { font-family: var(--font-mono) !important; font-size: 12px !important; }
+.nv-mf-help { font-size: 11px; color: var(--text-4); line-height: 1.45; }
+
+/* ---------------------------------------------------------------------
+   Legacy surfaces inside the console overlay: one form language.
+   Labels sit ABOVE their control, controls stretch, help reads under
+   the control, and section groups breathe - the inline label + input
+   crumble was the worst-reviewed screen in the console (ui-ux pass
+   2026-08-26). Scoped so nothing leaks outside the overlay host.
+   ------------------------------------------------------------------ */
+.nv-legacy-host .field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  margin-bottom: 14px;
+}
+.nv-legacy-host .field-label,
+.nv-legacy-host .field > label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.nv-legacy-host .field input,
+.nv-legacy-host .field select,
+.nv-legacy-host .field textarea,
+.nv-legacy-host .field .input {
+  width: 100%;
+  max-width: 560px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.nv-legacy-host .field-help {
+  font-size: 11px;
+  color: var(--text-4);
+  line-height: 1.5;
+  max-width: 560px;
+}
+.nv-legacy-host .limits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  padding: 12px 14px;
+  max-width: 560px;
+}

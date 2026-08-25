@@ -20,6 +20,8 @@ var NV_PLAT_ICONS = {
   toolsets: "M9.8 1.8a3 3 0 0 0-3.4 4L2 10.2 3.8 12l4.4-4.4a3 3 0 0 0 "
     + "4-3.4L10 6.4 7.6 4Z",
   collections: "M3.5 1.5h7v11h-5.5a1.5 1.5 0 0 0-1.5 1.5Z M3.5 1.5V14",
+  tools: "M5.5 2.5h3v9h-3Z M2 5.5h3 M9 5.5h3 M2 8.5h3 M9 8.5h3",
+  templates: "M2 2h10v3H2Z M2 6.5h4.5V12H2Z M8 6.5h4V12H8Z",
   triggers: "M8 1 3 8h3.5L6 13l5-7H7.5Z",
   channels: "M2 2.5h10v7H6L3 12V9.5H2Z",
   harnesses: "M4 4.2a1.4 1.4 0 1 0 0-.01 M4 11.2a1.4 1.4 0 1 0 0-.01 "
@@ -33,7 +35,8 @@ var NV_PLAT_ICONS = {
 
 var NV_PLAT_GROUPS = [
   { label: "Intelligence", ids: ["providers", "profiles", "agents", "graphs"] },
-  { label: "Workbench", ids: ["workspaces", "toolsets", "collections"] },
+  { label: "Workbench",
+    ids: ["workspaces", "templates", "toolsets", "tools", "collections"] },
   { label: "Automation", ids: ["triggers", "channels", "harnesses", "services"] },
   { label: "Governance", ids: ["approvals"] },
 ];
@@ -76,16 +79,25 @@ var NV_PLAT_PAGES = {
     card: function (row) {
       return {
         name: row.id,
-        sub: [row.provider_id, row.model].filter(Boolean).join(" · "),
+        sub: [row.provider_id, row.model_name || row.model]
+          .filter(Boolean).join(" · "),
         chip: null,
         facts: [
-          NV_fact("reasoning", row.reasoning_effort || row.reasoning),
-          NV_fact("max tokens", row.max_tokens),
+          NV_fact("context", row.context_length),
+          NV_fact("reasoning",
+            (row.config && row.config.reasoning) || row.reasoning),
         ],
       };
     },
-    open: function (con) { con.openOverlay("providers", "llm", null); },
-    create: function (con) { con.openOverlay("providers", "llm", null); },
+    // The profile form is its OWN modal (MP_ProfileModal): opening the
+    // Providers overlay for a profile action was a straight mis-route
+    // (live finding 2026-08-26).
+    open: function (con, row, setModal) {
+      setModal({ kind: "profile", row: row });
+    },
+    create: function (con, setModal) {
+      setModal({ kind: "profile", row: null });
+    },
     delPath: function (row) { return "/model_profiles/" + encodeURIComponent(row.id); },
   },
   agents: {
@@ -109,7 +121,10 @@ var NV_PLAT_PAGES = {
       };
     },
     open: function (con, row) { con.openOverlay("agents", null, row.id); },
-    create: function (con) { con.openOverlay("agents", null, null); },
+    // Section "new" tells the surface to open its create form
+    // IMMEDIATELY - landing the operator on the list with a second
+    // "new" button was a two-step detour (live finding 2026-08-26).
+    create: function (con) { con.openOverlay("agents", "new", null); },
     delPath: function (row) { return "/agents/" + encodeURIComponent(row.id); },
   },
   graphs: {
@@ -129,7 +144,7 @@ var NV_PLAT_PAGES = {
       };
     },
     open: function (con, row) { con.openOverlay("graphs", null, row.id); },
-    create: function (con) { con.openOverlay("graphs", null, null); },
+    create: function (con) { con.openOverlay("graphs", "new", null); },
     delPath: function (row) { return "/graphs/" + encodeURIComponent(row.id); },
   },
   workspaces: {
@@ -154,13 +169,21 @@ var NV_PLAT_PAGES = {
   },
   toolsets: {
     title: "Toolsets", createLabel: "New toolset",
+    // GET /tools is the CATALOGUE: built-ins (system, workspaces, web,
+    // ...) and registered rows alike. Listing only the DB table hid
+    // every internal toolset from the cards (live finding 2026-08-26).
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/toolsets?limit=200", null, { signal: signal });
+      return apiFetch("GET", "/tools", null, { signal: signal });
     },
     card: function (row) {
       return {
-        name: row.id, sub: row.description || "",
-        chip: row.kind ? { label: row.kind, color: "var(--text-3)" } : null,
+        name: row.id, sub: row.tagline || row.description || "",
+        chip: row.builtin
+          ? { label: "built-in", color: "var(--blue)" }
+          : { label: row.kind || "registered", color: "var(--text-3)" },
+        status: row.available === false
+          ? { label: "unavailable", tone: "warn" }
+          : { label: "available", tone: "ok" },
         facts: [
           NV_fact("tools", NV_countOf(row.tools)),
           NV_fact("source", row.source || row.transport),
@@ -169,9 +192,63 @@ var NV_PLAT_PAGES = {
     },
     open: function (con, row) { con.openOverlay("toolsets", null, row.id); },
     create: function (con) { con.openOverlay("toolsets", null, null); },
-    delPath: function (row) { return "/toolsets/" + encodeURIComponent(row.id); },
-    // The flat tool catalog is its own overlay; this is its affordance.
-    extraNav: { label: "Tool catalog", run: function (con) { con.openOverlay("tools", null, null); } },
+    // A built-in ships with the platform; only registered rows delete.
+    delPath: function (row) {
+      return row.builtin ? null
+        : "/toolsets/" + encodeURIComponent(row.id);
+    },
+  },
+  tools: {
+    title: "Tools",
+    // Flat catalogue of every tool on the install, searchable and
+    // paged like any platform page. Approval policies point here.
+    list: function (apiFetch, signal) {
+      return apiFetch("GET", "/tools/catalogue", null, { signal: signal });
+    },
+    card: function (row) {
+      var scoped = String(row.id || "");
+      var sep = scoped.indexOf("__");
+      var toolset = sep > 0 ? scoped.slice(0, sep) : "";
+      var bare = sep > 0 ? scoped.slice(sep + 2) : scoped;
+      var desc = String(row.description || "").split("\n")[0];
+      return {
+        name: bare, sub: desc, _key: scoped,
+        chip: toolset ? { label: toolset, color: "var(--violet)" } : null,
+        facts: [NV_fact("scoped id", scoped)],
+      };
+    },
+    open: function (con, row) {
+      var sep = String(row.id || "").indexOf("__");
+      con.openOverlay("toolsets", null,
+        sep > 0 ? String(row.id).slice(0, sep) : null);
+    },
+  },
+  templates: {
+    title: "Workspace templates", createLabel: "New template",
+    list: function (apiFetch, signal) {
+      return apiFetch("GET", "/workspace_templates?limit=200", null,
+        { signal: signal });
+    },
+    card: function (row) {
+      var backend = (row.backend && row.backend.kind) || "local";
+      return {
+        name: row.id, sub: row.description || "",
+        chip: { label: backend, color: "var(--teal)" },
+        facts: [
+          NV_fact("provider", row.provider_id),
+          NV_fact("image", row.backend && row.backend.image),
+        ],
+      };
+    },
+    open: function (con, row, setModal) {
+      setModal({ kind: "template", row: row });
+    },
+    create: function (con, setModal) {
+      setModal({ kind: "template", row: null });
+    },
+    delPath: function (row) {
+      return "/workspace_templates/" + encodeURIComponent(row.id);
+    },
   },
   collections: {
     title: "Collections", createLabel: "New collection",
@@ -181,16 +258,21 @@ var NV_PLAT_PAGES = {
     card: function (row) {
       return {
         name: row.id, sub: row.description || "",
-        chip: null,
+        chip: row.system
+          ? { label: "system", color: "var(--blue)" } : null,
         facts: [
           NV_fact("documents", NV_countOf(row.documents || row.doc_count)),
-          NV_fact("embedding", row.embedding_provider_id),
+          NV_fact("search", row.search
+            ? "enabled" : (row.search === null ? "disabled" : row.search)),
         ],
       };
     },
     open: function (con, row) { con.openOverlay("collections", null, row.id); },
     create: function (con) { con.openOverlay("collections", null, null); },
-    delPath: function (row) { return "/collections/" + encodeURIComponent(row.id); },
+    delPath: function (row) {
+      return row.system ? null
+        : "/collections/" + encodeURIComponent(row.id);
+    },
   },
   triggers: {
     title: "Triggers", createLabel: "New trigger",
@@ -353,6 +435,11 @@ function NV_PlatCard(props) {
         ) : null}
         <span className="nv-pcard-name">{c.name}</span>
         <span style={{ flex: 1 }} />
+        {c.status ? (
+          <span className="nv-pcard-status" data-tone={c.status.tone}>
+            {c.status.label}
+          </span>
+        ) : null}
         {c.chip ? (
           <span className="nv-pcard-chip" style={{ color: c.chip.color }}>
             {c.chip.label}
@@ -384,6 +471,134 @@ function NV_PlatCard(props) {
         ) : null}
       </div>
     </div>
+  );
+}
+
+// Model-profile create/edit, inline on the platform page. The form is
+// MP_ProfileModal (model-profiles.jsx); this host only feeds it the
+// provider list it needs.
+function NV_ProfileModalHost(props) {
+  var providers = window.primerApi.useResource(
+    "nv-plat:llm-providers",
+    function (signal) {
+      return window.primerApi.apiFetch(
+        "GET", "/llm_providers?limit=200", null, { signal: signal });
+    },
+    { pollMs: 0 }
+  );
+  if (typeof window.MP_ProfileModal !== "function") return null;
+  return (
+    <window.MP_ProfileModal open
+      existing={props.row || null}
+      providers={(providers.data && providers.data.items) || []}
+      onClose={props.onClose}
+      onSaved={props.onSaved} />
+  );
+}
+
+// Workspace-template create/edit. Until now templates had NO page at
+// all (live finding 2026-08-26): id + description + provider are
+// first-class fields, the backend spec stays JSON for everything the
+// schema can express.
+function NV_TemplateModal(props) {
+  var apiFetch = window.primerApi.apiFetch;
+  var row = props.row || null;
+  var isEdit = !!row;
+  var idState = React.useState(row ? row.id : "");
+  var descState = React.useState((row && row.description) || "");
+  var provState = React.useState((row && row.provider_id) || "");
+  var backendState = React.useState(JSON.stringify(
+    (row && row.backend) || { kind: "local" }, null, 2));
+  var errState = React.useState(null);
+  var busyState = React.useState(false);
+  var providers = window.primerApi.useResource(
+    "nv-plat:ws-providers",
+    function (signal) {
+      return apiFetch("GET", "/workspace_providers?limit=200", null,
+        { signal: signal });
+    },
+    { pollMs: 0 }
+  );
+  var provItems = (providers.data && providers.data.items) || [];
+  React.useEffect(function () {
+    if (!provState[0] && provItems.length) provState[1](provItems[0].id);
+  }, [provItems.length]);
+
+  function save() {
+    var backend;
+    try {
+      backend = JSON.parse(backendState[0] || "{}");
+    } catch (e) {
+      errState[1]("Backend spec is not valid JSON: " + e.message);
+      return;
+    }
+    var body = {
+      id: idState[0], description: descState[0],
+      provider_id: provState[0], backend: backend,
+    };
+    busyState[1](true);
+    errState[1](null);
+    var call = isEdit
+      ? apiFetch("PUT", "/workspace_templates/"
+        + encodeURIComponent(row.id), body)
+      : apiFetch("POST", "/workspace_templates", body);
+    call.then(props.onSaved, function (e) {
+      busyState[1](false);
+      errState[1](e.detail || e.message);
+    });
+  }
+
+  return (
+    <Modal
+      title={isEdit ? "Edit template · " + row.id : "New workspace template"}
+      onClose={props.onClose}
+      footer={
+        <React.Fragment>
+          <Btn kind="ghost" onClick={props.onClose}>Cancel</Btn>
+          <Btn kind="primary" onClick={save} disabled={busyState[0]}
+            data-testid="template-save">
+            {busyState[0] ? "Saving…" : isEdit ? "Save template" : "Create template"}
+          </Btn>
+        </React.Fragment>
+      }>
+      <div className="nv-modal-form" data-testid="template-form">
+        <label className="nv-mf-field">
+          <span className="nv-mf-label">id</span>
+          <input value={idState[0]} disabled={isEdit}
+            data-testid="template-id"
+            placeholder="my-template"
+            onChange={function (ev) { idState[1](ev.target.value); }} />
+        </label>
+        <label className="nv-mf-field">
+          <span className="nv-mf-label">description</span>
+          <input value={descState[0]}
+            placeholder="What workspaces from this template are for"
+            onChange={function (ev) { descState[1](ev.target.value); }} />
+        </label>
+        <label className="nv-mf-field">
+          <span className="nv-mf-label">workspace provider</span>
+          <select value={provState[0]}
+            onChange={function (ev) { provState[1](ev.target.value); }}>
+            {provItems.map(function (p) {
+              return <option key={p.id} value={p.id}>{p.id}</option>;
+            })}
+          </select>
+        </label>
+        <label className="nv-mf-field">
+          <span className="nv-mf-label">backend spec (JSON)</span>
+          <textarea rows={8} value={backendState[0]} spellCheck={false}
+            className="nv-mf-mono"
+            onChange={function (ev) { backendState[1](ev.target.value); }} />
+          <span className="nv-mf-help">
+            {"{\"kind\": \"local\"} runs on the server's disk; a "
+              + "kubernetes backend names image, resources and pvc."}
+          </span>
+        </label>
+        {errState[0] ? (
+          <div className="nv-form-error">{errState[0]}</div>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 
@@ -444,7 +659,14 @@ function NV_PlatPage() {
   var pageState = React.useState(0);
   var pageNo = pageState[0];
   var setPageNo = pageState[1];
-  React.useEffect(function () { setQ(""); setPageNo(0); }, [nav]);
+  // Inline create/edit modal for entities whose form is a component of
+  // its own (model profiles, workspace templates): {kind, row}.
+  var modalState = React.useState(null);
+  var modal = modalState[0];
+  var setModal = modalState[1];
+  React.useEffect(function () {
+    setQ(""); setPageNo(0); setModal(null);
+  }, [nav]);
 
   var page = NV_PLAT_PAGES[nav] || null;
   var provClass = NV_PROV_CLASSES.find(function (c) { return c.key === fam; });
@@ -492,7 +714,11 @@ function NV_PlatPage() {
 
   function openRow(row) {
     if (isProviders) con.openOverlay("providers", fam, row.id || null);
-    else page.open(con, row);
+    else page.open(con, row, setModal);
+  }
+  function runCreate() {
+    if (isProviders) con.openOverlay("providers", fam, null);
+    else if (page.create) page.create(con, setModal);
   }
   function del(row) {
     var path = isProviders
@@ -544,12 +770,11 @@ function NV_PlatPage() {
               data-testid="nv-plat-filter"
               onChange={function (ev) { setQ(ev.target.value); setPageNo(0); }} />
           </div>
-          <button type="button" className="nv-btn-primary"
-            data-testid="nv-plat-create"
-            onClick={function () {
-              if (isProviders) con.openOverlay("providers", fam, null);
-              else page.create(con);
-            }}>{createLabel}</button>
+          {createLabel ? (
+            <button type="button" className="nv-btn-primary"
+              data-testid="nv-plat-create"
+              onClick={runCreate}>{createLabel}</button>
+          ) : null}
         </div>
         {isProviders ? (
           <div className="nv-fam-pills" data-testid="nv-plat-fams">
@@ -573,22 +798,34 @@ function NV_PlatPage() {
         {!visible.length && !res.loading && !res.error ? (
           <div className="nv-plat-empty" data-testid="nv-plat-empty">
             <div>Nothing here yet.</div>
-            <button type="button" className="nv-btn-primary"
-              onClick={function () {
-                if (isProviders) con.openOverlay("providers", fam, null);
-                else page.create(con);
-              }}>{createLabel}</button>
+            {createLabel ? (
+              <button type="button" className="nv-btn-primary"
+                onClick={runCreate}>{createLabel}</button>
+            ) : null}
           </div>
         ) : null}
         <div className="nv-pcard-grid">
           {visible.map(function (c) {
+            var deletable = isProviders
+              || (page.delPath && page.delPath(c._row));
             return (
-              <NV_PlatCard key={c.name} card={c}
+              <NV_PlatCard key={c._key || c.name} card={c}
                 onOpen={function () { openRow(c._row); }}
-                onDelete={function () { del(c._row); }} />
+                onDelete={deletable
+                  ? function () { del(c._row); } : null} />
             );
           })}
         </div>
+        {modal && modal.kind === "profile" ? (
+          <NV_ProfileModalHost row={modal.row}
+            onClose={function () { setModal(null); }}
+            onSaved={function () { setModal(null); res.refetch(); }} />
+        ) : null}
+        {modal && modal.kind === "template" ? (
+          <NV_TemplateModal row={modal.row}
+            onClose={function () { setModal(null); }}
+            onSaved={function () { setModal(null); res.refetch(); }} />
+        ) : null}
         {cards.length > NV_PLAT_PAGE_SIZE ? (
           <div className="nv-pager">
             <span className="nv-pager-range">

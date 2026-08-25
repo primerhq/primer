@@ -640,6 +640,7 @@ var NV_OVERLAY_MOUNTS = {
       return (
         <window.AgentsPage
           pushToast={window.primerApi.toastPush}
+          startCreate={state.section === "new"}
           onOpen={function (aid) {
             shell.openOverlay("agents", null, aid);
           }}
@@ -660,6 +661,7 @@ var NV_OVERLAY_MOUNTS = {
       return (
         <window.GraphsPage
           pushToast={window.primerApi.toastPush}
+          startCreate={state.section === "new"}
           onOpen={function (gid) {
             shell.openOverlay("graphs", null, gid);
           }}
@@ -702,9 +704,12 @@ var NV_OVERLAY_MOUNTS = {
       return (
         <window.ApprovalsPage
           pushToast={window.primerApi.toastPush}
-          onNavigate={function (_page, sid) {
+          onNavigate={function (page, sid) {
             if (sid) {
               shell.openDoc({ kind: "session", ref: sid, preview: false });
+            } else if (page === "tools") {
+              // "Configure gates on the Tools page" - a real page now.
+              shell.openOverlay("tools", null, null);
             }
           }}
         />
@@ -872,16 +877,17 @@ function NV_LegacyOverlay(props) {
   return (
     <NV_OverlayPanel title={NV_overlayTitle(overlay)} wide
       testid={"nv-overlay:" + name} onClose={con.closeOverlay}>
-      {overlay.section || overlay.id ? (
-        <div className="nv-overlay-crumb">
-          <a data-testid="nv-overlay-crumb"
-            onClick={function () { con.openOverlay(name, null, null); }}>
-            {NV_OVERLAY_TITLES[name] || name}
-          </a>
-          <span className="nv-crumb-sep">/</span>
-          <span>{NV_overlayTitle(overlay)}</span>
-        </div>
-      ) : null}
+      {(overlay.section || overlay.id)
+        && NV_overlayTitle(overlay) !== (NV_OVERLAY_TITLES[name] || name) ? (
+          <div className="nv-overlay-crumb">
+            <a data-testid="nv-overlay-crumb"
+              onClick={function () { con.openOverlay(name, null, null); }}>
+              {NV_OVERLAY_TITLES[name] || name}
+            </a>
+            <span className="nv-crumb-sep">/</span>
+            <span>{NV_overlayTitle(overlay)}</span>
+          </div>
+        ) : null}
       <div className="nv-legacy-host">
         {mount.render(overlay, adapter)}
       </div>

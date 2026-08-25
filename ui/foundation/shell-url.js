@@ -91,9 +91,9 @@ function SH_parseDoc(raw) {
 var SH_VIEWS = {
   studio: [],
   platform: [
-    "providers", "profiles", "toolsets", "collections", "workspaces",
-    "agents", "graphs", "triggers", "channels", "harnesses",
-    "services", "approvals",
+    "providers", "profiles", "toolsets", "tools", "collections",
+    "workspaces", "templates", "agents", "graphs", "triggers",
+    "channels", "harnesses", "services", "approvals",
   ],
   system: [
     "dashboard", "users", "apikeys", "sso", "mcp", "internal",

@@ -45,7 +45,7 @@ function _agToastErr(pushToast, fallbackTitle) {
 // Agents list page
 // ============================================================================
 
-function AgentsPage({ onOpen, pushToast }) {
+function AgentsPage({ onOpen, pushToast, startCreate }) {
   const { useResource, useRouter, useViewport, apiFetch, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
@@ -53,6 +53,11 @@ function AgentsPage({ onOpen, pushToast }) {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [textFilter, setTextFilter] = React.useState("");
   const filterFocused = React.useRef(false);
+  // "New agent" from the platform page opens the form DIRECTLY -
+  // landing on this list with a second button was a two-step detour.
+  React.useEffect(() => {
+    if (startCreate) setCreateOpen(true);
+  }, [startCreate]);
 
   // Server-side offset pagination (bug #19). The text filter is applied
   // client-side over the current page, so typing snaps back to page 0.

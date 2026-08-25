@@ -236,7 +236,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
 // GraphsPage — list, wired to /graphs?limit=200
 // ============================================================================
 
-function GraphsPage({ onOpen, pushToast }) {
+function GraphsPage({ onOpen, pushToast, startCreate }) {
   const { useViewport, usePagedList, Pager } = window.primerApi;
   const apiFetch = window.primerApi.apiFetch;
   const { isMobile } = useViewport();
@@ -274,6 +274,10 @@ function GraphsPage({ onOpen, pushToast }) {
   }, [list.data]);
 
   const [createOpen, setCreateOpen] = React.useState(false);
+  // "New graph" from the platform page opens the form DIRECTLY.
+  React.useEffect(() => {
+    if (startCreate) setCreateOpen(true);
+  }, [startCreate]);
 
   return (
     <div className="col" style={{ gap: 14 }}>
