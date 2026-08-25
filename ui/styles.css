@@ -4938,3 +4938,79 @@ button.nv-commit-row { flex-direction: column; align-items: stretch; }
   padding: 12px 14px;
   max-width: 560px;
 }
+
+/* ---------------------------------------------------------------------
+   Provider catalog rail: a real sidebar - icon + label rows, active
+   pill, section head - instead of bare text links (ui-ux pass
+   2026-08-26).
+   ------------------------------------------------------------------ */
+.pc-rail {
+  border-right: 1px solid var(--border);
+  padding: 4px 10px 4px 2px;
+  align-self: stretch;
+}
+.pc-rail-head {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  padding: 4px 10px 6px;
+}
+.pc-rail-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border-radius: var(--r-6);
+  font-size: 12.5px;
+  color: var(--text-3);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.pc-rail-item:hover { background: var(--bg-hover); color: var(--text); }
+.pc-rail-item.selected {
+  background: var(--bg-2);
+  color: var(--accent);
+  font-weight: 600;
+}
+.pc-rail-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.pc-rail-icon { flex-shrink: 0; opacity: 0.85; }
+
+/* Workspace events: a row EXPANDS to its full envelope - actor,
+   entity, correlation and the raw payload - a one-line type + id was
+   unactionable (live finding 2026-08-26). */
+.nv-event-row { cursor: pointer; }
+.nv-event-row:hover { background: var(--bg-hover); }
+.nv-event-caret {
+  font-size: 8px; color: var(--text-4); flex-shrink: 0;
+  width: 10px; text-align: center;
+}
+.nv-event-detail-block {
+  margin: 2px 8px 8px 24px;
+  padding: 7px 9px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+}
+.nv-event-kv { display: flex; gap: 8px; }
+.nv-event-kv .k {
+  color: var(--text-4); font-family: var(--font-mono);
+  font-size: 10px; width: 74px; flex-shrink: 0;
+}
+.nv-event-kv .v {
+  color: var(--text-2, var(--text));
+  overflow-wrap: anywhere; min-width: 0;
+}
+.nv-event-payload {
+  margin: 0; padding: 6px 8px; border-radius: var(--r-6);
+  background: var(--bg-2); color: var(--text-2, var(--text));
+  font-size: 10.5px; white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow-y: auto;
+}

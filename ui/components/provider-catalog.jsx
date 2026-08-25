@@ -39,9 +39,26 @@ const PROVIDER_CLASSES = [
     detail: () => window.ChannelProviderDetail },
 ];
 
+// One glyph per provider class, same 12x12 stroke language as the
+// platform nav (ui-ux pass 2026-08-26: the rail was bare text links).
+const PC_CLASS_ICONS = {
+  llm: "M2 4.5 7 2l5 2.5-5 2.5Z M2 7l5 2.5L12 7 M2 9.5 7 12l5-2.5",
+  embedding: "M2 10h2.2V6.5H2Z M5.4 10h2.2V3H5.4Z M8.8 10H11V5H8.8Z M2 12h9",
+  cross_encoder: "M2 3.5h6.5 M5.5 7h6.5 M2 10.5h6.5 M10 2l2 1.5-2 1.5 M4 5.5 2 7l2 1.5 M10 9l2 1.5-2 1.5",
+  ssp: "M2 3.5a5 1.8 0 0 0 10 0 5 1.8 0 0 0-10 0Z M2 3.5v7a5 1.8 0 0 0 10 0v-7 M2 7a5 1.8 0 0 0 10 0",
+  stt: "M5 1.5h4v5.5a2 2 0 0 1-4 0Z M2.8 6a4.2 4.2 0 0 0 8.4 0 M7 10.2V13",
+  tts: "M2 5h2.3L8 2.2v9.6L4.3 9H2Z M9.8 4.6a3.4 3.4 0 0 1 0 4.8",
+  web_search: "M5.8 1.5a4.3 4.3 0 1 0 0 8.6 4.3 4.3 0 0 0 0-8.6Z M9 9l3.5 3.5",
+  web_fetch: "M7 1.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z M1.5 7h11 M7 1.5c2.2 2.6 2.2 8.4 0 11",
+  artifact: "M2 4.5 7 2l5 2.5v5L7 12 2 9.5Z M2 4.5 7 7l5-2.5 M7 7v5",
+  workspaces: "M1.5 3.5h4l1 1.5h6V11h-11Z",
+  channel: "M2 2.5h10v7H6L3 12V9.5H2Z",
+};
+
 function PC_ClassRail({ classes, selected, onSelect }) {
   return (
-    <div className="col pc-rail" style={{ minWidth: 180, gap: 2 }}>
+    <div className="col pc-rail" style={{ minWidth: 196, gap: 2 }}>
+      <div className="pc-rail-head">Provider classes</div>
       {classes.map((cls) => (
         <a
           key={cls.key}
@@ -64,7 +81,12 @@ function PC_ClassRail({ classes, selected, onSelect }) {
             }
           }}
         >
-          {cls.label}
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
+            stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"
+            className="pc-rail-icon" aria-hidden="true">
+            <path d={PC_CLASS_ICONS[cls.key] || PC_CLASS_ICONS.llm} />
+          </svg>
+          <span>{cls.label}</span>
         </a>
       ))}
     </div>

@@ -37,6 +37,11 @@ function NV_EventsSidebar() {
   var lockedState = React.useState(false);
   var locked = lockedState[0];
   var setLocked = lockedState[1];
+  // id -> expanded. A row opens to its full envelope (actor, entity,
+  // payload) in place.
+  var openState = React.useState({});
+  var open = openState[0];
+  var setOpen = openState[1];
   var bodyRef = React.useRef(null);
 
   // Streaming config on the workspace row. The row rides the 15s
@@ -135,16 +140,67 @@ function NV_EventsSidebar() {
       ) : (
         <div className="nv-events-body" ref={bodyRef}>
           {rows.map(function (ev) {
+            var isOpen = !!open[ev.id];
             return (
-              <div key={ev.id} className="nv-event-row"
-                data-testid={"nv-event:" + ev.id}>
-                <span className="nv-event-dot"
-                  style={{ background: NV_eventColor(ev.event_type) }} />
-                <span className="nv-event-type">{ev.event_type}</span>
-                <span className="nv-event-detail">
-                  {ev.entity_id || ev.session_id || ""}
-                </span>
-              </div>
+              <React.Fragment key={ev.id}>
+                <div className="nv-event-row"
+                  data-testid={"nv-event:" + ev.id}
+                  onClick={function () {
+                    setOpen(function (prev) {
+                      var next = Object.assign({}, prev);
+                      if (next[ev.id]) delete next[ev.id];
+                      else next[ev.id] = true;
+                      return next;
+                    });
+                  }}>
+                  <span className="nv-event-caret">
+                    {isOpen ? "▾" : "▸"}
+                  </span>
+                  <span className="nv-event-dot"
+                    style={{ background: NV_eventColor(ev.event_type) }} />
+                  <span className="nv-event-type">{ev.event_type}</span>
+                  <span className="nv-event-detail">
+                    {ev.entity_id || ev.session_id || ""}
+                  </span>
+                </div>
+                {isOpen ? (
+                  <div className="nv-event-detail-block"
+                    data-testid={"nv-event-open:" + ev.id}>
+                    <div className="nv-event-kv">
+                      <span className="k">at</span>
+                      <span className="v">{ev.occurred_at || ""}</span>
+                    </div>
+                    <div className="nv-event-kv">
+                      <span className="k">actor</span>
+                      <span className="v">{ev.actor || ""}</span>
+                    </div>
+                    <div className="nv-event-kv">
+                      <span className="k">entity</span>
+                      <span className="v">
+                        {[ev.entity_kind, ev.entity_id]
+                          .filter(Boolean).join(" · ")}
+                      </span>
+                    </div>
+                    {ev.session_id ? (
+                      <div className="nv-event-kv">
+                        <span className="k">session</span>
+                        <span className="v">{ev.session_id}</span>
+                      </div>
+                    ) : null}
+                    {ev.correlation_id ? (
+                      <div className="nv-event-kv">
+                        <span className="k">correlation</span>
+                        <span className="v">{ev.correlation_id}</span>
+                      </div>
+                    ) : null}
+                    <pre className="nv-event-payload">
+                      {ev.payload == null
+                        ? "(no payload)"
+                        : JSON.stringify(ev.payload, null, 2)}
+                    </pre>
+                  </div>
+                ) : null}
+              </React.Fragment>
             );
           })}
           {!rows.length ? (
