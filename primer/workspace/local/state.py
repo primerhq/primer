@@ -273,6 +273,16 @@ class LocalStateRepo:
 
         agent_id = self._agent_by_session.get(session_id)
         if agent_id is None:
+            # The cache is PER-PROCESS but the repo lives on a shared
+            # filesystem: on a multi-pod deployment the api pod runs
+            # create_session and a worker pod runs the turn commits, so
+            # a session can be on disk yet absent from this process's
+            # cache. Re-scan before declaring it unknown - without this
+            # a turn that landed on the other worker ended the session
+            # as failed (k3s live finding 2026-08-26).
+            await self._scan_existing_sessions()
+            agent_id = self._agent_by_session.get(session_id)
+        if agent_id is None:
             raise LookupError(
                 f"session {session_id!r} unknown to repo "
                 "(call create_session first or initialize() to scan)"

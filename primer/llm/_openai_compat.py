@@ -31,6 +31,7 @@ from primer.model.chat import (
     ImagePart,
     Message,
     Part,
+    ReasoningDelta,
     StopReason,
     StreamEvent,
     StreamStart,
@@ -381,6 +382,18 @@ def _translate_chunk(  # noqa: C901
             content = getattr(delta, "content", None)
             if content:
                 out.append(TextDelta(text=content, index=0))
+
+            # Extended-thinking channel used by the DeepSeek/Qwen family
+            # and served by vLLM/SGLang/many gateways as
+            # ``delta.reasoning_content`` (some proxies abbreviate to
+            # ``delta.reasoning``). Real OpenAI never sets either on
+            # chat completions, so this is a no-op there. Dropping it
+            # silently is what left thinking invisible end to end
+            # (live finding 2026-08-26).
+            thinking = getattr(delta, "reasoning_content", None) \
+                or getattr(delta, "reasoning", None)
+            if thinking and isinstance(thinking, str):
+                out.append(ReasoningDelta(text=thinking, index=0))
 
             tool_calls = getattr(delta, "tool_calls", None) or []
             for tc in tool_calls:

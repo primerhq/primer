@@ -148,6 +148,14 @@ function SA_toTranscript(records, session) {
   for (var i = 0; i < records.length; i++) {
     var rec = records[i];
     if (SA_SKIP_IN_TRANSCRIPT[rec.kind]) continue;
+    // A DONE carrying stop_reason="tool_use" ends one MODEL CALL, not
+    // the turn: the loop runs the tools and calls the model again
+    // (primer/session/timeline.py closes_turn makes the same cut).
+    // Rendering them peppered the transcript with "done" markers
+    // between every tool round and made the fold split one turn into
+    // many (live finding 2026-08-26).
+    if (rec.kind === "done"
+        && ((rec.payload || {}).stop_reason === "tool_use")) continue;
     var kind = SA_KIND_TO_TRANSCRIPT[rec.kind] || "lifecycle";
     out.push({
       seq: rec.seq,

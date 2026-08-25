@@ -254,6 +254,107 @@ function NV_SessionHeader(props) {
 }
 
 // ---------------------------------------------------------------------------
+// Thought + tool blocks (round 4, 2026-08-26). Thinking renders as a
+// collapsed muted toggle. A tool call renders as ONE expandable block
+// - collapsed it reads as a plain verb line ("ran ls artifacts"),
+// expanded it shows the arguments and the paired result - because a
+// bare label line answered neither "with what?" nor "and?", and the
+// separate result rows rendered as empty chevron lines.
+// ---------------------------------------------------------------------------
+function NV_Thought(props) {
+  var openState = React.useState(false);
+  var open = openState[0];
+  var setOpen = openState[1];
+  var text = props.row.label || "";
+  return (
+    <div className="nv-thought" data-testid={"nv-thought:" + props.row.seq}
+      data-open={open ? "true" : "false"}>
+      <button type="button" className="nv-thought-toggle"
+        onClick={function () { setOpen(!open); }}>
+        <span className="nv-thought-mark">{open ? "▾" : "▸"}</span>
+        thought
+        {!open && text ? (
+          <span className="nv-thought-peek">
+            {String(text).slice(0, 110)}
+          </span>
+        ) : null}
+      </button>
+      {open ? <div className="nv-thought-body">{text}</div> : null}
+    </div>
+  );
+}
+
+function NV_ToolBlock(props) {
+  var con = NV_useConsole();
+  var openState = React.useState(false);
+  var open = openState[0];
+  var setOpen = openState[1];
+  var maxState = React.useState(false);
+  var maxed = maxState[0];
+  var setMaxed = maxState[1];
+  var row = props.row;
+  var info = SH_toolChipLabel(row);
+  var args = (row.payload && row.payload.arguments) || {};
+  var rp = (props.result && props.result.payload) || null;
+  var output = null;
+  if (rp) {
+    output = typeof rp.output === "string"
+      ? rp.output
+      : JSON.stringify(rp.output, null, 2);
+  }
+  var lines = output == null ? [] : output.split("\n");
+  return (
+    <div className="nv-toolblock" data-testid={"nv-tool:" + row.seq}
+      data-open={open ? "true" : "false"} data-tone={info.tone}>
+      <button type="button" className="nv-toolblock-head"
+        onClick={function () { setOpen(!open); }}>
+        <span className="nv-thought-mark">{open ? "▾" : "▸"}</span>
+        <span className="nv-chip-icon">
+          {NV_CHIP_ICONS[info.tone] || NV_CHIP_ICONS.other}
+        </span>
+        <span className="nv-toolblock-label">{info.label}</span>
+        {rp && rp.error ? (
+          <span className="nv-toolblock-err">failed</span>
+        ) : null}
+      </button>
+      {open ? (
+        <div className="nv-toolblock-body">
+          <div className="nv-toolblock-sec">arguments</div>
+          <pre className="nv-toolblock-pre">
+            {JSON.stringify(args, null, 2)}
+          </pre>
+          <div className="nv-toolblock-sec">
+            <span>result</span>
+            <span style={{ flex: 1 }} />
+            {info.path ? (
+              <button type="button" className="nv-artifact-verb"
+                onClick={function () {
+                  con.setDoc({ kind: "file", ref: info.path });
+                }}>Open as Tab</button>
+            ) : null}
+            {lines.length > 14 ? (
+              <button type="button" className="nv-artifact-verb"
+                onClick={function () { setMaxed(true); }}>Maximize</button>
+            ) : null}
+          </div>
+          <pre className="nv-toolblock-pre" data-error={rp && rp.error
+            ? "true" : "false"}>
+            {output == null
+              ? "(no result recorded)"
+              : lines.slice(0, 14).join("\n")
+                + (lines.length > 14 ? "\n…" : "")}
+          </pre>
+          {maxed ? (
+            <NV_Lightbox title={info.label} content={output || ""}
+              onClose={function () { setMaxed(false); }} />
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Cards
 // ---------------------------------------------------------------------------
 function NV_DecisionCard(props) {
@@ -730,18 +831,6 @@ function NV_SessionDoc(props) {
   // speaks, and toggling on never replays backlog beyond the last
   // answer. Dictation is the composer's; nothing here commits a gate.
   var spokenRef = React.useRef({});
-  // seq -> expanded artifact descriptor. Inline-only (decision 4): a
-  // chip toggles its artifact IN PLACE; tabs are an explicit escalation
-  // on the block, never the click's side effect.
-  var expandedState = React.useState({});
-  var expanded = expandedState[0];
-  var setExpanded = expandedState[1];
-  // seq -> open reasoning block. Thinking renders collapsed and muted
-  // (S8 rule: reasoning is never replayed as an answer); the toggle
-  // opens the full thought in place.
-  var thoughtsState = React.useState({});
-  var thoughtsOpen = thoughtsState[0];
-  var setThoughtsOpen = thoughtsState[1];
   var graphViewState = React.useState(false);
   var graphView = graphViewState[0];
   var setGraphView = graphViewState[1];
@@ -768,6 +857,22 @@ function NV_SessionDoc(props) {
   var shown = live || (optimistic
     ? { verb: "sending", object: "", startedMs: optimistic }
     : null);
+  // A reload mid-run has no tap history and no optimistic flag, but
+  // the polled session row knows a turn is executing - without this
+  // the busy indicator vanished on refresh (live finding 2026-08-26).
+  var busySinceRef = React.useRef(null);
+  var rowBusy = !!(session && !NV_sessionIsOver(session)
+    && session.turn_status && session.turn_status !== "idle");
+  if (rowBusy && busySinceRef.current == null) {
+    busySinceRef.current = Date.now();
+  }
+  if (!rowBusy) busySinceRef.current = null;
+  if (!shown && rowBusy) {
+    shown = {
+      verb: String(session.turn_status), object: "",
+      startedMs: busySinceRef.current,
+    };
+  }
   var status = shown
     ? SH_statusLine({
       verb: shown.verb, object: shown.object,
@@ -787,6 +892,22 @@ function NV_SessionDoc(props) {
     }
   }
   var rows = SH_collapseTurns(flat, { liveFromSeq: liveFromSeq });
+
+  // tool_result rows render INSIDE their call's block, paired by call
+  // id, never as standalone lines (they have no label and drew as
+  // empty chevron rows).
+  var resultsByCallId = {};
+  for (var ri = 0; ri < flat.length; ri++) {
+    if (flat[ri].kind === "tool_result") {
+      var cid = (flat[ri].payload || {}).call_id;
+      if (cid != null) resultsByCallId[cid] = flat[ri];
+    }
+  }
+  function resultFor(row) {
+    var id = (row.payload || {}).id
+      || (row.payload || {}).tool_call_id || null;
+    return id != null ? resultsByCallId[id] || null : null;
+  }
 
   // 0-based turn ordinal per seq, matching the timeline endpoint's
   // terminal-counting contract (get_session_turn_timeline: turn_no is
@@ -880,18 +1001,26 @@ function NV_SessionDoc(props) {
         <div key={row.seq} className="nv-turn-agent">
           <div className="nv-turn-sections">
             {(row.rows || []).map(function (child) {
-              var info = child.kind === "tool_call"
-                ? SH_toolChipLabel(child)
-                : child.kind === "reasoning"
-                  ? { label: "thought", tone: "other" }
-                  : { label: child.label, tone: "other" };
+              if (child.kind === "tool_call") {
+                return (
+                  <NV_ToolBlock key={child.seq} row={child}
+                    result={resultFor(child)} />
+                );
+              }
+              if (child.kind === "reasoning") {
+                return <NV_Thought key={child.seq} row={child} />;
+              }
+              // Results render inside their call's block; a bare label
+              // row here would be an empty chevron line.
+              if (child.kind === "tool_result") return null;
+              if (!child.label) return null;
               return (
                 <div key={child.seq} className="nv-turn-section-line">
                   <svg width="8" height="8" viewBox="0 0 10 10" fill="none"
                     stroke="currentColor" strokeWidth="1.4">
                     <path d="M3.5 2 6.5 5 3.5 8" />
                   </svg>
-                  {info.label}
+                  {child.label}
                 </div>
               );
             })}
@@ -919,33 +1048,16 @@ function NV_SessionDoc(props) {
     // Model thinking: collapsed + muted by design, never dressed as an
     // answer. The toggle opens the full thought in place.
     if (row.kind === "reasoning") {
-      var open = !!thoughtsOpen[row.seq];
+      return <NV_Thought key={row.seq} row={row} />;
+    }
+    // Tool traffic in the LIVE turn: same expandable block as folded
+    // sections use, so a call reads identically mid-run and after.
+    if (row.kind === "tool_call") {
       return (
-        <div key={row.seq} className="nv-thought"
-          data-testid={"nv-thought:" + row.seq} data-open={open}>
-          <button type="button" className="nv-thought-toggle"
-            onClick={function () {
-              setThoughtsOpen(function (prev) {
-                var next = Object.assign({}, prev);
-                if (next[row.seq]) delete next[row.seq];
-                else next[row.seq] = true;
-                return next;
-              });
-            }}>
-            <span className="nv-thought-mark">{open ? "▾" : "▸"}</span>
-            thought
-            {!open && row.label ? (
-              <span className="nv-thought-peek">
-                {String(row.label).slice(0, 110)}
-              </span>
-            ) : null}
-          </button>
-          {open ? (
-            <div className="nv-thought-body">{row.label}</div>
-          ) : null}
-        </div>
+        <NV_ToolBlock key={row.seq} row={row} result={resultFor(row)} />
       );
     }
+    if (row.kind === "tool_result") return null;
     // Lifecycle markers: a slim muted line, not a full agent block. The
     // done line carries the turn's trace affordance (it IS the turn
     // boundary). Before this branch every one of these rendered as an
@@ -988,8 +1100,6 @@ function NV_SessionDoc(props) {
     }
     // A lifecycle row with nothing to say renders nothing at all.
     if (row.kind === "lifecycle" && !row.label) return null;
-    var isChip = row.kind === "tool_call";
-    var chip = isChip ? SH_toolChipLabel(row) : null;
     return (
       <div key={row.seq} className="nv-turn nv-turn-agent"
         data-depth={depth} data-testid={"nv-turn:" + row.seq}>
@@ -1013,47 +1123,28 @@ function NV_SessionDoc(props) {
                 }}>trace</button>
             ) : null}
           </div>
-          {isChip ? (
-            <div className="nv-turn-chips">
-              {(function () {
-                var artifact = NV_artifactFor(row, chip);
-                return (
-                  <button type="button" className="nv-chip-pill"
-                    data-tone={chip.tone}
-                    data-expandable={artifact ? "true" : "false"}
-                    onClick={function () {
-                      if (!artifact) return;
-                      setExpanded(function (prev) {
-                        var next = Object.assign({}, prev);
-                        if (next[row.seq]) delete next[row.seq];
-                        else next[row.seq] = artifact;
-                        return next;
-                      });
-                    }}>
-                    <span className="nv-chip-icon">
-                      {NV_CHIP_ICONS[chip.tone] || NV_CHIP_ICONS.other}
-                    </span>
-                    {chip.label}
-                  </button>
-                );
-              })()}
-            </div>
-          ) : (
-            <div className="nv-turn-text md-body">
-              {row.kind === "assistant_message"
-                && typeof window.renderMarkdown === "function"
-                ? window.renderMarkdown(row.label || "")
-                : row.label}
-            </div>
-          )}
-          {expanded[row.seq] ? (
-            <NV_ArtifactBlock seq={row.seq}
-              path={expanded[row.seq].path}
-              output={expanded[row.seq].output} />
-          ) : null}
+          <div className="nv-turn-text md-body">
+            {row.kind === "assistant_message"
+              && typeof window.renderMarkdown === "function"
+              ? window.renderMarkdown(
+                String(row.label || "").replace(/^\s+/, ""))
+              : row.label}
+          </div>
           {(row.children || []).map(function (child) {
-            var cInfo = child.kind === "tool_call"
-              ? SH_toolChipLabel(child) : null;
+            if (child.kind === "tool_call") {
+              return (
+                <div key={child.seq} className="nv-subagent">
+                  <div className="nv-subagent-head">
+                    <span className="nv-subagent-name">
+                      {(child.payload && child.payload.agent_id)
+                        || "subagent"}
+                    </span>
+                  </div>
+                  <NV_ToolBlock row={child} result={resultFor(child)} />
+                </div>
+              );
+            }
+            if (!child.label) return null;
             return (
               <div key={child.seq} className="nv-subagent">
                 <div className="nv-subagent-head">
@@ -1061,16 +1152,7 @@ function NV_SessionDoc(props) {
                     {(child.payload && child.payload.agent_id) || "subagent"}
                   </span>
                 </div>
-                {cInfo ? (
-                  <span className="nv-chip-pill" data-tone={cInfo.tone}>
-                    <span className="nv-chip-icon">
-                      {NV_CHIP_ICONS[cInfo.tone] || "⚙"}
-                    </span>
-                    {cInfo.label}
-                  </span>
-                ) : (
-                  <div className="nv-turn-text">{child.label}</div>
-                )}
+                <div className="nv-turn-text">{child.label}</div>
               </div>
             );
           })}
@@ -1220,3 +1302,5 @@ window.NV_DecisionCard = NV_DecisionCard;
 window.NV_AskCard = NV_AskCard;
 window.NV_TraceSplit = NV_TraceSplit;
 window.NV_Composer = NV_Composer;
+window.NV_Thought = NV_Thought;
+window.NV_ToolBlock = NV_ToolBlock;
