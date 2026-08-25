@@ -673,3 +673,52 @@ def test_graph_end_output_record_carries_node_id() -> None:
     assert rec.kind == SessionMessageKind.ASSISTANT_TOKEN
     assert rec.node_id == "end1"
     assert rec.payload["end_node_id"] == "end1"
+
+
+def test_translate_reasoning_delta_coalesces_and_flushes_before_text() -> None:
+    """ReasoningDeltas coalesce; Done flushes thought BEFORE the answer.
+
+    Until 2026-08-25 ReasoningDelta was silently dropped, so thinking
+    never reached the transcript at all.
+    """
+    from primer.model.chat import Done, ReasoningDelta, TextDelta
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    assert translate_stream_event(
+        ReasoningDelta(text="let me ", index=0), state) is None
+    assert translate_stream_event(
+        ReasoningDelta(text="think", index=0), state) is None
+    assert translate_stream_event(
+        TextDelta(text="the answer", index=0), state) is None
+    result = translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), state)
+
+    assert isinstance(result, list)
+    assert [r.kind for r in result] == [
+        SessionMessageKind.REASONING,
+        SessionMessageKind.ASSISTANT_TOKEN,
+        SessionMessageKind.DONE,
+    ]
+    assert result[0].payload == {"text": "let me think"}
+    assert result[1].payload == {"text": "the answer"}
+    # Done cleared the buffer: a stray second Done replays nothing.
+    assert state.reasoning_buffers == {}
+
+
+def test_translate_tool_call_end_flushes_reasoning_first() -> None:
+    """ToolCallEnd orders thought -> buffered text -> the tool call."""
+    from primer.model.chat import ReasoningDelta, ToolCallEnd
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(ReasoningDelta(text="need a file", index=0), state)
+    result = translate_stream_event(
+        ToolCallEnd(id="call_0", arguments={"path": "x"}, index=0), state)
+
+    assert isinstance(result, list)
+    assert [r.kind for r in result] == [
+        SessionMessageKind.REASONING,
+        SessionMessageKind.TOOL_CALL,
+    ]
+    assert result[0].payload == {"text": "need a file"}

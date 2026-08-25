@@ -3669,9 +3669,12 @@ input, textarea, select { font: inherit; color: inherit; }
 .nv-transcript-split { flex: 1; min-height: 0; display: flex; }
 .nv-transcript { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; position: relative; }
 .nv-transcript-inner {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 18px 22px 26px;
+  /* Full-width: the doc pane is the operator's working surface, and a
+     hard 860px column left most of a wide viewport empty (live
+     finding 2026-08-25). */
+  max-width: none;
+  margin: 0;
+  padding: 18px 32px 26px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -3695,6 +3698,39 @@ input, textarea, select { font: inherit; color: inherit; }
 .nv-turn-byline { display: flex; align-items: baseline; gap: 8px; }
 .nv-turn-name { font-weight: 600; font-size: 12px; }
 .nv-turn-text { font-size: 13.5px; margin-top: 2px; text-wrap: pretty; color: var(--text); white-space: pre-wrap; }
+/* Markdown answers manage their own block spacing; pre-wrap on top of
+   that doubles every gap. */
+.nv-turn-text.md-body { white-space: normal; }
+/* Model thinking: collapsed + muted; the toggle opens it in place. */
+.nv-thought { display: flex; flex-direction: column; gap: 4px; padding-left: 30px; }
+.nv-thought-toggle {
+  border: none; background: transparent; cursor: pointer;
+  display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-4);
+  padding: 0; text-align: left;
+}
+.nv-thought-toggle:hover { color: var(--text-3); }
+.nv-thought-mark { flex-shrink: 0; }
+.nv-thought-peek {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-style: italic; color: var(--text-4); min-width: 0;
+}
+.nv-thought-body {
+  font-size: 12.5px; color: var(--text-3); white-space: pre-wrap;
+  border-left: 2px solid var(--border); padding: 2px 0 2px 10px;
+}
+/* Lifecycle markers: one slim muted line, never a full agent block. */
+.nv-lifecycle {
+  display: flex; align-items: center; gap: 8px; padding-left: 30px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-4);
+}
+.nv-lifecycle[data-kind="cancelled"] .nv-lifecycle-dot { color: var(--danger, #e06c5f); }
+.nv-turn-error {
+  display: flex; align-items: center; gap: 8px;
+  margin-left: 30px; padding: 8px 12px; border-radius: var(--r-6);
+  border: 1px solid var(--danger, #e06c5f); color: var(--danger, #e06c5f);
+  font-size: 12.5px;
+}
 .nv-trace-toggle {
   border: none; background: transparent;
   font-family: var(--font-mono); font-size: 10px; color: var(--text-4);

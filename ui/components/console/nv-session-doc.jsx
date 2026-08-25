@@ -736,6 +736,12 @@ function NV_SessionDoc(props) {
   var expandedState = React.useState({});
   var expanded = expandedState[0];
   var setExpanded = expandedState[1];
+  // seq -> open reasoning block. Thinking renders collapsed and muted
+  // (S8 rule: reasoning is never replayed as an answer); the toggle
+  // opens the full thought in place.
+  var thoughtsState = React.useState({});
+  var thoughtsOpen = thoughtsState[0];
+  var setThoughtsOpen = thoughtsState[1];
   var graphViewState = React.useState(false);
   var graphView = graphViewState[0];
   var setGraphView = graphViewState[1];
@@ -781,6 +787,27 @@ function NV_SessionDoc(props) {
     }
   }
   var rows = SH_collapseTurns(flat, { liveFromSeq: liveFromSeq });
+
+  // 0-based turn ordinal per seq, matching the timeline endpoint's
+  // terminal-counting contract (get_session_turn_timeline: turn_no is
+  // the ordinal produced by counting done/cancelled/error terminals).
+  // The old hardcoded fallback of 1 asked for the SECOND turn's trace
+  // from every row of a first-turn session, which is why the split
+  // came up empty (BDD/live finding 2026-08-25).
+  var turnOfSeq = {};
+  (function () {
+    var ordinal = 0;
+    for (var ti = 0; ti < flat.length; ti++) {
+      turnOfSeq[flat[ti].seq] = ordinal;
+      if (flat[ti].kind === "done" || flat[ti].kind === "cancelled"
+          || flat[ti].kind === "error") ordinal += 1;
+    }
+  })();
+  function traceTurnFor(row) {
+    if (row.turn_no != null) return row.turn_no;
+    var t = turnOfSeq[row.seq];
+    return t == null ? 0 : t;
+  }
 
   var ttsOk = !!(con.speech && con.speech.tts_configured);
   React.useEffect(function () {
@@ -855,7 +882,9 @@ function NV_SessionDoc(props) {
             {(row.rows || []).map(function (child) {
               var info = child.kind === "tool_call"
                 ? SH_toolChipLabel(child)
-                : { label: child.label, tone: "other" };
+                : child.kind === "reasoning"
+                  ? { label: "thought", tone: "other" }
+                  : { label: child.label, tone: "other" };
               return (
                 <div key={child.seq} className="nv-turn-section-line">
                   <svg width="8" height="8" viewBox="0 0 10 10" fill="none"
@@ -887,6 +916,78 @@ function NV_SessionDoc(props) {
         </div>
       );
     }
+    // Model thinking: collapsed + muted by design, never dressed as an
+    // answer. The toggle opens the full thought in place.
+    if (row.kind === "reasoning") {
+      var open = !!thoughtsOpen[row.seq];
+      return (
+        <div key={row.seq} className="nv-thought"
+          data-testid={"nv-thought:" + row.seq} data-open={open}>
+          <button type="button" className="nv-thought-toggle"
+            onClick={function () {
+              setThoughtsOpen(function (prev) {
+                var next = Object.assign({}, prev);
+                if (next[row.seq]) delete next[row.seq];
+                else next[row.seq] = true;
+                return next;
+              });
+            }}>
+            <span className="nv-thought-mark">{open ? "▾" : "▸"}</span>
+            thought
+            {!open && row.label ? (
+              <span className="nv-thought-peek">
+                {String(row.label).slice(0, 110)}
+              </span>
+            ) : null}
+          </button>
+          {open ? (
+            <div className="nv-thought-body">{row.label}</div>
+          ) : null}
+        </div>
+      );
+    }
+    // Lifecycle markers: a slim muted line, not a full agent block. The
+    // done line carries the turn's trace affordance (it IS the turn
+    // boundary). Before this branch every one of these rendered as an
+    // EMPTY "operator" block stacking under the answer (live finding
+    // 2026-08-25).
+    if (row.kind === "done" || row.kind === "yielded"
+        || row.kind === "resumed" || row.kind === "cancelled") {
+      return (
+        <div key={row.seq} className="nv-lifecycle"
+          data-kind={row.kind} data-testid={"nv-turn:" + row.seq}>
+          <span className="nv-lifecycle-dot">
+            {row.kind === "cancelled" ? "■ cancelled" : "· " + row.kind}
+          </span>
+          {row.kind === "done" || row.kind === "cancelled" ? (
+            <button type="button" className="nv-trace-toggle"
+              data-testid={"nv-trace-open:" + row.seq}
+              onClick={function () { setTraceTurn(traceTurnFor(row)); }}>
+              trace
+            </button>
+          ) : null}
+        </div>
+      );
+    }
+    if (row.kind === "error") {
+      var msg = row.label
+        || (row.payload && (row.payload.message || row.payload.code))
+        || "turn failed";
+      return (
+        <div key={row.seq} className="nv-turn-error"
+          data-testid={"nv-turn:" + row.seq}>
+          <span>{msg}</span>
+          <span style={{ flex: 1 }} />
+          <button type="button" className="nv-trace-toggle"
+            data-testid={"nv-trace-open:" + row.seq}
+            onClick={function () { setTraceTurn(traceTurnFor(row)); }}>
+            trace
+          </button>
+        </div>
+      );
+    }
+    // A lifecycle row with nothing to say renders nothing at all.
+    if (row.kind === "lifecycle" && !row.label) return null;
     var isChip = row.kind === "tool_call";
     var chip = isChip ? SH_toolChipLabel(row) : null;
     return (
@@ -904,11 +1005,11 @@ function NV_SessionDoc(props) {
               {(row.payload && row.payload.agent_id) || agentId || "agent"}
             </span>
             <span style={{ flex: 1 }} />
-            {row.turn_no != null || row.seq != null ? (
+            {row.seq != null ? (
               <button type="button" className="nv-trace-toggle"
                 data-testid={"nv-trace-open:" + row.seq}
                 onClick={function () {
-                  setTraceTurn(row.turn_no != null ? row.turn_no : 1);
+                  setTraceTurn(traceTurnFor(row));
                 }}>trace</button>
             ) : null}
           </div>
@@ -938,7 +1039,12 @@ function NV_SessionDoc(props) {
               })()}
             </div>
           ) : (
-            <div className="nv-turn-text">{row.label}</div>
+            <div className="nv-turn-text md-body">
+              {row.kind === "assistant_message"
+                && typeof window.renderMarkdown === "function"
+                ? window.renderMarkdown(row.label || "")
+                : row.label}
+            </div>
           )}
           {expanded[row.seq] ? (
             <NV_ArtifactBlock seq={row.seq}

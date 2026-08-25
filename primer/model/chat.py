@@ -1423,12 +1423,16 @@ class _LlmCall(BaseModel):
         ge=0,
         description="Wall-clock duration of the model call in milliseconds.",
     )
-    status: Literal["ok"] = Field(
+    status: Literal["ok", "error"] = Field(
         default="ok",
         description=(
-            "Only successful calls produce a record: a failed stream "
-            "re-raises, and the dispatch error path writes the ERROR "
-            "record. The failure is still counted on llm_calls_total."
+            "'ok' for a clean stream. 'error' when the adapter emitted "
+            "an in-band terminal Error event: the stream ends without "
+            "raising, and the telemetry envelope still lands (BEFORE "
+            "the terminal, so it stays inside the turn's seq window - "
+            "primer/agent/loop.py). A stream that RAISES produces no "
+            "record at all; the dispatch error path writes the ERROR "
+            "record and the failure is still counted on llm_calls_total."
         ),
     )
 

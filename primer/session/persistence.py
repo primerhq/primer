@@ -32,6 +32,7 @@ from primer.model.chat import (
     Done,
     Error,
     ExtendedEvent,
+    ReasoningDelta,
     StreamEvent,
     TextDelta,
     ToolCallEnd,
@@ -217,6 +218,13 @@ class _CoalesceState:
     """
 
     text_buffers: dict[str | None, str] = field(default_factory=dict)
+    # Model reasoning / extended thinking, coalesced exactly like the
+    # answer text. Flushed as a REASONING record BEFORE the buffered
+    # answer at every flush point, so the transcript orders thought ->
+    # action the way the model produced them. Until 2026-08-25 the
+    # adapters' ReasoningDelta events were silently dropped here and
+    # thinking never reached the transcript at all.
+    reasoning_buffers: dict[str | None, str] = field(default_factory=dict)
     last_usage_by: dict[str | None, Usage] = field(default_factory=dict)
     # Tool name carried from ToolCallStart (which has it) to the paired
     # ToolCallEnd (same id, but no name field), keyed by (node_id, tool_call
@@ -242,15 +250,16 @@ def translate_stream_event(
     | Event                | Output                                          |
     |----------------------|-------------------------------------------------|
     | TextDelta            | None (coalesces into state.text_buffers[node])  |
+    | ReasoningDelta       | None (coalesces into state.reasoning_buffers)   |
     | Usage                | None (accumulated in state.last_usage_by[node]) |
     | ToolCallStart        | None (records name in state.tool_names[node,id])|
-    | ToolCallEnd          | flush text buffer (if any), then TOOL_CALL      |
+    | ToolCallEnd          | flush reasoning, then text, then TOOL_CALL      |
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
     | ExtendedEvent(_ClientAction)       | CLIENT_ACTION                  |
     | ExtendedEvent(_LlmCall)            | LLM_CALL                       |
     | ExtendedEvent(_GraphNodeEvent) | reconstruct inner StreamEvent and    |
     |                      |   recurse with node_id=event.extended.node_id   |
-    | Done                 | flush text buffer (if any), then DONE           |
+    | Done                 | flush reasoning + text buffers, then DONE       |
     |                      |   payload includes usage envelope when present  |
     | Error                | ERROR                                           |
     | _GraphErrorEvent     | ERROR (graph runtime terminal failure)          |
@@ -365,6 +374,14 @@ def translate_stream_event(
         state.text_buffers[node_id] = state.text_buffers.get(node_id, "") + event.text
         return None
 
+    if isinstance(event, ReasoningDelta):
+        # Same coalescing discipline as TextDelta; flushed as a
+        # REASONING record at the same flush points.
+        state.reasoning_buffers[node_id] = (
+            state.reasoning_buffers.get(node_id, "") + event.text
+        )
+        return None
+
     if isinstance(event, ToolCallStart):
         # ToolCallStart carries the tool name; the paired ToolCallEnd (same
         # id) does not. Stash it so the TOOL_CALL record below can persist the
@@ -376,6 +393,18 @@ def translate_stream_event(
 
     if isinstance(event, ToolCallEnd):
         records: list[SessionMessageRecord] = []
+        thought = state.reasoning_buffers.get(node_id, "")
+        if thought:
+            records.append(
+                SessionMessageRecord(
+                    seq=1,
+                    kind=SessionMessageKind.REASONING,
+                    payload={"text": thought},
+                    node_id=node_id,
+                    created_at=now,
+                )
+            )
+            state.reasoning_buffers[node_id] = ""
         buffered = state.text_buffers.get(node_id, "")
         if buffered:
             records.append(
@@ -455,6 +484,18 @@ def translate_stream_event(
 
     if isinstance(event, Done):
         records = []
+        thought = state.reasoning_buffers.get(node_id, "")
+        if thought:
+            records.append(
+                SessionMessageRecord(
+                    seq=1,
+                    kind=SessionMessageKind.REASONING,
+                    payload={"text": thought},
+                    node_id=node_id,
+                    created_at=now,
+                )
+            )
+            state.reasoning_buffers[node_id] = ""
         buffered = state.text_buffers.get(node_id, "")
         if buffered:
             records.append(
@@ -492,6 +533,7 @@ def translate_stream_event(
         # stale usage envelope (mirrors the text-buffer clear discipline) and
         # the dicts don't accumulate dead keys across many nodes.
         state.text_buffers.pop(node_id, None)
+        state.reasoning_buffers.pop(node_id, None)
         state.last_usage_by.pop(node_id, None)
         if records:
             records.append(done_record)
@@ -507,7 +549,7 @@ def translate_stream_event(
             created_at=now,
         )
 
-    # All other events (StreamStart, ReasoningDelta, ToolCallDelta, MediaDelta,
+    # All other events (StreamStart, ToolCallDelta, MediaDelta,
     # ExtendedEvent without _ExecutorToolResult / _GraphNodeEvent) — silently
     # dropped. (ToolCallStart is handled above: it records the tool name.)
     return None

@@ -33,6 +33,7 @@ import primer.observability.metrics as _metrics
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import (
     Done,
+    Error,
     ExtendedEvent,
     Message,
     StreamEvent,
@@ -190,12 +191,16 @@ async def run_agent_turn(
                 buffered.append(event)
                 if isinstance(event, Usage):
                     call_usage = event
-                if isinstance(event, Done) and held_done is None:
+                if isinstance(event, (Done, Error)) and held_done is None:
                     # Held so the llm_call event below reaches consumers
                     # FIRST: the record it becomes must land inside this
                     # turn's seq window, and a DONE record closes that
-                    # window (primer/session/timeline.py). ``buffered``
-                    # keeps the original order for output_to_message.
+                    # window (primer/session/timeline.py). Error is a
+                    # terminal too - letting it through closed the window
+                    # before the telemetry landed, so every errored
+                    # turn's trace came up empty (live finding
+                    # 2026-08-25). ``buffered`` keeps the original order
+                    # for output_to_message.
                     held_done = event
                     continue
                 yield event
@@ -215,9 +220,10 @@ async def run_agent_turn(
                 tool_manager, llm_model, call_usage, err_elapsed, "error",
             )
             raise
-        elapsed = _observe_llm_call(llm_model, call_t0, call_usage, "ok")
+        call_status = "error" if isinstance(held_done, Error) else "ok"
+        elapsed = _observe_llm_call(llm_model, call_t0, call_usage, call_status)
         await _emit_llm_called(
-            tool_manager, llm_model, call_usage, elapsed, "ok",
+            tool_manager, llm_model, call_usage, elapsed, call_status,
         )
         yield ExtendedEvent(
             extended=_LlmCall(
@@ -227,7 +233,7 @@ async def run_agent_turn(
                 input_tokens=call_usage.input_tokens if call_usage else None,
                 output_tokens=call_usage.output_tokens if call_usage else None,
                 duration_ms=max(0, int(elapsed * 1000)),
-                status="ok",
+                status=call_status,
             )
         )
         if held_done is not None:
