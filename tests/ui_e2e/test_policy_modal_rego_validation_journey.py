@@ -112,19 +112,14 @@ def test_u0114_policy_modal_rego_compile_error_renders_inline(
 
     try:
         # ----- 1. Open the policy modal from the Tools page ---------
-        # The approval-policy authoring surface moved off the Approvals
-        # page onto the per-tool Tools table: each row's Add/Edit button
-        # opens the same AP_NewPolicyModal (which still carries free-form
+        # uiv2 cutover: the standalone Tools catalog page retired; the
+        # Approvals page's config hint now opens the same
+        # AP_NewPolicyModal directly (which still carries free-form
         # id / toolset / tool inputs we override below).
-        open_legacy_route(page, console_url, "tools")
-        page.locator("h1.page-title").get_by_text(
-            "Tools", exact=False,
-        ).first.wait_for(state="visible", timeout=15_000)
+        open_legacy_route(page, console_url, "approvals")
 
-        # ----- 2. New policy modal opens via a tool row -------------
-        add_btn = page.get_by_role("button", name="Add", exact=True).or_(
-            page.get_by_role("button", name="Edit", exact=True)
-        ).first
+        # ----- 2. New policy modal opens via the config hint --------
+        add_btn = page.get_by_test_id("approvals-config-link")
         expect(add_btn).to_be_visible(timeout=15_000)
         add_btn.click()
 

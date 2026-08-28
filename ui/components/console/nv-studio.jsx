@@ -162,7 +162,10 @@ function NV_Studio() {
           ? <window.NV_Terminal />
           : null}
       </div>
-      {typeof window.NV_FilesSidebar === "function"
+      {/* Always-visible only WITH a workspace: the panel's tree/log polls
+          key off con.wid, and mounting it wid-less fires literal
+          /workspaces/null/... fetches (404 noise on every bare route). */}
+      {con.wid && typeof window.NV_FilesSidebar === "function"
         ? <window.NV_FilesSidebar />
         : null}
     </div>

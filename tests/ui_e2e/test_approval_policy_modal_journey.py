@@ -152,19 +152,14 @@ def test_u0110_policy_modal_llm_judge_journey(
         expect(provider_row.first).to_be_visible(timeout=15_000)
 
         # --- 2. Open the policy modal from the Tools page ----------
-        # The approval-policy authoring surface moved off the Approvals
-        # page onto the per-tool Tools table: each row's Add/Edit button
-        # opens the same AP_NewPolicyModal (free-form id / toolset / tool
+        # uiv2 cutover: the standalone Tools catalog page retired; the
+        # Approvals page's config hint now opens the same
+        # AP_NewPolicyModal directly (free-form id / toolset / tool
         # inputs are still editable, so we override them below).
-        open_legacy_route(page, console_url, "tools")
-        page.locator("h1.page-title").get_by_text(
-            "Tools", exact=False,
-        ).first.wait_for(state="visible", timeout=15_000)
+        open_legacy_route(page, console_url, "approvals")
 
-        # --- 3. Open the New-policy modal via a tool row -----------
-        add_btn = page.get_by_role("button", name="Add", exact=True).or_(
-            page.get_by_role("button", name="Edit", exact=True)
-        ).first
+        # --- 3. Open the New-policy modal via the config hint -------
+        add_btn = page.get_by_test_id("approvals-config-link")
         expect(add_btn).to_be_visible(timeout=15_000)
         add_btn.click()
 
