@@ -43,9 +43,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 

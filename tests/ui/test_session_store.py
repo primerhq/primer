@@ -37,11 +37,11 @@ def _transcript(ctx, wid, sid, frames):
     rows as a list of dicts."""
     out = ctx.eval(
         "(function () {\n"
-        "  var s = SS_getStore(%s, %s);\n"
-        "  var frames = %s;\n"
+        "  var s = SS_getStore(" + json.dumps(wid) + ", " + json.dumps(sid) + ");\n"
+        "  var frames = " + json.dumps(frames) + ";\n"
         "  for (var i = 0; i < frames.length; i++) SS_apply(s, frames[i]);\n"
         "  return JSON.stringify(SS_getSnapshot(s, 'transcript') || []);\n"
-        "})()" % (json.dumps(wid), json.dumps(sid), json.dumps(frames))
+        "})()"
     )
     return json.loads(out)
 
