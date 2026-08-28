@@ -1,8 +1,13 @@
 /* global React, NV_useConsole */
-// The Studio frame (wiring plan P2 T6): left sidebar (Sessions|Files
-// tabs), center doc host, terminal panel and events sidebar slots.
-// Also home of the pure helpers the sidebars and tests share: the
-// session BAND sort and the agent identity glyphs.
+// The Studio frame (uiv2 R2 cutover, US-011a): left rail (Inbox +
+// workspace tree, NV_Rail), center tab groups, always-visible right
+// Files sidebar (notes 2.5), terminal panel and events sidebar slots.
+// The old Sessions|Files rail-toggle and its flag-gated fallback to
+// nv-sessions-sidebar.jsx/nv-doc-host.jsx retired with this round -
+// NV_TG_ENABLED is gone, this is just how the shell works now.
+// Also home of the pure helpers tests share: the session BAND sort
+// (still used by NV_sessionBands' own unit tests) and the agent
+// identity glyphs.
 
 // The five seeded agents carry the prototype's glyph set; anything
 // else gets a stable hash pick from the same vocabulary. Never
@@ -114,24 +119,12 @@ function NV_renderStudioDoc(con, tab) {
 
 function NV_Studio() {
   var con = NV_useConsole();
-  var railState = React.useState("sessions");
-  var railTab = railState[0];
-  var setRailTab = railState[1];
-  var tgEnabled = con.tgEnabled && typeof window.NV_Rail === "function"
-    && typeof window.NV_TabGroups === "function";
 
   function renderDoc(tab) { return NV_renderStudioDoc(con, tab); }
 
-  // The rail's own header "+" buttons (nv-rail-create-session/-workspace)
-  // replace the old tab-bar's NV_SessionsSidebarVerbs button - showing
-  // both would duplicate the affordance. Files keeps its own verbs
-  // regardless: the Files sidebar/tab is unchanged this round (notes 2.5's
-  // always-visible right-side Files panel is a separate, later round -
-  // out of phase 2's scope, so it stays tabbed here rather than losing
-  // reachability).
-  function railSessionsSlot() {
-    if (tgEnabled) {
-      return (
+  return (
+    <div className="nv-studio" data-testid="nv-studio">
+      <div className="nv-rail" data-testid="nv-rail">
         <window.NV_Rail
           selectedWorkspaceId={con.wid}
           onSelectWorkspace={function (wid) {
@@ -157,61 +150,20 @@ function NV_Studio() {
             if (verb) verb.run();
           }}
         />
-      );
-    }
-    return typeof window.NV_SessionsSidebar === "function"
-      ? <window.NV_SessionsSidebar />
-      : null;
-  }
-
-  return (
-    <div className="nv-studio" data-testid="nv-studio">
-      <div className="nv-rail" data-testid="nv-rail">
-        <div className="nv-rail-tabs">
-          <button type="button" className="nv-rail-tab"
-            data-active={railTab === "sessions" ? "true" : "false"}
-            data-testid="nv-rail-tab-sessions"
-            onClick={function () { setRailTab("sessions"); }}>Sessions</button>
-          <button type="button" className="nv-rail-tab"
-            data-active={railTab === "files" ? "true" : "false"}
-            data-testid="nv-rail-tab-files"
-            onClick={function () { setRailTab("files"); }}>Files</button>
-          <div style={{ flex: 1 }} />
-          {railTab === "sessions" && !tgEnabled
-            && typeof window.NV_SessionsSidebarVerbs === "function"
-            ? <window.NV_SessionsSidebarVerbs />
-            : null}
-          {railTab === "files"
-            && typeof window.NV_FilesSidebarVerbs === "function"
-            ? <window.NV_FilesSidebarVerbs />
-            : null}
-        </div>
-        {railTab === "sessions" ? railSessionsSlot() : null}
-        {railTab === "files" && typeof window.NV_FilesSidebar === "function"
-          ? <window.NV_FilesSidebar />
-          : null}
       </div>
       <div className="nv-center" data-testid="nv-center">
-        {tgEnabled ? (
-          <window.NV_TabGroups
-            model={con.tgModel}
-            onModelChange={con.onTgModelChange}
-            renderDoc={renderDoc}
-            resolveSessionWid={con.resolveSessionWid}
-          />
-        ) : typeof window.NV_DocHost === "function" ? (
-          <window.NV_DocHost />
-        ) : (
-          <div className="nv-view-pending">
-            <span>The doc host lands in P2 T7.</span>
-          </div>
-        )}
+        <window.NV_TabGroups
+          model={con.tgModel}
+          onModelChange={con.onTgModelChange}
+          renderDoc={renderDoc}
+          resolveSessionWid={con.resolveSessionWid}
+        />
         {con.panels.terminal && typeof window.NV_Terminal === "function"
           ? <window.NV_Terminal />
           : null}
       </div>
-      {con.panels.events && typeof window.NV_EventsSidebar === "function"
-        ? <window.NV_EventsSidebar />
+      {typeof window.NV_FilesSidebar === "function"
+        ? <window.NV_FilesSidebar />
         : null}
     </div>
   );

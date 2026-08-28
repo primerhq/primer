@@ -4,9 +4,8 @@
 // drag-and-drop with the three "move here / split right / split down"
 // zones, replacing nv-doc-host.jsx's single tab group.
 //
-// Mounted by nv-studio.jsx (phase 2), replacing nv-doc-host.jsx in the
-// center slot when the caller's model is TG_-shaped (see NV_TG_ENABLED in
-// nv-shell.jsx for the rollback gate).
+// Mounted unconditionally by nv-studio.jsx as the center slot (the
+// phase-2 rollback gate to nv-doc-host.jsx retired in US-011a).
 //
 // Props:
 //   model              - a TG_ model, see tab-group-model.js.
@@ -26,13 +25,10 @@
 //                         document body for its active tab; called with
 //                         null when a group has no active tab (only
 //                         possible for the sole empty-state group).
-//                         Delegates entirely to the caller so this file
-//                         never needs to know about NV_SessionDoc /
-//                         NV_FileDoc / NV_DiffDoc / NV_WikiDoc directly -
-//                         that dispatch is exactly what nv-doc-host.jsx
-//                         already does and will be retired once this file
-//                         replaces it (duplicating it here would just be
-//                         two copies to keep in sync until then).
+//                         Delegates entirely to the caller (nv-studio.jsx's
+//                         NV_renderStudioDoc) so this file never needs to
+//                         know about NV_SessionDoc / NV_FileDoc /
+//                         NV_DiffDoc / NV_WikiDoc directly.
 //   resolveSessionWid   - OPTIONAL (sid) => wid | undefined. A session
 //                         tab's running-pulse dot needs the session
 //                         store, which is keyed by (wid, sid); tabs are

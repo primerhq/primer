@@ -52,7 +52,7 @@ function _wsToastErr(pushToast, fallbackTitle) {
 // Workspaces list page
 // ============================================================================
 
-function WorkspacesPage({ onOpen, pushToast }) {
+function WorkspacesPage({ onOpen, pushToast, onManageTemplates }) {
   const { useRouter, useViewport, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
@@ -144,6 +144,17 @@ function WorkspacesPage({ onOpen, pushToast }) {
         </select>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
           <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
+          {typeof onManageTemplates === "function" && (
+            <Btn
+              size="sm"
+              kind="ghost"
+              icon="settings"
+              data-testid="workspaces-manage-templates"
+              onClick={onManageTemplates}
+            >
+              Manage templates
+            </Btn>
+          )}
           <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New workspace</Btn>
         </div>
       </div>

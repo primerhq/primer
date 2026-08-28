@@ -17,16 +17,21 @@
 // Web APIs are not ECMAScript, and a URL grammar that cannot be executed
 // in a test is a grammar nobody checks.
 
-// trace and inbox died on the three-view flag day: the trace is a
-// split inside the session doc and attention lives in the bands + the
-// system dashboard, so neither is a document any more.
+// On the split-view console trace and inbox are not document kinds: the
+// trace is a split inside the session doc and attention lives in the
+// Inbox (cross-workspace feed in the rail, beside the workspace tree) +
+// the system dashboard, so neither is a document kind.
 var SH_DOC_KINDS = ["session", "file", "diff", "wiki"];
 
 // "admin" died on the flag day: users/sso/mcp/setup are the System
 // view's navs now, so an overlay=admin address drops on parse.
 var SH_OVERLAYS = [
   "providers", "collections", "agents", "graphs", "triggers",
-  "toolsets", "tools", "workers", "approvals",
+  // "tools" retired (uiv2 US-011a): the standalone Tools catalog page is
+  // gone, embedded pickers (AP_ToolPicker, GB_ToolPicker) are the only
+  // surface left - an old ?overlay=tools link should fail to parse, not
+  // open a blank panel.
+  "toolsets", "workers", "approvals",
   "harnesses", "services", "channels", "workspaces", "new-session",
   // Create-workspace (wiring plan P3): the designer's instantiation
   // form, distinct from "workspaces" (the management surface).

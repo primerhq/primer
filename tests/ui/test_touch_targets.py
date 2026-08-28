@@ -28,6 +28,11 @@ HIT_SIZED: list[str] = [
     "nv-composer-iconbtn",
     "nv-stop-btn",
     "nv-send-btn",
+    # US-011b (split-view shell cutover): the tab strip and rail shipped
+    # with raw 16px/24px icon buttons, under the floor and untracked by
+    # this guard until now.
+    "nv-tg-tab-close",
+    "nv-rail-iconbtn",
 ]
 
 

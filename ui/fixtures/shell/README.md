@@ -21,11 +21,14 @@ Four doc kinds, addressed by wire id:
 - `wiki` : a collection document addressed by its slug path. Fixture:
   `wiki-document.json`.
 
-The trace and inbox doc kinds died on the three-view flag day: the
-trace opens as a SPLIT inside the session doc (still the only place raw
-tool arguments are shown; fixture `turn-timeline.json`), and attention
-lives in the sessions bands plus the System dashboard's cross-workspace
-panel (fixtures `pending-yields.json`, `approval-records.json`).
+The trace and inbox are not separate document kinds on the split-view
+console: the trace opens as a SPLIT inside the session doc (still the
+only place raw tool arguments are shown; fixture `turn-timeline.json`),
+and attention lives in the Inbox (the cross-workspace attention feed in
+the rail, alongside the workspace tree) plus the System dashboard's
+cross-workspace panel (fixtures `pending-yields.json`,
+`approval-records.json`). The rail is the workspace tree + Inbox (no
+bands); the center is tab groups and the Files panel is always visible.
 
 ## Overlays
 
@@ -33,7 +36,7 @@ Each is a self-contained management surface, opened over the shell and
 addressable in the URL. Names are the registry keys:
 
 `providers`, `collections`, `agents`, `graphs`, `triggers`, `toolsets`,
-`tools`, `workers`, `approvals`, `harnesses`, `services`,
+`workers`, `approvals`, `harnesses`, `services`,
 `channels`, `workspaces`, `new-session`, `new-workspace`,
 `internal-collections`, `activity`.
 

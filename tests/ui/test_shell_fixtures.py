@@ -19,7 +19,7 @@ DOC_KINDS = ["session", "file", "diff", "wiki"]
 # "admin" died on the flag day: its sections are the System view's navs.
 OVERLAYS = [
     "providers", "collections", "agents", "graphs", "triggers",
-    "toolsets", "tools", "workers", "approvals",
+    "toolsets", "workers", "approvals",
     "harnesses", "services", "channels", "workspaces", "new-session",
     # Create-workspace (wiring plan P3).
     "new-workspace",

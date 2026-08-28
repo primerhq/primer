@@ -114,11 +114,9 @@ def sessions_list(page: Page):
 
 
 def files_list(page: Page, *, timeout: int = 10_000):
-    """The rail's file tree. The console tabs the rail (Sessions |
-    Files), so reaching the tree means selecting its tab first."""
-    tab = page.get_by_test_id("nv-rail-tab-files")
-    expect(tab).to_be_visible(timeout=timeout)
-    tab.click()
+    """The file tree, in its own always-visible right-side panel
+    (uiv2 R2 cutover, US-011a: Files is no longer a Sessions|Files rail
+    tab, so reaching the tree needs no selection step first)."""
     files = page.get_by_test_id("nv-files")
     expect(files).to_be_visible(timeout=timeout)
     return files

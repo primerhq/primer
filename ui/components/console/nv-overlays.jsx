@@ -687,11 +687,6 @@ var NV_OVERLAY_MOUNTS = {
       return <window.ToolsetsPage pushToast={window.primerApi.toastPush} />;
     },
   },
-  tools: {
-    render: function () {
-      return <window.ToolsPage pushToast={window.primerApi.toastPush} />;
-    },
-  },
   // Workers + Health collapse into one overlay; health is a section.
   workers: {
     render: function (state) {
@@ -707,9 +702,6 @@ var NV_OVERLAY_MOUNTS = {
           onNavigate={function (page, sid) {
             if (sid) {
               shell.openDoc({ kind: "session", ref: sid, preview: false });
-            } else if (page === "tools") {
-              // "Configure gates on the Tools page" - a real page now.
-              shell.openOverlay("tools", null, null);
             }
           }}
         />
@@ -795,6 +787,9 @@ var NV_OVERLAY_MOUNTS = {
           onOpen={function (wid) {
             shell.switchWorkspace(wid);
           }}
+          onManageTemplates={function () {
+            shell.openOverlay("workspaces", "templates", null);
+          }}
         />
       );
     },
@@ -809,7 +804,6 @@ var NV_OVERLAY_TITLES = {
   graphs: "Graphs",
   triggers: "Triggers",
   toolsets: "Toolsets",
-  tools: "Tools",
   workers: "Workers",
   approvals: "Approvals",
   harnesses: "Harnesses",

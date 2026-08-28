@@ -38,6 +38,10 @@ function ApprovalsPage({ pushToast, onNavigate }) {
   // Records sort controls. "time" | "status"; "desc" | "asc".
   const [sortBy, setSortBy] = React.useState("time");
   const [sortDir, setSortDir] = React.useState("desc");
+  // US-011a: the standalone Tools catalog page retired; configuring a
+  // gate opens AP_NewPolicyModal directly, with its own embedded
+  // AP_ToolPicker to find the tool - no page to navigate to anymore.
+  const [configuringPolicy, setConfiguringPolicy] = React.useState(false);
 
   // Parked sessions — sessions in parked_status="parked" state. Each row
   // may or may not be parked on tool_approval (could be ask_user, sleep,
@@ -79,7 +83,13 @@ function ApprovalsPage({ pushToast, onNavigate }) {
   // (tool-approval:session:${id}) - handy for invalidation.
   return (
     <div className="col" style={{ gap: 14 }}>
-      <AP_ConfigHint onNavigate={onNavigate} />
+      <AP_ConfigHint onConfigure={() => setConfiguringPolicy(true)} />
+      {configuringPolicy && (
+        <AP_NewPolicyModal
+          pushToast={pushToast}
+          onClose={() => setConfiguringPolicy(false)}
+        />
+      )}
       <div className="panel">
         <div
           style={{
@@ -132,22 +142,22 @@ function ApprovalsPage({ pushToast, onNavigate }) {
 }
 
 // =============================================================
-// Config hint - approval configuration is per-tool, on the Tools page
+// Config hint - approval configuration is per-tool, via AP_NewPolicyModal
 // =============================================================
 
-function AP_ConfigHint({ onNavigate }) {
+function AP_ConfigHint({ onConfigure }) {
   return (
     <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 10 }} data-testid="approvals-config-hint">
       <Icon name="settings" size={14} style={{ color: "var(--text-3)" }} />
       <span className="muted text-sm">
         Approval gates are configured <strong style={{ color: "var(--text)" }}>per tool</strong>.
-        Add or edit one from the{" "}
+        {" "}
         <a
           style={{ color: "var(--accent)", cursor: "pointer" }}
-          onClick={() => onNavigate && onNavigate("tools")}
+          onClick={() => onConfigure && onConfigure()}
           data-testid="approvals-config-link"
         >
-          Tools page
+          Add or edit one
         </a>
         .
       </span>
@@ -574,8 +584,9 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
 
 // =============================================================
 // Approval configuration modal - Required/Policy/LLM create + edit.
-// Surfaced per-tool from the Tools page (toolsets.jsx); the global
-// Approvals page no longer carries a "Policies" tab.
+// Opened directly from ApprovalsPage's AP_ConfigHint link (US-011a: the
+// standalone Tools catalog page retired; its own embedded AP_ToolPicker
+// below is the only way left to find a tool to gate).
 // =============================================================
 
 // Searchable tool catalogue browser for the policy form: picking a row

@@ -98,7 +98,6 @@ def test_every_registered_verb_has_a_pointer_affordance() -> None:
     chrome_owned = {
         "palette.open": 'data-testid="nv-search"',
         "terminal.toggle": 'data-testid="nv-toggle-terminal"',
-        "events.toggle": 'data-testid="nv-toggle-events"',
         "workspace.switch": 'data-testid="nv-ws-btn"',
         "workspace.create": 'data-testid="nv-ws-create"',
         "view.studio": 'data-testid="nv-go-studio"',

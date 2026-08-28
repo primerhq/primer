@@ -217,24 +217,15 @@
 <script type="text/babel" src="components/console/nv-chrome.jsx"></script>
 <script type="text/babel" src="components/console/nv-palette.jsx"></script>
 <script type="text/babel" src="components/console/nv-studio.jsx"></script>
-<script type="text/babel" src="components/console/nv-sessions-sidebar.jsx"></script>
-<!-- US-007 R2 phase 1: the Inbox + workspace-tree rail, standalone until
-     phase 2 retires nv-sessions-sidebar.jsx above. Uses NV_identity
-     (nv-studio.jsx, already loaded earlier) but deliberately does NOT
-     reuse nv-sessions-sidebar.jsx's session context menu (con.wid there
-     is wrong for a cross-workspace tree - see nv-rail.jsx's own
-     comment); registered here purely for grouping, no load-order
-     dependency on the file above it. -->
+<!-- uiv2 R2 cutover (US-011a): nv-sessions-sidebar.jsx (flat rail) and
+     nv-doc-host.jsx (single-group doc host) retired - NV_Rail below and
+     nv-tab-groups.jsx are the only shell for Studio now. -->
 <script type="text/babel" src="components/console/nv-rail.jsx"></script>
 <script type="text/babel" src="components/console/nv-files-sidebar.jsx"></script>
 <script type="text/babel" src="components/console/nv-session-doc.jsx"></script>
 <script type="text/babel" src="components/console/nv-file-docs.jsx"></script>
-<script type="text/babel" src="components/console/nv-doc-host.jsx"></script>
-<!-- US-007 R2 phase 1: the multi-group tab host, standalone until phase 2
-     retires nv-doc-host.jsx above and nv-shell.jsx mounts this instead. -->
 <script type="text/babel" src="components/console/nv-tab-groups.jsx"></script>
 <script type="text/babel" src="components/console/nv-terminal.jsx"></script>
-<script type="text/babel" src="components/console/nv-events-sidebar.jsx"></script>
 <script type="text/babel" src="components/console/nv-client-tools.jsx"></script>
 <script type="text/babel" src="components/console/nv-overlays.jsx"></script>
 <script type="text/babel" src="components/console/nv-platform.jsx"></script>

@@ -3320,32 +3320,25 @@ input, textarea, select { font: inherit; color: inherit; }
   background: var(--bg-1);
   border-right: 1px solid var(--border);
 }
-.nv-rail-tabs {
-  display: flex;
-  align-items: center;
-  height: 34px;
-  padding: 0 8px;
-  gap: 2px;
-  border-bottom: 1px solid var(--border);
+/* uiv2 R2 cutover (US-011a): Files is its own always-visible right-side
+   panel now (notes 2.5), 248px, mirroring .nv-rail's shape on the
+   opposite edge. */
+.nv-files-panel {
+  width: 248px;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-1);
+  border-left: 1px solid var(--border);
 }
-.nv-rail-tab {
-  padding: 4px 10px;
-  border: none;
-  background: transparent;
-  color: var(--text-3);
-  border-radius: var(--r-6);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-.nv-rail-tab:hover { color: var(--text); }
-.nv-rail-tab[data-active="true"] { background: var(--bg-2); color: var(--text); }
 .nv-rail-iconbtn {
-  width: 24px;
-  height: 24px;
+  /* US-011b touch-target guard: was a raw 24px, under the floor. The
+     30px section-head row leaves no room for a full var(--hit), so
+     this uses the same reduced-but-token-driven idiom already shipped
+     for other dense rows (.nv-plat-row/.nv-seg-btn/.nv-fam-pill). */
+  width: calc(var(--hit) - 8px);
+  height: calc(var(--hit) - 8px);
   display: grid;
   place-items: center;
   border: none;
@@ -3669,8 +3662,12 @@ input, textarea, select { font: inherit; color: inherit; }
 .nv-tg-glyph-diff { font-family: var(--font-mono, monospace); font-size: 10.5px; color: var(--green); }
 .nv-tg-tab-label { overflow: hidden; text-overflow: ellipsis; }
 .nv-tg-tab-close {
-  width: 16px;
-  height: 16px;
+  /* US-011b touch-target guard: was a raw 16px, well under the floor.
+     Full var(--hit) (36px/32px) would overflow the 34px tab bar, so
+     this uses the same reduced-but-token-driven idiom already shipped
+     for other dense rows (.nv-plat-row/.nv-seg-btn/.nv-fam-pill). */
+  width: calc(var(--hit) - 8px);
+  height: calc(var(--hit) - 8px);
   display: grid;
   place-items: center;
   border: none;
@@ -5089,6 +5086,20 @@ button.nv-commit-row {
   display: flex;
 }
 button.nv-commit-row { flex-direction: column; align-items: stretch; }
+/* uiv2 R2 cutover (US-011a): the rail's rows converted from <div onClick>
+   to real buttons too, closing the same FC5 gap nv-rail.jsx had reopened -
+   same reset pattern as above. */
+button.nv-rail-inbox-row,
+button.nv-rail-ws-row,
+button.nv-rail-ws-session {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  font: inherit;
+  color: inherit;
+  display: flex;
+}
 
 /* Row status chip (flag day follow-through): the bands order by
    consequence; this says created/waiting/ended-why on the row itself. */

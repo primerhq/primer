@@ -38,16 +38,10 @@ def test_affordances_run_registered_verbs():
     # Chrome never hardcodes behavior: clicks resolve registry verbs.
     for verb in ("view.studio", "view.platform", "view.system",
                  "workspace.switch", "workspace.create", "palette.open",
-                 "terminal.toggle", "events.toggle"):
+                 "terminal.toggle"):
         assert verb in SHELL, f"{verb} not registered"
     assert 'registry.get' in CHROME
     assert re.search(r'data-verb="view\.studio"', CHROME)
-
-
-def test_toggle_order_terminal_before_events():
-    t = CHROME.index("nv-toggle-terminal")
-    e = CHROME.index("nv-toggle-events")
-    assert t < e, "terminal toggle sits before the events toggle"
 
 
 def test_registered_chords_are_live_bindings():

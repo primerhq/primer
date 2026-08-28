@@ -34,7 +34,6 @@ DESIGNATIONS = {
     "graphs": ("graphs.jsx", "GraphsPage"),
     "triggers": ("triggers.jsx", "TR_TriggersPage"),
     "toolsets": ("toolsets.jsx", "ToolsetsPage"),
-    "tools": ("toolsets.jsx", "ToolsPage"),
     "workers": ("workers.jsx", "WorkersPage"),
     "approvals": ("approvals.jsx", "ApprovalsPage"),
     "harnesses": ("harnesses.jsx", "HarnessesPage"),

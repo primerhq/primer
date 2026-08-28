@@ -89,8 +89,8 @@ function NV_Rail_inboxKindLabel(kind) {
 // workspace's expanded row would silently act against the WRONG
 // workspace if it read con.wid instead of the row's own wid. That is a
 // real correctness bug, not a style preference, so this takes wid as an
-// explicit prop instead. Keep the two in sync by hand if either changes;
-// nv-sessions-sidebar.jsx stays untouched (owned elsewhere until cutover).
+// explicit prop instead. nv-sessions-sidebar.jsx (and its own copy of
+// this menu) retired in US-011a; this is the only one left.
 function NV_Rail_SessionContextMenu(props) {
   var s = props.session;
   var wid = props.wid;
@@ -223,6 +223,32 @@ function NV_Rail(props) {
     { pollMs: 10000, deps: [(wsRes.data && wsRes.data.items || []).length] }
   );
 
+  // US-011f: restore the liveness the retired nv-sessions-sidebar.jsx had
+  // (git show HEAD -- ui/components/console/nv-sessions-sidebar.jsx) -
+  // it refetched on yielded/resumed/done tap frames instead of waiting
+  // out its poll. Scoped to the SELECTED workspace's tap, same as that
+  // file: the rail's Inbox is cross-workspace, but useWorkspaceTapListener
+  // is one EventSource per workspace, and opening one per workspace just
+  // for this rail is a bigger change than restoring the property that
+  // regressed - attention changes in OTHER workspaces still arrive via
+  // inboxRes's own 10s poll, unchanged. Debounced (leading-edge, 500ms
+  // suppression window) because the retired code's un-debounced direct
+  // refetch was fine for one workspace's frames but a burst here would
+  // otherwise hammer the cross-workspace aggregate endpoint once per
+  // frame; the first qualifying frame still refetches immediately so the
+  // update still feels live.
+  var attentionRefetchTimerRef = React.useRef(null);
+  window.useWorkspaceTapListener(props.selectedWorkspaceId, function (ev) {
+    var cls = ev && ev["class"];
+    if (cls !== "yielded" && cls !== "resumed" && cls !== "done") return;
+    if (attentionRefetchTimerRef.current) return;
+    sessRes.refetch();
+    inboxRes.refetch();
+    attentionRefetchTimerRef.current = setTimeout(function () {
+      attentionRefetchTimerRef.current = null;
+    }, 500);
+  });
+
   var expandedState = React.useState({});
   var expanded = expandedState[0];
   var setExpanded = expandedState[1];
@@ -272,6 +298,7 @@ function NV_Rail(props) {
           <span className="nv-rail-count">{inboxItems.length}</span>
           <div style={{ flex: 1 }} />
           <button type="button" className="nv-rail-iconbtn" title="New session"
+            data-verb="session.create"
             data-testid="nv-rail-create-session"
             onClick={function () {
               if (typeof props.onCreateSession === "function") {
@@ -287,7 +314,7 @@ function NV_Rail(props) {
           var ws = workspaces.filter(function (w) { return w.id === it.workspace_id; })[0];
           var ident = s ? NV_identity(s.binding) : null;
           return (
-            <div key={it.session_id} className="nv-rail-inbox-row"
+            <button type="button" key={it.session_id} className="nv-rail-inbox-row"
               data-testid={"nv-rail-inbox-row:" + it.session_id}
               onClick={function () {
                 if (typeof props.onSelectWorkspace === "function") {
@@ -308,7 +335,7 @@ function NV_Rail(props) {
                   <path d={ident.d} fill="currentColor" />
                 </svg>
               ) : null}
-            </div>
+            </button>
           );
         })}
       </div>
@@ -329,7 +356,7 @@ function NV_Rail(props) {
           var attnCount = Object.keys(attentionSidsByWs[w.id] || {}).length;
           return (
             <div key={w.id}>
-              <div className="nv-rail-ws-row" data-testid={"nv-rail-ws:" + w.id}
+              <button type="button" className="nv-rail-ws-row" data-testid={"nv-rail-ws:" + w.id}
                 data-selected={isSelected ? "true" : "false"}
                 onClick={function () {
                   if (typeof props.onSelectWorkspace === "function") props.onSelectWorkspace(w.id);
@@ -349,13 +376,13 @@ function NV_Rail(props) {
                 <span className="nv-rail-name">{w.name || w.id}</span>
                 {attnCount > 0 ? <span className="nv-rail-attn-count">{attnCount}</span> : null}
                 <span className="nv-rail-session-count">{wsSessions.length}</span>
-              </div>
+              </button>
               {isOpen ? wsSessions.map(function (s) {
                 var sid = s.session_id;
                 var ident = NV_identity(s.binding);
                 var isAttention = !!(attentionSidsByWs[w.id] && attentionSidsByWs[w.id][sid]);
                 return (
-                  <div key={sid} className="nv-rail-ws-session"
+                  <button type="button" key={sid} className="nv-rail-ws-session"
                     data-testid={"nv-rail-ws-session:" + sid}
                     onClick={function () {
                       if (typeof props.onSelectWorkspace === "function") props.onSelectWorkspace(w.id);
@@ -375,7 +402,7 @@ function NV_Rail(props) {
                     ) : (
                       <NV_Rail_SessionPulse wid={w.id} sid={sid} />
                     )}
-                  </div>
+                  </button>
                 );
               }) : null}
             </div>

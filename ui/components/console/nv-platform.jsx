@@ -35,8 +35,14 @@ var NV_PLAT_ICONS = {
 
 var NV_PLAT_GROUPS = [
   { label: "Intelligence", ids: ["providers", "profiles", "agents", "graphs"] },
+  // "templates" retired as a peer nav id (uiv2 US-011a): it folded into
+  // Workspaces (WorkspacesPage's own "Manage templates" link opens the
+  // workspaces:templates overlay section instead). The grammar
+  // (shell-url.js SH_VIEWS.platform) and this file's own per-entity
+  // config still admit view=platform:templates so an old deep link
+  // keeps working - there is just no row for it here anymore.
   { label: "Workbench",
-    ids: ["workspaces", "templates", "toolsets", "tools", "collections"] },
+    ids: ["workspaces", "toolsets", "tools", "collections"] },
   { label: "Automation", ids: ["triggers", "channels", "harnesses", "services"] },
   { label: "Governance", ids: ["approvals"] },
 ];

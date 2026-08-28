@@ -1,62 +1,17 @@
 /* global React, SH_api, NV_useConsole */
-// Files sidebar (wiring plan P2 T6): lazy one-level tree with full
-// management (new/upload/rename/delete/download/copy-path via header
-// verbs + right-click), and the History toggle listing turn commits
-// that open diff tabs. Prototype LEFT SIDEBAR files region.
-
-// The verbs strip and the sidebar body are SIBLINGS in the rail
-// header row, so state is shared through a module ref + a change
-// event rather than context.
-var NV_filesUi = { current: null };
-
-function NV_FilesSidebarVerbs() {
-  var con = NV_useConsole();
-  var tickState = React.useState(0);
-  var setTick = tickState[1];
-  React.useEffect(function () {
-    function bump() { setTick(function (v) { return v + 1; }); }
-    window.addEventListener("nv-files-ui", bump);
-    return function () { window.removeEventListener("nv-files-ui", bump); };
-  }, []);
-  var ui = NV_filesUi.current;
-  if (!ui) return null;
-  return (
-    <React.Fragment>
-      <button type="button" className="nv-rail-iconbtn" title="New file"
-        data-testid="nv-file-new"
-        onClick={function () {
-          promptDialog({ title: "New file path" }).then(function (p) {
-            if (!p) return;
-            SH_api.fileWrite(con.wid, p, "").then(ui.refetch);
-          });
-        }}>+</button>
-      <button type="button" className="nv-rail-iconbtn" title="Upload"
-        data-testid="nv-file-upload"
-        onClick={function () {
-          var input = document.createElement("input");
-          input.type = "file";
-          input.multiple = true;
-          input.onchange = function () { ui.upload(input.files, ""); };
-          input.click();
-        }}>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
-          stroke="currentColor" strokeWidth="1.4">
-          <path d="M6 8V1.5M3 4 6 1l3 3M1.5 10.5h9" />
-        </svg>
-      </button>
-      <button type="button" className="nv-rail-iconbtn"
-        title="Workspace history" data-testid="nv-file-history"
-        data-active={ui.history ? "true" : "false"}
-        onClick={ui.toggleHistory}>
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"
-          stroke="currentColor" strokeWidth="1.3">
-          <circle cx="6.5" cy="6.5" r="5" />
-          <path d="M6.5 3.8v2.9l2 1.4" />
-        </svg>
-      </button>
-    </React.Fragment>
-  );
-}
+// Files sidebar (uiv2 R2 cutover, US-011a): always-visible right panel
+// per implementer-notes 2.5 - lazy one-level tree with full management
+// (new/upload/rename/delete/download/copy-path via header verbs +
+// right-click), and the History toggle listing turn commits that open
+// diff tabs.
+//
+// Header verbs used to be a SEPARATE component (NV_FilesSidebarVerbs)
+// sharing state with this one through a module ref + change event,
+// because nv-studio.jsx's old Sessions|Files tab bar rendered them as
+// siblings. That tab bar is retired (Files is its own panel now, no
+// tab to share a header row with), so the verbs render inline here
+// with plain closures - the ref/event indirection had no reason left
+// to exist once verbs and body share one component.
 
 function NV_FileContextMenu(props) {
   var con = NV_useConsole();
@@ -259,22 +214,46 @@ function NV_FilesSidebar() {
 
   var items = (tree.data && tree.data.items) || [];
   var commitRows = (commits.data && commits.data.items) || [];
-  NV_filesUi.current = {
-    refetch: refetch,
-    upload: upload,
-    history: history,
-    toggleHistory: function () {
-      setHistory(function (v) { return !v; });
-      try { window.dispatchEvent(new CustomEvent("nv-files-ui")); } catch (_e) { /* noop */ }
-    },
-  };
-  React.useEffect(function () {
-    try { window.dispatchEvent(new CustomEvent("nv-files-ui")); } catch (_e) { /* noop */ }
-    return function () { NV_filesUi.current = null; };
-  }, [history, con.wid]);
+  var ws = (con.workspaces || []).find(function (w) { return w.id === con.wid; });
 
   return (
-    <React.Fragment>
+    <div className="nv-files-panel" data-testid="nv-files-panel">
+      <div className="nv-rail-section-head">
+        <span>Files - {(ws && (ws.name || ws.id)) || con.wid}</span>
+        <div style={{ flex: 1 }} />
+        <button type="button" className="nv-rail-iconbtn" title="New file"
+          data-testid="nv-file-new"
+          onClick={function () {
+            promptDialog({ title: "New file path" }).then(function (p) {
+              if (!p) return;
+              SH_api.fileWrite(con.wid, p, "").then(refetch);
+            });
+          }}>+</button>
+        <button type="button" className="nv-rail-iconbtn" title="Upload"
+          data-testid="nv-file-upload"
+          onClick={function () {
+            var input = document.createElement("input");
+            input.type = "file";
+            input.multiple = true;
+            input.onchange = function () { upload(input.files, ""); };
+            input.click();
+          }}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+            stroke="currentColor" strokeWidth="1.4">
+            <path d="M6 8V1.5M3 4 6 1l3 3M1.5 10.5h9" />
+          </svg>
+        </button>
+        <button type="button" className="nv-rail-iconbtn"
+          title="Workspace history" data-testid="nv-file-history"
+          data-active={history ? "true" : "false"}
+          onClick={function () { setHistory(function (v) { return !v; }); }}>
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"
+            stroke="currentColor" strokeWidth="1.3">
+            <circle cx="6.5" cy="6.5" r="5" />
+            <path d="M6.5 3.8v2.9l2 1.4" />
+          </svg>
+        </button>
+      </div>
       <div className="nv-rail-body" data-testid="nv-files"
         onDragOver={function (ev) { ev.preventDefault(); }}
         onDrop={function (ev) {
@@ -338,9 +317,8 @@ function NV_FilesSidebar() {
             onClose={function () { setMenu(null); }} />
         ) : null}
       </div>
-    </React.Fragment>
+    </div>
   );
 }
 
-window.NV_FilesSidebarVerbs = NV_FilesSidebarVerbs;
 window.NV_FilesSidebar = NV_FilesSidebar;

@@ -207,6 +207,17 @@ EOF
     echo "[bringup] auth disabled (PRIMER_E2E_AUTH_DISABLED=1)" >&2
 fi
 
+# US-011e: mounting the instrumentation endpoints (primer/api/routers/
+# _test_endpoints.py, incl. POST /_test/park_session used by the
+# deterministic-park BDD scenario) needs no action here. It is not a
+# config.yaml field: the router is gated by PRIMER_ENABLE_TEST_ENDPOINTS
+# directly (see primer/api/_app_routes.py), and this script launches
+# `uv run primer api` as a plain host subprocess below (unlike
+# scripts/e2e/ui-bringup.sh's docker container, which needs an explicit
+# compose-env passthrough), so a caller-exported
+# PRIMER_ENABLE_TEST_ENDPOINTS=1 reaches the server on its own. Same
+# opt-in-by-the-caller shape as PRIMER_E2E_AUTH_DISABLED above.
+
 # Merge storage/vector backend choice from tests/testconfig.yaml (if present).
 # render-server-config prints nothing when sqlite/lance are selected, so this
 # is a no-op for the default hermetic run.

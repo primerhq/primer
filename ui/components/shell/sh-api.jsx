@@ -102,14 +102,6 @@ var SH_api = {
       "PUT", url, { content: content, encoding: "text" });
   },
 
-  // Per-workspace lifecycle-event streaming opt-in (workspaces.py
-  // set_workspace_events; body wraps the config so null clears).
-  setWorkspaceEvents: function (wid, enabled) {
-    return window.primerApi.apiFetch(
-      "PUT", "/workspaces/" + encodeURIComponent(wid) + "/events",
-      { config: enabled ? { enabled: true } : null });
-  },
-
   // The platform event log window (events.py list_events; admin-gated).
   events: function (opts, signal) {
     var o = opts || {};

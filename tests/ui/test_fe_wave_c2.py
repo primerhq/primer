@@ -7,7 +7,7 @@ from pathlib import Path
 _UI = Path(__file__).resolve().parents[2] / "ui"
 STYLES = (_UI / "styles.css").read_text()
 SHARED = (_UI / "components" / "shared.jsx").read_text()
-SESSIONS = (_UI / "components" / "console" / "nv-sessions-sidebar.jsx").read_text()
+RAIL = (_UI / "components" / "console" / "nv-rail.jsx").read_text()
 FILES = (_UI / "components" / "console" / "nv-files-sidebar.jsx").read_text()
 
 
@@ -50,11 +50,20 @@ def test_fc5_text4_contrast_raised() -> None:
 def test_fc5_rail_rows_are_keyboard_accessible() -> None:
     """The console sidebars satisfy this by construction: their rows are
     real buttons, so focus, Enter and Space come from the platform
-    instead of a role/tabindex/onKeyDown retrofit."""
-    for src in (SESSIONS, FILES):
+    instead of a role/tabindex/onKeyDown retrofit.
+
+    RETARGET (uiv2 R2 cutover): nv-sessions-sidebar.jsx retired; nv-rail.jsx
+    is the rail now. Its rows were <div onClick> (a real regression this
+    guard would have caught if it had been pointed here already) -
+    converted to buttons alongside this retarget, not just renamed past.
+    """
+    for src in (RAIL, FILES):
         assert 'role="button"' not in src, "a real button needs no role"
         # Every clickable row is a <button>, never a bare div with onClick.
         assert "<div onClick" not in src
-    assert '<button type="button" key={sid} className="nv-session-row"' \
-        in SESSIONS
+    assert '<button type="button" key={it.session_id} className="nv-rail-inbox-row"' \
+        in RAIL
+    assert '<button type="button" className="nv-rail-ws-row"' in RAIL
+    assert '<button type="button" key={sid} className="nv-rail-ws-session"' \
+        in RAIL
     assert '<button type="button" className="nv-file-row"' in FILES

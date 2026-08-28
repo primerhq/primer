@@ -227,16 +227,6 @@ function NV_Topbar() {
               <path d="M3.5 5.5 6 7.5 3.5 9.5M7.5 9.5h3" />
             </svg>
           </button>
-          <button type="button" className="nv-topbar-toggle"
-            title="Toggle workspace events" data-verb="events.toggle"
-            data-testid="nv-toggle-events"
-            data-active={con.panels.events ? "true" : "false"}
-            onClick={function () { NV_run(con, "events.toggle"); }}>
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
-              stroke="currentColor" strokeWidth="1.3">
-              <path d="M1.5 7h2.6l1.6-4 2.6 8 1.6-4h2.6" />
-            </svg>
-          </button>
         </div>
       ) : null}
       {con.openMenu === "profile" ? <NV_ProfileMenu /> : null}

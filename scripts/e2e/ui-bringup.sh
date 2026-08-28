@@ -58,25 +58,29 @@ fi
 
 # ---- 1. Compose stack ------------------------------------------------------
 
-# Optionally disable auth for the test container. Mirrors the opt-in knob in
-# scripts/e2e/bringup.sh: some suites (tests/ui_e2e) seed fixtures over plain
-# httpx with no login and 401 when auth is on. Opt in with
-# PRIMER_E2E_AUTH_DISABLED=1; unset (the default) keeps auth enabled — the
-# production default. The container is env-driven (see docker-compose.yml), so
-# we inject PRIMER_AUTH__ENABLED=false via a compose override file rather than
-# editing docker-compose.yml (which must keep auth on by default).
+# Optional container-env knobs, injected via a compose override file rather
+# than editing docker-compose.yml (which must keep production defaults).
+# - PRIMER_E2E_AUTH_DISABLED=1 mirrors the opt-in knob in scripts/e2e/
+#   bringup.sh: some suites (tests/ui_e2e) seed fixtures over plain httpx
+#   with no login and 401 when auth is on.
+# - PRIMER_ENABLE_TEST_ENDPOINTS=1 forwards the app's own /v1/_test/* mount
+#   flag into the container (bringup.sh's host-process server inherits it
+#   from the caller's environment; the container needs this passthrough).
 COMPOSE_UP=(up -d)
+OVERRIDE_ENV=""
 if [[ "${PRIMER_E2E_AUTH_DISABLED:-0}" == "1" ]]; then
-    AUTH_OVERRIDE="$(mktemp)"
-    trap 'rm -f "$AUTH_OVERRIDE"' EXIT
-    cat > "$AUTH_OVERRIDE" <<'EOF'
-services:
-  primer:
-    environment:
-      PRIMER_AUTH__ENABLED: "false"
-EOF
-    COMPOSE_UP=(-f docker-compose.yml -f "$AUTH_OVERRIDE" up -d)
+    OVERRIDE_ENV+=$'      PRIMER_AUTH__ENABLED: "false"\n'
     echo "[ui-bringup] auth disabled (PRIMER_E2E_AUTH_DISABLED=1)" >&2
+fi
+if [[ "${PRIMER_ENABLE_TEST_ENDPOINTS:-0}" == "1" ]]; then
+    OVERRIDE_ENV+=$'      PRIMER_ENABLE_TEST_ENDPOINTS: "1"\n'
+    echo "[ui-bringup] test endpoints enabled (PRIMER_ENABLE_TEST_ENDPOINTS=1)" >&2
+fi
+if [[ -n "$OVERRIDE_ENV" ]]; then
+    ENV_OVERRIDE="$(mktemp)"
+    trap 'rm -f "$ENV_OVERRIDE"' EXIT
+    printf 'services:\n  primer:\n    environment:\n%s' "$OVERRIDE_ENV" > "$ENV_OVERRIDE"
+    COMPOSE_UP=(-f docker-compose.yml -f "$ENV_OVERRIDE" up -d)
 fi
 
 echo "[ui-bringup] ensuring primer-app + postgres are up..." >&2

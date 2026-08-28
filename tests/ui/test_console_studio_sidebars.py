@@ -1,5 +1,7 @@
-"""Studio sidebars (wiring plan P2 T6): band ordering, context-menu
-management, files tree + history, empty states as prompts.
+"""Studio sidebars (wiring plan P2 T6, retargeted for the uiv2 R2 cutover
+US-011a): band ordering (still a pure spec-pinned sort, though the rail
+draws Inbox + tree instead of bands now), context-menu management, files
+tree + history, empty states as prompts.
 """
 
 from __future__ import annotations
@@ -10,7 +12,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CONSOLE = ROOT / "ui" / "components" / "console"
 STUDIO = (CONSOLE / "nv-studio.jsx").read_text(encoding="utf-8")
-SESS = (CONSOLE / "nv-sessions-sidebar.jsx").read_text(encoding="utf-8")
+# RETARGET (uiv2 R2 cutover, US-011a): nv-sessions-sidebar.jsx retired;
+# NV_Rail (nv-rail.jsx) is the session-carrying sidebar now.
+RAIL = (CONSOLE / "nv-rail.jsx").read_text(encoding="utf-8")
 FILES = (CONSOLE / "nv-files-sidebar.jsx").read_text(encoding="utf-8")
 
 
@@ -22,22 +26,27 @@ def test_band_order_is_attention_running_idle_ended():
 
 
 def test_attention_band_comes_from_pending_yields():
-    assert "pendingYields" in SESS
-    assert "attentionSids" in SESS
+    assert "SH_api.pendingYields" in RAIL
+    assert "attentionSids" in RAIL
 
 
-def test_session_rows_carry_identity_and_live_status():
-    assert "NV_identity" in SESS
-    assert "SH_statusFromTap" in SESS
-    assert 'data-attention=' in SESS
+def test_session_rows_carry_identity_and_attention_dot():
+    """RETARGET: the rail's rows carry the agent glyph and an attention
+    dot, same as the old sidebar - but not a live per-row status color;
+    the rail has no useWorkspaceTapListener wiring (unlike the retired
+    nv-sessions-sidebar.jsx), so live status only shows once a session is
+    opened as a doc. Flagged to the lead as a possible gap, not silently
+    reintroduced here."""
+    assert "NV_identity" in RAIL
+    assert "nv-dot-attention" in RAIL
 
 
 def test_session_context_menu_manages_the_row():
     for label in ('"Open"', '"Rename"', '"Interrupt"', '"Park"',
                   '"End"', '"Delete"'):
-        assert label in SESS, label
-    assert "confirmDialog" in SESS, "delete confirms"
-    assert "deleteSession" in SESS
+        assert label in RAIL, label
+    assert "confirmDialog" in RAIL, "delete confirms"
+    assert "deleteSession" in RAIL
 
 
 def test_files_tree_manages_and_uploads():
@@ -54,7 +63,11 @@ def test_history_opens_diff_docs():
 
 
 def test_empty_states_are_prompts_with_one_action():
-    assert "Start a session" in SESS
+    """RETARGET: the rail's empty Inbox is a plain message with no CTA
+    now (the "start a session" prompt lives in the center's empty-doc
+    state instead, alongside the new Ctrl+K affordance - two actions,
+    not one, a genuine UX change from the old sidebar's single button)."""
+    assert "New session" in STUDIO
     assert "New file" in FILES
 
 

@@ -1,11 +1,14 @@
-"""US-007 R2 phase 2: wiring the rail + tab groups into the shell.
+"""US-007 R2 phase 2, cut over permanently in US-011a: the rail + tab
+groups as the only Studio shell.
 
 Design: docs/superpowers/uiv2/06-r2-phase2-design.md (local, gitignored).
-TG model lives as nv-shell.jsx state; doc becomes a derived memo off it
-instead of a second source of truth. con.setDoc/con.promoteDoc keep their
-exact pre-existing signatures so out-of-scope callers (nv-overlays.jsx,
-nv-files-sidebar.jsx, nv-file-docs.jsx) need no changes. A single flag
-(NV_TG_ENABLED) gates both mount points for an instant rollback.
+TG model lives as nv-shell.jsx state; doc is a derived memo off it
+instead of a second source of truth. con.setDoc/con.promoteDoc keep
+their exact pre-existing signatures so out-of-scope callers
+(nv-overlays.jsx, nv-files-sidebar.jsx, nv-file-docs.jsx) need no
+changes. The phase-2 rollback flag (NV_TG_ENABLED) and its fallback
+mount (nv-doc-host.jsx, nv-sessions-sidebar.jsx) were retired once the
+cutover proved out - this is just how the shell works now.
 """
 
 from __future__ import annotations
@@ -17,11 +20,6 @@ ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 SHELL = (UI / "components" / "console" / "nv-shell.jsx").read_text(encoding="utf-8")
 STUDIO = (UI / "components" / "console" / "nv-studio.jsx").read_text(encoding="utf-8")
-
-
-def test_the_flag_exists_and_defaults_on() -> None:
-    assert re.search(r"var NV_TG_ENABLED = true;", SHELL)
-    assert "tgEnabled: NV_TG_ENABLED" in SHELL
 
 
 def test_doc_is_derived_not_a_second_source_of_truth() -> None:
@@ -102,13 +100,12 @@ def test_resolve_session_wid_reuses_the_rails_own_cache_key() -> None:
     assert '"nv-rail-all-sessions"' in SHELL
 
 
-def test_studio_mounts_rail_and_tab_groups_behind_the_flag() -> None:
-    assert "con.tgEnabled && typeof window.NV_Rail" in STUDIO
-    assert "<window.NV_TabGroups" in STUDIO
+def test_studio_mounts_rail_and_tab_groups_unconditionally() -> None:
     assert "<window.NV_Rail" in STUDIO
-    # The pre-R2 fallback must still be reachable when the flag is off.
-    assert "<window.NV_DocHost />" in STUDIO
-    assert "<window.NV_SessionsSidebar />" in STUDIO
+    assert "<window.NV_TabGroups" in STUDIO
+    # The pre-R2 fallback is gone, not just unreachable.
+    assert "NV_DocHost" not in STUDIO
+    assert "NV_SessionsSidebar" not in STUDIO
 
 
 def test_rail_props_are_wired_to_console_verbs() -> None:
@@ -158,20 +155,21 @@ def test_render_doc_dispatch_and_empty_state_survive_with_their_testids() -> Non
     assert 'data-testid="nv-empty-new-session"' in STUDIO
 
 
-def test_files_sidebar_stays_reachable_regardless_of_the_flag() -> None:
-    # Files-sidebar repositioning (notes 2.5's always-visible right panel)
-    # is out of phase-2 scope; the Sessions|Files tab toggle is kept so
-    # Files access is never lost when the flag flips the sessions side.
-    assert 'data-testid="nv-rail-tab-files"' in STUDIO
+def test_files_sidebar_is_always_visible() -> None:
+    # US-011a (notes 2.5): Files is its own always-visible right-side
+    # panel now, not a Sessions|Files rail-toggle tab.
+    assert "nv-rail-tab-files" not in STUDIO
     assert "window.NV_FilesSidebar" in STUDIO
 
 
-def test_old_files_stay_scripted_for_instant_rollback() -> None:
+def test_old_files_are_gone_not_just_unscripted() -> None:
     html = (UI / "index.html").read_text(encoding="utf-8")
-    assert "components/console/nv-doc-host.jsx" in html
-    assert "components/console/nv-sessions-sidebar.jsx" in html
+    assert "components/console/nv-doc-host.jsx" not in html
+    assert "components/console/nv-sessions-sidebar.jsx" not in html
     assert "components/console/nv-tab-groups.jsx" in html
     assert "components/console/nv-rail.jsx" in html
+    assert not (UI / "components" / "console" / "nv-doc-host.jsx").exists()
+    assert not (UI / "components" / "console" / "nv-sessions-sidebar.jsx").exists()
 
 
 def test_bundle_transpiles_with_the_integration() -> None:

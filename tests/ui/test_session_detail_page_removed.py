@@ -49,8 +49,10 @@ def test_a_session_is_reachable_as_a_document() -> None:
     a session is a document in it, so a session link IS the shell URL."""
     url = (UI / "foundation" / "shell-url.js").read_text(encoding="utf-8")
     assert '"session"' in url, "session must be an addressable doc kind"
+    # RETARGET (uiv2 R2 cutover): nv-sessions-sidebar.jsx retired; the
+    # rail (nv-studio.jsx's onOpenSession) is the affordance now.
     host = (
-        UI / "components" / "console" / "nv-sessions-sidebar.jsx"
+        UI / "components" / "console" / "nv-studio.jsx"
     ).read_text(encoding="utf-8")
     assert 'kind: "session"' in host, "an affordance must be able to open one"
     # The removed page component is never mounted.

@@ -1,17 +1,19 @@
-"""Terminal + events sidebar (wiring plan P2 T8)."""
+"""Terminal panel (wiring plan P2 T8).
+
+The workspace events sidebar (nv-events-sidebar.jsx: streaming opt-in,
+cursor-paged tail, role-denial fallback) retired in the uiv2 US-011a
+cutover - the toggle, the mount and its dedicated sh-api.jsx helper
+(setWorkspaceEvents) are gone with it. The terminal panel is unrelated
+and survives untouched.
+"""
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONSOLE = ROOT / "ui" / "components" / "console"
 TERM = (CONSOLE / "nv-terminal.jsx").read_text(encoding="utf-8")
-EVENTS = (CONSOLE / "nv-events-sidebar.jsx").read_text(encoding="utf-8")
-CHROME = (CONSOLE / "nv-chrome.jsx").read_text(encoding="utf-8")
-API = (ROOT / "ui" / "components" / "shell" / "sh-api.jsx").read_text(
-    encoding="utf-8")
 
 
 def test_terminal_rides_the_pty_websocket():
@@ -19,31 +21,3 @@ def test_terminal_rides_the_pty_websocket():
     assert "window.Terminal" in TERM and "FitAddon" in TERM
     assert "resize" in TERM
     assert 'data-testid="nv-terminal-denied"' in TERM
-
-
-def test_toggle_order_terminal_before_events():
-    t = CHROME.index("nv-toggle-terminal")
-    e = CHROME.index("nv-toggle-events")
-    assert t < e
-
-
-def test_events_tail_is_cursor_paged_and_workspace_scoped():
-    assert "afterId" in EVENTS and "workspaceId: con.wid" in EVENTS
-    assert "max_id" in EVENTS
-
-
-def test_events_feed_is_open_with_role_denial_fallback():
-    # P6 T14: reads are redacted server-side and open to every user;
-    # the only remaining lock is a restricted-role 403, rendered as a
-    # note rather than a broken fetch. The head probe must carry the
-    # workspace filter too - a non-admin read without one is refused.
-    m = re.search(r'status === 403[\s\S]{0,200}', EVENTS)
-    assert m and "setLocked" in m.group(0)
-    assert 'data-testid="nv-events-locked"' in EVENTS
-    assert "limit: 1, workspaceId: con.wid" in EVENTS
-    assert "admin-gated" not in EVENTS
-
-
-def test_streaming_optin_writes_the_workspace_config():
-    assert "setWorkspaceEvents" in EVENTS
-    assert re.search(r'setWorkspaceEvents: function \(wid, enabled\)', API)

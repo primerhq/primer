@@ -10,19 +10,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONSOLE = ROOT / "ui" / "components" / "console"
-HOST = (CONSOLE / "nv-doc-host.jsx").read_text(encoding="utf-8")
+# RETARGET (uiv2 R2 cutover, US-011a): nv-doc-host.jsx retired; tab
+# semantics now live in nv-tab-groups.jsx and the empty-state prompt in
+# nv-studio.jsx's NV_renderStudioDoc.
+TABS = (CONSOLE / "nv-tab-groups.jsx").read_text(encoding="utf-8")
+STUDIO = (CONSOLE / "nv-studio.jsx").read_text(encoding="utf-8")
 DOC = (CONSOLE / "nv-session-doc.jsx").read_text(encoding="utf-8")
 FDOCS = (CONSOLE / "nv-file-docs.jsx").read_text(encoding="utf-8")
 
 
 def test_tabs_have_vscode_semantics():
-    assert 'data-preview=' in HOST
-    assert "onDoubleClick" in HOST and "promoteDoc" in HOST
-    assert "nv-tab-close" in HOST
+    assert 'data-preview=' in TABS
+    assert "onDoubleClick" in TABS and "promoteTab" in TABS
+    assert "nv-tg-tab-close" in TABS
 
 
 def test_center_empty_is_a_prompt_with_actions():
-    m = re.search(r'data-testid="nv-center-empty"[\s\S]{0,900}', HOST)
+    m = re.search(r'data-testid="nv-center-empty"[\s\S]{0,900}', STUDIO)
     assert m and "session.create" in m.group(0)
 
 

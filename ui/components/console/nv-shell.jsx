@@ -127,13 +127,6 @@ function NV_readUrl() {
 // Frozen module-level empty array: a fresh [] each render would defeat the ctx memo.
 var EMPTY_WS_ITEMS = Object.freeze([]);
 
-// Round-scoped rollback switch (US-007 R2 phase 2): flip to false to
-// remount the pre-R2 sessions-sidebar + doc-host in nv-studio.jsx's left/
-// center slots instead of the rail + tab-groups, with no other code
-// changes. Not a user preference like tweaks.js's studioV2/graphBuilderV2
-// flags, so it stays a local module constant instead of a tweak.
-var NV_TG_ENABLED = true;
-
 function NV_Shell() {
   var initial = React.useMemo(NV_readUrl, []);
   var widState = React.useState(initial.wid);
@@ -164,7 +157,7 @@ function NV_Shell() {
   var menuState = React.useState(null);
   var openMenu = menuState[0];
   var setOpenMenu = menuState[1];
-  var panelsState = React.useState({ terminal: false, events: false });
+  var panelsState = React.useState({ terminal: false });
   var panels = panelsState[0];
   var setPanels = panelsState[1];
   var tickState = React.useState(0);
@@ -381,16 +374,7 @@ function NV_Shell() {
       surfaces: ["topbar", "palette"],
       run: function () {
         setPanels(function (p) {
-          return { terminal: !p.terminal, events: p.events };
-        });
-      },
-    });
-    reg({
-      id: "events.toggle", label: "Toggle Workspace Events",
-      surfaces: ["topbar", "palette"],
-      run: function () {
-        setPanels(function (p) {
-          return { terminal: p.terminal, events: !p.events };
+          return { terminal: !p.terminal };
         });
       },
     });
@@ -417,7 +401,6 @@ function NV_Shell() {
       voiceRef: voiceRef,
       paletteRef: paletteRef,
       goView: goView,
-      tgEnabled: NV_TG_ENABLED,
       tgModel: tgModel,
       resolveSessionWid: resolveSessionWid,
       // Opening a document/overlay is a real navigation (palette entity
