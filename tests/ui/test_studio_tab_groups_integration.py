@@ -80,7 +80,10 @@ def test_set_doc_null_closes_the_active_tab_instead_of_crashing() -> None:
 def test_ctx_exposes_the_tg_surface_with_preserved_setdoc_signature() -> None:
     for needle in (
         "tgModel: tgModel",
-        "resolveSessionWid: resolveSessionWid",
+        # F1 (2026-08-29 UI review): generalized wid-only resolveSessionWid
+        # into resolveSessionMeta (wid + name + binding, for the tab label
+        # and identity glyph, not just the pulse dot).
+        "resolveSessionMeta: resolveSessionMeta",
         "onTgModelChange: function (next, op)",
         "promoteDoc: function (id)",
     ):
@@ -157,7 +160,9 @@ def test_tab_groups_props_are_wired() -> None:
     assert "model={con.tgModel}" in body
     assert "onModelChange={con.onTgModelChange}" in body
     assert "renderDoc={renderDoc}" in body
-    assert "resolveSessionWid={con.resolveSessionWid}" in body
+    # F1 (2026-08-29 UI review): resolveSessionWid generalized into
+    # resolveSessionMeta (wid + name + binding).
+    assert "resolveSessionMeta={con.resolveSessionMeta}" in body
 
 
 def test_render_doc_dispatch_and_empty_state_survive_with_their_testids() -> None:
@@ -187,6 +192,58 @@ def test_old_files_are_gone_not_just_unscripted() -> None:
     assert "components/console/nv-rail.jsx" in html
     assert not (UI / "components" / "console" / "nv-doc-host.jsx").exists()
     assert not (UI / "components" / "console" / "nv-sessions-sidebar.jsx").exists()
+
+
+# ---------------------------------------------------------------------------
+# F1 (2026-08-29 UI review): resolveSessionWid generalized into
+# resolveSessionMeta(sid) -> {wid, name, binding}; stampSessionWid into
+# stampSessionMeta so a freshly-opened/created session's tab shows its real
+# label and glyph immediately, not just its pulse.
+# ---------------------------------------------------------------------------
+
+
+def test_session_meta_poll_map_carries_wid_name_and_binding() -> None:
+    m = re.search(
+        r"var sessionMetaById = React\.useMemo\(function \(\) \{([\s\S]{0,300})",
+        SHELL,
+    )
+    assert m
+    body = m.group(1)
+    assert "wid: s.workspace_id" in body
+    assert "name: s.name" in body
+    assert "binding: s.binding" in body
+
+
+def test_resolve_session_meta_prefers_the_poll_over_the_stamp() -> None:
+    m = re.search(
+        r"var resolveSessionMeta = React\.useCallback\(function \(sid\) \{"
+        r"([\s\S]{0,120})",
+        SHELL,
+    )
+    assert m
+    assert "sessionMetaById[sid] || stampedMetaById[sid]" in m.group(1)
+
+
+def test_stamp_session_meta_carries_the_full_shape_and_is_exposed() -> None:
+    assert (
+        "var stampSessionMeta = React.useCallback(function (sid, meta)"
+        in SHELL
+    )
+    assert "stampSessionMeta: stampSessionMeta" in SHELL
+    # The old wid-only seam must be gone, not left dangling alongside it.
+    assert "stampSessionWid" not in SHELL
+    assert "resolveSessionWid" not in SHELL
+
+
+def test_rail_open_and_create_overlay_stamp_the_full_meta() -> None:
+    assert "con.stampSessionMeta(session.session_id, {" in STUDIO
+    assert "name: session.name, binding: session.binding" in STUDIO
+    overlays = (
+        UI / "components" / "console" / "nv-overlays.jsx"
+    ).read_text(encoding="utf-8")
+    m = re.search(r"con\.stampSessionMeta\(sid, \{([\s\S]{0,80})", overlays)
+    assert m
+    assert "name: trimmedName, binding: binding" in m.group(1)
 
 
 def test_bundle_transpiles_with_the_integration() -> None:

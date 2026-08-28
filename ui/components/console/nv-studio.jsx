@@ -112,10 +112,16 @@ function NV_Studio() {
             if (con.promoteDoc) {
               con.promoteDoc("session:" + session.session_id);
             }
-            // F10 (2026-08-29 UI review): the pulse dot resolves wid from
-            // a 5s poll; stamp the wid we already know immediately so a
-            // freshly-opened session doesn't sit blind until it catches up.
-            if (con.stampSessionWid) con.stampSessionWid(session.session_id, wid);
+            // F1/F10 (2026-08-29 UI review): the tab's label, glyph and
+            // pulse all resolve from a 5s poll; the rail's own row already
+            // carries the full session (name, binding), so stamp it
+            // immediately rather than showing the raw id/default glyph
+            // until the poll catches up.
+            if (con.stampSessionMeta) {
+              con.stampSessionMeta(session.session_id, {
+                wid: wid, name: session.name, binding: session.binding,
+              });
+            }
           }}
           onCreateSessionInWorkspace={function (wid) {
             if (con.createSessionInWorkspace) con.createSessionInWorkspace(wid);
@@ -134,7 +140,7 @@ function NV_Studio() {
           model={con.tgModel}
           onModelChange={con.onTgModelChange}
           renderDoc={renderDoc}
-          resolveSessionWid={con.resolveSessionWid}
+          resolveSessionMeta={con.resolveSessionMeta}
         />
         {con.panels.terminal && typeof window.NV_Terminal === "function"
           ? <window.NV_Terminal />

@@ -1,4 +1,4 @@
-/* global React */
+/* global React, NV_identity */
 // The multi-group tab host (uiv2 R2, US-007 phase 1): renders a TG_
 // model (ui/foundation/tab-group-model.js) - preview/promote tabs, HTML
 // drag-and-drop with the three "move here / split right / split down"
@@ -29,17 +29,21 @@
 //                         NV_renderStudioDoc) so this file never needs to
 //                         know about NV_SessionDoc / NV_FileDoc /
 //                         NV_DiffDoc / NV_WikiDoc directly.
-//   resolveSessionWid   - OPTIONAL (sid) => wid | undefined. A session
-//                         tab's running-pulse dot needs the session
-//                         store, which is keyed by (wid, sid); tabs are
-//                         GLOBAL across workspaces and the TG_ model does
-//                         not carry a wid per tab (out of the pure
-//                         model's scope, see the tab-group-model.js
-//                         deliverable report). This is the seam the
-//                         phase-2 shell wires up so a session tab
-//                         anywhere can find its store. Omitted, or
+//   resolveSessionMeta  - OPTIONAL (sid) => {wid, name, binding} |
+//                         undefined. A session tab's running-pulse dot
+//                         needs the session store, which is keyed by
+//                         (wid, sid); tabs are GLOBAL across workspaces
+//                         and the TG_ model does not carry a wid per tab
+//                         (out of the pure model's scope, see the
+//                         tab-group-model.js deliverable report). name
+//                         and binding drive the tab's label and identity
+//                         glyph (F1, 2026-08-29 UI review) - the same
+//                         seam generalized rather than adding a second
+//                         one, since both ride the shell's existing
+//                         session cache alongside the wid. Omitted, or
 //                         returning undefined for a given sid, just means
-//                         that tab shows no pulse - never an error.
+//                         that tab shows no pulse and falls back to the
+//                         bare id label - never an error.
 //
 // testids (the R2 BDD scenarios pin these, per the uiv2 migration map):
 //   nv-tg-group:{n}          - the nth group's wrapper (n = array index)
@@ -71,9 +75,17 @@ function NV_TG_SessionPulse(props) {
 function NV_TG_KindGlyph(props) {
   var kind = props.kind;
   if (kind === "session") {
+    // F1 (2026-08-29 UI review): was a fixed accent diamond for every
+    // session tab, losing which agent (or graph) is actually bound.
+    // NV_identity(binding) never returns null (falls back to the
+    // operator glyph for an unresolved/absent binding), so an
+    // unresolved session tab still renders A glyph, just not yet the
+    // bound one - same "never an error" contract resolveSessionMeta
+    // documents for its own undefined case.
+    var ident = NV_identity(props.binding);
     return (
-      <svg width="10" height="10" viewBox="0 0 12 12" className="nv-tg-tab-glyph" style={{ flexShrink: 0, color: "var(--accent)" }}>
-        <path d="M6 1 11 6 6 11 1 6Z" fill="currentColor" />
+      <svg width="10" height="10" viewBox="0 0 12 12" className="nv-tg-tab-glyph" style={{ flexShrink: 0, color: ident.color }}>
+        <path d={ident.d} fill="currentColor" />
       </svg>
     );
   }
@@ -95,8 +107,11 @@ function NV_TG_KindGlyph(props) {
   );
 }
 
-function NV_TG_tabLabel(tab) {
-  if (tab.kind === "session") return tab.ref;
+function NV_TG_tabLabel(tab, meta) {
+  // F1 (2026-08-29 UI review): was always tab.ref (the raw session id) -
+  // meta is resolveSessionMeta's result, undefined/nameless until the
+  // session cache resolves it, hence the id fallback staying live.
+  if (tab.kind === "session") return (meta && meta.name) || tab.ref;
   if (tab.kind === "diff") return String(tab.ref).slice(0, 7);
   return String(tab.ref).split("/").pop();
 }
@@ -218,6 +233,14 @@ function NV_TabGroups(props) {
               onDrop={function (ev) { onTabbarDrop(g.id, ev); }}>
               {g.tabs.map(function (tab) {
                 var isActive = tab.id === g.activeTabId;
+                // F1: one resolve per session tab feeds the glyph, the
+                // pulse AND the label, instead of each reaching into the
+                // seam separately (resolveSessionMeta replaces the old
+                // wid-only resolveSessionWid).
+                var meta = tab.kind === "session"
+                  && typeof props.resolveSessionMeta === "function"
+                  ? props.resolveSessionMeta(tab.ref)
+                  : null;
                 return (
                   <div key={tab.id} className="nv-tg-tab"
                     data-active={isActive ? "true" : "false"}
@@ -230,14 +253,11 @@ function NV_TabGroups(props) {
                     onClick={function (ev) { selectTab(tab, ev); }}
                     onDoubleClick={function (ev) { promoteTab(tab, ev); }}>
                     {isActive ? <span className="nv-tg-tab-edge" /> : null}
-                    <NV_TG_KindGlyph kind={tab.kind} />
+                    <NV_TG_KindGlyph kind={tab.kind} binding={meta && meta.binding} />
                     {tab.kind === "session" ? (
-                      <NV_TG_SessionPulse
-                        sid={tab.ref}
-                        wid={typeof props.resolveSessionWid === "function" ? props.resolveSessionWid(tab.ref) : undefined}
-                      />
+                      <NV_TG_SessionPulse sid={tab.ref} wid={meta && meta.wid} />
                     ) : null}
-                    <span className="nv-tg-tab-label">{NV_TG_tabLabel(tab)}</span>
+                    <span className="nv-tg-tab-label">{NV_TG_tabLabel(tab, meta)}</span>
                     <button type="button" className="nv-tg-tab-close"
                       data-testid={"nv-tg-tab-close:" + tab.id}
                       onClick={function (ev) { closeTab(tab, ev); }}>x</button>

@@ -136,3 +136,49 @@ def test_drop_index_math_is_pure_and_correct() -> None:
     assert ctx.eval("NV_TG_dropIndex([], 999)") == 0
     # Exactly ON a midpoint stays put (only strictly-past midpoints count).
     assert ctx.eval(f"NV_TG_dropIndex({midpoints}, 150)") == 1
+
+
+# ---------------------------------------------------------------------------
+# F1 (2026-08-29 UI review): session tabs showed the raw sid and a fixed
+# accent diamond. Label = session name (id fallback for an unresolved sid),
+# glyph = the bound agent/graph's own identity via NV_identity(binding).
+# ---------------------------------------------------------------------------
+
+
+def test_tab_label_takes_a_meta_param_and_falls_back_to_ref() -> None:
+    start = SRC.index("function NV_TG_tabLabel(")
+    end = SRC.index("\n}\n", start) + 2
+    body = SRC[start:end]
+    assert "meta" in SRC[start:SRC.index(")", start)], (
+        "NV_TG_tabLabel must accept meta alongside tab"
+    )
+    assert "(meta && meta.name) || tab.ref" in body
+
+
+def test_kind_glyph_resolves_session_identity_not_a_fixed_diamond() -> None:
+    start = SRC.index("function NV_TG_KindGlyph(")
+    end = SRC.index("\n}\n", start) + 2
+    body = SRC[start:end]
+    assert "NV_identity(props.binding)" in body
+    # The old unconditional fixed-diamond path for every session tab must
+    # be gone, not left as a second, now-dead branch.
+    assert body.count('kind === "session"') == 1
+
+
+def test_session_tab_resolves_meta_once_for_glyph_pulse_and_label() -> None:
+    assert "NV_identity" in SRC.splitlines()[0], (
+        "the /* global */ directive must declare NV_identity"
+    )
+    m = re.search(
+        r"var meta = tab\.kind === \"session\"[\s\S]{0,200}", SRC,
+    )
+    assert m
+    assert "props.resolveSessionMeta(tab.ref)" in m.group(0)
+    assert (
+        '<NV_TG_KindGlyph kind={tab.kind} binding={meta && meta.binding} />'
+        in SRC
+    )
+    assert (
+        '<NV_TG_SessionPulse sid={tab.ref} wid={meta && meta.wid} />' in SRC
+    )
+    assert "NV_TG_tabLabel(tab, meta)" in SRC

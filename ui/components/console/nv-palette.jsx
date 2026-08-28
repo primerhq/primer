@@ -35,12 +35,16 @@ function NV_Palette() {
   };
 
   // Lazy entity/file resources: fetched once the palette first opens.
+  // F9 (2026-08-29 UI review) empty-query recents: "nv-rail-all-sessions"
+  // is nv-shell.jsx's OWN cache key for the rail's session list (also
+  // reused by NV_TabGroups' resolveSessionMeta) - use-resource.js keys
+  // its cache by string across components, so sharing the key here
+  // costs one fetch total, not a second "nv-palette-sessions" one for
+  // the same underlying data.
   var sessions = window.primerApi.useResource(
-    "nv-palette-sessions",
-    function (signal) {
-      return open ? SH_api.allSessions(signal) : Promise.resolve({ items: [] });
-    },
-    { pollMs: 0, deps: [open] }
+    "nv-rail-all-sessions",
+    function (signal) { return SH_api.allSessions(signal); },
+    { pollMs: 0 }
   );
   var agents = window.primerApi.useResource(
     "nv-palette-agents",
@@ -56,6 +60,22 @@ function NV_Palette() {
     },
     { pollMs: 0, deps: [open] }
   );
+  // F9: the two missing entity sources - same lazy-list-then-filter
+  // shape as agents/graphs above, feeding the same "Platform" group.
+  var triggers = window.primerApi.useResource(
+    "nv-palette-triggers",
+    function (signal) {
+      return open ? SH_api.triggers(signal) : Promise.resolve({ items: [] });
+    },
+    { pollMs: 0, deps: [open] }
+  );
+  var toolsets = window.primerApi.useResource(
+    "nv-palette-toolsets",
+    function (signal) {
+      return open ? SH_api.toolsets(signal) : Promise.resolve({ items: [] });
+    },
+    { pollMs: 0, deps: [open] }
+  );
   var files = window.primerApi.useResource(
     "nv-palette-files:" + con.wid,
     function (signal) {
@@ -64,6 +84,17 @@ function NV_Palette() {
         : Promise.resolve({ items: [] });
     },
     { pollMs: 0, deps: [open, con.wid] }
+  );
+  // F9: the wiki source - every document path in the system collection,
+  // searched the same client-side way sessions/files/entities are.
+  var wikiDocs = window.primerApi.useResource(
+    "nv-palette-wiki",
+    function (signal) {
+      return open
+        ? SH_api.collectionDocuments("system", signal)
+        : Promise.resolve({ documents: [] });
+    },
+    { pollMs: 0, deps: [open] }
   );
 
   // Ctrl+K opens; Esc closes. Registered while mounted.
@@ -126,48 +157,71 @@ function NV_Palette() {
   });
   if (verbRows.length) groups.push({ label: "Verbs", rows: verbRows });
 
+  // F3/F2 (2026-08-29 UI review, unchanged): rail rows promote on open
+  // AND route a cross-workspace target through the combined
+  // con.openInWorkspace nav, one history entry either way. Shared by
+  // both the searched "Sessions" group below and the empty-query
+  // "Recent" group (F9) so the two never drift.
+  function sessionRow(s) {
+    return {
+      key: "s:" + s.session_id,
+      label: s.name || s.session_id,
+      tag: "session",
+      run: runAndClose(function () {
+        con.goView("studio");
+        if (s.workspace_id && s.workspace_id !== con.wid && con.openInWorkspace) {
+          con.openInWorkspace(s.workspace_id, { kind: "session", ref: s.session_id });
+        } else {
+          con.setDoc({ kind: "session", ref: s.session_id });
+        }
+        if (con.promoteDoc) con.promoteDoc("session:" + s.session_id);
+      }),
+    };
+  }
+
+  // Shared by both the searched "Files" group below and the empty-query
+  // recent-files group (F9), same reason sessionRow is shared above.
+  function fileRow(f) {
+    return {
+      key: "f:" + f.path,
+      label: f.path,
+      tag: f.is_dir ? "folder" : "file",
+      run: runAndClose(function () {
+        con.goView("studio");
+        if (!f.is_dir) con.setDoc({ kind: "file", ref: f.path });
+      }),
+    };
+  }
+
   if (q.trim()) {
     var sess = NV_matchRows(
-      ((sessions.data && sessions.data.items) || []).map(function (s) {
-        return {
-          key: "s:" + s.session_id,
-          label: s.name || s.session_id,
-          tag: "session",
-          // F3 (2026-08-29 UI review): rail rows promote on open; the
-          // palette's session rows only ever called setDoc (preview), so
-          // the same row you searched for still needed a second click.
-          // F2: the cross-workspace path used to raw-assign
-          // location.hash, its own separate navigation outside con's
-          // markPush bookkeeping - route it through the same combined
-          // con.openInWorkspace the rail's cross-workspace open uses so
-          // there's one history entry here too, not a hash write plus
-          // whatever markPush already happened this tick.
-          run: runAndClose(function () {
-            con.goView("studio");
-            if (s.workspace_id && s.workspace_id !== con.wid && con.openInWorkspace) {
-              con.openInWorkspace(s.workspace_id, { kind: "session", ref: s.session_id });
-            } else {
-              con.setDoc({ kind: "session", ref: s.session_id });
-            }
-            if (con.promoteDoc) con.promoteDoc("session:" + s.session_id);
-          }),
-        };
-      }), q, "Sessions");
+      ((sessions.data && sessions.data.items) || []).map(sessionRow),
+      q, "Sessions");
     if (sess) groups.push(sess);
 
     var fils = NV_matchRows(
-      ((files.data && files.data.items) || []).map(function (f) {
+      ((files.data && files.data.items) || []).map(fileRow), q, "Files");
+    if (fils) groups.push(fils);
+
+    // F9: the wiki source - every document path in the system
+    // collection. "doc: <slug>" opens a wiki tab (con.setDoc kind
+    // "wiki"), same as a session/file row opens its own doc kind -
+    // NV_WikiDoc's own slug format is "{collection_id}/{path}", split
+    // on the first "/" (nv-file-docs.jsx), so the ref must match that
+    // exactly.
+    var wiki = NV_matchRows(
+      ((wikiDocs.data && wikiDocs.data.documents) || []).map(function (d) {
         return {
-          key: "f:" + f.path,
-          label: f.path,
-          tag: f.is_dir ? "folder" : "file",
+          key: "w:" + d.path,
+          label: d.path,
+          tag: "wiki",
           run: runAndClose(function () {
             con.goView("studio");
-            if (!f.is_dir) con.setDoc({ kind: "file", ref: f.path });
+            con.setDoc({ kind: "wiki", ref: "system/" + d.path });
           }),
         };
-      }), q, "Files");
-    if (fils) groups.push(fils);
+      }), q, "Wiki");
+    if (wiki) groups.push(wiki);
 
     var ents = [];
     ((agents.data && agents.data.items) || []).forEach(function (a) {
@@ -178,6 +232,19 @@ function NV_Palette() {
     ((graphs.data && graphs.data.items) || []).forEach(function (g) {
       ents.push({
         key: "g:" + g.id, label: g.id, tag: "graph", nav: "graphs",
+      });
+    });
+    // F9: the two missing entity sources, same platform overlay pattern
+    // as agents/graphs above (Platform grammar names them "triggers"/
+    // "toolsets" - ui/foundation/shell-url.js).
+    ((triggers.data && triggers.data.items) || []).forEach(function (t) {
+      ents.push({
+        key: "tr:" + t.id, label: t.id, tag: "trigger", nav: "triggers",
+      });
+    });
+    ((toolsets.data && toolsets.data.items) || []).forEach(function (t) {
+      ents.push({
+        key: "ts:" + t.id, label: t.id, tag: "toolset", nav: "toolsets",
       });
     });
     ents = ents.map(function (e) {
@@ -195,9 +262,37 @@ function NV_Palette() {
         }),
       };
     });
-    // Notes 1.3 group order: Verbs, Sessions, Files, Platform.
+    // Notes 1.3 group order: Verbs, Sessions, Files, Wiki, Platform.
     var entGroup = NV_matchRows(ents, q, "Platform");
     if (entGroup) groups.push(entGroup);
+  } else {
+    // F9: an empty query showed verbs only - a few recent sessions (and
+    // files, since that resource is already sitting in cache the moment
+    // the workspace is open - no new fetch) make the palette useful the
+    // instant it opens, not just once you start typing (design: "a few
+    // recent sessions + files under the verbs"). last_activity_at is
+    // stamped onto every row by SH_api.allSessions' own normalisation,
+    // independent of the list's server-side order.
+    var recent = ((sessions.data && sessions.data.items) || [])
+      .slice()
+      .sort(function (a, b) {
+        return String(b.last_activity_at || "").localeCompare(
+          String(a.last_activity_at || ""));
+      })
+      .slice(0, NV_PALETTE_CAP)
+      .map(sessionRow);
+    if (recent.length) groups.push({ label: "Recent", rows: recent });
+
+    // files/tree stamps a real mtime per entry (workspaces.py file_tree);
+    // only leaf files carry an "open this" action, so directories (no
+    // recency signal worth surfacing here) are left out.
+    var recentFiles = ((files.data && files.data.items) || [])
+      .filter(function (f) { return !f.is_dir; })
+      .slice()
+      .sort(function (a, b) { return (b.mtime || 0) - (a.mtime || 0); })
+      .slice(0, 3)
+      .map(fileRow);
+    if (recentFiles.length) groups.push({ label: "Files", rows: recentFiles });
   }
 
   var flat = [];
@@ -255,9 +350,22 @@ function NV_Palette() {
                   var idx = flatPos;
                   flatPos += 1;
                   return (
+                    // Round-two gate flake (palette2, suite-context-dependent):
+                    // every row shares the SAME testid (an established,
+                    // still-relied-on convention - run_verb() in
+                    // _shell_helpers.py fills the input then clicks
+                    // get_by_test_id("nv-palette-row").first on the narrowed
+                    // set) so it cannot be repointed to a per-row value
+                    // without breaking every other caller of that generic
+                    // "any row" selector. data-row-key adds a second, exact,
+                    // content-independent handle - r.key is already unique
+                    // per row (the "a:"/"s:"/"f:"/etc builders above) - for
+                    // scenarios that need ONE specific row, not "the first
+                    // match".
                     <button type="button" key={r.key}
                       className="nv-palette-row"
                       data-testid="nv-palette-row"
+                      data-row-key={r.key}
                       data-active={idx === selIdx ? "true" : "false"}
                       onClick={r.run}>
                       <span className="nv-palette-label">{r.label}</span>

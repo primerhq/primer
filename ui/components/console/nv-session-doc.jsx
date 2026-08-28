@@ -1345,8 +1345,8 @@ function NV_SessionDoc(props) {
       if (!c || !c.doc || c.doc.kind !== "session") return null;
       var fsid = c.doc.ref;
       var inst = NV_SESSION_INSTANCES[fsid] || {};
-      var wid = (c.resolveSessionWid && c.resolveSessionWid(fsid))
-        || inst.wid || c.wid;
+      var meta = c.resolveSessionMeta && c.resolveSessionMeta(fsid);
+      var wid = (meta && meta.wid) || inst.wid || c.wid;
       function refetch() {
         var live2 = NV_SESSION_INSTANCES[fsid];
         // Best-effort: the focused instance's own poll already lands

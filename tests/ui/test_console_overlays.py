@@ -51,7 +51,11 @@ def test_session_body_keeps_the_shared_form_contract():
     # Omitting binding asks for the system default agent.
     m = re.search(r"function submit\(\)[\s\S]{0,900}", OVERLAYS)
     assert m and "auto_start" in m.group(0)
-    assert "if (bind)" in m.group(0)
+    # F1 (2026-08-29 UI review): binding is computed into a local var now
+    # (not just inlined into body.binding) so it can also be reused for
+    # the post-create stampSessionMeta call.
+    assert "var binding = bind" in m.group(0)
+    assert "if (binding) body.binding = binding;" in m.group(0)
     assert "graph_input" in OVERLAYS
     assert "initial_instructions" in OVERLAYS
     # The graph Begin.input_schema form reuses the ONE schema field.

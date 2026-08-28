@@ -182,12 +182,34 @@ var SH_api = {
     return window.primerApi.apiFetch("GET", "/graphs?limit=200", null,
       { signal: signal });
   },
+  // F9 (2026-08-29 UI review): the palette had no trigger/toolset rows -
+  // same GET-list-then-client-filter shape as agents/graphs above.
+  // triggers_router carries its own /v1 prefix (primer/api/routers/
+  // triggers.py) and has no ?limit query param.
+  triggers: function (signal) {
+    return window.primerApi.apiFetch("GET", "/triggers", null,
+      { signal: signal });
+  },
+  toolsets: function (signal) {
+    return window.primerApi.apiFetch("GET", "/toolsets?limit=200", null,
+      { signal: signal });
+  },
 
   // S2's document-by-path read (ui/components/knowledge.jsx:657-660).
   collectionDocument: function (cid, path, signal) {
     return window.primerApi.apiFetch(
       "GET", "/collections/" + encodeURIComponent(cid) + "/documents?path="
         + encodeURIComponent(path),
+      null, { signal: signal });
+  },
+  // F9: the palette's wiki source - same /documents route as
+  // collectionDocument above, just without ?path= (list mode: "{
+  // documents: [{path, document_id, size}, ...] }", per
+  // get_or_list_collection_documents). No title field there, so
+  // NV_WikiDoc's own path-as-fallback-label convention applies here too.
+  collectionDocuments: function (cid, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/collections/" + encodeURIComponent(cid) + "/documents",
       null, { signal: signal });
   },
 

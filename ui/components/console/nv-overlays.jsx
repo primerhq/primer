@@ -194,12 +194,14 @@ function NV_CreateSessionOverlay() {
     var body = { auto_start: autoStart };
     // Omitting binding entirely asks for the system default agent;
     // {kind:"agent", agent_id:null} would name an agent called null.
-    if (bind) {
-      body.binding = bind.kind === "graph"
+    var binding = bind
+      ? (bind.kind === "graph"
         ? { kind: "graph", graph_id: bind.id }
-        : { kind: "agent", agent_id: bind.id };
-    }
-    if (name.trim()) body.name = name.trim();
+        : { kind: "agent", agent_id: bind.id })
+      : null;
+    if (binding) body.binding = binding;
+    var trimmedName = name.trim() || null;
+    if (trimmedName) body.name = trimmedName;
     if (usesGraphInput) body.graph_input = graphDraft;
     else if (instr.trim()) body.initial_instructions = instr.trim();
     apiFetch(
@@ -213,10 +215,15 @@ function NV_CreateSessionOverlay() {
       if (sid) {
         con.setDoc({ kind: "session", ref: sid });
         if (con.promoteDoc) con.promoteDoc("session:" + sid);
-        // F10 (2026-08-29 UI review): stamp the wid we already know (this
-        // overlay always creates in con.wid) so the new tab's pulse dot
-        // doesn't sit blind until the 5s poll catches up.
-        if (con.stampSessionWid) con.stampSessionWid(sid, con.wid);
+        // F1/F10 (2026-08-29 UI review): stamp the wid, name and binding
+        // we already know (this overlay always creates in con.wid, from
+        // exactly what was just submitted) so the new tab's label, glyph
+        // and pulse don't sit blind/default until the 5s poll catches up.
+        if (con.stampSessionMeta) {
+          con.stampSessionMeta(sid, {
+            wid: con.wid, name: trimmedName, binding: binding,
+          });
+        }
       }
     }, function (e) {
       setBusy(false);

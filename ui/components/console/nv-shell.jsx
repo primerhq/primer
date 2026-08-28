@@ -189,44 +189,58 @@ function NV_Shell() {
   var voiceRef = React.useRef(null);
   var wsItems = (workspaces.data && workspaces.data.items) || EMPTY_WS_ITEMS;
 
-  // resolveSessionWid for NV_TabGroups' session-tab pulse dot: reuses the
-  // rail's OWN cache key (nv-rail.jsx) - use-resource.js keys its cache by
+  // resolveSessionMeta for NV_TabGroups' session tabs: reuses the rail's
+  // OWN cache key (nv-rail.jsx) - use-resource.js keys its cache by
   // string across components, so this costs one fetch, not two.
   var railSessions = window.primerApi.useResource(
     "nv-rail-all-sessions",
     function (signal) { return SH_api.allSessions(signal); },
     { pollMs: 5000, deps: [] }
   );
-  var sessionWidById = React.useMemo(function () {
+  // F1 (2026-08-29 UI review): generalized from the wid-only seam this
+  // used to be - session tabs also want the name (label, instead of the
+  // bare id) and binding (NV_identity's glyph/color), and both already
+  // ride the same cached row the wid came from.
+  var sessionMetaById = React.useMemo(function () {
     var map = {};
     ((railSessions.data && railSessions.data.items) || []).forEach(function (s) {
-      map[s.session_id] = s.workspace_id;
+      map[s.session_id] = {
+        wid: s.workspace_id, name: s.name, binding: s.binding,
+      };
     });
     return map;
   }, [railSessions.data]);
-  // F10 (2026-08-29 UI review): sessionWidById is derived purely from the
-  // 5s poll above, so a session opened the same second it's created (or
-  // clicked) shows no pulse until the poll catches up. stampedWidById is
-  // an immediate, caller-supplied overlay for exactly those two known-wid
-  // opens (rail click, create-session overlay - see stampSessionWid on
-  // the ctx object below); the poll's own data always wins once it
-  // arrives; a workspace_id never changes for a session so the stamp
-  // never goes stale in the meantime.
-  var stampedWidState = React.useState({});
-  var stampedWidById = stampedWidState[0];
-  var setStampedWidById = stampedWidState[1];
-  var stampSessionWid = React.useCallback(function (sid, swid) {
-    if (!sid || !swid) return;
-    setStampedWidById(function (prev) {
-      if (prev[sid] === swid) return prev;
+  // F10 (2026-08-29 UI review): sessionMetaById is derived purely from
+  // the 5s poll above, so a session opened the same second it's created
+  // (or clicked) shows no pulse, no name and no glyph until the poll
+  // catches up. stampedMetaById is an immediate, caller-supplied overlay
+  // for exactly those two known-at-open-time opens (rail click, create-
+  // session overlay - see stampSessionMeta on the ctx object below);
+  // the poll's own data always wins once it arrives, and a session's
+  // wid/name/binding don't change themselves just by being opened, so
+  // the stamp never goes stale in the meantime.
+  var stampedMetaState = React.useState({});
+  var stampedMetaById = stampedMetaState[0];
+  var setStampedMetaById = stampedMetaState[1];
+  var stampSessionMeta = React.useCallback(function (sid, meta) {
+    if (!sid || !meta || !meta.wid) return;
+    setStampedMetaById(function (prev) {
+      var prevMeta = prev[sid];
+      if (prevMeta && prevMeta.wid === meta.wid && prevMeta.name === meta.name
+        && prevMeta.binding === meta.binding) {
+        return prev;
+      }
       var next = Object.assign({}, prev);
-      next[sid] = swid;
+      next[sid] = meta;
       return next;
     });
   }, []);
-  var resolveSessionWid = React.useCallback(function (sid) {
-    return sessionWidById[sid] || stampedWidById[sid];
-  }, [sessionWidById, stampedWidById]);
+  // Returns undefined (not a partial object) for a totally unresolved
+  // sid - tabs read this as "no pulse, fall back to the raw id label,"
+  // never an error.
+  var resolveSessionMeta = React.useCallback(function (sid) {
+    return sessionMetaById[sid] || stampedMetaById[sid];
+  }, [sessionMetaById, stampedMetaById]);
 
   // Default workspace: the URL's, else the first listed.
   React.useEffect(function () {
@@ -435,8 +449,8 @@ function NV_Shell() {
       paletteRef: paletteRef,
       goView: goView,
       tgModel: tgModel,
-      resolveSessionWid: resolveSessionWid,
-      stampSessionWid: stampSessionWid,
+      resolveSessionMeta: resolveSessionMeta,
+      stampSessionMeta: stampSessionMeta,
       // F2 (2026-08-29 UI review): a cross-workspace session open used to
       // run workspace.switch (its own markPush) then setDoc (a SECOND
       // markPush) - two history entries for one navigation, so Back
@@ -521,7 +535,7 @@ function NV_Shell() {
     };
   }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
     frecency, wsItems, status, caps, voiceRef, paletteRef, goView,
-    tgModel, setTgModel, resolveSessionWid, stampSessionWid, setOpenMenu,
+    tgModel, setTgModel, resolveSessionMeta, stampSessionMeta, setOpenMenu,
     setOverlay, setTick, markPush, setWid]);
 
   var viewName = ctx.view.name;
