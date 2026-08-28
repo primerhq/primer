@@ -359,7 +359,7 @@ def test_u0067_resume_re_toasts_on_repeat_click(
     try:
         open_session_in_studio(page, console_url, wid, sid, kind="agent")
 
-        composer = page.get_by_test_id("nv-composer").locator("input")
+        composer = page.get_by_test_id("nv-composer-input")
         composer.wait_for(state="visible", timeout=10_000)
         send_btn = page.get_by_test_id("nv-send")
 

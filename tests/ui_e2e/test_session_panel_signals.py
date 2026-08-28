@@ -202,7 +202,7 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
     try:
         # Open the session in the Studio — the agent panel + Composer mount.
         open_session_in_studio(page, console_url, wid, sid, kind="agent")
-        composer = page.get_by_test_id("nv-composer").locator("input")
+        composer = page.get_by_test_id("nv-composer-input")
         composer.wait_for(state="visible", timeout=10_000)
 
         # The rail row carries a status before anything is sent. NOT

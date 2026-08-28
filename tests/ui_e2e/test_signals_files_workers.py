@@ -144,7 +144,7 @@ def test_u0068_steer_queue_renders_submitted_instruction(
 
         # Send the instruction via the Composer — this IS steering now
         # (no dedicated steer button/popover survives on the agent panel).
-        composer = page.get_by_test_id("nv-composer").locator("input")
+        composer = page.get_by_test_id("nv-composer-input")
         expect(composer).to_be_visible(timeout=10_000)
         composer.fill(instruction)
         page.get_by_test_id("nv-send").click()
