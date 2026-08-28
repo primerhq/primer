@@ -171,7 +171,7 @@ def test_landing_mounts_the_shell_and_lists_the_workspace(
     # (status lives on the composer strip, rail chips and tab labels).
     for region in ("nv-topbar", "nv-rail", "nv-center"):
         expect(page.get_by_test_id(region)).to_be_visible(timeout=15_000)
-    expect(session_row(page, sid)).to_be_visible(timeout=20_000)
+    expect(session_row(page, sid, wid)).to_be_visible(timeout=20_000)
 
 
 # ===========================================================================
@@ -190,7 +190,7 @@ def test_a_session_opens_as_a_tab_and_the_url_restores_it(
     expect(page.get_by_test_id(f"nv-session-doc:{sid}")).to_be_visible(timeout=20_000)
 
     page.reload()
-    expect(page.get_by_test_id(f"nv-tab:session:{sid}")).to_be_visible(
+    expect(page.get_by_test_id(f"nv-tg-tab:session:{sid}")).to_be_visible(
         timeout=20_000
     )
     assert sid in page.evaluate("window.location.hash")
@@ -269,7 +269,7 @@ def test_a_file_opens_as_a_preview_tab(
         pytest.skip("the container cannot write to the provider path")
 
     open_doc(page, console_url, wid, "file", name)
-    tab = page.locator('[data-testid^="nv-tab:file:"]').first
+    tab = page.locator('[data-testid^="nv-tg-tab:file:"]').first
     expect(tab).to_be_visible(timeout=20_000)
     assert tab.get_attribute("data-preview") == "true"
 

@@ -98,15 +98,18 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
         # Open the Studio for the fresh workspace; the sidebar Sessions
         # section polls this workspace's sessions every 3s.
         open_studio(page, console_url, workspace_id)
+        # RETARGET (uiv2 R2): the flat rail is now the workspace tree,
+        # collapsed by default - expand once so child rows render at all
+        # (they mount/unmount reactively as the session list polls from
+        # then on, no re-click needed).
+        page.get_by_test_id(f"nv-rail-ws:{workspace_id}").click()
 
         def _row_count() -> int:
-            """Number of session rows currently rendered in the rail.
-
-            The rail keys each row by its session id
-            (``nv-session:<sid>``); the flat ``session-row`` handle
-            belonged to the sidebar it replaced.
-            """
-            return page.locator('[data-testid^="nv-session:"]').count()
+            """Number of session rows currently rendered under this
+            workspace's (expanded) tree row."""
+            return page.locator(
+                '[data-testid^="nv-rail-ws-session:"]'
+            ).count()
 
         # Baseline: a brand-new workspace has zero session rows. Wait for
         # the Sessions section to have finished its first poll (the empty
@@ -135,16 +138,20 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
         # before the seeded row had arrived.
         target = baseline + 1
         deadline = time.monotonic() + 15.0
-        final = baseline
         while time.monotonic() < deadline:
-            final = _row_count()
-            if session_row(page, session_id).count() >= 1:
+            if session_row(page, session_id, workspace_id).count() >= 1:
                 break
             page.wait_for_timeout(250)
-        assert session_row(page, session_id).count() >= 1, (
+        assert session_row(page, session_id, workspace_id).count() >= 1, (
             f"seeded session row did not reach the rail within 15s: "
-            f"baseline={baseline} final={final} sid={session_id}"
+            f"baseline={baseline} sid={session_id}"
         )
+        # Snapshot the count only AFTER confirming the target row is
+        # present - reading it mid-loop raced session_row's own
+        # expand-on-demand click (uiv2 R2: the tree starts collapsed),
+        # so it could catch the DOM a tick before React flushed the
+        # newly expanded children.
+        final = _row_count()
         assert final >= target, (
             f"the rail's session-row count did not catch up to API state: "
             f"baseline={baseline} expected>={target} final={final}"

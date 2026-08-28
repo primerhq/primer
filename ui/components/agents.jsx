@@ -866,13 +866,16 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
                         onChange={() => toggleScopedId(t.scoped_id)}
                         style={{ marginTop: 3 }}
                       />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="mono" style={{ fontSize: 12 }}>{t.id}</div>
-                        {t.description && (
-                          <div className="muted text-sm" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.4 }}>
-                            {t.description}
-                          </div>
-                        )}
+                      <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "flex-start", gap: 8 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="mono" style={{ fontSize: 12 }}>{t.id}</div>
+                          {t.description && (
+                            <div className="muted text-sm" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.4 }}>
+                              {t.description}
+                            </div>
+                          )}
+                        </div>
+                        <window.primerApi.CapabilityBadges tool={t} testid={`agent-tool-badges-${t.scoped_id}`} />
                       </div>
                     </label>
                   );

@@ -122,6 +122,23 @@ var SH_api = {
       "GET", "/events?" + q.join("&"), null, { signal: signal });
   },
 
+  // Event subscriptions (events.py's make_crud_router list) - powers the
+  // Activity console's subscriptions table (revamp notes section 4).
+  // OffsetPageResponse shape: {items, total, ...}.
+  eventSubscriptions: function (signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/event_subscriptions?limit=200", null, { signal: signal });
+  },
+
+  // The one mutation allowed on system-managed rows server-side
+  // (events.py set_subscription_paused); unmanaged rows may also use
+  // this for their normal Pause/Resume toggle.
+  setSubscriptionPaused: function (id, paused) {
+    return window.primerApi.apiFetch(
+      "POST", "/event_subscriptions/" + encodeURIComponent(id) + "/paused",
+      { paused: paused });
+  },
+
   // PATCH rename (workspaces.py rename_session): {name}; null clears.
   renameSession: function (wid, sid, name) {
     return window.primerApi.apiFetch(
@@ -367,6 +384,7 @@ var SH_api = {
     log: function (wid) { return "shell-log:" + wid; },
     commit: function (wid, sha) { return "shell-commit:" + wid + ":" + sha; },
     records: function () { return "shell-approval-records"; },
+    eventSubscriptions: function () { return "shell-event-subscriptions"; },
     timeline: function (sid, turnNo) {
       return "shell-timeline:" + sid + ":" + turnNo;
     },

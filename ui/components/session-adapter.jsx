@@ -16,11 +16,16 @@
 // tables) so a consumer can render the store's records through the
 // reused chat UI without a second parallel renderer.
 //
-// One symbol is produced:
+// Two symbols are produced:
 //   - SA_toTranscript(records, session): pure mapping, SessionMessageKind
 //     (or the tap's mirrored TapEventClass, once normalised to the same
 //     {seq, kind, payload, created_at, node_id} shape) -> the transcript
 //     row shape.
+//   - SA_visibleRecords(records): the progressive rewind-fold walk
+//     SA_toTranscript runs first, ported from primer/session/replay.py's
+//     visible_records (exported separately so nested-rewind composition
+//     can be tested against the raw record set, not just the mapped
+//     transcript rows).
 
 // ---------------------------------------------------------------------------
 // Pure mapping: SessionMessageKind -> transcript row kind
@@ -31,16 +36,21 @@
 // and S7 adds llm_call HERE rather than each introducing its own
 // registry at this same insertion point (cross-plan findings F26/F36).
 // S8 HAND-OFF: SH_TurnList replaces this renderer at the flag day, and
-// the S8 plan names none of the four kinds P1 added. Carry these four
+// the S8 plan names none of the four kinds P1 added. Carry these three
 // decisions across or they regress: reasoning collapses muted,
 // agent_marker is a binding row, external_tool_call folds into the tool
-// rendering, and rewind_marker is skipped entirely.
-
+// rendering.
+//
+// US-008 R3 item 4: rewind_marker moved OUT of this table and into
+// SA_KIND_TO_TRANSCRIPT as a divider (below) - now that the console
+// actually wires Rewind, skipping it left the reader looking at a
+// transcript a rewind visibly did nothing to (the /messages read is
+// visible=false by design - see primer/api/routers/sessions.py's own
+// comment - so the raw discarded rows were never hidden either).
+// SA_toTranscript's fold pass now does what the replay walk does
+// server-side: hide the span the marker discarded and label where it
+// cut, same principle already applied to compaction_marker below.
 var SA_SKIP_IN_TRANSCRIPT = {
-  // A rewind marker tells the replay walk what to drop. Rendering it
-  // would show the reader an instruction about their history instead of
-  // their history.
-  rewind_marker: true,
   // Delivery frame for a notifying tool call (S3): display and protocol
   // only. The paired tool_call/tool_result rows carry the history, so
   // rendering this too would show the same action twice.
@@ -73,6 +83,11 @@ var SA_KIND_TO_TRANSCRIPT = {
   // silently begins mid-conversation.
   compaction_marker: "divider",
   invocation_divider: "divider",
+  // Unlike compaction (annotates, keeps the raw span visible for
+  // audit), a rewind's whole point is to discard - SA_toTranscript's
+  // fold pass below hides the span it names before this label ever
+  // renders.
+  rewind_marker: "divider",
   // Lifecycle rows map to the SAME-named kinds <Transcript>'s Message()
   // already renders with dedicated styling: yielded/resumed/done as a muted
   // "· kind" dot, cancelled as a red "■ cancelled" marker, error as an error
@@ -106,7 +121,7 @@ function SA_rowText(rec) {
 }
 
 
-// Divider label for the three kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
+// Divider label for the four kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
 // invocation_divider (written by reset_session on ENDED->CREATED re-open,
 // payload: {invocation: N}) renders "— invocation N —"; graph_transition
 // (node ENTER/EXIT, payload: {node_id, node_kind, phase, status}) renders
@@ -119,6 +134,11 @@ function SA_dividerLabel(rec) {
       ? "— history compacted —"
       : "— history compacted from #" + from + " —";
   }
+  if (rec.kind === "rewind_marker") {
+    var rp = rec.payload || {};
+    return "— rewound, later turns discarded (kept up to #"
+      + rp.to_seq + ") —";
+  }
   if (rec.kind === "invocation_divider") {
     var n = (rec.payload && rec.payload.invocation) || 1;
     return "— invocation " + n + " —";
@@ -127,15 +147,54 @@ function SA_dividerLabel(rec) {
   return (p.node_id || "node") + " · " + (p.phase || "");
 }
 
+// The read path is visible=false (primer/api/routers/sessions.py's own
+// comment: the console needs the raw stream for audit/trace), so a
+// rewind's discarded rows arrive here same as anything else - nothing
+// upstream hides them. This ports primer/session/replay.py's
+// visible_records walk faithfully for the REWIND rule (its own
+// docstring: "Rewind, continue, rewind again nests correctly" - acting
+// on the running VISIBLE set rather than raw file order is what makes
+// nested rewinds compose). `records` is seq-ascending
+// (session-store.js's recordsBySeq contract), matching the walk's
+// append-order assumption.
+//
+// Diverges from the backend in ONE place, by design: there, a
+// rewind_marker is a pure instruction and is never returned (`continue`,
+// never appended) - here it stays in the visible set, because the
+// console needs to SHOW the reader a rewind happened (US-008 R3 item 4),
+// not just silently honor it; SA_KIND_TO_TRANSCRIPT renders it as a
+// divider below. compaction_marker is deliberately NOT ported the same
+// way - the backend replaces the whole visible set with the marker
+// (folds it into a summary); item 4's accepted design keeps the raw
+// pre-compaction span visible for audit and only annotates, so it is
+// still just appended here, never hides anything.
+function SA_visibleRecords(records) {
+  var visible = [];
+  for (var i = 0; i < records.length; i++) {
+    var rec = records[i];
+    if (rec.kind === "rewind_marker") {
+      var toSeq = (rec.payload || {}).to_seq;
+      if (typeof toSeq === "number") {
+        visible = visible.filter(function (r) { return r.seq <= toSeq; });
+      }
+      visible.push(rec);
+      continue;
+    }
+    visible.push(rec);
+  }
+  return visible;
+}
+
 // records: SessionMessageRecord-shaped rows — {seq, kind, payload,
 // created_at, node_id}, whether loaded from the REST history endpoint or
 // normalised from a live TapEvent by the tap hub (Phase 2).
 // session: the WorkspaceSession row (reserved for session-aware rendering
 // decisions a future task may need — not read here yet).
 function SA_toTranscript(records, session) {
+  var visible = SA_visibleRecords(records);
   var out = [];
-  for (var i = 0; i < records.length; i++) {
-    var rec = records[i];
+  for (var i = 0; i < visible.length; i++) {
+    var rec = visible[i];
     if (SA_SKIP_IN_TRANSCRIPT[rec.kind]) continue;
     // A DONE carrying stop_reason="tool_use" ends one MODEL CALL, not
     // the turn: the loop runs the tools and calls the model again
@@ -169,3 +228,4 @@ function SA_toTranscript(records, session) {
 window.SA_SKIP_IN_TRANSCRIPT = SA_SKIP_IN_TRANSCRIPT;
 window.SA_toTranscript = SA_toTranscript;
 window.SA_KIND_TO_TRANSCRIPT = SA_KIND_TO_TRANSCRIPT;
+window.SA_visibleRecords = SA_visibleRecords;

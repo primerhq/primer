@@ -180,12 +180,12 @@ def test_u0103_sessions_full_lifecycle_journey(
         # The row shows the session TITLE, not the raw sid — locate by the
         # data-session-id stamp (the shell rail).
         open_studio(page, console_url, wid)
-        row_locator = session_row(page, sid)
+        row_locator = session_row(page, sid, wid)
         expect(row_locator.first).to_be_visible(timeout=20_000)
 
         # --- 2. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid^="nv-tab:"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="nv-tg-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
         expect(page.locator('[data-testid^="nv-session-doc:"]')).to_be_visible(
@@ -197,7 +197,7 @@ def test_u0103_sessions_full_lifecycle_journey(
         # session verbs on the row's right-click menu (POST .../cancel);
         # the old panel's ctrl-end button died with it.
         row_locator.first.click(button="right")
-        menu = page.get_by_test_id(f"nv-session-menu:{sid}")
+        menu = page.get_by_test_id(f"nv-rail-session-menu:{sid}")
         expect(menu).to_be_visible(timeout=10_000)
         menu.get_by_text("End", exact=True).click()
 
@@ -209,7 +209,7 @@ def test_u0103_sessions_full_lifecycle_journey(
         )
 
         # --- 5. The session is still listed in the Studio sidebar -----------
-        row_after = session_row(page, sid)
+        row_after = session_row(page, sid, wid)
         expect(row_after.first).to_be_visible(timeout=15_000)
     finally:
         _cleanup(base_url, ids)
@@ -319,12 +319,12 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
 
         # --- 4. Wait for the sidebar row to surface within the 3s poll ------
         # Locate by data-session-id (the row shows the title, not the sid).
-        row_locator = session_row(page, sid)
+        row_locator = session_row(page, sid, wid)
         expect(row_locator.first).to_be_visible(timeout=20_000)
 
         # --- 5. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid^="nv-tab:"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="nv-tg-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
         expect(page.locator('[data-testid^="nv-session-doc:"]')).to_be_visible(

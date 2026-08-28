@@ -168,6 +168,24 @@ function NV_Rail(props) {
     function (signal) { return SH_api.workspaces(signal); },
     { pollMs: 15000, deps: [] }
   );
+  // Defect found closing out uiv2 R2 (ui_e2e migration): the shell's own
+  // page can already be mounted (hash-only nav does not reload the SPA)
+  // when a NEW workspace is created and immediately navigated to - the
+  // tree then shows nothing for that workspace for up to one 15s poll,
+  // since the list was fetched before it existed. Refetch immediately
+  // when the selected workspace is not (yet) in the loaded list, rather
+  // than waiting for the poll. Self-limiting: once the list actually
+  // contains it (or genuinely never will), wsRes.data stops changing and
+  // this stops re-firing (use-resource.js dedupes identical responses).
+  React.useEffect(function () {
+    if (!props.selectedWorkspaceId) return;
+    var items = (wsRes.data && wsRes.data.items) || [];
+    if (items.length && !items.some(function (w) {
+      return w.id === props.selectedWorkspaceId;
+    })) {
+      wsRes.refetch();
+    }
+  }, [props.selectedWorkspaceId, wsRes.data]);
   var sessRes = window.primerApi.useResource(
     "nv-rail-all-sessions",
     function (signal) { return SH_api.allSessions(signal); },

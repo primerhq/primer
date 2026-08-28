@@ -2,14 +2,17 @@
 
 The facade amendment M16 asks for: every ui_e2e test drives the console
 through a helper layer, so re-pointing at a new shell is one edit here
-rather than N edits across the suite. That bet paid out twice now -
-first S8's fresh shell, now the three-view console.
+rather than N edits across the suite. That bet paid out three times now -
+first S8's fresh shell, then the three-view console, now uiv2 R2's rail +
+tab-group split view.
 
 Selectors mirror ui/components/console/*.jsx exactly:
 
-  nv-root / nv-topbar / nv-actbar / nv-dochost
-  nv-tab:<kind>:<ref> · nv-overlay:<name> · nv-palette
-  nv-sessions / nv-files · nv-session:<sid> (band row)
+  nv-root / nv-topbar / nv-actbar / nv-center
+  nv-tg-tab:<kind>:<ref> (nv-tab-groups.jsx) · nv-overlay:<name> · nv-palette
+  nv-rail-inbox / nv-rail-inbox-row:<sid> (cross-workspace, attention-only)
+  nv-rail-ws:<wid> / nv-rail-ws-session:<sid> (workspace tree, collapsed
+  by default - expand the workspace row before a tree row is reachable)
 """
 
 from __future__ import annotations
@@ -46,7 +49,11 @@ def open_doc(page: Page, console_url: str, wid: str, kind: str, ref: str,
     if anchor:
         url += f"#{anchor}"
     page.goto(url)
-    expect(page.get_by_test_id(f"nv-tab:{kind}:{ref}")).to_be_visible(timeout=timeout)
+    # RETARGET (uiv2 R2): the tab-group host's tabs carry the nv-tg-
+    # prefix (nv-tab-groups.jsx); the doc= grammar and restore are
+    # unchanged.
+    expect(page.get_by_test_id(f"nv-tg-tab:{kind}:{ref}")).to_be_visible(
+        timeout=timeout)
 
 
 def open_overlay(page: Page, console_url: str, wid: str, name: str,
@@ -77,18 +84,33 @@ def run_verb(page: Page, label: str) -> None:
     page.get_by_test_id("nv-palette-row").first.click()
 
 
-def session_row(page: Page, sid: str):
-    return page.get_by_test_id(f"nv-session:{sid}")
+def session_row(page: Page, sid: str, wid: str, *, timeout: int = 10_000):
+    """The workspace tree row for a specific session id.
+
+    RETARGET (uiv2 R2): the flat per-workspace band list is now the
+    Inbox (attention-only, cross-workspace - see attention_item below)
+    plus the workspace tree, which starts collapsed. wid is required so
+    the right nv-rail-ws:<wid> row can be expanded; the expand is
+    idempotent (checks the target row first) so a second call in the
+    same test does not re-toggle and collapse it.
+    """
+    ws_row = page.get_by_test_id(f"nv-rail-ws:{wid}")
+    expect(ws_row).to_be_visible(timeout=timeout)
+    row = page.get_by_test_id(f"nv-rail-ws-session:{sid}")
+    if row.count() == 0:
+        ws_row.click()
+    return row
 
 
 def attention_item(page: Page, sid: str):
     """The attention affordance for a session.
 
-    The S8 toast/inbox tier died with the flag day: attention is the
-    "Needs you" band row (attention-dotted), which opens the session
-    whose inline card carries the decision.
+    RETARGET (uiv2 R2): needs-a-human sessions now lead the Inbox, the
+    cross-workspace attention feed (notes 2.1), not a per-workspace band
+    - clicking it opens the session whose inline card carries the
+    decision, same as before.
     """
-    return page.get_by_test_id(f"nv-session:{sid}")
+    return page.get_by_test_id(f"nv-rail-inbox-row:{sid}")
 
 
 # ---------------------------------------------------------------------------

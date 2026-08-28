@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, BottomSheet, relativeTime, fmtDate */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, BottomSheet, relativeTime, fmtDate, CapabilityBadges */
 
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with AP_ to avoid clashes with other components.
@@ -578,6 +578,104 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
 // Approvals page no longer carries a "Policies" tab.
 // =============================================================
 
+// Searchable tool catalogue browser for the policy form: picking a row
+// fills toolset + tool name AND shows that tool's y/w/r/n capability
+// badges, so an operator gating a call can see up front whether it
+// yields, needs a workspace, is role-gated, or is fire-and-forget --
+// context the old free-text-only fields never surfaced. Reuses
+// GET /tools (same endpoint TS_ToolsTab reads, batch-2 + the
+// GET /toolsets/{id}/tools follow-up both carry the 4 fields there
+// already). The free-text fields below stay -- this is a faster way to
+// fill them, not a replacement for typing a not-yet-indexed id.
+function AP_ToolPicker({ toolsetId, toolName, onPick }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const [q, setQ] = React.useState("");
+  const catalogue = useResource(
+    "approval-policy:tools-catalogue",
+    (signal) => apiFetch("GET", "/tools", null, { signal }),
+    { pollMs: null },
+  );
+  const groups = catalogue.data?.items ?? [];
+  const ql = q.trim().toLowerCase();
+  const rows = React.useMemo(() => {
+    const out = [];
+    for (const g of groups) {
+      if (!g.available) continue;
+      for (const t of g.tools || []) {
+        if (ql && !(
+          t.id.toLowerCase().includes(ql)
+          || g.id.toLowerCase().includes(ql)
+          || (t.description || "").toLowerCase().includes(ql)
+        )) continue;
+        out.push({ toolsetId: g.id, tool: t });
+      }
+    }
+    return out;
+  }, [groups, ql]);
+
+  return (
+    <div className="field">
+      <label className="field-label">
+        browse tool catalogue
+        <span className="hint">pick a tool to fill toolset + tool name below, with its y/w/r/n capabilities</span>
+      </label>
+      <div className="input-icon">
+        <Icon name="search" size={13} className="icon" />
+        <input
+          className="input"
+          placeholder="Filter by tool, toolset, or description…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          data-testid="approval-policy-tool-picker-filter"
+          style={{ width: "100%" }}
+        />
+      </div>
+      <div
+        style={{
+          maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)",
+          borderRadius: 6, marginTop: 6,
+        }}
+        data-testid="approval-policy-tool-picker-results"
+      >
+        {catalogue.loading && rows.length === 0 && (
+          <div className="muted text-sm" style={{ padding: 10 }}>Loading tool catalogue…</div>
+        )}
+        {!catalogue.loading && rows.length === 0 && (
+          <div className="muted text-sm" style={{ padding: 10 }}>No tools match.</div>
+        )}
+        {rows.map((r) => {
+          const rowKey = `${r.toolsetId}__${r.tool.id}`;
+          const selected = r.toolsetId === toolsetId && r.tool.id === toolName;
+          return (
+            <div
+              key={rowKey}
+              data-testid={`approval-policy-tool-picker-row-${rowKey}`}
+              onClick={() => onPick(r.toolsetId, r.tool.id)}
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "6px 10px", cursor: "pointer",
+                background: selected ? "var(--bg-2)" : "transparent",
+                borderBottom: "1px solid var(--bg-1)",
+              }}
+            >
+              <span
+                className="mono"
+                style={{
+                  fontSize: 12, minWidth: 0, flex: 1, overflow: "hidden",
+                  textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}
+              >
+                {r.toolsetId} · {r.tool.id}
+              </span>
+              <CapabilityBadges tool={r.tool} testid={`approval-policy-tool-picker-badges-${rowKey}`} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   // Same modal: create (no existing, or existing with empty id) and
   // edit (existing.id set). The Tools page passes a seed row with
@@ -791,6 +889,15 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
         />
         {fieldErr("body.id")}
       </div>
+
+      <AP_ToolPicker
+        toolsetId={toolsetId}
+        toolName={toolName}
+        onPick={(pickedToolsetId, pickedToolName) => {
+          setToolsetId(pickedToolsetId);
+          setToolName(pickedToolName);
+        }}
+      />
 
       <div className="field">
         <label className="field-label">toolset</label>

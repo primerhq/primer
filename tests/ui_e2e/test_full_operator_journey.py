@@ -247,10 +247,21 @@ def test_multi_page_operator_journey_no_llm(
         )
         # The catalog lists instances as cards beside the form, not as
         # table rows: S4 P4 retired the per-class provider pages and
-        # their tables.
-        page.get_by_test_id("provider-instances-llm").get_by_text(
+        # their tables. The list paginates at 25 with no search field
+        # (provider-catalog.jsx's PC_InstanceList) and the shared stack
+        # legitimately accumulates fixture residue across rounds (by
+        # design), which can push this seed past page 1 - page forward
+        # rather than assuming page 1.
+        llm_row = page.get_by_test_id("provider-instances-llm").get_by_text(
             ids["llm"], exact=True,
-        ).first.wait_for(state="visible", timeout=10_000)
+        )
+        next_btn = page.get_by_test_id("pager-next")
+        for _ in range(50):
+            if llm_row.count() > 0 or next_btn.is_disabled():
+                break
+            next_btn.click()
+            page.wait_for_timeout(300)
+        llm_row.first.wait_for(state="visible", timeout=10_000)
 
         # ----- 9. Back to the shell
         # There is no dashboard page and no page title outside an

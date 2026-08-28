@@ -106,12 +106,18 @@ def test_cancelled_session_shows_outcome_banner(
     _cancel_session(base_url, wid, sid)
 
     open_session_in_studio(page, console_url, wid, sid, kind="agent")
-    # Where a terminal status is legible in the shell: the rail's row for
-    # the session. NOT the composer's status line, which describes what
-    # the session is DOING and is empty once nothing is running -- so an
-    # ended session says nothing there, by design.
+    # RETARGET (uiv2 R2): the workspace tree row no longer carries a
+    # per-row status chip (nv-rail.jsx signals only attention/running via
+    # dots, by design - notes 2.1/2.2); legible terminal status moved to
+    # the session doc, already open here. NOT the composer's status
+    # line, which describes what the session is DOING and is empty once
+    # nothing is running -- so an ended session says nothing there, by
+    # design.
+    page.get_by_test_id(f"nv-rail-ws:{wid}").click()
+    expect(page.get_by_test_id(f"nv-rail-ws-session:{sid}")).to_be_visible(
+        timeout=10_000)
     expect(
-        page.get_by_test_id(f"nv-session:{sid}").filter(has_text="ended")
+        page.get_by_text("session ended", exact=False).first
     ).to_be_visible(timeout=20_000)
     # Interrupting an ended session is meaningless, so the shell stops
     # offering it: the verb is gone from the document once terminal.
@@ -147,17 +153,18 @@ def test_cancelled_session_shows_cancelled_chip_in_list(
     _cancel_session(base_url, wid, sid)
 
     open_studio(page, console_url, wid)
-    # The cancelled session is listed as a sidebar row (located by its
-    # data-session-id stamp — the row shows the title, not the raw sid).
-    row = session_row(page, sid).first
+    # The cancelled session is listed as a workspace-tree row (located by
+    # its data-session-id stamp — the row shows the title, not the raw
+    # sid). RETARGET (uiv2 R2): the tree row no longer carries a per-row
+    # status chip (nv-rail.jsx signals only attention/running via dots,
+    # by design), so the terminal-status assertion moves to the session
+    # doc, the surviving legible-status surface (same disposition as the
+    # BDD suite's "bands order by consequence" migration).
+    row = session_row(page, sid, wid).first
     expect(row).to_be_visible(timeout=20_000)
-    # The row carries its status chip, stamped with the status it is in.
-    # POST /cancel lands the session in "ended": cancelling is how it
-    # got there, not a status of its own, and SESSION_TERMINAL carries
-    # both. Assert it reads as over rather than naming one spelling.
-    dot = row.locator('[data-testid="session-status-dot"]')
-    expect(dot).to_be_visible(timeout=10_000)
-    status = dot.get_attribute("data-status") or ""
-    assert status in {"ended", "cancelled", "failed", "completed"}, (
-        f"expected a terminal chip after cancelling, got {status!r}"
-    )
+    row.click()
+    expect(page.get_by_test_id(f"nv-session-doc:{sid}")).to_be_visible(
+        timeout=15_000)
+    expect(
+        page.get_by_text("session ended", exact=False).first
+    ).to_be_visible(timeout=15_000)

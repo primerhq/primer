@@ -13,6 +13,166 @@ function NV_sessionIsOver(session) {
 }
 
 // ---------------------------------------------------------------------------
+// US-008 R3 item 2: session verbs, extracted to standalone functions so
+// the SAME logic backs both an inline button (closed over this
+// instance's own wid/sid/refetchAll) and a palette verb (resolved to
+// whichever session tab is focused - see the registration effect below).
+// Pure delegation to SH_api; no component state, so no closure to go
+// stale.
+// ---------------------------------------------------------------------------
+function NV_doInterrupt(wid, sid, refetchAll, toast) {
+  return SH_api.interrupt(wid, sid).then(refetchAll, function (err) {
+    toast("Interrupt failed: " + err.message);
+  });
+}
+function NV_doPark(wid, sid, refetchAll, toast) {
+  return SH_api.pause(wid, sid).then(refetchAll, function (err) {
+    toast("Park failed: " + err.message);
+  });
+}
+// Nothing you can type resumes a parked session from the palette the way
+// sending a message does from the composer (sh-api.jsx's pause/cancel
+// comment) - so "Resume Session" lands the operator in the composer
+// rather than calling an endpoint that does not exist.
+function NV_doResume() {
+  var el = document.querySelector('[data-testid="nv-composer-input"]');
+  if (el && typeof el.focus === "function") el.focus();
+}
+function NV_doClose(wid, sid, refetchAll, toast) {
+  return SH_api.cancel(wid, sid).then(refetchAll, function (err) {
+    toast("Close failed: " + err.message);
+  });
+}
+function NV_doRename(wid, sid, currentName, refetchAll, toast) {
+  return window.promptDialog({
+    title: "Rename session", defaultValue: currentName || "",
+  }).then(function (name) {
+    if (name == null) return;
+    return SH_api.renameSession(wid, sid, name || null).then(
+      refetchAll, function (err) { toast("Rename failed: " + err.message); }
+    );
+  });
+}
+// The tab-group model lives in the shell (nv-shell.jsx's con.tgModel /
+// con.onTgModelChange) - this only ever reads/writes through that seam,
+// same as every other doc-level caller.
+function NV_doSplitRight(con, sid) {
+  if (!con.tgModel || typeof con.onTgModelChange !== "function") return;
+  var tabId = window.TG_tabId("session", sid);
+  con.onTgModelChange(
+    window.TG_splitWith(con.tgModel, tabId, "row"), "manage"
+  );
+}
+// US-008 R3 item 4: Compact fires immediately (notes 2.4: "folds into a
+// summary marker immediately") - no picker, so the palette verb and the
+// overflow row both call this directly.
+function NV_doCompact(wid, sid, refetchAll, toast) {
+  return SH_api.compact(wid, sid).then(refetchAll, function (err) {
+    toast("Compact failed: " + err.message);
+  });
+}
+// Rewind needs a target turn first (notes 2.4: "picker overlay — radio
+// list of user turns"), so both the overflow row and the palette verb
+// only OPEN the picker; the actual SH_api.rewind call happens once the
+// operator confirms a choice (NV_RewindPicker's onConfirm below).
+function NV_doRewind(wid, sid, toSeq, refetchAll, toast) {
+  return SH_api.rewind(wid, sid, toSeq).then(refetchAll, function (err) {
+    toast("Rewind failed: " + err.message);
+  });
+}
+// A rewind target must be a currently-visible user_input, strictly
+// after the latest visible compaction marker and strictly before the
+// newest visible record (primer/session/rewind.py's check_rewind_target,
+// mirrored here so the picker never offers a choice the backend would
+// 422/409 on). "Currently visible" is doing real work: a user_input a
+// PRIOR rewind already discarded must not be offered again, which is
+// exactly what deriving candidates from SA_visibleRecords' progressive
+// fold gives for free (a discarded record is simply absent from it) -
+// no separate floor bookkeeping needed here, only a genuinely separate
+// concern (the compaction floor) stays explicit below.
+function NV_rewindCandidates(records) {
+  var folded = window.SA_visibleRecords
+    ? window.SA_visibleRecords(records || [])
+    : (records || []);
+  // SA_visibleRecords keeps rewind_marker in ITS OWN result (frontend-
+  // only, so a rewind renders as a divider) - the backend's own
+  // visible_records() never returns it (a pure instruction, not
+  // content). Excluded here too so "newest visible record" matches
+  // check_rewind_target's definition exactly, not an inflated one that
+  // could let a genuinely-newest user_input through because a later
+  // rewind_marker's own seq shadowed it.
+  var visible = folded.filter(function (r) { return r.kind !== "rewind_marker"; });
+  var newest = 0;
+  var newestCompactionSeq = 0;
+  for (var i = 0; i < visible.length; i++) {
+    var r = visible[i];
+    if (r.seq > newest) newest = r.seq;
+    if (r.kind === "compaction_marker" && r.seq > newestCompactionSeq) {
+      newestCompactionSeq = r.seq;
+    }
+  }
+  var out = [];
+  for (var j = 0; j < visible.length; j++) {
+    var rec = visible[j];
+    if (rec.kind !== "user_input") continue;
+    if (rec.seq <= newestCompactionSeq) continue;
+    if (rec.seq >= newest) continue;
+    out.push({ seq: rec.seq, text: (rec.payload && rec.payload.text) || "" });
+  }
+  return out;
+}
+
+function NV_RewindPicker(props) {
+  var selState = React.useState(null);
+  var sel = selState[0];
+  var setSel = selState[1];
+  var candidates = props.candidates || [];
+  return (
+    <div className="nv-scrim" data-testid="nv-rewind-scrim"
+      onClick={props.onClose}>
+      <div className="nv-overlay-panel nv-rewind-picker"
+        data-testid="nv-rewind-picker"
+        role="dialog" aria-label="Rewind session"
+        onClick={function (ev) { ev.stopPropagation(); }}>
+        <div className="nv-overlay-head">
+          <h3 className="nv-overlay-title">Rewind to a kept turn</h3>
+        </div>
+        <div className="nv-rewind-body">
+          {!candidates.length ? (
+            <div className="nv-rewind-empty">
+              No earlier turn to rewind to.
+            </div>
+          ) : candidates.map(function (c) {
+            return (
+              <label key={c.seq} className="nv-rewind-row"
+                data-testid={"nv-rewind-option:" + c.seq}>
+                <input type="radio" name="nv-rewind-target"
+                  checked={sel === c.seq}
+                  onChange={function () { setSel(c.seq); }} />
+                <span className="nv-rewind-text">
+                  {String(c.text || "(turn #" + c.seq + ")").slice(0, 140)}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <div className="nv-rewind-actions">
+          <button type="button" className="nv-menu-row"
+            data-testid="nv-rewind-cancel"
+            onClick={props.onClose}>Cancel</button>
+          <button type="button" className="nv-btn-primary"
+            data-testid="nv-rewind-confirm"
+            disabled={sel == null}
+            onClick={function () { props.onConfirm(sel); }}>
+            Rewind
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Header: binding chip + picker, inline rename, usage, graph view,
 // voice replies, overflow.
 // ---------------------------------------------------------------------------
@@ -171,6 +331,7 @@ function NV_SessionHeader(props) {
           onBlur={saveTitle} />
       ) : (
         <div className="nv-title" data-testid="nv-session-title"
+          data-verb="session.rename"
           title="Click to rename"
           onClick={function () {
             setDraft((session && session.name) || "");
@@ -218,12 +379,44 @@ function NV_SessionHeader(props) {
         {ovfOpen ? (
           <div className="nv-menu nv-menu-right"
             onClick={function (ev) { ev.stopPropagation(); }}>
-            <button type="button" className="nv-menu-row" disabled
-              title="Needs the S1 P2 rewind endpoint (spec section 12)">
+            {!NV_sessionIsOver(session) ? (
+              <button type="button" className="nv-menu-row"
+                data-verb="session.park"
+                onClick={function () {
+                  setOvf(false);
+                  var verb = con.registry.get("session.park");
+                  if (verb) verb.run();
+                }}>Park Session</button>
+            ) : null}
+            <button type="button" className="nv-menu-row"
+              data-verb="session.resume"
+              onClick={function () {
+                setOvf(false);
+                var verb = con.registry.get("session.resume");
+                if (verb) verb.run();
+              }}>Resume Session</button>
+            <button type="button" className="nv-menu-row"
+              data-verb="session.splitRight"
+              onClick={function () {
+                setOvf(false);
+                var verb = con.registry.get("session.splitRight");
+                if (verb) verb.run();
+              }}>Split Right</button>
+            <div className="nv-menu-sep" />
+            <button type="button" className="nv-menu-row"
+              data-verb="session.rewind"
+              onClick={function () {
+                setOvf(false);
+                props.onOpenRewind();
+              }}>
               Rewind…
             </button>
-            <button type="button" className="nv-menu-row" disabled
-              title="Needs the S1 P2 compact endpoint (spec section 12)">
+            <button type="button" className="nv-menu-row"
+              data-verb="session.compact"
+              onClick={function () {
+                setOvf(false);
+                props.onCompact();
+              }}>
               Compact…
             </button>
             <button type="button" className="nv-menu-row"
@@ -232,6 +425,15 @@ function NV_SessionHeader(props) {
                 props.onExport();
               }}>Export transcript</button>
             <div className="nv-menu-sep" />
+            {!NV_sessionIsOver(session) ? (
+              <button type="button" className="nv-menu-row" data-danger="true"
+                data-verb="session.close"
+                onClick={function () {
+                  setOvf(false);
+                  var verb = con.registry.get("session.close");
+                  if (verb) verb.run();
+                }}>Close Session</button>
+            ) : null}
             <button type="button" className="nv-menu-row" data-danger="true"
               onClick={function () {
                 setOvf(false);
@@ -296,6 +498,28 @@ function NV_ToolBlock(props) {
   var info = SH_toolChipLabel(row);
   var args = (row.payload && row.payload.arguments) || {};
   var rp = (props.result && props.result.payload) || null;
+  // US-008 R3 item 1: an elapsed timer while the call has no result yet
+  // and the session has a live turn (props.running) - a call that's
+  // already durable (arguments complete) but still executing (no
+  // tool_result durable record yet). Ticks once a second, only while
+  // both conditions hold, so a finished or historical call never runs a
+  // timer.
+  var stillRunning = !rp && !!props.running;
+  var tickState = React.useState(0);
+  var setTick = tickState[1];
+  var startedAtRef = React.useRef(null);
+  if (startedAtRef.current == null) {
+    var parsed = row.createdAt ? Date.parse(row.createdAt) : NaN;
+    startedAtRef.current = isNaN(parsed) ? Date.now() : parsed;
+  }
+  React.useEffect(function () {
+    if (!stillRunning) return;
+    var t = setInterval(function () { setTick(function (n) { return n + 1; }); }, 1000);
+    return function () { clearInterval(t); };
+  }, [stillRunning]);
+  var elapsedS = stillRunning
+    ? Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000))
+    : null;
   var serialized = React.useMemo(function () {
     if (!open) return null;
     if (!rp) return { output: null, lines: [] };
@@ -316,6 +540,10 @@ function NV_ToolBlock(props) {
           {NV_CHIP_ICONS[info.tone] || NV_CHIP_ICONS.other}
         </span>
         <span className="nv-toolblock-label">{info.label}</span>
+        {stillRunning ? (
+          <span className="nv-toolblock-elapsed"
+            data-testid={"nv-tool-elapsed:" + row.seq}>{elapsedS}s</span>
+        ) : null}
         {rp && rp.error ? (
           <span className="nv-toolblock-err">failed</span>
         ) : null}
@@ -679,7 +907,7 @@ function NV_StatusStrip(props) {
       <span className="nv-status-verb">{line}</span>
       <span style={{ flex: 1 }} />
       <button type="button" className="nv-interrupt-btn"
-        data-testid="nv-interrupt"
+        data-testid="nv-interrupt" data-verb="session.interrupt"
         onClick={props.onInterrupt}>◼ interrupt</button>
     </div>
   );
@@ -697,6 +925,19 @@ function NV_StatusStrip(props) {
 // regardless of which mounting behavior is in play.
 var NV_DRAFTS = {};
 
+// US-008 R3 item 2: the palette registers session verbs ONCE, globally
+// (registry.register throws on a duplicate id), but a verb's run() fires
+// long after registration and must act on WHICHEVER session tab is
+// focused then - never the one instance that happened to register it.
+// nv-shell.jsx's SH_liveShell comment documents the exact stale-closure
+// bug this avoids for its own chrome-level verbs. Every mounted
+// NV_SessionDoc refreshes this on render (plain ref writes, same idiom
+// as terminalRef above), so a verb's run() always reads the CURRENT
+// console object and can always find the currently-focused session's
+// wid/refetchAll.
+var NV_SESSION_CON_REF = { current: null };
+var NV_SESSION_INSTANCES = {};
+
 function NV_Composer(props) {
   var con = NV_useConsole();
   var valState = React.useState(function () { return NV_DRAFTS[props.sid] || ""; });
@@ -712,6 +953,20 @@ function NV_Composer(props) {
   var recording = recState[0];
   var setRecording = recState[1];
   var recRef = React.useRef(null);
+  // The active getUserMedia stream, so an unmount mid-recording can stop
+  // its tracks directly (defect 3, R3 review) rather than only asking
+  // the MediaRecorder to stop and hoping rec.onstop runs before the
+  // component is gone.
+  var streamRef = React.useRef(null);
+  // US-008 R3 item 5: double-tap latches recording on (hands-free);
+  // click again stops it. Hold-to-talk is unchanged - a normal
+  // press-and-release still stops on release, same as before.
+  var latchState = React.useState(false);
+  var latched = latchState[0];
+  var setLatched = latchState[1];
+  var micLastUpRef = React.useRef(0);
+  var micPendingStopRef = React.useRef(null);
+  var MIC_DOUBLE_TAP_MS = 350;
   var sendingState = React.useState(false);
   var sending = sendingState[0];
   var setSending = sendingState[1];
@@ -763,10 +1018,12 @@ function NV_Composer(props) {
     if (recording || !props.micEnabled) return;
     navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
       var rec = new MediaRecorder(stream);
+      streamRef.current = stream;
       var chunks = [];
       rec.ondataavailable = function (ev) { chunks.push(ev.data); };
       rec.onstop = function () {
         stream.getTracks().forEach(function (t) { t.stop(); });
+        streamRef.current = null;
         setRecording(false);
         var blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
         var form = new FormData();
@@ -791,6 +1048,71 @@ function NV_Composer(props) {
   function micStop() {
     if (recRef.current && recording) recRef.current.stop();
   }
+  function micClearPendingStop() {
+    if (micPendingStopRef.current) {
+      clearTimeout(micPendingStopRef.current);
+      micPendingStopRef.current = null;
+    }
+  }
+  // Pressing while latched is the "click again" gesture - handled
+  // entirely on release below, so press does nothing but unlatch-guard.
+  // Pressing while a first tap's release is still in its grace window
+  // (see micUp) is the SECOND tap of a double-tap arriving early -
+  // cancel that pending stop so the SAME recording carries through,
+  // rather than stopping and restarting mid-gesture.
+  function micDown() {
+    if (latched) return;
+    micClearPendingStop();
+    micStart();
+  }
+  function micUp() {
+    if (latched) {
+      setLatched(false);
+      micStop();
+      return;
+    }
+    var now = Date.now();
+    var isSecondTap = now - micLastUpRef.current < MIC_DOUBLE_TAP_MS;
+    micLastUpRef.current = now;
+    if (isSecondTap) {
+      // Confirmed double-tap: latch on, recording carries through
+      // unchanged (never stopped between the two taps).
+      setLatched(true);
+      return;
+    }
+    // Might be the first tap of a double-tap in progress - give a brief
+    // grace window for a second press before treating this as a normal
+    // hold-to-talk release.
+    micClearPendingStop();
+    micPendingStopRef.current = setTimeout(function () {
+      micPendingStopRef.current = null;
+      micStop();
+    }, MIC_DOUBLE_TAP_MS);
+  }
+  function micLeave() {
+    // Latched recording must survive the pointer leaving the button -
+    // it is a toggle now, not a hold. Un-latched, dragging off the
+    // button while still holding it down stops it exactly as before.
+    if (!latched) micStop();
+  }
+  // R3 review defect 3: a latched (or mid-grace-window) recording has no
+  // release event left to stop it if the composer unmounts instead -
+  // closing the session tab, navigating away - so the mic would keep
+  // recording in the background indefinitely. `[]` deps: this must run
+  // once, at true unmount, so it reads refs (always current) rather than
+  // `recording` (a state value this closure would otherwise freeze at
+  // whatever it was on first render).
+  React.useEffect(function () {
+    return function () {
+      micClearPendingStop();
+      if (recRef.current && recRef.current.state !== "inactive") {
+        recRef.current.stop();
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(function (t) { t.stop(); });
+      }
+    };
+  }, []);
 
   return (
     <div className="nv-composer-wrap" data-testid="nv-composer">
@@ -857,11 +1179,13 @@ function NV_Composer(props) {
         </div>
         {props.micEnabled ? (
           <button type="button" className="nv-composer-iconbtn"
-            title="Hold to talk — release lands as editable text, never auto-sends"
+            title={"Hold to talk, or double-tap to latch. Release "
+              + "lands as editable text, never auto-sends."}
             data-testid="nv-mic"
             data-active={recording ? "true" : "false"}
-            onMouseDown={micStart} onMouseUp={micStop}
-            onMouseLeave={micStop}>
+            data-latched={latched ? "true" : "false"}
+            onMouseDown={micDown} onMouseUp={micUp}
+            onMouseLeave={micLeave}>
             <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
               stroke="currentColor" strokeWidth="1.3">
               <rect x="5" y="1.5" width="4" height="7" rx="2" />
@@ -871,7 +1195,7 @@ function NV_Composer(props) {
         ) : null}
         {props.running ? (
           <button type="button" className="nv-stop-btn"
-            data-testid="nv-stop"
+            data-testid="nv-stop" data-verb="session.interrupt"
             title="Interrupt the running turn"
             onClick={props.onInterrupt}>Stop</button>
         ) : null}
@@ -981,8 +1305,135 @@ function NV_SessionDoc(props) {
   var nodeFilterState = React.useState(null);
   var nodeFilter = nodeFilterState[0];
   var setNodeFilter = nodeFilterState[1];
+  // US-008 R3 item 4: the rewind picker overlay (notes 2.4). Lives here,
+  // not in NV_SessionHeader, because it needs the record list to derive
+  // candidates - the overflow menu's Rewind row and the palette verb
+  // both just open it (see NV_SESSION_INSTANCES.openRewind below).
+  var rewindOpenState = React.useState(false);
+  var rewindOpen = rewindOpenState[0];
+  var setRewindOpen = rewindOpenState[1];
 
   var session = detail.data || null;
+
+  // US-008 R3 item 2: refresh the shared "current console + current
+  // session instance" lookup on every render (plain ref writes - see
+  // NV_SESSION_CON_REF's own comment) so the verbs registered below
+  // always resolve the FOCUSED session tab, not this one specifically.
+  NV_SESSION_CON_REF.current = con;
+  // refetchAll is a hoisted function declaration further down this same
+  // component body - available here regardless of textual order.
+  NV_SESSION_INSTANCES[sid] = {
+    wid: con.wid, session: session, refetchAll: refetchAll,
+    openRewind: function () { setRewindOpen(true); },
+  };
+  React.useEffect(function () {
+    return function () { delete NV_SESSION_INSTANCES[sid]; };
+  }, [sid]);
+
+  // Registered once, ever (registry.register throws on a repeat id);
+  // every later NV_SessionDoc mount's attempt is a no-op guarded the
+  // same way nv-shell.jsx's own core-verbs effect guards itself.
+  // contexts: ["session"] hard-gates these out of the ranked list
+  // unless the focused doc is a session (SH_rankVerbs), and nv-palette.jsx
+  // already special-cases contexts: ["session"] to lead the list ahead
+  // of everything else once that gate passes.
+  React.useEffect(function () {
+    var registry = con.registry;
+    function reg(v) { if (!registry.get(v.id)) registry.register(v); }
+    function focused() {
+      var c = NV_SESSION_CON_REF.current;
+      if (!c || !c.doc || c.doc.kind !== "session") return null;
+      var fsid = c.doc.ref;
+      var inst = NV_SESSION_INSTANCES[fsid] || {};
+      var wid = (c.resolveSessionWid && c.resolveSessionWid(fsid))
+        || inst.wid || c.wid;
+      function refetch() {
+        var live2 = NV_SESSION_INSTANCES[fsid];
+        // Best-effort: the focused instance's own poll already lands
+        // this within one cycle, this just skips the wait when the
+        // instance is mounted and its resource handles are reachable.
+        if (live2 && typeof live2.refetchAll === "function") live2.refetchAll();
+      }
+      return { sid: fsid, wid: wid, con: c, refetchAll: refetch };
+    }
+    // contexts: ["session"] hard-gates on docKind; requiresLive mirrors
+    // nv-sessions-sidebar.jsx's NV_SessionContextMenu, the one place this
+    // business rule already existed (Interrupt/Park/Close hide once a
+    // session has ended, Rename/Split Right/Compact/Rewind do not).
+    reg({
+      id: "session.interrupt", label: "Interrupt Session",
+      contexts: ["session"], requiresLive: true,
+      surfaces: ["palette", "tab-menu"],
+      run: function () {
+        var f = focused(); if (!f) return;
+        NV_doInterrupt(f.wid, f.sid, f.refetchAll, f.con.toast);
+      },
+    });
+    reg({
+      id: "session.park", label: "Park Session",
+      contexts: ["session"], requiresLive: true,
+      surfaces: ["palette", "tab-menu"],
+      run: function () {
+        var f = focused(); if (!f) return;
+        NV_doPark(f.wid, f.sid, f.refetchAll, f.con.toast);
+      },
+    });
+    reg({
+      id: "session.resume", label: "Resume Session",
+      contexts: ["session"],
+      surfaces: ["palette", "tab-menu"],
+      run: function () { NV_doResume(); },
+    });
+    reg({
+      id: "session.close", label: "Close Session",
+      contexts: ["session"], requiresLive: true,
+      surfaces: ["palette", "tab-menu"],
+      run: function () {
+        var f = focused(); if (!f) return;
+        NV_doClose(f.wid, f.sid, f.refetchAll, f.con.toast);
+      },
+    });
+    reg({
+      id: "session.rename", label: "Rename Session",
+      contexts: ["session"],
+      surfaces: ["palette", "tab-menu"],
+      run: function () {
+        var f = focused(); if (!f) return;
+        var inst = NV_SESSION_INSTANCES[f.sid] || {};
+        var name = inst.session && inst.session.name;
+        NV_doRename(f.wid, f.sid, name, f.refetchAll, f.con.toast);
+      },
+    });
+    reg({
+      id: "session.splitRight", label: "Split Right",
+      contexts: ["session"],
+      surfaces: ["palette", "tab-menu"],
+      run: function () {
+        var f = focused(); if (!f) return;
+        NV_doSplitRight(f.con, f.sid);
+      },
+    });
+    reg({
+      id: "session.compact", label: "Compact Session",
+      contexts: ["session"],
+      surfaces: ["palette", "tab-menu"],
+      run: function () {
+        var f = focused(); if (!f) return;
+        NV_doCompact(f.wid, f.sid, f.refetchAll, f.con.toast);
+      },
+    });
+    reg({
+      id: "session.rewind", label: "Rewind Session",
+      contexts: ["session"],
+      surfaces: ["palette", "tab-menu"],
+      run: function () {
+        var f = focused(); if (!f) return;
+        var inst = NV_SESSION_INSTANCES[f.sid] || {};
+        if (typeof inst.openRewind === "function") inst.openRewind();
+      },
+    });
+  }, [con.registry]);
+
   React.useEffect(function () { if (live) setOptimistic(null); }, [!!live]);
   // Bounded fallback: a reopen whose turn dies before the tap shows
   // life would otherwise hold "sending" (and the lifted poll stop)
@@ -1081,6 +1532,57 @@ function NV_SessionDoc(props) {
     return t == null ? 0 : t;
   }
 
+  // US-008 R3 item 1: live tool-call ARGUMENTS as they stream in, before
+  // the call's durable record even exists.
+  //
+  // CONTRACT NOTE: two DIFFERENT part_id schemes, not one. Text and
+  // reasoning deltas key by `part_id(node_id, kind)` - node+kind scoped
+  // (primer/session/persistence.py:402 and :413, using the helper at
+  // primer/tap/delta.py::part_id). Tool deltas do NOT go through that
+  // helper at all - primer/session/persistence.py:434 passes
+  // `event.id` (the tool call id itself) straight through as the part
+  // id, because the paired TOOL_CALL durable record carries that same
+  // id and the client reconciles the live arguments to it by it.
+  // Either way, translate_stream_event coalesces a whole ToolCallDelta
+  // series into ONE durable record per call, so the row for a tool_call
+  // does not exist in `flat`/`rows` at all until that record lands.
+  // There is nothing to "enhance" while streaming; the live preview has
+  // to be synthesized from the store's parts directly and then hand off
+  // to the real NV_ToolBlock once the durable record appears (below, in
+  // the transcript body).
+  //
+  // Scanning store.parts for kind === "tool" (rather than trying to
+  // derive a part_id from a row) also naturally covers more than one
+  // concurrent forming call - a fan-out graph turn has one part per
+  // running node, each independently keyed.
+  var liveToolTickState = React.useState(0);
+  var setLiveToolTick = liveToolTickState[1];
+  var liveToolStartRef = React.useRef({});
+  var liveToolParts = [];
+  if (shownActive && store && store.parts) {
+    for (var ltPid in store.parts) {
+      if (!Object.prototype.hasOwnProperty.call(store.parts, ltPid)) continue;
+      var ltPart = store.parts[ltPid];
+      if (ltPart.kind !== "tool" || ltPart.final || !ltPart.text) continue;
+      if (!liveToolStartRef.current[ltPid]) {
+        liveToolStartRef.current[ltPid] = Date.now();
+      }
+      liveToolParts.push({
+        partId: ltPid,
+        text: ltPart.text,
+        elapsedS: Math.max(0, Math.floor(
+          (Date.now() - liveToolStartRef.current[ltPid]) / 1000)),
+      });
+    }
+  }
+  React.useEffect(function () {
+    if (!liveToolParts.length) return;
+    var t = setInterval(function () {
+      setLiveToolTick(function (n) { return n + 1; });
+    }, 1000);
+    return function () { clearInterval(t); };
+  }, [liveToolParts.length]);
+
   var ttsOk = !!(con.speech && con.speech.tts_configured);
   React.useEffect(function () {
     if (!voiceOn || !ttsOk || !flat.length) return;
@@ -1166,7 +1668,7 @@ function NV_SessionDoc(props) {
               if (child.kind === "tool_call") {
                 return (
                   <NV_ToolBlock key={child.seq} row={child}
-                    result={resultFor(child)} />
+                    result={resultFor(child)} running={shownActive} />
                 );
               }
               if (child.kind === "reasoning") {
@@ -1216,7 +1718,7 @@ function NV_SessionDoc(props) {
     // sections use, so a call reads identically mid-run and after.
     if (row.kind === "tool_call") {
       return (
-        <NV_ToolBlock key={row.seq} row={row} result={resultFor(row)} />
+        <NV_ToolBlock key={row.seq} row={row} result={resultFor(row)} running={shownActive} />
       );
     }
     if (row.kind === "tool_result") return null;
@@ -1302,7 +1804,7 @@ function NV_SessionDoc(props) {
                         || "subagent"}
                     </span>
                   </div>
-                  <NV_ToolBlock row={child} result={resultFor(child)} />
+                  <NV_ToolBlock row={child} result={resultFor(child)} running={shownActive} />
                 </div>
               );
             }
@@ -1346,7 +1848,20 @@ function NV_SessionDoc(props) {
         onGraphView={function () { setGraphView(true); }}
         onChanged={refetchAll}
         onDeleted={function () { con.setDoc(null); }}
-        onExport={exportTranscript} />
+        onExport={exportTranscript}
+        onOpenRewind={function () { setRewindOpen(true); }}
+        onCompact={function () {
+          NV_doCompact(con.wid, sid, refetchAll, con.toast);
+        }} />
+      {rewindOpen ? (
+        <NV_RewindPicker
+          candidates={NV_rewindCandidates(records)}
+          onClose={function () { setRewindOpen(false); }}
+          onConfirm={function (toSeq) {
+            setRewindOpen(false);
+            NV_doRewind(con.wid, sid, toSeq, refetchAll, con.toast);
+          }} />
+      ) : null}
       {nodeFilter ? (
         <div className="nv-node-filter" data-testid="graph-node-filter">
           <span>Showing <span className="nv-mono">{nodeFilter}</span> only</span>
@@ -1364,6 +1879,32 @@ function NV_SessionDoc(props) {
           <div className="nv-transcript-inner">
             {NV_scopeToNode(rows, nodeFilter).map(function (r) {
               return renderTurn(r, 0);
+            })}
+            {liveToolParts.map(function (ltp) {
+              var parsedLive = typeof window.parsePartialJson === "function"
+                ? window.parsePartialJson(ltp.text)
+                : { value: undefined, state: "failed" };
+              var shownText = parsedLive.value !== undefined
+                ? JSON.stringify(parsedLive.value, null, 2)
+                : ltp.text;
+              return (
+                <div key={ltp.partId} className="nv-toolblock nv-toolblock-live"
+                  data-testid={"nv-tool-live:" + ltp.partId} data-open="true">
+                  <div className="nv-toolblock-head">
+                    <span className="nv-thought-mark">▾</span>
+                    <span className="nv-chip-icon">{NV_CHIP_ICONS.other}</span>
+                    <span className="nv-toolblock-label">forming a tool call…</span>
+                    <span className="nv-toolblock-streaming">streaming</span>
+                    <span className="nv-toolblock-elapsed">{ltp.elapsedS}s</span>
+                  </div>
+                  <div className="nv-toolblock-body">
+                    <div className="nv-toolblock-sec">arguments</div>
+                    <pre className="nv-toolblock-pre nv-toolblock-pre-live">
+                      {shownText}
+                    </pre>
+                  </div>
+                </div>
+              );
             })}
             {pending.map(function (row) {
               var text = (row.parts || [])
@@ -1426,7 +1967,7 @@ function NV_SessionDoc(props) {
         terminal={NV_sessionIsOver(session)}
         micEnabled={!!(con.speech && con.speech.stt_configured)}
         onInterrupt={function () {
-          SH_api.interrupt(con.wid, sid).then(refetchAll);
+          NV_doInterrupt(con.wid, sid, refetchAll, con.toast);
         }}
         onSend={function (text, clientId) {
           return window.SS_sendUserMessage(store, text, clientId);

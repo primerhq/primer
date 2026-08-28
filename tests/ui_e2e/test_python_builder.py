@@ -88,7 +88,10 @@ def test_the_outline_lists_functions_from_the_unsaved_draft(
     _seed(base_url, tid)
     try:
         _open(page, console_url, tid)
-        rows = page.locator('[data-testid="python-outline-row"]')
+        # R4 review nit: the row testid is now suffixed with the tool
+        # id/fn_name (was a static, shared-across-all-rows testid) - a
+        # prefix selector still matches every row.
+        rows = page.locator('[data-testid^="python-outline-row:"]')
         expect(rows.first).to_be_visible(timeout=15_000)
         expect(rows.first).to_contain_text("greet")
 
@@ -110,7 +113,7 @@ def test_the_outline_lists_functions_from_the_unsaved_draft(
         )
 
         # Nothing was saved, so the callable set is still just the seeded one.
-        saved = page.locator('[data-testid="python-tool-row"]')
+        saved = page.locator('[data-testid^="python-tool-row:"]')
         expect(saved).to_have_count(1)
     finally:
         _drop(base_url, tid)
@@ -172,7 +175,7 @@ def test_add_function_inserts_a_scaffold_that_registers(
         expect(page.locator('[data-testid="python-live-status"]')).to_have_attribute(
             "data-ok", "1", timeout=15_000,
         )
-        expect(page.locator('[data-testid="python-outline-row"]').first
+        expect(page.locator('[data-testid^="python-outline-row:"]').first
                ).to_contain_text("my_tool")
     finally:
         _drop(base_url, tid)
@@ -193,8 +196,16 @@ def test_the_yielding_scaffold_is_marked_as_yielding(
             "data-ok", "1", timeout=15_000,
         )
         # Parking a run is the most important thing to know at a glance.
-        expect(page.locator('[data-testid="python-outline-yields"]').first
-               ).to_be_visible(timeout=10_000)
+        # The single ad-hoc "yields" pill was replaced by the shared
+        # y/w/r/n CapabilityBadges component (R4 Workbench group) so this
+        # tool's badge row carries the same y/w/r/n language as every
+        # other tool picker in the console; the active "y" badge is the
+        # equivalent signal.
+        yields_badge = page.locator(
+            '[data-testid^="python-outline-row:"] [data-testid="cap-badge-y"]'
+        ).first
+        expect(yields_badge).to_be_visible(timeout=10_000)
+        expect(yields_badge).to_have_attribute("data-on", "true")
     finally:
         _drop(base_url, tid)
 

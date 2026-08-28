@@ -11,11 +11,13 @@ have to bridge:
 
 * One workspace URL (``#/w/<wid>``) rather than ``#/workspaces/<wid>``.
 * Documents, not panels: a session opens as a TAB
-  (``nv-tab:session:<sid>``) whose body is one uniform session
-  document for every binding kind. There is no agent/graph panel split,
-  so the ``kind`` argument is accepted and ignored.
-* Attention is always mounted (``rail-attention``) instead of hiding
-  behind a debug toggle, so "expand the panel" becomes an assertion.
+  (``nv-tg-tab:session:<sid>``, uiv2 R2's split-view tab-group host)
+  whose body is one uniform session document for every binding kind.
+  There is no agent/graph panel split, so the ``kind`` argument is
+  accepted and ignored.
+* Attention is always mounted (the Inbox, cross-workspace) instead of
+  hiding behind a debug toggle, so "expand the panel" becomes an
+  assertion.
 
 Selectors mirror the shell components exactly; see ``_shell_helpers``.
 
@@ -34,6 +36,7 @@ from tests.ui_e2e._shell_helpers import (
     open_palette,
     open_shell,
     run_verb,
+    session_row,
     shell_url,
 )
 
@@ -66,17 +69,6 @@ STUDIO_CONSOLE_IGNORES = [
     r"internal_collections/config",
     r"Failed to load resource:.*status of 404",
 ]
-
-
-def session_row(page: Page, sid: str):
-    """The rail row for a specific session id.
-
-    The row renders the session TITLE (binding name or a truncated id),
-    NOT the raw ``sess-<id>``, so filtering by ``has_text`` is unreliable;
-    the rail stamps the id into the testid instead. The rail is
-    per-workspace, so navigate to the session's OWN workspace first.
-    """
-    return page.get_by_test_id(f"nv-session:{sid}")
 
 
 def studio_url(console_url: str, wid: str) -> str:
@@ -112,8 +104,13 @@ def kind_text(page: Page, kind: str) -> str:
 
 
 def sessions_list(page: Page):
-    """The rail's session list (bands; attention leads)."""
-    return page.get_by_test_id("nv-sessions")
+    """The rail's session area (Inbox + workspace tree).
+
+    RETARGET (uiv2 R2): the flat band list is now the two-section rail;
+    this points at the outer container so a caller just waiting for the
+    rail's session area to mount does not have to pick a section.
+    """
+    return page.get_by_test_id("nv-rail-sections")
 
 
 def files_list(page: Page, *, timeout: int = 10_000):
@@ -169,16 +166,25 @@ def open_session_via_sidebar(
 
     Returns the clicked row locator. Use this (rather than the deep-link)
     when the test's intent is the rail-list to tab interaction itself.
+
+    RETARGET (uiv2 R2): the flat row list is now the workspace tree,
+    collapsed by default - expand wid's tree row (idempotently: skip the
+    click if a session row is already showing) before picking the first
+    one, and the resulting tab carries the nv-tg- prefix.
     """
     del kind
     open_studio(page, console_url, wid, timeout=timeout)
-    rows = page.locator('[data-testid^="nv-session:"]')
+    ws_row = page.get_by_test_id(f"nv-rail-ws:{wid}")
+    expect(ws_row).to_be_visible(timeout=timeout)
+    rows = page.locator('[data-testid^="nv-rail-ws-session:"]')
+    if rows.count() == 0:
+        ws_row.click()
     row = rows.first
     expect(row).to_be_visible(timeout=timeout)
     row.click()
-    expect(page.locator('[data-testid^="nv-tab:session:"]').first).to_be_visible(
-        timeout=timeout
-    )
+    expect(
+        page.locator('[data-testid^="nv-tg-tab:session:"]').first
+    ).to_be_visible(timeout=timeout)
     return row
 
 
@@ -215,22 +221,23 @@ def open_workspace_settings(
 def expand_debug_sidebar(page: Page, *, timeout: int = 10_000) -> None:
     """Assert the attention surface is mounted.
 
-    The three-view console retired the Inbox tab: attention is the
-    "Needs you" BAND at the top of the always-mounted sessions rail,
-    so there is nothing to expand - only to assert.
+    RETARGET (uiv2 R2): "Needs you" is now the Inbox, the cross-workspace
+    attention feed at the top of the rail (always mounted) - so there is
+    still nothing to expand, only to assert.
     """
-    expect(page.get_by_test_id("nv-sessions")).to_be_visible(timeout=timeout)
+    expect(page.get_by_test_id("nv-rail-inbox")).to_be_visible(timeout=timeout)
 
 
 def action_item_for_session(page: Page, sid: str):
     """The attention affordance for a session id.
 
-    A park puts the session's band row in "Needs you" with the
-    attention dot; clicking it opens the session whose inline card
-    carries the decision. Keyed by session id so the match stays scoped
-    to THIS session even when the shared DB left other parks around.
+    RETARGET (uiv2 R2): a park puts the session in the Inbox (the
+    cross-workspace attention feed, notes 2.1) with the attention dot;
+    clicking it opens the session whose inline card carries the
+    decision. Keyed by session id so the match stays scoped to THIS
+    session even when the shared DB left other parks around.
     """
-    return page.locator(f'[data-testid="nv-session:{sid}"]').first
+    return page.locator(f'[data-testid="nv-rail-inbox-row:{sid}"]').first
 
 
 def open_provider_catalog(

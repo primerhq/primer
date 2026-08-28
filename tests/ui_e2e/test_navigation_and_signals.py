@@ -241,13 +241,18 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
             page, console_url, workspace_id, session_id, kind="agent",
         )
 
-        # Re-pointed (flag day): the console's End affordance is the
-        # session row's context-menu verb (POST .../cancel, fired
-        # directly - no confirm); the old panel's ctrl-end died.
-        row = page.locator(f'[data-testid="nv-session:{session_id}"]').first
+        # Re-pointed (flag day, then uiv2 R2): the console's End
+        # affordance is the session row's context-menu verb (POST
+        # .../cancel, fired directly - no confirm); the old panel's
+        # ctrl-end died. R2 moved the row into the workspace tree
+        # (collapsed by default) and the menu testid to the rail prefix.
+        page.get_by_test_id(f"nv-rail-ws:{workspace_id}").click()
+        row = page.locator(
+            f'[data-testid="nv-rail-ws-session:{session_id}"]'
+        ).first
         row.wait_for(state="visible", timeout=10_000)
         row.click(button="right")
-        menu = page.get_by_test_id(f"nv-session-menu:{session_id}")
+        menu = page.get_by_test_id(f"nv-rail-session-menu:{session_id}")
         menu.wait_for(state="visible", timeout=10_000)
         menu.get_by_text("End", exact=True).click()
 
@@ -263,7 +268,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
         gone = False
         while time.monotonic() < deadline:
             row.click(button="right")
-            menu = page.get_by_test_id(f"nv-session-menu:{session_id}")
+            menu = page.get_by_test_id(f"nv-rail-session-menu:{session_id}")
             menu.wait_for(state="visible", timeout=5_000)
             gone = menu.get_by_text("End", exact=True).count() == 0
             page.keyboard.press("Escape")

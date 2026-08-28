@@ -92,6 +92,16 @@ async def list_tools(
                         "id": scoped,
                         "description": tool.description or "",
                         "input_schema": tool.args_schema or {},
+                        # y/w/r/n capability badges. Excluded from Tool's own
+                        # wire serialisation (chat.py) since they must never
+                        # reach the LLM-facing tool schema; added back here
+                        # explicitly, same pattern as GET /toolsets/{id}/runtime.
+                        "yields": bool(getattr(tool, "yields", False)),
+                        "requires_workspace": bool(
+                            getattr(tool, "requires_workspace", False)
+                        ),
+                        "tool_class": getattr(tool, "tool_class", "standard"),
+                        "required_role": getattr(tool, "required_role", None),
                     })
         except TimeoutError:
             # An unreachable MCP server accepts the connection and then

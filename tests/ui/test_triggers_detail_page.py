@@ -34,3 +34,29 @@ def test_detail_uses_polling():
 
 def test_detail_has_add_subscription_btn():
     assert "add-subscription-btn" in _src() or "Add subscription" in _src()
+
+
+def test_fire_now_renders_every_subscriptions_result_inline() -> None:
+    """notes 3.6: 'Fire now runs immediately and shows per-subscription
+    results inline.' POST .../fire_now is synchronous and already returns
+    one result dict per subscription (primer/trigger/dispatch.py); this
+    used to be thrown away down to a bare count."""
+    src = _src()
+    assert 'data-testid="fire-now-results-list"' in src
+    assert "fireResult.results.map(" in src
+
+
+def test_fire_now_result_row_distinguishes_failed_skipped_delivered() -> None:
+    src = _src()
+    assert '"failed"' in src
+    assert '"skipped"' in src
+    assert '"delivered"' in src
+
+
+def test_fire_now_result_row_surfaces_the_error_message() -> None:
+    # error_message is the human-readable half of SubscriptionDispatchResult
+    # (primer/trigger/subscribers/__init__.py) -- a failed/skipped row is
+    # useless without it.
+    src = _src()
+    assert "r.error_message" in src
+    assert "r.artefact_id" in src

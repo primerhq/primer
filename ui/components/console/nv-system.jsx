@@ -1,4 +1,4 @@
-/* global React, SH_api, NV_useConsole, NV_identity */
+/* global React, SH_api, NV_useConsole, NV_identity, relativeTime */
 // The System view (wiring plan P5 T11): SYSNAV rail + one body per nav.
 // The dashboard is fresh (health cards off /health, the worker fleet
 // with drain/purge, and the cross-workspace "needs a human" panel via
@@ -37,20 +37,31 @@ var NV_SYS_LABELS = {
   profile: "Profile",
 };
 
-// Which navs a role sees. Everything else is the admin's.
-var NV_SYS_USER_NAVS = ["apikeys", "profile"];
-
+// R5 ruling: notes section 4's own intro says "all admin-gated except
+// Profile (restricted users see only Profile)" - every section but
+// Profile requires admin, for EVERY non-admin role, not just restricted.
+// The prior NV_SYS_USER_NAVS = ["apikeys", "profile"] was drift: apikeys
+// used to double as the personal-tokens surface, so a non-admin needed
+// it to self-serve. That surface now lives under Profile (R5 tokens
+// ruling, NV_SysProfile below) and the System apikeys nav is the admin
+// ALL-USERS token table, so the gate can finally match the notes exactly
+// with nothing lost.
 function NV_sysNavsFor(role) {
   var all = ["dashboard", "users", "apikeys", "sso", "mcp", "internal",
     "activity", "setup", "profile"];
   if (role === "admin") return all;
-  return all.filter(function (id) {
-    return NV_SYS_USER_NAVS.indexOf(id) >= 0;
-  });
+  return ["profile"];
 }
 
 // --- Dashboard bits --------------------------------------------------------
 
+// notes section 4: "health cards (scheduler, worker pool, sessions
+// active, attention count)" - the previous 4 cards (platform/in-flight/
+// claims/missed-heartbeats) were a scheduler-internals dump, not this
+// set. Sessions-active and attention-count need no new backend route:
+// GET /sessions?status=running&limit=1 and SH_api.pendingAttention()
+// (the batch-1 aggregate) both already carry a `.total` the UI never
+// asked for before.
 function NV_HealthCards() {
   var health = window.primerApi.useResource(
     "nv-sys:health",
@@ -60,36 +71,50 @@ function NV_HealthCards() {
     },
     { pollMs: 5000 }
   );
+  var activeSessions = window.primerApi.useResource(
+    "nv-sys:sessions-active",
+    function (signal) {
+      return window.primerApi.apiFetch(
+        "GET", "/sessions?status=running&limit=1", null, { signal: signal });
+    },
+    { pollMs: 10000 }
+  );
+  var attention = window.primerApi.useResource(
+    "nv-sys:health-attention",
+    function (signal) { return SH_api.pendingAttention(signal); },
+    { pollMs: 10000 }
+  );
   var data = health.data || {};
   var wp = data.worker_pool || {};
   var sched = data.scheduler || {};
-  var ok = data.status === "ok" && sched.alive === true;
-  var metrics = sched.metrics || {};
+  var schedOk = sched.alive === true && !sched.degraded;
+  var attnTotal = attention.data && attention.data.total != null
+    ? attention.data.total : null;
   var cards = [
     {
-      k: "platform", v: data.status || "…",
-      sub: ok ? "scheduler alive" : "scheduler " + String(sched.alive),
-      tone: ok ? "var(--green)" : "var(--red)",
+      k: "scheduler",
+      v: sched.alive == null ? "…"
+        : (!sched.alive ? "down" : (sched.degraded ? "degraded" : "alive")),
+      sub: sched.degraded ? (sched.degraded_reason || "degraded")
+        : (sched.alive ? "healthy" : "no scheduler attached"),
+      tone: schedOk ? "var(--green)" : (sched.alive ? "var(--amber)" : "var(--red)"),
     },
     {
-      k: "in flight", v: String(wp.in_flight == null ? "…" : wp.in_flight),
+      k: "worker pool", v: String(wp.in_flight == null ? "…" : wp.in_flight),
       sub: "of " + (wp.capacity == null ? "?" : wp.capacity) + " capacity",
       tone: "var(--blue)",
     },
     {
-      k: "claims", v: String(
-        metrics["primer_scheduler_claims_total"] == null
-          ? "—" : metrics["primer_scheduler_claims_total"]),
-      sub: "p99 " + (metrics["primer_scheduler_claim_latency_p99_ms"] == null
-        ? "—" : metrics["primer_scheduler_claim_latency_p99_ms"] + "ms"),
+      k: "sessions active",
+      v: String(activeSessions.data && activeSessions.data.total != null
+        ? activeSessions.data.total : "…"),
+      sub: "running now",
       tone: "var(--violet)",
     },
     {
-      k: "missed heartbeats", v: String(
-        metrics["primer_scheduler_missed_heartbeats_total"] == null
-          ? "—" : metrics["primer_scheduler_missed_heartbeats_total"]),
-      sub: "since boot",
-      tone: "var(--amber)",
+      k: "attention", v: String(attnTotal == null ? "…" : attnTotal),
+      sub: "needs a human",
+      tone: attnTotal ? "var(--attention)" : "var(--text-4)",
     },
   ];
   return (
@@ -118,6 +143,23 @@ function NV_WorkerFleet() {
     function (signal) { return apiFetch("GET", "/workers", null, { signal: signal }); },
     { pollMs: 8000 }
   );
+  // notes section 4: "worker rows show ... turns + uptime". WorkerInfo
+  // itself (primer/int/scheduler.py) carries started_at (uptime, computed
+  // client-side) but no per-worker task count; /workers/stats answers
+  // per-(worker, kind, status) lane counters, so a row's "turns" is the
+  // sum of `tasks` across every lane entry naming that worker id -
+  // same source workers.jsx's own lane-stats section already reads, just
+  // grouped by worker here instead of shown as one global table.
+  var laneStats = window.primerApi.useResource(
+    "nv-sys:worker-stats",
+    function (signal) { return apiFetch("GET", "/workers/stats", null, { signal: signal }); },
+    { pollMs: 8000 }
+  );
+  var turnsByWorker = {};
+  ((laneStats.data && laneStats.data.items) || []).forEach(function (lane) {
+    var wid = lane.worker;
+    turnsByWorker[wid] = (turnsByWorker[wid] || 0) + (lane.tasks || 0);
+  });
   var rows = (workers.data && workers.data.items) || [];
   function drain(id) {
     apiFetch("POST", "/workers/" + encodeURIComponent(id) + "/drain").then(
@@ -156,13 +198,16 @@ function NV_WorkerFleet() {
               }} />
               <span className="nv-worker-id">{w.id}</span>
               <span className="nv-worker-fact">{status}</span>
-              {w.lanes != null ? (
-                <span className="nv-worker-fact">
-                  {Array.isArray(w.lanes) ? w.lanes.join(" ") : w.lanes}
+              <span className="nv-worker-fact" data-testid={"nv-worker-turns:" + w.id}>
+                {turnsByWorker[w.id] || 0} turns
+              </span>
+              {w.started_at ? (
+                <span className="nv-worker-fact" data-testid={"nv-worker-uptime:" + w.id}>
+                  started {typeof relativeTime === "function"
+                    ? relativeTime(Math.max(0,
+                        (Date.now() - new Date(w.started_at).getTime()) / 1000))
+                    : w.started_at}
                 </span>
-              ) : null}
-              {w.in_flight != null ? (
-                <span className="nv-worker-fact">{w.in_flight} in flight</span>
               ) : null}
               <span style={{ flex: 1 }} />
               {status !== "dead" ? (
@@ -180,37 +225,54 @@ function NV_WorkerFleet() {
   );
 }
 
-// Cross-workspace attention: fan out over every workspace's pending
-// yields and flatten - the system-level "needs a human" panel.
+// Cross-workspace attention: GET /v1/yields/pending (the real aggregate,
+// batch-1) - workspace_id/workspace_name/session_id/session_name/kind/
+// agent_binding/created_at per row, already sorted newest-first and
+// capped server-side. Falls back to the old per-workspace fan-out ONLY
+// against a server that predates the aggregate (same 404 guard
+// nv-rail.jsx's Inbox already uses for the same endpoint), so this
+// panel degrades the same way the rail does rather than differently.
 function NV_AttentionEverywhere() {
   var con = NV_useConsole();
   var wids = (con.workspaces || []).map(function (w) { return w.id; });
   var pending = window.primerApi.useResource(
     "nv-sys:attention:" + wids.join(","),
     function (signal) {
-      return Promise.all(wids.map(function (wid) {
-        return SH_api.pendingYields(wid, signal).then(function (out) {
-          return ((out && out.items) || []).map(function (row) {
-            row._wid = wid;
-            return row;
-          });
-        }, function () { return []; });
-      })).then(function (nested) {
-        return { items: [].concat.apply([], nested) };
+      return SH_api.pendingAttention(signal).catch(function (err) {
+        if (err && err.status !== 404) throw err;
+        return Promise.all(wids.map(function (wid) {
+          return SH_api.pendingYields(wid, signal).then(function (out) {
+            return ((out && out.items) || []).map(function (row) {
+              return Object.assign({}, row, {
+                workspace_id: wid, session_id: row.session_id,
+              });
+            });
+          }, function () { return []; });
+        })).then(function (nested) {
+          return { items: [].concat.apply([], nested) };
+        });
       });
     },
     { pollMs: 10000, deps: [wids.join(",")] }
   );
   var items = (pending.data && pending.data.items) || [];
-  function wsName(wid) {
-    var ws = (con.workspaces || []).find(function (w) { return w.id === wid; });
-    return (ws && (ws.name || ws.id)) || wid;
+  function wsName(row) {
+    if (row.workspace_name) return row.workspace_name;
+    var ws = (con.workspaces || []).find(function (w) {
+      return w.id === row.workspace_id;
+    });
+    return (ws && (ws.name || ws.id)) || row.workspace_id;
   }
+  // Same promoted-open contract nv-studio.jsx wires for the rail's own
+  // Inbox rows (notes 2.1/2.2: every rail-triggered open is promoted).
   function openItem(row) {
-    var verb = con.registry.get("workspace.switch");
-    if (verb) verb.run({ wid: row._wid });
+    if (row.workspace_id && row.workspace_id !== con.wid) {
+      var verb = con.registry.get("workspace.switch");
+      if (verb) verb.run({ wid: row.workspace_id });
+    }
     con.goView("studio");
     con.setDoc({ kind: "session", ref: row.session_id });
+    if (con.promoteDoc) con.promoteDoc("session:" + row.session_id);
   }
   return (
     <div data-testid="nv-sys-attention">
@@ -222,19 +284,19 @@ function NV_AttentionEverywhere() {
       ) : (
         <div className="nv-attn-list">
           {items.map(function (row, i) {
-            var ident = NV_identity(null);
+            var ident = NV_identity(row.agent_binding || null);
             return (
               <div key={(row.session_id || i) + ":" + i} className="nv-attn-row">
                 <svg width="11" height="11" viewBox="0 0 12 12"
-                  style={{ color: "var(--attention)", flexShrink: 0 }}>
+                  style={{ color: ident.color || "var(--attention)", flexShrink: 0 }}>
                   <path d={ident.d} fill="currentColor" />
                 </svg>
-                <span className="nv-attn-session">{row.session_id}</span>
-                <span className="nv-attn-kind">
-                  {row.kind || row.reason || "approval"}
+                <span className="nv-attn-session">
+                  {row.session_name || row.session_id}
                 </span>
+                <span className="nv-attn-kind">{row.kind || "approval"}</span>
                 <span style={{ flex: 1 }} />
-                <span className="nv-attn-ws">{wsName(row._wid)}</span>
+                <span className="nv-attn-ws">{wsName(row)}</span>
                 <button type="button" className="nv-btn-secondary"
                   data-testid={"nv-attn-open:" + (row.session_id || i)}
                   onClick={function () { openItem(row); }}>Open</button>
@@ -258,8 +320,12 @@ function NV_SysDashboard() {
   );
 }
 
-// The operator's own page: password + linked accounts. API tokens have
-// their own nav (they are also each user's own).
+// The operator's own page: password + personal API tokens + linked
+// accounts. R5 tokens ruling: personal tokens move HERE (every role
+// reaches Profile); the System apikeys nav (admin-only, per the R5 role
+// gate above) becomes the admin all-users token table instead - the two
+// surfaces now share AT_ApiTokensPage's machinery via its mode prop
+// rather than duplicating table/row/dialog code.
 function NV_SysProfile() {
   var con = NV_useConsole();
   var curState = React.useState("");
@@ -315,8 +381,11 @@ function NV_SysProfile() {
           {busy ? "Changing…" : "Change password"}
         </button>
       </div>
-      {/* One-title rule: the re-hosted page renders its own
-          action-bearing "Linked accounts" header. */}
+      {/* One-title rule: the re-hosted pages render their own
+          action-bearing headers ("API tokens" / "Linked accounts"). */}
+      {typeof window.AT_ApiTokensPage === "function"
+        ? <window.AT_ApiTokensPage mode="personal" />
+        : null}
       {typeof window.LA_LinkedAccountsPage === "function"
         ? <window.LA_LinkedAccountsPage />
         : null}
@@ -332,7 +401,9 @@ function NV_SysBody(props) {
   if (nav === "dashboard") return <NV_SysDashboard />;
   if (nav === "profile") return <NV_SysProfile />;
   if (nav === "users") return <window.ADM_AdminUsersPage />;
-  if (nav === "apikeys") return <window.AT_ApiTokensPage />;
+  // R5 tokens ruling: this is now the admin all-users token table
+  // (personal tokens live under Profile, above).
+  if (nav === "apikeys") return <window.AT_ApiTokensPage mode="admin" />;
   if (nav === "sso") return <window.SSO_ProvidersPage />;
   if (nav === "mcp") return <window.MC_McpPage />;
   if (nav === "internal") {

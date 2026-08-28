@@ -142,11 +142,11 @@ def _seed_ladder(base_url: str, unique_suffix: str, tmp_path):
 
 
 def _route_pending_items(page, wid: str, items: list[dict]) -> list[str]:
-    """Route GET /v1/workspaces/{wid}/yields/pending -> the given items.
+    """Route GET /v1/workspaces/{wid}/yields/pending -> the given items,
+    plus the cross-workspace aggregate the rail's Inbox reads (uiv2 R2).
 
-    The rail's attention list reads ``data.items``; each item is the
-    shape that route sends: ``{session_id, kind, prompt, tool_call_id,
-    parked_at}``.
+    Each item is the shape the per-workspace route sends:
+    ``{session_id, kind, prompt, tool_call_id, parked_at}``.
 
     Returns the list the handler appends each intercepted URL to. A mock
     that quietly fails to match looks exactly like a surface rendering
@@ -175,6 +175,30 @@ def _route_pending_items(page, wid: str, items: list[dict]) -> list[str]:
     # The console renders the cards INLINE in the session doc, whose
     # gates ride the session-scoped route; mock it with the same items.
     page.route(f"**/v1/workspaces/{wid}/sessions/*/yields/pending*", _handler)
+
+    # uiv2 R2: the rail's Inbox badge now reads the cross-workspace
+    # aggregate (GET /v1/yields/pending, no workspace in the path), not
+    # the per-workspace route above. Mock it too, or the badge count
+    # falls through to the REAL aggregate - which on a long-lived shared
+    # stack answers with however much real attention residue has
+    # accumulated, not "1". Its item shape needs workspace_id (the
+    # per-workspace items above don't carry one, since the URL already
+    # scopes them).
+    def _aggregate_handler(route):
+        seen.append(route.request.url)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "items": [
+                    dict(it, workspace_id=it.get("workspace_id", wid))
+                    for it in items
+                ],
+                "total": len(items),
+            }),
+        )
+
+    page.route("**/v1/yields/pending*", _aggregate_handler)
     return seen
 
 
@@ -250,8 +274,11 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
         expect(card).to_contain_text("What is your name?")
         expect(card).to_have_attribute("data-kind", "question")
         expect(card.get_by_test_id("nv-ask-answer")).to_be_visible()
-        # The rail badge reflects the single pending item.
-        expect(page.get_by_test_id("nv-band:attention")).to_contain_text("1")
+        # RETARGET (uiv2 R2): the attention band's count badge is now the
+        # Inbox header's count, the cross-workspace attention feed.
+        expect(
+            page.get_by_test_id("nv-rail-inbox").locator(".nv-rail-count")
+        ).to_contain_text("1")
     finally:
         _cleanup(base_url, cleanup_urls)
 

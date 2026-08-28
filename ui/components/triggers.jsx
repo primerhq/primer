@@ -1557,10 +1557,55 @@ function TR_TriggerDetail({ id }) {
             </div>
           )}
           {fireResult && (
-            <div style={{ marginTop: 8 }} className="muted text-sm">
-              Fired{fireResult.fire_id ? <> · fire id <span className="mono">{fireResult.fire_id}</span></> : null}
+            <div style={{ marginTop: 8 }} data-testid="fire-now-result">
+              <div className="muted text-sm">
+                Fired{fireResult.fire_id ? <> · fire id <span className="mono">{fireResult.fire_id}</span></> : null}
+              </div>
+              {/* Per-subscription results inline (notes 3.6) -- POST
+                  .../fire_now is synchronous and already returns one
+                  result dict per subscription (primer/trigger/dispatch.py),
+                  the summary count alone threw that away. */}
               {Array.isArray(fireResult.results) && fireResult.results.length > 0 && (
-                <> · {fireResult.results.length} {fireResult.results.length === 1 ? "subscription" : "subscriptions"} dispatched</>
+                <div
+                  style={{
+                    marginTop: 6, border: "1px solid var(--border)",
+                    borderRadius: 6, overflow: "hidden",
+                  }}
+                  data-testid="fire-now-results-list"
+                >
+                  {fireResult.results.map((r, i) => {
+                    const tone = !r.ok ? "var(--red)" : r.skipped ? "var(--text-3)" : "var(--green)";
+                    const label = !r.ok ? "failed" : r.skipped ? "skipped" : "delivered";
+                    return (
+                      <div
+                        key={r.subscription_id || i}
+                        data-testid={`fire-now-result-row-${r.subscription_id || i}`}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 8,
+                          padding: "6px 10px", fontSize: 11.5,
+                          borderTop: i === 0 ? "none" : "1px solid var(--border)",
+                        }}
+                      >
+                        <span
+                          className="mono"
+                          style={{
+                            color: tone, fontWeight: 600, minWidth: 66,
+                          }}
+                        >{label}</span>
+                        <span className="mono muted" style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {r.subscription_id || "—"}
+                        </span>
+                        <span style={{ flex: 1 }} />
+                        {r.artefact_id && (
+                          <span className="mono text-sm" style={{ color: "var(--text-3)" }}>{r.artefact_id}</span>
+                        )}
+                        {r.error_message && (
+                          <span className="text-sm" style={{ color: tone }}>{r.error_message}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           )}

@@ -32,7 +32,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.llm.anthropic import _discover_anthropic_models
@@ -1047,6 +1047,16 @@ async def _catalogue_tools(
                     "scoped_id": f"{tid}__{tool.id}",
                     "description": tool.description or "",
                     "input_schema": tool.args_schema or {},
+                    # y/w/r/n capability badges -- excluded from Tool's own
+                    # wire serialisation (chat.py) since they must never
+                    # reach the LLM-facing tool schema; added back here
+                    # explicitly, same pattern as GET /toolsets/{id}/runtime.
+                    "yields": bool(getattr(tool, "yields", False)),
+                    "requires_workspace": bool(
+                        getattr(tool, "requires_workspace", False)
+                    ),
+                    "tool_class": getattr(tool, "tool_class", "standard"),
+                    "required_role": getattr(tool, "required_role", None),
                 })
         finally:
             # Finalize the generator HERE, in the probe task, never via
@@ -1353,7 +1363,18 @@ async def list_toolset_tools(
     tools = []
     try:
         async for tool in provider.list_tools(principal=principal):
-            tools.append(tool.model_dump(mode="json"))
+            entry = tool.model_dump(mode="json")
+            # y/w/r/n capability badges -- excluded from Tool's own wire
+            # serialisation (chat.py) since they must never reach the
+            # LLM-facing tool schema; added back here explicitly, same
+            # pattern as GET /tools/catalogue and GET /toolsets/{id}/runtime.
+            entry["yields"] = bool(getattr(tool, "yields", False))
+            entry["requires_workspace"] = bool(
+                getattr(tool, "requires_workspace", False)
+            )
+            entry["tool_class"] = getattr(tool, "tool_class", "standard")
+            entry["required_role"] = getattr(tool, "required_role", None)
+            tools.append(entry)
     except BaseExceptionGroup as group:
         # HTTP/SSE MCP transports run inside anyio task groups, which
         # wrap any sub-exception in BaseExceptionGroup. Unwrap to find
@@ -1386,6 +1407,75 @@ async def list_toolset_tools(
             f"{type(exc).__name__}: {exc}"
         ) from exc
     return {"tools": tools}
+
+
+async def _complete_mcp_oauth(
+    toolset_id: str, code: str, state: str, registry: ProviderRegistry,
+) -> dict:
+    """Shared body for the GET and POST OAuth callback routes below."""
+    from primer.model.except_ import BadRequestError
+    from primer.toolset.mcp import McpToolsetProvider
+
+    provider = await registry.get_toolset(toolset_id)
+    if not isinstance(provider, McpToolsetProvider):
+        raise BadRequestError(
+            f"toolset {toolset_id!r} is not an MCP toolset; the OAuth "
+            "callback does not apply"
+        )
+    await provider.complete_oauth(code=code, state=state)
+    return {"ok": True}
+
+
+@toolset_router.get(
+    "/toolsets/{toolset_id}/oauth/callback",
+    summary="MCP OAuth consent callback (exchanges code+state for a token)",
+    responses=common_responses(400, 404, 500),
+)
+async def mcp_oauth_callback_get(
+    toolset_id: str = Path(..., description="Toolset id"),
+    code: str = Query(..., description="Authorization code from the OAuth provider"),
+    state: str = Query(
+        ..., description="Opaque state id minted when the consent flow started"
+    ),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    """Finish an MCP toolset's OAuth consent flow.
+
+    The third-party OAuth provider redirects the operator's browser back
+    here with ``code``/``state`` once they consent to a flow started by
+    an earlier ``AuthRequiredError`` (surfaced as 401 + ``auth_url`` from
+    e.g. ``GET /toolsets/{id}/tools``). Exchanges the code for a token via
+    the toolset's ``McpToolsetProvider.complete_oauth`` and persists it,
+    so the next call to this toolset succeeds without another round-trip.
+
+    ``state`` is a single opaque token from the toolset's own OAuth state
+    store; it carries no toolset id, so the id in the URL path is what
+    routes this callback to the right provider. The operator's
+    ``OAuthConfig.redirect_uri`` must be registered with the third-party
+    provider as this exact path. An unknown/expired/already-consumed
+    ``state`` 400s (surfaced by the state store); an unknown ``toolset_id``
+    404s; a ``toolset_id`` that resolves but isn't an MCP toolset 400s.
+    """
+    return await _complete_mcp_oauth(toolset_id, code, state, registry)
+
+
+@toolset_router.post(
+    "/toolsets/{toolset_id}/oauth/callback",
+    summary="MCP OAuth consent callback (exchanges code+state for a token)",
+    responses=common_responses(400, 404, 500),
+)
+async def mcp_oauth_callback_post(
+    toolset_id: str = Path(..., description="Toolset id"),
+    code: str = Query(..., description="Authorization code from the OAuth provider"),
+    state: str = Query(
+        ..., description="Opaque state id minted when the consent flow started"
+    ),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    """POST counterpart of ``GET .../oauth/callback`` -- some OAuth
+    providers deliver the callback as a form POST rather than a redirect
+    with query params. Same contract; see the GET handler's docstring."""
+    return await _complete_mcp_oauth(toolset_id, code, state, registry)
 
 
 # ---------- Built-in toolsets registry --------------------------------------
@@ -1694,14 +1784,22 @@ async def validate_python_source(
     HTTP error. ``ok`` distinguishes them. (The PUT path still 422s -- there,
     invalid source is a rejected write.)
 
-    Safe by construction: :func:`register_module` walks the AST and never
-    imports or executes the module, which is the same property that lets the
-    save path validate untrusted source.
+    Safe by construction: :func:`register_module_report` walks the AST and
+    never imports or executes the module, which is the same property that
+    lets the save path validate untrusted source.
+
+    Per-tool, not first-failure: a module with 2 bad functions and 3 good
+    ones reports all 5 verdicts. Top-level ``error`` is reserved for
+    MODULE-level problems (bad syntax, a dangling ``@resumes`` reference)
+    that abort before any function-level analysis is possible; a
+    per-function failure instead shows up as ``ok: false`` on that one
+    entry in ``tools``, alongside the others.
     """
     from primer.model.providers.toolset import PythonConfig
     from primer.toolset.python_runner.registration import (
+        RegisteredTool,
         RegistrationError,
-        register_module,
+        register_module_report,
     )
 
     # The per-tool default only affects reported timeouts, so a missing or
@@ -1713,7 +1811,9 @@ async def validate_python_source(
         default_timeout = row.config.default_timeout_seconds
 
     try:
-        registered = register_module(body.source, toolset_id, default_timeout)
+        registered = register_module_report(
+            body.source, toolset_id, default_timeout,
+        )
     except RegistrationError as exc:
         return {
             "ok": False,
@@ -1725,14 +1825,26 @@ async def validate_python_source(
             },
         }
 
-    return {
-        "ok": True,
-        "error": None,
-        "tools": [
-            {
+    tools: list[dict] = []
+    all_ok = True
+    for reg in registered:
+        if isinstance(reg, RegisteredTool):
+            tools.append({
                 "id": reg.tool.id,
                 "fn_name": reg.fn_name,
+                "ok": True,
                 "yields": reg.tool.yields,
+                # w/r/n capability badges -- same getattr pattern as
+                # GET /toolsets/{id}/tools, GET /toolsets/{id}/runtime,
+                # GET /tools/catalogue and GET /tools, so every
+                # tool-serialising endpoint stays in parity (R4 review
+                # finding: this route and .../runtime were the two that
+                # had drifted, only re-adding "yields").
+                "requires_workspace": bool(
+                    getattr(reg.tool, "requires_workspace", False)
+                ),
+                "tool_class": getattr(reg.tool, "tool_class", "standard"),
+                "required_role": getattr(reg.tool, "required_role", None),
                 "timeout_seconds": reg.timeout_seconds,
                 "description": reg.tool.description or "",
                 "args": sorted(
@@ -1740,9 +1852,25 @@ async def validate_python_source(
                 ),
                 # Where the function sits, so the outline can jump to it.
                 "lineno": reg.lineno,
-            }
-            for reg in registered
-        ],
+            })
+        else:
+            all_ok = False
+            tools.append({
+                "id": reg.fn_name,
+                "fn_name": reg.fn_name,
+                "ok": False,
+                "lineno": reg.lineno,
+                "error": {
+                    "message": reg.message,
+                    "field": reg.field,
+                    "lineno": reg.lineno,
+                },
+            })
+
+    return {
+        "ok": all_ok,
+        "error": None,
+        "tools": tools,
     }
 
 
@@ -1763,14 +1891,23 @@ async def toolset_runtime(
     than a generic "sandboxed" badge.
     """
     provider = await registry.get_toolset(toolset_id)
-    # `yields` is not part of Tool's serialisation, but it is the single most
-    # important thing to know about a python tool at a glance: a yielding tool
-    # parks the run rather than returning. The console renders a badge from it,
-    # so add it explicitly rather than leaving the badge unreachable.
+    # y/w/r/n capability badges are not part of Tool's own serialisation
+    # (chat.py excludes them so they never reach the LLM-facing schema);
+    # added back here explicitly, same getattr pattern as
+    # GET /toolsets/{id}/tools, POST /toolsets/{id}/validate,
+    # GET /tools/catalogue and GET /tools, so every tool-serialising
+    # endpoint stays in parity (R4 review finding: this route and
+    # .../validate were the two that had drifted, only re-adding
+    # "yields").
     tools = []
     async for t in provider.list_tools():
         entry = t.model_dump(mode="json")
         entry["yields"] = bool(getattr(t, "yields", False))
+        entry["requires_workspace"] = bool(
+            getattr(t, "requires_workspace", False)
+        )
+        entry["tool_class"] = getattr(t, "tool_class", "standard")
+        entry["required_role"] = getattr(t, "required_role", None)
         tools.append(entry)
     error = getattr(provider, "registration_error", None)
     return {

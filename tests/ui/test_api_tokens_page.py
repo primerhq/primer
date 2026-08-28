@@ -55,3 +55,16 @@ def test_the_admin_overlay_renders_the_tokens_page():
     src = (Path(__file__).resolve().parents[2] / "ui" / "components"
            / "console" / "nv-system.jsx").read_text()
     assert "AT_ApiTokensPage" in src
+
+
+def test_extract_error_reads_extensions_not_detail():
+    """R5 fix (mirrors admin_users.jsx's ADM_extractError): envelope.detail
+    is always a STRING (primer/api/errors.py's _http_exception_handler),
+    never the {code, message} dict this used to check `typeof ... ===
+    "object"` against - code was always null."""
+    src = _src()
+    start = src.index("function AT_extractError(")
+    end = src.index("\n}", start)
+    body = src[start:end]
+    assert "env.extensions" in body
+    assert "env.detail" not in body

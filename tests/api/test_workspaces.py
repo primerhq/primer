@@ -819,6 +819,76 @@ class TestWorkspaceRouter:
         assert get2.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_destroy_reconciles_open_sessions_to_workspace_lost(
+        self, client, sp
+    ) -> None:
+        """Real bug: destroy used to hard-delete the WorkspaceRow without
+        touching open sessions, so they were silently orphaned instead of
+        ending -- the probe's own workspace_lost reconciliation only ever
+        fires as a side effect of observing phase -> "failed", which can
+        never happen once the row is gone. Destroy must reconcile sessions
+        itself, before the row disappears."""
+        from primer.model.workspace_session import (
+            AgentSessionBinding,
+            WorkspaceSession,
+        )
+
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        post = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        assert post.status_code == 201, post.text
+        wid = post.json()["id"]
+
+        sess_storage = sp.get_storage(WorkspaceSession)
+        running = WorkspaceSession(
+            id="sess-open-1",
+            workspace_id=wid,
+            binding=AgentSessionBinding(agent_id="agt-1"),
+            status=SessionStatus.RUNNING,
+            created_at=datetime.now(timezone.utc),
+        )
+        waiting = WorkspaceSession(
+            id="sess-open-2",
+            workspace_id=wid,
+            binding=AgentSessionBinding(agent_id="agt-1"),
+            status=SessionStatus.WAITING,
+            created_at=datetime.now(timezone.utc),
+        )
+        already_ended = WorkspaceSession(
+            id="sess-already-ended",
+            workspace_id=wid,
+            binding=AgentSessionBinding(agent_id="agt-1"),
+            status=SessionStatus.ENDED,
+            created_at=datetime.now(timezone.utc),
+            ended_reason="completed",
+            ended_at=datetime.now(timezone.utc),
+        )
+        for sess in (running, waiting, already_ended):
+            await sess_storage.create(sess)
+
+        delete = await client.delete(f"/v1/workspaces/{wid}")
+        assert delete.status_code == 204, delete.text
+
+        # No orphan workspace row.
+        get2 = await client.get(f"/v1/workspaces/{wid}")
+        assert get2.status_code == 404
+
+        # Both open sessions transitioned; the pre-ended one is untouched.
+        got_running = await sess_storage.get("sess-open-1")
+        got_waiting = await sess_storage.get("sess-open-2")
+        got_ended = await sess_storage.get("sess-already-ended")
+        assert got_running.status == SessionStatus.ENDED
+        assert got_running.ended_reason == "workspace_lost"
+        assert got_running.ended_at is not None
+        assert got_waiting.status == SessionStatus.ENDED
+        assert got_waiting.ended_reason == "workspace_lost"
+        assert got_ended.ended_reason == "completed"
+
+    @pytest.mark.asyncio
     async def test_create_rolls_back_live_workspace_when_row_write_fails(
         self, client, wsr, sp
     ) -> None:

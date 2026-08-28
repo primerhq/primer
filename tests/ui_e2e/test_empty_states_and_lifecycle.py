@@ -160,11 +160,21 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
         save_btn.click()
 
         # The row appears in the instance list beside the form, with no
-        # reload and no navigation.
-        expect(
-            page.get_by_test_id("provider-instances-llm").get_by_text(
-                provider_id, exact=True,
-            )
-        ).to_be_visible(timeout=15_000)
+        # reload and no navigation. The list paginates at 25 with no
+        # search field (provider-catalog.jsx's PC_InstanceList) and the
+        # shared stack legitimately accumulates fixture residue across
+        # rounds (by design), which can push the new row past page 1 -
+        # page forward within the SAME already-open list (no reload, no
+        # route change) rather than assuming page 1.
+        row = page.get_by_test_id("provider-instances-llm").get_by_text(
+            provider_id, exact=True,
+        )
+        next_btn = page.get_by_test_id("pager-next")
+        for _ in range(50):
+            if row.count() > 0 or next_btn.is_disabled():
+                break
+            next_btn.click()
+            page.wait_for_timeout(300)
+        expect(row).to_be_visible(timeout=15_000)
     finally:
         _cleanup(base_url, [f"/v1/llm_providers/{provider_id}"])

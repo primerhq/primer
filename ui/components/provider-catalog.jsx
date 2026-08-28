@@ -228,7 +228,7 @@ function PC_InstanceList({ klass, selectedId, onSelect, onRegisterRefetch }) {
   );
 
   return (
-    <div data-testid={`provider-instances-${klass.key}`}>
+    <div data-testid={`provider-instances-${klass.key}`} style={{ minWidth: 0, flex: "1 1 0" }}>
       {isMobile ? (
         <CardList
           items={items}

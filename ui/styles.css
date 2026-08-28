@@ -2928,6 +2928,8 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .sh-activity-foot { display: flex; align-items: center; gap: var(--sp-2); }
 .sh-activity-count { font-size: var(--fs-11); color: var(--text-3); }
+.sh-activity-subs { display: flex; flex-direction: column; gap: var(--sp-2); border-top: 1px solid var(--border); padding-top: var(--sp-3); min-height: 0; }
+.sh-activity-subs-title { font-size: var(--fs-12); font-weight: 600; color: var(--text); }
 .sh-overlay-bar > button.sh-verb { flex: none; white-space: nowrap; }
 .sh-group .sh-empty { margin: auto; }
 
@@ -3929,6 +3931,59 @@ input, textarea, select { font: inherit; color: inherit; }
   word-break: break-word; max-width: 100%;
 }
 .nv-toolblock-pre[data-error="true"] { color: var(--danger, #e06c5f); }
+
+/* US-008 R3 item 1: live tool-args streaming affordance. Additive only -
+   every rule above this comment is untouched. */
+.nv-toolblock-elapsed {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-4);
+  margin-left: auto;
+}
+.nv-toolblock-streaming {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent, var(--text-3));
+  animation: nv-pulse 1.6s ease-in-out infinite;
+}
+.nv-toolblock-live .nv-toolblock-head { color: var(--text-2, var(--text)); cursor: default; }
+.nv-toolblock-pre-live { border: 1px dashed var(--border); }
+
+/* US-008 R3 item 4: rewind kept-turn picker. Additive only - reuses
+   .nv-scrim/.nv-overlay-panel/.nv-overlay-head for the modal chrome. */
+.nv-rewind-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 16px;
+  overflow-y: auto;
+  max-height: 50vh;
+}
+.nv-rewind-empty { color: var(--text-4); font-size: 12.5px; padding: 8px 0; }
+.nv-rewind-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 6px;
+  border-radius: var(--r-6);
+  cursor: pointer;
+}
+.nv-rewind-row:hover { background: var(--bg-hover, var(--bg-elev)); }
+.nv-rewind-row input[type="radio"] { margin-top: 2px; flex-shrink: 0; }
+.nv-rewind-text {
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.nv-rewind-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
 /* Lifecycle markers: one slim muted line, never a full agent block. */
 .nv-lifecycle {
   display: flex; align-items: center; gap: 8px; padding-left: 30px;
@@ -4070,6 +4125,13 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-composer-iconbtn:hover { border-color: var(--border-strong); color: var(--text); }
 .nv-composer-iconbtn[data-active="true"] { border-color: var(--accent-border); background: var(--accent-dim); color: var(--accent); }
+/* US-008 R3 item 5: double-tap latch - a pulse distinguishes "recording
+   hands-free until clicked again" from a plain held-down mic. */
+.nv-composer-iconbtn[data-latched="true"] {
+  border-color: var(--danger, #e06c5f);
+  color: var(--danger, #e06c5f);
+  animation: nv-pulse 1.6s ease-in-out infinite;
+}
 .nv-composer-field {
   flex: 1; min-width: 0; position: relative;
   border: 1px solid var(--border);
@@ -4638,7 +4700,7 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-pcard-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 12px;
 }
 .nv-pcard {
@@ -4673,6 +4735,7 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-pcard-status[data-tone="ok"] { color: var(--green); }
 .nv-pcard-status[data-tone="warn"] { color: var(--attention); }
+.nv-pcard-status[data-tone="error"] { color: var(--red); }
 .nv-pcard-head { display: flex; align-items: center; gap: 8px; }
 .nv-pcard-name {
   font-weight: 600;
@@ -4688,6 +4751,7 @@ input, textarea, select { font: inherit; color: inherit; }
   white-space: nowrap;
 }
 .nv-pcard-sub {
+  font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--text-3);

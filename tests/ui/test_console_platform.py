@@ -54,6 +54,16 @@ def test_delete_is_confirm_guarded():
     assert "Referenced entities refuse deletion" in PLAT
 
 
+def test_search_query_resets_the_page():
+    # R4 review finding 3: without this, Math.min(pageNo, pages - 1)
+    # clamps toward the END of a search-narrowed range, so typing a
+    # query while on a later page could land on the LAST page of
+    # matches instead of the first. Mirrors toolsets.jsx:1259's
+    # equivalent pattern for its own text/policy filters.
+    m = re.search(r"React\.useEffect\(function \(\) \{ setPageNo\(0\); \}, \[q\]\);", PLAT)
+    assert m, "pageNo must reset when the search query q changes"
+
+
 def test_providers_ride_the_real_plurals():
     for plural in ("llm_providers", "embedding_providers", "tts_providers",
                    "web_search_providers", "workspace_providers",

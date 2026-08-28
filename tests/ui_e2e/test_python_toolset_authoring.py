@@ -51,7 +51,7 @@ def test_the_editor_shows_derived_tools_and_the_isolation_level(
 
         # The derived list comes from the server, so this asserts the source
         # actually registered rather than that the textarea has text in it.
-        rows = page.locator('[data-testid="python-tool-row"]')
+        rows = page.locator('[data-testid^="python-tool-row:"]')
         expect(rows.first).to_be_visible(timeout=15_000)
         expect(rows.first).to_contain_text("greet")
         expect(rows.first).to_contain_text("name")

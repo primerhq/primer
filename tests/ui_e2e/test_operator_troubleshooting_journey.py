@@ -165,12 +165,12 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
         # ----- 3. Sidebar Sessions section lists the seeded row ------
         # The row renders the session TITLE, not the raw sid — locate it by
         # its data-session-id stamp (the shell rail).
-        row = session_row(page, sid)
+        row = session_row(page, sid, wid)
         expect(row.first).to_be_visible(timeout=20_000)
 
         # ----- 4. Click the row → center tab + agent panel ----------
         row.first.click()
-        expect(page.locator('[data-testid^="nv-tab:"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="nv-tg-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
         expect(page.locator('[data-testid^="nv-session-doc:"]')).to_be_visible(

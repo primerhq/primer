@@ -135,6 +135,104 @@ def test_sa_to_transcript_maps_records_via_mini_racer() -> None:
     assert ctx.eval("out[3].kind") == "done"
 
 
+def test_rewind_marker_folds_the_discarded_span_via_mini_racer() -> None:
+    """US-008 R3 item 4: a rewind must be VISIBLE (a fold divider, same
+    treatment as compaction_marker) and it must hide the span it
+    discarded - the /messages read is visible=false by design
+    (primer/api/routers/sessions.py), so nothing upstream hides the
+    raw rows for us.
+    """
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(ADAPTER.read_text(encoding="utf-8"))
+    ctx.eval(
+        """
+        var records = [
+          {seq: 1, kind: "user_input", payload: {text: "first"}, created_at: "t1"},
+          {seq: 2, kind: "assistant_token", payload: {text: "first answer"}, created_at: "t2"},
+          {seq: 3, kind: "user_input", payload: {text: "second"}, created_at: "t3"},
+          {seq: 4, kind: "assistant_token", payload: {text: "second answer"}, created_at: "t4"},
+          {seq: 5, kind: "rewind_marker", payload: {to_seq: 1, actor: "user"}, created_at: "t5"},
+          {seq: 6, kind: "user_input", payload: {text: "third"}, created_at: "t6"},
+        ];
+        var out = window.SA_toTranscript(records, {id: "s1"});
+        """
+    )
+    # Only the kept turn, the marker's own divider, and the post-rewind
+    # turn survive - seq 2/3/4 (the discarded span) do not.
+    import json
+
+    seqs = json.loads(ctx.eval(
+        "JSON.stringify(out.map(function (r) { return r.seq; }))"
+    ))
+    assert seqs == [1, 5, 6]
+    assert ctx.eval("out[0].label") == "first"
+    assert ctx.eval("out[1].kind") == "divider"
+    assert "kept up to #1" in ctx.eval("out[1].label")
+    assert ctx.eval("out[2].label") == "third"
+
+
+def test_progressive_rewind_folds_nest_via_mini_racer() -> None:
+    """R3 cross-review defect 1 (HIGH): a SECOND rewind must compose with
+    the first, not replace it - primer/session/replay.py's visible_records
+    docstring: "Rewind, continue, rewind again nests correctly." The prior
+    implementation kept only the LAST marker's (to_seq, marker_seq) pair,
+    so the FIRST rewind's discarded span (seq 6-10 below) silently
+    resurfaced once a second rewind was recorded.
+
+    client_action/llm_call at seq 2-4 are unrelated padding (always
+    skipped by SA_SKIP_IN_TRANSCRIPT regardless of any fold) - they make
+    the fixture 16 records without adding a THIRD kept span to reason
+    about; the two rewinds and their discarded content are the only
+    thing under test.
+    """
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(ADAPTER.read_text(encoding="utf-8"))
+    ctx.eval(
+        """
+        var records = [
+          {seq: 1, kind: "user_input", payload: {text: "first"}, created_at: "t1"},
+          {seq: 2, kind: "client_action", payload: {}, created_at: "t2"},
+          {seq: 3, kind: "llm_call", payload: {}, created_at: "t3"},
+          {seq: 4, kind: "client_action", payload: {}, created_at: "t4"},
+          {seq: 5, kind: "assistant_token", payload: {text: "first answer"}, created_at: "t5"},
+          {seq: 6, kind: "user_input", payload: {text: "d1"}, created_at: "t6"},
+          {seq: 7, kind: "assistant_token", payload: {text: "d2"}, created_at: "t7"},
+          {seq: 8, kind: "user_input", payload: {text: "d3"}, created_at: "t8"},
+          {seq: 9, kind: "assistant_token", payload: {text: "d4"}, created_at: "t9"},
+          {seq: 10, kind: "user_input", payload: {text: "d5"}, created_at: "t10"},
+          {seq: 11, kind: "rewind_marker", payload: {to_seq: 5, actor: "user"}, created_at: "t11"},
+          {seq: 12, kind: "user_input", payload: {text: "second"}, created_at: "t12"},
+          {seq: 13, kind: "assistant_token", payload: {text: "second answer"}, created_at: "t13"},
+          {seq: 14, kind: "user_input", payload: {text: "d6"}, created_at: "t14"},
+          {seq: 15, kind: "assistant_token", payload: {text: "d7"}, created_at: "t15"},
+          {seq: 16, kind: "rewind_marker", payload: {to_seq: 13, actor: "user"}, created_at: "t16"}
+        ];
+        var out = window.SA_toTranscript(records, {id: "s1"});
+        var visible = window.SA_visibleRecords(records);
+        """
+    )
+    import json
+
+    out_seqs = json.loads(ctx.eval(
+        "JSON.stringify(out.map(function (r) { return r.seq; }))"
+    ))
+    assert out_seqs == [1, 5, 11, 12, 13, 16]
+    visible_seqs = json.loads(ctx.eval(
+        "JSON.stringify(visible.map(function (r) { return r.seq; }))"
+    ))
+    # SA_visibleRecords keeps rewind_marker itself (unlike the backend,
+    # for display) but is otherwise the same walk, so seq 2-4 (real
+    # content there, generic-skip is a later, separate stage) survive
+    # here even though they don't reach the final transcript.
+    assert visible_seqs == [1, 2, 3, 4, 5, 11, 12, 13, 16]
+
+
 def test_transcript_rows_carry_the_text_they_display() -> None:
     """Every message kind, and the parts shape a realized steer arrives in."""
     from py_mini_racer import MiniRacer

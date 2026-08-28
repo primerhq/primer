@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, relativeTime */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, CapabilityBadges */
 
 // Toolsets page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -236,6 +236,76 @@ function _tsTarget(t) {
   if (Array.isArray(cfg.command) && cfg.command.length > 0) return cfg.command.join(" ");
   if (typeof cfg.command === "string") return cfg.command;
   return null;
+}
+
+// MCP toolset overlay OAuth section (notes 3.9: "endpoint, OAuth re-link,
+// bound tools with badges"). Renders the REAL state, not an assumed one:
+// McpToolsetProvider.complete_oauth() and the callback route both exist,
+// but the production toolset factory never builds a PrimerOAuthHandler and
+// passes it in (backend batch-2 finding), so complete_oauth always 503s
+// "OAuth not configured for this provider" today regardless of whether
+// this toolset's config carries an oauth block. Re-link calls the REAL
+// route and shows whatever comes back rather than a hardcoded string, so
+// this stops needing an edit the day that factory gets wired.
+function TS_McpOAuthPanel({ id, ts }) {
+  const { apiFetch } = window.primerApi;
+  const oauthConfigured = !!(ts && ts.config && ts.config.config && ts.config.config.oauth);
+  const [result, setResult] = React.useState(null); // {ok, message} | null
+  const [busy, setBusy] = React.useState(false);
+
+  if (!oauthConfigured) {
+    return (
+      <div className="field-help" data-testid="toolset-oauth-unconfigured" style={{ marginBottom: 12 }}>
+        OAuth not configured for this provider.
+      </div>
+    );
+  }
+
+  const relink = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      // No real authorization code exists to exchange here -- this is a
+      // state probe, not a consent flow (the browser has to redirect to
+      // the auth server's auth_url first, then land back on the real
+      // callback route with a code MINTED by that redirect). Any code/
+      // state reaches McpToolsetProvider.complete_oauth's "is self._oauth
+      // None" check first, so the response is the truth about whether
+      // this deployment can even start that flow yet.
+      await apiFetch(
+        "GET",
+        "/toolsets/" + encodeURIComponent(id) + "/oauth/callback"
+          + "?code=console-relink-probe&state=console-relink-probe",
+      );
+      setResult({ ok: true, message: "Reconnected." });
+    } catch (err) {
+      setResult({
+        ok: false,
+        message: (err && (err.detail || err.message || err.title)) || "Could not reconnect.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div data-testid="toolset-oauth-panel" style={{ marginBottom: 12 }}>
+      <Btn size="sm" kind="secondary" icon="refresh" data-testid="toolset-oauth-relink"
+        disabled={busy} onClick={relink}>
+        {busy ? "Reconnecting…" : "Re-link OAuth"}
+      </Btn>
+      {result ? (
+        <div
+          data-testid="toolset-oauth-result"
+          data-ok={result.ok ? "1" : "0"}
+          className="field-help"
+          style={{ marginTop: 6, color: result.ok ? "var(--green)" : "var(--red)" }}
+        >
+          {result.message}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 // Post-registration connection result shown inside the New/Edit modal: a
@@ -883,6 +953,9 @@ function TS_ConfigTab({ ts, pushToast }) {
           )}
         </div>
       </div>
+      {ts?.provider === "mcp" && (transport === "http" || transport === "sse") ? (
+        <TS_McpOAuthPanel id={ts.id} ts={ts} />
+      ) : null}
       {editing && (
         <TS_NewToolsetModal
           existing={ts}
@@ -979,6 +1052,7 @@ function TS_ToolsTab({ id, ts, onInvalidate }) {
           <tr>
             <th>name</th>
             <th>description</th>
+            <th>capabilities</th>
             <th>approval</th>
           </tr>
         </thead>
@@ -992,6 +1066,7 @@ function TS_ToolsTab({ id, ts, onInvalidate }) {
               <tr key={tool.id || toolName || i}>
                 <td className="mono">{tool.id || toolName}</td>
                 <td className="muted text-sm" style={{ fontSize: 11 }}>{tool.description || tool.desc || "—"}</td>
+                <td><CapabilityBadges tool={tool} testid={`toolset-tool-badges-${tool.id || toolName}`} /></td>
                 <td>
                   {policy ? (
                     <span

@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Banner */
+/* global React, Icon, Btn, Banner, CapabilityBadges */
 // Python toolset authoring surface.
 //
 // The editor is the whole feature for an operator: source in, derived tools
@@ -41,21 +41,44 @@ var PY_ISOLATION_COPY = {
 
 // Turn a registration error's 1-based line into a CodeMirror range, so the
 // failure is marked on the line that caused it rather than only described in
-// a panel above the editor.
-function PY_diagnosticsFor(source, error) {
-  if (!error || !error.lineno) return [];
+// a panel above the editor. Handles BOTH shapes the dry-run route can carry:
+// a single module-level `error` (bad syntax, a dangling @resumes reference -
+// nothing registers at all), and per-tool refusals inside `tools` (one bad
+// function does not stop the rest from validating - batch-2's
+// register_module_report). Every refused tool gets its own gutter mark, not
+// just the first.
+function PY_diagnosticsFor(source, error, tools) {
   var lines = (source || "").split("\n");
-  var idx = Math.max(0, Math.min(error.lineno - 1, lines.length - 1));
-  var from = 0;
-  for (var i = 0; i < idx; i++) from += lines[i].length + 1;
-  return [{
-    from: from,
-    to: from + lines[idx].length,
-    severity: "error",
-    message: error.field
-      ? error.message + "  (" + error.field + ")"
-      : error.message,
-  }];
+  function rangeFor(lineno) {
+    var idx = Math.max(0, Math.min(lineno - 1, lines.length - 1));
+    var from = 0;
+    for (var i = 0; i < idx; i++) from += lines[i].length + 1;
+    return { from: from, to: from + lines[idx].length };
+  }
+  var out = [];
+  if (error && error.lineno) {
+    var r = rangeFor(error.lineno);
+    out.push({
+      from: r.from,
+      to: r.to,
+      severity: "error",
+      message: error.field ? error.message + "  (" + error.field + ")" : error.message,
+    });
+  }
+  (tools || []).forEach(function (t) {
+    if (t.ok === false && t.lineno) {
+      var tr = rangeFor(t.lineno);
+      var msg = (t.error && t.error.message) || "registration refused";
+      var field = t.error && t.error.field;
+      out.push({
+        from: tr.from,
+        to: tr.to,
+        severity: "error",
+        message: field ? msg + "  (" + field + ")" : msg,
+      });
+    }
+  });
+  return out;
 }
 
 function PY_IsolationBadge({ level }) {
@@ -99,21 +122,13 @@ function PY_DerivedTools({ tools }) {
         return (
           <div
             key={t.id}
-            data-testid="python-tool-row"
+            data-testid={"python-tool-row:" + t.id}
             className="col"
             style={{ gap: 3, padding: "9px 11px", borderBottom: "1px solid var(--bg-active)" }}
           >
             <div className="row" style={{ gap: 7, alignItems: "center" }}>
               <span className="mono" style={{ fontSize: "var(--fs-12)", fontWeight: 600 }}>{t.id}</span>
-              {t.yields ? (
-                <span
-                  data-testid="python-tool-yields"
-                  style={{
-                    padding: "0 6px", borderRadius: 999, fontSize: "var(--fs-11)",
-                    background: "var(--amber-dim)", color: "var(--amber)",
-                  }}
-                >yields</span>
-              ) : null}
+              <CapabilityBadges tool={t} testid={"python-tool-badges-" + t.id} />
               <span className="muted mono" style={{ marginLeft: "auto", fontSize: "var(--fs-11)" }}>
                 ({args.join(", ")})
               </span>
@@ -162,31 +177,49 @@ function PY_Outline({ tools, error, onJump }) {
   return (
     <div data-testid="python-outline" className="col" style={{ gap: 0 }}>
       {tools.map(function (t) {
+        // A per-tool refusal (batch-2 register_module_report): the rest of
+        // the module still validated, so this function shows up alongside
+        // the good ones with its own reason, instead of the whole outline
+        // going empty the way one bad function used to make it.
+        var refused = t.ok === false;
         return (
           <div
-            key={t.id}
-            data-testid="python-outline-row"
+            key={t.id || t.fn_name}
+            data-testid={"python-outline-row:" + (t.id || t.fn_name)}
+            data-ok={refused ? "0" : "1"}
             className="row"
             onClick={function () { if (onJump) onJump(t.lineno); }}
             style={{
-              gap: 7, alignItems: "center", cursor: "pointer",
+              gap: 7, alignItems: "flex-start", cursor: "pointer",
               padding: "6px 11px", borderBottom: "1px solid var(--border)",
             }}
           >
-            <Icon name={t.yields ? "clock" : "tools"} size={12} />
-            <span className="mono" style={{ fontSize: "var(--fs-12)" }}>{t.id}</span>
-            {t.yields ? (
-              <span
-                data-testid="python-outline-yields"
-                style={{
-                  padding: "0 6px", borderRadius: 999, fontSize: "var(--fs-11)",
-                  background: "var(--amber-dim)", color: "var(--amber)",
-                }}
-              >yields</span>
-            ) : null}
-            <span className="muted mono" style={{ marginLeft: "auto", fontSize: "var(--fs-11)" }}>
-              ({(t.args || []).join(", ")})
-            </span>
+            <Icon name={refused ? "x-circle" : (t.yields ? "clock" : "tools")} size={12}
+              style={{ marginTop: 2, color: refused ? "var(--red)" : undefined }} />
+            <div className="col" style={{ gap: 2, minWidth: 0, flex: 1 }}>
+              <div className="row" style={{ gap: 7, alignItems: "center" }}>
+                <span className="mono" style={{ fontSize: "var(--fs-12)", color: refused ? "var(--red)" : undefined }}>
+                  {t.id || t.fn_name}
+                </span>
+                {!refused ? (
+                  <CapabilityBadges tool={t} testid={"python-outline-badges-" + (t.id || t.fn_name)} />
+                ) : null}
+                {!refused ? (
+                  <span className="muted mono" style={{ marginLeft: "auto", fontSize: "var(--fs-11)" }}>
+                    ({(t.args || []).join(", ")})
+                  </span>
+                ) : null}
+              </div>
+              {refused ? (
+                <span
+                  data-testid="python-outline-refused-reason"
+                  className="mono"
+                  style={{ fontSize: "var(--fs-11)", color: "var(--red)", lineHeight: 1.5 }}
+                >
+                  {(t.error && t.error.message) || "registration refused"}
+                </span>
+              ) : null}
+            </div>
           </div>
         );
       })}
@@ -312,9 +345,10 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
   }, [source, toolsetId, detail.loading]);
 
   var liveError = validation ? validation.error : null;
+  var liveTools = validation ? validation.tools : null;
   var diagnostics = React.useMemo(
-    function () { return PY_diagnosticsFor(source, liveError); },
-    [source, liveError]
+    function () { return PY_diagnosticsFor(source, liveError, liveTools); },
+    [source, liveError, liveTools]
   );
 
   var save = api.useMutation(
@@ -408,21 +442,34 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
               }
             }}
           />
-          {validation ? (
-            <span
-              data-testid="python-live-status"
-              data-ok={validation.ok ? "1" : "0"}
-              className="mono"
-              style={{
-                fontSize: "var(--fs-11)",
-                color: validation.ok ? "var(--accent)" : "var(--red)",
-              }}
-            >
-              {validation.ok
-                ? (validation.tools || []).length + " registered"
-                : "does not register"}
-            </span>
-          ) : null}
+          {validation ? (function () {
+            // Partial success is real now (batch-2 register_module_report):
+            // a module with 3 good functions and 1 refused one still
+            // registers 3 tools, so the pill has to say that instead of
+            // collapsing to "does not register" the way a single bad
+            // function used to make the whole module look dead.
+            var toolList = validation.tools || [];
+            var refusedCount = toolList.filter(function (t) { return t.ok === false; }).length;
+            var okCount = toolList.length - refusedCount;
+            var label = liveError
+              ? "does not register"
+              : refusedCount > 0
+                ? okCount + " registered, " + refusedCount + " refused"
+                : okCount + " registered";
+            return (
+              <span
+                data-testid="python-live-status"
+                data-ok={validation.ok ? "1" : "0"}
+                className="mono"
+                style={{
+                  fontSize: "var(--fs-11)",
+                  color: validation.ok ? "var(--accent)" : "var(--red)",
+                }}
+              >
+                {label}
+              </span>
+            );
+          })() : null}
           <Btn
             size="sm"
             kind="primary"

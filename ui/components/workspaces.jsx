@@ -1704,6 +1704,73 @@ function WS_LinkChannelModal({ wid, channels, onClose, onLinked, pushToast }) {
 // Config tab — derived from ws.data (no extra fetch)
 // ============================================================================
 
+// Terminal — user access. Backed by the REAL WorkspaceRow field + PUT
+// endpoint (batch-1 fix: the field never existed at all before, so the
+// integrated terminal's non-admin gate could never actually be granted
+// regardless of operator intent -- terminal.py read it off the wrong
+// object entirely). This toggle is genuinely wired, not the prototype's
+// static "always on" stub (component-inventory finding #8).
+function WS_TerminalAccessToggle({ wid, ws }) {
+  const { apiFetch } = window.primerApi;
+  const data = ws.data || {};
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+  const enabled = !!data.terminal_user_access;
+
+  const toggle = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiFetch(
+        "PUT", `/workspaces/${encodeURIComponent(wid)}/terminal_access`,
+        { enabled: !enabled },
+      );
+      ws.refetch();
+    } catch (e) {
+      setErr((e && (e.detail || e.message)) || "Could not update terminal access");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-4">
+      <div className="field-label" style={{ marginBottom: 6 }}>Terminal — user access</div>
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          disabled={busy}
+          data-testid="workspace-terminal-access-toggle"
+          onClick={toggle}
+          style={{
+            flex: "0 0 auto", width: 34, height: 20, borderRadius: 999,
+            border: "1px solid var(--border)", padding: 0, marginTop: 1,
+            background: enabled ? "var(--accent)" : "var(--bg-2)",
+            position: "relative", cursor: busy ? "default" : "pointer",
+            transition: "background 0.12s ease",
+          }}
+        >
+          <span
+            style={{
+              position: "absolute", top: 1, left: enabled ? 15 : 1,
+              width: 16, height: 16, borderRadius: "50%",
+              background: enabled ? "var(--accent-fg)" : "var(--text-3)",
+              transition: "left 0.12s ease",
+            }}
+          />
+        </button>
+        <span style={{ fontSize: 12.5, lineHeight: 1.4 }}>
+          Let non-admin (user-role) operators open this workspace's integrated terminal.
+          <span className="muted"> Restricted accounts never get a shell regardless of this toggle.</span>
+        </span>
+      </label>
+      {err && <div className="field-help" style={{ color: "var(--red)" }} data-testid="workspace-terminal-access-error">{err}</div>}
+    </div>
+  );
+}
+
 function WS_ConfigTab({ wid, ws }) {
   if (ws.loading && !ws.data) {
     return <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading workspace…</div>;
@@ -1732,6 +1799,7 @@ function WS_ConfigTab({ wid, ws }) {
         <dt>provider_id</dt><dd className="mono">{data.provider_id || "—"}</dd>
         <dt>created_at</dt><dd className="mono">{data.created_at ? fmtDate(new Date(data.created_at)) : "—"}</dd>
       </dl>
+      <WS_TerminalAccessToggle wid={wid} ws={ws} />
       {data.overrides && (
         <div className="mt-4">
           <div className="field-label" style={{ marginBottom: 6 }}>Overrides</div>

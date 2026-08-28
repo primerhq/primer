@@ -64,14 +64,19 @@ function AT_statusOf(token) {
 // every 4xx with {detail: {code, message}} (see _raise_code). FastAPI
 // unwraps `detail` to the envelope; ApiError stores it on `.detail` or
 // `.envelope.detail`. Mirrors the parser used by triggers.jsx.
+// R5 fix: envelope.detail is a STRING (primer/api/errors.py's
+// _detail_from_mapping reduces a raw HTTPException({code, message}) dict
+// to RFC7807's own string `detail`); the {code, message} dict survives
+// verbatim under `envelope.extensions`, not `envelope.detail`. See
+// ADM_extractError's fuller note in admin_users.jsx.
 function AT_extractError(err) {
   const env = err && err.envelope;
-  const envDetail = env && env.detail;
+  const ext = env && env.extensions;
   let code = null;
   let msg = null;
-  if (envDetail && typeof envDetail === "object") {
-    code = envDetail.code || null;
-    msg = envDetail.message || null;
+  if (ext && typeof ext === "object") {
+    code = ext.code || ext.error || null;
+    msg = ext.message || null;
   }
   if (!msg && typeof err.detail === "string") msg = err.detail;
   if (!msg) msg = (err && (err.title || err.message)) || "Request failed";
@@ -80,16 +85,45 @@ function AT_extractError(err) {
 
 // ============================================================================
 // AT_ApiTokensPage — top-level list view + create entry point
+//
+// mode: "personal" (default, unchanged) — GET/POST/DELETE /auth/tokens,
+// the caller's own tokens only. mode="admin" — the System API-keys page
+// (R5 ruling: this is the admin ALL-USERS token table now; personal
+// tokens moved to Profile, see NV_SysProfile). No flat "every token"
+// backend route exists (admin_tokens.py is per-user: GET/DELETE
+// /admin/users/{user_id}/tokens[/{id}]), so admin mode fans out GET
+// /admin/users -> GET .../tokens per user and flattens client-side,
+// tagging each row with its owner. No create in admin mode — minting is
+// inherently self-service (an admin cannot mint a token AS someone
+// else); Revoke uses the per-user admin route instead of /auth/tokens.
 // ============================================================================
 
-function AT_ApiTokensPage() {
+function AT_ApiTokensPage({ mode }) {
+  const isAdmin = mode === "admin";
   const { useResource, apiFetch } = window.primerApi;
   const [createOpen, setCreateOpen] = React.useState(false);
   const [confirmRevoke, setConfirmRevoke] = React.useState(null); // token | null
 
   const list = useResource(
-    "api-tokens:list",
-    (signal) => apiFetch("GET", "/auth/tokens", null, { signal }),
+    isAdmin ? "api-tokens:admin-list" : "api-tokens:list",
+    (signal) => {
+      if (!isAdmin) return apiFetch("GET", "/auth/tokens", null, { signal });
+      return apiFetch("GET", "/admin/users?limit=200", null, { signal })
+        .then((usersRes) => {
+          const users = usersRes?.items ?? [];
+          return Promise.all(users.map((u) =>
+            apiFetch(
+              "GET", "/admin/users/" + encodeURIComponent(u.id) + "/tokens",
+              null, { signal },
+            ).then(
+              (r) => (r?.items ?? []).map((t) => ({
+                ...t, _ownerId: u.id, _ownerName: u.username,
+              })),
+              () => [],
+            )
+          )).then((perUser) => ({ items: [].concat(...perUser) }));
+        });
+    },
     { pollMs: 10000 },
   );
 
@@ -98,18 +132,22 @@ function AT_ApiTokensPage() {
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="filter-bar">
-        <span style={{ fontSize: 13, fontWeight: 600 }}>API tokens</span>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>
+          {isAdmin ? "API tokens — every user" : "API tokens"}
+        </span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
-          <Btn
-            size="sm"
-            kind="primary"
-            icon="plus"
-            data-testid="create-token-btn"
-            onClick={() => setCreateOpen(true)}
-          >
-            Create token
-          </Btn>
+          {!isAdmin && (
+            <Btn
+              size="sm"
+              kind="primary"
+              icon="plus"
+              data-testid="create-token-btn"
+              onClick={() => setCreateOpen(true)}
+            >
+              Create token
+            </Btn>
+          )}
         </div>
       </div>
 
@@ -129,12 +167,15 @@ function AT_ApiTokensPage() {
           <div className="ico-wrap"><Icon name="key" size={22} /></div>
           <div className="head">No API tokens yet</div>
           <div className="sub">
-            Create a token to authenticate programmatic clients (e.g. the
-            MCP bridge) without a browser session.
+            {isAdmin
+              ? "No user has minted an API token yet."
+              : "Create a token to authenticate programmatic clients (e.g. the MCP bridge) without a browser session."}
           </div>
-          <div className="actions">
-            <Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create token</Btn>
-          </div>
+          {!isAdmin && (
+            <div className="actions">
+              <Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create token</Btn>
+            </div>
+          )}
         </div>
       )}
 
@@ -144,6 +185,7 @@ function AT_ApiTokensPage() {
             <thead>
               <tr>
                 <th>Name</th>
+                {isAdmin && <th>Owner</th>}
                 <th>Prefix</th>
                 <th>Scopes</th>
                 <th>Last used</th>
@@ -155,8 +197,9 @@ function AT_ApiTokensPage() {
             <tbody>
               {items.map((t) => (
                 <AT_TokenRow
-                  key={t.id}
+                  key={(t._ownerId || "") + ":" + t.id}
                   token={t}
+                  isAdmin={isAdmin}
                   onRevoke={() => setConfirmRevoke(t)}
                 />
               ))}
@@ -183,6 +226,7 @@ function AT_ApiTokensPage() {
       {confirmRevoke && (
         <AT_RevokeConfirmDialog
           token={confirmRevoke}
+          isAdmin={isAdmin}
           onClose={() => setConfirmRevoke(null)}
           onRevoked={() => {
             setConfirmRevoke(null);
@@ -198,7 +242,7 @@ function AT_ApiTokensPage() {
 // AT_TokenRow — one row of the table.
 // ============================================================================
 
-function AT_TokenRow({ token, onRevoke }) {
+function AT_TokenRow({ token, onRevoke, isAdmin }) {
   const status = AT_statusOf(token);
   // Color mapping (Spec §8):
   //   active  -> green  (pill-claimed)
@@ -213,6 +257,7 @@ function AT_TokenRow({ token, onRevoke }) {
   return (
     <tr data-testid={`api-token-row-${token.id}`}>
       <td>{token.name}</td>
+      {isAdmin && <td className="mono">{token._ownerName || token._ownerId || "—"}</td>}
       <td className="mono">{token.prefix}…</td>
       <td>
         {Array.isArray(token.scopes) && token.scopes.length > 0 ? (
@@ -565,7 +610,7 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
 // AT_RevokeConfirmDialog — confirm + DELETE /v1/auth/tokens/{id}
 // ============================================================================
 
-function AT_RevokeConfirmDialog({ token, onClose, onRevoked }) {
+function AT_RevokeConfirmDialog({ token, onClose, onRevoked, isAdmin }) {
   const { apiFetch } = window.primerApi;
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState(null);
@@ -580,7 +625,11 @@ function AT_RevokeConfirmDialog({ token, onClose, onRevoked }) {
     setBusy(true);
     setError(null);
     try {
-      await apiFetch("DELETE", "/auth/tokens/" + encodeURIComponent(token.id));
+      const path = isAdmin
+        ? "/admin/users/" + encodeURIComponent(token._ownerId) + "/tokens/"
+          + encodeURIComponent(token.id)
+        : "/auth/tokens/" + encodeURIComponent(token.id);
+      await apiFetch("DELETE", path);
       if (!mountedRef.current) return;
       onRevoked && onRevoked();
     } catch (err) {

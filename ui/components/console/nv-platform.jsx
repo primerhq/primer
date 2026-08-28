@@ -181,8 +181,9 @@ var NV_PLAT_PAGES = {
         chip: row.builtin
           ? { label: "built-in", color: "var(--blue)" }
           : { label: row.kind || "registered", color: "var(--text-3)" },
+        // notes 3.1: red = unreachable, not amber (amber is in-progress).
         status: row.available === false
-          ? { label: "unavailable", tone: "warn" }
+          ? { label: "unavailable", tone: "error" }
           : { label: "available", tone: "ok" },
         facts: [
           NV_fact("tools", NV_countOf(row.tools)),
@@ -384,7 +385,8 @@ var NV_PLAT_PAGES = {
   },
 };
 
-var NV_PLAT_PAGE_SIZE = 12;
+// notes 3.1: "pager (range + prev/next appears past 6 entities)".
+var NV_PLAT_PAGE_SIZE = 6;
 
 function NV_PlatNav() {
   var con = NV_useConsole();
@@ -667,6 +669,13 @@ function NV_PlatPage() {
   React.useEffect(function () {
     setQ(""); setPageNo(0); setModal(null);
   }, [nav]);
+  // R4 review finding 3: typing a search query narrowed the result set
+  // but never reset pageNo, so `p = Math.min(pageNo, pages - 1)` below
+  // clamped toward the END of the shrunk range rather than the start -
+  // a search while on a later page could land on the LAST page of
+  // matches instead of the first. Mirrors toolsets.jsx:1259's
+  // equivalent reset-on-filter-change effect.
+  React.useEffect(function () { setPageNo(0); }, [q]);
 
   var page = NV_PLAT_PAGES[nav] || null;
   var provClass = NV_PROV_CLASSES.find(function (c) { return c.key === fam; });

@@ -8,6 +8,7 @@ bodies re-host the existing pages rather than forking them.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -29,10 +30,34 @@ def test_nav_covers_the_grammar():
 
 
 def test_role_gating():
-    # Non-admins get their own pages only; the admin list is the full set.
-    assert "NV_SYS_USER_NAVS" in SYS
-    assert '"apikeys", "profile"' in SYS
-    assert 'role === "admin"' in SYS
+    # R5 ruling: notes section 4's own intro - "all admin-gated except
+    # Profile (restricted users see only Profile)" - applies to every
+    # non-admin role, not just restricted; the old NV_SYS_USER_NAVS =
+    # ["apikeys", "profile"] carve-out was drift (apikeys used to double
+    # as personal tokens; that moved to Profile, see test_console_system's
+    # tokens-ruling tests below). Executed via MiniRacer, not grepped -
+    # a substring check on this file would coincidentally match its own
+    # explanatory comments about the OLD behavior.
+    from py_mini_racer import MiniRacer
+
+    # Extract just the (JSX-free) function, not the whole file - the rest
+    # of nv-system.jsx is React/JSX, which MiniRacer cannot parse raw.
+    start = SYS.index("function NV_sysNavsFor(")
+    end = SYS.index("\n}\n", start) + 2
+    fn_src = SYS[start:end]
+
+    ctx = MiniRacer()
+    ctx.eval(fn_src)
+    for role in ("user", "restricted", None):
+        ctx.eval(f"var out = NV_sysNavsFor({json.dumps(role)});")
+        navs = json.loads(ctx.eval("JSON.stringify(out)"))
+        assert navs == ["profile"], (role, navs)
+    ctx.eval('var adminOut = NV_sysNavsFor("admin");')
+    admin_navs = json.loads(ctx.eval("JSON.stringify(adminOut)"))
+    assert admin_navs == [
+        "dashboard", "users", "apikeys", "sso", "mcp", "internal",
+        "activity", "setup", "profile",
+    ]
 
 
 def test_dashboard_composition():
@@ -41,7 +66,40 @@ def test_dashboard_composition():
     assert "/workers/purge_dead" in SYS
     assert "/drain" in SYS
     assert "NV_AttentionEverywhere" in SYS
-    assert "pendingYields" in SYS, "cross-workspace fan-out"
+    # R5: the real cross-workspace aggregate (batch-1's GET /yields/pending,
+    # SH_api.pendingAttention) is now the PRIMARY source; pendingYields
+    # (per-workspace fan-out) survives only as the pre-aggregate-server
+    # fallback, same guard shape as nv-rail.jsx's own Inbox.
+    assert "pendingAttention" in SYS
+    assert "pendingYields" in SYS, "404 fallback fan-out"
+
+
+def test_health_cards_match_notes_not_the_old_scheduler_dump():
+    # notes section 4: scheduler / worker pool / sessions active /
+    # attention count - NOT the old platform/in-flight/claims/missed-
+    # heartbeats scheduler-internals dump.
+    for k in ("scheduler", "worker pool", "sessions active", "attention"):
+        assert f'"{k}"' in SYS, k
+    assert "status=running" in SYS, "sessions-active reads GET /sessions?status=running"
+
+
+def test_worker_rows_carry_turns_and_uptime():
+    # notes section 4: "worker rows show ... turns + uptime". Turns come
+    # from grouping /workers/stats by worker id (workers.jsx's own lane
+    # stats source, just aggregated per-row here); uptime is computed off
+    # WorkerInfo.started_at.
+    assert "/workers/stats" in SYS
+    assert "turnsByWorker" in SYS
+    assert "w.started_at" in SYS
+
+
+def test_attention_open_uses_the_aggregate_fields_and_promotes():
+    # workspace_name/session_name come straight off the aggregate row
+    # (no client-side workspace join needed); promoteDoc matches the
+    # rail's own promoted-open contract (notes 2.1/2.2).
+    assert "row.workspace_name" in SYS
+    assert "row.session_name" in SYS
+    assert "con.promoteDoc" in SYS
 
 
 def test_admin_bodies_rehost_the_existing_pages():

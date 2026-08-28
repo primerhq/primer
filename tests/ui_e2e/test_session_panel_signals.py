@@ -205,14 +205,15 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
         composer = page.get_by_test_id("nv-composer-input")
         composer.wait_for(state="visible", timeout=10_000)
 
-        # The rail row carries a status before anything is sent. NOT
-        # pinned to "created": a seeded session does not reliably sit
-        # there to be observed, since the scheduler may claim it between
-        # the seed and the assertion, and what this test is about is the
-        # transition a send causes.
-        # The band row is the visible pre-send state (bands re-sort as
-        # the status moves; the send is what this test is about).
-        initial_row = page.locator(f'[data-testid="nv-session:{sid}"]').first
+        # The rail row is visible before anything is sent (the tree row,
+        # uiv2 R2 - collapsed by default, so expand wid's row first). NOT
+        # pinned to a status value: a seeded session does not reliably
+        # sit at "created" to be observed, since the scheduler may claim
+        # it between the seed and the assertion, and what this test is
+        # about is the transition a send causes (checked below via the
+        # page's own text, not this row).
+        page.get_by_test_id(f"nv-rail-ws:{wid}").click()
+        initial_row = page.get_by_test_id(f"nv-rail-ws-session:{sid}")
         expect(initial_row).to_be_visible(timeout=10_000)
 
         # Send a message via the Composer — this is the resume/steer/invoke
