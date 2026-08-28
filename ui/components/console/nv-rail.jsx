@@ -17,8 +17,7 @@
 // selecting a workspace or opening a session actually does.
 //
 // Props:
-//   selectedWorkspaceId - the current workspace id (tints its tree row,
-//                         and is who onCreateSession binds to).
+//   selectedWorkspaceId - the current workspace id (tints its tree row).
 //   onSelectWorkspace(wid)
 //   onOpenSession(session, wid) - session is the full row from
 //                         SH_api.allSessions (session_id, name, binding,
@@ -27,13 +26,28 @@
 //                         2.1/2.2 (unlike the doc host's preview-by-
 //                         default single click - the rail is never the
 //                         preview entry point).
-//   onCreateSession(selectedWorkspaceId) - the Inbox header "+".
+//   onCreateSessionInWorkspace(wid) - the workspace row's own context-
+//                         menu "New session" (bound to THAT row's wid,
+//                         not necessarily the selected one - a single
+//                         combined switch-and-open, F2 follow-up 2026-
+//                         08-29 UI review). The Inbox header's own "+"
+//                         retired in US-012b item 4 - this is the only
+//                         pointer affordance left for session.create now
+//                         (the dual-render guard still requires one; see
+//                         NV_Rail_WorkspaceContextMenu's data-verb).
 //   onCreateWorkspace() - the workspace-tree header "+".
+//   onOpenWorkspaceSettings(wid) - the workspace row's context-menu
+//                         "Settings" entry (US-012b item 5a); replaces the
+//                         retired topbar dropdown's own settings button.
 //
 // testids (nv-rail- prefix, matching the CSS prefix):
 //   nv-rail-inbox, nv-rail-inbox-row:{sid}
 //   nv-rail-tree, nv-rail-ws:{wid}, nv-rail-ws-session:{sid}
-//   nv-rail-create-session, nv-rail-create-workspace
+//   nv-rail-create-workspace
+//   nv-rail-workspace-menu:{wid} (New session / Settings / Delete,
+//   right-click on a workspace row - US-012b item 5a), rows are
+//   nv-rail-ws-menu-new-session:{wid}, nv-rail-ws-menu-settings:{wid},
+//   nv-rail-ws-menu-delete:{wid}
 //
 // Cross-workspace attention aggregate: notes 2.1 wants "every session
 // across ALL workspaces that needs a person" in the Inbox. GET
@@ -153,6 +167,74 @@ function NV_Rail_SessionContextMenu(props) {
         return (
           <button type="button" key={r.label} className="nv-menu-row"
             data-danger={r.danger ? "true" : "false"}
+            onClick={function () { props.onClose(); r.fn(); }}>
+            {r.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// US-012b (2026-08-29 dogfood, item 5a): the workspace-tree row's own
+// context menu - "New session" targets THIS row's workspace regardless
+// of which one is currently selected via con.createSessionInWorkspace
+// (one markPush - F2 follow-up, 2026-08-29 UI review: switch-then-act
+// through the workspace.switch and session.create verbs separately would
+// have carried two markPush calls for one navigation, same risk the
+// review flagged in onOpenSession), "Settings" opens the same
+// workspaces/detail overlay the retiring topbar dropdown used to (item
+// 3), and "Delete" mirrors the session menu's own confirm-then-mutate
+// shape (no dedicated SH_api wrapper existed for this route before this
+// task - see sh-api.jsx deleteWorkspace).
+function NV_Rail_WorkspaceContextMenu(props) {
+  var w = props.workspace;
+  function act(slug, label, fn, danger, verb) {
+    return { slug: slug, label: label, fn: fn, danger: !!danger, verb: verb || null };
+  }
+  var rows = [
+    // data-verb="session.create" here is load-bearing, not decorative:
+    // item 4 (2026-08-29 dogfood) retired the Inbox header "+", the
+    // verb's only other rendered pointer affordance - the dual-render
+    // guard (test_shell_dual_render_guard.py) requires every registered
+    // verb with a non-palette surface to render data-verb SOMEWHERE.
+    act("new-session", "New session", function () {
+      if (typeof props.onCreateSessionInWorkspace === "function") {
+        props.onCreateSessionInWorkspace(w.id);
+      }
+    }, false, "session.create"),
+    act("settings", "Settings", function () {
+      if (typeof props.onOpenSettings === "function") props.onOpenSettings(w.id);
+    }),
+    act("delete", "Delete", function () {
+      window.confirmDialog({
+        title: "Delete workspace",
+        message: "Permanently delete " + (w.name || w.id) + "? This cannot be undone.",
+        danger: true,
+      }).then(function (ok) {
+        if (!ok) return;
+        SH_api.deleteWorkspace(w.id).then(props.onChanged);
+      });
+    }, true),
+  ];
+
+  // Same viewport-clamping fix as NV_Rail_SessionContextMenu above (the
+  // tree can put a row anywhere down a long scrollable list).
+  var menuH = rows.length * 34 + 20;
+  var menuW = 190;
+  var clampedX = Math.max(4, Math.min(props.x, window.innerWidth - menuW));
+  var clampedY = Math.max(4, Math.min(props.y, window.innerHeight - menuH));
+
+  return (
+    <div className="nv-ctx" data-testid={"nv-rail-workspace-menu:" + w.id}
+      style={{ left: clampedX, top: clampedY }}
+      onClick={function (ev) { ev.stopPropagation(); }}>
+      {rows.map(function (r) {
+        return (
+          <button type="button" key={r.slug} className="nv-menu-row"
+            data-testid={"nv-rail-ws-menu-" + r.slug + ":" + w.id}
+            data-danger={r.danger ? "true" : "false"}
+            data-verb={r.verb || undefined}
             onClick={function () { props.onClose(); r.fn(); }}>
             {r.label}
           </button>
@@ -297,14 +379,6 @@ function NV_Rail(props) {
           <span>Inbox - needs you</span>
           <span className="nv-rail-count">{inboxItems.length}</span>
           <div style={{ flex: 1 }} />
-          <button type="button" className="nv-rail-iconbtn" title="New session"
-            data-verb="session.create"
-            data-testid="nv-rail-create-session"
-            onClick={function () {
-              if (typeof props.onCreateSession === "function") {
-                props.onCreateSession(props.selectedWorkspaceId);
-              }
-            }}>+</button>
         </div>
         {!inboxItems.length ? (
           <div className="nv-rail-empty">Nothing needs you right now.</div>
@@ -343,7 +417,13 @@ function NV_Rail(props) {
         <div className="nv-rail-section-head">
           <span>Workspaces</span>
           <div style={{ flex: 1 }} />
+          {/* data-verb on this button and the ws-row below are load-
+              bearing (US-012b item 3): retiring the topbar workspace
+              dropdown removed workspace.create/workspace.switch's only
+              rendered data-verb attributes, which the dual-render guard
+              (test_shell_dual_render_guard.py) requires somewhere. */}
           <button type="button" className="nv-rail-iconbtn" title="New workspace"
+            data-verb="workspace.create"
             data-testid="nv-rail-create-workspace"
             onClick={function () {
               if (typeof props.onCreateWorkspace === "function") props.onCreateWorkspace();
@@ -358,6 +438,7 @@ function NV_Rail(props) {
             <div key={w.id}>
               <button type="button" className="nv-rail-ws-row" data-testid={"nv-rail-ws:" + w.id}
                 data-selected={isSelected ? "true" : "false"}
+                data-verb="workspace.switch"
                 onClick={function () {
                   if (typeof props.onSelectWorkspace === "function") props.onSelectWorkspace(w.id);
                   setExpanded(function (prev) {
@@ -365,6 +446,11 @@ function NV_Rail(props) {
                     next[w.id] = !prev[w.id];
                     return next;
                   });
+                }}
+                onContextMenu={function (ev) {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  setMenu({ kind: "workspace", w: w, x: ev.clientX, y: ev.clientY });
                 }}>
                 <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"
                   style={{ flexShrink: 0, transform: "rotate(" + (isOpen ? 90 : 0) + "deg)" }}>
@@ -391,7 +477,7 @@ function NV_Rail(props) {
                     onContextMenu={function (ev) {
                       ev.preventDefault();
                       ev.stopPropagation();
-                      setMenu({ s: s, wid: w.id, x: ev.clientX, y: ev.clientY });
+                      setMenu({ kind: "session", s: s, wid: w.id, x: ev.clientX, y: ev.clientY });
                     }}>
                     <svg width="10" height="10" viewBox="0 0 12 12" style={{ flexShrink: 0, color: ident.color }}>
                       <path d={ident.d} fill="currentColor" />
@@ -409,10 +495,17 @@ function NV_Rail(props) {
           );
         })}
       </div>
-      {menu ? (
+      {menu && menu.kind === "session" ? (
         <NV_Rail_SessionContextMenu session={menu.s} wid={menu.wid} x={menu.x} y={menu.y}
           onOpen={function (s) { openSession(s); }}
           onChanged={refetchSessions}
+          onClose={function () { setMenu(null); }} />
+      ) : null}
+      {menu && menu.kind === "workspace" ? (
+        <NV_Rail_WorkspaceContextMenu workspace={menu.w} x={menu.x} y={menu.y}
+          onCreateSessionInWorkspace={props.onCreateSessionInWorkspace}
+          onOpenSettings={props.onOpenWorkspaceSettings}
+          onChanged={function () { wsRes.refetch(); refetchSessions(); }}
           onClose={function () { setMenu(null); }} />
       ) : null}
     </div>

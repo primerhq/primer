@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from primer.int.claim import ClaimKind
 from primer.model.except_ import NotFoundError
-from primer.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 
 if TYPE_CHECKING:
     from primer.int.claim import ClaimEngine
@@ -82,6 +82,14 @@ async def durably_mark_session_resumable(
     is_multi = bool(session.parked_event_keys)
     allowed = ("parked", "resumable") if is_multi else ("parked",)
     if session.parked_status not in allowed:
+        return False
+    if session.status == SessionStatus.ENDED:
+        # Defense in depth alongside flip_sessions_parked_on's query-level
+        # exclusion below: parked_status survives the ENDED transition
+        # (only reopen/abandon clear it), so a session that ended between
+        # a caller's find() and this write still reads parked_status=
+        # "parked" here - closes the narrower residual race window where
+        # find() ran before the row ended.
         return False
     state = dict(session.parked_state or {})
     # Singular fields: the single-event resume path + a "last fired" hint.
@@ -325,7 +333,30 @@ async def flip_sessions_parked_on(
     """
     from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 
-    predicate = Predicate(
+    def _excluding_ended(pred: Predicate) -> Predicate:
+        """AND *pred* with status != ENDED.
+
+        Closes the race a cross-process check-then-publish window opens:
+        parked_status survives the ENDED transition (only reopen/abandon
+        clear it), so a session a DIFFERENT worker ended between a
+        caller's own status read and this publish still matches
+        parked_status="parked" here. Without this, find() below can pick
+        up a stale-but-already-ended row, durably_mark_session_resumable
+        arms a lease on it, and the next claim hits workspace_executor's
+        "cannot invoke ENDED session" guard - reproducing the original
+        crash through a narrower window.
+        """
+        return Predicate(
+            left=pred,
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="status"),
+                op=Op.NE,
+                right=Value(value=SessionStatus.ENDED.value),
+            ),
+        )
+
+    predicate = _excluding_ended(Predicate(
         left=Predicate(
             left=FieldRef(name="parked_status"),
             op=Op.EQ,
@@ -337,7 +368,7 @@ async def flip_sessions_parked_on(
             op=Op.EQ,
             right=Value(value=event_key),
         ),
-    )
+    ))
     page = await session_storage.find(predicate, OffsetPage(length=200))
     flipped = 0
     for sess in page.items:
@@ -348,7 +379,7 @@ async def flip_sessions_parked_on(
             flipped += 1
 
     if flipped == 0 and event_key.startswith(("ask_user:", "tool_approval:")):
-        member_pred = Predicate(
+        member_pred = _excluding_ended(Predicate(
             left=Predicate(
                 left=FieldRef(name="parked_status"),
                 op=Op.IN,
@@ -360,7 +391,7 @@ async def flip_sessions_parked_on(
                 op=Op.CONTAINS,
                 right=Value(value=event_key),
             ),
-        )
+        ))
         page2 = await session_storage.find(member_pred, OffsetPage(length=200))
         for sess in page2.items:
             if await durably_mark_session_resumable(

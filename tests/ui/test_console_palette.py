@@ -38,9 +38,16 @@ def test_keyboard_spans_all_groups():
     )
 
 
-def test_cross_workspace_session_rows_navigate_by_url():
+def test_cross_workspace_session_rows_use_the_combined_navigation():
+    """F2/F3 (2026-08-29 UI review): this used to raw-assign
+    location.hash (its own navigation outside con's markPush bookkeeping,
+    and a preview-only open) - now it routes through con.openInWorkspace
+    (one history entry) and promotes, matching the rail's own rows."""
     m = re.search(r'workspace_id !== con\.wid[\s\S]{0,300}', SRC)
-    assert m and "SH_buildUrl" in m.group(0)
+    assert m
+    assert "con.openInWorkspace(s.workspace_id" in m.group(0)
+    assert "SH_buildUrl" not in m.group(0)
+    assert 'con.promoteDoc("session:" + s.session_id)' in SRC
 
 
 def test_transient_state_stays_out_of_the_url():

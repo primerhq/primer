@@ -1,9 +1,17 @@
 /* global React, NV_useConsole */
 // The three-view chrome (wiring plan P1 T4): activity bar, top bar,
-// workspace selector, search field, Studio-only toggles, profile menu.
-// Every affordance runs a registered verb (data-verb carries the id);
-// the markup is the designer prototype's ACTIVITY BAR / TOP BAR
-// regions, inline styles extracted to nv- classes.
+// search field, Studio-only toggles, profile menu. Every affordance runs
+// a registered verb (data-verb carries the id); the markup is the
+// designer prototype's ACTIVITY BAR / TOP BAR regions, inline styles
+// extracted to nv- classes.
+//
+// US-012b (2026-08-29 dogfood, item 3): the topbar's own workspace
+// dropdown (NV_WorkspaceMenu) retired - the rail tree is the switcher
+// and already tints the selected row, so the two were redundant. Its
+// "New workspace…" action was already duplicated by the rail's own
+// header "+"; "Workspace settings…" had no other home, so item 5a gave
+// it one on the rail's new workspace-row context menu
+// (onOpenWorkspaceSettings, wired in nv-studio.jsx).
 
 function NV_Logo() {
   return (
@@ -81,59 +89,6 @@ function NV_ActivityBar() {
   );
 }
 
-function NV_WorkspaceMenu() {
-  var con = NV_useConsole();
-  var rows = con.workspaces || [];
-  return (
-    <div className="nv-menu" data-testid="nv-ws-menu"
-      onClick={function (ev) { ev.stopPropagation(); }}>
-      {/* The workspace list scrolls; settings/new stay pinned below.
-          Without the scroll region a long install pushed both action
-          rows off-viewport, and the shell never scrolls, so they were
-          unreachable (BDD pass 2026-08-24). */}
-      <div className="nv-menu-scroll">
-        {rows.map(function (w) {
-          return (
-            <button type="button" key={w.id} className="nv-menu-row"
-              data-current={w.id === con.wid ? "true" : "false"}
-              data-testid={"nv-ws-row:" + w.id}
-              onClick={function () {
-                con.toggleMenu(null);
-                NV_run(con, "workspace.switch", { wid: w.id });
-              }}>
-              <span style={{ flex: 1, fontWeight: w.id === con.wid ? 600 : 400 }}>
-                {w.name || w.label || w.id}
-              </span>
-              <span className="nv-menu-id">{String(w.id).slice(0, 10)}</span>
-            </button>
-          );
-        })}
-      </div>
-      <div className="nv-menu-sep" />
-      <button type="button" className="nv-menu-row"
-        data-testid="nv-ws-settings"
-        onClick={function () {
-          con.toggleMenu(null);
-          // The workspace's own tabs (config / channels / log / destroy)
-          // open IN PLACE as the shared overlay: the open session tab
-          // survives underneath.
-          con.openOverlay("workspaces", "detail", con.wid);
-        }}>
-        <span>Workspace settings…</span>
-      </button>
-      <button type="button" className="nv-menu-row nv-menu-new"
-        data-verb="workspace.create" data-testid="nv-ws-new"
-        onClick={function () {
-          con.toggleMenu(null);
-          NV_run(con, "workspace.create");
-        }}>
-        <span style={{ fontSize: 14, lineHeight: 1 }}>+</span>
-        <span>New workspace…</span>
-      </button>
-    </div>
-  );
-}
-
 function NV_ProfileMenu() {
   var con = NV_useConsole();
   var theme = document.documentElement.getAttribute("data-theme") || "dark";
@@ -183,24 +138,8 @@ function NV_ProfileMenu() {
 
 function NV_Topbar() {
   var con = NV_useConsole();
-  var ws = (con.workspaces || []).find(function (w) { return w.id === con.wid; });
   return (
     <div className="nv-topbar" data-testid="nv-topbar">
-      <div className="nv-ws-wrap">
-        <button type="button" className="nv-ws-btn" data-testid="nv-ws-btn"
-          onClick={function (ev) { ev.stopPropagation(); con.toggleMenu("ws"); }}>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
-            stroke="var(--text-3)" strokeWidth="1.3">
-            <path d="M1.5 3.5 6 1l4.5 2.5v5L6 11 1.5 8.5Z M6 6v5M1.5 3.5 6 6l4.5-2.5" />
-          </svg>
-          <span>{(ws && (ws.name || ws.label || ws.id)) || con.wid || "workspace"}</span>
-          <svg width="9" height="9" viewBox="0 0 10 10" fill="none"
-            stroke="var(--text-3)" strokeWidth="1.5">
-            <path d="M2 3.5 5 6.5 8 3.5" />
-          </svg>
-        </button>
-        {con.openMenu === "ws" ? <NV_WorkspaceMenu /> : null}
-      </div>
       <div className="nv-search-wrap">
         <button type="button" className="nv-search-btn" data-verb="palette.open"
           data-testid="nv-search-btn"

@@ -139,15 +139,16 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
             f"unexpected workspace id format in URL: {url}"
         )
 
-        # The new workspace's shell mounts, and the topbar names it.
-        # S8 retired the Studio's workspace selector; the shell states
-        # the workspace id in the topbar instead.
+        # The new workspace's shell mounts and the rail selects it.
+        # US-012b retired the topbar workspace dropdown; the rail tree's
+        # row (data-selected) is the switch observable now.
         page.get_by_test_id("nv-root").wait_for(
             state="visible", timeout=15_000,
         )
-        page.get_by_test_id("nv-ws-btn").get_by_text(
-            created_ws_id, exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
+        page.locator(
+            f'[data-testid="nv-rail-ws:{created_ws_id}"]'
+            '[data-selected="true"]'
+        ).wait_for(state="visible", timeout=10_000)
 
         # Success toast: "Workspace created" (workspaces.jsx:155).
         page.get_by_text("Workspace created", exact=False).first.wait_for(

@@ -172,6 +172,12 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
 # ---------------------------------------------------------------------------
 
 
+# The known overlay-mount flake (original handoff known-issue #1) fired here
+# on 2026-08-29 CI (single victim, overlay never mounts, non-deterministic,
+# passes in isolation) - the same family test_mobile_modal_is_sheet.py marks
+# on its mobile params. The victim set moves between runs; extend this mark
+# to the next victim rather than blanket-marking the suite.
+@pytest.mark.flaky(reruns=2, reruns_delay=1)
 def test_u0007_new_agent_create_422_renders_inline_field_errors(
     page,
     base_url: str,

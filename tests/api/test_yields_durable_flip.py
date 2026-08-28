@@ -26,7 +26,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
-from primer.session.yields import durably_mark_session_resumable
+from primer.session.yields import durably_mark_session_resumable, flip_sessions_parked_on
 
 
 class _FlakyEngine:
@@ -341,3 +341,33 @@ async def test_healthy_double_reply_still_repairs_idempotently(app, client):
     # The guard still protects the first reply's payload from being clobbered.
     after = await storage.get("d-2x")
     assert after.parked_state["resume_event_payload"] == {"response": "one"}
+
+
+@pytest.mark.asyncio
+async def test_flip_never_arms_a_lease_on_a_row_that_already_ended(app):
+    """Cross-review race closure: ending a session does NOT clear
+    parked_status (only reset.py's reopen / abandon.py clear it), so a
+    row a DIFFERENT worker ended between a caller's own status check and
+    this publish still reads parked_status="parked" with the matching
+    event_key here. Without the fix, flip_sessions_parked_on's find()
+    would still pick it up, durably_mark_session_resumable would arm a
+    lease on it, and the next claim would hit workspace_executor's
+    "cannot invoke ENDED session" guard - reproducing the original crash
+    through a narrower window. Exercises the real find() predicates, not
+    just the in-memory guard, since the fix is at that query layer."""
+    sess = _make_ask_user_parked_session(session_id="d-ended", tool_call_id="tce")
+    sess.status = SessionStatus.ENDED
+    sess.ended_reason = "completed"
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+    engine = _FlakyEngine(fail_times=0)
+
+    flipped = await flip_sessions_parked_on(
+        "ask_user:d-ended:tce", {"response": "too late"},
+        session_storage=storage, engine=engine,
+    )
+
+    assert flipped == 0
+    assert engine.calls == [], "no lease may be armed on an ended row"
+    row = await storage.get("d-ended")
+    assert row.parked_status == "parked", "the stale row must be left untouched"

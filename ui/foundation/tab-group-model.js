@@ -1,10 +1,9 @@
 // tab-group-model.js - the pure state machine behind the multi-group tab
 // host (uiv2 R2, replacing nv-doc-host.jsx's single tab group).
 //
-// A PURE model (TG_ prefix, no DOM, no React) in the style of
-// scroll-follow.js: every operation takes a model and returns a FRESH
-// model, unit-tested in MiniRacer exactly like the other foundation
-// modules. The binding (rendering groups, wiring drag-and-drop, calling
+// A PURE model (TG_ prefix, no DOM, no React): every operation takes a
+// model and returns a FRESH model, unit-tested in MiniRacer exactly like
+// the other foundation modules. The binding (rendering groups, wiring drag-and-drop, calling
 // these operations from event handlers) lives in nv-tab-groups.jsx.
 //
 // Design source: uiv2/implementer-notes.md sections 2.3 (tab groups) +

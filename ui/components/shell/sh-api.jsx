@@ -264,6 +264,14 @@ var SH_api = {
         + encodeURIComponent(sid));
   },
 
+  // US-012b (2026-08-29 dogfood, item 5a): the rail's own workspace
+  // context menu wants a Delete action; workspaces.jsx already hits this
+  // route with a raw apiFetch call (no wrapper existed for it before).
+  deleteWorkspace: function (wid) {
+    return window.primerApi.apiFetch(
+      "DELETE", "/workspaces/" + encodeURIComponent(wid));
+  },
+
   // Drops one queued follow-up steer (the transcript's "queued" chip)
   // before a turn realizes it. The session doc has called this since
   // the flag day; the function (and its route) did not exist, so the

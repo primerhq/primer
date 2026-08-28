@@ -1,7 +1,12 @@
 """Studio sidebars (wiring plan P2 T6, retargeted for the uiv2 R2 cutover
-US-011a): band ordering (still a pure spec-pinned sort, though the rail
-draws Inbox + tree instead of bands now), context-menu management, files
-tree + history, empty states as prompts.
+US-011a): context-menu management, files tree + history, empty states as
+prompts.
+
+NV_sessionBands (the old band sort this file used to pin) was dead code
+by the time of the 2026-08-29 UI review (F5) - bands retired with the
+rail itself, and it mis-bucketed parked_status into "In progress" besides
+- removed from nv-studio.jsx, and its order-pinning test removed here
+with it.
 """
 
 from __future__ import annotations
@@ -16,13 +21,6 @@ STUDIO = (CONSOLE / "nv-studio.jsx").read_text(encoding="utf-8")
 # NV_Rail (nv-rail.jsx) is the session-carrying sidebar now.
 RAIL = (CONSOLE / "nv-rail.jsx").read_text(encoding="utf-8")
 FILES = (CONSOLE / "nv-files-sidebar.jsx").read_text(encoding="utf-8")
-
-
-def test_band_order_is_attention_running_idle_ended():
-    m = re.search(
-        r"return \[bands\.attention, bands\.running, bands\.idle,"
-        r" bands\.ended\]", STUDIO)
-    assert m, "the band order is the spec's sort, pinned literally"
 
 
 def test_attention_band_comes_from_pending_yields():

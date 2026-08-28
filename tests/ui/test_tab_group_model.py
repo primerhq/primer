@@ -1,7 +1,7 @@
 """Tab-group model (US-007 R2, phase 1): the pure multi-group state machine.
 
-Loaded here exactly like test_scroll_follow.py loads scroll-follow.js: a
-MiniRacer context with `var window = globalThis;`, no DOM. We drive the
+Loaded in a MiniRacer context with `var window = globalThis;`, no DOM
+(the foundation modules' shared unit-test pattern). We drive the
 pure model (TG_init / TG_openTab / ...) through window.* and inspect the
 resulting model, so the state machine is unit-tested without a real tab
 bar or a real drag-and-drop gesture.

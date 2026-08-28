@@ -48,7 +48,9 @@ def test_read_side_sync_opens_as_preview_and_leaves_null_alone() -> None:
 
 
 def test_workspace_switch_no_longer_touches_doc_or_anchor() -> None:
-    m = re.search(r'id: "workspace\.switch"[\s\S]{0,500}', SHELL)
+    # Window widened past 500 (2026-08-29 UI review, F6): the chord/
+    # surfaces explanatory comment now sits ahead of the executable body.
+    m = re.search(r'id: "workspace\.switch"[\s\S]{0,900}', SHELL)
     assert m
     body = m.group(0)
     # Strip line comments first - the explanatory comment names the old
@@ -116,19 +118,34 @@ def test_rail_props_are_wired_to_console_verbs() -> None:
         "selectedWorkspaceId={con.wid}",
         "onSelectWorkspace=",
         "onOpenSession=",
-        "onCreateSession=",
+        # F2 follow-up (2026-08-29 UI review): the plain onCreateSession
+        # prop retired with US-012b item 4's Inbox "+" - the workspace
+        # context menu's "New session" is the only caller left, and it
+        # needs a target wid, so nv-studio.jsx wires the combined
+        # switch-and-open (con.createSessionInWorkspace) instead.
+        "onCreateSessionInWorkspace=",
         "onCreateWorkspace=",
     ):
         assert prop in body, prop
     assert 'con.registry.get("workspace.switch")' in body
-    assert 'con.registry.get("session.create")' in body
+    # session.create no longer runs through the registry from here - the
+    # workspace context menu needs a combined switch-and-open (F2 follow-
+    # up), so onCreateSessionInWorkspace calls con.createSessionInWorkspace
+    # directly instead.
+    assert "con.createSessionInWorkspace" in body
     assert 'con.registry.get("workspace.create")' in body
 
 
 def test_rail_session_open_uses_the_existing_two_step_promote_pattern() -> None:
-    m = re.search(r"onOpenSession=\{function \(session, wid\) \{([\s\S]{0,400})", STUDIO)
+    # F2 (2026-08-29 UI review): the cross-workspace case now routes
+    # through con.openInWorkspace (one history entry) instead of a
+    # separate workspace.switch + setDoc; the same-workspace case still
+    # uses the plain setDoc + promoteDoc two-step. Window widened past
+    # 400 for the added explanatory comment.
+    m = re.search(r"onOpenSession=\{function \(session, wid\) \{([\s\S]{0,700})", STUDIO)
     assert m
     body = m.group(1)
+    assert "con.openInWorkspace(wid, " in body
     assert 'con.setDoc({ kind: "session", ref: session.session_id })' in body
     assert 'con.promoteDoc("session:" + session.session_id)' in body
 

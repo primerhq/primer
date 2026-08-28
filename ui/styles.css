@@ -3069,24 +3069,12 @@ input, textarea, select { font: inherit; color: inherit; }
   position: relative;
   z-index: 60;
 }
-.nv-ws-wrap { position: relative; }
-.nv-ws-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: var(--hit);
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-2);
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 12.5px;
-  color: var(--text);
-}
-.nv-ws-btn:hover { border-color: var(--accent-border); }
-
-/* Shared dropdown panel (workspace menu, profile menu) */
+/* Shared dropdown panel (session-doc menus, profile menu). US-012b
+   (2026-08-29 dogfood, item 3) retired the topbar workspace dropdown -
+   its own .nv-ws-wrap/.nv-ws-btn and the workspace-list-only
+   .nv-menu-scroll/[data-current]/.nv-menu-id/.nv-menu-new went with it;
+   .nv-menu/.nv-menu-row/.nv-menu-sep stay, still rendered by
+   nv-session-doc.jsx and nv-chrome.jsx's profile menu. */
 .nv-menu {
   position: absolute;
   top: 40px;
@@ -3099,10 +3087,6 @@ input, textarea, select { font: inherit; color: inherit; }
   padding: 5px;
   z-index: 60;
   animation: nv-pop-in 0.14s ease-out;
-}
-.nv-menu-scroll {
-  max-height: 45vh;
-  overflow-y: auto;
 }
 .nv-menu-row {
   display: flex;
@@ -3119,9 +3103,6 @@ input, textarea, select { font: inherit; color: inherit; }
   font: inherit;
 }
 .nv-menu-row:hover { background: var(--bg-hover); }
-.nv-menu-row[data-current="true"] { background: var(--bg-2); }
-.nv-menu-row .nv-menu-id { font-family: var(--font-mono); font-size: 10px; color: var(--text-4); }
-.nv-menu-row.nv-menu-new { color: var(--accent); }
 .nv-menu-sep { height: 1px; background: var(--border); margin: 5px 4px; }
 
 /* Search field-button */
@@ -4150,9 +4131,19 @@ input, textarea, select { font: inherit; color: inherit; }
   display: flex; align-items: center; gap: 8px;
 }
 .nv-composer-field[data-recording="true"] { border-color: var(--accent-border); }
-.nv-composer-field input {
+/* US-012b item 2 (2026-08-29 dogfood): this rule only ever matched
+   <input>, but the composer's actual element is a <textarea>
+   (nv-composer-input) - it kept the browser's default bordered,
+   resizable textarea box nested inside this pill, a visible
+   "box-in-box". textarea shares the rule now; resize:none and
+   font-family:inherit because the browser's own resize handle and
+   monospace default both fought the existing auto-grow behavior
+   (grow(), triggered on every value change) rather than complementing
+   it. */
+.nv-composer-field input, .nv-composer-field textarea {
   flex: 1; min-width: 0; border: none; background: transparent;
-  outline: none; font-size: 13px; color: var(--text); padding: 0;
+  outline: none; font-size: 13px; font-family: inherit; color: var(--text);
+  padding: 0; resize: none;
 }
 @keyframes nv-wave { 0%, 100% { transform: scaleY(0.4); } 50% { transform: scaleY(1); } }
 .nv-wave { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; flex-shrink: 0; }
@@ -4231,16 +4222,26 @@ input, textarea, select { font: inherit; color: inherit; }
 
 /* Terminal panel + events sidebar (P2 T8) */
 .nv-terminal {
-  height: 260px;
+  /* height is JS-driven inline style (F8(b): 100px-70vh top-edge drag) */
   flex-shrink: 0;
   border-top: 1px solid var(--border);
   background: var(--bg-1);
   display: flex;
   flex-direction: column;
-  min-height: 120px;
-  resize: vertical;
+  min-height: 100px;
   overflow: auto;
+  position: relative;
 }
+.nv-terminal-resize-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 1;
+}
+.nv-terminal-resize-handle:hover { background: var(--accent); opacity: 0.4; }
 .nv-terminal-host { flex: 1; min-height: 0; padding: 6px 10px; }
 .nv-term-exit { font-family: var(--font-mono); font-size: 10px; color: var(--red); text-transform: none; letter-spacing: 0; }
 .nv-events {

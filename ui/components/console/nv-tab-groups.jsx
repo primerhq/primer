@@ -101,6 +101,21 @@ function NV_TG_tabLabel(tab) {
   return String(tab.ref).split("/").pop();
 }
 
+// F7: pure drop-X-vs-tab-midpoints math, no DOM - the drop handler below
+// extracts each rendered tab's rect.left/rect.width and this decides
+// where the dragged tab lands. `midpoints` is the target group's OTHER
+// tabs' midpoints, left to right, EXCLUDING the dragged tab itself -
+// matching TG_moveTab's own documented `position` contract ("an index
+// into the target's tabs array AFTER removal").
+function NV_TG_dropIndex(midpoints, clientX) {
+  var index = 0;
+  for (var i = 0; i < midpoints.length; i++) {
+    if (clientX > midpoints[i]) index++;
+    else break;
+  }
+  return index;
+}
+
 function NV_TabGroups(props) {
   var model = props.model;
   var dragState = React.useState(null);
@@ -151,6 +166,26 @@ function NV_TabGroups(props) {
     change(window.TG_moveTab(model, dragging, groupId, null), "manage");
     setDragging(null);
   }
+  // F7: dropping ON THE TAB BAR itself (as opposed to the "move here"
+  // document-body zone above, which has no useful position concept)
+  // reorders in place - derive the insertion index from the drop's X
+  // against the OTHER tabs' rendered midpoints, instead of always
+  // appending.
+  function onTabbarDrop(groupId, ev) {
+    ev.preventDefault();
+    if (!dragging) return;
+    var tabEls = ev.currentTarget.querySelectorAll(".nv-tg-tab");
+    var midpoints = [];
+    for (var i = 0; i < tabEls.length; i++) {
+      var el = tabEls[i];
+      if (el.getAttribute("data-tab-id") === dragging) continue;
+      var rect = el.getBoundingClientRect();
+      midpoints.push(rect.left + rect.width / 2);
+    }
+    var position = NV_TG_dropIndex(midpoints, ev.clientX);
+    change(window.TG_moveTab(model, dragging, groupId, position), "manage");
+    setDragging(null);
+  }
   function onDropSplitRight(groupId, ev) {
     ev.preventDefault();
     if (!dragging) return;
@@ -180,7 +215,7 @@ function NV_TabGroups(props) {
             style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
             <div className="nv-tg-tabbar"
               onDragOver={onDragOverIfDragging}
-              onDrop={function (ev) { onDropMoveHere(g.id, ev); }}>
+              onDrop={function (ev) { onTabbarDrop(g.id, ev); }}>
               {g.tabs.map(function (tab) {
                 var isActive = tab.id === g.activeTabId;
                 return (
@@ -188,6 +223,7 @@ function NV_TabGroups(props) {
                     data-active={isActive ? "true" : "false"}
                     data-preview={tab.preview ? "true" : "false"}
                     data-testid={"nv-tg-tab:" + tab.id}
+                    data-tab-id={tab.id}
                     draggable="true"
                     onDragStart={function (ev) { onTabDragStart(tab, ev); }}
                     onDragEnd={onTabDragEnd}

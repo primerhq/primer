@@ -1,4 +1,4 @@
-/* global React, SH_api, SH_rankVerbs, SH_buildUrl, NV_useConsole */
+/* global React, SH_api, SH_rankVerbs, NV_useConsole */
 // The universal search bar (wiring plan P1 T5): one field over verbs,
 // sessions (every workspace), files (current workspace), and platform
 // entities. Grouped rows, arrow keys spanning every group, Enter runs.
@@ -133,16 +133,23 @@ function NV_Palette() {
           key: "s:" + s.session_id,
           label: s.name || s.session_id,
           tag: "session",
+          // F3 (2026-08-29 UI review): rail rows promote on open; the
+          // palette's session rows only ever called setDoc (preview), so
+          // the same row you searched for still needed a second click.
+          // F2: the cross-workspace path used to raw-assign
+          // location.hash, its own separate navigation outside con's
+          // markPush bookkeeping - route it through the same combined
+          // con.openInWorkspace the rail's cross-workspace open uses so
+          // there's one history entry here too, not a hash write plus
+          // whatever markPush already happened this tick.
           run: runAndClose(function () {
-            if (s.workspace_id && s.workspace_id !== con.wid) {
-              window.location.hash = SH_buildUrl({
-                wid: s.workspace_id,
-                doc: { kind: "session", ref: s.session_id },
-              });
+            con.goView("studio");
+            if (s.workspace_id && s.workspace_id !== con.wid && con.openInWorkspace) {
+              con.openInWorkspace(s.workspace_id, { kind: "session", ref: s.session_id });
             } else {
-              con.goView("studio");
               con.setDoc({ kind: "session", ref: s.session_id });
             }
+            if (con.promoteDoc) con.promoteDoc("session:" + s.session_id);
           }),
         };
       }), q, "Sessions");

@@ -204,9 +204,29 @@ function NV_Shell() {
     });
     return map;
   }, [railSessions.data]);
+  // F10 (2026-08-29 UI review): sessionWidById is derived purely from the
+  // 5s poll above, so a session opened the same second it's created (or
+  // clicked) shows no pulse until the poll catches up. stampedWidById is
+  // an immediate, caller-supplied overlay for exactly those two known-wid
+  // opens (rail click, create-session overlay - see stampSessionWid on
+  // the ctx object below); the poll's own data always wins once it
+  // arrives; a workspace_id never changes for a session so the stamp
+  // never goes stale in the meantime.
+  var stampedWidState = React.useState({});
+  var stampedWidById = stampedWidState[0];
+  var setStampedWidById = stampedWidState[1];
+  var stampSessionWid = React.useCallback(function (sid, swid) {
+    if (!sid || !swid) return;
+    setStampedWidById(function (prev) {
+      if (prev[sid] === swid) return prev;
+      var next = Object.assign({}, prev);
+      next[sid] = swid;
+      return next;
+    });
+  }, []);
   var resolveSessionWid = React.useCallback(function (sid) {
-    return sessionWidById[sid];
-  }, [sessionWidById]);
+    return sessionWidById[sid] || stampedWidById[sid];
+  }, [sessionWidById, stampedWidById]);
 
   // Default workspace: the URL's, else the first listed.
   React.useEffect(function () {
@@ -286,8 +306,13 @@ function NV_Shell() {
       var key = bits[bits.length - 1].toLowerCase();
       var wantCtrl = bits.indexOf("Ctrl") >= 0;
       var wantShift = bits.indexOf("Shift") >= 0;
+      // F6 (2026-08-29 UI review): session.create moved to Alt+n, which
+      // this matcher never checked before - without gating on ev.altKey,
+      // "Alt+n" would have matched a bare "n" keypress in any text field.
+      var wantAlt = bits.indexOf("Alt") >= 0;
       if ((ev.ctrlKey || ev.metaKey) !== wantCtrl) return false;
       if (!!ev.shiftKey !== wantShift) return false;
+      if (!!ev.altKey !== wantAlt) return false;
       return String(ev.key).toLowerCase() === key;
     }
     function onKey(ev) {
@@ -331,7 +356,12 @@ function NV_Shell() {
     });
     reg({
       id: "workspace.switch", label: "Switch Workspace",
-      chord: "Ctrl+Shift+p", surfaces: ["topbar", "palette"],
+      // F6 (2026-08-29 UI review): Ctrl+Shift+P is Firefox's private-
+      // window shortcut - the page never saw it. Ctrl+Shift+O is not
+      // reserved in Chrome/Edge/Firefox. Surface is "rail" now, not
+      // "topbar" - US-012b item 3 retired the topbar dropdown, the rail
+      // tree row is the only pointer affordance left.
+      chord: "Ctrl+Shift+o", surfaces: ["rail", "palette"],
       run: function (arg) {
         if (arg && arg.wid) {
           markPush();
@@ -347,7 +377,10 @@ function NV_Shell() {
       },
     });
     reg({
-      id: "session.create", label: "Create Session", chord: "Ctrl+n",
+      // F6 (2026-08-29 UI review): Ctrl+N is browser-reserved (new
+      // window) in Chrome/Edge - the page never even sees the keydown,
+      // so the chord was silently dead. Alt+N is not reserved.
+      id: "session.create", label: "Create Session", chord: "Alt+n",
       surfaces: ["rail", "palette"],
       // The shared entry point (rail "+", empty state, palette) opens
       // the SAME overlay a pasted overlay=new-session link opens.
@@ -403,6 +436,32 @@ function NV_Shell() {
       goView: goView,
       tgModel: tgModel,
       resolveSessionWid: resolveSessionWid,
+      stampSessionWid: stampSessionWid,
+      // F2 (2026-08-29 UI review): a cross-workspace session open used to
+      // run workspace.switch (its own markPush) then setDoc (a SECOND
+      // markPush) - two history entries for one navigation, so Back
+      // landed on a half-state (new workspace, old doc). One markPush,
+      // one combined state change; callers that also want the opened doc
+      // promoted (not just previewed) still call con.promoteDoc right
+      // after, same two-step every other caller here already uses.
+      openInWorkspace: function (owid, docSpec) {
+        markPush();
+        if (owid) setWid(owid);
+        setTgModel(function (m) {
+          return docSpec ? window.TG_openTab(m, docSpec, {}) : m;
+        });
+      },
+      // Same F2 shape, for the rail's workspace-menu "New session" (which
+      // right-clicking a NON-selected workspace row also switches-then-
+      // acts): workspace.switch's own run and session.create's own run
+      // each carry their own markPush, so calling both back to back is
+      // the same two-history-entries risk as onOpenSession was. One
+      // markPush here instead of routing through either verb.
+      createSessionInWorkspace: function (owid) {
+        markPush();
+        if (owid) setWid(owid);
+        setOverlay({ name: "new-session", section: null, id: null });
+      },
       // Opening a document/overlay is a real navigation (palette entity
       // rows, sidebar clicks, verb runs all funnel through this one
       // setter) so it earns a history entry, not a silent replace.
@@ -462,8 +521,8 @@ function NV_Shell() {
     };
   }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
     frecency, wsItems, status, caps, voiceRef, paletteRef, goView,
-    tgModel, setTgModel, resolveSessionWid, setOpenMenu, setOverlay,
-    setTick, markPush]);
+    tgModel, setTgModel, resolveSessionWid, stampSessionWid, setOpenMenu,
+    setOverlay, setTick, markPush, setWid]);
 
   var viewName = ctx.view.name;
   return (

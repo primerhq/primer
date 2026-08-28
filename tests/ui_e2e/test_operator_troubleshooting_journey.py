@@ -153,13 +153,13 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
         # ----- 1. Enter the Studio ----------------------------------
         open_studio(page, console_url, wid)
 
-        # ----- 2. The topbar names the workspace ---------------------
-        # S8 retired the Studio's sub-header workspace-selector; the
-        # shell states the workspace id in the topbar instead.
+        # ----- 2. The rail selects the workspace ---------------------
+        # US-012b retired the topbar workspace dropdown; the rail tree's
+        # row (data-selected) is the workspace observable now.
         expect(
-            page.get_by_test_id("nv-ws-btn").get_by_text(
-                wid, exact=False,
-            ).first
+            page.locator(
+                f'[data-testid="nv-rail-ws:{wid}"][data-selected="true"]'
+            )
         ).to_be_visible(timeout=15_000)
 
         # ----- 3. Sidebar Sessions section lists the seeded row ------
@@ -178,13 +178,13 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
         )
 
         # ----- 5. Workspace settings surface the workspace ----------
-        # The workspace menu's "Workspace settings…" opens
+        # The rail workspace row's context menu "Settings" opens
         # overlay=workspaces:detail:<wid>, which carries the same
         # config / channels / log / destroy tabs. Opening it in place
         # (no re-navigation) is the point: the open session tab has to
         # survive, which is the coherence check below.
-        page.get_by_test_id("nv-ws-btn").click()
-        page.get_by_test_id("nv-ws-settings").click()
+        page.get_by_test_id(f"nv-rail-ws:{wid}").click(button="right")
+        page.get_by_test_id(f"nv-rail-ws-menu-settings:{wid}").click()
         overlay = page.get_by_test_id("nv-overlay-body")
         expect(overlay).to_be_visible(timeout=10_000)
         assert f"overlay=workspaces:detail:{wid}" in page.url, (

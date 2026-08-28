@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import primer.channel.event_dispatch as ed
 from primer.channel.correlation import CorrelationStore
 from primer.channel.event_dispatch import ChannelEventRouter, mapping_anchor
 from primer.model.channel import Channel, ChannelProviderType, TelegramChannelConfig
@@ -16,6 +17,12 @@ from primer.model.channel_event import (
     EventSender,
     NormalizedEventType,
 )
+from primer.model.workspace_session import (
+    AgentSessionBinding,
+    SessionStatus,
+    WorkspaceSession,
+)
+from primer.session.steer_delivery import DELIVERED_MISSING, SteerDelivery
 from primer.trigger.subscribers import DispatchDeps
 from tests.conftest import _FakeStorageProvider
 
@@ -121,3 +128,95 @@ async def test_uncorrelated_event_with_no_triggers_is_ignored():
         event=_event(), channel=_channel(),
     )
     assert outcome.kind == "ignored"
+
+
+# ---------------------------------------------------------------------------
+# US-012a: a gate reply whose session already ENDED (e.g. the yield timed
+# out) must reopen the session like any other inbound message, mirroring
+# deliver_steer's own wake_session-driven reopen - not publish onto a dead
+# resume key nothing is listening for.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_session(sp, *, session_id: str, status: SessionStatus) -> None:
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id=session_id, workspace_id="w1",
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=status, created_at=datetime.now(UTC),
+    ))
+
+
+async def test_ended_gate_target_reopens_via_deliver_steer(monkeypatch):
+    sp = _FakeStorageProvider()
+    await _seed_session(sp, session_id="s1", status=SessionStatus.ENDED)
+    await CorrelationStore(sp).upsert_session(
+        channel_id="ch-1", anchor="thr-1", workspace_id="w1",
+        session_id="s1", tool_call_id="tc-1",
+    )
+    bus = _RecordingBus()
+    captured: dict = {}
+
+    async def _fake_deliver(**kw):
+        captured.update(kw)
+        return SteerDelivery(outcome="woken", session_id="s1")
+
+    monkeypatch.setattr(ed, "deliver_steer", _fake_deliver)
+    outcome = await _router(sp, bus).route_event(
+        event=_event("yes"), channel=_channel(),
+    )
+
+    assert outcome.kind == "steer"
+    assert outcome.session_id == "s1"
+    assert captured["session_id"] == "s1"
+    assert captured["text"] == "yes"
+    # The dead resume key must never be published onto - nothing that
+    # matters is listening for an ENDED session's ask_user gate.
+    assert bus.published == []
+    record = await CorrelationStore(sp).lookup("ch-1", "thr-1")
+    assert record.tool_call_id is None, "the stale gate must still clear"
+
+
+async def test_ended_gate_target_falls_through_when_unrestartable(monkeypatch):
+    """A non-restartable ended_reason (workspace_lost/force_deleted) reports
+    DELIVERED_MISSING - same fallback the plain steer branch already uses."""
+    sp = _FakeStorageProvider()
+    await _seed_session(sp, session_id="s1", status=SessionStatus.ENDED)
+    await CorrelationStore(sp).upsert_session(
+        channel_id="ch-1", anchor="thr-1", workspace_id="w1",
+        session_id="s1", tool_call_id="tc-1",
+    )
+
+    async def _fake_deliver(**kw):
+        return SteerDelivery(outcome=DELIVERED_MISSING)
+
+    monkeypatch.setattr(ed, "deliver_steer", _fake_deliver)
+    outcome = await _router(sp, _RecordingBus()).route_event(
+        event=_event("yes"), channel=_channel(),
+    )
+    # No channel triggers seeded, so the fresh-thread fallback finds
+    # nothing to fire.
+    assert outcome.kind == "ignored"
+
+
+async def test_non_ended_gate_target_keeps_the_direct_publish_path(monkeypatch):
+    """A genuinely still-parked gate (status RUNNING/WAITING) must keep
+    resuming via the direct bus publish - the ended-only reopen must not
+    divert a live, answerable gate through deliver_steer instead."""
+    sp = _FakeStorageProvider()
+    await _seed_session(sp, session_id="s1", status=SessionStatus.WAITING)
+    await CorrelationStore(sp).upsert_session(
+        channel_id="ch-1", anchor="thr-1", workspace_id="w1",
+        session_id="s1", tool_call_id="tc-1",
+    )
+    bus = _RecordingBus()
+
+    async def _unexpected_deliver(**kw):
+        raise AssertionError("deliver_steer must not be called for a live gate")
+
+    monkeypatch.setattr(ed, "deliver_steer", _unexpected_deliver)
+    outcome = await _router(sp, bus).route_event(
+        event=_event("yes"), channel=_channel(),
+    )
+
+    assert outcome.kind == "gate"
+    assert bus.published == [("ask_user:s1:tc-1", {"response": "yes"})]

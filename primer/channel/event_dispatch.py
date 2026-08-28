@@ -39,6 +39,7 @@ from primer.model.channel_event import ChannelEvent
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Trigger
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.steer_delivery import DELIVERED_MISSING, deliver_steer
 from primer.storage.q import Q
 from primer.trigger.dispatch import fire_trigger as _default_fire_trigger
@@ -132,23 +133,66 @@ class ChannelEventRouter:
         if anchor and channel_id is not None:
             record = await self._correlation.lookup(channel_id, anchor)
             if record is not None and record.kind == "session" and record.tool_call_id:
-                if self._bus is None:
-                    logger.warning(
-                        "channel event: session correlation for %s but no "
-                        "event bus; dropping reply", channel_id,
+                # The parked turn this gate would resume may no longer
+                # exist: the session can have ended (e.g. its yield timed
+                # out) before the reply arrived, and a stale correlation
+                # record still carries the dead tool_call_id. Publishing
+                # onto that event_key goes nowhere - nothing is listening
+                # for an ENDED session's resume key - so this used to
+                # silently drop the reply instead of erroring loudly, and
+                # if something DID still hold a lease it could re-arm the
+                # claim for an ENDED row, which is what raised "cannot
+                # invoke ENDED session" at turn time. Check first and, when
+                # ended, fall back to the SAME reopen-and-steer path a
+                # plain inbound message already uses below, so any inbound
+                # message reopens an ended session uniformly.
+                sessions = self._sp.get_storage(WorkspaceSession)
+                target = await sessions.get(record.session_id)
+                if target is not None and target.status == SessionStatus.ENDED:
+                    await self._correlation.clear_gate(channel_id, anchor)
+                    delivery = await deliver_steer(
+                        session_id=record.session_id,
+                        text=await self._steer_text(
+                            event=event,
+                            media_parts=media_parts,
+                            workspace_id=target.workspace_id,
+                            fire_id=event.event_id,
+                        ),
+                        parallelism="queue",
+                        storage_provider=self._sp,
+                        scheduler=self._fire_deps.scheduler,
+                        claim_engine=self._fire_deps.claim_engine,
+                        workspace_registry=self._fire_deps.workspace_registry,
+                        event_bus=self._bus,
                     )
-                    return ChannelRouteOutcome(kind="ignored")
-                event_key = (
-                    f"ask_user:{record.session_id}:{record.tool_call_id}"
-                )
-                await self._bus.publish(event_key, {"response": event.text})
-                # One reply answers one gate. Clearing it here is what lets
-                # the NEXT reply in the same thread steer the session
-                # instead of re-publishing onto a dead resume key.
-                await self._correlation.clear_gate(channel_id, anchor)
-                return ChannelRouteOutcome(
-                    kind="gate", session_id=record.session_id,
-                )
+                    if delivery.outcome != DELIVERED_MISSING:
+                        return ChannelRouteOutcome(
+                            kind="steer", session_id=record.session_id,
+                        )
+                    logger.info(
+                        "channel event: gate target %s/%s ended and could "
+                        "not be reopened; treating as a new thread",
+                        channel_id, anchor,
+                    )
+                else:
+                    if self._bus is None:
+                        logger.warning(
+                            "channel event: session correlation for %s but "
+                            "no event bus; dropping reply", channel_id,
+                        )
+                        return ChannelRouteOutcome(kind="ignored")
+                    event_key = (
+                        f"ask_user:{record.session_id}:{record.tool_call_id}"
+                    )
+                    await self._bus.publish(event_key, {"response": event.text})
+                    # One reply answers one gate. Clearing it here is what
+                    # lets the NEXT reply in the same thread steer the
+                    # session instead of re-publishing onto a dead resume
+                    # key.
+                    await self._correlation.clear_gate(channel_id, anchor)
+                    return ChannelRouteOutcome(
+                        kind="gate", session_id=record.session_id,
+                    )
             if record is not None and record.kind == "session":
                 # Thread-mapped session, no open gate: the reply is the next
                 # user message on that session (S6 section 5). Queueing is

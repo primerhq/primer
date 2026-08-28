@@ -98,8 +98,9 @@ def test_every_registered_verb_has_a_pointer_affordance() -> None:
     chrome_owned = {
         "palette.open": 'data-testid="nv-search"',
         "terminal.toggle": 'data-testid="nv-toggle-terminal"',
-        "workspace.switch": 'data-testid="nv-ws-btn"',
-        "workspace.create": 'data-testid="nv-ws-create"',
+        # workspace.switch/create moved OFF chrome onto the rail's own
+        # data-verb attributes (US-012b), so the primary rendered-check
+        # covers them and they need no chrome witness here anymore.
         "view.studio": 'data-testid="nv-go-studio"',
         "view.platform": 'data-testid="nv-go-platform"',
         "view.system": "nv-menu-row",
@@ -174,3 +175,26 @@ def test_every_data_verb_attribute_names_a_registered_verb() -> None:
     registered = {e["id"] for e in _registrations() if "id" in e}
     missing = referenced - registered
     assert not missing, f"data-verb pointing at nothing: {sorted(missing)}"
+
+
+# Known browser-reserved combos: the OS/browser eats the keydown before the
+# page's own listener ever runs (tab/window management), or one major
+# browser dedicates it to something else (Firefox's private-window
+# shortcut). A verb bound to one of these is silently dead no matter how
+# correct the dispatcher is (2026-08-29 UI review, F6 - session.create was
+# Ctrl+N, workspace.switch was Ctrl+Shift+P). Not exhaustive - extend as
+# new dead chords surface.
+RESERVED_CHORDS = {
+    "ctrl+n", "ctrl+t", "ctrl+w",
+    "ctrl+shift+n", "ctrl+shift+t", "ctrl+shift+w",
+    "ctrl+shift+p", "ctrl+shift+q",
+}
+
+
+def test_no_registered_chord_is_browser_reserved() -> None:
+    offenders = []
+    for entry in _registrations():
+        chord = entry.get("chord")
+        if chord and chord.lower() in RESERVED_CHORDS:
+            offenders.append(f'{entry.get("id")}: {chord}')
+    assert not offenders, f"browser-reserved chords: {offenders}"

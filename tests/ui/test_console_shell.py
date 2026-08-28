@@ -69,7 +69,9 @@ def test_workspace_switch_keeps_open_tabs():
     longer drops the open doc. It only changes which workspace drives the
     Files sidebar/terminal/rail selection - the pre-R2 single-doc-per-
     workspace model this test used to pin is gone."""
-    m = re.search(r'id: "workspace.switch"[\s\S]{0,400}', SHELL)
+    # Window widened past 400 (2026-08-29 UI review, F6): the chord/
+    # surfaces explanatory comment now sits ahead of the executable body.
+    m = re.search(r'id: "workspace.switch"[\s\S]{0,800}', SHELL)
     assert m and "setDoc(null)" not in m.group(0)
     assert m and "setWid(arg.wid)" in m.group(0)
 

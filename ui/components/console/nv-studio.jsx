@@ -5,9 +5,7 @@
 // The old Sessions|Files rail-toggle and its flag-gated fallback to
 // nv-sessions-sidebar.jsx/nv-doc-host.jsx retired with this round -
 // NV_TG_ENABLED is gone, this is just how the shell works now.
-// Also home of the pure helpers tests share: the session BAND sort
-// (still used by NV_sessionBands' own unit tests) and the agent
-// identity glyphs.
+// Also home of the pure helper tests share: the agent identity glyphs.
 
 // The five seeded agents carry the prototype's glyph set; anything
 // else gets a stable hash pick from the same vocabulary. Never
@@ -36,37 +34,6 @@ function NV_identity(binding) {
   var sum = 0;
   for (var i = 0; i < id.length; i++) sum = (sum * 31 + id.charCodeAt(i)) % 997;
   return NV_GLYPHS[NV_GLYPH_POOL[sum % NV_GLYPH_POOL.length]];
-}
-
-// Band sort (spec: attention first, then running, then idle, then
-// ended; recency within each). Pure so the ordering is unit-tested.
-function NV_sessionBands(sessions, attentionSids) {
-  var bands = {
-    attention: { id: "attention", label: "Needs you", rows: [] },
-    running: { id: "running", label: "In progress", rows: [] },
-    idle: { id: "idle", label: "Idle", rows: [] },
-    ended: { id: "ended", label: "Ended", rows: [] },
-  };
-  (sessions || []).forEach(function (s) {
-    var sid = s.session_id || s.id;
-    if (attentionSids && attentionSids.indexOf(sid) >= 0) {
-      bands.attention.rows.push(s);
-    } else if (s.status === "ended") {
-      bands.ended.rows.push(s);
-    } else if (s.status === "running" || s.status === "waiting"
-        || s.turn_status === "running" || s.parked_status) {
-      bands.running.rows.push(s);
-    } else {
-      bands.idle.rows.push(s);
-    }
-  });
-  function recency(a, b) {
-    return String(b.last_activity_at || "").localeCompare(
-      String(a.last_activity_at || ""));
-  }
-  return [bands.attention, bands.running, bands.idle, bands.ended]
-    .map(function (b) { return { id: b.id, label: b.label, rows: b.rows.sort(recency) }; })
-    .filter(function (b) { return b.rows.length > 0; });
 }
 
 // Lifted near-verbatim from nv-doc-host.jsx (US-007 R2 phase 2): the kind
@@ -132,22 +99,33 @@ function NV_Studio() {
             if (verb) verb.run({ wid: wid });
           }}
           onOpenSession={function (session, wid) {
-            if (wid && wid !== con.wid) {
-              var switchVerb = con.registry.get("workspace.switch");
-              if (switchVerb) switchVerb.run({ wid: wid });
+            // F2 (2026-08-29 UI review): route the cross-workspace case
+            // through the single combined navigation (con.openInWorkspace)
+            // instead of a separate workspace.switch + setDoc, each with
+            // their own markPush - that used to push two history entries
+            // for one navigation.
+            if (wid && wid !== con.wid && con.openInWorkspace) {
+              con.openInWorkspace(wid, { kind: "session", ref: session.session_id });
+            } else {
+              con.setDoc({ kind: "session", ref: session.session_id });
             }
-            con.setDoc({ kind: "session", ref: session.session_id });
             if (con.promoteDoc) {
               con.promoteDoc("session:" + session.session_id);
             }
+            // F10 (2026-08-29 UI review): the pulse dot resolves wid from
+            // a 5s poll; stamp the wid we already know immediately so a
+            // freshly-opened session doesn't sit blind until it catches up.
+            if (con.stampSessionWid) con.stampSessionWid(session.session_id, wid);
           }}
-          onCreateSession={function () {
-            var verb = con.registry.get("session.create");
-            if (verb) verb.run();
+          onCreateSessionInWorkspace={function (wid) {
+            if (con.createSessionInWorkspace) con.createSessionInWorkspace(wid);
           }}
           onCreateWorkspace={function () {
             var verb = con.registry.get("workspace.create");
             if (verb) verb.run();
+          }}
+          onOpenWorkspaceSettings={function (wid) {
+            con.openOverlay("workspaces", "detail", wid);
           }}
         />
       </div>
@@ -187,5 +165,4 @@ function NV_usageOf(session) {
 window.NV_usageOf = NV_usageOf;
 window.NV_GLYPHS = NV_GLYPHS;
 window.NV_identity = NV_identity;
-window.NV_sessionBands = NV_sessionBands;
 window.NV_Studio = NV_Studio;

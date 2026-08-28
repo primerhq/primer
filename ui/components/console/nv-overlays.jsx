@@ -213,6 +213,10 @@ function NV_CreateSessionOverlay() {
       if (sid) {
         con.setDoc({ kind: "session", ref: sid });
         if (con.promoteDoc) con.promoteDoc("session:" + sid);
+        // F10 (2026-08-29 UI review): stamp the wid we already know (this
+        // overlay always creates in con.wid) so the new tab's pulse dot
+        // doesn't sit blind until the 5s poll catches up.
+        if (con.stampSessionWid) con.stampSessionWid(sid, con.wid);
       }
     }, function (e) {
       setBusy(false);
