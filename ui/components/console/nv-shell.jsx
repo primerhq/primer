@@ -127,6 +127,13 @@ function NV_readUrl() {
 // Frozen module-level empty array: a fresh [] each render would defeat the ctx memo.
 var EMPTY_WS_ITEMS = Object.freeze([]);
 
+// Round-scoped rollback switch (US-007 R2 phase 2): flip to false to
+// remount the pre-R2 sessions-sidebar + doc-host in nv-studio.jsx's left/
+// center slots instead of the rail + tab-groups, with no other code
+// changes. Not a user preference like tweaks.js's studioV2/graphBuilderV2
+// flags, so it stays a local module constant instead of a tweak.
+var NV_TG_ENABLED = true;
+
 function NV_Shell() {
   var initial = React.useMemo(NV_readUrl, []);
   var widState = React.useState(initial.wid);
@@ -135,9 +142,19 @@ function NV_Shell() {
   var viewState = React.useState(initial.view);
   var view = viewState[0];
   var setView = viewState[1];
-  var docState = React.useState(initial.doc);
-  var doc = docState[0];
-  var setDoc = docState[1];
+  // TG model as shell state (US-007 R2 phase 2 design): doc is DERIVED
+  // from it (TG_activeDoc), not a second source of truth kept in sync.
+  // Seed from the initial URL's doc= as a preview tab, matching
+  // nv-doc-host.jsx's old preview-by-default load behavior.
+  var tgModelState = React.useState(function () {
+    var base = window.TG_init();
+    return initial.doc ? window.TG_openTab(base, initial.doc, {}) : base;
+  });
+  var tgModel = tgModelState[0];
+  var setTgModel = tgModelState[1];
+  var doc = React.useMemo(function () {
+    return window.TG_activeDoc(tgModel);
+  }, [tgModel]);
   var overlayState = React.useState(initial.overlay);
   var overlay = overlayState[0];
   var setOverlay = overlayState[1];
@@ -179,6 +196,25 @@ function NV_Shell() {
   var voiceRef = React.useRef(null);
   var wsItems = (workspaces.data && workspaces.data.items) || EMPTY_WS_ITEMS;
 
+  // resolveSessionWid for NV_TabGroups' session-tab pulse dot: reuses the
+  // rail's OWN cache key (nv-rail.jsx) - use-resource.js keys its cache by
+  // string across components, so this costs one fetch, not two.
+  var railSessions = window.primerApi.useResource(
+    "nv-rail-all-sessions",
+    function (signal) { return SH_api.allSessions(signal); },
+    { pollMs: 5000, deps: [] }
+  );
+  var sessionWidById = React.useMemo(function () {
+    var map = {};
+    ((railSessions.data && railSessions.data.items) || []).forEach(function (s) {
+      map[s.session_id] = s.workspace_id;
+    });
+    return map;
+  }, [railSessions.data]);
+  var resolveSessionWid = React.useCallback(function (sid) {
+    return sessionWidById[sid];
+  }, [sessionWidById]);
+
   // Default workspace: the URL's, else the first listed.
   React.useEffect(function () {
     if (!wid && wsItems.length) setWid(wsItems[0].id);
@@ -203,7 +239,13 @@ function NV_Shell() {
       var parsed = SH_parseUrl(current);
       setWid(parsed.wid);
       setView(parsed.view);
-      setDoc(parsed.doc);
+      // Tabs are global (notes 2.3) and persist across navigation; a URL
+      // naming no doc means "names nothing," not "close everything," so
+      // a null parsed.doc leaves tgModel untouched. A named doc opens as
+      // preview, matching the load-time seed above.
+      if (parsed.doc) {
+        setTgModel(function (m) { return window.TG_openTab(m, parsed.doc, {}); });
+      }
       setOverlay(parsed.overlay);
       setAnchor(parsed.anchor);
     }
@@ -301,8 +343,11 @@ function NV_Shell() {
         if (arg && arg.wid) {
           markPush();
           setWid(arg.wid);
-          setDoc(null);
-          setAnchor(null);
+          // US-007 R2: tabs are global across workspaces (notes 2.3) -
+          // switching workspace no longer drops the open doc/anchor, it
+          // only changes which workspace drives the Files sidebar/
+          // terminal/rail selection. (Was setDoc(null)/setAnchor(null)
+          // under the old single-doc-per-workspace model.)
         } else {
           setOpenMenu("ws");
         }
@@ -372,10 +417,45 @@ function NV_Shell() {
       voiceRef: voiceRef,
       paletteRef: paletteRef,
       goView: goView,
+      tgEnabled: NV_TG_ENABLED,
+      tgModel: tgModel,
+      resolveSessionWid: resolveSessionWid,
       // Opening a document/overlay is a real navigation (palette entity
       // rows, sidebar clicks, verb runs all funnel through this one
       // setter) so it earns a history entry, not a silent replace.
-      setDoc: function (d) { markPush(); setDoc(d); },
+      // Preview/reactivate (never promote:true here) - callers that want
+      // promoted-on-open call con.promoteDoc right after, same two-step
+      // every existing caller (nv-overlays.jsx, nv-files-sidebar.jsx,
+      // nv-file-docs.jsx) already uses.
+      setDoc: function (d) {
+        markPush();
+        setTgModel(function (m) {
+          // con.setDoc(null) is a real, live call shape - nv-doc-host.jsx
+          // closing its last tab, nv-session-doc.jsx's onDeleted - both
+          // meaning "nothing is open here anymore." Map it onto closing
+          // whichever tab is currently active rather than crashing
+          // TG_openTab on a null doc.
+          if (!d) {
+            var active = window.TG_activeDoc(m);
+            return active ? window.TG_closeTab(m, active.id) : m;
+          }
+          return window.TG_openTab(m, d, {});
+        });
+      },
+      // Replaces nv-doc-host.jsx's old hack of stuffing this onto `con`
+      // imperatively during render. Never touches the URL - preview vs.
+      // promoted isn't URL-visible.
+      promoteDoc: function (id) {
+        setTgModel(function (m) { return window.TG_promoteTab(m, id); });
+      },
+      // Wired straight to NV_TabGroups' onModelChange (op is "open" for
+      // select/promote, "manage" for close/move/split/focus - see that
+      // file's comment). Only "open" pushes; "manage" changes can move
+      // the active doc as a side effect the user didn't navigate to.
+      onTgModelChange: function (next, op) {
+        if (op === "open") markPush();
+        setTgModel(next);
+      },
       openOverlay: function (name, section, id) {
         markPush();
         setOverlay({ name: name, section: section || null, id: id || null });
@@ -399,7 +479,8 @@ function NV_Shell() {
     };
   }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
     frecency, wsItems, status, caps, voiceRef, paletteRef, goView,
-    setDoc, setOpenMenu, setOverlay, setTick, markPush]);
+    tgModel, setTgModel, resolveSessionWid, setOpenMenu, setOverlay,
+    setTick, markPush]);
 
   var viewName = ctx.view.name;
   return (

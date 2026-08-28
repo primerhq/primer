@@ -202,6 +202,14 @@ var SH_api = {
       null, { signal: signal });
   },
 
+  // Cross-workspace aggregate (uiv2 R2 Inbox rail): no workspace in the
+  // path. kind is "approval" | "ask" | "parked" - a different vocabulary
+  // than pendingYields' tool_name-derived kind above.
+  pendingAttention: function (signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/yields/pending", null, { signal: signal });
+  },
+
   sessionPendingYields: function (wid, sid, signal) {
     return window.primerApi.apiFetch(
       "GET", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
@@ -350,6 +358,7 @@ var SH_api = {
     allSessions: function () { return "shell-all-sessions"; },
     session: function (sid) { return "shell-session:" + sid; },
     pending: function (wid) { return "shell-pending:" + wid; },
+    pendingAttention: function () { return "shell-pending-attention"; },
     sessionPending: function (sid) { return "shell-session-pending:" + sid; },
     tree: function (wid, path) { return "shell-tree:" + wid + ":" + (path || "."); },
     file: function (wid, path) { return "shell-file:" + wid + ":" + path; },

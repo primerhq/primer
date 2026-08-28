@@ -64,11 +64,105 @@ function NV_sessionBands(sessions, attentionSids) {
     .filter(function (b) { return b.rows.length > 0; });
 }
 
+// Lifted near-verbatim from nv-doc-host.jsx (US-007 R2 phase 2): the kind
+// dispatch and empty-state markup survive unchanged, now called by
+// NV_TabGroups once per group (once for the sole group phase 2 ships
+// with) instead of once for the whole center. `con` closes over the verb
+// registry for the empty state's New session / Ctrl+K buttons.
+function NV_renderStudioDoc(con, tab) {
+  if (!tab) {
+    return (
+      <div className="nv-center-empty" data-testid="nv-center-empty">
+        <svg width="34" height="34" viewBox="0 0 24 24"
+          style={{ marginBottom: 10, color: "var(--text-4)" }}>
+          <polygon points="12,3 21,12 12,21 3,12" fill="none"
+            stroke="currentColor" strokeWidth="1.2" />
+          <polygon points="12,12 16.5,16.5 12,21 7.5,16.5"
+            fill="var(--brand-green)" />
+        </svg>
+        <div>Nothing open. Pick a session, or start one.</div>
+        <div className="nv-center-empty-actions">
+          <button type="button" className="nv-btn-primary"
+            data-testid="nv-empty-new-session"
+            onClick={function () {
+              var verb = con.registry.get("session.create");
+              if (verb) verb.run();
+            }}>New session</button>
+          <button type="button" className="nv-btn-secondary"
+            onClick={function () {
+              var verb = con.registry.get("palette.open");
+              if (verb) verb.run();
+            }}>Ctrl+K commands</button>
+        </div>
+      </div>
+    );
+  }
+  if (tab.kind === "session" && typeof window.NV_SessionDoc === "function") {
+    return <window.NV_SessionDoc sid={tab.ref} />;
+  }
+  if (tab.kind === "file" && typeof window.NV_FileDoc === "function") {
+    return <window.NV_FileDoc path={tab.ref} />;
+  }
+  if (tab.kind === "diff" && typeof window.NV_DiffDoc === "function") {
+    return <window.NV_DiffDoc sha={tab.ref} />;
+  }
+  if (tab.kind === "wiki" && typeof window.NV_WikiDoc === "function") {
+    return <window.NV_WikiDoc slug={tab.ref} />;
+  }
+  return null;
+}
+
 function NV_Studio() {
   var con = NV_useConsole();
   var railState = React.useState("sessions");
   var railTab = railState[0];
   var setRailTab = railState[1];
+  var tgEnabled = con.tgEnabled && typeof window.NV_Rail === "function"
+    && typeof window.NV_TabGroups === "function";
+
+  function renderDoc(tab) { return NV_renderStudioDoc(con, tab); }
+
+  // The rail's own header "+" buttons (nv-rail-create-session/-workspace)
+  // replace the old tab-bar's NV_SessionsSidebarVerbs button - showing
+  // both would duplicate the affordance. Files keeps its own verbs
+  // regardless: the Files sidebar/tab is unchanged this round (notes 2.5's
+  // always-visible right-side Files panel is a separate, later round -
+  // out of phase 2's scope, so it stays tabbed here rather than losing
+  // reachability).
+  function railSessionsSlot() {
+    if (tgEnabled) {
+      return (
+        <window.NV_Rail
+          selectedWorkspaceId={con.wid}
+          onSelectWorkspace={function (wid) {
+            var verb = con.registry.get("workspace.switch");
+            if (verb) verb.run({ wid: wid });
+          }}
+          onOpenSession={function (session, wid) {
+            if (wid && wid !== con.wid) {
+              var switchVerb = con.registry.get("workspace.switch");
+              if (switchVerb) switchVerb.run({ wid: wid });
+            }
+            con.setDoc({ kind: "session", ref: session.session_id });
+            if (con.promoteDoc) {
+              con.promoteDoc("session:" + session.session_id);
+            }
+          }}
+          onCreateSession={function () {
+            var verb = con.registry.get("session.create");
+            if (verb) verb.run();
+          }}
+          onCreateWorkspace={function () {
+            var verb = con.registry.get("workspace.create");
+            if (verb) verb.run();
+          }}
+        />
+      );
+    }
+    return typeof window.NV_SessionsSidebar === "function"
+      ? <window.NV_SessionsSidebar />
+      : null;
+  }
 
   return (
     <div className="nv-studio" data-testid="nv-studio">
@@ -83,7 +177,7 @@ function NV_Studio() {
             data-testid="nv-rail-tab-files"
             onClick={function () { setRailTab("files"); }}>Files</button>
           <div style={{ flex: 1 }} />
-          {railTab === "sessions"
+          {railTab === "sessions" && !tgEnabled
             && typeof window.NV_SessionsSidebarVerbs === "function"
             ? <window.NV_SessionsSidebarVerbs />
             : null}
@@ -92,22 +186,26 @@ function NV_Studio() {
             ? <window.NV_FilesSidebarVerbs />
             : null}
         </div>
-        {railTab === "sessions"
-          && typeof window.NV_SessionsSidebar === "function"
-          ? <window.NV_SessionsSidebar />
-          : null}
+        {railTab === "sessions" ? railSessionsSlot() : null}
         {railTab === "files" && typeof window.NV_FilesSidebar === "function"
           ? <window.NV_FilesSidebar />
           : null}
       </div>
       <div className="nv-center" data-testid="nv-center">
-        {typeof window.NV_DocHost === "function"
-          ? <window.NV_DocHost />
-          : (
-            <div className="nv-view-pending">
-              <span>The doc host lands in P2 T7.</span>
-            </div>
-          )}
+        {tgEnabled ? (
+          <window.NV_TabGroups
+            model={con.tgModel}
+            onModelChange={con.onTgModelChange}
+            renderDoc={renderDoc}
+            resolveSessionWid={con.resolveSessionWid}
+          />
+        ) : typeof window.NV_DocHost === "function" ? (
+          <window.NV_DocHost />
+        ) : (
+          <div className="nv-view-pending">
+            <span>The doc host lands in P2 T7.</span>
+          </div>
+        )}
         {con.panels.terminal && typeof window.NV_Terminal === "function"
           ? <window.NV_Terminal />
           : null}

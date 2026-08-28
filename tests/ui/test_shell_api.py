@@ -73,7 +73,8 @@ def test_no_other_shell_file_names_a_v1_url() -> None:
 def test_every_read_takes_an_abort_signal() -> None:
     src = _src()
     for name in ("sessions", "session", "filesTree", "fileRead", "commitLog",
-                 "commit", "pendingYields", "approvalRecords", "timeline"):
+                 "commit", "pendingYields", "pendingAttention",
+                 "approvalRecords", "timeline"):
         m = re.search(name + r":\s*function\s*\(([^)]*)\)", src)
         assert m, name
         assert m.group(1).strip().endswith("signal"), name

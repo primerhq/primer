@@ -688,11 +688,26 @@ function NV_StatusStrip(props) {
 // ---------------------------------------------------------------------------
 // Composer (status strip + input row + mic + stop + send)
 // ---------------------------------------------------------------------------
+// US-008 behavior 2 (notes 2.4): "drafts survive tab switches - keyed by
+// session id." Module-level so it outlives any single NV_Composer mount;
+// nv-doc-host.jsx does not key session docs by sid today, so a session
+// switch may re-render this SAME component instance with a new sid rather
+// than unmount/remount it - the sid-change effect below re-syncs `val`
+// from this map either way, so two sessions never see each other's drafts
+// regardless of which mounting behavior is in play.
+var NV_DRAFTS = {};
+
 function NV_Composer(props) {
   var con = NV_useConsole();
-  var valState = React.useState("");
+  var valState = React.useState(function () { return NV_DRAFTS[props.sid] || ""; });
   var val = valState[0];
   var setVal = valState[1];
+  var draftSidRef = React.useRef(props.sid);
+  React.useEffect(function () {
+    if (draftSidRef.current === props.sid) return;
+    draftSidRef.current = props.sid;
+    setVal(NV_DRAFTS[props.sid] || "");
+  }, [props.sid]);
   var recState = React.useState(false);
   var recording = recState[0];
   var setRecording = recState[1];
@@ -726,6 +741,10 @@ function NV_Composer(props) {
       : SH_api.steer(con.wid, props.sid, text);
     promise.then(function () {
       setVal("");
+      // Clear only on success - a failed send restores the typed text
+      // (P0 behaviour, untouched below) and the draft must restore with
+      // it, so a retry after a tab switch still has what was typed.
+      delete NV_DRAFTS[props.sid];
       setSending(false);
       grow();
       props.onSendStarted();
@@ -812,12 +831,27 @@ function NV_Composer(props) {
             placeholder={props.terminal
               ? "Send to reopen this session…"
               : "Send a message — Enter queues mid-run…"}
-            onChange={function (ev) { setVal(ev.target.value); }}
+            onChange={function (ev) {
+              var v = ev.target.value;
+              setVal(v);
+              NV_DRAFTS[props.sid] = v;
+            }}
             onKeyDown={function (ev) {
               if (ev.key === "Enter" && !ev.shiftKey
                   && !ev.nativeEvent.isComposing) {
                 ev.preventDefault();
                 send();
+                return;
+              }
+              // US-008 behavior 3 (notes 2.4): "/" in an EMPTY composer
+              // opens the palette instead of typing - non-empty text
+              // types "/" normally (no special-casing once there is any
+              // text), and an IME composition never triggers it, same
+              // guard as Enter above.
+              if (ev.key === "/" && !val && !ev.nativeEvent.isComposing) {
+                ev.preventDefault();
+                var verb = con.registry.get("palette.open");
+                if (verb) verb.run();
               }
             }} />
         </div>

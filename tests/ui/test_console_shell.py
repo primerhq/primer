@@ -69,11 +69,15 @@ def test_profile_menu_role_gates_system():
     assert m and "view.system" in m.group(0)
 
 
-def test_workspace_switch_resets_the_doc():
+def test_workspace_switch_keeps_open_tabs():
+    """Superseded by US-007 R2: tabs are global across workspaces (notes
+    2.3 - "any workspace's docs can co-exist"), so switching workspace no
+    longer drops the open doc. It only changes which workspace drives the
+    Files sidebar/terminal/rail selection - the pre-R2 single-doc-per-
+    workspace model this test used to pin is gone."""
     m = re.search(r'id: "workspace.switch"[\s\S]{0,400}', SHELL)
-    assert m and "setDoc(null)" in m.group(0), (
-        "switching workspace must drop the previous workspace's doc"
-    )
+    assert m and "setDoc(null)" not in m.group(0)
+    assert m and "setWid(arg.wid)" in m.group(0)
 
 
 def test_scripts_registered_before_app():

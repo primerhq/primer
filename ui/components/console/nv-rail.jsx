@@ -36,13 +36,16 @@
 //   nv-rail-create-session, nv-rail-create-workspace
 //
 // Cross-workspace attention aggregate: notes 2.1 wants "every session
-// across ALL workspaces that needs a person" in the Inbox. A teammate is
-// building GET /yields/pending (no workspace in the path) in parallel;
-// until it lands this codes defensively against a 404 and fans out
-// SH_api.pendingYields per workspace instead - same item shape, just N
-// calls instead of one. TODO(uiv2-R2): once the aggregate endpoint ships,
-// confirm its item shape includes workspace_id per item (my own gap-map
-// sketch assumed so) and drop the fallback fan-out.
+// across ALL workspaces that needs a person" in the Inbox. GET
+// /yields/pending (no workspace in the path) has SHIPPED (primer/api/
+// routers/workspaces.py list_pending_attention) and is the primary path;
+// item shape confirmed workspace_id per item, matching the fallback's
+// stamp below. The 404 fallback stays only for a server predating that
+// endpoint - fans out SH_api.pendingYields per workspace instead, same
+// idea, N calls instead of one. Its item shape is DIFFERENT though (see
+// NV_Rail_inboxKindLabel): the fallback's kind comes straight from
+// tool_name (ask_user/watch_files/sleep/...), the live aggregate collapses
+// to three buckets (approval/ask/parked) - both are normalized there.
 //
 // Session context menu: NOT reused from nv-sessions-sidebar.jsx's
 // NV_SessionContextMenu, deliberately - see NV_Rail_SessionContextMenu's
@@ -63,9 +66,16 @@ function NV_Rail_SessionPulse(props) {
   return <span className="nv-dot-pulse" title="running" />;
 }
 
+// Two vocabularies land here: the live aggregate's three buckets
+// (approval/ask/parked) and the pre-aggregate fallback's tool_name-derived
+// kind (ask_user/watch_files/sleep/...) - review finding #2 (US-007 R2
+// phase 1) was that only the fallback's "ask_user" was recognized, so an
+// ask_user yield through the (now live, primary) aggregate rendered
+// "parked on you" instead of "asking you". Both spellings map to the same
+// label; anything else parked on a human falls to "parked on you".
 function NV_Rail_inboxKindLabel(kind) {
   if (kind === "approval") return "approval";
-  if (kind === "ask_user") return "asking you";
+  if (kind === "ask" || kind === "ask_user") return "asking you";
   return "parked on you";
 }
 
@@ -122,9 +132,22 @@ function NV_Rail_SessionContextMenu(props) {
     });
   }, true));
 
+  // Bug found closing out R2's BDD pass: this menu positions off raw
+  // click coordinates with no viewport clamping (pre-existing, identical
+  // in nv-sessions-sidebar.jsx's NV_SessionContextMenu - not new to the
+  // rail). The tree can put a row anywhere down a long scrollable list,
+  // so a right-click near the bottom rendered later rows (End, Delete)
+  // past the viewport edge with position: fixed, permanently unreachable
+  // (no amount of page scroll brings a fixed element back in view).
+  // Estimates: ~34px/row incl. padding, ~190px menu width from styles.css.
+  var menuH = rows.length * 34 + 20;
+  var menuW = 190;
+  var clampedX = Math.max(4, Math.min(props.x, window.innerWidth - menuW));
+  var clampedY = Math.max(4, Math.min(props.y, window.innerHeight - menuH));
+
   return (
     <div className="nv-ctx" data-testid={"nv-rail-session-menu:" + sid}
-      style={{ left: props.x, top: props.y }}
+      style={{ left: clampedX, top: clampedY }}
       onClick={function (ev) { ev.stopPropagation(); }}>
       {rows.map(function (r) {
         return (
@@ -154,7 +177,7 @@ function NV_Rail(props) {
     "nv-rail-inbox",
     function (signal) {
       var workspaces = ((wsRes.data && wsRes.data.items) || []);
-      return window.primerApi.apiFetch("GET", "/yields/pending", null, { signal: signal })
+      return SH_api.pendingAttention(signal)
         .then(function (out) {
           var items = (out && out.items) || [];
           return { items: items.map(function (it) {
@@ -163,7 +186,11 @@ function NV_Rail(props) {
         })
         .catch(function (err) {
           if (err && err.status !== 404) throw err;
-          // TODO(uiv2-R2): drop this fan-out once GET /yields/pending ships.
+          // Compatibility path only: a server predating the aggregate
+          // endpoint (list_pending_attention) 404s here, so this fans out
+          // the per-workspace endpoint instead - same idea, N calls
+          // instead of one, and a different kind vocabulary (see
+          // NV_Rail_inboxKindLabel above).
           return Promise.all(workspaces.map(function (w) {
             return SH_api.pendingYields(w.id, signal).then(function (out) {
               return ((out && out.items) || []).map(function (it) {

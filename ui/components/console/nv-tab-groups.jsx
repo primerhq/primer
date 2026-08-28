@@ -4,17 +4,24 @@
 // drag-and-drop with the three "move here / split right / split down"
 // zones, replacing nv-doc-host.jsx's single tab group.
 //
-// STANDALONE for now: nothing mounts this component yet. Shell
-// integration (swapping it in for nv-doc-host.jsx inside nv-shell.jsx) is
-// phase 2, after the R1 owner releases nv-shell.jsx.
+// Mounted by nv-studio.jsx (phase 2), replacing nv-doc-host.jsx in the
+// center slot when the caller's model is TG_-shaped (see NV_TG_ENABLED in
+// nv-shell.jsx for the rollback gate).
 //
 // Props:
 //   model              - a TG_ model, see tab-group-model.js.
-//   onModelChange       - (nextModel) => void. Called after every
-//                         interaction that should mutate the model
-//                         (select/promote/close/focus/move/split). This
-//                         component never holds model state itself - the
-//                         caller owns it (no direct URL writes here).
+//   onModelChange       - (nextModel, op) => void. Called after every
+//                         interaction that should mutate the model.
+//                         op is "open" for selectTab/promoteTab (a real
+//                         navigation - the caller should push a history
+//                         entry) or "manage" for close/move/split/focus
+//                         (tab-management; the active doc can change as a
+//                         SIDE EFFECT, e.g. closing the active tab falls
+//                         back to the last one - the caller should
+//                         replace, not push, per US-007 R2 phase 2's
+//                         design). This component never holds model state
+//                         itself - the caller owns it (no direct URL
+//                         writes here).
 //   renderDoc           - (tab | null) => ReactNode. Renders a group's
 //                         document body for its active tab; called with
 //                         null when a group has no active tab (only
@@ -104,22 +111,29 @@ function NV_TabGroups(props) {
   var dragging = dragState[0]; // the dragged tab's id, or null
   var setDragging = dragState[1];
 
-  function change(next) {
-    if (typeof props.onModelChange === "function") props.onModelChange(next);
+  function change(next, op) {
+    if (typeof props.onModelChange === "function") props.onModelChange(next, op);
   }
 
-  function selectTab(tab) {
-    change(window.TG_openTab(model, { kind: tab.kind, ref: tab.ref }, {}));
+  function selectTab(tab, ev) {
+    // Review finding #1 (US-007 R2 phase 1): the group wrapper's onClick
+    // (focus-on-click) reads the SAME pre-click model closure. Without
+    // stopPropagation it fires right after this handler and overwrites
+    // whatever this call just dispatched with a stale-model result -
+    // mirrors closeTab's existing guard below.
+    if (ev) ev.stopPropagation();
+    change(window.TG_openTab(model, { kind: tab.kind, ref: tab.ref }, {}), "open");
   }
-  function promoteTab(tab) {
-    change(window.TG_openTab(model, { kind: tab.kind, ref: tab.ref }, { promote: true }));
+  function promoteTab(tab, ev) {
+    if (ev) ev.stopPropagation();
+    change(window.TG_openTab(model, { kind: tab.kind, ref: tab.ref }, { promote: true }), "open");
   }
   function closeTab(tab, ev) {
     if (ev) ev.stopPropagation();
-    change(window.TG_closeTab(model, tab.id));
+    change(window.TG_closeTab(model, tab.id), "manage");
   }
   function focusGroup(groupId) {
-    change(window.TG_focusGroup(model, groupId));
+    change(window.TG_focusGroup(model, groupId), "manage");
   }
 
   function onTabDragStart(tab, ev) {
@@ -138,19 +152,19 @@ function NV_TabGroups(props) {
   function onDropMoveHere(groupId, ev) {
     ev.preventDefault();
     if (!dragging) return;
-    change(window.TG_moveTab(model, dragging, groupId, null));
+    change(window.TG_moveTab(model, dragging, groupId, null), "manage");
     setDragging(null);
   }
   function onDropSplitRight(groupId, ev) {
     ev.preventDefault();
     if (!dragging) return;
-    change(window.TG_splitWith(model, dragging, "row", groupId));
+    change(window.TG_splitWith(model, dragging, "row", groupId), "manage");
     setDragging(null);
   }
   function onDropSplitDown(groupId, ev) {
     ev.preventDefault();
     if (!dragging) return;
-    change(window.TG_splitWith(model, dragging, "column", groupId));
+    change(window.TG_splitWith(model, dragging, "column", groupId), "manage");
     setDragging(null);
   }
 
@@ -181,8 +195,8 @@ function NV_TabGroups(props) {
                     draggable="true"
                     onDragStart={function (ev) { onTabDragStart(tab, ev); }}
                     onDragEnd={onTabDragEnd}
-                    onClick={function () { selectTab(tab); }}
-                    onDoubleClick={function () { promoteTab(tab); }}>
+                    onClick={function (ev) { selectTab(tab, ev); }}
+                    onDoubleClick={function (ev) { promoteTab(tab, ev); }}>
                     {isActive ? <span className="nv-tg-tab-edge" /> : null}
                     <NV_TG_KindGlyph kind={tab.kind} />
                     {tab.kind === "session" ? (
