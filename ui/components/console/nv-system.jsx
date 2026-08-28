@@ -396,7 +396,6 @@ function NV_SysProfile() {
 // nav -> body. The re-hosted pages carry their own action headers, so
 // each mounts bare (one-title rule).
 function NV_SysBody(props) {
-  var con = NV_useConsole();
   var nav = props.nav;
   if (nav === "dashboard") return <NV_SysDashboard />;
   if (nav === "profile") return <NV_SysProfile />;
@@ -412,12 +411,10 @@ function NV_SysBody(props) {
     );
   }
   if (nav === "activity") return <window.SH_ActivityPanel />;
-  if (nav === "setup") {
-    return (
-      <window.SetupWizardSteps
-        onComplete={function () { con.toast("Setup re-run complete"); }} />
-    );
-  }
+  // R5 BUILD: six live predicates + fix-actions + capabilities table +
+  // re-run seed / reset roster, replacing the bare 2-step wizard reuse
+  // (that stays available as the fix-action for the two provider rows).
+  if (nav === "setup") return <window.NV_SetupPage />;
   return null;
 }
 

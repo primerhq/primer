@@ -854,7 +854,13 @@ async def _probe_ollama_models(config: dict[str, Any]) -> dict:
     api_key = config.get("api_key")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    client = ollama.AsyncClient(host=config["url"], headers=headers or None)
+    # config["url"] may arrive as a pydantic HttpUrl (not a plain str)
+    # when the caller built it from a validated config model rather
+    # than a raw request-body dict; the ollama SDK calls str-only
+    # methods on `host` internally and raises AttributeError on an
+    # HttpUrl. str() here is defensive regardless of which shape the
+    # caller passes.
+    client = ollama.AsyncClient(host=str(config["url"]), headers=headers or None)
     try:
         resp = await client.list()
     except Exception as exc:  # pragma: no cover — network paths

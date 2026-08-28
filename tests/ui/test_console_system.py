@@ -103,10 +103,15 @@ def test_attention_open_uses_the_aggregate_fields_and_promotes():
 
 
 def test_admin_bodies_rehost_the_existing_pages():
+    # R5 BUILD: the bare 2-step SetupWizardSteps reuse is replaced by
+    # NV_SetupPage (six live predicates + capabilities table + re-run
+    # seed / reset roster); SetupWizardSteps is still reachable one
+    # layer deeper, as NV_SetupPage's own fix-action for the two
+    # provider-configuration predicates (see test_setup_wizard.py).
     for comp in ("ADM_AdminUsersPage", "AT_ApiTokensPage",
                  "SSO_ProvidersPage", "MC_McpPage",
                  "InternalCollectionsPage", "SH_ActivityPanel",
-                 "SetupWizardSteps", "LA_LinkedAccountsPage"):
+                 "NV_SetupPage", "LA_LinkedAccountsPage"):
         assert comp in SYS, comp
 
 

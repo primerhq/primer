@@ -539,3 +539,96 @@ class TestMcpOAuthCallback:
             params={"code": "x", "state": "y"},
         )
         assert resp.status_code == 404, resp.text
+
+
+# ===========================================================================
+# Live-probe URL stringification
+# ===========================================================================
+
+
+class TestProbeUrlStringification:
+    """``config["url"]`` is typed ``HttpUrl`` on OllamaConfig / the shared
+    ``_HttpApiKeyConfig`` (OpenResponsesConfig, OpenChatConfig) -
+    ``model_dump()`` (mode="python", the default) hands back the HttpUrl
+    OBJECT itself, not a string. Reproduced directly:
+    ``OllamaConfig(url=...).model_dump()["url"]`` is a
+    ``pydantic.networks.HttpUrl``, and passing it straight into
+    ``ollama.AsyncClient(host=...)`` raises ``AttributeError: 'HttpUrl'
+    object has no attribute 'partition'`` (the ollama SDK calls str-only
+    methods on ``host`` internally); httpx's URL handling has the same
+    failure mode on `f"{url}/models"` building via an un-stringified
+    join. Both probes must stringify the url defensively regardless of
+    whether the caller passes a raw request-body dict (already a plain
+    str, JSON has no URL type) or a dict derived from a validated config
+    model's dump (an HttpUrl).
+    """
+
+    @pytest.mark.asyncio
+    async def test_probe_ollama_models_stringifies_the_url(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from primer.api.routers.providers import _probe_ollama_models
+        from primer.model.providers.llm import OllamaConfig
+
+        config = OllamaConfig(url="http://localhost:11434").model_dump()
+        assert not isinstance(config["url"], str), (
+            "sanity check: model_dump() must hand back a real HttpUrl "
+            "object here, or this test is not exercising the bug"
+        )
+
+        captured: dict = {}
+
+        class FakeAsyncClient:
+            def __init__(self, *, host, headers=None):
+                captured["host"] = host
+
+            async def list(self):
+                return {"models": []}
+
+        monkeypatch.setattr("ollama.AsyncClient", FakeAsyncClient)
+        result = await _probe_ollama_models(config)
+        assert result == {"models": []}
+        assert isinstance(captured["host"], str)
+        assert captured["host"] == "http://localhost:11434/"
+
+    @pytest.mark.asyncio
+    async def test_probe_openai_compatible_models_stringifies_the_url(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from primer.api.routers.providers import _probe_openai_compatible_models
+        from primer.model.providers.llm import OpenChatConfig
+
+        config = OpenChatConfig(url="http://localhost:8080/v1").model_dump()
+        assert not isinstance(config["url"], str), (
+            "sanity check: model_dump() must hand back a real HttpUrl "
+            "object here, or this test is not exercising the bug"
+        )
+
+        captured: dict = {}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"data": [{"id": "probe-model"}]}
+
+        class FakeHttpxClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url, headers=None):
+                captured["url"] = url
+                return FakeResponse()
+
+        monkeypatch.setattr(
+            "httpx.AsyncClient",
+            lambda *args, **kwargs: FakeHttpxClient(),
+        )
+        result = await _probe_openai_compatible_models(config)
+        assert result == {"models": [{"name": "probe-model"}]}
+        assert isinstance(captured["url"], str)
+        assert captured["url"] == "http://localhost:8080/v1/models"

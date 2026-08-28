@@ -2791,6 +2791,19 @@ input, textarea, select { font: inherit; color: inherit; }
   text-transform: uppercase;
   color: var(--text-3);
 }
+
+/* Six-predicate checklist (R5). Shared by the console's admin Setup page
+   and the first-boot SetupWizardGate — like .setup-steps above, this
+   styles only the list's own chrome so it looks right in either host. */
+.setup-predicates { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.setup-predicate { display: flex; align-items: center; gap: 8px; padding: 8px 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+.setup-predicate:last-child { border-bottom: none; }
+.setup-predicate-dot { width: 16px; text-align: center; font-weight: 700; }
+.setup-predicate-dot.ok { color: var(--green, #2e7d32); }
+.setup-predicate-dot.missing { color: var(--red, #c0392b); }
+.setup-predicate-label { flex: 1; min-width: 160px; font-size: 13px; }
+.setup-predicate-detail { flex-basis: 100%; }
+.setup-predicate-fix { flex: none; }
 .auth-field select {
   width: 100%;
   padding: 8px 11px;

@@ -147,7 +147,15 @@ def test_a_broken_docstring_marks_the_line_without_saving(
         )
         # The failure is on a line, not just in a panel.
         expect(page.locator(".cm-lintRange-error").first).to_be_visible(timeout=10_000)
-        expect(page.locator('[data-testid="python-outline-error"]')).to_be_visible()
+        # RETARGET: register_module_report (batch-2) refuses the ONE bad
+        # function while the rest of the module still validates, instead
+        # of blanking the whole outline the way one bad function used to.
+        # python-outline-error is now module-parse-error-only; a per-
+        # function docstring issue shows as that row's own refused state.
+        broken_row = page.locator('[data-testid="python-outline-row:broken"]')
+        expect(broken_row).to_have_attribute("data-ok", "0", timeout=10_000)
+        expect(broken_row.get_by_test_id("python-outline-refused-reason")
+               ).to_contain_text("not documented")
     finally:
         _drop(base_url, tid)
 
