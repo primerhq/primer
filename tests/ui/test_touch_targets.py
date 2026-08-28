@@ -30,7 +30,12 @@ HIT_SIZED: list[str] = [
     "nv-send-btn",
     # US-011b (split-view shell cutover): the tab strip and rail shipped
     # with raw 16px/24px icon buttons, under the floor and untracked by
-    # this guard until now.
+    # this guard until now. DOCUMENTED EXCEPTION, not full compliance:
+    # both use calc(var(--hit) - 8px) = 28px (24px compact), below the
+    # 32px floor, because their rows are only 34px/30px tall - and the
+    # 44px mobile audit (scripts/audit_touch_targets.py) does not cover
+    # them either, since neither appears in the max-width:639px block.
+    # This guard therefore only pins that their sizing stays token-driven.
     "nv-tg-tab-close",
     "nv-rail-iconbtn",
 ]

@@ -1475,6 +1475,30 @@ function NV_SessionDoc(props) {
   var pipeline = React.useMemo(function () {
     var flat = SH_nestSubagentRows(
       window.SA_toTranscript(records, session));
+    // Live text/reasoning parts stream into the transcript BEFORE their
+    // durable record lands (A4: the record supersedes the part when it
+    // arrives and the part goes final). Without this branch the delta
+    // stream painted tool args only - partial answer text sat in
+    // store.parts invisibly. Not gated on an active turn: a non-final
+    // part IS the activity signal (frames only flow mid-turn).
+    if (store && store.parts) {
+      var liveSeq = flat.length ? flat[flat.length - 1].seq : 0;
+      for (var lpId in store.parts) {
+        if (!Object.prototype.hasOwnProperty.call(store.parts, lpId)) continue;
+        var lp = store.parts[lpId];
+        if (lp.final || !lp.text) continue;
+        if (lp.kind !== "text" && lp.kind !== "reasoning") continue;
+        liveSeq += 1;
+        flat.push({
+          seq: liveSeq,
+          kind: lp.kind === "reasoning" ? "reasoning" : "assistant_message",
+          nodeId: null,
+          label: lp.text,
+          payload: { streaming: true, part_id: lpId },
+          createdAt: null,
+        });
+      }
+    }
     var liveFromSeq = Infinity;
     if (shownActive) {
       for (var i = flat.length - 1; i >= 0; i--) {

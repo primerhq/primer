@@ -285,3 +285,12 @@ window.useWorkspaceTap = useWorkspaceTap;
 window.useWorkspaceTapListener = useWorkspaceTapListener;
 // Test/introspection surface — how many live hubs (== EventSources) exist.
 window.__wtapHubCount = function () { return Object.keys(WTAP_HUBS).length; };
+// Current hub connState for a workspace, or null when no hub exists. Lets a
+// store created AFTER the hub's onopen seed its connState correctly - the
+// open/error fan-out only reaches stores that exist at that instant, so
+// without this seed a late store sits at "connecting" forever and the
+// history-poll demotion (historyLive) never engages.
+window.WTAP_hubConnState = function (wid) {
+  var hub = wid ? WTAP_HUBS[wid] : null;
+  return hub ? hub.connState : null;
+};

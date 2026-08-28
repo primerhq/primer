@@ -49,7 +49,8 @@ function SS_getStore(wid, sid) {
     parts: {},           // part_id -> { kind, text, state, final }
     optimistic: {},       // clientId -> { clientId, text, state }
     status: null,         // { verb, object, startedMs } | null
-    connState: "connecting",
+    connState: (window.WTAP_hubConnState
+      && window.WTAP_hubConnState(wid)) || "connecting",
     refs: 0,
     _snap: { transcript: null, status: null, gates: null },
     _dirty: { transcript: false, status: false, gates: false },
