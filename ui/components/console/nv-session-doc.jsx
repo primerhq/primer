@@ -296,13 +296,16 @@ function NV_ToolBlock(props) {
   var info = SH_toolChipLabel(row);
   var args = (row.payload && row.payload.arguments) || {};
   var rp = (props.result && props.result.payload) || null;
-  var output = null;
-  if (rp) {
-    output = typeof rp.output === "string"
+  var serialized = React.useMemo(function () {
+    if (!open) return null;
+    if (!rp) return { output: null, lines: [] };
+    var output = typeof rp.output === "string"
       ? rp.output
       : JSON.stringify(rp.output, null, 2);
-  }
-  var lines = output == null ? [] : output.split("\n");
+    return { output: output, lines: output.split("\n") };
+  }, [rp, open]);
+  var output = serialized && serialized.output;
+  var lines = (serialized && serialized.lines) || [];
   return (
     <div className="nv-toolblock" data-testid={"nv-tool:" + row.seq}
       data-open={open ? "true" : "false"} data-tone={info.tone}>
@@ -653,6 +656,36 @@ function NV_TraceSplit(props) {
 }
 
 // ---------------------------------------------------------------------------
+// Status strip - own 1s ticker, keeps the transcript from re-rendering for the clock
+// ---------------------------------------------------------------------------
+function NV_StatusStrip(props) {
+  var setTick = React.useState(0)[1];
+  React.useEffect(function () {
+    var id = setInterval(function () {
+      setTick(function (n) { return n + 1; });
+    }, 1000);
+    return function () { clearInterval(id); };
+  }, []);
+  var shown = props.shown;
+  if (!shown) return null;
+  var line = window.SH_statusLine({
+    verb: shown.verb, object: shown.object,
+    elapsedSec: Math.round((Date.now() - shown.startedMs) / 1000),
+  });
+  if (!line) return null;
+  return (
+    <div className="nv-status-strip" data-testid="nv-status-strip">
+      <span className="nv-dot-pulse" />
+      <span className="nv-status-verb">{line}</span>
+      <span style={{ flex: 1 }} />
+      <button type="button" className="nv-interrupt-btn"
+        data-testid="nv-interrupt"
+        onClick={props.onInterrupt}>◼ interrupt</button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Composer (status strip + input row + mic + stop + send)
 // ---------------------------------------------------------------------------
 function NV_Composer(props) {
@@ -664,16 +697,41 @@ function NV_Composer(props) {
   var recording = recState[0];
   var setRecording = recState[1];
   var recRef = React.useRef(null);
+  var sendingState = React.useState(false);
+  var sending = sendingState[0];
+  var setSending = sendingState[1];
+  var sendErrState = React.useState(null);
+  var sendErr = sendErrState[0];
+  var setSendErr = sendErrState[1];
+  var inputRef = React.useRef(null);
+
+  function grow() {
+    var el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 176) + "px";
+  }
 
   function send() {
     var text = String(val || "").trim();
-    if (!text) return;
-    setVal("");
-    props.onSendStarted();
-    SH_api.steer(con.wid, props.sid, text).catch(function (err) {
-      con.toast("Steer failed: " + (err && err.message ? err.message : err));
+    if (!text || sending) return;
+    setSending(true);
+    setSendErr(null);
+    SH_api.steer(con.wid, props.sid, text).then(function () {
+      setVal("");
+      setSending(false);
+      grow();
+      props.onSendStarted();
+    }, function (err) {
+      setSending(false);
+      var msg = (err && err.message) ? err.message : "Steer failed";
+      var rid = (err && err.requestId) ? " (" + err.requestId + ")" : "";
+      setSendErr(msg + rid);
+      con.toast("Steer failed: " + msg);
     });
   }
+
+  React.useEffect(function () { grow(); }, [val]);
 
   function micStart() {
     if (recording || !props.micEnabled) return;
@@ -710,14 +768,12 @@ function NV_Composer(props) {
 
   return (
     <div className="nv-composer-wrap" data-testid="nv-composer">
-      {props.status ? (
-        <div className="nv-status-strip" data-testid="nv-status-strip">
-          <span className="nv-dot-pulse" />
-          <span className="nv-status-verb">{props.status}</span>
-          <span style={{ flex: 1 }} />
-          <button type="button" className="nv-interrupt-btn"
-            data-testid="nv-interrupt"
-            onClick={props.onInterrupt}>◼ interrupt</button>
+      <NV_StatusStrip shown={props.statusShown}
+        onInterrupt={props.onInterrupt} />
+      {props.degraded ? (
+        <div className="nv-status-strip" data-testid="nv-reconnect">
+          <span className="nv-dot-attention" />
+          <span className="nv-status-verb">reconnecting…</span>
         </div>
       ) : null}
       {props.waitNote ? (
@@ -744,13 +800,19 @@ function NV_Composer(props) {
               <span /><span /><span />
             </span>
           ) : null}
-          <input value={val}
+          <textarea ref={inputRef} value={val} rows={1}
             data-testid="nv-composer-input"
             placeholder={props.terminal
               ? "Send to reopen this session…"
               : "Send a message — Enter queues mid-run…"}
             onChange={function (ev) { setVal(ev.target.value); }}
-            onKeyDown={function (ev) { if (ev.key === "Enter") send(); }} />
+            onKeyDown={function (ev) {
+              if (ev.key === "Enter" && !ev.shiftKey
+                  && !ev.nativeEvent.isComposing) {
+                ev.preventDefault();
+                send();
+              }
+            }} />
         </div>
         {props.micEnabled ? (
           <button type="button" className="nv-composer-iconbtn"
@@ -773,8 +835,14 @@ function NV_Composer(props) {
             onClick={props.onInterrupt}>Stop</button>
         ) : null}
         <button type="button" className="nv-send-btn" data-testid="nv-send"
-          onClick={send}>Send</button>
+          disabled={sending}
+          onClick={send}>{sending ? "Sending…" : "Send"}</button>
       </div>
+      {sendErr ? (
+        <div className="nv-form-error" data-testid="nv-composer-error">
+          {sendErr}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -805,13 +873,13 @@ function NV_SessionDoc(props) {
   var detail = window.primerApi.useResource(
     SH_api.keys.session(sid),
     function (signal) { return SH_api.session(sid, signal); },
-    { pollMs: pollStopped ? 0 : 2000, deps: [sid] }
+    { pollMs: pollStopped ? 0 : 2000, deps: [sid], ignoreIdle: true }
   );
   terminalRef.current = !!(detail.data && NV_sessionIsOver(detail.data));
   var history = window.primerApi.useResource(
     SH_api.keys.session(sid) + ":messages",
     function (signal) { return SH_api.messages(sid, 200, null, signal); },
-    { pollMs: pollStopped ? 0 : 2000, deps: [sid] }
+    { pollMs: pollStopped ? 0 : 2000, deps: [sid], ignoreIdle: true }
   );
   var gates = window.primerApi.useResource(
     SH_api.keys.sessionPending(sid),
@@ -820,6 +888,16 @@ function NV_SessionDoc(props) {
     },
     { pollMs: 5000, deps: [con.wid, sid] }
   );
+  // Top-level hook call (it is a hook: useRef+useEffect inside); the hook
+  // keeps the latest closure in a ref, so gates.refetch stays current.
+  window.useWorkspaceTapListener(con.wid, function (ev) {
+    if (ev && ev.session_id === sid
+        && (ev["class"] === "yielded"
+            || ev["class"] === "resumed"
+            || ev["class"] === "done")) {
+      gates.refetch();
+    }
+  });
   var traceState = React.useState(null);
   var traceTurn = traceState[0];
   var setTraceTurn = traceState[1];
@@ -873,57 +951,64 @@ function NV_SessionDoc(props) {
       startedMs: busySinceRef.current,
     };
   }
-  var status = shown
-    ? SH_statusLine({
-      verb: shown.verb, object: shown.object,
-      elapsedSec: Math.round((Date.now() - shown.startedMs) / 1000),
-    })
-    : null;
-
+  var degraded = !!(history && history.degraded) || !!(detail && detail.degraded)
+    || tap.connState === "error";
   var records = (history.data && history.data.items) || [];
-  var flat = SH_nestSubagentRows(window.SA_toTranscript(records, session));
-  var liveFromSeq = Infinity;
-  if (shown) {
-    for (var i = flat.length - 1; i >= 0; i--) {
-      if (flat[i].kind === "user_message") {
-        liveFromSeq = flat[i].seq;
-        break;
+  var shownActive = !!shown;
+  var pipeline = React.useMemo(function () {
+    var flat = SH_nestSubagentRows(
+      window.SA_toTranscript(records, session));
+    var liveFromSeq = Infinity;
+    if (shownActive) {
+      for (var i = flat.length - 1; i >= 0; i--) {
+        if (flat[i].kind === "user_message") {
+          liveFromSeq = flat[i].seq;
+          break;
+        }
       }
     }
-  }
-  var rows = SH_collapseTurns(flat, { liveFromSeq: liveFromSeq });
+    var rows = SH_collapseTurns(flat, { liveFromSeq: liveFromSeq });
 
-  // tool_result rows render INSIDE their call's block, paired by call
-  // id, never as standalone lines (they have no label and drew as
-  // empty chevron rows).
-  var resultsByCallId = {};
-  for (var ri = 0; ri < flat.length; ri++) {
-    if (flat[ri].kind === "tool_result") {
-      var cid = (flat[ri].payload || {}).call_id;
-      if (cid != null) resultsByCallId[cid] = flat[ri];
+    // tool_result rows render INSIDE their call's block, paired by call
+    // id, never as standalone lines (they have no label and drew as
+    // empty chevron rows).
+    var resultsByCallId = {};
+    for (var ri = 0; ri < flat.length; ri++) {
+      if (flat[ri].kind === "tool_result") {
+        var cid = (flat[ri].payload || {}).call_id;
+        if (cid != null) resultsByCallId[cid] = flat[ri];
+      }
     }
-  }
+
+    // 0-based turn ordinal per seq, matching the timeline endpoint's
+    // terminal-counting contract (get_session_turn_timeline: turn_no is
+    // the ordinal produced by counting done/cancelled/error terminals).
+    // The old hardcoded fallback of 1 asked for the SECOND turn's trace
+    // from every row of a first-turn session, which is why the split
+    // came up empty (BDD/live finding 2026-08-25).
+    var turnOfSeq = {};
+    (function () {
+      var ordinal = 0;
+      for (var ti = 0; ti < flat.length; ti++) {
+        turnOfSeq[flat[ti].seq] = ordinal;
+        if (flat[ti].kind === "done" || flat[ti].kind === "cancelled"
+            || flat[ti].kind === "error") ordinal += 1;
+      }
+    })();
+    return {
+      flat: flat, rows: rows,
+      resultsByCallId: resultsByCallId, turnOfSeq: turnOfSeq,
+    };
+  }, [records, session, shownActive]);
+  var flat = pipeline.flat;
+  var rows = pipeline.rows;
+  var resultsByCallId = pipeline.resultsByCallId;
+  var turnOfSeq = pipeline.turnOfSeq;
   function resultFor(row) {
     var id = (row.payload || {}).id
       || (row.payload || {}).tool_call_id || null;
     return id != null ? resultsByCallId[id] || null : null;
   }
-
-  // 0-based turn ordinal per seq, matching the timeline endpoint's
-  // terminal-counting contract (get_session_turn_timeline: turn_no is
-  // the ordinal produced by counting done/cancelled/error terminals).
-  // The old hardcoded fallback of 1 asked for the SECOND turn's trace
-  // from every row of a first-turn session, which is why the split
-  // came up empty (BDD/live finding 2026-08-25).
-  var turnOfSeq = {};
-  (function () {
-    var ordinal = 0;
-    for (var ti = 0; ti < flat.length; ti++) {
-      turnOfSeq[flat[ti].seq] = ordinal;
-      if (flat[ti].kind === "done" || flat[ti].kind === "cancelled"
-          || flat[ti].kind === "error") ordinal += 1;
-    }
-  })();
   function traceTurnFor(row) {
     if (row.turn_no != null) return row.turn_no;
     var t = turnOfSeq[row.seq];
@@ -955,27 +1040,38 @@ function NV_SessionDoc(props) {
 
   // Scroll anchoring (same decision function as the sh doc).
   var scrollRef = React.useRef(null);
-  var seenState = React.useState(0);
-  var seen = seenState[0];
-  var setSeen = seenState[1];
-  var distance = 0;
-  if (scrollRef.current) {
-    distance = scrollRef.current.scrollHeight - scrollRef.current.scrollTop
-      - scrollRef.current.clientHeight;
+  var seenRef = React.useRef(0);
+  var distanceRef = React.useRef(0);
+  var followRef = React.useRef(true);
+  var followState = React.useState(true);
+  var follow = followState[0];
+  var setFollow = followState[1];
+  function onScroll() {
+    var el = scrollRef.current;
+    if (!el) return;
+    var d = el.scrollHeight - el.scrollTop - el.clientHeight;
+    distanceRef.current = d;
+    var isFollow = d <= SH_FOLLOW_PX;
+    if (isFollow !== followRef.current) {
+      followRef.current = isFollow;
+      setFollow(isFollow);
+      if (isFollow) seenRef.current = rows.length;
+    }
   }
-  var decision = SH_scrollDecision({
-    distanceFromBottom: distance,
-    newTurns: Math.max(0, rows.length - seen),
-  });
   function jumpLatest() {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-    setSeen(rows.length);
+    seenRef.current = rows.length;
   }
+  var newTurns = Math.max(0, rows.length - seenRef.current);
+  var decision = SH_scrollDecision({
+    distanceFromBottom: distanceRef.current,
+    newTurns: newTurns,
+  });
   React.useEffect(function () {
-    if (decision.follow) jumpLatest();
-  }, [rows.length, decision.follow]);
+    if (follow) jumpLatest();
+  }, [rows.length, follow]);
 
   function refetchAll() {
     detail.refetch();
@@ -1198,7 +1294,7 @@ function NV_SessionDoc(props) {
       <div className="nv-transcript-split">
         <div className="nv-transcript" ref={scrollRef}
           data-testid="nv-transcript"
-          onScroll={function () { if (decision.follow) setSeen(rows.length); }}>
+          onScroll={onScroll}>
           <div className="nv-transcript-inner">
             {NV_scopeToNode(rows, nodeFilter).map(function (r) {
               return renderTurn(r, 0);
@@ -1256,7 +1352,8 @@ function NV_SessionDoc(props) {
       </div>
       <NV_Composer sid={sid}
         running={!!shown}
-        status={status}
+        statusShown={shown}
+        degraded={degraded}
         waitNote={session && session.parked_status
           ? "parked — waiting on " + (session.waiting_reason || "a wake")
           : null}

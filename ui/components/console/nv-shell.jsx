@@ -102,6 +102,9 @@ function NV_readUrl() {
   return SH_parseUrl(window.location.hash || "");
 }
 
+// Frozen module-level empty array: a fresh [] each render would defeat the ctx memo.
+var EMPTY_WS_ITEMS = Object.freeze([]);
+
 function NV_Shell() {
   var initial = React.useMemo(NV_readUrl, []);
   var widState = React.useState(initial.wid);
@@ -152,7 +155,7 @@ function NV_Shell() {
   // Capability probe: speech config gates the voice affordances.
   var caps = window.primerApi.useCapabilities();
   var voiceRef = React.useRef(null);
-  var wsItems = (workspaces.data && workspaces.data.items) || [];
+  var wsItems = (workspaces.data && workspaces.data.items) || EMPTY_WS_ITEMS;
 
   // Default workspace: the URL's, else the first listed.
   React.useEffect(function () {
@@ -233,10 +236,10 @@ function NV_Shell() {
     return function () { window.removeEventListener("keydown", onKey); };
   }, [registry]);
 
-  function goView(name, nav) {
+  var goView = React.useCallback(function (name, nav) {
     setView({ name: name, nav: nav || null });
     setOpenMenu(null);
-  }
+  }, [setView, setOpenMenu]);
 
   // --- Core verbs (chrome-level; view bodies add their own) --------------
   React.useEffect(function () {
@@ -308,47 +311,51 @@ function NV_Shell() {
     });
   }, [registry]);
 
-  var ctx = {
-    wid: wid,
-    view: view || { name: "studio", nav: null },
-    doc: doc,
-    overlay: overlay,
-    anchor: anchor,
-    panels: panels,
-    openMenu: openMenu,
-    toggleMenu: function (name) {
-      setOpenMenu(function (cur) { return cur === name ? null : name; });
-    },
-    registry: registry,
-    frecency: frecency,
-    workspaces: wsItems,
-    username: (status.data && status.data.username) || "anon",
-    role: (status.data && status.data.role) || "user",
-    speech: (caps.data && caps.data.speech) || {},
-    voiceRef: voiceRef,
-    paletteRef: paletteRef,
-    goView: goView,
-    setDoc: setDoc,
-    openOverlay: function (name, section, id) {
-      setOverlay({ name: name, section: section || null, id: id || null });
-    },
-    closeOverlay: function () { setOverlay(null); },
-    bump: function () { setTick(function (v) { return v + 1; }); },
-    // extra (optional): { kind, requestId } - an error toast that came
-    // from an ApiError should pass the error so the request id renders
-    // with its copy affordance. A plain string toast never carried one,
-    // which left that affordance dead on every error (BDD round 2).
-    toast: function (msg, extra) {
-      if (window.primerApi.toastPush) {
-        window.primerApi.toastPush({
-          kind: (extra && extra.kind) || "info",
-          text: String(msg),
-          requestId: (extra && (extra.requestId || extra.request_id))
-            || null,
-        });
-      }
-    },
-  };
+  var ctx = React.useMemo(function () {
+    return {
+      wid: wid,
+      view: view || { name: "studio", nav: null },
+      doc: doc,
+      overlay: overlay,
+      anchor: anchor,
+      panels: panels,
+      openMenu: openMenu,
+      toggleMenu: function (name) {
+        setOpenMenu(function (cur) { return cur === name ? null : name; });
+      },
+      registry: registry,
+      frecency: frecency,
+      workspaces: wsItems,
+      username: (status.data && status.data.username) || "anon",
+      role: (status.data && status.data.role) || "user",
+      speech: (caps.data && caps.data.speech) || {},
+      voiceRef: voiceRef,
+      paletteRef: paletteRef,
+      goView: goView,
+      setDoc: setDoc,
+      openOverlay: function (name, section, id) {
+        setOverlay({ name: name, section: section || null, id: id || null });
+      },
+      closeOverlay: function () { setOverlay(null); },
+      bump: function () { setTick(function (v) { return v + 1; }); },
+      // extra (optional): { kind, requestId } - an error toast that came
+      // from an ApiError should pass the error so the request id renders
+      // with its copy affordance. A plain string toast never carried one,
+      // which left that affordance dead on every error (BDD round 2).
+      toast: function (msg, extra) {
+        if (window.primerApi.toastPush) {
+          window.primerApi.toastPush({
+            kind: (extra && extra.kind) || "info",
+            text: String(msg),
+            requestId: (extra && (extra.requestId || extra.request_id))
+              || null,
+          });
+        }
+      },
+    };
+  }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
+    frecency, wsItems, status, caps, voiceRef, paletteRef, goView,
+    setDoc, setOpenMenu, setOverlay, setTick]);
 
   var viewName = ctx.view.name;
   return (
