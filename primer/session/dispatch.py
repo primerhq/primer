@@ -367,10 +367,23 @@ async def run_one_session_turn(
     # error, cancel and clean exits all run the finally below).
     _metrics.sessions_active.labels(session.workspace_id).inc()
 
+    # Ephemeral delta stream: the live content the durable log omits, on a
+    # separate bus channel. A degraded bus is swallowed inside the buffer, so
+    # the durable record still completes each part (UI falls back gracefully).
+    from primer.tap.delta import DeltaBuffer
+    delta_buffer = (
+        DeltaBuffer(session_id=session_id, publish=deps.event_bus.publish)
+        if deps.event_bus is not None else None
+    )
+    if delta_buffer is not None:
+        await delta_buffer.start()
+
     try:
         async for event in executor.invoke([]):
             # Translate StreamEvent → SessionMessageRecord(s)
-            result = translate_stream_event(event, coalesce_state)
+            result = translate_stream_event(
+                event, coalesce_state, delta_sink=delta_buffer
+            )
             if result is None:
                 # Check cancel between events even when nothing was produced
                 if cancel_event.is_set():
@@ -648,6 +661,8 @@ async def run_one_session_turn(
             await cancel_task
         except (asyncio.CancelledError, Exception):
             pass
+        if delta_buffer is not None:
+            await delta_buffer.aclose()
 
     # ------------------------------------------------------------------
     # 5b. Cancel path — write CANCELLED record, transition row to ENDED

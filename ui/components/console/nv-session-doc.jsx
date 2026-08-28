@@ -717,7 +717,14 @@ function NV_Composer(props) {
     if (!text || sending) return;
     setSending(true);
     setSendErr(null);
-    SH_api.steer(con.wid, props.sid, text).then(function () {
+    // The store owns the optimistic row and the steer POST; it removes the
+    // optimistic row on failure, and the composer restores the composer
+    // text + shows the inline error (P0 send-failure behaviour).
+    var clientId = "steer-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+    var promise = typeof props.onSend === "function"
+      ? props.onSend(text, clientId)
+      : SH_api.steer(con.wid, props.sid, text);
+    promise.then(function () {
       setVal("");
       setSending(false);
       grow();
@@ -854,6 +861,15 @@ function NV_SessionDoc(props) {
   var con = NV_useConsole();
   var sid = props.sid;
   var tap = window.useWorkspaceTap(con.wid);
+  // Phase 2: the per-session store is the single source for transcript,
+  // status, and connection state. The tap hub routes live frames here;
+  // the REST history seed below fills the durable records. We bind to
+  // all three channels so a change re-renders the consumer without a
+  // REST poll.
+  var store = window.SS_getStore(con.wid, sid);
+  var transcriptSnap = window.useSessionStore(con.wid, sid, "transcript");
+  var statusSnap = window.useSessionStore(con.wid, sid, "status");
+  var gatesSnap = window.useSessionStore(con.wid, sid, "gates");
   var terminalRef = React.useRef(false);
   // Declared BEFORE the resources on purpose: a send into an ENDED
   // session REOPENS it server-side (steer's fourth behaviour), so the
@@ -876,10 +892,14 @@ function NV_SessionDoc(props) {
     { pollMs: pollStopped ? 0 : 2000, deps: [sid], ignoreIdle: true }
   );
   terminalRef.current = !!(detail.data && NV_sessionIsOver(detail.data));
+  // C3 poll demotion: once the tap is live the REST history poll is the
+  // slow catch-up leg, not the live source; the store gets frames from
+  // the hub. Keep the detail poll at 2000ms (turn_status / parked rows).
+  var historyLive = !!(gatesSnap && gatesSnap.connState === "live");
   var history = window.primerApi.useResource(
     SH_api.keys.session(sid) + ":messages",
     function (signal) { return SH_api.messages(sid, 200, null, signal); },
-    { pollMs: pollStopped ? 0 : 2000, deps: [sid], ignoreIdle: true }
+    { pollMs: pollStopped ? 0 : (historyLive ? 15000 : 2000), deps: [sid], ignoreIdle: true }
   );
   var gates = window.primerApi.useResource(
     SH_api.keys.sessionPending(sid),
@@ -898,6 +918,15 @@ function NV_SessionDoc(props) {
       gates.refetch();
     }
   });
+  // Seed the store from the REST history resource so the first paint is
+  // not slower than the old REST-only path. The store dedupes by seq,
+  // so re-applying on every history poll is a no-op once caught up.
+  React.useEffect(function () {
+    var items = (history.data && history.data.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      window.SS_apply(store, items[i]);
+    }
+  }, [store, history.data, history.error]);
   var traceState = React.useState(null);
   var traceTurn = traceState[0];
   var setTraceTurn = traceState[1];
@@ -932,7 +961,10 @@ function NV_SessionDoc(props) {
       setOptimistic(null);
     }
   }, [detail.data]);
-  var shown = live || (optimistic
+  // C4 three-source merge: the store's status channel already carries
+  // the tap-derived live status and the optimistic "sending" leg; the
+  // polled session row's turn_status is layered on below (rowBusy).
+  var shown = statusSnap || (optimistic
     ? { verb: "sending", object: "", startedMs: optimistic }
     : null);
   // A reload mid-run has no tap history and no optimistic flag, but
@@ -951,9 +983,8 @@ function NV_SessionDoc(props) {
       startedMs: busySinceRef.current,
     };
   }
-  var degraded = !!(history && history.degraded) || !!(detail && detail.degraded)
-    || tap.connState === "error";
-  var records = (history.data && history.data.items) || [];
+  var degraded = !!(gatesSnap && gatesSnap.degraded);
+  var records = store.recordsBySeq;
   var shownActive = !!shown;
   var pipeline = React.useMemo(function () {
     var flat = SH_nestSubagentRows(
@@ -999,7 +1030,7 @@ function NV_SessionDoc(props) {
       flat: flat, rows: rows,
       resultsByCallId: resultsByCallId, turnOfSeq: turnOfSeq,
     };
-  }, [records, session, shownActive]);
+  }, [transcriptSnap, session, shownActive]);
   var flat = pipeline.flat;
   var rows = pipeline.rows;
   var resultsByCallId = pipeline.resultsByCallId;
@@ -1361,6 +1392,9 @@ function NV_SessionDoc(props) {
         micEnabled={!!(con.speech && con.speech.stt_configured)}
         onInterrupt={function () {
           SH_api.interrupt(con.wid, sid).then(refetchAll);
+        }}
+        onSend={function (text, clientId) {
+          return window.SS_sendUserMessage(store, text, clientId);
         }}
         onSendStarted={function () {
           setOptimistic(Date.now());

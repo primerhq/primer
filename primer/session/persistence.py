@@ -35,6 +35,7 @@ from primer.model.chat import (
     ReasoningDelta,
     StreamEvent,
     TextDelta,
+    ToolCallDelta,
     ToolCallEnd,
     ToolCallStart,
     Usage,
@@ -44,6 +45,12 @@ from primer.model.chat import (
     _LlmCall,
 )
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
+from primer.tap.delta import (
+    KIND_REASONING,
+    KIND_TEXT,
+    KIND_TOOL,
+    part_id,
+)
 
 # Reusable validator for the discriminated ``StreamEvent`` union.  Used to
 # reconstruct the inner StreamEvent carried by a forwarded ``_GraphNodeEvent``
@@ -240,10 +247,27 @@ class _CoalesceState:
     tool_names: dict[tuple[str | None, str], str] = field(default_factory=dict)
 
 
+class _DeltaSink(Protocol):
+    """Duck-typed ephemeral-delta sink (``primer.tap.delta.DeltaBuffer``).
+
+    ``translate_stream_event`` is synchronous, so it can only drive the
+    *synchronous* half of the buffer: :meth:`on_delta` per content delta and
+    :meth:`close` when the durable record for a part is produced. The buffer
+    publishes its own frames on a separate async cadence; the translator
+    never blocks on I/O. Absent (``None``) the live path is skipped and the
+    durable-record behaviour is byte-identical to before.
+    """
+
+    def on_delta(self, pid: str, kind: str, delta: str) -> None: ...
+
+    def close(self, pid: str) -> None: ...
+
+
 def translate_stream_event(
     event: StreamEvent,
     state: _CoalesceState,
     node_id: str | None = None,
+    delta_sink: "_DeltaSink | None" = None,
 ) -> "SessionMessageRecord | list[SessionMessageRecord] | None":
     """Per-event translation following the chat-selective persistence cadence.
 
@@ -309,7 +333,9 @@ def translate_stream_event(
             # Inner event isn't a reconstructable StreamEvent — drop, exactly
             # as an unhandled event would be dropped on the agent path.
             return None
-        return translate_stream_event(inner, state, node_id=event.extended.node_id)
+        return translate_stream_event(
+            inner, state, node_id=event.extended.node_id, delta_sink=delta_sink,
+        )
 
     if isinstance(event, _GraphTransitionEvent):
         # Graph-runtime node-lifecycle transition (spec §2.6). Maps 1:1 to a
@@ -372,6 +398,8 @@ def translate_stream_event(
     if isinstance(event, TextDelta):
         # Keyed by node_id so interleaved sibling-node text never mixes.
         state.text_buffers[node_id] = state.text_buffers.get(node_id, "") + event.text
+        if delta_sink is not None:
+            delta_sink.on_delta(part_id(node_id, KIND_TEXT), KIND_TEXT, event.text)
         return None
 
     if isinstance(event, ReasoningDelta):
@@ -380,6 +408,10 @@ def translate_stream_event(
         state.reasoning_buffers[node_id] = (
             state.reasoning_buffers.get(node_id, "") + event.text
         )
+        if delta_sink is not None:
+            delta_sink.on_delta(
+                part_id(node_id, KIND_REASONING), KIND_REASONING, event.text
+            )
         return None
 
     if isinstance(event, ToolCallStart):
@@ -391,6 +423,17 @@ def translate_stream_event(
         state.tool_names[(node_id, event.id)] = event.name
         return None
 
+    if isinstance(event, ToolCallDelta):
+        # Like TextDelta this coalesces into the single TOOL_CALL record
+        # (produced on ToolCallEnd), so it produces no durable record of its
+        # own - but it feeds the delta sink so a client can render the
+        # arguments as they stream. The part_id is the tool call id, not a
+        # node-scoped id, because the paired TOOL_CALL record carries the same
+        # id and the client reconciles the live arguments to it by that id.
+        if delta_sink is not None:
+            delta_sink.on_delta(event.id, KIND_TOOL, event.arguments_delta)
+        return None
+
     if isinstance(event, ToolCallEnd):
         records: list[SessionMessageRecord] = []
         thought = state.reasoning_buffers.get(node_id, "")
@@ -399,7 +442,10 @@ def translate_stream_event(
                 SessionMessageRecord(
                     seq=1,
                     kind=SessionMessageKind.REASONING,
-                    payload={"text": thought},
+                    payload={
+                        "text": thought,
+                        "part_id": part_id(node_id, KIND_REASONING),
+                    },
                     node_id=node_id,
                     created_at=now,
                 )
@@ -411,7 +457,10 @@ def translate_stream_event(
                 SessionMessageRecord(
                     seq=1,
                     kind=SessionMessageKind.ASSISTANT_TOKEN,
-                    payload={"text": buffered},
+                    payload={
+                        "text": buffered,
+                        "part_id": part_id(node_id, KIND_TEXT),
+                    },
                     node_id=node_id,
                     created_at=now,
                 )
@@ -430,6 +479,12 @@ def translate_stream_event(
                 created_at=now,
             )
         )
+        # The text/reasoning parts end here; the tool-input part ends here too
+        # (its part_id is the tool call id). A part with no deltas is a no-op.
+        if delta_sink is not None:
+            delta_sink.close(part_id(node_id, KIND_TEXT))
+            delta_sink.close(part_id(node_id, KIND_REASONING))
+            delta_sink.close(event.id)
         if len(records) == 1:
             return records[0]
         return records
@@ -490,7 +545,10 @@ def translate_stream_event(
                 SessionMessageRecord(
                     seq=1,
                     kind=SessionMessageKind.REASONING,
-                    payload={"text": thought},
+                    payload={
+                        "text": thought,
+                        "part_id": part_id(node_id, KIND_REASONING),
+                    },
                     node_id=node_id,
                     created_at=now,
                 )
@@ -502,7 +560,10 @@ def translate_stream_event(
                 SessionMessageRecord(
                     seq=1,
                     kind=SessionMessageKind.ASSISTANT_TOKEN,
-                    payload={"text": buffered},
+                    payload={
+                        "text": buffered,
+                        "part_id": part_id(node_id, KIND_TEXT),
+                    },
                     node_id=node_id,
                     created_at=now,
                 )
@@ -535,6 +596,9 @@ def translate_stream_event(
         state.text_buffers.pop(node_id, None)
         state.reasoning_buffers.pop(node_id, None)
         state.last_usage_by.pop(node_id, None)
+        if delta_sink is not None:
+            delta_sink.close(part_id(node_id, KIND_TEXT))
+            delta_sink.close(part_id(node_id, KIND_REASONING))
         if records:
             records.append(done_record)
             return records

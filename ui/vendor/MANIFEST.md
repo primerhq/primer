@@ -31,6 +31,7 @@ transitive resolution, no surprise additions.
 | xterm-addon-fit.min.js | https://unpkg.com/@xterm/addon-fit@0.11.0/lib/addon-fit.js | 0.11.0 | `ba3ea256ce0620a0992a197d6c9baea64823fc93d8da07a9e366ca9943c18527` | MIT | 2026-07-02 |
 | codemirror.min.js   | bundled from npm, see "CodeMirror 6" below | 16 pinned packages (@codemirror/state 6.5.2 et al) | `11684404b4478b1b3f1b143475ee7aa5a0703759deeb903455dc1fa834b47ee4` | MIT | 2026-08-01 |
 | codemirror.entry.js | hand-written, no upstream (bundle entry, NOT loaded by the console) | n/a | `874e887276421f0860250687cc2b8d97194e96c269a7ab33c06a9971d91c445b` | MIT (this repo) | 2026-08-01 |
+| parse-partial-json.js | hand-written, no upstream | n/a | `b97ffbb316d4f570e1c1c63f871c1099f2be7d15db850a533180c9d422e5ccc3` | MIT (this repo) | 2026-08-28 |
 
 To recompute hand-written hashes (from repo root):
 

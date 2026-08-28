@@ -1,8 +1,4 @@
-"""Task 11 of docs/superpowers/plans/2026-07-05-studio-agents-interact.md —
-session adapter mapping a workspace Session's message stream
-(SessionMessageKind / the tap's mirrored TapEventClass) onto the shape
-chat-refactor's `<Transcript>` renders, so a Session can be rendered
-through the reused chat UI instead of a second parallel renderer.
+"""Session adapter (ui/components/session-adapter.jsx) tests.
 
 Static-source + transpile-build checks only (the ui/ suite convention,
 e.g. test_conversation_extracted.py / test_session_live_history.py), plus
@@ -10,6 +6,13 @@ one MiniRacer eval of the actual mapping function (mirrors
 test_chat_coalesce_forwards_agent_id_and_created_at_from_first_token) so
 the load-bearing kind table and divider labels are exercised for real
 rather than only substring-matched.
+
+Phase 2 (2026-08-28): the live data hook (SA_useSessionConversation) and
+the SA_encodeCursor helper moved to ui/foundation/session-store.js and
+ui/foundation/use-workspace-tap.js. The adapter now holds only the pure
+record->transcript mapping (SA_toTranscript + the kind tables). The
+catch-up / ws-state / transport / controls tests moved to the store/hub
+(test_session_store.py); the tests below cover the remaining surface.
 """
 
 from __future__ import annotations
@@ -38,8 +41,11 @@ def test_session_adapter_module_exists_and_exports() -> None:
     assert "function SA_toTranscript(" in src
     assert "window.SA_toTranscript = SA_toTranscript;" in src
     assert "window.SA_KIND_TO_TRANSCRIPT = SA_KIND_TO_TRANSCRIPT;" in src
-    assert "function SA_useSessionConversation(" in src
-    assert "window.SA_useSessionConversation = SA_useSessionConversation;" in src
+    assert "window.SA_SKIP_IN_TRANSCRIPT = SA_SKIP_IN_TRANSCRIPT;" in src
+    # Phase 2: the data hook + cursor encode moved to the store/hub; the
+    # adapter must not re-introduce them.
+    assert "SA_useSessionConversation" not in src
+    assert "SA_encodeCursor" not in src
 
 
 def test_kind_mapping_table_matches_the_locked_contract() -> None:
@@ -67,77 +73,6 @@ def test_kind_mapping_table_matches_the_locked_contract() -> None:
         assert f'{kind}: "{transcript_kind}"' in src, (
             f"SA_KIND_TO_TRANSCRIPT must map {kind!r} -> {transcript_kind!r}"
         )
-
-
-def test_no_session_websocket_only_rest_and_tap_sse() -> None:
-    # Transport rule (locked): reuse the workspace tap SSE, never a
-    # dedicated session WebSocket.
-    src = ADAPTER.read_text(encoding="utf-8")
-    assert "new WebSocket(" not in src
-    assert "new EventSource(" in src
-    assert "/tap" in src
-    assert "/messages" in src
-
-
-def test_ws_state_reaches_terminal_closed_when_eventsource_gives_up() -> None:
-    # Connection legibility: es.onerror mirrors the browser's native retry
-    # (readyState CONNECTING) as "connecting", but once EventSource gives up
-    # for good (readyState === 2 / CLOSED) it must flip to a terminal
-    # "closed" so <Transcript>'s pill shows a non-transient failure rather
-    # than parking on "connecting" forever. CT_ConnectionStatus already
-    # renders any non-open/non-connecting value as the offline pill.
-    src = ADAPTER.read_text(encoding="utf-8")
-    assert "es.onerror = function" in src
-    assert 'es.readyState === 2 ? "closed" : "connecting"' in src
-
-
-def test_controls_hit_the_documented_endpoints() -> None:
-    src = ADAPTER.read_text(encoding="utf-8")
-    assert "/steer" in src
-    assert "/interrupt" in src
-    assert "/cancel" in src
-
-
-def test_catch_up_refetches_messages_after_known_seq() -> None:
-    # Bug fix: a fresh/slow-starting session's live tap can miss events
-    # emitted right before it subscribes (highWater 0 -> live-only tail),
-    # leaving the transcript stuck "waiting for events" until a full page
-    # refresh. The adapter must self-heal by re-fetching /messages after
-    # its current max known seq and merging the result in (deduped by seq,
-    # never resetting `records`).
-    src = ADAPTER.read_text(encoding="utf-8")
-    assert "function" in src and "catchUp" in src
-    assert "/messages?after_seq=" in src
-    assert "catchUpInFlightRef" in src, "catch-up must guard against overlapping fetches"
-
-
-def test_catch_up_triggered_by_polled_last_seq_outrunning_known_seq() -> None:
-    # The session row is already light-polled every 3s and carries the
-    # authoritative high-water `last_seq` (WorkspaceSession.last_seq) — the
-    # adapter must compare that against its own max known record seq
-    # (historyCursorRef) and only re-fetch when actually behind, so it
-    # never issues a superfluous request once caught up.
-    src = ADAPTER.read_text(encoding="utf-8")
-    assert "polledLastSeq" in src
-    assert "sessionRow.last_seq" in src
-    assert "polledLastSeq > (historyCursorRef.current || 0)" in src
-
-
-def test_catch_up_also_triggered_on_tap_reconnect() -> None:
-    # A tap that attaches even a moment late — or reconnects after a drop —
-    # must also re-sync, not rely solely on the next poll tick.
-    src = ADAPTER.read_text(encoding="utf-8")
-    onopen_start = src.index("es.onopen = function")
-    onopen_body = src[onopen_start:src.index("es.onmessage = function")]
-    assert "catchUp()" in onopen_body
-
-
-def test_session_scoped_tap_reuses_wtp_build_selector() -> None:
-    # Reuse components/workspace-tap.jsx's selector builder to scope the
-    # live tail to this one session, rather than re-deriving the
-    # TapSelector predicate shape here.
-    src = ADAPTER.read_text(encoding="utf-8")
-    assert "window.WTP_buildSelector" in src
 
 
 def test_session_adapter_registered_before_studio_center() -> None:

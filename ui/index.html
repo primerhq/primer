@@ -86,6 +86,8 @@
 <script type="text/babel" src="foundation/use-resource.js"></script>
 <script type="text/babel" src="foundation/use-mutation.js"></script>
 <script type="text/babel" src="foundation/capabilities.js"></script>
+<!-- Phase 2: the per-session conversation store (the tap routes frames here). -->
+<script type="text/babel" src="foundation/session-store.js"></script>
 <script type="text/babel" src="foundation/use-workspace-tap.js"></script>
 <script type="text/babel" src="foundation/tweaks.js"></script>
 <script type="text/babel" src="foundation/idle.js"></script>
@@ -100,6 +102,10 @@
 <script type="text/babel" src="foundation/shell-router-shim.js"></script>
 <!-- Fresh shell: status verb + scroll anchoring. -->
 <script type="text/babel" src="foundation/shell-status.js"></script>
+<!-- Phase 3: the auto-pin-to-bottom engine (pure core + thin binding).
+     Replaces the P0 interim distance ref + follow boolean in nv-session-doc.
+     Registered after shell-status so it can read window.SH_FOLLOW_PX. -->
+<script type="text/babel" src="foundation/scroll-follow.js"></script>
 <!-- Fresh shell: turn collapse, tool chips, subagent nesting. -->
 <script type="text/babel" src="foundation/shell-turns.js"></script>
 <!-- Fresh shell: attention items and tiers. No S6 vocabulary. -->
@@ -116,6 +122,7 @@
 <script type="text/babel" src="vendor/sparkline.js"></script>
 <script type="text/babel" src="vendor/auto-layout.js"></script>
 <script type="text/babel" src="vendor/markdown.jsx"></script>
+<script type="text/babel" src="vendor/parse-partial-json.js"></script>
 
 <!-- Shared components first (Icon/Btn/Modal etc.) + mock data + unused helper -->
 <script type="text/babel" src="components/shared.jsx"></script>

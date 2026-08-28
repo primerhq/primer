@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -182,6 +183,17 @@ def _frame(event: TapEvent) -> str:
     return f"id: {event.cursor}\ndata: {data}\n\n"
 
 
+def _delta_frame(frame: dict) -> str:
+    """Render one ephemeral delta frame as a bare SSE ``data:`` line.
+
+    No ``id:`` line: deltas never advance the tap cursor (the durable tick is
+    the only cursor pointer), so a reconnect resumes from the durable log,
+    not from deltas. An old client that keys off ``class`` and ``seq`` sees a
+    frame with neither and ignores it (the existing seq guard drops it).
+    """
+    return f"data: {json.dumps(frame)}\n\n"
+
+
 async def _stream_tap(
     *,
     router: "WorkspaceTapRouter",
@@ -217,27 +229,42 @@ async def _stream_tap(
             # high-water mark so pre-existing history is NOT replayed.
             cursor.advance(row.id, row.last_seq)
 
-    sub = router.subscribe(workspace_id)
+    tick_sub = router.subscribe(workspace_id)
+    delta_sub = router.subscribe_delta(workspace_id)
+    combined: asyncio.Queue = asyncio.Queue()
+
+    async def _pump(sub, tag):
+        try:
+            async for item in sub:
+                await combined.put((tag, item))
+        except asyncio.CancelledError:
+            pass
+        except StopAsyncIteration:
+            pass
+        except Exception:
+            logger.exception("workspace tap: %s pump failed", tag)
+
+    pump_tick = asyncio.create_task(_pump(tick_sub, "tick"))
+    pump_delta = asyncio.create_task(_pump(delta_sub, "delta"))
     try:
         while True:
             try:
-                wtick = await asyncio.wait_for(
-                    sub.__anext__(), timeout=_KEEPALIVE_INTERVAL_S
+                tag, item = await asyncio.wait_for(
+                    combined.get(), timeout=_KEEPALIVE_INTERVAL_S
                 )
             except TimeoutError:
                 # Idle: emit a keepalive comment so proxies do not reap us.
                 yield ": keepalive\n\n"
                 continue
-            except StopAsyncIteration:
-                return
 
+            if tag == "delta":
+                yield _delta_frame(item)
+                continue
+
+            wtick = item
             sid = wtick.session_id
             entry = in_scope.get(sid)
             if entry is None:
-                # Session not yet confirmed in scope — re-resolve it now.
-                # We do NOT cache a negative result: scope membership is
-                # mutable (e.g. status transitions) so each tick re-evaluates
-                # until the session enters scope or the connection closes.
                 row = await _resolve_single_in_scope(
                     sessions_storage,
                     workspace_id=workspace_id,
@@ -246,7 +273,6 @@ async def _stream_tap(
                 )
                 if row is None:
                     continue
-                # A newly-in-scope session starts from seq 0 (full), per spec.
                 in_scope[sid] = (row, 0)
                 entry = in_scope[sid]
 
@@ -263,13 +289,13 @@ async def _stream_tap(
 
             for ev in events:
                 cursor.advance(sid, ev.seq)
-                # STAMP: overwrite the reader's per-session placeholder with the
-                # full multi-session token so each frame's id: is a resumable
-                # Last-Event-ID. This is the load-bearing seam.
                 ev.cursor = cursor.encode()
                 yield _frame(ev)
     finally:
-        await sub.aclose()
+        await tick_sub.aclose()
+        await delta_sub.aclose()
+        pump_tick.cancel()
+        pump_delta.cancel()
 
 
 # ---------------------------------------------------------------------------

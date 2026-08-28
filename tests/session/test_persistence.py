@@ -198,7 +198,7 @@ def test_translate_text_delta_coalesces() -> None:
     assert isinstance(rec3, list)
     assert len(rec3) == 2
     assert rec3[0].kind == SessionMessageKind.ASSISTANT_TOKEN
-    assert rec3[0].payload == {"text": "hello world"}
+    assert rec3[0].payload == {"text": "hello world", "part_id": "x:text"}
     assert rec3[1].kind == SessionMessageKind.DONE
 
 
@@ -440,7 +440,7 @@ def test_translate_wrapped_node_text_then_done_carries_node_id() -> None:
     assert isinstance(r3, list)
     assert len(r3) == 2
     assert r3[0].kind == SessionMessageKind.ASSISTANT_TOKEN
-    assert r3[0].payload == {"text": "hi there"}
+    assert r3[0].payload == {"text": "hi there", "part_id": "n1:text"}
     assert r3[0].node_id == "n1"
     assert r3[1].kind == SessionMessageKind.DONE
     assert r3[1].node_id == "n1"
@@ -603,7 +603,7 @@ def test_agent_only_path_unchanged_node_id_none() -> None:
     result = translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state)
     assert isinstance(result, list)
     assert result[0].kind == SessionMessageKind.ASSISTANT_TOKEN
-    assert result[0].payload == {"text": "hello world"}
+    assert result[0].payload == {"text": "hello world", "part_id": "x:text"}
     assert result[0].node_id is None
     assert result[1].kind == SessionMessageKind.DONE
     assert result[1].node_id is None
@@ -700,8 +700,8 @@ def test_translate_reasoning_delta_coalesces_and_flushes_before_text() -> None:
         SessionMessageKind.ASSISTANT_TOKEN,
         SessionMessageKind.DONE,
     ]
-    assert result[0].payload == {"text": "let me think"}
-    assert result[1].payload == {"text": "the answer"}
+    assert result[0].payload == {"text": "let me think", "part_id": "x:reasoning"}
+    assert result[1].payload == {"text": "the answer", "part_id": "x:text"}
     # Done cleared the buffer: a stray second Done replays nothing.
     assert state.reasoning_buffers == {}
 
@@ -721,4 +721,4 @@ def test_translate_tool_call_end_flushes_reasoning_first() -> None:
         SessionMessageKind.REASONING,
         SessionMessageKind.TOOL_CALL,
     ]
-    assert result[0].payload == {"text": "need a file"}
+    assert result[0].payload == {"text": "need a file", "part_id": "x:reasoning"}

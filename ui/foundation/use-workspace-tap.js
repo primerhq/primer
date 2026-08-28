@@ -66,20 +66,26 @@ function WTAP_notifyRender(hub) {
 
 function WTAP_open(hub) {
   if (hub.es || !hub.wid) return;
-  var url = "/v1/workspaces/" + encodeURIComponent(hub.wid) + "/tap";
+  var url = WTAP_cursorUrl(hub);
   var es;
   try {
     es = new EventSource(url, { withCredentials: true });
   } catch (_e) {
     hub.connState = "error";
     WTAP_notifyRender(hub);
+    WTAP_notifyStoresConnState(hub);
     return;
   }
   hub.es = es;
   hub.connState = "connecting";
+  WTAP_notifyStoresConnState(hub);
   es.onopen = function () {
     hub.connState = "live";
     WTAP_notifyRender(hub);
+    WTAP_notifyStoresConnState(hub);
+    // On (re)connect, re-read the REST tail for every observed store so a tap
+    // that attached late backfills the gap instead of waiting for a page refresh.
+    WTAP_catchUpStores(hub);
   };
   es.onmessage = function (e) {
     var ev;
@@ -93,12 +99,16 @@ function WTAP_open(hub) {
     for (var i = 0; i < esubs.length; i++) {
       try { esubs[i](ev); } catch (_e2) { /* no-op */ }
     }
+    // Phase 2: also route the frame to the matching session store (additive;
+    // the render/event notify above is unchanged).
+    WTAP_routeToStores(hub, ev);
     WTAP_notifyRender(hub);
   };
   es.onerror = function () {
     // EventSource auto-reconnects natively via Last-Event-ID; reflect the drop.
     hub.connState = "error";
     WTAP_notifyRender(hub);
+    WTAP_notifyStoresConnState(hub);
   };
 }
 
@@ -107,6 +117,84 @@ function WTAP_close(hub) {
     try { hub.es.close(); } catch (_e) { /* no-op */ }
     hub.es = null;
   }
+}
+
+// --- Phase 2 additive: route session-scoped frames to the conversation store
+// (spec section 4). These helpers are strictly additive: the existing render /
+// event subscriber notify path below is untouched, so the sidebar and status
+// consumers see byte-for-byte the same frames. A frame is routed to a store
+// only if a store already exists for (wid, sid) in the store registry - the
+// hub never creates a store (that is the component's job via getStore), so a
+// session nobody is watching produces no empty store.
+
+function WTAP_obsPrefix(wid) {
+  return "session-store:" + wid + ":";
+}
+
+// Route one frame to the store for its session_id, if a store exists.
+function WTAP_routeToStores(hub, ev) {
+  if (!window.SS_STORES || !window.SS_key || !window.SS_apply) return;
+  var sid = ev.session_id;
+  if (sid == null) return;
+  var store = window.SS_STORES[window.SS_key(hub.wid, sid)];
+  if (store) {
+    try { window.SS_apply(store, ev); } catch (_e) { /* no-op */ }
+  }
+}
+
+// Surface the hub's connState to every store for this wid (C5: one source).
+function WTAP_notifyStoresConnState(hub) {
+  if (!window.SS_STORES || !window.SS_setConnState) return;
+  var prefix = WTAP_obsPrefix(hub.wid);
+  for (var key in window.SS_STORES) {
+    if (Object.prototype.hasOwnProperty.call(window.SS_STORES, key)
+        && key.indexOf(prefix) === 0) {
+      var store = window.SS_STORES[key];
+      try { window.SS_setConnState(store, hub.connState); } catch (_e) { /* no-op */ }
+    }
+  }
+}
+
+// Trigger a REST catch-up for every store for this wid (spec section 4.1).
+function WTAP_catchUpStores(hub) {
+  if (!window.SS_STORES || !window.SS_catchUp) return;
+  var prefix = WTAP_obsPrefix(hub.wid);
+  for (var key in window.SS_STORES) {
+    if (Object.prototype.hasOwnProperty.call(window.SS_STORES, key)
+        && key.indexOf(prefix) === 0) {
+      var store = window.SS_STORES[key];
+      try { window.SS_catchUp(store); } catch (_e) { /* no-op */ }
+    }
+  }
+}
+
+// Open the EventSource with a cursor built from the observed stores' high-
+// water, so the tap resumes where a store's REST seed left off (the gap-free
+// seam). Bare URL when no store is observed, so existing consumers keep the
+// live-from-connect behaviour byte-for-byte.
+function WTAP_cursorUrl(hub) {
+  var url = "/v1/workspaces/" + encodeURIComponent(hub.wid) + "/tap";
+  if (!window.SS_STORES || !window.SS_highWater) return url;
+  var seqs = {};
+  var prefix = WTAP_obsPrefix(hub.wid);
+  for (var key in window.SS_STORES) {
+    if (Object.prototype.hasOwnProperty.call(window.SS_STORES, key)
+        && key.indexOf(prefix) === 0) {
+      var store = window.SS_STORES[key];
+      var hw = window.SS_highWater(store);
+      if (hw > 0) seqs[store.sid] = hw;
+    }
+  }
+  if (Object.keys(seqs).length === 0) return url;
+  var payload = { known_as_of: "1970-01-01T00:00:00+00:00", seqs: seqs };
+  var b64;
+  try {
+    b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  } catch (_e) {
+    return url;
+  }
+  var token = b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return url + "?cursor=" + encodeURIComponent(token);
 }
 
 function WTAP_retain(wid) {
