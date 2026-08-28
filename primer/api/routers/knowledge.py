@@ -387,8 +387,7 @@ async def put_collection_document(
     the body via the service's indexer after the write commits. Returns the
     stored document metadata.
     """
-    if await collections.get(collection_id) is None:
-        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    await _require_writable(collections, collection_id)
 
     doc = await service.upsert(
         collection_id=collection_id,
@@ -416,8 +415,7 @@ async def delete_collection_document(
 
     Raises 404 (via NotFoundError) when no document lives at that path.
     """
-    if await collections.get(collection_id) is None:
-        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    await _require_writable(collections, collection_id)
     await service.delete(collection_id=collection_id, path=path)
 
 
@@ -438,8 +436,7 @@ async def move_collection_document(
     404 (NotFoundError) when ``from`` does not exist; 409 (ConflictError)
     when ``to`` is already occupied.
     """
-    if await collections.get(collection_id) is None:
-        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    await _require_writable(collections, collection_id)
     await service.move(collection_id=collection_id, src=body.src, dst=body.dst)
 
 

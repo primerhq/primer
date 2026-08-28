@@ -1432,10 +1432,26 @@ input, textarea, select { font: inherit; color: inherit; }
 .toast-warning { border-left: 3px solid var(--amber); }
 .toast-error .ico { color: var(--red); }
 .toast-error { border-left: 3px solid var(--red); }
+/* uiv2 notes 1.5/1.6: attention orange is reserved for "needs a human"
+   signals only, never reused for plain warnings (kept amber above). */
+.toast-needs-human .ico { color: var(--attention); }
+.toast-needs-human { border-left: 3px solid var(--attention); }
 .toast .title { font-weight: 600; }
 .toast .detail { color: var(--text-2); margin-top: 2px; }
 .toast .req-id { margin-top: 6px; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--text-3); display: flex; align-items: center; gap: 4px; }
 .toast .req-id a { color: var(--accent); cursor: pointer; }
+.toast-actions { display: flex; gap: 8px; margin-top: 8px; }
+.toast-action {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+.toast-action:hover { border-color: var(--accent-border); color: var(--accent); }
 
 .toast .close {
   margin-left: auto;
@@ -3337,6 +3353,75 @@ input, textarea, select { font: inherit; color: inherit; }
   gap: 10px;
   align-items: center;
 }
+
+/* nv-rail-* additions (US-007 R2, nv-rail.jsx): Inbox + workspace tree.
+   .nv-rail / .nv-rail-tabs / .nv-rail-tab / .nv-rail-iconbtn /
+   .nv-rail-body / .nv-rail-empty above are the CURRENT rail's classes and
+   are reused as-is where the purpose is identical (the small icon
+   buttons, the empty-state block); everything below is new and additive
+   only, nothing above this comment was touched. */
+.nv-rail-sections { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.nv-rail-inbox, .nv-rail-tree { display: flex; flex-direction: column; min-height: 0; }
+.nv-rail-tree { flex: 1.3; overflow-y: auto; }
+.nv-rail-inbox { flex: 1; overflow-y: auto; border-bottom: 1px solid var(--border); }
+.nv-rail-section-head {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 8px 0 12px;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--border);
+}
+.nv-rail-count { font-family: var(--font-mono, monospace); color: var(--attention); }
+.nv-rail-inbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px 7px 12px;
+  cursor: pointer;
+}
+.nv-rail-inbox-row:hover { background: var(--bg-hover); }
+.nv-rail-main { flex: 1; min-width: 0; }
+.nv-rail-name { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nv-rail-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-4);
+}
+.nv-rail-kind { color: var(--attention); }
+.nv-rail-ws-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: var(--row-h, 30px);
+  padding: 2px 10px;
+  cursor: pointer;
+  color: var(--text-2);
+}
+.nv-rail-ws-row:hover { background: var(--bg-hover); }
+.nv-rail-ws-row[data-selected="true"] { background: var(--bg-active); font-weight: 600; }
+.nv-rail-attn-count { font-family: var(--font-mono, monospace); font-size: 9.5px; color: var(--attention); }
+.nv-rail-session-count { font-family: var(--font-mono, monospace); font-size: 9.5px; color: var(--text-4); margin-left: auto; }
+.nv-rail-ws-session {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: var(--frow-h, 24px);
+  padding: 2px 10px 2px 32px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.nv-rail-ws-session:hover { background: var(--bg-hover); }
 .nv-btn-primary {
   padding: 6px 12px;
   border: 1px solid var(--accent);
@@ -3522,6 +3607,102 @@ input, textarea, select { font: inherit; color: inherit; }
   gap: 12px;
 }
 .nv-center-empty-actions { display: flex; gap: 8px; justify-content: center; }
+
+/* nv-tg-* : the multi-group tab host (US-007 R2, nv-tab-groups.jsx).
+   Additive only - nv-tab*/nv-tabbar/nv-doc-body above stay untouched,
+   these are a separate prefix so the two can coexist until nv-doc-host.jsx
+   is retired in phase 2. */
+.nv-tg-groups { background: var(--bg); }
+.nv-tg-group {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  margin-left: -1px;
+  border-top: 1px solid var(--border);
+  margin-top: -1px;
+}
+.nv-tg-group[data-focused="true"] { outline: none; }
+.nv-tg-tabbar {
+  display: flex;
+  align-items: stretch;
+  height: 34px;
+  flex-shrink: 0;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.nv-tg-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 220px;
+  padding: 0 8px 0 12px;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.nv-tg-tab:hover { background: var(--bg-2); }
+.nv-tg-tab[data-active="true"] { background: var(--bg); color: var(--text); }
+.nv-tg-tab[data-preview="true"] .nv-tg-tab-label { font-style: italic; }
+.nv-tg-tab-edge { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); }
+.nv-tg-tab-glyph { flex-shrink: 0; }
+.nv-tg-glyph-diff { font-family: var(--font-mono, monospace); font-size: 10.5px; color: var(--green); }
+.nv-tg-tab-label { overflow: hidden; text-overflow: ellipsis; }
+.nv-tg-tab-close {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  color: var(--text-4);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+.nv-tg-tab-close:hover { background: var(--bg-active); color: var(--text); }
+.nv-tg-doc-body { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.nv-tg-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  grid-template-columns: 58% 42%;
+  grid-template-rows: 58% 42%;
+  background: var(--scrim, rgba(0, 0, 0, 0.4));
+}
+.nv-tg-drop-zone {
+  margin: 10px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--r-8, 8px);
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-2);
+  background: var(--bg-elev);
+}
+.nv-tg-drop-zone-move { grid-row: 1; grid-column: 1; }
+.nv-tg-drop-zone-right {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  margin: 10px 10px 10px 0;
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.nv-tg-drop-zone-down {
+  grid-row: 2;
+  grid-column: 1;
+  margin: 0 10px 10px 10px;
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
 
 /* Session doc header */
 .nv-session-doc { flex: 1; min-height: 0; display: flex; flex-direction: column; }

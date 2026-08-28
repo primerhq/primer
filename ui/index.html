@@ -106,6 +106,10 @@
      Replaces the P0 interim distance ref + follow boolean in nv-session-doc.
      Registered after shell-status so it can read window.SH_FOLLOW_PX. -->
 <script type="text/babel" src="foundation/scroll-follow.js"></script>
+<!-- US-007 R2 phase 1: the pure multi-group tab-host state machine.
+     Standalone until nv-tab-groups.jsx (phase 1, next deliverable) and the
+     nv-shell.jsx integration (phase 2, after the R1 owner releases it). -->
+<script type="text/babel" src="foundation/tab-group-model.js"></script>
 <!-- Fresh shell: turn collapse, tool chips, subagent nesting. -->
 <script type="text/babel" src="foundation/shell-turns.js"></script>
 <!-- Fresh shell: attention items and tiers. No S6 vocabulary. -->
@@ -213,10 +217,21 @@
 <script type="text/babel" src="components/console/nv-palette.jsx"></script>
 <script type="text/babel" src="components/console/nv-studio.jsx"></script>
 <script type="text/babel" src="components/console/nv-sessions-sidebar.jsx"></script>
+<!-- US-007 R2 phase 1: the Inbox + workspace-tree rail, standalone until
+     phase 2 retires nv-sessions-sidebar.jsx above. Uses NV_identity
+     (nv-studio.jsx, already loaded earlier) but deliberately does NOT
+     reuse nv-sessions-sidebar.jsx's session context menu (con.wid there
+     is wrong for a cross-workspace tree - see nv-rail.jsx's own
+     comment); registered here purely for grouping, no load-order
+     dependency on the file above it. -->
+<script type="text/babel" src="components/console/nv-rail.jsx"></script>
 <script type="text/babel" src="components/console/nv-files-sidebar.jsx"></script>
 <script type="text/babel" src="components/console/nv-session-doc.jsx"></script>
 <script type="text/babel" src="components/console/nv-file-docs.jsx"></script>
 <script type="text/babel" src="components/console/nv-doc-host.jsx"></script>
+<!-- US-007 R2 phase 1: the multi-group tab host, standalone until phase 2
+     retires nv-doc-host.jsx above and nv-shell.jsx mounts this instead. -->
+<script type="text/babel" src="components/console/nv-tab-groups.jsx"></script>
 <script type="text/babel" src="components/console/nv-terminal.jsx"></script>
 <script type="text/babel" src="components/console/nv-events-sidebar.jsx"></script>
 <script type="text/babel" src="components/console/nv-client-tools.jsx"></script>

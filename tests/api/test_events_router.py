@@ -143,3 +143,46 @@ async def test_workspace_events_toggle(client, app) -> None:
         "/v1/workspaces/nope/events", json={"config": None},
     )
     assert missing.status_code == 404, missing.text
+
+
+@pytest.mark.asyncio
+async def test_workspace_terminal_access_toggle(client, app) -> None:
+    """PUT /v1/workspaces/{id}/terminal_access grants/revokes non-admin
+    access to the workspace's integrated terminal (defaults to False)."""
+    await _login(client)
+    from datetime import datetime, timezone
+
+    from pydantic import SecretStr
+
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+
+    sp = app.state.storage_provider
+    await sp.get_storage(Workspace).create(Workspace(
+        id="ws-term-1", description="terminal access toggle probe",
+        template_id="tpl-1", provider_id="p-1",
+        created_at=datetime.now(timezone.utc),
+        runtime_meta=WorkspaceRuntimeMeta(
+            url="ws://127.0.0.1:1/", token=SecretStr("t"),
+        ),
+    ))
+
+    # Off by default.
+    row = await sp.get_storage(Workspace).get("ws-term-1")
+    assert row.terminal_user_access is False
+
+    on = await client.put(
+        "/v1/workspaces/ws-term-1/terminal_access", json={"enabled": True},
+    )
+    assert on.status_code == 200, on.text
+    assert on.json()["terminal_user_access"] is True
+
+    off = await client.put(
+        "/v1/workspaces/ws-term-1/terminal_access", json={"enabled": False},
+    )
+    assert off.status_code == 200, off.text
+    assert off.json()["terminal_user_access"] is False
+
+    missing = await client.put(
+        "/v1/workspaces/nope/terminal_access", json={"enabled": True},
+    )
+    assert missing.status_code == 404, missing.text

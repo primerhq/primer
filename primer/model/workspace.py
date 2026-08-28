@@ -1240,6 +1240,17 @@ class Workspace(Identifiable):
             "Opt-in workspace lifecycle event streaming; None = off."
         ),
     )
+    terminal_user_access: bool = Field(
+        default=False,
+        description=(
+            "Non-admin access to the workspace's integrated terminal "
+            "(``WS /workspaces/{id}/terminal``). The terminal is admin-only "
+            "by default; flipping this on admits callers holding at least "
+            "the ``user`` role too (``restricted`` never gets a shell). Set "
+            "via ``PUT /workspaces/{id}/terminal_access``. Backward-"
+            "compatible default for existing rows."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod

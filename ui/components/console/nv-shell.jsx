@@ -88,6 +88,28 @@ function NV_ToastHost() {
                   >copy</a>
                 </div>
               ) : null}
+              {Array.isArray(t.actions) && t.actions.length ? (
+                <div className="toast-actions">
+                  {t.actions.map(function (action, actionIdx) {
+                    return (
+                      <button type="button" key={actionIdx}
+                        className="toast-action" data-testid="toast-action"
+                        onClick={function () {
+                          // Notes 1.5: an action button must route, not
+                          // just dismiss - href drives real navigation
+                          // through the same hash the shell reads.
+                          if (action && action.href) {
+                            window.location.hash = action.href;
+                          }
+                          if (action && typeof action.run === "function") {
+                            action.run();
+                          }
+                          removeToast(t.id);
+                        }}>{action.label}</button>
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
             <button type="button" className="close"
               onClick={function () { removeToast(t.id); }}>x</button>
@@ -164,6 +186,15 @@ function NV_Shell() {
 
   // --- URL sync: read on navigation events -------------------------------
   var ownHashRef = React.useRef(window.location.hash || "");
+  // Notes 1.4: verb-driven navigation pushes a real history entry; passive
+  // state sync (the default-workspace pick below, or a hash arriving from
+  // hashchange/popstate) keeps replaceState. Verb-driven call sites mark
+  // this ref right before changing state; the write effect below consumes
+  // and resets it, so an unmarked change (the default fallback) replaces.
+  var pendingPushRef = React.useRef(false);
+  var markPush = React.useCallback(function () {
+    pendingPushRef.current = true;
+  }, []);
   React.useEffect(function () {
     function onNav() {
       var current = window.location.hash || "";
@@ -191,7 +222,12 @@ function NV_Shell() {
     });
     if ((window.location.hash || "") !== url) {
       ownHashRef.current = url;
-      window.history.pushState(null, "", url);
+      if (pendingPushRef.current) {
+        window.history.pushState(null, "", url);
+      } else {
+        window.history.replaceState(null, "", url);
+      }
+      pendingPushRef.current = false;
     }
   }, [wid, view && view.name, view && view.nav,
     doc && doc.kind, doc && doc.ref,
@@ -237,9 +273,10 @@ function NV_Shell() {
   }, [registry]);
 
   var goView = React.useCallback(function (name, nav) {
+    markPush();
     setView({ name: name, nav: nav || null });
     setOpenMenu(null);
-  }, [setView, setOpenMenu]);
+  }, [setView, setOpenMenu, markPush]);
 
   // --- Core verbs (chrome-level; view bodies add their own) --------------
   React.useEffect(function () {
@@ -262,6 +299,7 @@ function NV_Shell() {
       chord: "Ctrl+Shift+p", surfaces: ["topbar", "palette"],
       run: function (arg) {
         if (arg && arg.wid) {
+          markPush();
           setWid(arg.wid);
           setDoc(null);
           setAnchor(null);
@@ -276,6 +314,7 @@ function NV_Shell() {
       // The shared entry point (rail "+", empty state, palette) opens
       // the SAME overlay a pasted overlay=new-session link opens.
       run: function () {
+        markPush();
         setOverlay({ name: "new-session", section: null, id: null });
       },
     });
@@ -283,6 +322,7 @@ function NV_Shell() {
       id: "workspace.create", label: "Create Workspace",
       surfaces: ["topbar", "palette"],
       run: function () {
+        markPush();
         setOverlay({ name: "new-workspace", section: null, id: null });
       },
     });
@@ -332,11 +372,15 @@ function NV_Shell() {
       voiceRef: voiceRef,
       paletteRef: paletteRef,
       goView: goView,
-      setDoc: setDoc,
+      // Opening a document/overlay is a real navigation (palette entity
+      // rows, sidebar clicks, verb runs all funnel through this one
+      // setter) so it earns a history entry, not a silent replace.
+      setDoc: function (d) { markPush(); setDoc(d); },
       openOverlay: function (name, section, id) {
+        markPush();
         setOverlay({ name: name, section: section || null, id: id || null });
       },
-      closeOverlay: function () { setOverlay(null); },
+      closeOverlay: function () { markPush(); setOverlay(null); },
       bump: function () { setTick(function (v) { return v + 1; }); },
       // extra (optional): { kind, requestId } - an error toast that came
       // from an ApiError should pass the error so the request id renders
@@ -355,7 +399,7 @@ function NV_Shell() {
     };
   }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
     frecency, wsItems, status, caps, voiceRef, paletteRef, goView,
-    setDoc, setOpenMenu, setOverlay, setTick]);
+    setDoc, setOpenMenu, setOverlay, setTick, markPush]);
 
   var viewName = ctx.view.name;
   return (

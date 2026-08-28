@@ -22,9 +22,30 @@ function NV_run(con, id, arg) {
   if (verb) verb.run(arg);
 }
 
+// Theme is a per-user preference (notes 1.1); there is no prefs endpoint
+// (grepped primer/api/routers, primer/model - none), so localStorage keyed
+// by username is the fallback the wiring notes call acceptable. This runs
+// once username resolves and corrects any theme the shared tweaks store
+// (ui/foundation/tweaks.js, one browser-wide key) applied before login.
+function NV_themeStorageKey(username) {
+  return "primer.theme." + (username || "anon");
+}
+
 function NV_ActivityBar() {
   var con = NV_useConsole();
   var initials = String(con.username || "?").slice(0, 2).toLowerCase();
+  React.useEffect(function () {
+    if (!con.username) return;
+    try {
+      var saved = localStorage.getItem(NV_themeStorageKey(con.username));
+      var current = document.documentElement.getAttribute("data-theme");
+      if (saved && saved !== current) {
+        window.primerApi.setTweak("theme", saved);
+        document.documentElement.setAttribute("data-theme", saved);
+        con.bump();
+      }
+    } catch (_e) { /* private mode, quota, etc. - non-fatal */ }
+  }, [con.username]);
   return (
     <div className="nv-actbar" data-testid="nv-actbar">
       <div className="nv-actbar-logo" title="primer"><NV_Logo /></div>
@@ -119,6 +140,9 @@ function NV_ProfileMenu() {
   function setTheme(next) {
     window.primerApi.setTweak("theme", next);
     document.documentElement.setAttribute("data-theme", next);
+    try {
+      localStorage.setItem(NV_themeStorageKey(con.username), next);
+    } catch (_e) { /* private mode, quota, etc. - non-fatal */ }
     con.bump();
   }
   return (

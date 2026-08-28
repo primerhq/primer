@@ -88,10 +88,28 @@ function NV_Palette() {
 
   // --- Build the grouped result list -------------------------------------
   var groups = [];
-  var verbRows = SH_rankVerbs(con.registry, q, {
+  var rankedVerbs = SH_rankVerbs(con.registry, q, {
     docKind: con.doc ? con.doc.kind : null,
     frecency: con.frecency,
-  }).slice(0, 8).map(function (verb) {
+  });
+  // Notes 1.3: a focused session tab prepends its session verbs
+  // (Interrupt/Park/End/Rename/Split Right/Compact/Rewind) ahead of the
+  // rest. Ranking already context-gates on docKind (shell-verbs.js); this
+  // reorders within that gated set rather than re-ranking by weight, so a
+  // verb declaring contexts: ["session"] always leads regardless of score.
+  if (con.doc && con.doc.kind === "session") {
+    var sessionVerbs = [];
+    var otherVerbs = [];
+    rankedVerbs.forEach(function (verb) {
+      if (verb.contexts && verb.contexts.indexOf("session") >= 0) {
+        sessionVerbs.push(verb);
+      } else {
+        otherVerbs.push(verb);
+      }
+    });
+    rankedVerbs = sessionVerbs.concat(otherVerbs);
+  }
+  var verbRows = rankedVerbs.slice(0, 8).map(function (verb) {
     return {
       key: "v:" + verb.id,
       label: verb.label,
@@ -170,7 +188,8 @@ function NV_Palette() {
         }),
       };
     });
-    var entGroup = NV_matchRows(ents, q, "Entities");
+    // Notes 1.3 group order: Verbs, Sessions, Files, Platform.
+    var entGroup = NV_matchRows(ents, q, "Platform");
     if (entGroup) groups.push(entGroup);
   }
 

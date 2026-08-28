@@ -842,8 +842,9 @@ function NV_Composer(props) {
             onClick={props.onInterrupt}>Stop</button>
         ) : null}
         <button type="button" className="nv-send-btn" data-testid="nv-send"
+          data-mode={props.running ? "queue" : "send"}
           disabled={sending}
-          onClick={send}>{sending ? "Sending…" : "Send"}</button>
+          onClick={send}>{sending ? "Sending…" : (props.running ? "Queue" : "Send")}</button>
       </div>
       {sendErr ? (
         <div className="nv-form-error" data-testid="nv-composer-error">

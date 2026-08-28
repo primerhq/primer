@@ -18,7 +18,9 @@ API = (
 
 
 def test_mixed_result_kinds():
-    for group in ('"Verbs"', '"Sessions"', '"Files"', '"Entities"'):
+    # Group order per implementer-notes.md 1.3: Verbs, Sessions, Files,
+    # Platform (the group was named "Entities" before the uiv2 R1 delta).
+    for group in ('"Verbs"', '"Sessions"', '"Files"', '"Platform"'):
         assert group in SRC, group
     assert "SH_rankVerbs" in SRC
     assert "allSessions" in SRC

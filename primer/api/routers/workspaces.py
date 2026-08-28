@@ -570,6 +570,38 @@ class WorkspaceEventsBody(BaseModel):
     config: WorkspaceEventsConfig | None = None
 
 
+@workspace_router.put(
+    "/workspaces/{workspace_id}/terminal_access",
+    response_model=WorkspaceRow,
+    summary="Grant or revoke non-admin access to the workspace's integrated terminal",
+    responses=common_responses(404, 500),
+)
+async def set_workspace_terminal_access(
+    body: "WorkspaceTerminalAccessBody",
+    workspace_id: str = Path(..., description="Workspace id"),
+    storage=Depends(get_workspace_storage),
+) -> WorkspaceRow:
+    """Toggle the per-workspace ``terminal_user_access`` flag.
+
+    The integrated terminal (``WS /workspaces/{id}/terminal``) is
+    admin-only by default; setting ``enabled: true`` here admits callers
+    holding at least the ``user`` role too (``restricted`` accounts never
+    get a shell regardless of this toggle).
+    """
+    row = await storage.get(workspace_id)
+    if row is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    return await storage.update(
+        row.model_copy(update={"terminal_user_access": body.enabled})
+    )
+
+
+class WorkspaceTerminalAccessBody(BaseModel):
+    """Body of ``PUT /workspaces/{id}/terminal_access``."""
+
+    enabled: bool
+
+
 @workspace_router.post(
     "/workspaces",
     response_model=WorkspaceRow,
@@ -2395,6 +2427,123 @@ async def list_pending_yields(
         offset += page_size
 
     return {"items": items}
+
+
+@yields_pending_router.get(
+    "/yields/pending",
+    summary="Aggregated pending attention across all workspaces (Inbox / System dashboard)",
+    responses=common_responses(500),
+)
+async def list_pending_attention(
+    workspace_id: str | None = Query(
+        default=None, description="Optional: restrict to a single workspace"
+    ),
+    limit: int = Query(100, ge=1, le=500),
+    session_storage=Depends(get_session_storage),
+    workspace_storage=Depends(get_workspace_storage),
+) -> dict:
+    """Aggregate pending attention (approvals, ask_user, and everything else
+    parked on a human) across every workspace the caller can see.
+
+    Drives the cross-workspace Inbox rail and the System dashboard's
+    "needs a human, every workspace" table. Unlike
+    ``GET /workspaces/{workspace_id}/yields/pending`` (session-shaped,
+    single-workspace), this endpoint is workspace-shaped for the Inbox row
+    contract::
+
+        {
+            "items": [
+                {
+                    "workspace_id": str,
+                    "workspace_name": str | None,
+                    "session_id": str,
+                    "session_name": str | None,
+                    "kind": "approval" | "ask" | "parked",
+                    "agent_binding": dict,
+                    "created_at": str,   # ISO-8601; parked_at, falling back
+                                         # to the session's created_at
+                },
+                …
+            ],
+            "total": int,
+        }
+
+    ``kind`` collapses the full yield-tool vocabulary down to the three
+    buckets the Inbox cares about: ``"approval"`` (tool-approval gate),
+    ``"ask"`` (``ask_user``), and ``"parked"`` (everything else parked
+    pending a human -- ``watch_files``, ``sleep``, etc).
+
+    Only sessions with ``parked_status == "parked"`` are included. Items are
+    ordered newest-first by the same timestamp exposed as ``created_at`` and
+    capped at ``limit`` (default 100); ``total`` reports the full matching
+    count regardless of the cap. No per-workspace ACL exists today (any
+    signed-in user may see any workspace), matching this router's other
+    routes.
+    """
+    from primer.model.storage import OffsetPage
+    from primer.storage.q import Q
+    from primer.model.workspace_session import WorkspaceSession
+
+    predicate_q = Q(WorkspaceSession).where("parked_status", "parked")
+    if workspace_id is not None:
+        predicate_q = predicate_q.where("workspace_id", workspace_id)
+    predicate = predicate_q.build()
+
+    sessions: list[WorkspaceSession] = []
+    offset = 0
+    page_size = 200
+    while True:
+        resp = await session_storage.find(
+            predicate,
+            OffsetPage(offset=offset, length=page_size),
+        )
+        sessions.extend(resp.items)
+        if len(resp.items) < page_size:
+            break
+        offset += page_size
+
+    workspace_names: dict[str, str | None] = {}
+
+    async def _workspace_name(wid: str) -> str | None:
+        if wid not in workspace_names:
+            row = await workspace_storage.get(wid)
+            workspace_names[wid] = row.name if row is not None else None
+        return workspace_names[wid]
+
+    rows = []
+    for sess in sessions:
+        blob: dict = sess.parked_state or {}
+        yielded_blob: dict = blob.get("yielded") or {}
+        tool_name: str = yielded_blob.get("tool_name") or ""
+
+        if tool_name == "_approval":
+            kind = "approval"
+        elif tool_name == "ask_user":
+            kind = "ask"
+        else:
+            kind = "parked"
+
+        created_at = sess.parked_at if sess.parked_at is not None else sess.created_at
+
+        rows.append(
+            (
+                created_at,
+                {
+                    "workspace_id": sess.workspace_id,
+                    "workspace_name": await _workspace_name(sess.workspace_id),
+                    "session_id": sess.id,
+                    "session_name": sess.name,
+                    "kind": kind,
+                    "agent_binding": sess.binding.model_dump(mode="json"),
+                    "created_at": created_at.isoformat(),
+                },
+            )
+        )
+
+    rows.sort(key=lambda row: row[0], reverse=True)
+    items = [row[1] for row in rows]
+
+    return {"items": items[:limit], "total": len(items)}
 
 
 @yields_pending_router.get(
