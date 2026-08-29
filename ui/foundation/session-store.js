@@ -46,6 +46,23 @@ function SS_getStore(wid, sid) {
     sid: sid,
     records: {},          // seq -> record
     recordsBySeq: [],     // sorted ascending by seq
+    // SEV-2 fix: `{role, parts}`-shaped items (legacy Message rows a
+    // queued-but-not-yet-processed instruction gets written as -
+    // primer/workspace/session.py's append_instruction, called both at
+    // session create with initial_instructions and from enqueue.py's
+    // wake path, well before that instruction's OWN SessionMessageRecord
+    // exists) have no numeric seq, so SS_insertRecord's dedupe-by-seq
+    // guard rejects them outright - they used to be silently dropped
+    // with no fallback, which is what left the pane blank for the
+    // ENTIRE window until a real record for the same content landed
+    // (up to a whole turn's duration on a cold refresh). Kept here,
+    // separate from recordsBySeq, surfaced by SS_deriveTranscript (as
+    // `{kind: "legacy", ...}`, for the memoization signal only) and by
+    // nv-session-doc.jsx's `pipeline` useMemo (which merges these rows
+    // into what actually renders, since it reads recordsBySeq directly -
+    // see SS_apply's role/parts branch for how entries here get dropped
+    // once a real record for the same text exists).
+    legacyMessages: [],   // [{ role, text }], best-effort only
     parts: {},           // part_id -> { kind, text, state, final }
     optimistic: {},       // clientId -> { clientId, text, state }
     status: null,         // { verb, object, startedMs } | null
@@ -109,7 +126,13 @@ function SS_finalizePart(store, partId, finalText) {
 // session row's turn_status is merged by the consumer (it is a separate REST
 // source); the store owns the tap + optimistic legs.
 function SS_updateStatus(store, frame) {
-  var kind = frame && frame["class"];
+  // Same REST-vs-tap shape split as SS_apply's recordKind (frame["class"]
+  // for a live tap frame, frame.kind for a REST history record) - a
+  // REST-seeded user_input/tool_call/done never reset the live status
+  // without this fallback, since every real call site here is already
+  // inside SS_apply's durable-record branch (the two synthetic-frame call
+  // sites below always use "class", so the fallback is a no-op for them).
+  var kind = frame && (frame["class"] || frame.kind);
   if (kind === "user_input") {
     store.status = { verb: "thinking", object: "", startedMs: SS_ms(frame) };
     return true;
@@ -154,6 +177,34 @@ function SS_apply(store, frame) {
   // The hub routes by session_id, but a frame that names another session is
   // dropped (defensive; the store is per-sid).
   if (frame.session_id != null && frame.session_id !== store.sid) return;
+
+  // SEV-2 fix: a legacy `{role, parts}` Message row (no seq at all - see
+  // legacyMessages' own comment above) used to fall through every branch
+  // below untouched: not a durable record (no numeric seq), not a delta
+  // frame (no `class`). Recognize it explicitly rather than let it
+  // silently vanish. Deduped by exact text against BOTH recordsBySeq
+  // (a real record for the same content already landed) and any
+  // already-stored legacy entry (the same instruction can be written to
+  // messages.jsonl more than once, e.g. session create + a later steer
+  // sharing one file) - a real record always wins once it exists.
+  if (frame.role && Array.isArray(frame.parts) && typeof frame.seq !== "number") {
+    var legacyText = frame.parts
+      .filter(function (p) { return p && p.type === "text"; })
+      .map(function (p) { return p.text; }).join("\n");
+    if (legacyText) {
+      var alreadyReal = store.recordsBySeq.some(function (rec) {
+        return SS_recordText(rec) === legacyText;
+      });
+      var alreadyLegacy = store.legacyMessages.some(function (m) {
+        return m.text === legacyText;
+      });
+      if (!alreadyReal && !alreadyLegacy) {
+        store.legacyMessages.push({ role: frame.role, text: legacyText });
+        SS_markDirty(store, "transcript");
+      }
+    }
+    return;
+  }
 
   var kind = frame["class"];
   var partId = frame.part_id;
@@ -206,9 +257,26 @@ function SS_apply(store, frame) {
       var finalText = (frame.payload && frame.payload.text) || null;
       SS_finalizePart(store, reconcileId, finalText);
     }
-    // A user_input durable record reconciles the matching optimistic row.
-    if (kind === "user_input" && store.optimisticSendPending != null) {
+    // Tap durable frames name their kind field `class` (already read into
+    // `kind` above); REST history records name it `kind` instead (see
+    // SS_insertRecord's own comment) - `kind` alone is blind to a
+    // REST-sourced user_input, which silently skipped both branches
+    // below when seeded from history. recordKind covers both shapes.
+    var recordKind = kind || frame.kind;
+    if (recordKind === "user_input" && store.optimisticSendPending != null) {
       SS_reconcileOptimistic(store);
+    }
+    // SEV-2 fix: a real record superseding an earlier legacy `{role,
+    // parts}` placeholder (see the branch above) must drop that
+    // placeholder - otherwise the user's own message would render
+    // TWICE once the durable record catches up.
+    if (recordKind === "user_input" && store.legacyMessages.length) {
+      var supersededText = SS_recordText(frame);
+      if (supersededText) {
+        store.legacyMessages = store.legacyMessages.filter(function (m) {
+          return m.text !== supersededText;
+        });
+      }
     }
     SS_updateStatus(store, frame);
     SS_markDirty(store, "transcript");
@@ -276,6 +344,17 @@ function SS_commit(store, channel) {
 function SS_deriveTranscript(store) {
   var out = [];
   var i;
+  // SEV-2 fix: legacy `{role, parts}` placeholders render FIRST - they
+  // stand in for the earliest not-yet-durably-recorded instruction(s),
+  // so they belong before every real record, not appended after (unlike
+  // live parts below, which are genuinely mid-stream continuations of
+  // what is already shown). SS_apply already drops a placeholder the
+  // moment a real record for the same text lands, so this list is only
+  // ever non-empty during the gap this fix closes.
+  for (i = 0; i < store.legacyMessages.length; i++) {
+    var lm = store.legacyMessages[i];
+    out.push({ kind: "legacy", role: lm.role, text: lm.text });
+  }
   for (i = 0; i < store.recordsBySeq.length; i++) {
     var rec = store.recordsBySeq[i];
     out.push({
@@ -320,10 +399,13 @@ function SS_recordText(rec) {
 }
 
 // Structural equality of two transcript snapshots (spec section 3.3): same
-// length, same per-item kind / seq / partId / state, same text. A finished
-// turn whose parts are all final and whose records are all durable produces
-// a byte-identical snapshot across flushes, so no new reference is committed
-// and the channel never re-fires.
+// length, same per-item kind / seq / partId / state / role, same text. A
+// finished turn whose parts are all final and whose records are all durable
+// produces a byte-identical snapshot across flushes, so no new reference is
+// committed and the channel never re-fires. `role` only ever varies on
+// `kind: "legacy"` entries (SEV-2 fix, SS_deriveTranscript) - every other
+// kind leaves it `undefined` on both sides, so the added check is a no-op
+// for them.
 function SS_transcriptEqual(a, b) {
   if (a === b) return true;
   if (a == null || b == null) return a == b;
@@ -335,6 +417,7 @@ function SS_transcriptEqual(a, b) {
     if (x.seq !== y.seq) return false;
     if (x.partId !== y.partId) return false;
     if (x.state !== y.state) return false;
+    if (x.role !== y.role) return false;
     if (x.text !== y.text) return false;
   }
   return true;

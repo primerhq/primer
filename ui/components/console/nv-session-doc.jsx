@@ -1627,6 +1627,30 @@ function NV_SessionDoc(props) {
   var pipeline = React.useMemo(function () {
     var flat = SH_nestSubagentRows(
       window.SA_toTranscript(records, session));
+    // SEV-2 fix: a legacy `{role, parts}` placeholder (session-store.js's
+    // SS_apply/store.legacyMessages - see its own comment) stands in for an
+    // instruction not yet backed by a durable SessionMessageRecord - without
+    // this, SA_toTranscript (which only ever reads store.recordsBySeq) never
+    // sees it and the pane rendered fully blank until the real record
+    // landed, up to a whole turn later. It is the EARLIEST content in the
+    // transcript by construction (SS_apply drops the placeholder the moment
+    // the matching real record arrives), so it belongs ahead of every real
+    // row here, not appended like the live parts below. Negative synthetic
+    // seqs never collide with a real one (persistence.py's
+    // WorkspaceMessageWriter starts real seqs at 1).
+    if (store && store.legacyMessages && store.legacyMessages.length) {
+      var legacyRows = store.legacyMessages.map(function (lm, li) {
+        return {
+          seq: li - store.legacyMessages.length,
+          kind: "user_message",
+          nodeId: null,
+          label: lm.text,
+          payload: { text: lm.text },
+          createdAt: null,
+        };
+      });
+      flat.unshift.apply(flat, legacyRows);
+    }
     // Live text/reasoning parts stream into the transcript BEFORE their
     // durable record lands (A4: the record supersedes the part when it
     // arrives and the part goes final). Without this branch the delta

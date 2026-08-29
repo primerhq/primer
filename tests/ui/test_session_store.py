@@ -318,3 +318,115 @@ def test_tool_result_metadata_survives_the_class_to_kind_clone() -> None:
     assert out["metadata"] == {
         "match_count": 2, "file_count": 1, "truncated": False,
     }
+
+
+def test_legacy_role_parts_frame_renders_as_a_legacy_row() -> None:
+    """SEV-2: refresh mid-turn returned a `{role, parts}` legacy Message row
+    (primer/workspace/session.py's append_instruction, written for the
+    user's own first instruction well before its SessionMessageRecord
+    counterpart exists - primer/session/enqueue.py's dual-write) with no
+    numeric seq at all. SS_apply used to drop it silently: not a delta frame
+    (no class), not a durable record (no seq) - leaving the pane blank for
+    the whole gap. This pins the fix: the placeholder is recognized and
+    surfaced as a `kind: "legacy"` row, ahead of the (empty, here) real
+    record list - see the next test for the supersede half."""
+    ctx = _ctx()
+    rows = _transcript(ctx, "w7", "s7", [
+        {"role": "user", "parts": [{"type": "text", "text": "hello world"}],
+         "session_id": "s7"},
+    ])
+    legacy = [r for r in rows if r["kind"] == "legacy"]
+    assert len(legacy) == 1
+    assert legacy[0]["role"] == "user"
+    assert legacy[0]["text"] == "hello world"
+
+
+def test_legacy_message_is_superseded_by_a_rest_shaped_real_record() -> None:
+    """The real record can arrive REST-shaped (`kind`, not `class` - the
+    same shape get_session_messages returns, per SS_insertRecord's own
+    documented convention) rather than as a live tap frame. Pins two
+    things at once: recordKind's `kind || frame.kind` fallback (a REST
+    user_input used to be invisible to this check, `class` alone), and
+    that a real record dedupes out the placeholder it supersedes rather
+    than rendering both (the user's own message showing up twice)."""
+    ctx = _ctx()
+    rows = _transcript(ctx, "w8", "s8", [
+        {"role": "user", "parts": [{"type": "text", "text": "hello world"}],
+         "session_id": "s8"},
+    ])
+    assert len([r for r in rows if r["kind"] == "legacy"]) == 1
+
+    rows = _transcript(ctx, "w8", "s8", [
+        {"kind": "user_input", "session_id": "s8", "seq": 5,
+         "payload": {"text": "hello world"}},
+    ])
+    legacy = [r for r in rows if r["kind"] == "legacy"]
+    records = [r for r in rows if r["kind"] == "record"]
+    assert legacy == []
+    assert len(records) == 1
+    assert records[0]["text"] == "hello world"
+
+
+def test_legacy_message_is_deduped_against_a_repeat_of_itself() -> None:
+    """messages.jsonl can carry the same instruction's legacy line twice
+    (e.g. session create with initial_instructions plus a later steer
+    sharing the file) - the placeholder must not render twice."""
+    ctx = _ctx()
+    frame = {"role": "user", "parts": [{"type": "text", "text": "hi"}],
+             "session_id": "s9"}
+    rows = _transcript(ctx, "w9", "s9", [frame, frame])
+    assert len([r for r in rows if r["kind"] == "legacy"]) == 1
+
+
+def test_legacy_message_is_skipped_when_a_real_record_already_exists() -> None:
+    """Frame order is not guaranteed (a REST backfill page and a live tap
+    catch-up can race) - if the real record is already present, a legacy
+    line for the same text must never be added at all, not added-then-
+    removed."""
+    ctx = _ctx()
+    rows = _transcript(ctx, "w10", "s10", [
+        {"class": "user_input", "session_id": "s10", "seq": 1,
+         "payload": {"text": "hi"}},
+        {"role": "user", "parts": [{"type": "text", "text": "hi"}],
+         "session_id": "s10"},
+    ])
+    assert len([r for r in rows if r["kind"] == "legacy"]) == 0
+    assert len([r for r in rows if r["kind"] == "record"]) == 1
+
+
+def test_legacy_placeholder_renders_ahead_of_a_later_unrelated_record() -> None:
+    """Full reconnect sequence the diagnosis captured: mount with an empty
+    store, backfill delivers the legacy placeholder for the first message
+    AND an unrelated durable record (e.g. a later turn's assistant
+    answer) in the same burst - the placeholder must render as the
+    FIRST row, not be lost among or after the real records."""
+    ctx = _ctx()
+    rows = _transcript(ctx, "w11", "s11", [
+        {"role": "user", "parts": [{"type": "text", "text": "first message"}],
+         "session_id": "s11"},
+        {"class": "assistant_token", "session_id": "s11", "seq": 7,
+         "payload": {"text": "an answer"}},
+    ])
+    assert rows[0]["kind"] == "legacy"
+    assert rows[0]["text"] == "first message"
+    assert rows[1]["kind"] == "record"
+    assert rows[1]["text"] == "an answer"
+
+
+def test_status_updates_from_a_rest_shaped_record_too() -> None:
+    """SS_updateStatus had the identical frame["class"]-only blind spot as
+    SS_apply's old recordKind bug: a REST-seeded (kind, not class)
+    user_input never set the live "thinking" status. Folded into this
+    ticket per the lead's call (same shape, same file)."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var s = SS_getStore("w12", "s12");
+          SS_apply(s, {"kind": "user_input", session_id: "s12", seq: 1,
+            payload: {text: "hi"}});
+          return JSON.stringify(SS_getSnapshot(s, "status"));
+        })()
+        """
+    ))
+    assert out["verb"] == "thinking"
