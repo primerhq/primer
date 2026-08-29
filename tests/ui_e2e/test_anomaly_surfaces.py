@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 
 import httpx
+import pytest
 
 from tests.ui_e2e._studio_helpers import open_session_in_studio
 
@@ -27,6 +28,13 @@ from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-02", "SMK-UI-05", status="partial")
 
 
+# US-011b/US-014 triage (2026-08-29): the pre-existing ui_e2e overlay-mount
+# race (orig handoff known-issue #1) - same family as
+# test_mobile_modal_is_sheet.py's mobile params and
+# test_agents_create.py's u0007. Failed once in the full US-014 E2E run,
+# passed twice in a row in isolation with no code change; a real
+# regression in this surface would still fail outright after the reruns.
+@pytest.mark.flaky(reruns=2, reruns_delay=1)
 def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
     page,
     base_url: str,

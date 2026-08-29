@@ -24,7 +24,7 @@ from playwright.sync_api import Page  # noqa: E402
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import MOBILE_TABS, open_mobile_tab
 
 pytestmark = smk("SMK-UI-01", status="partial")
 
@@ -33,11 +33,13 @@ pytestmark = smk("SMK-UI-01", status="partial")
 # modern iPhone. Both sat under the old 410px floor.
 PHONE_WIDTHS = [(390, 844), (360, 800)]
 
-# One per top-level nav section that renders the standard shell.
-# "" means the shell root itself; the rest are legacy routes the
-# facade translates into overlays. The chats route went with the chat
-# surface in S6.
-SURFACES = ["", "agents", "workspaces", "toolsets"]
+# RETARGET (US-014): both PHONE_WIDTHS fall in useViewport's mobile band
+# (<=639px), so NV_MobileShell - not the desktop shell these surfaces used
+# to name - owns every one of these viewports now. The real top-level
+# sections a phone user reaches are its own bottom-nav tabs, not the
+# desktop's legacy ?overlay= routes (which NV_MobileShell's root does not
+# even parse - see _shell_helpers.py's open_mobile_tab).
+SURFACES = MOBILE_TABS
 
 
 def _overflow(page: Page) -> dict:
@@ -73,43 +75,46 @@ def _overflow(page: Page) -> dict:
 
 @pytest.mark.ui_e2e
 @pytest.mark.parametrize(("width", "height"), PHONE_WIDTHS)
-@pytest.mark.parametrize("route", SURFACES)
+@pytest.mark.parametrize("tab_id", SURFACES)
 def test_the_document_does_not_scroll_sideways_on_a_phone(
-    page: Page, console_url: str, route: str, width: int, height: int,
+    page: Page, console_url: str, tab_id: str, width: int, height: int,
 ) -> None:
     page.set_viewport_size({"width": width, "height": height})
-    if route:
-        open_legacy_route(page, console_url, route)
-    else:
-        page.goto(f"{console_url}#/")
-    page.wait_for_load_state("domcontentloaded")
-    # The shell mounts before data arrives; give the topbar's live pill a beat
-    # so we measure it populated rather than empty.
+    open_mobile_tab(page, console_url, tab_id)
+    # The shell mounts before data arrives; give live data (health cards,
+    # workspace tree, inbox) a beat so we measure it populated rather than
+    # empty.
     page.wait_for_timeout(1500)
 
     m = _overflow(page)
     assert m["scrollWidth"] <= m["clientWidth"] + 1, (
-        f"{route} at {width}px scrolls sideways "
+        f"{tab_id} at {width}px scrolls sideways "
         f"({m['scrollWidth']} > {m['clientWidth']}): {m['widest']}"
     )
 
 
 @pytest.mark.ui_e2e
 @pytest.mark.parametrize(("width", "height"), PHONE_WIDTHS)
-def test_the_topbar_fits_the_viewport(
+def test_the_bottom_nav_fits_the_viewport(
     page: Page, console_url: str, width: int, height: int,
 ) -> None:
     """The specific element that was floored. Asserted separately so a
-    regression here is not masked by a page whose content also overflows."""
-    page.set_viewport_size({"width": width, "height": height})
-    page.goto(f"{console_url}#/")
-    page.wait_for_load_state("domcontentloaded")
-    page.wait_for_timeout(1500)
+    regression here is not masked by a page whose content also overflows.
 
-    m = _overflow(page)
-    assert m["topbar"] is not None, "the app topbar never mounted"
-    assert m["topbar"] <= m["clientWidth"] + 1, (
-        f"topbar is {m['topbar']}px in a {m['clientWidth']}px viewport"
+    RETARGET (US-014): NV_MobileShell has no .nv-topbar - the mobile shell's
+    own persistent chrome across every tab is its bottom nav (.mobile-tabs,
+    shared/mobile-tabs.jsx) instead. Same guarantee (chrome must fit the
+    viewport), the mobile shell's own surface.
+    """
+    page.set_viewport_size({"width": width, "height": height})
+    open_mobile_tab(page, console_url, "inbox")
+
+    nav = page.locator(".mobile-tabs")
+    nav.wait_for(state="visible", timeout=10_000)
+    box = nav.bounding_box()
+    assert box is not None, "the mobile bottom nav never mounted"
+    assert box["width"] <= width + 1, (
+        f"bottom nav is {box['width']}px in a {width}px viewport"
     )
 
 

@@ -228,3 +228,49 @@ def open_legacy_route(page: Page, console_url: str, route: str,
     expect(body).to_be_visible(timeout=timeout)
     expect(page.get_by_test_id(f"nv-overlay:{name}")).to_be_visible(timeout=timeout)
     return body
+
+
+# ---------------------------------------------------------------------------
+# Mobile shell (NV_MobileShell, US-014) navigation
+# ---------------------------------------------------------------------------
+#
+# Below the mobile band (<=639px, useViewport's own threshold) the console
+# swaps to an entirely different root component (nv-mobile-shell.jsx) that
+# does not know the ?overlay= grammar: NV_OverlayHost only mounts inside the
+# desktop branch, so open_legacy_route's nv-overlay-body wait can never
+# resolve there. A platform overlay whose top-level name IS a mobile
+# Platform nav id (see NV_PLAT_GROUPS) gets intercepted instead and lands on
+# the More tab's fact-sheet flow (M5) - which is a real surface, but a
+# read-only one (rows open a fact sheet; "Edit on desktop"). These helpers
+# drive the mobile shell on its own terms.
+
+MOBILE_TABS = ["inbox", "spaces", "files", "more"]
+
+
+def open_mobile_shell(page: Page, console_url: str, *, timeout: int = 20_000) -> None:
+    page.goto(f"{console_url}#/")
+    expect(page.get_by_test_id("nv-mobile-shell")).to_be_visible(timeout=timeout)
+
+
+def open_mobile_tab(page: Page, console_url: str, tab_id: str, *, timeout: int = 20_000):
+    """Land on one of the mobile shell's bottom-nav tabs (Inbox / Spaces /
+    Files / More) - the actual top-level surfaces a phone user reaches,
+    replacing the desktop's ?overlay= grammar at this viewport band."""
+    open_mobile_shell(page, console_url, timeout=timeout)
+    page.get_by_role("tab", name=tab_id.capitalize()).click()
+    panel = page.get_by_test_id(f"nv-mobile-panel:{tab_id}")
+    expect(panel).to_be_visible(timeout=timeout)
+    return panel
+
+
+def open_mobile_platform_nav(page: Page, console_url: str, nav_id: str, *,
+                              timeout: int = 20_000):
+    """Drill into a Platform entity list from the More tab (NV_MobilePlatform)
+    - the mobile-native replacement for a desktop Platform overlay, always
+    rendered as .card rows (NV_MobilePlatform has no <table> branch), never
+    the classic page component itself."""
+    open_mobile_tab(page, console_url, "more", timeout=timeout)
+    page.get_by_test_id(f"nv-mob-plat-nav:{nav_id}").click()
+    rows = page.get_by_test_id(f"nv-mob-plat-page:{nav_id}")
+    expect(rows).to_be_visible(timeout=timeout)
+    return rows
