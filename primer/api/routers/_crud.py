@@ -132,6 +132,18 @@ _OnPreDeleteHook = Callable[[Any, Request], Awaitable[None]] | None
 # that must return 403 regardless of storage state.
 _OnPreDeleteIdHook = Callable[[str, Request], Awaitable[None]] | None
 
+# List-enrich hook signature: ``(page_response, request) -> page_response``.
+# Called AFTER storage.list()/storage.find() on the unscoped GET
+# /<plural> route, with the freshly-fetched page. Returns a (possibly
+# new) page response - e.g. with each item swapped for a response-only
+# subclass carrying a computed field. Runs once per request against the
+# CURRENT PAGE ONLY; a hook that needs a cross-entity aggregate (a
+# reference count from a different Storage[T]) must build it with its
+# own bounded number of full-table passes, not a per-item lookup, to
+# stay N+1-free (see model_profiles.py's reference-count enrichment for
+# the pattern).
+_OnListEnrichHook = Callable[[Any, Request], Awaitable[Any]] | None
+
 
 def make_crud_router(
     *,
@@ -153,6 +165,7 @@ def make_crud_router(
     references: Sequence[ReferenceCheck] = (),
     cdc_kind: str | None = None,
     search_fields: list[str] | None = None,
+    enrich_list: _OnListEnrichHook = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -238,6 +251,14 @@ def make_crud_router(
         these fields via ``storage.find``.  The response keeps the same
         ``{items, total}`` offset-paged shape as the unfiltered list.
         ``None`` (the default) leaves the list route unchanged.
+    enrich_list
+        Optional async callable ``async def(page_response, request) ->
+        page_response`` invoked on the unscoped ``GET /<plural>`` route
+        after ``storage.list()``/``storage.find()`` returns (before the
+        response is sent). Use to attach a computed, response-only
+        field to each item (e.g. a reference count from another
+        entity's storage) without a per-id endpoint. ``None`` (the
+        default) leaves the list route unchanged.
     """
 
     # Validate scope params: both must be set together or not at all.
@@ -615,6 +636,7 @@ def make_crud_router(
             responses=common_responses(400, 422, 500),
         )
         async def _list(
+            request: Request,
             page: PageRequest = Depends(parse_page),
             order_by: list[OrderBy] | None = Depends(parse_order_by),
             q: str | None = Query(
@@ -632,8 +654,12 @@ def make_crud_router(
             # OffsetPageResponse {items, total} shape as the plain list.
             if q and q.strip() and search_fields:
                 predicate = _build_search_predicate(search_fields, q)
-                return await storage.find(predicate, page, order_by=order_by)
-            return await storage.list(page, order_by=order_by)
+                resp = await storage.find(predicate, page, order_by=order_by)
+            else:
+                resp = await storage.list(page, order_by=order_by)
+            if enrich_list is not None:
+                resp = await enrich_list(resp, request)
+            return resp
 
         # ---- POST /<plural>/find  (find with predicate) ------------------
         @router.post(

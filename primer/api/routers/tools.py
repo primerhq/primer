@@ -28,6 +28,7 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.registries import ProviderRegistry
+from primer.model.chat import tool_catalogue_flags
 from primer.model.storage import OffsetPage
 
 logger = logging.getLogger(__name__)
@@ -92,16 +93,12 @@ async def list_tools(
                         "id": scoped,
                         "description": tool.description or "",
                         "input_schema": tool.args_schema or {},
-                        # y/w/r/n capability badges. Excluded from Tool's own
+                        # y/w/r/n capability badges, excluded from Tool's own
                         # wire serialisation (chat.py) since they must never
-                        # reach the LLM-facing tool schema; added back here
-                        # explicitly, same pattern as GET /toolsets/{id}/runtime.
-                        "yields": bool(getattr(tool, "yields", False)),
-                        "requires_workspace": bool(
-                            getattr(tool, "requires_workspace", False)
-                        ),
-                        "tool_class": getattr(tool, "tool_class", "standard"),
-                        "required_role": getattr(tool, "required_role", None),
+                        # reach the LLM-facing tool schema;
+                        # tool_catalogue_flags() is the one seam every
+                        # "list tools" route re-adds them from.
+                        **tool_catalogue_flags(tool),
                     })
         except TimeoutError:
             # An unreachable MCP server accepts the connection and then

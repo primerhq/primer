@@ -517,6 +517,14 @@ def translate_stream_event(
                 "call_id": event.extended.call_id,
                 "output": event.extended.output,
                 "error": event.extended.error,
+                # UX reconcile wave 5: a workspace tool's own extra data
+                # (grep's match_count/file_count, ...) used to be dropped
+                # here, the last of three drop points on this path
+                # (ToolResultPart -> _ExecutorToolResult -> here). Additive
+                # and defensive: a record persisted before this field
+                # existed simply has no "metadata" key, and every reader
+                # of this payload already treats it as optional.
+                "metadata": event.extended.metadata,
             },
             node_id=node_id,
             created_at=now,

@@ -327,6 +327,18 @@ class ToolResultPart(BaseModel):
             "media; ignored by LLM adapters (they read ``output``)."
         ),
     )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Per-tool extras a workspace tool computed but did not put in "
+            "``output`` (e.g. grep's match_count/file_count - an exact "
+            "count the model does not need repeated in its own context, "
+            "but a UI chip does). Carried verbatim from WorkspaceTool's "
+            "own ToolResult.metadata (primer/workspace/tool.py); ignored "
+            "by LLM adapters, same as ``media``. Absent on records "
+            "persisted before this field existed - always optional."
+        ),
+    )
 
 
 class ToolCallResult(BaseModel):
@@ -695,6 +707,33 @@ class Tool(Describeable):
             "In-memory metadata only; excluded from serialization."
         ),
     )
+
+
+def tool_catalogue_flags(tool: Any) -> dict[str, Any]:
+    """The four ``exclude=True`` picker flags on a :class:`Tool`, by wire name.
+
+    Every "list tools for a picker" route re-adds these on top of the
+    default ``model_dump()`` (which omits them) so the UI can render
+    per-tool badges - one seam for the flag set itself, so a fifth flag
+    added later needs one edit here instead of N call sites staying in
+    sync by hand.
+
+    A module-level function reading via ``getattr``, not a ``Tool``
+    method calling ``self.x`` directly: several routers' tests pass a
+    bare ``unittest.mock.MagicMock`` standing in for a ``Tool`` with
+    only the four flag attributes explicitly configured. A bound method
+    call (``tool.catalogue_flags()``) would hit the mock's own
+    auto-attribute machinery instead of this implementation; ``getattr``
+    reads the mock's configured attributes exactly like the plain
+    ``Tool`` case, so both are handled identically without duplicating
+    this function's body as a second "test-only" variant.
+    """
+    return {
+        "yields": bool(getattr(tool, "yields", False)),
+        "requires_workspace": bool(getattr(tool, "requires_workspace", False)),
+        "tool_class": getattr(tool, "tool_class", "standard"),
+        "required_role": getattr(tool, "required_role", None),
+    }
 
 
 ToolChoice = Literal["auto", "required", "none"] | str
@@ -1297,6 +1336,15 @@ class _ExecutorToolResult(BaseModel):
     error: bool = Field(
         default=False,
         description="True if the tool reported an execution failure or denial.",
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Carried verbatim from the originating ToolResultPart.metadata "
+            "(see that field's own docstring) - not fed to the LLM, only "
+            "along for the ride so a tap subscriber (a UI chip) sees it "
+            "on the same round-trip event, not a second fetch."
+        ),
     )
 
 

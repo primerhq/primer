@@ -208,3 +208,11 @@ async def test_runtime_reports_which_tools_yield(client) -> None:
     assert "yields" in by_id["ask"], "the badge reads this key"
     assert by_id["ask"]["yields"] is True
     assert by_id["plain"]["yields"] is False
+    # Platform wave P2 (#28): the other three y/w/r/n badges ride the
+    # same Tool.catalogue_flags() seam as yields - pin all four here so
+    # a future flag never silently drifts back to one route again.
+    for key in ("requires_workspace", "tool_class", "required_role"):
+        assert key in by_id["plain"], f"the badge reads this key too: {key}"
+    assert by_id["plain"]["requires_workspace"] is False
+    assert by_id["plain"]["tool_class"] == "standard"
+    assert by_id["plain"]["required_role"] is None

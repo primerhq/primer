@@ -291,6 +291,43 @@ class TestWrite:
                 WriteArgs(path="x.txt", content="x", mode="not-a-number"), ctx
             )
 
+    async def test_new_file_metadata_is_all_additions(
+        self, workspace_root: Path, ctx: ToolCallContext
+    ) -> None:
+        result = await Write(workspace_root).execute(
+            WriteArgs(path="new.txt", content="a\nb\nc"), ctx
+        )
+        assert result.metadata == {"additions": 3, "deletions": 0}
+
+    async def test_overwrite_metadata_carries_exact_line_delta(
+        self, workspace_root: Path, ctx: ToolCallContext
+    ) -> None:
+        (workspace_root / "f.txt").write_text("a\nb\nc\n")
+        await Read(workspace_root).execute(ReadArgs(path="f.txt"), ctx)
+        result = await Write(workspace_root).execute(
+            WriteArgs(path="f.txt", content="a\nx\nc\nd\n"), ctx
+        )
+        assert result.metadata == {"additions": 2, "deletions": 1}
+
+    async def test_overwrite_with_identical_content_has_no_metadata(
+        self, workspace_root: Path, ctx: ToolCallContext
+    ) -> None:
+        (workspace_root / "f.txt").write_text("same\n")
+        await Read(workspace_root).execute(ReadArgs(path="f.txt"), ctx)
+        result = await Write(workspace_root).execute(
+            WriteArgs(path="f.txt", content="same\n"), ctx
+        )
+        assert result.metadata == {}
+
+    async def test_unreadable_old_content_has_no_metadata(
+        self, workspace_root: Path, ctx: ToolCallContext
+    ) -> None:
+        (workspace_root / "f.bin").write_bytes(b"\xff\xfe\x00\x01")
+        result = await Write(workspace_root).execute(
+            WriteArgs(path="f.bin", content="text now", force=True), ctx
+        )
+        assert result.metadata == {}
+
 
 # ===========================================================================
 # edit
@@ -509,6 +546,52 @@ class TestGrep:
         )
         assert len(result.output.splitlines()) == 3
         assert result.truncated is True
+
+    async def test_metadata_carries_the_exact_file_and_match_counts(
+        self, workspace_root: Path, ctx: ToolCallContext
+    ) -> None:
+        """UX reconcile wave 5: a "searched N files" chip needs the
+        real count, not a client-side parse of the (possibly capped)
+        output string - metadata carries it unconditionally."""
+        (workspace_root / "a.py").write_text("def foo(): pass\ndef bar(): pass\n")
+        (workspace_root / "b.py").write_text("def baz(): pass\n")
+        (workspace_root / "c.py").write_text("class C: pass\n")
+        result = await Grep(workspace_root).execute(
+            GrepArgs(pattern=r"^def "), ctx
+        )
+        assert result.metadata == {
+            "match_count": 3, "file_count": 2, "truncated": False,
+        }
+
+    async def test_metadata_match_count_is_per_line_in_count_mode(
+        self, workspace_root: Path, ctx: ToolCallContext
+    ) -> None:
+        (workspace_root / "a.py").write_text("x\nx\nx\n")
+        (workspace_root / "b.py").write_text("x\n")
+        result = await Grep(workspace_root).execute(
+            GrepArgs(pattern="x", output_mode="count"), ctx
+        )
+        assert result.metadata == {
+            "match_count": 4, "file_count": 2, "truncated": False,
+        }
+
+    async def test_metadata_counts_survive_head_limit_truncation(
+        self, workspace_root: Path, ctx: ToolCallContext
+    ) -> None:
+        """The count in metadata is the REAL total, unaffected by the
+        output-line cap - a chip reading it never silently under-reports
+        just because head_limit fired. metadata["truncated"] mirrors
+        ToolResult.truncated so a UI reading only metadata still knows
+        the output list itself (not the count) was capped."""
+        for i in range(10):
+            (workspace_root / f"f{i}.txt").write_text("hit\n")
+        result = await Grep(workspace_root).execute(
+            GrepArgs(pattern="hit", head_limit=3), ctx
+        )
+        assert result.truncated is True
+        assert result.metadata == {
+            "match_count": 10, "file_count": 10, "truncated": True,
+        }
 
     async def test_invalid_regex_rejected(
         self, workspace_root: Path, ctx: ToolCallContext

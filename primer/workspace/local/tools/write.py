@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 from pathlib import Path
 from typing import ClassVar
 
@@ -112,6 +113,28 @@ class Write(WorkspaceTool):
                     "or pass force=True"
                 )
 
+        # UX reconcile wave 5: a live "editing {file} +N -N" chip needs an
+        # exact line-delta, which - unlike edit's own unified-diff output -
+        # this tool's result has never carried (just a byte count). The
+        # prior content is only ever available for a moment, right here,
+        # before the atomic write below replaces it. A brand new file
+        # (target does not exist) is genuinely all-additions - old_lines
+        # stays []. An EXISTING file whose old content could not be read
+        # (binary, races, permissions) stays None: reporting "all
+        # additions" there would be a wrong, misleading stat, not a
+        # missing one, so no diff-stat is attached at all rather than a
+        # false one.
+        old_lines: list[str] | None = []
+        if target.exists():
+            try:
+                old_lines = (
+                    await asyncio.to_thread(
+                        target.read_text, encoding="utf-8", errors="strict"
+                    )
+                ).splitlines()
+            except (OSError, UnicodeDecodeError):
+                old_lines = None
+
         # Reuse the backend's atomic write primitive (temp file + os.replace)
         # so a concurrent reader never sees a torn / truncated file. Imported
         # lazily to avoid a circular import (workspace.py imports this module).
@@ -143,7 +166,36 @@ class Write(WorkspaceTool):
         # the read-before-write rule.
         ctx.session.mark_read(args.path)
         size = len(content_bytes)
-        return ToolResult(output=f"wrote {size} bytes to {args.path}")
+        metadata = _diff_stat(old_lines, args.content.splitlines())
+        return ToolResult(
+            output=f"wrote {size} bytes to {args.path}", metadata=metadata
+        )
+
+
+def _diff_stat(
+    old_lines: list[str] | None, new_lines: list[str]
+) -> dict[str, int]:
+    """Exact added/deleted line counts, without materialising a diff
+    string - SequenceMatcher.get_opcodes() is exactly what
+    difflib.unified_diff itself walks internally to build one, so this
+    is the same algorithm edit.py's own diff already relies on, just
+    summed instead of rendered. Unreadable old content returns {}
+    (falsy, matches ToolResult.metadata's own empty-dict default) rather
+    than a misleading all-additions stat.
+    """
+    if old_lines is None:
+        return {}
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    additions = 0
+    deletions = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("replace", "delete"):
+            deletions += i2 - i1
+        if tag in ("replace", "insert"):
+            additions += j2 - j1
+    if not additions and not deletions:
+        return {}
+    return {"additions": additions, "deletions": deletions}
 
 
 __all__ = ["Write", "WriteArgs"]

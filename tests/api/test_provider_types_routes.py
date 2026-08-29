@@ -82,6 +82,32 @@ async def test_aggregated_declares_its_own_editor(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_discoverable_flag_matches_the_probe_helper(client) -> None:
+    """Platform wave P2 addendum (A): _types' discoverable flag must
+    agree with what _probe_llm_models (primer/api/routers/providers.py)
+    actually supports - its own docstring names ollama, openresponses,
+    openchat, openrouter, anthropic and gemini as having a live
+    list-models API. anthropic was stale at False (discoverable metadata
+    hadn't caught up to the probe branch already calling the real
+    _discover_anthropic_models - see TestDiscoverAnthropic's live-probe
+    tests) while every other one of the six was already True."""
+    body = (await client.get("/v1/llm_providers/_types")).json()
+    discoverable_kinds = {
+        LLMProviderType.OLLAMA.value,
+        LLMProviderType.OPENRESPONSES.value,
+        LLMProviderType.OPENCHAT.value,
+        LLMProviderType.OPENROUTER.value,
+        LLMProviderType.ANTHROPIC.value,
+        LLMProviderType.GEMINI.value,
+    }
+    for kind, meta in body.items():
+        assert meta["discoverable"] is (kind in discoverable_kinds), kind
+    # Aggregated is a meta-provider with no upstream of its own to probe -
+    # the one kind outside the probe helper's docstring list entirely.
+    assert body[LLMProviderType.AGGREGATED.value]["discoverable"] is False
+
+
+@pytest.mark.asyncio
 async def test_llm_rows_declare_no_models_field(client) -> None:
     """models[] left LLMProvider when ModelProfile became the registry of
     what a provider serves (primer/model/providers/llm.py:317-322)."""

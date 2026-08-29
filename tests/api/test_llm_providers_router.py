@@ -333,3 +333,122 @@ class TestDiscoverModelsOnASavedProvider:
         r = await client.get("/v1/llm_providers/saved-probe-2/discovered_models")
         assert r.status_code == 200, r.text
         assert r.json()["models"][0]["context_length"] > 0
+
+
+class TestProbeStateStamping:
+    """Platform wave P2 (#4/#5): last_probe_at/last_probe_ok/last_error
+    are stamped onto the stored LLMProvider row by the one route that
+    actually probes a persisted provider."""
+
+    @pytest.mark.asyncio
+    async def test_virgin_row_has_no_probe_state(self, client) -> None:
+        await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "probe-virgin",
+                "provider": "openresponses",
+                "config": {"url": "http://example.invalid", "flavor": "other"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        got = await client.get("/v1/llm_providers/probe-virgin")
+        assert got.json()["last_probe_at"] is None
+        assert got.json()["last_probe_ok"] is False
+        assert got.json()["last_error"] is None
+
+    @pytest.mark.asyncio
+    async def test_success_stamps_ok_and_at(self, client, monkeypatch) -> None:
+        async def _fake_probe(config):
+            return {"models": [{"name": "m-1"}]}
+
+        monkeypatch.setattr(
+            "primer.api.routers.providers._probe_openai_compatible_models",
+            _fake_probe,
+        )
+        await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "probe-ok",
+                "provider": "openresponses",
+                "config": {"url": "http://example.invalid", "flavor": "other"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        r = await client.get("/v1/llm_providers/probe-ok/discovered_models")
+        assert r.status_code == 200, r.text
+
+        got = await client.get("/v1/llm_providers/probe-ok")
+        body = got.json()
+        assert body["last_probe_at"] is not None
+        assert body["last_probe_ok"] is True
+        assert body["last_error"] is None
+
+    @pytest.mark.asyncio
+    async def test_failure_stamps_error_and_leaves_ok_false(
+        self, client, monkeypatch,
+    ) -> None:
+        from primer.model.except_ import BadRequestError
+
+        async def _fake_probe(config):
+            raise BadRequestError("upstream said no")
+
+        monkeypatch.setattr(
+            "primer.api.routers.providers._probe_openai_compatible_models",
+            _fake_probe,
+        )
+        await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "probe-fail",
+                "provider": "openresponses",
+                "config": {"url": "http://example.invalid", "flavor": "other"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        r = await client.get("/v1/llm_providers/probe-fail/discovered_models")
+        assert r.status_code >= 400
+
+        got = await client.get("/v1/llm_providers/probe-fail")
+        body = got.json()
+        assert body["last_probe_at"] is not None
+        assert body["last_probe_ok"] is False
+        assert "upstream said no" in body["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_a_later_success_clears_a_prior_error(
+        self, client, monkeypatch,
+    ) -> None:
+        from primer.model.except_ import BadRequestError
+
+        calls = {"n": 0}
+
+        async def _flaky_probe(config):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise BadRequestError("first attempt failed")
+            return {"models": [{"name": "m-1"}]}
+
+        monkeypatch.setattr(
+            "primer.api.routers.providers._probe_openai_compatible_models",
+            _flaky_probe,
+        )
+        await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "probe-recover",
+                "provider": "openresponses",
+                "config": {"url": "http://example.invalid", "flavor": "other"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        first = await client.get("/v1/llm_providers/probe-recover/discovered_models")
+        assert first.status_code >= 400
+        second = await client.get(
+            "/v1/llm_providers/probe-recover/discovered_models",
+        )
+        assert second.status_code == 200, second.text
+
+        got = await client.get("/v1/llm_providers/probe-recover")
+        body = got.json()
+        assert body["last_probe_ok"] is True
+        assert body["last_error"] is None

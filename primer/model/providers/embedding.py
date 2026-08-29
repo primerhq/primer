@@ -10,10 +10,10 @@ from __future__ import annotations
 from enum import Enum
 from typing import ClassVar
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field
 
 from primer.model.common import Identifiable
-from primer.model.providers._shared import Limits, _HttpApiKeyConfig
+from primer.model.providers._shared import ApiKeySecret, Limits, _HttpApiKeyConfig
 from primer.model.providers.llm import GoogleConfig
 
 
@@ -77,7 +77,7 @@ class OpenAIConfig(_HttpApiKeyConfig):
 class HuggingFaceConfig(BaseModel):
     """Connection settings for the HuggingFace embedding provider."""
 
-    token: SecretStr = Field(
+    token: ApiKeySecret = Field(
         ...,
         description="HuggingFace token used to pull the transformer model.",
     )

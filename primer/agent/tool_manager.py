@@ -829,7 +829,15 @@ class ToolExecutionManager:
         if not result.truncated:
             output = await self._maybe_truncate_output(output, sess)
 
-        return ToolResultPart(id=call.id, output=output, error=False)
+        # UX reconcile wave 5: a workspace tool's own ToolResult.metadata
+        # (grep's match_count/file_count, an edit's future diff-stat, ...)
+        # used to be dropped here - the model never needed it (it is not
+        # in `output`), but neither did anything downstream, so a UI chip
+        # wanting an exact count had nothing to read.
+        return ToolResultPart(
+            id=call.id, output=output, error=False,
+            metadata=result.metadata or None,
+        )
 
     async def _maybe_truncate_output(
         self,

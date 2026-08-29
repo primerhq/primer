@@ -119,7 +119,7 @@ class Grep(WorkspaceTool):
             raise BadRequestError(f"invalid regex: {exc}") from exc
 
         files = await asyncio.to_thread(_collect_files, target, args.glob)
-        lines, full_count = await asyncio.to_thread(
+        lines, match_count, file_count = await asyncio.to_thread(
             _grep_files,
             files,
             regex=regex,
@@ -137,8 +137,23 @@ class Grep(WorkspaceTool):
         else:
             capped = lines
 
-        del full_count  # reserved for future "summary" output enhancement
-        return ToolResult(output="\n".join(capped), truncated=truncated)
+        # UX reconcile wave 5: match_count/file_count used to be computed
+        # here and thrown away (`del full_count`) - a chip that wants to
+        # say "searched N files" (files_with_matches, the default mode)
+        # or "N matches" (count/content) needs the EXACT number, not a
+        # client-side parse of a capped, mode-shaped output string.
+        # truncated is duplicated into metadata (also on ToolResult itself)
+        # so a UI reading only `metadata` still knows to caveat the count
+        # ("250+ files") instead of presenting a capped total as exact.
+        return ToolResult(
+            output="\n".join(capped),
+            truncated=truncated,
+            metadata={
+                "match_count": match_count,
+                "file_count": file_count,
+                "truncated": truncated,
+            },
+        )
 
 
 def _collect_files(target: Path, glob_filter: str | None) -> list[Path]:
@@ -163,10 +178,11 @@ def _grep_files(
     context: int,
     multiline: bool,
     workspace_root: Path,
-) -> tuple[list[str], int]:
-    """Return (lines, total-match-count) for the requested mode."""
+) -> tuple[list[str], int, int]:
+    """Return (lines, total-match-count, files-with-a-match-count)."""
     out: list[str] = []
     total = 0
+    file_count = 0
     for path in files:
         try:
             with path.open("rb") as fh:
@@ -186,6 +202,7 @@ def _grep_files(
             if not matches_ml:
                 continue
             total += len(matches_ml)
+            file_count += 1
             if mode == "files_with_matches":
                 out.append(rel)
                 continue
@@ -205,6 +222,7 @@ def _grep_files(
         if not line_matches:
             continue
         total += len(line_matches)
+        file_count += 1
 
         if mode == "files_with_matches":
             out.append(rel)
@@ -223,7 +241,7 @@ def _grep_files(
                     continue
                 emitted.add(i)
                 out.append(f"{rel}:{i + 1}:{all_lines[i]}")
-    return out, total
+    return out, total, file_count
 
 
 __all__ = ["Grep", "GrepArgs"]

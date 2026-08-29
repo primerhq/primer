@@ -28,6 +28,7 @@ Models" button. They build a transient adapter, call its
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -50,6 +51,7 @@ from primer.api.deps import (
     get_toolset_storage,
 )
 from primer.api.errors import common_responses
+from primer.model.chat import tool_catalogue_flags
 from primer.model.except_ import (
     BadRequestError,
     NetworkError,
@@ -375,7 +377,13 @@ async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
             "label": "Anthropic",
             "config_fields": [_vendor_api_key_field("Anthropic")],
             "row_fields": [],
-            "discoverable": False,
+            # Platform wave P2 addendum (A): _probe_llm_models' anthropic
+            # branch calls the real _discover_anthropic_models live probe
+            # (proven by TestDiscoverAnthropic's live-discovery tests
+            # below) - this was the stale side of the inconsistency, not
+            # the probe's own docstring, which already listed anthropic
+            # among the six discoverable kinds.
+            "discoverable": True,
         },
         LLMProviderType.OLLAMA.value: {
             "label": "Ollama",
@@ -629,6 +637,12 @@ async def discover_saved_llm_models(
     Returns the same ``{"models": [...]}`` shape, which the console turns
     into :class:`ModelProfile` rows -- discovery lists what the upstream
     offers; a profile is what this deployment chooses to register.
+
+    Platform wave P2 (#4/#5): this is the one place a REAL, stored
+    provider is actually probed (the draft-config sibling above has no
+    persisted row to stamp), so success/failure here is stamped onto
+    ``last_probe_at``/``last_probe_ok``/``last_error`` before the
+    original outcome (result or re-raise) proceeds.
     """
     from primer.model.except_ import NotFoundError
 
@@ -639,7 +653,20 @@ async def discover_saved_llm_models(
     # value this endpoint exists to avoid sending upstream. Dump in python
     # mode and unwrap explicitly.
     config = _unwrap_secrets(row.config.model_dump(mode="python"))
-    return await _probe_llm_models(str(getattr(row.provider, "value", row.provider)), config)
+    now = datetime.now(UTC)
+    try:
+        result = await _probe_llm_models(
+            str(getattr(row.provider, "value", row.provider)), config,
+        )
+    except BadRequestError as exc:
+        await providers.update(row.model_copy(update={
+            "last_probe_at": now, "last_probe_ok": False, "last_error": str(exc),
+        }))
+        raise
+    await providers.update(row.model_copy(update={
+        "last_probe_at": now, "last_probe_ok": True, "last_error": None,
+    }))
+    return result
 
 
 def _unwrap_secrets(value: Any) -> Any:
@@ -1055,14 +1082,10 @@ async def _catalogue_tools(
                     "input_schema": tool.args_schema or {},
                     # y/w/r/n capability badges -- excluded from Tool's own
                     # wire serialisation (chat.py) since they must never
-                    # reach the LLM-facing tool schema; added back here
-                    # explicitly, same pattern as GET /toolsets/{id}/runtime.
-                    "yields": bool(getattr(tool, "yields", False)),
-                    "requires_workspace": bool(
-                        getattr(tool, "requires_workspace", False)
-                    ),
-                    "tool_class": getattr(tool, "tool_class", "standard"),
-                    "required_role": getattr(tool, "required_role", None),
+                    # reach the LLM-facing tool schema;
+                    # tool_catalogue_flags() is the one seam every "list
+                    # tools" route re-adds them from.
+                    **tool_catalogue_flags(tool),
                 })
         finally:
             # Finalize the generator HERE, in the probe task, never via
@@ -1372,14 +1395,9 @@ async def list_toolset_tools(
             entry = tool.model_dump(mode="json")
             # y/w/r/n capability badges -- excluded from Tool's own wire
             # serialisation (chat.py) since they must never reach the
-            # LLM-facing tool schema; added back here explicitly, same
-            # pattern as GET /tools/catalogue and GET /toolsets/{id}/runtime.
-            entry["yields"] = bool(getattr(tool, "yields", False))
-            entry["requires_workspace"] = bool(
-                getattr(tool, "requires_workspace", False)
-            )
-            entry["tool_class"] = getattr(tool, "tool_class", "standard")
-            entry["required_role"] = getattr(tool, "required_role", None)
+            # LLM-facing tool schema; tool_catalogue_flags() is the one
+            # seam every "list tools" route re-adds them from.
+            entry.update(tool_catalogue_flags(tool))
             tools.append(entry)
     except BaseExceptionGroup as group:
         # HTTP/SSE MCP transports run inside anyio task groups, which
@@ -1839,18 +1857,12 @@ async def validate_python_source(
                 "id": reg.tool.id,
                 "fn_name": reg.fn_name,
                 "ok": True,
-                "yields": reg.tool.yields,
-                # w/r/n capability badges -- same getattr pattern as
-                # GET /toolsets/{id}/tools, GET /toolsets/{id}/runtime,
-                # GET /tools/catalogue and GET /tools, so every
-                # tool-serialising endpoint stays in parity (R4 review
-                # finding: this route and .../runtime were the two that
-                # had drifted, only re-adding "yields").
-                "requires_workspace": bool(
-                    getattr(reg.tool, "requires_workspace", False)
-                ),
-                "tool_class": getattr(reg.tool, "tool_class", "standard"),
-                "required_role": getattr(reg.tool, "required_role", None),
+                # y/w/r/n capability badges -- tool_catalogue_flags() is
+                # the one seam every "list tools" route re-adds them
+                # from (R4 review finding: this route and .../runtime
+                # had drifted, only re-adding "yields", before that seam
+                # existed).
+                **tool_catalogue_flags(reg.tool),
                 "timeout_seconds": reg.timeout_seconds,
                 "description": reg.tool.description or "",
                 "args": sorted(
@@ -1899,21 +1911,13 @@ async def toolset_runtime(
     provider = await registry.get_toolset(toolset_id)
     # y/w/r/n capability badges are not part of Tool's own serialisation
     # (chat.py excludes them so they never reach the LLM-facing schema);
-    # added back here explicitly, same getattr pattern as
-    # GET /toolsets/{id}/tools, POST /toolsets/{id}/validate,
-    # GET /tools/catalogue and GET /tools, so every tool-serialising
-    # endpoint stays in parity (R4 review finding: this route and
-    # .../validate were the two that had drifted, only re-adding
-    # "yields").
+    # tool_catalogue_flags() is the one seam every "list tools" route
+    # re-adds them from (R4 review finding: this route and .../validate
+    # had drifted, only re-adding "yields", before that seam existed).
     tools = []
     async for t in provider.list_tools():
         entry = t.model_dump(mode="json")
-        entry["yields"] = bool(getattr(t, "yields", False))
-        entry["requires_workspace"] = bool(
-            getattr(t, "requires_workspace", False)
-        )
-        entry["tool_class"] = getattr(t, "tool_class", "standard")
-        entry["required_role"] = getattr(t, "required_role", None)
+        entry.update(tool_catalogue_flags(t))
         tools.append(entry)
     error = getattr(provider, "registration_error", None)
     return {

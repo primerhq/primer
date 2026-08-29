@@ -300,6 +300,7 @@ async def run_agent_turn(
                             call_id=part.id,
                             output=part.output,
                             error=part.error,
+                            metadata=part.metadata,
                         )
                     )
                     yield synth

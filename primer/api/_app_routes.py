@@ -23,7 +23,10 @@ from primer.api.routers import (
     yields as yields_router,
 )
 from primer.api.routers.auth import auth_router
-from primer.api.routers.semantic_search import semantic_search_router
+from primer.api.routers.semantic_search import (
+    semantic_search_provider_helpers_router,
+    semantic_search_router,
+)
 from primer.api.routers.services import service_router
 from primer.api.routers.web_fetch import (
     web_fetch_active_config_router,
@@ -163,6 +166,11 @@ def _mount_routers(
     from primer.api.routers.tools import tools_router
     app.include_router(tools_router, prefix=prefix, dependencies=user_dep)
     # SemanticSearchProvider CRUD — a provider => admin only.
+    # helpers (_types, _test) BEFORE CRUD so the literal paths win over
+    # /{id}, same ordering rule as providers/web_search/web_fetch above.
+    app.include_router(
+        semantic_search_provider_helpers_router, prefix=prefix, dependencies=admin_dep,
+    )
     app.include_router(semantic_search_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(service_router, prefix=prefix, dependencies=admin_dep)
     from primer.api.routers.artifact_storage import artifact_storage_router

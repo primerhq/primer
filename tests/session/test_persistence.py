@@ -303,6 +303,40 @@ def test_translate_executor_tool_result() -> None:
     assert rec.payload.get("call_id") == "tc1"
 
 
+def test_translate_executor_tool_result_carries_metadata() -> None:
+    """UX reconcile wave 5: the last of three drop points on this path
+    (ToolResultPart -> _ExecutorToolResult -> here) - a workspace tool's
+    own extra data (grep's match_count/file_count, ...) now survives
+    into the persisted record instead of being silently dropped."""
+    from primer.model.chat import ExtendedEvent, _ExecutorToolResult
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    event = ExtendedEvent(
+        extended=_ExecutorToolResult(
+            call_id="tc1", output="a.py\nb.py", error=False,
+            metadata={"match_count": 3, "file_count": 2},
+        )
+    )
+    rec = translate_stream_event(event, state)
+    assert rec.payload.get("metadata") == {"match_count": 3, "file_count": 2}
+
+
+def test_translate_executor_tool_result_metadata_defaults_to_none() -> None:
+    """Additive and defensive: the overwhelming majority of tool
+    results never set metadata, so this must not turn into a payload
+    full of empty {} noise."""
+    from primer.model.chat import ExtendedEvent, _ExecutorToolResult
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    event = ExtendedEvent(
+        extended=_ExecutorToolResult(call_id="tc1", output="result text", error=False)
+    )
+    rec = translate_stream_event(event, state)
+    assert rec.payload.get("metadata") is None
+
+
 def test_translate_error() -> None:
     """Error emits an ERROR record."""
     from primer.model.chat import Error

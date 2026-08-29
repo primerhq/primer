@@ -2419,6 +2419,14 @@ async def list_pending_yields(
                     # never a free-text question). BDD pass 2026-08-24.
                     "resume_metadata": {
                         "original_call": metadata.get("original_call"),
+                        # UX reconcile wave 5: an ask_user park stamps this
+                        # at yield time (_system_tools.py) and the
+                        # dedicated ask_user/pending route already returns
+                        # it (AskUserPendingResponse.response_schema) -
+                        # this route dropped it, so a card built from the
+                        # aggregate list could never offer discrete answer
+                        # options, only free text.
+                        "response_schema": metadata.get("response_schema"),
                     },
                 }
             )
@@ -2589,6 +2597,8 @@ async def list_session_pending_yields(
             # The literal gated call (see the aggregated route above).
             "resume_metadata": {
                 "original_call": metadata.get("original_call"),
+                # UX reconcile wave 5 - see the aggregated route above.
+                "response_schema": metadata.get("response_schema"),
             },
         })
     return {"items": items}

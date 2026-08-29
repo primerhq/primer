@@ -128,6 +128,27 @@ async def test_write_with_force_overwrites(tmp_path: Path) -> None:
     assert await sb.read_file("/workspace/y.txt") == b"new"
 
 
+@pytest.mark.asyncio
+async def test_write_new_file_metadata_is_all_additions(tmp_path: Path) -> None:
+    sb = FakeSandbox(root=tmp_path)
+    tool = SandboxWrite(sb, workspace_root="/workspace")
+    args = tool.parameters()(path="y.txt", content="a\nb\nc")
+    res = await tool.execute(args, _ctx())
+    assert res.metadata == {"additions": 3, "deletions": 0}
+
+
+@pytest.mark.asyncio
+async def test_write_metadata_matches_the_local_backend_shape(
+    tmp_path: Path,
+) -> None:
+    sb = FakeSandbox(root=tmp_path)
+    await sb.write_file("/workspace/y.txt", b"a\nb\nc\n")
+    tool = SandboxWrite(sb, workspace_root="/workspace")
+    args = tool.parameters()(path="y.txt", content="a\nx\nc\nd\n", force=True)
+    res = await tool.execute(args, _ctx())
+    assert res.metadata == {"additions": 2, "deletions": 1}
+
+
 # ---- SandboxEdit ----------------------------------------------------------
 
 
@@ -208,6 +229,39 @@ async def test_grep_content_mode(tmp_path: Path) -> None:
     )
     res = await tool.execute(args, _ctx())
     assert "x.txt:2:beta needle" in res.output
+
+
+@pytest.mark.asyncio
+async def test_grep_metadata_matches_the_local_backend_shape(tmp_path: Path) -> None:
+    """UX reconcile wave 5: same match_count/file_count/truncated metadata
+    as the local backend (primer/workspace/local/tools/grep.py) - a chip
+    must read identically regardless of which backend ran the call."""
+    sb = FakeSandbox(root=tmp_path)
+    await sb.write_file("/workspace/a.txt", b"needle\nneedle\n")
+    await sb.write_file("/workspace/b.txt", b"needle\n")
+    await sb.write_file("/workspace/c.txt", b"nothing here\n")
+    tool = SandboxGrep(sb, workspace_root="/workspace")
+    args = tool.parameters()(pattern="needle", path=".")
+    res = await tool.execute(args, _ctx())
+    assert res.metadata == {
+        "match_count": 3, "file_count": 2, "truncated": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_grep_metadata_truncated_flag_survives_head_limit(
+    tmp_path: Path,
+) -> None:
+    sb = FakeSandbox(root=tmp_path)
+    for i in range(5):
+        await sb.write_file(f"/workspace/f{i}.txt", b"needle\n")
+    tool = SandboxGrep(sb, workspace_root="/workspace")
+    args = tool.parameters()(pattern="needle", path=".", head_limit=2)
+    res = await tool.execute(args, _ctx())
+    assert res.truncated is True
+    assert res.metadata == {
+        "match_count": 5, "file_count": 5, "truncated": True,
+    }
 
 
 # ---- SandboxExec ----------------------------------------------------------

@@ -19,6 +19,7 @@ UI = ROOT / "ui"
 TOOLSETS = UI / "components" / "toolsets.jsx"
 PROVIDERS_ROUTER = ROOT / "primer" / "api" / "routers" / "providers.py"
 TOOLS_ROUTER = ROOT / "primer" / "api" / "routers" / "tools.py"
+MCP_EXPOSURE = ROOT / "primer" / "mcp" / "exposure.py"
 
 BADGE_FIELDS = ("yields", "requires_workspace", "tool_class", "required_role")
 
@@ -78,6 +79,10 @@ def test_capabilities_column_header_present() -> None:
             "GET /tools/catalogue",
             TOOLS_ROUTER, "async def list_tools(",
         ),
+        (
+            "GET /available (MCP allowlist)",
+            MCP_EXPOSURE, "async def list_available_tools(",
+        ),
     ],
 )
 def test_every_tool_serialising_endpoint_carries_the_four_fields(
@@ -87,13 +92,30 @@ def test_every_tool_serialising_endpoint_carries_the_four_fields(
     only re-added "yields", the same class of drift
     test_backend_route_now_carries_the_four_fields (this file's earlier,
     single-endpoint version) already caught once for list_toolset_tools.
-    Parametrized across all FIVE tool-serialising routes so a future
-    sibling endpoint can't regress this a fourth time silently - one
-    always-empty badge row would be worse than none.
+    Parametrized across all SIX tool-serialising routes (the five
+    original REST ones plus the MCP allowlist, which used to be the
+    exception that carried none of the four - platform wave P2, #28)
+    so a future sibling endpoint can't regress this a fourth time
+    silently - one always-empty badge row would be worse than none.
+
+    Platform wave P2 (#28) centralized the four field names behind
+    Tool.catalogue_flags -- primer/model/chat.py's tool_catalogue_flags()
+    -- so none of these endpoints spells "yields"/"requires_workspace"/
+    "tool_class"/"required_role" literally any more; every one of them
+    calls the shared helper instead (see providers.py/tools.py's own
+    "one seam" comments at each call site). Retargeted to assert THAT
+    call is present, source-level, rather than the literal field names
+    the refactor deliberately removed - the wire-shape half of this
+    invariant (the four keys actually reach the response) is pinned by
+    the real API tests instead: tests/api/test_python_toolset_routes.py,
+    tests/mcp/test_exposure_service.py, and
+    tests/model/test_tool_catalogue_flags.py.
     """
     body = _function_body(path, def_marker)
-    for field in BADGE_FIELDS:
-        assert f'"{field}"' in body, f"{label}: missing {field!r}"
+    assert "tool_catalogue_flags(" in body, (
+        f"{label}: does not call tool_catalogue_flags() - "
+        f"the badge fields {BADGE_FIELDS} would be dropped"
+    )
 
 
 def test_bundle_transpiles_with_the_tools_tab_badges() -> None:

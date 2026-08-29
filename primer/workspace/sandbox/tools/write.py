@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from primer.int.sandbox import Sandbox
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, ConflictError
-from primer.workspace.local.tools.write import WriteArgs
+from primer.workspace.local.tools.write import WriteArgs, _diff_stat
 from primer.workspace.sandbox.tools._common import resolve_sandbox_path
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 
@@ -62,6 +62,23 @@ class SandboxWrite(WorkspaceTool):
                     "or pass force=True"
                 )
 
+        # UX reconcile wave 5: same diff-stat as the local backend's write
+        # tool (primer/workspace/local/tools/write.py) - old content is
+        # only available right here, before write_file below replaces it.
+        # A new file (no `existing`) is genuinely all-additions - old_lines
+        # stays []. Decoded with errors="replace" (never raises), matching
+        # this sandbox backend's own lossy-decode convention already used
+        # by SandboxEdit/SandboxGrep, rather than the local backend's
+        # strict-decode-or-None handling: a sandbox read failure here would
+        # propagate like it does for those tools, not get swallowed.
+        old_lines: list[str] = []
+        if existing is not None:
+            old_lines = (
+                (await self._sandbox.read_file(target))
+                .decode("utf-8", errors="replace")
+                .splitlines()
+            )
+
         mode_int: int | None = None
         if args.mode is not None:
             try:
@@ -76,7 +93,10 @@ class SandboxWrite(WorkspaceTool):
         )
         ctx.session.mark_read(args.path)
         size = len(args.content.encode("utf-8"))
-        return ToolResult(output=f"wrote {size} bytes to {args.path}")
+        metadata = _diff_stat(old_lines, args.content.splitlines())
+        return ToolResult(
+            output=f"wrote {size} bytes to {args.path}", metadata=metadata
+        )
 
 
 __all__ = ["SandboxWrite"]

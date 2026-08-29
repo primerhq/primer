@@ -381,6 +381,67 @@ class TestListPendingYields:
         assert item["parked_at"] == parked_at.isoformat()
 
     @pytest.mark.asyncio
+    async def test_ask_user_response_schema_is_returned(self, client, sp) -> None:
+        """UX reconcile wave 5: response_schema (a real, jsonschema-
+        enforced _AskUserArgs field, already returned by the dedicated
+        GET .../ask_user/pending route) used to be dropped by this
+        aggregate route's own hand-built resume_metadata dict, so a
+        card built from it could never offer discrete answer options."""
+        wid = await _create_workspace(client)
+        sess = _make_session(
+            "sess-ask-schema",
+            wid,
+            parked_status="parked",
+            parked_state={
+                "tool_call_id": "tcid-ask-2",
+                "yielded": {
+                    "tool_name": "ask_user",
+                    "event_key": "ask_user:sess-ask-schema:tcid-ask-2",
+                    "resume_metadata": {
+                        "prompt": "Which currency?",
+                        "response_schema": {
+                            "enum": ["Original charge currency", "Always USD"],
+                        },
+                    },
+                },
+            },
+        )
+        await sp.get_storage(WorkspaceSession).create(sess)
+
+        resp = await client.get(f"/v1/workspaces/{wid}/yields/pending")
+        assert resp.status_code == 200, resp.text
+        item = resp.json()["items"][0]
+        assert item["resume_metadata"]["response_schema"] == {
+            "enum": ["Original charge currency", "Always USD"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_response_schema_is_null_when_absent(self, client, sp) -> None:
+        """The common case (a free-text ask_user, or any other park kind)
+        - present as an explicit null, not an absent key, so the
+        frontend's own defensive read never has to distinguish "missing
+        key" from "no schema"."""
+        wid = await _create_workspace(client)
+        sess = _make_session(
+            "sess-ask-nosc",
+            wid,
+            parked_status="parked",
+            parked_state={
+                "tool_call_id": "tcid-ask-3",
+                "yielded": {
+                    "tool_name": "ask_user",
+                    "event_key": "ask_user:sess-ask-nosc:tcid-ask-3",
+                    "resume_metadata": {"prompt": "Free text ok?"},
+                },
+            },
+        )
+        await sp.get_storage(WorkspaceSession).create(sess)
+
+        resp = await client.get(f"/v1/workspaces/{wid}/yields/pending")
+        item = resp.json()["items"][0]
+        assert item["resume_metadata"]["response_schema"] is None
+
+    @pytest.mark.asyncio
     async def test_watch_files_park_is_returned(self, client, sp) -> None:
         wid = await _create_workspace(client)
         sess = _make_session(
