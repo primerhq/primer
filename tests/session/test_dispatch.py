@@ -1446,3 +1446,96 @@ async def test_midturn_concurrent_steer_seq_collision_is_known_gap(
     assert seqs == sorted(seqs) and len(seqs) == len(set(seqs)), (
         f"mid-turn steer produced non-monotonic/duplicate seqs: {seqs}"
     )
+
+
+# ---------------------------------------------------------------------------
+# update_unless fencing for the two unlocked/lock-adjacent phase writers
+# (01a04d91-a7a0 follow-up): _write_agent_phase and _clear_turn_running each
+# do their OWN internal `storage.get()` before writing, so a naive
+# model_copy(update=...) + update() can revert a DIFFERENT field a
+# concurrent writer (wake_session's turn_status="claimable" steer) touched
+# in the gap between that read and the write - the exact class of race
+# primer.session.yields.durably_mark_session_resumable's own docstring
+# documents and update_unless exists to close atomically. Mirrors
+# tests/api/test_yields_durable_flip.py's
+# test_flip_rejects_a_row_ended_after_the_caller_snapshotted_it: since these
+# two functions read internally (no snapshot parameter to hand in
+# pre-raced), the interleaving is simulated by wrapping storage.get() with a
+# side effect that lands the race exactly between the function's own read
+# and its update_unless write.
+# ---------------------------------------------------------------------------
+
+
+class _RaceOnFirstGetStorage:
+    """Wraps a real Storage[WorkspaceSession]; the FIRST call to get()
+    also writes `race_update` to the underlying store as a side effect,
+    simulating a concurrent writer landing in the exact gap between the
+    wrapped function's own read and its later update_unless call."""
+
+    def __init__(self, inner, race_update: dict) -> None:
+        self._inner = inner
+        self._race_update = race_update
+        self._fired = False
+
+    async def get(self, *args, **kwargs):
+        row = await self._inner.get(*args, **kwargs)
+        if not self._fired and row is not None:
+            self._fired = True
+            await self._inner.update(row.model_copy(update=self._race_update))
+        return row
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+@pytest.mark.asyncio
+async def test_write_agent_phase_does_not_revert_a_raced_in_claimable(
+    fake_storage_provider,
+):
+    """A wake_session() steer that flips turn_status to "claimable" in the
+    gap between _write_agent_phase's own read and write must survive -
+    the phase write must be rejected atomically (update_unless), not
+    silently clobber turn_status back to whatever the stale read saw."""
+    from primer.session.dispatch import _write_agent_phase
+
+    sess = await _seed_session(fake_storage_provider)  # turn_status="running"
+    real_storage = fake_storage_provider.get_storage(WorkspaceSession)
+    racing_storage = _RaceOnFirstGetStorage(
+        real_storage, {"turn_status": "claimable"},
+    )
+
+    await _write_agent_phase(racing_storage, sess.id, sess.turn_no, "executing")
+
+    row = await real_storage.get(sess.id)
+    assert row.turn_status == "claimable", (
+        "the raced-in claimable must survive - _write_agent_phase must not "
+        "revert it via a stale snapshot"
+    )
+    assert row.agent_phase is None, (
+        "the phase write must have been rejected wholesale, not partially "
+        "applied alongside a reverted turn_status"
+    )
+
+
+@pytest.mark.asyncio
+async def test_clear_turn_running_does_not_revert_a_raced_in_claimable(
+    fake_storage_provider,
+):
+    """Same race, for _clear_turn_running: a wake_session() steer landing
+    between its read and its update_unless write must survive - the
+    turn's own cleanup must not stomp a fresh claim back to idle."""
+    from primer.session.dispatch import _clear_turn_running
+
+    sess = await _seed_session(fake_storage_provider)  # turn_status="running"
+    real_storage = fake_storage_provider.get_storage(WorkspaceSession)
+    racing_storage = _RaceOnFirstGetStorage(
+        real_storage, {"turn_status": "claimable"},
+    )
+
+    await _clear_turn_running(racing_storage, sess.id)
+
+    row = await real_storage.get(sess.id)
+    assert row.turn_status == "claimable", (
+        "a steer that raced in during this turn's own cleanup must survive "
+        "to release so the pool's re-arm can see it"
+    )

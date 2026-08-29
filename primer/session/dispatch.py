@@ -1453,7 +1453,17 @@ async def _clear_turn_running(session_storage, session_id: str) -> None:
     stranded (the exact bug the claimable-consume step earlier in this
     function exists to avoid). Always called from inside a
     ``session_lifecycle_lock`` critical section, matching every other
-    read-modify-write in this module.
+    read-modify-write in this module - belt-and-suspenders alongside the
+    ``update_unless`` guard below, not a substitute for it: the
+    ``fresh.turn_status == "running"`` check is a CHEAP EARLY EXIT on a
+    snapshot (mirrors primer.session.yields.durably_mark_session_resumable's
+    own two-layer pattern - see its docstring), not the safety guarantee
+    itself. The actual guarantee is ``update_unless``, which the backend
+    evaluates against the row's CURRENT ``turn_status`` in the same
+    statement as the write - so even a wake_session() that lands in the
+    gap between this function's own read and write (the lock reduces but
+    does not by itself prove there is no such gap across every caller)
+    is still caught atomically, not by a stale Python-side snapshot.
 
     A worker that hard-crashes (OOM kill, pod eviction) between the
     "running" write and reaching either of these cleanup points never
@@ -1466,20 +1476,22 @@ async def _clear_turn_running(session_storage, session_id: str) -> None:
     and would need a dedicated lease-staleness sweep to catch.
     """
     fresh = await session_storage.get(session_id)
-    if fresh is not None and fresh.turn_status == "running":
-        await session_storage.update(
-            fresh.model_copy(update={
-                "turn_status": "idle",
-                "turn_started_at": None,
-                # agent_phase is scoped to "while a turn is genuinely
-                # running" (its own docstring) - clear it in the same
-                # write, same guard, so it can never survive past the
-                # turn_status it's a finer-grained sub-state of.
-                "agent_phase": None,
-                "agent_phase_turn_no": None,
-                "agent_phase_stamped_at": None,
-            })
-        )
+    if fresh is None or fresh.turn_status != "running":
+        return
+    updated = fresh.model_copy(update={
+        "turn_status": "idle",
+        "turn_started_at": None,
+        # agent_phase is scoped to "while a turn is genuinely running"
+        # (its own docstring) - clear it in the same write, same guard,
+        # so it can never survive past the turn_status it's a
+        # finer-grained sub-state of.
+        "agent_phase": None,
+        "agent_phase_turn_no": None,
+        "agent_phase_stamped_at": None,
+    })
+    await session_storage.update_unless(
+        updated, field="turn_status", forbidden="claimable",
+    )
 
 
 async def _write_agent_phase(
@@ -1490,23 +1502,34 @@ async def _write_agent_phase(
     No session_lifecycle_lock here, unlike every other read-modify-write
     in this module: agent_phase/agent_phase_turn_no/agent_phase_stamped_at
     have exactly ONE writer for the lifetime of a turn (this dispatch
-    call) - nothing else ever touches them, so there is nothing to
-    serialize against. Still re-reads fresh immediately before writing
-    (rather than mutating a stale local) so a concurrent, differently-
-    scoped write (e.g. cancel_requested flipping mid-turn) is never
-    clobbered by this one - model_copy(update=...) only overwrites the
-    three keys given.
+    call) - nothing else ever touches THOSE THREE FIELDS. But
+    model_copy(update=...) + a plain update() replaces the WHOLE row, so
+    a stale ``fresh`` snapshot still risks reverting a DIFFERENT field a
+    concurrent writer touched in the gap between this function's own read
+    and write - most notably wake_session() flipping turn_status to
+    "claimable" mid-turn (the exact hazard _clear_turn_running's own
+    docstring documents). Guarding with ``update_unless`` closes that: the
+    backend evaluates "is turn_status currently claimable" against the
+    row's CURRENT value in the same statement as the write, so a raced-in
+    claimable is never silently reverted back to whatever ``fresh`` saw
+    turn_status as - mirrors primer.session.yields' established pattern for
+    this exact class of race (see durably_mark_session_resumable's
+    docstring). A rejected write (turn_status already claimable) is a
+    silent no-op here: the turn is ending/being steered either way, so
+    one skipped phase transition is harmless - the row already reads
+    "claimable", not something the phase field could make more correct.
     """
     fresh = await session_storage.get(session_id)
     if fresh is None:
         return
+    updated = fresh.model_copy(update={
+        "agent_phase": phase,
+        "agent_phase_turn_no": turn_no,
+        "agent_phase_stamped_at": _now(),
+    })
     try:
-        await session_storage.update(
-            fresh.model_copy(update={
-                "agent_phase": phase,
-                "agent_phase_turn_no": turn_no,
-                "agent_phase_stamped_at": _now(),
-            })
+        await session_storage.update_unless(
+            updated, field="turn_status", forbidden="claimable",
         )
     except Exception:  # noqa: BLE001 - best-effort, never block the turn
         logger.exception(
