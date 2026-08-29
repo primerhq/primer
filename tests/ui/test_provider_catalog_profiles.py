@@ -52,38 +52,58 @@ def test_no_speech_class_offers_a_profile_affordance() -> None:
 
 def test_the_panel_lists_profile_rows_not_just_model_names() -> None:
     """A profile is the deletable entity; a bare model-name list gives an
-    operator nothing to act on."""
-    src = _read("components/provider-catalog.jsx")
-    assert "/model_profiles" in src
-    assert "r.provider_id === providerId" in src or "provider_id ===" in src
-    assert "model_name" in src
+    operator nothing to act on.
+
+    RETARGET (platform wave P4): the panel used to render a bare <ul> of
+    rows itself; it now delegates rendering to MP_ProfileCard/
+    MP_ProfilesGrid (model-profiles.jsx), so model_name lives there, not
+    in the panel's own source. The panel's own responsibility - fetching
+    /model_profiles and filtering to this provider - is unchanged.
+    """
+    panel_src = _read("components/provider-catalog.jsx")
+    assert "/model_profiles" in panel_src
+    assert "r.provider_id === providerId" in panel_src or "provider_id ===" in panel_src
+    card_src = _read("components/model-profiles.jsx")
+    assert "model_name" in card_src
 
 
 def test_profiles_can_be_deleted_from_the_panel() -> None:
-    src = _read("components/provider-catalog.jsx")
-    assert 'data-testid="profile-delete"' in src
-    # The id is interpolated, so the path is a template literal.
-    assert "/model_profiles/${" in src
+    """RETARGET (platform wave P4): delete now lives on MP_ProfileCard,
+    wired in via MP_ProfilesGrid rather than reimplemented in the
+    panel."""
+    src = _read("components/model-profiles.jsx")
+    assert 'data-testid={`profile-card-delete-${profile.id}`}' in src
+    assert "/model_profiles/${encodeURIComponent(profile.id)}" in src
 
 
 def test_harness_managed_rows_hide_mutation() -> None:
     """Mirrors the backend's 409-on-public-CRUD discipline
-    (managed_by_field="harness_id")."""
-    src = _read("components/provider-catalog.jsx")
+    (managed_by_field="harness_id"). RETARGET (platform wave P4): the
+    guard moved onto MP_ProfileCard itself so it survives wherever the
+    card is mounted next, not just this one panel."""
+    src = _read("components/model-profiles.jsx")
     assert "harness_id" in src
+    assert "harnessManaged" in src
 
 
 def test_a_delete_conflict_renders_inline_not_as_a_toast() -> None:
     """409 means an agent still points at it; the operator needs to act on
-    that without losing their place."""
-    src = _read("components/provider-catalog.jsx")
-    assert "profileDeleteErr" in src
-    assert 'data-testid="profile-delete-error"' in src
+    that without losing their place. RETARGET (platform wave P4): the
+    per-row error now lives on MP_ProfileCard, scoped per card instead
+    of one panel-wide error string."""
+    src = _read("components/model-profiles.jsx")
+    assert "setErr" in src
+    assert 'data-testid={`profile-card-error-${profile.id}`}' in src
 
 
 def test_profile_delete_is_gated_behind_a_confirm() -> None:
     """The dialog that regressed on the old page
-    (tests/ui/test_modal_open_prop.py:61-66) stays gated here."""
-    src = _read("components/provider-catalog.jsx")
-    assert "confirmProfile" in src
-    assert 'data-testid="profile-delete-confirm"' in src
+    (tests/ui/test_modal_open_prop.py) stays gated here. RETARGET
+    (platform wave P4): confirmDelete is now a plain per-card boolean
+    (React.useState(false)) rather than a panel-wide id comparison -
+    a stronger form of the same gate, since there is no id to compare
+    against at all, so the old confirmProfile?.id-style bug class
+    cannot recur."""
+    src = _read("components/model-profiles.jsx")
+    assert "const [confirmDelete, setConfirmDelete] = React.useState(false);" in src
+    assert 'data-testid={`profile-card-delete-confirm-${profile.id}`}' in src

@@ -28,13 +28,20 @@ def test_the_catalog_exports_itself_on_window() -> None:
 
 
 def test_every_spec_class_is_on_the_rail() -> None:
-    """M11b: eleven classes, Web Fetch and Artifact Storage included."""
+    """M11b: eleven classes, Web Fetch and Artifact Storage included.
+
+    RETARGET (platform wave P1a item 5): the "Vector Stores" label became
+    "Semantic Search" - the vision doc's own reference screenshots 4/6
+    name this family chip "Semantic search", and unifying it onto the
+    Providers page (rather than a standalone route) is exactly what this
+    wave's item 5 asks for.
+    """
     src = _read("components/provider-catalog.jsx")
     for label in (
         "LLM",
         "Embedding",
         "Cross-Encoder",
-        "Vector Stores",
+        "Semantic Search",
         "Speech-to-Text",
         "Text-to-Speech",
         "Web Search",
@@ -43,7 +50,7 @@ def test_every_spec_class_is_on_the_rail() -> None:
         "Workspaces",
         "Channels",
     ):
-        assert f'label: "{label}"' in src, f"class rail is missing {label}"
+        assert f'label: "{label}"' in src, f"family chips missing {label}"
 
 
 def test_each_crud_class_names_its_plural_path() -> None:
@@ -127,7 +134,7 @@ def test_every_panel_class_can_reach_its_own_detail_view() -> None:
     every component being renamed to suit the host.
     """
     src = _read("components/provider-catalog.jsx")
-    classes = src[:src.index("function PC_ClassRail")]
+    classes = src[:src.index("function PC_FamilyChips")]
     for key in ("ssp", "workspace", "channel"):
         block = classes[classes.index(f'key: "{key}"'):]
         block = block[:block.index("},")]

@@ -166,15 +166,19 @@ def test_u0106_workspace_file_inspect_and_download_journey(
         expect(page.locator("h1.page-title")).to_have_text(
             "Workspaces", timeout=20_000,
         )
-        ws_row = page.locator("tbody tr", has_text=wid)
-        expect(ws_row).to_be_visible(timeout=20_000)
+        # RETARGET (platform wave P1b item 7): the table/tr list was
+        # replaced by a .pc-card-grid of cards; unlike the old row, the
+        # card itself carries no click-to-enter handler (only its Open
+        # button does), so target that testid directly.
+        ws_open_btn = page.get_by_test_id(f"workspace-card-open-{wid}")
+        expect(ws_open_btn).to_be_visible(timeout=20_000)
 
-        # ----- 2. Click row: enter that workspace -------------------
-        # The row ENTERS the workspace rather than addressing its record,
+        # ----- 2. Click Open: enter that workspace -------------------
+        # This ENTERS the workspace rather than addressing its record,
         # which is what the shell spells "#/w/<wid>". The overlay-url
         # helper is for a surface hung off a workspace, which this is
         # not.
-        ws_row.first.click()
+        ws_open_btn.click()
         expect(page).to_have_url(re.compile(rf"#/w/{re.escape(wid)}\b"))
         open_studio(page, console_url, wid)
 

@@ -38,19 +38,19 @@ def test_ssp_lance_create_via_modal_journey(
         open_legacy_route(page, console_url, "ssp")
         expect(page.locator("h1.page-title")).to_be_visible(timeout=15_000)
 
-        # 2. Open the create modal — button label depends on empty vs
-        # non-empty state; both contain "Semantic Search provider".
-        new_btn = page.get_by_role(
-            "button", name="New Semantic Search provider"
-        ).or_(
-            page.get_by_role("button", name="New provider")
-        ).first
-        expect(new_btn).to_be_visible(timeout=20_000)
-        new_btn.click()
+        # 2. RETARGET (platform wave P4 item 3): SSP creation now routes
+        # through the same PC_RegisterDropdown every other family uses
+        # ("kind decides the form up front"), not a bespoke New-provider
+        # button. Pick pgvector first so the "default backend" assertion
+        # below still exercises the in-modal switch-to-lance behavior
+        # this journey is actually pinning, rather than just picking
+        # lance directly from the dropdown.
+        page.get_by_test_id("provider-register-toggle").first.click()
+        page.get_by_test_id("provider-register-kind-pgvector").click()
         modal = page.locator(".modal").first
         expect(modal).to_be_visible(timeout=5_000)
 
-        # 3. Default backend is pgvector — hostname field is visible.
+        # 3. Picked backend is pgvector - hostname field is visible.
         expect(modal.get_by_text("hostname", exact=False).first).to_be_visible()
 
         # 4. Switch backend to lance.
@@ -64,7 +64,11 @@ def test_ssp_lance_create_via_modal_journey(
         # the input rather than a text-content assertion.
         expect(modal.locator("[data-testid='ssp-lance-path']")).to_be_visible()
 
-        # 6. HNSW knobs section is still present.
+        # 6. HNSW knobs are still present, just collapsed behind the
+        # Advanced <details> by default now (platform wave P4 item 3 -
+        # "minimal SSP form": not deleted, just not part of the default
+        # view). Expand it before asserting visibility.
+        modal.get_by_test_id("ssp-advanced-details").locator("summary").click()
         expect(modal.get_by_text("HNSW knobs", exact=False).first).to_be_visible()
 
         # 7. Fill id + path.

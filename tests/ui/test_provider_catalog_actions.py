@@ -19,10 +19,17 @@ def _src() -> str:
 
 
 def test_rows_offer_delete() -> None:
+    """RETARGET (platform wave P1a item 3): the reference card anatomy
+    puts Delete directly on each card's own footer rather than beside a
+    single shared form for whichever row happens to be "selected" -
+    PC_InstanceCard replaces PC_RowActions, one instance per card, so the
+    testid is per-row (provider-card-delete-{id}) rather than a single
+    flat one.
+    """
     src = _src()
-    assert "function PC_RowActions(" in src
+    assert "function PC_InstanceCard(" in src
     assert '"DELETE"' in src
-    assert 'data-testid="provider-row-delete"' in src
+    assert 'data-testid={`provider-card-delete-${row.id}`}' in src
 
 
 def test_delete_asks_first() -> None:
@@ -43,7 +50,7 @@ def test_the_backend_reason_is_shown_inline_not_swallowed() -> None:
     src = _src()
     assert "err.status" in src or "error.status" in src
     assert "detail" in src
-    assert 'data-testid="provider-row-error"' in src
+    assert 'data-testid={`provider-card-error-${row.id}`}' in src
 
 
 def test_no_reserved_id_list_is_duplicated_in_the_console() -> None:

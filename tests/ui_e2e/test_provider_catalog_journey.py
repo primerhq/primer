@@ -1,4 +1,4 @@
-"""The catalog is one reachable surface with every class on its rail."""
+"""The catalog is one reachable surface with every family on its chips."""
 
 from __future__ import annotations
 
@@ -25,10 +25,12 @@ CLASS_KEYS = [
 ]
 
 
-def test_every_class_on_the_rail_opens_its_body(page, console_url) -> None:
+def test_every_family_chip_opens_its_body(page, console_url) -> None:
+    # RETARGET (platform wave P1a item 1): the rail became a family
+    # chips row - provider-class-{key} is now provider-chip-{key}.
     open_provider_catalog(page, console_url)
     for key in CLASS_KEYS:
-        page.click(f'[data-testid="provider-class-{key}"]')
+        page.click(f'[data-testid="provider-chip-{key}"]')
         page.wait_for_selector(f'[data-testid="provider-body-{key}"]')
 
 
@@ -39,7 +41,12 @@ def test_the_speech_classes_expose_the_active_defaults_panel(page, console_url) 
 
 
 def test_the_llm_class_offers_the_shared_form(page, console_url) -> None:
+    # RETARGET (platform wave P1a items 2/7): the form is no longer
+    # always-mounted inline - "Register provider" names the kind first,
+    # which opens the create modal with the form inside it.
     open_provider_catalog(page, console_url, cls="llm")
+    page.click('[data-testid="provider-register-toggle"]')
+    page.click('[data-testid="provider-register-kind-anthropic"]')
     page.wait_for_selector('[data-testid="provider-form-llm_providers"]')
     page.wait_for_selector('[data-testid="provider-form-test"]')
 
@@ -49,7 +56,12 @@ def test_the_catalog_is_reachable_from_the_sidebar(page, console_url) -> None:
 
 
 def test_a_provider_row_can_be_created_and_deleted(page, console_url) -> None:
+    # RETARGET (platform wave P1a items 2/3/7): Register provider -> pick
+    # kind -> modal form -> Save; the card grid's own per-row footer
+    # button replaces the old select-row-then-use-the-side-panel delete.
     open_provider_catalog(page, console_url, cls="stt")
+    page.click('[data-testid="provider-register-toggle"]')
+    page.click('[data-testid="provider-register-kind-openai"]')
     page.wait_for_selector('[data-testid="provider-form-stt_providers"]')
     form = '[data-testid="provider-form-stt_providers"]'
     page.fill(f'{form} [data-field="id"] input', "journey-stt")
@@ -62,6 +74,5 @@ def test_a_provider_row_can_be_created_and_deleted(page, console_url) -> None:
     page.fill(f'{form} [data-field="url"] input', "https://api.openai.com/v1")
     page.click('[data-testid="provider-form-save"]')
     page.wait_for_selector("text=journey-stt")
-    page.click("text=journey-stt")
-    page.click('[data-testid="provider-row-delete"]')
-    page.click('[data-testid="provider-row-delete-confirm"]')
+    page.click('[data-testid="provider-card-delete-journey-stt"]')
+    page.click('[data-testid="provider-card-delete-confirm-journey-stt"]')

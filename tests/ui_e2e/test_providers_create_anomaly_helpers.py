@@ -39,9 +39,12 @@ def test_u0010_embedding_provider_modal_shows_t0025_static_models_helper(
     phrasing and the (T0025) tag are present so a future copy-edit can't
     silently drop the anomaly reference.
     """
-    # The catalog creates through an inline form, not a modal: the
-    # per-class New-provider modals are what it replaced.
+    # RETARGET (platform wave P1a items 2/7): creation is back to a modal
+    # - "Register provider" -> pick a kind -> the form (same testids as
+    # before) renders inside it.
     open_legacy_route(page, console_url, "providers/embedding")
+    page.get_by_test_id("provider-register-toggle").click()
+    page.get_by_test_id("provider-register-kind-openai").click()
     form = page.get_by_test_id("provider-form-embedding_providers")
     form.wait_for(state="visible", timeout=15_000)
     # The form root renders before /\_types resolves, so wait for the
@@ -86,6 +89,8 @@ def test_u0011_llm_provider_modal_shows_t0379_cross_validation_warning(
     test catches it before the anomaly drift propagates to operators.
     """
     open_legacy_route(page, console_url, "providers/llm")
+    page.get_by_test_id("provider-register-toggle").click()
+    page.get_by_test_id("provider-register-kind-anthropic").click()
     form = page.get_by_test_id("provider-form-llm_providers")
     form.wait_for(state="visible", timeout=15_000)
 
@@ -120,14 +125,15 @@ def test_provider_create_disabled_until_model_name_filled(
     ``body.models.0.name: Field required``. The fix requires every
     non-optional model field to be non-empty before enabling Create.
 
-    Re-pointed at the catalog's inline form: the per-class create modal
-    this was written against is gone, and the form that replaced it
-    shipped with no gate at all, so the same empty row went out as
-    ``models: [{}]`` again.
+    RETARGET (platform wave P1a items 2/7): creation is back to a modal -
+    "Register provider" -> pick a kind -> the form (same testids, same
+    gate logic) renders inside it.
     """
     from playwright.sync_api import expect
 
     open_legacy_route(page, console_url, "providers/embedding")
+    page.get_by_test_id("provider-register-toggle").click()
+    page.get_by_test_id("provider-register-kind-openai").click()
     form = page.get_by_test_id("provider-form-embedding_providers")
     form.wait_for(state="visible", timeout=15_000)
 

@@ -4,7 +4,7 @@ Walks the full chain from a clean state through the UI:
   1. Create a local Workspace Provider via the modal.
   2. Create a Workspace Template referencing it via the modal.
   3. Open the Workspaces page; click New Workspace; the new template
-     appears in the dropdown; submit; workspace materialises.
+     appears in the template row picker; submit; workspace materialises.
   4. The workspace detail page renders.
 
 Pinned invariants:
@@ -12,14 +12,13 @@ Pinned invariants:
     three pages refetches the next page's resources cleanly.
   * The provider dropdown on the Template modal includes the
     just-created provider within the polling cadence (5s).
-  * The template dropdown on the New Workspace modal includes the
+  * The template row picker on the New Workspace modal (platform wave
+    P1b item 6 - rows replaced the old <select>) includes the
     just-created template.
   * The workspace detail page renders for the new id.
 """
 
 from __future__ import annotations
-
-import time
 
 import re
 
@@ -119,17 +118,15 @@ def test_workspace_chain_create_journey(
 
         modal = page.locator(".modal").first
         expect(modal).to_be_visible(timeout=5_000)
-        # Template dropdown should include the new template within ~5s poll.
-        template_select = modal.locator("select.select").first
-        expect(template_select).to_be_visible(timeout=10_000)
-        # Poll the dropdown options until the new template appears.
-        deadline = time.time() + 15
-        while time.time() < deadline:
-            options = template_select.locator("option").all_text_contents()
-            if template_id in options:
-                break
-            page.wait_for_timeout(500)
-        template_select.select_option(template_id)
+        # RETARGET (platform wave P1b item 6): the Template <select> was
+        # replaced by a row picker (one .pc-register-row per template).
+        # Poll for the new template's row to appear within ~5s, same
+        # intent as the old dropdown-options poll.
+        template_row = modal.locator(
+            f"[data-testid='workspace-template-row-{template_id}']"
+        )
+        expect(template_row).to_be_visible(timeout=15_000)
+        template_row.click()
         modal.get_by_role("button", name="Create").first.click()
 
         # Modal closes and the shell ENTERS the workspace just created,

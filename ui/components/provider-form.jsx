@@ -119,10 +119,17 @@ function PC_Field({ field, value, onChange }) {
       />
     );
   }
+  // Platform wave P1a item 4: secret fields (api_key/token/password/
+  // secret_access_key - PC_fieldType above) get the reference's own label
+  // pattern rather than an unlabeled password box. The value itself is
+  // whatever the operator types (a plain password input) - see PC_Field's
+  // caller comment for why there is no masked-tail DISPLAY here.
+  const isSecret = field.type === "password";
   return (
     <label className="field" data-field={field.key}>
       <span>
         {field.label}
+        {isSecret ? " secret — masked on read" : ""}
         {field.required ? <em className="req"> *</em> : null}
       </span>
       {input}
@@ -130,6 +137,85 @@ function PC_Field({ field, value, onChange }) {
     </label>
   );
 }
+
+// Platform wave P1a item 4: "Live model probe" - a live POST against the
+// CURRENT draft config (before Save), for kinds the served /_types data
+// marks discoverable. Two REAL, confirmed backend endpoints exist for
+// this shape (routers/providers.py): /llm_providers/_discover_models and
+// /embedding_providers/_discover_models - other classes keep the existing
+// generic runTest()/_test round trip below unchanged (PC_ProviderForm
+// renders this panel ADDITIONALLY, not instead).
+const PC_DISCOVER_MODELS_PLURALS = ["llm_providers", "embedding_providers"];
+
+function PC_ProbePanel({ plural, draft, selectedType }) {
+  const { apiFetch } = window.primerApi;
+  const [busy, setBusy] = React.useState(false);
+  const [result, setResult] = React.useState(null);
+
+  const probe = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const out = await apiFetch("POST", `/${plural}/_discover_models`, {
+        provider: selectedType,
+        config: draft.config || {},
+      });
+      setResult({ ok: true, models: (out && out.models) || [] });
+    } catch (err) {
+      setResult({
+        ok: false,
+        error: (err && (err.detail || err.message)) || String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const models = (result && result.ok && result.models) || [];
+  // Reference shows 5 named rows plus an overflow count for a 12-model
+  // result; not a hard protocol limit, just the display cap.
+  const shown = models.slice(0, 5);
+  const overflow = models.length - shown.length;
+
+  return (
+    <div className="pc-probe" data-testid="provider-probe-panel">
+      <div className="pc-probe-head">Live model probe</div>
+      <Btn kind="primary" size="sm" disabled={busy}
+        data-testid="provider-probe-test" onClick={probe}>
+        Test connect
+      </Btn>
+      {result ? (
+        result.ok ? (
+          <div className="pc-probe-result" data-testid="provider-probe-result">
+            <div className="pc-probe-count">
+              {models.length} models · probed on the DRAFT config
+            </div>
+            <ul className="pc-probe-models">
+              {shown.map((m, i) => (
+                <li key={i} className="mono">{(m && m.name) || m}</li>
+              ))}
+            </ul>
+            {overflow > 0 ? (
+              <div className="muted text-sm">+ {overflow} more</div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="field-help" data-testid="provider-probe-error">
+            {result.error}
+          </div>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+// Platform wave P1a item 4: shared across every provider class's form
+// modal (screenshots 5 and 7 both carry it verbatim) - explanatory copy
+// about how /capabilities-driven install-wide defaults and aggregated
+// failover chains work, not data fetched live from that endpoint.
+const PC_CAPABILITIES_FOOTNOTE =
+  "Speech, web-search and web-fetch families set the install-wide ACTIVE "
+  + "config; aggregated kinds carry a failover chain.";
 
 // Limits is required on every model-family provider row and
 // max_concurrency inside it has no default, so the form has to offer it.
@@ -250,7 +336,7 @@ function PC_submittable(draft, shape, selectedType) {
   return cleaned;
 }
 
-function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest }) {
+function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest, onCancel }) {
   const { useResource, apiFetch, useCapabilities, capabilityHint,
     EXTRA_FOR_PROVIDER_TYPE } = window.primerApi;
   const [busy, setBusy] = React.useState(false);
@@ -337,9 +423,16 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
     );
   }
 
-  return (
-    <div className="col" style={{ gap: 12 }}
-      data-testid={`provider-form-${plural}`}>
+  // Platform wave P1a item 4: the rich "Live model probe" panel is
+  // ADDITIONAL, not a replacement for the generic Test button below -
+  // gated on the served /_types discoverable flag for THIS kind (not a
+  // hardcoded kind list) and on a confirmed real endpoint existing for
+  // this class (see PC_DISCOVER_MODELS_PLURALS's own comment).
+  const showProbePanel = !!shape.discoverable
+    && PC_DISCOVER_MODELS_PLURALS.indexOf(plural) >= 0;
+
+  const fields = (
+    <div className="col" style={{ gap: 12, flex: 1, minWidth: 0 }}>
       <div className="field">
         <label className="field-label" htmlFor="pf-provider">provider</label>
         <select
@@ -418,8 +511,30 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
             : testResult.error}
         </Banner>
       ) : null}
+    </div>
+  );
+
+  return (
+    <div className="col" style={{ gap: 12 }}
+      data-testid={`provider-form-${plural}`}>
+      <div className="row" style={{ gap: 20, alignItems: "flex-start" }}>
+        {fields}
+        {showProbePanel ? (
+          <div className="col pc-form-right" style={{ gap: 10, width: 240, flexShrink: 0 }}>
+            <PC_ProbePanel plural={plural} draft={draft} selectedType={selectedType} />
+            <div className="field-help" data-testid="provider-form-capabilities-footnote">
+              {PC_CAPABILITIES_FOOTNOTE}
+            </div>
+          </div>
+        ) : null}
+      </div>
 
       <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
+        {typeof onCancel === "function" ? (
+          <Btn kind="ghost" data-testid="provider-form-cancel" onClick={onCancel}>
+            Cancel
+          </Btn>
+        ) : null}
         <Btn
           kind="ghost"
           data-testid="provider-form-test"

@@ -8,10 +8,10 @@ Covers backlog items:
   ``<button className="close" onClick={onClose}>`` against the
   modal-stays-open invariant when other buttons are clicked.
 
-* U0101 — Workspaces list filter input narrows the table to matching
-  ids (sister of U0037 Agents filter + U0046 Sessions filter for the
-  third list-page filter input). Pins workspaces.jsx:56-78 (text
-  filter on id + template_id, client-side).
+* U0101 — Workspaces list filter input narrows the card grid to
+  matching ids (sister of U0037 Agents filter + U0046 Sessions filter
+  for the third list-page filter input). Pins workspaces.jsx's text
+  filter on id + template_id, client-side.
 """
 
 from __future__ import annotations
@@ -40,17 +40,17 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 # ===========================================================================
 
 
-def test_u0101_workspaces_list_filter_narrows_table(
+def test_u0101_workspaces_list_filter_narrows_grid(
     page, base_url, console_url, unique_suffix,
 ) -> None:
     """U0101 — Seed 2 workspaces with discriminating id suffixes
     ("alpha" / "beta"); navigate to /workspaces; type "alpha" into
-    the filter input → only the alpha row remains visible (beta
-    drops). Clear filter → both rows visible again.
+    the filter input → only the alpha card remains visible (beta
+    drops). Clear filter → both cards visible again.
 
-    Pins workspaces.jsx:56-78's textFilter (client-side substring
-    match on id + template_id). Sister of U0037 (Agents filter) +
-    U0046 (Sessions filter) — the third list-page filter pinned.
+    Pins workspaces.jsx's textFilter (client-side substring match on
+    id + template_id). Sister of U0037 (Agents filter) + U0046
+    (Sessions filter) — the third list-page filter pinned.
     """
     wp_id = f"wp-u101-{unique_suffix}"
     tpl_id = f"tpl-u101-{unique_suffix}"
@@ -93,12 +93,14 @@ def test_u0101_workspaces_list_filter_narrows_table(
     try:
         open_legacy_route(page, console_url, "workspaces")
 
-        # Wait for both rows to land in the table. Scope to tbody so
-        # we don't match the templateFilter dropdown's hidden <option>
-        # elements that also contain the template id text.
-        table_body = page.locator("tbody").first
+        # RETARGET (platform wave P1b item 7): the table/tbody/tr list
+        # was replaced by a .pc-card-grid of cards (data-testid
+        # "workspaces-grid" / "workspace-card-<id>"). Scope to the grid
+        # so we don't match the templateFilter dropdown's hidden
+        # <option> elements that also contain the template id text.
+        grid = page.get_by_test_id("workspaces-grid")
         for tid in (tpl_alpha, tpl_beta):
-            table_body.locator(f"tr:has-text('{tid}')").first.wait_for(
+            grid.locator(f"[data-testid^='workspace-card-']:has-text('{tid}')").first.wait_for(
                 state="visible", timeout=15_000,
             )
 
@@ -109,26 +111,26 @@ def test_u0101_workspaces_list_filter_narrows_table(
         filter_input.wait_for(state="visible", timeout=5_000)
         filter_input.fill("alpha")
 
-        # alpha row stays, beta row drops. Allow a brief settle.
+        # alpha card stays, beta card drops. Allow a brief settle.
         page.wait_for_timeout(300)
-        assert table_body.locator(
-            f"tr:has-text('{tpl_alpha}')"
+        assert grid.locator(
+            f"[data-testid^='workspace-card-']:has-text('{tpl_alpha}')"
         ).count() >= 1, (
-            f"alpha row {tpl_alpha!r} disappeared after filtering on 'alpha'"
+            f"alpha card {tpl_alpha!r} disappeared after filtering on 'alpha'"
         )
-        assert table_body.locator(
-            f"tr:has-text('{tpl_beta}')"
+        assert grid.locator(
+            f"[data-testid^='workspace-card-']:has-text('{tpl_beta}')"
         ).count() == 0, (
-            f"beta row {tpl_beta!r} still visible after filtering on 'alpha' "
+            f"beta card {tpl_beta!r} still visible after filtering on 'alpha' "
             "— textFilter contract broken"
         )
 
-        # Clear the filter — both rows visible again.
+        # Clear the filter — both cards visible again.
         filter_input.fill("")
         page.wait_for_timeout(300)
         for tid in (tpl_alpha, tpl_beta):
             expect(
-                table_body.locator(f"tr:has-text('{tid}')").first
+                grid.locator(f"[data-testid^='workspace-card-']:has-text('{tid}')").first
             ).to_be_visible(timeout=5_000)
     finally:
         _cleanup(base_url, cleanup_urls)

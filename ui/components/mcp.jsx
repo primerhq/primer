@@ -716,6 +716,15 @@ function MC_ToolsPanel({ exposure, available }) {
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Tool</th>
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Toolset</th>
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Description</th>
+              {/* Platform wave P4 item 4: GET /mcp_exposure/available now
+                  carries yields/requires_workspace/tool_class/
+                  required_role per row (primer/mcp/exposure.py's
+                  list_available_tools, platform wave P2 #28) - the same
+                  shared CapabilityBadges the agent tool picker already
+                  renders, so an operator building this allowlist can
+                  tell a workspace-only or yielding tool apart from a
+                  plain one before exposing it. */}
+              <th style={{ textAlign: "left", padding: "8px 12px" }}>Flags</th>
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Status</th>
             </tr>
           </thead>
@@ -774,6 +783,10 @@ function MC_ToolsPanel({ exposure, available }) {
                     title={it.description || ""}
                   >
                     {it.description || <span className="muted">—</span>}
+                  </td>
+                  <td style={{ padding: "6px 12px" }}>
+                    <window.primerApi.CapabilityBadges tool={it}
+                      testid={`tool-flags-${it.scoped_id}`} />
                   </td>
                   <td style={{ padding: "6px 12px" }}>
                     {it.exposable ? (

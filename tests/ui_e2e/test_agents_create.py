@@ -127,7 +127,9 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             #
             # Selector strategy: use the htmlFor/id pairs added to
             # NewAgentModal (na-id, na-description, na-model-profile,
-            # na-system-prompt, na-temperature). These are
+            # na-temperature - system prompt became a repeatable part
+            # list, platform wave P1b item 8, and dropped its single id
+            # in favor of per-index data-testids). These are
             # semantic IDs tied to the JSX, more stable than
             # get_by_label substring matches (which hit strict-mode
             # violations when labels share words). When the JSX

@@ -117,12 +117,15 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
 
-        # The dropdown auto-selects the first template per
-        # NewWorkspaceModal's useEffect. Pin via explicit selection so we
-        # don't depend on ordering. Scope to the modal: the list page
-        # behind it carries its own selects and its own Create buttons,
-        # and a page-wide ``.first`` picks by DOM order, not by intent.
-        modal.locator("select.select").first.select_option(value=tpl_id)
+        # RETARGET (platform wave P1b item 6): the Template <select> was
+        # replaced by a row picker (one .pc-register-row per template,
+        # reusing P1a's register-panel anatomy) so a live GET
+        # /{id}/discovered_models-style probe isn't needed here, but more
+        # importantly so each row can show its own backend/network/mount
+        # descriptor. The list page's own auto-select useEffect still
+        # picks the first template; click the seeded one explicitly by
+        # testid so we don't depend on ordering.
+        modal.get_by_test_id(f"workspace-template-row-{tpl_id}").click()
 
         # Submit. By testid, not by role name: "Create" is a substring
         # match, so it also catches the modal's own "Create a template
