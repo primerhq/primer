@@ -770,6 +770,113 @@ async def get_session_turn_log(
     )
 
 
+def _extract_legacy_text(obj: dict) -> str | None:
+    """Join every text part of a legacy ``{role,parts}`` Message dict.
+
+    Mirrors WorkspaceAgentExecutor._fetch_last_assistant_text's own
+    part-walk (primer/agent/workspace_executor.py), just over a raw
+    dict instead of a validated Message. Returns None when the line
+    carries no text part (nothing to reconcile).
+    """
+    texts: list[str] = []
+    for part in obj.get("parts") or []:
+        if isinstance(part, dict) and part.get("type") == "text":
+            t = part.get("text")
+            if t:
+                texts.append(t)
+    return "".join(texts) if texts else None
+
+
+def _dedupe_legacy_user_input(
+    items: list[dict], *, fallback_created_at: str | None,
+) -> list[dict]:
+    """Reconcile messages.jsonl's dual-write asymmetry (01a04dde-b331).
+
+    messages.jsonl deliberately interleaves two shapes for two different
+    consumers: legacy ``{role,parts}`` Message lines feed LLM context
+    reconstruction (WorkspaceAgentExecutor._read_messages_jsonl), and
+    modern seq/kind SessionMessageRecord lines feed this API + the live
+    tap. primer.session.enqueue.wake_session writes BOTH for every
+    steer; primer.workspace.session_factory.start_workspace_session now
+    does the same for a session's opening initial_instructions (the
+    01a04dde-b331 write-side fix) - but a session created BEFORE that
+    fix shipped has its opening instruction ONLY as a legacy line, and
+    nothing ever back-fills the missing modern counterpart for
+    already-persisted history. Dropping it would erase a real user
+    message from the transcript this route serves.
+
+    Scoped to role="user" legacy lines ONLY - every other legacy shape
+    (assistant text/tool_call, tool tool_result) is passed through
+    completely unchanged. A NORMAL (non-parked) turn already writes a
+    matching modern record for those during live streaming (confirmed:
+    ToolCallEnd's TOOL_CALL record lands before dispatch, the
+    ExtendedEvent(_ExecutorToolResult) that becomes TOOL_RESULT lands
+    right after), but a PARKED-then-resumed turn's rehydrated
+    tool-result does not - WorkspaceAgentExecutor.inject_resume_messages
+    -> _persist_turn writes only the legacy line for that content, and
+    nothing (not park time, not resume time) ever writes a matching
+    modern TOOL_RESULT record for it. That is a separate, not-yet-fixed
+    write-side gap (reported alongside this one); reconciling it here
+    without a real modern record to key off risks synthesizing the
+    wrong shape or, worse, silently deciding a line is "covered" when
+    it isn't and dropping real content the raw passthrough never lost.
+    Dev-Prime's UI-side legacy-line tolerance stays load-bearing for
+    that case.
+
+    For each role="user" legacy line: if a modern USER_INPUT record
+    ANYWHERE in this file already carries the exact same text, drop the
+    legacy line (redundant - the write-side fix means this is now the
+    common case for every NEW instruction). Otherwise synthesize a
+    USER_INPUT-shaped item so the message is never lost. Synthesized
+    items count DOWN from seq 0 (0, -1, -2, ...) in file order: never
+    collides with a real record (those start at seq 1), sorts before
+    all real content (correct - this is always older, backfilled
+    history), and is naturally excluded from any since_seq-filtered
+    poll (any since_seq >= 0 already excludes seq <= 0) - exactly the
+    "not new" status this content actually has.
+
+    Known simplification: matching is by exact text equality anywhere
+    in the file, not file-position proximity to a specific candidate
+    counterpart. Two genuinely distinct user messages that happen to
+    share identical text could dedupe against each other's counterpart
+    instead of their own - the failure mode is a duplicate line
+    rendering once instead of twice, never data loss of distinct
+    content, so the simpler global check was chosen over a
+    proximity-windowed one.
+    """
+    covered_texts = {
+        obj["payload"]["text"]
+        for obj in items
+        if obj.get("kind") == "user_input"
+        and isinstance(obj.get("payload"), dict)
+        and isinstance(obj["payload"].get("text"), str)
+    }
+    out: list[dict] = []
+    synthetic_seq = 0
+    for obj in items:
+        if "kind" in obj:
+            out.append(obj)
+            continue
+        if obj.get("role") != "user":
+            out.append(obj)  # non-user legacy line: pass through unchanged
+            continue
+        text = _extract_legacy_text(obj)
+        if text is None:
+            out.append(obj)  # no text part to reconcile; leave as-is
+            continue
+        if text in covered_texts:
+            continue  # redundant - a modern USER_INPUT already covers it
+        out.append({
+            "seq": synthetic_seq,
+            "kind": "user_input",
+            "payload": {"text": text},
+            "created_at": fallback_created_at,
+            "node_id": None,
+        })
+        synthetic_seq -= 1
+    return out
+
+
 async def _read_workspace_turn_log(
     *,
     workspace,
@@ -779,6 +886,8 @@ async def _read_workspace_turn_log(
     since_seq: int | None,
     tail: bool = False,
     visible: bool = False,
+    dedupe_legacy_user_input: bool = False,
+    fallback_created_at: str | None = None,
 ) -> dict:
     """JSONL-parse the file at ``relative_path`` inside ``workspace``.
 
@@ -799,6 +908,16 @@ async def _read_workspace_turn_log(
     disappear and a compacted span collapses to its marker. It defaults
     off because the audit and trace views need the raw stream, and a
     rewound span has to stay fetchable to render as a collapsed region.
+
+    ``dedupe_legacy_user_input`` (01a04dde-b331): reconciles the
+    messages.jsonl dual-write asymmetry (see :func:`_dedupe_legacy_user_input`)
+    before paging. Defaults off - this helper is SHARED with
+    turns.jsonl (get_session_turn_log) and other JSONL logs
+    (primer/api/routers/compute.py) that carry no such dual-shape
+    concept at all; only get_session_messages (the one reader of
+    messages.jsonl specifically) opts in. Folded BEFORE paging, same
+    reasoning as ``visible`` - offsets must describe the reconciled
+    conversation, not the raw file underneath it.
     """
     try:
         raw = await workspace.read_file(relative_path)
@@ -816,6 +935,16 @@ async def _read_workspace_turn_log(
         if since_seq is not None and int(obj.get("seq", 0)) <= since_seq:
             continue
         items.append(obj)
+    if dedupe_legacy_user_input:
+        # Before the visible fold: visible_records/_parse (primer/
+        # session/replay.py) only keeps kind+seq shaped lines, so
+        # reconciling legacy lines into that shape FIRST means a
+        # visible=true request also correctly sees a synthesized
+        # backfilled instruction instead of silently losing it the
+        # same way the raw legacy line would have.
+        items = _dedupe_legacy_user_input(
+            items, fallback_created_at=fallback_created_at,
+        )
     if visible:
         # Folded BEFORE paging, so offsets describe the conversation the
         # caller asked to see rather than the raw file underneath it.
@@ -896,6 +1025,10 @@ async def get_session_messages(
         since_seq=after_seq,
         tail=tail,
         visible=visible,
+        dedupe_legacy_user_input=True,
+        fallback_created_at=(
+            sess.created_at.isoformat() if sess.created_at else None
+        ),
     )
 
 
