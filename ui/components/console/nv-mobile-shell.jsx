@@ -228,7 +228,7 @@ function NV_MobileChatScreen(props) {
           // desktop's own steer-while-running semantics) is unchanged,
           // this only overrides the button's text (nv-session-doc.jsx's
           // NV_Composer, default "Queue" for every other caller).
-          <window.NV_SessionDoc sid={sid} queueLabel="+Q" />
+          <window.NV_SessionDoc key={sid} sid={sid} queueLabel="+Q" />
         ) : null}
       </div>
     </div>

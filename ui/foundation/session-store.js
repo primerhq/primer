@@ -534,8 +534,13 @@ function SS_catchUp(store) {
     }
     if (merged > 0) {
       // A reconcile may also finalize a part or settle an optimistic row.
+      // Stamp session_id (SessionMessageRecord carries none of its own -
+      // see nv-session-doc.jsx's REST-seed effect for the same defensive
+      // stamp) so SS_apply's cross-session guard has something real to
+      // check even though this path is already sid-scoped by construction
+      // (the fetch URL above is store.sid, applied to the same store).
       for (var j = 0; j < items.length; j++) {
-        SS_apply(store, items[j]);
+        SS_apply(store, Object.assign({}, items[j], { session_id: store.sid }));
       }
       SS_markDirty(store, "transcript");
       SS_markDirty(store, "status");

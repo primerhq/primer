@@ -69,17 +69,30 @@ function NV_renderStudioDoc(con, tab) {
       </div>
     );
   }
+  // SEV fix: this dispatcher renders from the same fixed tree position
+  // regardless of which tab is active (renderDoc(activeTab) is called
+  // from one un-keyed slot in nv-tab-groups.jsx), so switching tabs
+  // without a `key` re-renders the SAME doc component instance with
+  // new props instead of unmount+remount. For NV_SessionDoc that meant
+  // a brand-new session's tab could render with a stale in-flight
+  // useResource snapshot from the PREVIOUS session still in scope for
+  // one render, long enough for the REST-history seed effect to apply
+  // the old session's messages into the new session's store (which
+  // carries no session_id to filter on - see session-store.js's SS_apply
+  // fix). Keying by the tab's own ref forces a real remount on switch,
+  // closing the window entirely rather than relying on a downstream
+  // guard.
   if (tab.kind === "session" && typeof window.NV_SessionDoc === "function") {
-    return <window.NV_SessionDoc sid={tab.ref} />;
+    return <window.NV_SessionDoc key={tab.ref} sid={tab.ref} />;
   }
   if (tab.kind === "file" && typeof window.NV_FileDoc === "function") {
-    return <window.NV_FileDoc path={tab.ref} />;
+    return <window.NV_FileDoc key={tab.ref} path={tab.ref} />;
   }
   if (tab.kind === "diff" && typeof window.NV_DiffDoc === "function") {
-    return <window.NV_DiffDoc sha={tab.ref} />;
+    return <window.NV_DiffDoc key={tab.ref} sha={tab.ref} />;
   }
   if (tab.kind === "wiki" && typeof window.NV_WikiDoc === "function") {
-    return <window.NV_WikiDoc slug={tab.ref} />;
+    return <window.NV_WikiDoc key={tab.ref} slug={tab.ref} />;
   }
   return null;
 }

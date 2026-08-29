@@ -1407,12 +1407,24 @@ function NV_SessionDoc(props) {
   // Seed the store from the REST history resource so the first paint is
   // not slower than the old REST-only path. The store dedupes by seq,
   // so re-applying on every history poll is a no-op once caught up.
+  //
+  // SEV defense-in-depth: SessionMessageRecord (the wire shape History
+  // returns) carries no session_id of its own - the session is implicit
+  // in the fetch URL, not the payload - so SS_apply's own cross-session
+  // guard (`frame.session_id !== store.sid`, session-store.js) is a
+  // no-op for these items and can't reject a stale batch on its own.
+  // The real fix is nv-studio.jsx/nv-mobile-shell.jsx keying NV_SessionDoc
+  // by session id (closes the stale-render window this exploited), but
+  // stamping session_id here means that guard has something real to
+  // check if any future un-keyed remount reopens a similar window.
+  // Object.assign copies rather than mutates: the original item is the
+  // useResource cache's own shared data.
   React.useEffect(function () {
     var items = (history.data && history.data.items) || [];
     for (var i = 0; i < items.length; i++) {
-      window.SS_apply(store, items[i]);
+      window.SS_apply(store, Object.assign({}, items[i], { session_id: sid }));
     }
-  }, [store, history.data, history.error]);
+  }, [store, sid, history.data, history.error]);
   var traceState = React.useState(null);
   var traceTurn = traceState[0];
   var setTraceTurn = traceState[1];

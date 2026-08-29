@@ -234,11 +234,17 @@ def test_inbox_action_buttons_carry_the_touch_target_class() -> None:
 
 def test_chat_screen_mounts_the_real_session_doc() -> None:
     """Reuses NV_SessionDoc verbatim - the same mount nv-studio.jsx's own
-    NV_renderStudioDoc uses on desktop - not a mobile reimplementation."""
+    NV_renderStudioDoc uses on desktop - not a mobile reimplementation.
+
+    RETARGET (SEV cross-session state bleed fix): NV_SessionDoc now
+    mounts with `key={sid}` so switching which session's screen is
+    shown forces a real unmount/remount instead of reusing the same
+    component instance (and its stale useResource snapshot) across
+    sessions."""
     m = re.search(r"function NV_MobileChatScreen\(props\)[\s\S]{0,1300}", MOBILE)
     assert m
     body = m.group(0)
-    assert "<window.NV_SessionDoc sid={sid}" in body
+    assert "<window.NV_SessionDoc key={sid} sid={sid}" in body
     assert 'data-testid="nv-mob-session-screen"' in body
     assert 'data-testid="nv-mob-screen-back"' in body
     assert "con.setDoc(null)" in body
@@ -330,7 +336,7 @@ def test_mobile_gets_the_compact_queue_label_desktop_keeps_queue() -> None:
     assert 'data-mode={props.running ? "queue" : "send"}' in doc
     assert "props.running ? (props.queueLabel || \"Queue\") : \"Send\"" in doc
     assert "queueLabel={props.queueLabel}" in doc
-    assert 'window.NV_SessionDoc sid={sid} queueLabel="+Q"' in MOBILE
+    assert 'window.NV_SessionDoc key={sid} sid={sid} queueLabel="+Q"' in MOBILE
 
 
 def test_single_implementation_guard_no_forked_session_doc_internals() -> None:
