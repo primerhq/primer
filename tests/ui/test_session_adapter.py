@@ -42,6 +42,8 @@ def test_session_adapter_module_exists_and_exports() -> None:
     assert "window.SA_toTranscript = SA_toTranscript;" in src
     assert "window.SA_KIND_TO_TRANSCRIPT = SA_KIND_TO_TRANSCRIPT;" in src
     assert "window.SA_SKIP_IN_TRANSCRIPT = SA_SKIP_IN_TRANSCRIPT;" in src
+    assert "window.SA_diffStatOfResult = SA_diffStatOfResult;" in src
+    assert "window.SA_resultCountLabel = SA_resultCountLabel;" in src
     # Phase 2: the data hook + cursor encode moved to the store/hub; the
     # adapter must not re-introduce them.
     assert "SA_useSessionConversation" not in src
@@ -260,3 +262,179 @@ def test_transcript_rows_carry_the_text_they_display() -> None:
     # A tool call draws its own chip, so it needs no label. MiniRacer
     # hands back JSUndefined rather than None for an absent property.
     assert not ctx.eval("out[3].label")
+
+
+# ---------------------------------------------------------------------------
+# UX reconcile wave 3 (audit A item 6): SA_diffStatOf - the live/done
+# "editing {file} +N -N" chip's line-delta data. workspace__edit_file's
+# own tool result (primer/workspace/local/tools/edit.py) is a unified
+# diff already, via difflib.unified_diff - this counts its content
+# lines. Edit-only by construction (it parses diff text, and write never
+# produced any); SA_diffStatOfResult below is the wave-5 seam that
+# additionally covers write via its own server-computed metadata.
+# ---------------------------------------------------------------------------
+
+
+def _diff_stat_ctx():
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(ADAPTER.read_text(encoding="utf-8"))
+    return ctx
+
+
+def test_diff_stat_counts_content_lines_only() -> None:
+    ctx = _diff_stat_ctx()
+    diff_text = (
+        "--- a/src/api.ts\n"
+        "+++ b/src/api.ts\n"
+        "@@ -4,6 +4,9 @@\n"
+        " export const webhookConfig = {\n"
+        "+  signingSecret: env(\"STRIPE_WEBHOOK_SECRET\"),\n"
+        "+  rotatedAt: \"2026-08-23T09:41:00Z\",\n"
+        "-  signingSecret: \"whsec_live_9f31\",\n"
+        "   tolerance: 300,\n"
+    )
+    ctx.eval(f"var out = window.SA_diffStatOf({diff_text!r});")
+    out = {
+        "additions": ctx.eval("out.additions"),
+        "deletions": ctx.eval("out.deletions"),
+    }
+    assert out == {"additions": 2, "deletions": 1}
+
+
+def test_diff_stat_ignores_the_filename_header_lines() -> None:
+    """"--- a/x" / "+++ b/x" are the diff's own filename pair, not a
+    removed/added content line - counting them would over-count by
+    exactly one of each on every call."""
+    ctx = _diff_stat_ctx()
+    diff_text = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
+    ctx.eval(f"var out = window.SA_diffStatOf({diff_text!r});")
+    assert ctx.eval("out.additions") == 1
+    assert ctx.eval("out.deletions") == 1
+
+
+def test_diff_stat_is_null_for_no_change() -> None:
+    ctx = _diff_stat_ctx()
+    assert ctx.eval("window.SA_diffStatOf('')") is None
+    assert ctx.eval("window.SA_diffStatOf(null)") is None
+    assert ctx.eval(
+        "window.SA_diffStatOf('--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n unchanged\\n')"
+    ) is None
+
+
+# ---------------------------------------------------------------------------
+# UX reconcile wave 5 (audit A item 6, write half): SA_diffStatOfResult -
+# the one seam a caller uses for a tool_result row's diff stat regardless
+# of which tool produced it (edit's unified-diff text vs write's own
+# server-computed metadata, primer/workspace/local/tools/write.py).
+# ---------------------------------------------------------------------------
+
+
+def test_diff_stat_of_result_prefers_write_metadata() -> None:
+    ctx = _diff_stat_ctx()
+    ctx.eval(
+        "var out = window.SA_diffStatOfResult({payload: {"
+        "output: 'wrote 9 bytes to a.py',"
+        "metadata: {additions: 2, deletions: 1}"
+        "}});"
+    )
+    assert ctx.eval("out.additions") == 2
+    assert ctx.eval("out.deletions") == 1
+
+
+def test_diff_stat_of_result_new_file_metadata_has_zero_deletions() -> None:
+    ctx = _diff_stat_ctx()
+    ctx.eval(
+        "var out = window.SA_diffStatOfResult({payload: {"
+        "output: 'wrote 5 bytes to a.py',"
+        "metadata: {additions: 3, deletions: 0}"
+        "}});"
+    )
+    assert ctx.eval("out.additions") == 3
+    assert ctx.eval("out.deletions") == 0
+
+
+def test_diff_stat_of_result_falls_back_to_parsing_edit_output() -> None:
+    ctx = _diff_stat_ctx()
+    ctx.eval(
+        "var out = window.SA_diffStatOfResult({payload: {"
+        "output: '--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-old\\n+new\\n'"
+        "}});"
+    )
+    assert ctx.eval("out.additions") == 1
+    assert ctx.eval("out.deletions") == 1
+
+
+def test_diff_stat_of_result_is_null_when_neither_source_has_a_diff() -> None:
+    ctx = _diff_stat_ctx()
+    assert ctx.eval(
+        "window.SA_diffStatOfResult({payload: {output: 'src/api.ts:88'}})"
+    ) is None
+    assert ctx.eval("window.SA_diffStatOfResult({payload: {}})") is None
+    assert ctx.eval("window.SA_diffStatOfResult(null)") is None
+
+
+# ---------------------------------------------------------------------------
+# UX reconcile wave 5 (audit A item 4): SA_resultCountLabel - the
+# "searched N files" chip label for a grep tool_result row, read from
+# its own exact match_count/file_count/truncated metadata
+# (primer/workspace/local/tools/grep.py) rather than a client-side parse
+# of the (possibly head_limit-capped) output text.
+# ---------------------------------------------------------------------------
+
+
+def test_result_count_label_singular_file() -> None:
+    ctx = _diff_stat_ctx()
+    ctx.eval(
+        "var out = window.SA_resultCountLabel({payload: {"
+        "metadata: {match_count: 2, file_count: 1, truncated: false}"
+        "}});"
+    )
+    assert ctx.eval("out") == "searched 1 file"
+
+
+def test_result_count_label_plural_files() -> None:
+    ctx = _diff_stat_ctx()
+    ctx.eval(
+        "var out = window.SA_resultCountLabel({payload: {"
+        "metadata: {match_count: 7, file_count: 4, truncated: false}"
+        "}});"
+    )
+    assert ctx.eval("out") == "searched 4 files"
+
+
+def test_result_count_label_honest_about_truncation() -> None:
+    """A capped output list must never present a partial count as if it
+    were exact - the "250+" marker, not "250" or "4"."""
+    ctx = _diff_stat_ctx()
+    ctx.eval(
+        "var out = window.SA_resultCountLabel({payload: {"
+        "metadata: {match_count: 312, file_count: 250, truncated: true}"
+        "}});"
+    )
+    assert ctx.eval("out") == "searched 250+ files"
+
+
+def test_result_count_label_is_null_when_metadata_absent() -> None:
+    """A mid-flight tool_result (executor hasn't attached metadata yet)
+    or a pre-wave-5 persisted record - the caller keeps its existing
+    input-arg chip form in both cases."""
+    ctx = _diff_stat_ctx()
+    assert ctx.eval(
+        "window.SA_resultCountLabel({payload: {output: 'src/api.ts:88'}})"
+    ) is None
+    assert ctx.eval("window.SA_resultCountLabel({payload: {}})") is None
+    assert ctx.eval("window.SA_resultCountLabel(null)") is None
+
+
+def test_result_count_label_is_null_for_non_grep_metadata() -> None:
+    """write's {additions, deletions} metadata has no file_count - must
+    not be mistaken for a grep row."""
+    ctx = _diff_stat_ctx()
+    assert ctx.eval(
+        "window.SA_resultCountLabel({payload: {"
+        "metadata: {additions: 2, deletions: 1}"
+        "}})"
+    ) is None

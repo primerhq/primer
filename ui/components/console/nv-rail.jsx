@@ -461,7 +461,12 @@ function NV_Rail(props) {
                 </svg>
                 <span className="nv-rail-name">{w.name || w.id}</span>
                 {attnCount > 0 ? <span className="nv-rail-attn-count">{attnCount}</span> : null}
-                <span className="nv-rail-session-count">{wsSessions.length}</span>
+                {/* UX reconcile wave 1 (audit A item 17): a bare count read as
+                    an unlabeled second number next to the attention count -
+                    spell out the unit, same as the reference. */}
+                <span className="nv-rail-session-count">
+                  {wsSessions.length} {wsSessions.length === 1 ? "session" : "sessions"}
+                </span>
               </button>
               {isOpen ? wsSessions.map(function (s) {
                 var sid = s.session_id;

@@ -47,6 +47,20 @@ def test_session_context_menu_manages_the_row():
     assert "deleteSession" in RAIL
 
 
+def test_workspace_row_session_count_spells_out_the_unit():
+    """UX reconcile wave 1 (audit A item 17): a bare number next to the
+    attention count read as unlabeled - the reference spells out
+    "N sessions" (singular "session" for exactly one)."""
+    m = re.search(
+        r'<span className="nv-rail-session-count">([\s\S]{0,120}?)</span>',
+        RAIL,
+    )
+    assert m
+    body = m.group(1)
+    assert '"session"' in body and '"sessions"' in body
+    assert 'wsSessions.length === 1' in body
+
+
 def test_files_tree_manages_and_uploads():
     for label in ('"Rename"', '"Delete"', '"Download"', '"Copy Path"'):
         assert label in FILES, label

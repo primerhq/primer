@@ -3871,10 +3871,45 @@ input, textarea, select { font: inherit; color: inherit; }
 .nv-turn-main { flex: 1; min-width: 0; }
 .nv-turn-byline { display: flex; align-items: baseline; gap: 8px; }
 .nv-turn-name { font-weight: 600; font-size: 12px; }
+/* Audit A item 2: a muted short-time label next to the byline name. */
+.nv-turn-time { font-size: 10.5px; color: var(--text-4); }
+/* Audit A item 1: compaction/rewind/invocation markers - a horizontal
+   rule with the label centered, never dressed as a message bubble. */
+.nv-turn-divider {
+  display: flex; align-items: center; gap: 10px;
+  margin: 4px 0; padding-left: 30px;
+}
+.nv-turn-divider-line { flex: 1; height: 1px; background: var(--border); }
+.nv-turn-divider-label {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 11px; color: var(--text-4); white-space: nowrap;
+}
+.nv-turn-divider-time { font-size: 10px; color: var(--text-4); }
 .nv-turn-text { font-size: 13.5px; margin-top: 2px; text-wrap: pretty; color: var(--text); white-space: pre-wrap; }
 /* Markdown answers manage their own block spacing; pre-wrap on top of
    that doubles every gap. */
 .nv-turn-text.md-body { white-space: normal; }
+/* Audit A item 8: a blinking cursor at the tail of live-streaming
+   assistant text. ::after on the LAST rendered markdown block (not the
+   .md-body container itself) so it sits inline at the end of the actual
+   last line of text and wraps naturally with it, rather than landing on
+   its own line below a block-level paragraph. No separate reduced-
+   motion override needed here - the global rule above already forces
+   every animation (this one included) to a single, near-instant
+   iteration, which settles the cursor on a steady (non-blinking) block
+   exactly as required. */
+.nv-turn-text.md-body[data-streaming="true"] > *:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 7px; height: 1em;
+  margin-left: 2px;
+  background: currentColor;
+  vertical-align: text-bottom;
+  animation: nv-stream-cursor-blink 1s step-start infinite;
+}
+@keyframes nv-stream-cursor-blink {
+  50% { opacity: 0; }
+}
 /* Model thinking: collapsed + muted; the toggle opens it in place. */
 .nv-thought { display: flex; flex-direction: column; gap: 4px; padding-left: 30px; }
 .nv-thought-toggle {
@@ -3885,10 +3920,6 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-thought-toggle:hover { color: var(--text-3); }
 .nv-thought-mark { flex-shrink: 0; }
-.nv-thought-peek {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-style: italic; color: var(--text-4); min-width: 0;
-}
 .nv-thought-body {
   font-size: 12.5px; color: var(--text-3); white-space: pre-wrap;
   border-left: 2px solid var(--border); padding: 2px 0 2px 10px;
@@ -4019,7 +4050,16 @@ input, textarea, select { font: inherit; color: inherit; }
   border-radius: 999px; font-size: 12px;
   color: var(--text-2); background: var(--bg-1);
 }
-.nv-steer-mark { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-4); text-transform: uppercase; }
+/* Audit A item 9: text-transform already uppercased the PAINT, but
+   nv-steer-mark had none of the badge chrome (border/padding/radius) the
+   reference shows - same small-mono-badge treatment as .nv-filedoc-dirty
+   above, reused rather than invented, with the queued (waiting) tone
+   already established for .pill-paused. */
+.nv-steer-mark {
+  font-family: var(--font-mono); font-size: 9.5px;
+  color: var(--amber); border: 1px solid var(--amber);
+  border-radius: 3px; padding: 0 5px; text-transform: uppercase;
+}
 .nv-steer-chip button {
   width: 18px; height: 18px; display: grid; place-items: center;
   border: none; background: transparent; border-radius: 50%;
@@ -4052,6 +4092,11 @@ input, textarea, select { font: inherit; color: inherit; }
   margin: 0 0 4px; padding: 6px 10px;
   color: var(--text-2); white-space: pre-wrap; overflow-x: auto;
 }
+/* Audit A item 14 partial: a diff-shaped preview reuses .nv-diff-line's
+   own per-line background/color (below) - those need the full card
+   width to color edge-to-edge, so the card-level padding moves onto
+   each line instead (mirrors .nv-diff-lines' own padding convention). */
+.nv-card-preview.nv-card-preview-diff { padding: 4px 0; }
 .nv-card-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
 .nv-btn-reject {
   padding: 5px 14px;
@@ -4070,6 +4115,25 @@ input, textarea, select { font: inherit; color: inherit; }
   outline: none; color: var(--text); font-family: inherit;
 }
 .nv-ask-prompt { font-size: 13px; margin-bottom: 9px; color: var(--text); }
+/* Wave 6 (audit A item 15 render half): schema-driven radio options,
+   replacing the free-text textarea when SH_askOptionsOf finds a real
+   enum. Selected state gets a strong accent border/tint (not just the
+   .nv-rewind-row precedent's hover-only treatment) - the reference shows
+   the chosen option as the clear visual anchor of the whole card. */
+.nv-ask-options { display: flex; flex-direction: column; gap: 6px; }
+.nv-ask-option {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 12px; border: 1px solid var(--border);
+  border-radius: var(--r-6); cursor: pointer; font-size: 13px;
+  color: var(--text-2);
+}
+.nv-ask-option:hover { border-color: var(--border-strong); }
+.nv-ask-option[data-selected="true"] {
+  border-color: var(--accent); background: var(--accent-dim);
+  color: var(--text);
+}
+.nv-ask-option input[type="radio"] { flex-shrink: 0; }
+.nv-ask-option-label { min-width: 0; }
 
 /* Trace split */
 .nv-trace-split {
@@ -5210,46 +5274,84 @@ button.nv-rail-ws-session {
 }
 
 /* ---------------------------------------------------------------------
-   Provider catalog rail: a real sidebar - icon + label rows, active
-   pill, section head - instead of bare text links (ui-ux pass
-   2026-08-26).
+   Platform wave P1a: providers surface reconciliation.
+   Family chips replaced the rail (item 1); the register dropdown, card
+   grid and probe panel are new (items 2/3/4).
    ------------------------------------------------------------------ */
-.pc-rail {
-  border-right: 1px solid var(--border);
-  padding: 4px 10px 4px 2px;
-  align-self: stretch;
+/* Item 1: the family selector reuses .chip-group/.chip (the app's own
+   proven segmented-control pattern) - .pc-chips only adds the reference's
+   accent-colored active state, since the generic .chip.active (background
+   highlight only) is shared with surfaces that should not always turn
+   green just because this one wants to. */
+.pc-chips { flex-wrap: wrap; height: auto; }
+.pc-chips .chip.active { background: var(--accent-dim); color: var(--accent); }
+
+/* Item 2/3: "Register provider" dropdown. */
+.pc-register { position: relative; }
+.pc-register-panel {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
+  min-width: 260px; max-height: 320px; overflow-y: auto;
+  background: var(--bg-1); border: 1px solid var(--border-strong);
+  border-radius: var(--r-6); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  padding: 6px;
 }
-.pc-rail-head {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-4);
-  padding: 4px 10px 6px;
+.pc-register-head {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-4); padding: 6px 8px 4px;
 }
-.pc-rail-item {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 6px 10px;
-  border-radius: var(--r-6);
-  font-size: 12.5px;
-  color: var(--text-3);
-  cursor: pointer;
-  text-decoration: none;
-  transition: background 0.1s ease, color 0.1s ease;
+.pc-register-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; width: 100%; padding: 7px 8px; border-radius: var(--r-4);
+  border: none; background: transparent; color: var(--text);
+  font-size: 12.5px; text-align: left; cursor: pointer; font-family: inherit;
 }
-.pc-rail-item:hover { background: var(--bg-hover); color: var(--text); }
-.pc-rail-item.selected {
-  background: var(--bg-2);
-  color: var(--accent);
-  font-weight: 600;
+.pc-register-row:hover { background: var(--bg-hover); }
+.pc-register-annotation { font-size: 10.5px; white-space: nowrap; }
+.pc-register-empty { padding: 8px; }
+/* Platform wave P1b: .pc-register-row reused as a PERSISTENT picker row
+   (model-profiles' Provider|Model columns, workspaces' Template rows) as
+   well as its original one-shot dropdown-item role - selected state only
+   matters for the persistent-picker usage. */
+.pc-register-row[data-selected="true"] {
+  background: var(--accent-dim); color: var(--accent);
 }
-.pc-rail-item:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
+
+/* Item 3: card grid replaces the flat row list. auto-fill/minmax is the
+   ENTIRE narrow-viewport story - no isMobile/CardList JS branch, the grid
+   reflows its own column count (test_the_list_adapts_to_narrow_viewports). */
+.pc-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
 }
-.pc-rail-icon { flex-shrink: 0; opacity: 0.85; }
+.pc-card {
+  border: 1px solid var(--border); border-radius: var(--r-6);
+  background: var(--bg-1); padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+}
+.pc-card-head { display: flex; align-items: center; gap: 8px; }
+.pc-card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-card-subtitle { color: var(--text-2); font-size: 12px; }
+.pc-card-facts { display: flex; flex-direction: column; gap: 3px; }
+.pc-card-fact { display: flex; gap: 6px; font-size: 12px; }
+.pc-card-footer { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+
+/* Item 4: the create modal's schema-driven chip + two-column form + the
+   live probe panel's own small result list. */
+.pc-modal-chip {
+  border: 1px solid var(--border); border-radius: var(--r-4);
+  padding: 2px 8px; display: inline-block; margin-bottom: 10px;
+}
+.pc-form-right {
+  border-left: 1px solid var(--border); padding-left: 16px;
+}
+.pc-probe {
+  border: 1px solid var(--border); border-radius: var(--r-6);
+  padding: 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.pc-probe-head { font-weight: 600; font-size: 12.5px; }
+.pc-probe-count { font-size: 12px; color: var(--text-2); }
+.pc-probe-models { margin: 0; padding-left: 18px; font-size: 12px; }
 
 /* Workspace events: a row EXPANDS to its full envelope - actor,
    entity, correlation and the raw payload - a one-line type + id was

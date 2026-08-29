@@ -47,7 +47,13 @@ function SH_chipObject(args) {
   return "";
 }
 
-function SH_toolChipLabel(row) {
+// UX reconcile wave 7 (audit A items 4/6, render half): resultRow is the
+// paired tool_result row (NV_ToolBlock's props.result), optional and
+// absent while the call is still running - the args-only label below is
+// exactly what a running/historical/pre-wave-5 call already showed, so
+// omitting it (or passing one with no usable metadata) is a no-op, not
+// a regression.
+function SH_toolChipLabel(row, resultRow) {
   var payload = (row && row.payload) || {};
   var bare = window.SH_bareToolName(payload.name);
   var spec = SH_TOOL_VERBS[bare] || { verb: "ran " + bare, tone: "other" };
@@ -60,8 +66,27 @@ function SH_toolChipLabel(row) {
   var path = spec.tone === "write" && typeof args.path === "string"
     ? args.path
     : null;
+  var argForm = object ? label + " " + object : label;
+  // Once a result carries wave 5's exact server metadata, prefer a
+  // result-aware label over the args-only guess above - "searched 42
+  // files" says what happened; "searched webhook" only says what was
+  // asked. The two accessors are shape-driven (grep's file_count vs
+  // write/edit's additions/deletions), not tool-name-driven, so this
+  // dispatches correctly without hardcoding which bare tool is which.
+  var resultLabel = argForm;
+  if (resultRow) {
+    var countLabel = window.SA_resultCountLabel(resultRow);
+    if (countLabel) {
+      resultLabel = countLabel;
+    } else {
+      var stat = window.SA_diffStatOfResult(resultRow);
+      if (stat) {
+        resultLabel = argForm + " +" + stat.additions + " -" + stat.deletions;
+      }
+    }
+  }
   return {
-    label: object ? label + " " + object : label,
+    label: resultLabel,
     tone: spec.tone,
     path: path,
   };
@@ -87,6 +112,92 @@ function SH_nestSubagentRows(rows) {
     out.push(Object.assign({}, row, { children: row.children || [] }));
   }
   return out;
+}
+
+// UX reconcile wave 2 (audit A item 2): a short local-time label for a
+// turn's byline, next to the name. Same format as shared/transcript.jsx's
+// CT_formatTime (that file is not in this task's boundary, so this is a
+// small duplicate rather than a cross-file import) - "" for a
+// missing/unparsable createdAt so callers can render conditionally
+// without flashing "Invalid Date".
+function SH_shortTime(createdAt) {
+  if (!createdAt) return "";
+  var d = new Date(createdAt);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// UX reconcile wave 2 (audit A item 5): the trace split's header - "trace
+// · turn N" names the turn but says nothing about what happened in it.
+// Enrich to "trace · {calls} · {span}" using the turn's OWN rows (already
+// fetched for the transcript, each carrying createdAt - no new request):
+// N = tool_call row count; span = last tool activity minus first (the
+// latest of any tool_call/tool_result timestamp, minus the earliest tool
+// call) rather than summing individual durations, since overlapping or
+// back-to-back calls would double-count shared time in a sum. A turn with
+// no tool calls (pure reasoning + answer) keeps the plain "turn N" form -
+// there is nothing to count.
+function SH_traceHeaderLabel(turnNo, turnRows) {
+  var toolCallCount = 0;
+  var minMs = null;
+  var maxMs = null;
+  for (var i = 0; i < (turnRows || []).length; i++) {
+    var row = turnRows[i];
+    if (row.kind !== "tool_call" && row.kind !== "tool_result") continue;
+    if (row.kind === "tool_call") toolCallCount += 1;
+    if (!row.createdAt) continue;
+    var ms = Date.parse(row.createdAt);
+    if (isNaN(ms)) continue;
+    if (minMs === null || ms < minMs) minMs = ms;
+    if (maxMs === null || ms > maxMs) maxMs = ms;
+  }
+  if (!toolCallCount) return "trace · turn " + turnNo;
+  var callsLabel = toolCallCount + (toolCallCount === 1 ? " call" : " calls");
+  if (minMs === null || maxMs === null) return "trace · " + callsLabel;
+  var seconds = Math.max(0, Math.round((maxMs - minMs) / 1000));
+  return "trace · " + callsLabel + " · " + seconds + "s";
+}
+
+// UX reconcile wave 4 (audit A item 3): NV_Thought's collapsed label was
+// the literal word "thought" plus a raw 110-char peek - the reference
+// shows short semantic summaries instead ("Explored the repo", "Chose
+// the handler seam"). True summarization needs an LLM, out of scope
+// here (do not build that) - this is an honest heuristic approximation
+// only: reasoning text often opens with a topic sentence, so the FIRST
+// sentence (trimmed, ellipsized) reads close enough for a collapsed
+// label most of the time. Full semantic summaries remain a product-
+// level follow-up, not something this heuristic claims to solve.
+function SH_thoughtLabel(text) {
+  var trimmed = String(text || "").trim();
+  if (!trimmed) return "thought";
+  var m = trimmed.match(/^[^.!?\n]+[.!?]?/);
+  var sentence = (m ? m[0] : trimmed).trim();
+  if (sentence.length > 60) sentence = sentence.slice(0, 59) + "…";
+  return sentence || "thought";
+}
+
+// UX reconcile wave 4 (audit A item 14 partial): approval-card previews
+// sometimes carry a unified diff (a file-edit tool call awaiting
+// approval) - nv-file-docs.jsx's NV_DiffDoc already colors +/- lines
+// this same one-line way, but that file is a component (not an
+// importable pure function) and outside this task's boundary, so this
+// is a small duplicate rather than a cross-file reach, same drift-note
+// precedent as SH_shortTime above.
+function SH_diffLineTone(line) {
+  var ch = String(line || "").charAt(0);
+  return ch === "+" ? "add" : ch === "-" ? "del" : "ctx";
+}
+
+// A preview is diff-shaped only when it carries an actual unified-diff
+// hunk header ("@@ ... @@") - gating on a bare "+"/"-" prefix alone
+// would misfire on ordinary text (a bullet list line starting with "-"
+// is not rare), coloring content that was never a diff.
+function SH_looksLikeDiff(text) {
+  var lines = String(text || "").split("\n");
+  for (var i = 0; i < lines.length; i++) {
+    if (/^@@ /.test(lines[i])) return true;
+  }
+  return false;
 }
 
 var SH_TERMINAL_KINDS = ["done", "cancelled", "error"];
@@ -158,3 +269,8 @@ window.SH_TOOL_VERBS = SH_TOOL_VERBS;
 window.SH_toolChipLabel = SH_toolChipLabel;
 window.SH_nestSubagentRows = SH_nestSubagentRows;
 window.SH_collapseTurns = SH_collapseTurns;
+window.SH_shortTime = SH_shortTime;
+window.SH_traceHeaderLabel = SH_traceHeaderLabel;
+window.SH_thoughtLabel = SH_thoughtLabel;
+window.SH_diffLineTone = SH_diffLineTone;
+window.SH_looksLikeDiff = SH_looksLikeDiff;

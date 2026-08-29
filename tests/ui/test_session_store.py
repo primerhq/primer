@@ -277,3 +277,44 @@ def test_record_already_carrying_kind_is_stored_as_is() -> None:
     ))
     assert out["storedIsSame"] is True
     assert out["kind"] == "assistant_token"
+
+
+def test_tool_result_metadata_survives_the_class_to_kind_clone() -> None:
+    """UX reconcile wave 7 (audit A items 4/6, render half): a live
+    tool_result tap frame (shaped like ui/fixtures/shell/tap-frames.json's
+    c2 grep frame) carries payload.metadata (match_count/file_count,
+    wave 5's server-computed data) - the store/pipeline must not be a
+    fourth drop point after the three the backend already fixed. The
+    class-to-kind clone (SS_insertRecord) does `Object.assign({}, rec,
+    {kind: ...})`, a shallow copy that carries payload (and therefore
+    payload.metadata) by reference; this pins that down for real rather
+    than by reading the source."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var s = SS_getStore("ws-3f8a9bc1d4e2", "sess-4f1a2b3c");
+          var frame = {
+            cursor: "c2", seq: 43,
+            workspace_id: "ws-3f8a9bc1d4e2", session_id: "sess-4f1a2b3c",
+            agent_id: "operator", graph_id: null, node_id: null,
+            "class": "tool_result", ts: "2026-08-16T09:40:05+00:00",
+            payload: {
+              tool_call_id: "tc-1",
+              content: "src/api.ts:88\\nsrc/api.ts:104",
+              metadata: {match_count: 2, file_count: 1, truncated: false}
+            }
+          };
+          SS_apply(s, frame);
+          var rec = s.records[43];
+          return JSON.stringify({
+            kind: rec ? rec.kind : null,
+            metadata: rec ? rec.payload.metadata : null
+          });
+        })()
+        """
+    ))
+    assert out["kind"] == "tool_result"
+    assert out["metadata"] == {
+        "match_count": 2, "file_count": 1, "truncated": False,
+    }

@@ -51,7 +51,11 @@ def test_gates_and_questions_are_interrupt_tier() -> None:
         '{ return [i.toolName, i.tier, i.resolved]; }))'
     ))
     by_name = {row[0]: row for row in out}
-    assert by_name["ask_approval"][1] == "interrupt"
+    # "approval", not "ask_approval" - GET /workspaces/{wid}/yields/
+    # pending's real "kind" field (primer/api/routers/workspaces.py's
+    # _extract_yield_kind maps the internal "_approval" tool name to
+    # the human-facing "approval"); live-verified at gate step one.
+    assert by_name["approval"][1] == "interrupt"
     assert by_name["ask_user"][1] == "interrupt"
 
 
@@ -75,13 +79,16 @@ def test_resolved_records_are_digest_and_remain_queryable() -> None:
 
 
 def test_the_decision_preview_survives_into_the_item() -> None:
-    """A decision card without the literal command or diff is a
-    free-text question, which section 8 forbids."""
+    """A decision card without the literal gated call is a free-text
+    question, which section 8 forbids. GET /workspaces/{wid}/yields/
+    pending's real payload has no free-standing diff/preview string
+    (live-verified at gate step one) - SH_previewOf computes this from
+    resume_metadata.original_call's name + arguments."""
     ctx = _ctx()
     preview = ctx.eval(
         'SH_toAttentionItems({pending: PENDING.items, records: []})[0].preview'
     )
-    assert "stripe-signature" in preview
+    assert preview == "workspace__write_file(path=src/api.ts)"
 
 
 def test_snooze_and_mute_filter_without_deleting() -> None:
@@ -155,13 +162,16 @@ def test_a_parked_question_in_the_ROUTE_shape_is_a_question() -> None:
 
 
 def test_an_approval_park_in_the_route_shape_still_reads_as_approval() -> None:
+    """kind: "approval" is the real route value (live-verified at gate
+    step one) - _extract_yield_kind (primer/api/routers/workspaces.py)
+    never emits "ask_approval"."""
     ctx = _ctx()
     out = json.loads(ctx.eval(
         """
         JSON.stringify(SH_toAttentionItems({
           pending: [{
             session_id: "sess-2",
-            kind: "ask_approval",
+            kind: "approval",
             prompt: "run rm -rf /tmp/x",
             tool_call_id: "tc-2",
             parked_at: "2026-08-20T09:01:00+00:00"
@@ -172,3 +182,175 @@ def test_an_approval_park_in_the_route_shape_still_reads_as_approval() -> None:
     ))
     assert out[0]["kind"] == "approval", out
     assert out[0]["tier"] == "interrupt", out
+
+
+# ---------------------------------------------------------------------------
+# UX reconcile wave 3/5 (audit A item 15): response_schema is a real,
+# jsonschema-enforced _AskUserArgs field (primer/toolset/_system_tools.py)
+# already surfaced by GET /sessions/{id}/ask_user/pending. Wave 3 reported
+# that list_pending_yields / list_session_pending_yields (primer/api/
+# routers/workspaces.py) hand-built resume_metadata as {original_call}
+# only and dropped it; wave 5 landed that one-key backend addition (both
+# routes now include "response_schema" in resume_metadata - see
+# tests/api/test_workspace_yields_pending.py /
+# test_session_yields_scoped.py for the route-level coverage). These
+# frontend tests were written defensively ahead of that fix and needed no
+# code change once it shipped - only this comment, since the first test's
+# docstring below used to describe the (now closed) gap as "the real
+# route's shape".
+# ---------------------------------------------------------------------------
+
+
+def test_response_schema_is_absent_when_the_row_truly_has_none() -> None:
+    """A row without a response_schema (e.g. a plain approval, or an
+    ask_user whose _AskUserArgs never set one - both real, both still
+    valid) reads as null. Must not crash or invent one."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toAttentionItems({
+          pending: [{
+            session_id: "sess-1", kind: "ask_user",
+            prompt: "Which currency?", tool_call_id: "tc-1",
+            parked_at: "2026-08-20T09:00:00+00:00"
+          }],
+          records: []
+        }))
+        """
+    ))
+    assert out[0]["responseSchema"] is None, out
+
+
+def test_response_schema_reads_through_a_bare_item_field() -> None:
+    """A bare item field (matching how "approvers" already arrives today) -
+    kept as a forwards-compatible alias alongside the resume_metadata
+    shape the live routes actually populate (see the next test)."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toAttentionItems({
+          pending: [{
+            session_id: "sess-1", kind: "ask_user",
+            prompt: "Which currency?", tool_call_id: "tc-1",
+            parked_at: "2026-08-20T09:00:00+00:00",
+            responseSchema: {enum: ["USD", "EUR"]}
+          }],
+          records: []
+        }))
+        """
+    ))
+    assert out[0]["responseSchema"] == {"enum": ["USD", "EUR"]}, out
+
+
+def test_response_schema_also_reads_from_resume_metadata_shape() -> None:
+    """The shape every live route now actually returns: nested under
+    resume_metadata (list_pending_yields / list_session_pending_yields,
+    since wave 5) or as AskUserPendingResponse's own top-level field fed
+    through the same key by a caller. This is the one real routes
+    populate; the bare-field test above stays as a forwards-compat
+    alias, not the primary path."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toAttentionItems({
+          pending: [{
+            session_id: "sess-1", kind: "ask_user",
+            prompt: "Which currency?", tool_call_id: "tc-1",
+            parked_at: "2026-08-20T09:00:00+00:00",
+            resume_metadata: {response_schema: {enum: ["USD", "EUR"]}}
+          }],
+          records: []
+        }))
+        """
+    ))
+    assert out[0]["responseSchema"] == {"enum": ["USD", "EUR"]}, out
+
+
+def test_ask_options_normalizes_the_enum() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        'JSON.stringify(SH_askOptionsOf({enum: ["Original charge currency", '
+        '"Always USD", "Ask per refund"]}))'
+    ))
+    assert out == [
+        {"value": "Original charge currency", "label": "Original charge currency"},
+        {"value": "Always USD", "label": "Always USD"},
+        {"value": "Ask per refund", "label": "Ask per refund"},
+    ]
+
+
+def test_ask_options_is_null_for_free_text() -> None:
+    ctx = _ctx()
+    assert ctx.eval("SH_askOptionsOf(null)") is None
+    assert ctx.eval('SH_askOptionsOf({type: "string"})') is None
+    assert ctx.eval('SH_askOptionsOf({enum: []})') is None
+
+
+# ---------------------------------------------------------------------------
+# UX reconcile wave 3 (audit A item 14): SH_routingLine/SH_viewerQualifies
+# mirror primer/model/tool_approval.py's ApproverSpec.allows() exactly -
+# an affordance only, the backend re-checks on the real POST.
+# ---------------------------------------------------------------------------
+
+
+def test_viewer_qualifies_admin_always() -> None:
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_viewerQualifies({kind: "roles", roles: ["ops"]}, '
+        '{username: "usman", role: "admin"})'
+    ) is True
+
+
+def test_viewer_qualifies_anyone_spec() -> None:
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_viewerQualifies(null, {username: "usman", role: "engineer"})'
+    ) is True
+    assert ctx.eval(
+        'SH_viewerQualifies({kind: "anyone"}, {username: "usman", role: "engineer"})'
+    ) is True
+
+
+def test_viewer_qualifies_roles_and_users() -> None:
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_viewerQualifies({kind: "roles", roles: ["ops"]}, '
+        '{username: "usman", role: "ops"})'
+    ) is True
+    assert ctx.eval(
+        'SH_viewerQualifies({kind: "roles", roles: ["ops"]}, '
+        '{username: "usman", role: "engineer"})'
+    ) is False
+    assert ctx.eval(
+        'SH_viewerQualifies({kind: "users", users: ["usman"]}, '
+        '{username: "usman", role: "engineer"})'
+    ) is True
+    assert ctx.eval(
+        'SH_viewerQualifies({kind: "users", users: ["someone-else"]}, '
+        '{username: "usman", role: "engineer"})'
+    ) is False
+
+
+def test_routing_line_anyone_is_unpersonalized() -> None:
+    """Qualifying is trivial and universal for "anyone" - personalizing
+    it would be noise, so it stays exactly as it reads today."""
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_routingLine({approvers: null}, {username: "usman", role: "engineer"})'
+    ) == "anyone may decide"
+    assert ctx.eval(
+        'SH_routingLine({approvers: {kind: "anyone"}}, '
+        '{username: "usman", role: "engineer"})'
+    ) == "anyone may decide"
+
+
+def test_routing_line_names_the_spec_and_qualification() -> None:
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_routingLine({approvers: {kind: "roles", roles: ["admins"]}}, '
+        '{username: "usman", role: "admin"})'
+    ) == "who may decide: admins — you qualify"
+    assert ctx.eval(
+        'SH_routingLine({approvers: {kind: "roles", roles: ["ops"]}}, '
+        '{username: "usman", role: "engineer"})'
+    ) == "who may decide: ops"

@@ -101,6 +101,76 @@ var SA_KIND_TO_TRANSCRIPT = {
   error: "error",
 };
 
+// UX reconcile wave 3 (audit A item 6): the live/done "editing {file}
+// +N -N" chip's line-delta data for an edit result. workspace__edit_file's
+// own tool result is a unified diff already (primer/workspace/local/
+// tools/edit.py's difflib.unified_diff, returned verbatim as
+// ToolResult.output) - this counts the +/- content lines, skipping the
+// "+++"/"---" filename header pair a unified diff always opens with
+// (those are not content changes). Generic over any unified-diff text,
+// not edit-specific, so it is equally usable against a git patch string
+// elsewhere. Internal to this file - a caller wanting the diff stat for
+// an arbitrary tool_result row should use SA_diffStatOfResult below,
+// which also covers write.
+function SA_diffStatOf(text) {
+  var lines = String(text || "").split("\n");
+  var additions = 0;
+  var deletions = 0;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (line.indexOf("+++") === 0 || line.indexOf("---") === 0) continue;
+    if (line.charAt(0) === "+") additions += 1;
+    else if (line.charAt(0) === "-") deletions += 1;
+  }
+  if (!additions && !deletions) return null;
+  return { additions: additions, deletions: deletions };
+}
+
+// UX reconcile wave 5 (audit A item 6, write half): the ONE seam a
+// caller should use for a tool_result row's diff stat, regardless of
+// which tool produced it. write's own metadata (server-computed via
+// difflib.SequenceMatcher against the old file content, captured just
+// before it was overwritten - primer/workspace/local/tools/write.py) is
+// authoritative when present; otherwise falls back to parsing edit's
+// unified-diff output text via SA_diffStatOf above. A row with neither
+// (a tool that produces no diff, or a pre-wave-5 record with no
+// metadata key at all) returns null - the same "no chip" contract
+// SA_diffStatOf already has.
+function SA_diffStatOfResult(rec) {
+  var payload = (rec && rec.payload) || {};
+  var meta = payload.metadata || null;
+  if (
+    meta
+    && (typeof meta.additions === "number" || typeof meta.deletions === "number")
+  ) {
+    return { additions: meta.additions || 0, deletions: meta.deletions || 0 };
+  }
+  return SA_diffStatOf(payload.output);
+}
+
+// UX reconcile wave 5 (audit A item 4): the "searched N files" result-
+// count label for a grep tool_result row, read from its own exact
+// metadata (primer/workspace/local/tools/grep.py's match_count/
+// file_count/truncated, restored server-side in wave 5) rather than a
+// client-side parse of the (possibly head_limit-capped) output text -
+// the wave 3 report's own argument against that parse still applies: a
+// capped output list of "4" lines must never be presented as if it
+// were the total when the true count is "250+". Copy choice (mine, not
+// a reference mock - noted per the brief): "searched N file(s)", with a
+// trailing "+" on the count when metadata.truncated is true. Returns
+// null when metadata is absent (a mid-flight tool_result before the
+// executor attaches it, or a pre-wave-5 persisted record) - the
+// caller's existing chip keeps showing its input-arg form (e.g. the
+// raw pattern) in that case, exactly as it does today.
+function SA_resultCountLabel(rec) {
+  var payload = (rec && rec.payload) || {};
+  var meta = payload.metadata || null;
+  if (!meta || typeof meta.file_count !== "number") return null;
+  var count = String(meta.file_count) + (meta.truncated ? "+" : "");
+  var noun = meta.file_count === 1 && !meta.truncated ? "file" : "files";
+  return "searched " + count + " " + noun;
+}
+
 // The text a row shows. Messages keep theirs at payload.text; a record
 // with none (a tool call, a lifecycle marker) has nothing to say here and
 // the renderer draws its own chip for it.
@@ -225,6 +295,9 @@ function SA_toTranscript(records, session) {
   return out;
 }
 
+window.SA_diffStatOf = SA_diffStatOf;
+window.SA_diffStatOfResult = SA_diffStatOfResult;
+window.SA_resultCountLabel = SA_resultCountLabel;
 window.SA_SKIP_IN_TRANSCRIPT = SA_SKIP_IN_TRANSCRIPT;
 window.SA_toTranscript = SA_toTranscript;
 window.SA_KIND_TO_TRANSCRIPT = SA_KIND_TO_TRANSCRIPT;

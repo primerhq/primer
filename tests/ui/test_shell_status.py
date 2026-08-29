@@ -28,20 +28,96 @@ def test_status_line_is_verb_object_elapsed() -> None:
     ctx = _ctx()
     assert ctx.eval(
         'SH_statusLine({verb: "grep", object: "src/", elapsedSec: 12})'
-    ) == "running: grep src/ - 12s"
+    ) == "running: grep src/ — 12s"
 
 
 def test_a_run_with_no_tool_yet_still_says_something() -> None:
     """Prohibited: bare spinners and silent pre-first-token gaps."""
     ctx = _ctx()
-    assert ctx.eval("SH_statusLine({elapsedSec: 0})") == "running: thinking - 0s"
+    assert ctx.eval("SH_statusLine({elapsedSec: 0})") == "running: thinking — 0s"
 
 
 def test_long_runs_read_in_minutes() -> None:
     ctx = _ctx()
     assert ctx.eval(
         'SH_statusLine({verb: "run", object: "pytest", elapsedSec: 62})'
-    ) == "running: run pytest - 1m 02s"
+    ) == "running: run pytest — 1m 02s"
+
+
+# ---------------------------------------------------------------------------
+# UX reconcile wave 1 (audit A item 10): the parked-session status line.
+# ---------------------------------------------------------------------------
+
+
+def test_wait_line_names_the_tool_for_an_approval() -> None:
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_waitLine({kind: "approval", toolName: "workspace__write_file"})'
+    ) == "waiting on approval — workspace__write_file (parked, worker released)"
+
+
+def test_wait_line_reads_as_an_answer_for_a_question() -> None:
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_waitLine({kind: "question", toolName: "ask_user"})'
+    ) == "waiting on your answer — ask_user (parked, worker released)"
+
+
+def test_wait_line_falls_back_without_a_tool_name() -> None:
+    ctx = _ctx()
+    assert ctx.eval('SH_waitLine({kind: "approval"})') == (
+        "waiting on approval — a tool call (parked, worker released)"
+    )
+    assert ctx.eval('SH_waitLine({kind: "question"})') == (
+        "waiting on your answer — ask_user (parked, worker released)"
+    )
+
+
+def test_wait_line_is_null_with_nothing_parked() -> None:
+    ctx = _ctx()
+    assert ctx.eval("SH_waitLine(null)") is None
+
+
+# ---------------------------------------------------------------------------
+# SH_parkedStatusLine - the full decision nv-session-doc.jsx's waitNote
+# prop needs (gate item vs. the wake/timer fallback), a one-argument-
+# shape drop-in for its current inline expression.
+# ---------------------------------------------------------------------------
+
+
+def test_parked_status_line_is_null_when_not_parked() -> None:
+    ctx = _ctx()
+    assert ctx.eval("SH_parkedStatusLine({parked_status: null}, [])") is None
+    assert ctx.eval("SH_parkedStatusLine(null, [])") is None
+
+
+def test_parked_status_line_names_the_approval_gate() -> None:
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_parkedStatusLine({parked_status: "parked"}, '
+        '[{kind: "approval", toolName: "workspace__write_file"}])'
+    ) == "waiting on approval — workspace__write_file (parked, worker released)"
+
+
+def test_parked_status_line_names_the_ask_gate() -> None:
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_parkedStatusLine({parked_status: "parked"}, '
+        '[{kind: "question", toolName: "ask_user"}])'
+    ) == "waiting on your answer — ask_user (parked, worker released)"
+
+
+def test_parked_status_line_falls_back_with_no_gate_item() -> None:
+    """A wake/timer park (sleep, watch_files, ...) carries no decision
+    gate - keep the existing wording for that case rather than inventing
+    one, per the wave-1 brief."""
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_parkedStatusLine({parked_status: "parked"}, [])'
+    ) == "parked — waiting on a wake"
+    assert ctx.eval(
+        'SH_parkedStatusLine({parked_status: "parked"}, null)'
+    ) == "parked — waiting on a wake"
 
 
 def test_status_is_derived_from_the_latest_tool_call_on_the_tap() -> None:

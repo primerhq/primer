@@ -37,7 +37,11 @@
     "node_id": null,
     "class": "tool_result",
     "ts": "2026-08-16T09:40:05+00:00",
-    "payload": {"tool_call_id": "tc-1", "content": "src/api.ts:88\nsrc/api.ts:104"}
+    "payload": {
+      "tool_call_id": "tc-1",
+      "content": "src/api.ts:88\nsrc/api.ts:104",
+      "metadata": {"match_count": 2, "file_count": 1, "truncated": false}
+    }
   },
   {
     "cursor": "c3",
@@ -51,7 +55,7 @@
     "ts": "2026-08-16T09:41:00+00:00",
     "payload": {
       "tool_call_id": "tc-2",
-      "tool_name": "ask_approval",
+      "tool_name": "_approval",
       "resume_metadata": {"original_call": {"name": "workspace__write_file"}}
     }
   },

@@ -165,7 +165,14 @@ function NV_usageOf(session) {
   var ctx = session.context_length || 0;
   var used = (u.total_input_tokens || 0) + (u.total_output_tokens || 0);
   var pct = ctx ? Math.min(100, Math.round((used / ctx) * 100)) : 0;
-  return { pct: pct, label: Math.round(used / 1000) + "k" };
+  var usedLabel = Math.round(used / 1000) + "k";
+  // UX reconcile wave 1 (audit A item 13): used ALONE ("38k") answered
+  // "how much so far" but not "out of what" - the budget is exactly what
+  // ctx already carries, so this was a label bug, not missing data. No
+  // ctx (rare) keeps the old used-only label rather than showing a
+  // misleading "/ 0k".
+  var label = ctx ? usedLabel + " / " + Math.round(ctx / 1000) + "k" : usedLabel;
+  return { pct: pct, label: label };
 }
 
 window.NV_usageOf = NV_usageOf;

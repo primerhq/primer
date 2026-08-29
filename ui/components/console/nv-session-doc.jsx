@@ -1,6 +1,7 @@
 /* global React, SH_api, NV_useConsole, NV_identity, SH_statusFromTap,
    SH_statusLine, SH_collapseTurns, SH_nestSubagentRows, SH_toolChipLabel,
-   SH_scrollDecision */
+   SH_scrollDecision, SH_shortTime, SH_traceHeaderLabel, SH_thoughtLabel,
+   SH_diffLineTone, SH_looksLikeDiff, SH_routingLine, SH_askOptionsOf */
 // The session tab (wiring plan P2 T7). DATA layer inherited from the
 // sh session doc (same resources, same pure modules); RENDER is the
 // designer prototype's SESSION DOC / TRANSCRIPT / cards / TRACE /
@@ -10,6 +11,70 @@ var NV_CHIP_ICONS = { write: "✎", read: "→", other: "⚙" };
 
 function NV_sessionIsOver(session) {
   return !!session && session.status === "ended";
+}
+
+// Refresh bug (2026-08-29): the store's live status channel
+// (session-store.js's SS_updateStatus) only ever knows the CURRENT verb
+// ("running: {tool}", "thinking") from a live tap frame - a fresh page
+// has none until the next one arrives, which during a long tool call can
+// be minutes away. This mirrors that exact kind-based derivation, but
+// replays durable records the REST history poll already fetched, so a
+// refresh reconstructs "running: {tool}" immediately instead of only a
+// bare turn_status label. Scans backward (recordsBySeq is seq-ascending)
+// for the most recent record that would have set or cleared status -
+// anything else (tool_result, reasoning, assistant_token...) is not a
+// status-changing kind and is skipped, same as SS_updateStatus ignores
+// them.
+function NV_deriveStatusFromRecords(recordsBySeq) {
+  if (!recordsBySeq || !recordsBySeq.length) return null;
+  for (var i = recordsBySeq.length - 1; i >= 0; i--) {
+    var rec = recordsBySeq[i];
+    if (rec.kind === "done" || rec.kind === "cancelled" || rec.kind === "error") {
+      return null;
+    }
+    if (rec.kind === "tool_call") {
+      var payload = rec.payload || {};
+      return {
+        verb: String(payload.name || ""), object: "",
+        startedMs: rec.created_at ? Date.parse(rec.created_at) : null,
+      };
+    }
+    if (rec.kind === "user_input") {
+      return {
+        verb: "thinking", object: "",
+        startedMs: rec.created_at ? Date.parse(rec.created_at) : null,
+      };
+    }
+  }
+  return null;
+}
+
+// Review finding (2026-08-29): session.last_turn_at stamps when the
+// PREVIOUS turn completed, not when the current one started - for a
+// session that idled between turns (user stepped away, came back, sent
+// a message), using it as startedMs shows elapsed = idle-gap +
+// current-turn-time (e.g. "running - 14432s" after a lunch break),
+// worse than resetting to 0. The honest current-turn-start timestamp is
+// its trigger: the most recent user_input record's created_at, when
+// that message landed AFTER the last turn ended - already in the
+// fetched records, no new fetch. Only reached when
+// NV_deriveStatusFromRecords found no in-flight tool_call/user_input of
+// its own (records momentarily behind turn_status, or genuinely no
+// records yet) - the resort chain still ends the same way as before.
+function NV_lastTurnStartMs(recordsBySeq, session) {
+  var lastTurnAtMs = session.last_turn_at ? Date.parse(session.last_turn_at) : null;
+  var lastUserInputMs = null;
+  for (var i = (recordsBySeq || []).length - 1; i >= 0; i--) {
+    if (recordsBySeq[i].kind === "user_input" && recordsBySeq[i].created_at) {
+      lastUserInputMs = Date.parse(recordsBySeq[i].created_at);
+      break;
+    }
+  }
+  if (lastUserInputMs != null && (lastTurnAtMs == null || lastUserInputMs > lastTurnAtMs)) {
+    return lastUserInputMs;
+  }
+  if (lastTurnAtMs != null) return lastTurnAtMs;
+  return session.created_at ? Date.parse(session.created_at) : Date.now();
 }
 
 // ---------------------------------------------------------------------------
@@ -474,12 +539,7 @@ function NV_Thought(props) {
       <button type="button" className="nv-thought-toggle"
         onClick={function () { setOpen(!open); }}>
         <span className="nv-thought-mark">{open ? "▾" : "▸"}</span>
-        thought
-        {!open && text ? (
-          <span className="nv-thought-peek">
-            {String(text).slice(0, 110)}
-          </span>
-        ) : null}
+        {SH_thoughtLabel(text)}
       </button>
       {open ? <div className="nv-thought-body">{text}</div> : null}
     </div>
@@ -495,9 +555,12 @@ function NV_ToolBlock(props) {
   var maxed = maxState[0];
   var setMaxed = maxState[1];
   var row = props.row;
-  var info = SH_toolChipLabel(row);
-  var args = (row.payload && row.payload.arguments) || {};
   var rp = (props.result && props.result.payload) || null;
+  // UX reconcile wave 7 (audit A items 4/6, render half): once the
+  // result lands, its wave-5 metadata (grep's file_count, write/edit's
+  // diff stat) drives the chip label - see SH_toolChipLabel.
+  var info = SH_toolChipLabel(row, props.result);
+  var args = (row.payload && row.payload.arguments) || {};
   // US-008 R3 item 1: an elapsed timer while the call has no result yet
   // and the session has a live turn (props.running) - a call that's
   // already durable (arguments complete) but still executing (no
@@ -597,14 +660,12 @@ function NV_DecisionCard(props) {
   var reasonState = React.useState("");
   var reason = reasonState[0];
   var setReason = reasonState[1];
-  // The ApproverSpec stamped at park time (P6): kind anyone|roles|users.
-  var routing = item.approvers
-    ? (item.approvers.kind === "anyone"
-      ? "anyone may decide"
-      : "awaiting " + ((item.approvers.kind === "roles"
-        ? item.approvers.roles
-        : item.approvers.users) || []).join(", "))
-    : "anyone may decide";
+  // Wave 6 (audit A item 14-routing): SH_routingLine (shell-attention.js)
+  // mirrors primer/model/tool_approval.py's ApproverSpec.allows() exactly
+  // and is viewer-aware ("who may decide: {spec} — you qualify") -
+  // replaces the old inline ternary, which only named the spec and never
+  // told the viewer whether THEY could act on it.
+  var routing = SH_routingLine(item, { username: con.username, role: con.role });
   return (
     <div className="nv-card nv-card-attention" data-kind="approval"
       data-testid={"nv-decision:" + item.toolCallId}>
@@ -617,7 +678,18 @@ function NV_DecisionCard(props) {
       </div>
       <div className="nv-card-body">
         {item.preview ? (
-          <pre className="nv-card-preview">{item.preview}</pre>
+          SH_looksLikeDiff(item.preview) ? (
+            <pre className="nv-card-preview nv-card-preview-diff nv-diff-lines">
+              {item.preview.split("\n").map(function (line, i) {
+                return (
+                  <div key={i} className="nv-diff-line"
+                    data-tone={SH_diffLineTone(line)}>{line}</div>
+                );
+              })}
+            </pre>
+          ) : (
+            <pre className="nv-card-preview">{item.preview}</pre>
+          )
         ) : null}
         <div className="nv-card-actions">
           <button type="button" className="nv-btn-primary"
@@ -636,7 +708,7 @@ function NV_DecisionCard(props) {
                 props.onResolved,
                 function (err) { con.toast("Reject failed: " + err.message); }
               );
-            }}>{rejOpen ? "Reject with feedback" : "Reject…"}</button>
+            }}>Reject with feedback</button>
           <span className="nv-card-note">
             also in your attention feed — keep scrolling while you judge
           </span>
@@ -655,7 +727,21 @@ function NV_DecisionCard(props) {
 function NV_AskCard(props) {
   var con = NV_useConsole();
   var item = props.item;
-  var valState = React.useState("");
+  // Wave 6 (audit A item 15 render half): SH_askOptionsOf (shell-
+  // attention.js, wave 3) normalizes _AskUserArgs.response_schema's
+  // {enum: [...]} into a radio-friendly list, or null for the SAME
+  // free-text fallback this textarea already was. Reads as null until
+  // wave 5's backend passthrough lands (item.responseSchema is
+  // defensively undefined today - shell-attention.js's own comment) -
+  // that is the correct, unchanged behavior for right now, not a bug;
+  // synthetic schemas exercise the radio path in the meantime (see
+  // tests/ui/test_console_session_doc.py).
+  var options = SH_askOptionsOf(item.responseSchema);
+  // SH_askOptionsOf's own comment: it deliberately does not pre-select
+  // an option (a rendering choice, not data) - the reference mockup's
+  // pre-selected first option is exactly that choice, made here.
+  var valState = React.useState(
+    options && options.length ? String(options[0].value) : "");
   var val = valState[0];
   var setVal = valState[1];
   var errState = React.useState(null);
@@ -682,17 +768,35 @@ function NV_AskCard(props) {
       </div>
       <div className="nv-card-body">
         <div className="nv-ask-prompt">{item.preview || item.title}</div>
-        <textarea className="nv-card-reason" value={val}
-          data-testid="nv-ask-answer"
-          placeholder="Your answer — the agent resumes with it"
-          onChange={function (ev) { setVal(ev.target.value); }}
-          onKeyDown={function (ev) {
-            // Enter submits, like the composer; Shift+Enter breaks a line.
-            if (ev.key === "Enter" && !ev.shiftKey) {
-              ev.preventDefault();
-              submit();
-            }
-          }} />
+        {options ? (
+          <div className="nv-ask-options" data-testid="nv-ask-options">
+            {options.map(function (opt, i) {
+              var optVal = String(opt.value);
+              return (
+                <label key={i} className="nv-ask-option"
+                  data-testid={"nv-ask-option:" + i}
+                  data-selected={val === optVal ? "true" : "false"}>
+                  <input type="radio" name={"nv-ask-" + item.toolCallId}
+                    checked={val === optVal}
+                    onChange={function () { setVal(optVal); }} />
+                  <span className="nv-ask-option-label">{opt.label}</span>
+                </label>
+              );
+            })}
+          </div>
+        ) : (
+          <textarea className="nv-card-reason" value={val}
+            data-testid="nv-ask-answer"
+            placeholder="Your answer — the agent resumes with it"
+            onChange={function (ev) { setVal(ev.target.value); }}
+            onKeyDown={function (ev) {
+              // Enter submits, like the composer; Shift+Enter breaks a line.
+              if (ev.key === "Enter" && !ev.shiftKey) {
+                ev.preventDefault();
+                submit();
+              }
+            }} />
+        )}
         {err ? (
           <div className="nv-form-error" data-testid="nv-ask-error">{err}</div>
         ) : null}
@@ -842,7 +946,7 @@ function NV_TraceSplit(props) {
   return (
     <div className="nv-trace-split" data-testid="nv-trace-split">
       <div className="nv-trace-head">
-        <span>trace · turn {props.turnNo}</span>
+        <span>{SH_traceHeaderLabel(props.turnNo, props.turnRows)}</span>
         <span style={{ flex: 1 }} />
         <button type="button" className="nv-rail-iconbtn"
           data-testid="nv-trace-close"
@@ -1157,7 +1261,9 @@ function NV_Composer(props) {
             data-testid="nv-composer-input"
             placeholder={props.terminal
               ? "Send to reopen this session…"
-              : "Send a message — Enter queues mid-run…"}
+              : props.running && !props.waitNote
+                ? "Steer mid-run — queues to the turn boundary"
+                : "Message " + (props.agentName || "agent") + "…"}
             onChange={function (ev) {
               var v = ev.target.value;
               setVal(v);
@@ -1477,18 +1583,31 @@ function NV_SessionDoc(props) {
   // A reload mid-run has no tap history and no optimistic flag, but
   // the polled session row knows a turn is executing - without this
   // the busy indicator vanished on refresh (live finding 2026-08-26).
-  var busySinceRef = React.useRef(null);
+  // Prefer NV_deriveStatusFromRecords (the actual verb/tool, replayed
+  // from durable records already fetched) over the bare turn_status
+  // label - a user watching a live tap frame would have seen "running:
+  // grep_src", not just "running", and losing that detail on refresh
+  // reads as broken even though the strip itself never went blank.
+  // startedMs must come from the SERVER's own state, not Date.now() at
+  // the moment this component happened to notice (a client-local clock
+  // resets the elapsed counter to ~0 on every refresh, which reads as
+  // "lost the running indicator" even though the dot+label stayed put -
+  // the refresh bug this fixes) - see NV_lastTurnStartMs for the
+  // fallback chain when no in-flight record answers directly.
   var rowBusy = !!(session && !NV_sessionIsOver(session)
     && session.turn_status && session.turn_status !== "idle");
-  if (rowBusy && busySinceRef.current == null) {
-    busySinceRef.current = Date.now();
-  }
-  if (!rowBusy) busySinceRef.current = null;
   if (!shown && rowBusy) {
-    shown = {
-      verb: String(session.turn_status), object: "",
-      startedMs: busySinceRef.current,
-    };
+    var replayed = NV_deriveStatusFromRecords(store.recordsBySeq);
+    shown = replayed
+      ? {
+        verb: replayed.verb, object: replayed.object,
+        startedMs: replayed.startedMs
+          || NV_lastTurnStartMs(store.recordsBySeq, session),
+      }
+      : {
+        verb: String(session.turn_status), object: "",
+        startedMs: NV_lastTurnStartMs(store.recordsBySeq, session),
+      };
   }
   var degraded = !!(gatesSnap && gatesSnap.degraded);
   var records = store.recordsBySeq;
@@ -1575,6 +1694,14 @@ function NV_SessionDoc(props) {
     if (row.turn_no != null) return row.turn_no;
     var t = turnOfSeq[row.seq];
     return t == null ? 0 : t;
+  }
+  // Audit A item 5: the trace split's header needs the turn's OWN rows
+  // (tool_call/tool_result, each carrying createdAt from SA_toTranscript)
+  // to compute its enriched "{N} calls · {span}s" label - turnOfSeq
+  // already maps every seq to its ordinal turn, so this is a plain
+  // filter over the same flat array, not a new fetch.
+  function turnRowsFor(turnNo) {
+    return flat.filter(function (row) { return turnOfSeq[row.seq] === turnNo; });
   }
 
   // US-008 R3 item 1: live tool-call ARGUMENTS as they stream in, before
@@ -1748,6 +1875,9 @@ function NV_SessionDoc(props) {
           <div className="nv-turn-main">
             <div className="nv-turn-byline">
               <span className="nv-turn-name">{con.username}</span>
+              {row.createdAt ? (
+                <span className="nv-turn-time">{SH_shortTime(row.createdAt)}</span>
+              ) : null}
             </div>
             <div className="nv-turn-text">{row.label}</div>
           </div>
@@ -1809,6 +1939,30 @@ function NV_SessionDoc(props) {
     }
     // A lifecycle row with nothing to say renders nothing at all.
     if (row.kind === "lifecycle" && !row.label) return null;
+    // Audit A item 1: compaction/rewind/invocation markers (session-
+    // adapter.jsx's SA_KIND_TO_TRANSCRIPT maps all three to "divider",
+    // with SA_dividerLabel already computing the text) had no render
+    // branch at all here and fell through to the generic agent bubble
+    // below - an empty identity chip with the marker's own label
+    // dressed up as something the agent said. A divider is not a
+    // message: render it as a horizontal-rule row, label centered.
+    if (row.kind === "divider") {
+      return (
+        <div key={row.seq} className="nv-turn-divider"
+          data-testid={"nv-turn:" + row.seq}>
+          <span className="nv-turn-divider-line" />
+          <span className="nv-turn-divider-label">
+            {row.label}
+            {row.createdAt ? (
+              <span className="nv-turn-divider-time">
+                {SH_shortTime(row.createdAt)}
+              </span>
+            ) : null}
+          </span>
+          <span className="nv-turn-divider-line" />
+        </div>
+      );
+    }
     return (
       <div key={row.seq} className="nv-turn nv-turn-agent"
         data-depth={depth} data-testid={"nv-turn:" + row.seq}>
@@ -1823,6 +1977,9 @@ function NV_SessionDoc(props) {
             <span className="nv-turn-name" style={{ color: ident.color }}>
               {(row.payload && row.payload.agent_id) || agentId || "agent"}
             </span>
+            {row.createdAt ? (
+              <span className="nv-turn-time">{SH_shortTime(row.createdAt)}</span>
+            ) : null}
             <span style={{ flex: 1 }} />
             {row.seq != null ? (
               <button type="button" className="nv-trace-toggle"
@@ -1832,7 +1989,9 @@ function NV_SessionDoc(props) {
                 }}>trace</button>
             ) : null}
           </div>
-          <div className="nv-turn-text md-body">
+          <div className="nv-turn-text md-body"
+            data-streaming={row.payload && row.payload.streaming
+              ? "true" : "false"}>
             {row.kind === "assistant_message"
               && typeof window.renderMarkdown === "function"
               ? window.renderMarkdown(
@@ -1999,6 +2158,7 @@ function NV_SessionDoc(props) {
         </div>
         {traceTurn != null ? (
           <NV_TraceSplit sid={sid} turnNo={traceTurn}
+            turnRows={turnRowsFor(traceTurn)}
             onClose={function () { setTraceTurn(null); }} />
         ) : null}
       </div>
@@ -2007,9 +2167,8 @@ function NV_SessionDoc(props) {
         statusShown={shown}
         degraded={degraded}
         queueLabel={props.queueLabel}
-        waitNote={session && session.parked_status
-          ? "parked — waiting on " + (session.waiting_reason || "a wake")
-          : null}
+        waitNote={window.SH_parkedStatusLine(session, gateItems)}
+        agentName={agentId}
         terminal={NV_sessionIsOver(session)}
         micEnabled={!!(con.speech && con.speech.stt_configured)}
         onInterrupt={function () {

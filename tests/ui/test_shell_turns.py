@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "ui" / "foundation" / "shell-turns.js"
+ADAPTER = ROOT / "ui" / "components" / "session-adapter.jsx"
 
 
 def _ctx():
@@ -21,6 +22,14 @@ def _ctx():
     ctx = MiniRacer()
     ctx.eval("var window = globalThis;")
     ctx.eval((ROOT / "ui" / "foundation" / "shell-status.js").read_text(encoding="utf-8"))
+    # UX reconcile wave 7: SH_toolChipLabel's result-aware branch calls
+    # window.SA_resultCountLabel / window.SA_diffStatOfResult (session-
+    # adapter.jsx) - only reached when a resultRow is passed, so the
+    # pre-wave-7 single-arg tests below still pass without this, but the
+    # two-arg tests need it loaded. session-adapter.jsx has no JSX in it
+    # (see its own docstring: pure record->transcript mapping only), so
+    # it evals here the same as in test_session_adapter.py's own harness.
+    ctx.eval(ADAPTER.read_text(encoding="utf-8"))
     ctx.eval(MODULE.read_text(encoding="utf-8"))
     return ctx
 
@@ -78,6 +87,92 @@ def test_unknown_tools_still_get_a_verb() -> None:
     ))
     assert out["label"] == "ran do_thing"
     assert out["tone"] == "other"
+
+
+# ---------------------------------------------------------------------------
+# UX reconcile wave 7 (audit A items 4/6, render half): SH_toolChipLabel's
+# optional resultRow argument - once the paired tool_result is in, wave
+# 5's exact server metadata (grep's file_count, write/edit's diff stat)
+# drives the label instead of the args-only guess.
+# ---------------------------------------------------------------------------
+
+
+def test_grep_result_label_becomes_searched_n_files() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toolChipLabel(
+          {kind: "tool_call",
+           payload: {name: "workspace__grep",
+                     arguments: {pattern: "webhook", path: "src/"}}},
+          {payload: {metadata: {match_count: 7, file_count: 4, truncated: false}}}
+        ))
+        """
+    ))
+    assert out["label"] == "searched 4 files"
+    assert out["tone"] == "read"
+
+
+def test_write_result_label_appends_diff_stat() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toolChipLabel(
+          {kind: "tool_call",
+           payload: {name: "workspace__write_file",
+                     arguments: {path: "src/api.ts"}}},
+          {payload: {output: "wrote 9 bytes to src/api.ts",
+                     metadata: {additions: 2, deletions: 1}}}
+        ))
+        """
+    ))
+    assert out["label"] == "wrote src/api.ts +2 -1"
+    assert out["tone"] == "write"
+    # A write chip's Open-as-Tab target is unaffected by the label change.
+    assert out["path"] == "src/api.ts"
+
+
+def test_edit_result_label_appends_diff_stat_parsed_from_output() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toolChipLabel(
+          {kind: "tool_call",
+           payload: {name: "workspace__edit_file",
+                     arguments: {path: "src/api.ts"}}},
+          {payload: {output: "--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-old\\n+new\\n"}}
+        ))
+        """
+    ))
+    assert out["label"] == "edited src/api.ts +1 -1"
+
+
+def test_result_label_falls_back_to_args_form_while_running() -> None:
+    """No resultRow yet (still running) - identical to the pre-wave-7,
+    single-arg call. Same object as test_writes_are_prominent_and_reads_are_subdued."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        'JSON.stringify(SH_toolChipLabel({kind: "tool_call", payload: '
+        '{name: "workspace__write_file", arguments: {path: "src/api.ts"}}}))'
+    ))
+    assert out["label"] == "wrote src/api.ts"
+
+
+def test_result_label_falls_back_when_result_has_no_usable_metadata() -> None:
+    """A result exists but carries no metadata (pre-wave-5 record, or a
+    tool with nothing to report) - args form, unchanged."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toolChipLabel(
+          {kind: "tool_call",
+           payload: {name: "workspace__grep",
+                     arguments: {pattern: "webhook", path: "src/"}}},
+          {payload: {output: "src/api.ts:88"}}
+        ))
+        """
+    ))
+    assert out["label"] == "searched src/"
 
 
 def test_finished_turns_collapse_to_named_sections() -> None:

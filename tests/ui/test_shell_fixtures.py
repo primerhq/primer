@@ -163,7 +163,12 @@ def test_attention_and_boot_fixtures_carry_the_gating_facts() -> None:
     }
 
     yields = json.loads((FIXTURES / "pending-yields.json").read_text(encoding="utf-8"))
-    kinds = {row["tool_name"] for row in yields["items"]}
-    assert "ask_approval" in kinds and "ask_user" in kinds, (
+    # GET /workspaces/{wid}/yields/pending's real item shape (live-
+    # verified against the restarted dev stack, gate step one): "kind",
+    # not "tool_name" - _extract_yield_kind (primer/api/routers/
+    # workspaces.py) maps the internal "_approval" tool name to the
+    # human-facing "approval", never "ask_approval".
+    kinds = {row["kind"] for row in yields["items"]}
+    assert "approval" in kinds and "ask_user" in kinds, (
         "attention needs both a decision card and a question to design against"
     )

@@ -12,7 +12,15 @@
 
 var SH_TIERS = ["interrupt", "ambient", "digest"];
 
-var SH_DECISION_TOOLS = ["ask_approval", "ask_user"];
+// Gate step one (live-verified against the restarted dev stack): GET
+// /workspaces/{wid}/yields/pending's real "kind" field is "approval",
+// never "ask_approval" - _extract_yield_kind (primer/api/routers/
+// workspaces.py) maps the internal "_approval" tool name to the
+// human-facing "approval". Before this fix a real pending approval
+// gate never matched this allowlist and rendered "ambient" tier
+// instead of "interrupt" - the exact case this tier split exists to
+// catch.
+var SH_DECISION_TOOLS = ["approval", "ask_user"];
 
 function SH_isDecisionTool(name) {
   for (var i = 0; i < SH_DECISION_TOOLS.length; i++) {
@@ -63,6 +71,61 @@ function SH_titleOf(row) {
   return call.name ? "Approve " + call.name : "Approve tool call";
 }
 
+// UX reconcile wave 3 (audit A item 15): a normalized options list for
+// an ask_user card's radio UI, or null for the free-text fallback (the
+// SAME fallback the current textarea already is - _AskUserArgs.
+// response_schema is optional, "Omit for free-text responses"). Reads
+// jsonschema's own {enum: [...]} (any schema shape carrying it, e.g.
+// bare or {type: "string", enum: [...]}) since that is what
+// _validate_response_against_schema (primer/api/routers/yields.py)
+// already enforces server-side; nothing here invents a new schema
+// vocabulary. First entry is not pre-selected here - the reference
+// mockup's own pre-selected option looks like a UI default (first-item),
+// a rendering choice for whichever component consumes this, not data.
+function SH_askOptionsOf(schema) {
+  if (!schema || !Array.isArray(schema.enum) || !schema.enum.length) {
+    return null;
+  }
+  var out = [];
+  for (var i = 0; i < schema.enum.length; i++) {
+    out.push({ value: schema.enum[i], label: String(schema.enum[i]) });
+  }
+  return out;
+}
+
+// UX reconcile wave 3 (audit A item 14): mirrors primer/model/
+// tool_approval.py's ApproverSpec.allows(username, role) exactly - the
+// backend's own authorization check, not a new rule invented here. This
+// is an AFFORDANCE only (the backend re-checks on the real POST), so
+// drifting from it is a wrong label, never a security regression.
+function SH_viewerQualifies(approvers, viewer) {
+  var v = viewer || {};
+  if (v.role === "admin") return true;
+  if (!approvers || approvers.kind === "anyone") return true;
+  if (approvers.kind === "roles") {
+    return (approvers.roles || []).indexOf(v.role) >= 0;
+  }
+  return (approvers.users || []).indexOf(v.username) >= 0;
+}
+
+// The approval card's routing label. "anyone" stays exactly as it reads
+// today (qualifying is trivial and universal there, so personalizing it
+// would be noise); a roles/users-scoped spec gets the reference's own
+// form, "who may decide: {spec} — you qualify", with the qualifier
+// dropped when the viewer's own role/username is not admitted - the
+// dev stack runs auth-disabled (a single fixed "system"/"admin"
+// identity), so every roles/users spec there always qualifies; this
+// only shows real variation once real per-user roles exist.
+function SH_routingLine(item, viewer) {
+  var approvers = item && item.approvers;
+  if (!approvers || approvers.kind === "anyone") return "anyone may decide";
+  var spec = approvers.kind === "roles"
+    ? (approvers.roles || []).join(", ")
+    : (approvers.users || []).join(", ");
+  var base = "who may decide: " + spec;
+  return SH_viewerQualifies(approvers, viewer) ? base + " — you qualify" : base;
+}
+
 function SH_toAttentionItems(input) {
   var pending = (input && input.pending) || [];
   var records = (input && input.records) || [];
@@ -98,6 +161,19 @@ function SH_toAttentionItems(input) {
       // decision card renders this as its routing label.
       approvers: row.approvers
         || ((row.resume_metadata || {}).approvers)
+        || null,
+      // UX reconcile wave 5 (audit A item 15): _AskUserArgs.response_
+      // schema is a real, jsonschema-enforced field (primer/toolset/
+      // _system_tools.py) - already server-validated at POST time - and
+      // primer/api/routers/workspaces.py's list_pending_yields /
+      // list_session_pending_yields now include it in resume_metadata
+      // (wave 5 backend fix). The row.responseSchema branch stays as a
+      // forwards-compatible alias in case a future route flattens it to
+      // the top level; the resume_metadata read is the one live routes
+      // actually populate today. See SH_askOptionsOf below for the
+      // {enum} shape an ask_user card's radio UI consumes from this.
+      responseSchema: row.responseSchema
+        || ((row.resume_metadata || {}).response_schema)
         || null,
     };
     item.tier = SH_tierFor(item);
@@ -169,6 +245,9 @@ window.SH_TIERS = SH_TIERS;
 window.SH_tierFor = SH_tierFor;
 window.SH_yieldKind = SH_yieldKind;
 window.SH_toAttentionItems = SH_toAttentionItems;
+window.SH_askOptionsOf = SH_askOptionsOf;
+window.SH_viewerQualifies = SH_viewerQualifies;
+window.SH_routingLine = SH_routingLine;
 window.SH_approvedByMap = SH_approvedByMap;
 window.SH_emptyTriage = SH_emptyTriage;
 window.SH_triageKey = SH_triageKey;
