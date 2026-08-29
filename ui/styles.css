@@ -5284,3 +5284,207 @@ button.nv-rail-ws-session {
   font-size: 10.5px; white-space: pre-wrap; word-break: break-word;
   max-height: 220px; overflow-y: auto;
 }
+
+/* nv-mobile-shell (US-014 M1): shared/mobile-tabs.jsx's own .mobile-tabs
+   rules (the "Mobile (< 640px)" block above) ship it as a sticky TOP bar
+   for the classic studio's mobile mode - the console's design wants the
+   same component's single-active-panel model as a BOTTOM nav (Primer
+   Mobile.dc.html). Scoped overrides here, not a second tab component or
+   an edit to the classic rules, so a shared/mobile-tabs.jsx fix still
+   benefits both consumers. */
+.nv-mobile-shell {
+  display: flex; flex-direction: column;
+  height: 100dvh; width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  /* US-014 M3: --hit's own default (36px) and compact mode (32px) are
+     both below the 44px mobile floor (uiv2 UI review, "Mobile support"
+     pt 4/7). nv-composer-iconbtn/nv-send-btn/nv-stop-btn are its only
+     consumers (test_touch_targets.py's HIT_SIZED list), so this scoped
+     bump only touches the chat screen's composer. */
+  --hit: 44px;
+}
+.nv-mobile-shell .mobile-tabs-wrap { flex: 1; min-height: 0; flex-direction: column-reverse; }
+.nv-mobile-shell .mobile-tabs {
+  position: sticky; top: auto; bottom: 0;
+  border-bottom: none; border-top: 1px solid var(--border);
+  justify-content: space-around;
+  padding: 0 var(--mobile-pad-x);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.nv-mobile-shell .mobile-tab-panel { overflow-y: auto; }
+.nv-mobile-stub {
+  padding: var(--mobile-pad-y) var(--mobile-pad-x);
+  color: var(--text-2, var(--text));
+}
+/* US-014 M2: the Inbox card's Approve/Review action row. shared/
+   card-list.jsx's own .card-body only sets margin-top - this is the
+   one addition the mobile Inbox cards need on top of it. */
+.nv-mobile-inbox-actions { display: flex; gap: 8px; }
+
+/* US-014 M4: Spaces + Files tabs. */
+
+/* shared/floating-action.jsx's .fab is bottom: var(--mobile-pad-y) - fine
+   floating over a page, but the mobile shell ALSO has its own sticky
+   bottom tab bar (the override above) sitting in that same space, so the
+   unscoped position would hide the FAB behind it. Lift it by the tab
+   bar's own height (mobile-tab padding 10px*2 + ~16px line-height, the
+   same --tap-min floor every mobile-tab already carries). */
+.nv-mobile-shell .fab {
+  bottom: calc(var(--tap-min) + var(--mobile-pad-y) + env(safe-area-inset-bottom));
+}
+
+/* Spaces: workspace tree, expand -> sessions. */
+.nv-mob-ws-group { display: flex; flex-direction: column; gap: 4px; }
+.nv-mob-ws-sessions {
+  display: flex; flex-direction: column; gap: 6px;
+  padding-left: 14px;
+}
+.nv-mob-session-row .card-row { gap: 8px; }
+.nv-mob-chevron {
+  display: inline-block; flex-shrink: 0;
+  color: var(--text-3);
+  transition: transform 0.12s ease;
+}
+.nv-mob-chevron-open { transform: rotate(90deg); }
+
+/* Files: workspace picker + tree. */
+.nv-mob-files-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: var(--mobile-pad-y) var(--mobile-pad-x) 4px;
+}
+.nv-mob-ws-picker {
+  background: transparent; border: none;
+  color: var(--text); font-weight: 600; font-size: 14px;
+  padding: 6px 4px; display: inline-block;
+}
+/* Only a <button> (>1 workspace, a real choice) gets the pointer cursor -
+   the <span> variant (implicit, one workspace) is a label, not a control. */
+button.nv-mob-ws-picker { cursor: pointer; }
+.nv-mob-file-row { padding-top: 10px; padding-bottom: 10px; }
+
+/* File/diff full-screen takeover (shell-level, replaces the whole bottom-
+   nav MobileTabs render the same way NV_MobileChatScreen (M3) does for a
+   session doc - see nv-mobile-shell.jsx's NV_MobileShell). */
+.nv-mob-screen {
+  display: flex; flex-direction: column;
+  height: 100dvh; width: 100%;
+  background: var(--bg);
+}
+.nv-mob-screen-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: var(--mobile-pad-y) var(--mobile-pad-x);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.nv-mob-back {
+  background: transparent; border: none;
+  color: var(--text); font-size: 14px; cursor: pointer;
+  padding: 4px 6px; flex-shrink: 0;
+}
+.nv-mob-screen-title {
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nv-mob-screen-body { flex: 1; min-height: 0; display: flex; overflow: auto; }
+
+/* Read-only file view (M4: no upload/new/rename/save on mobile this
+   phase - see NV_MobileFileView's own comment on why this is not
+   NV_FileDoc reused). */
+.nv-mob-file-view { flex: 1; min-width: 0; display: flex; }
+.nv-mob-file-content {
+  flex: 1; min-width: 0; margin: 0;
+  padding: var(--mobile-pad-y) var(--mobile-pad-x);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+  color: var(--text);
+}
+
+/* US-014 M3: the mobile chat screen. .nv-mobile-chat wraps a verbatim
+   NV_SessionDoc mount (nv-mobile-shell.jsx's NV_MobileChatScreen) - every
+   selector below restyles that component's OWN existing classes for
+   touch/messenger-layout, it does not fork or duplicate any of them. */
+.nv-mobile-chat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+/* Messenger bubbles: .nv-turn-user/.nv-turn-agent already exist on every
+   turn (nv-session-doc.jsx's renderTurn) with no distinguishing style on
+   desktop - align user right, agent left, each in its own bubble. */
+.nv-mobile-chat .nv-turn-user {
+  flex-direction: row-reverse;
+  margin-left: 15%;
+}
+.nv-mobile-chat .nv-turn-user .nv-turn-main {
+  background: var(--accent-dim);
+  border-radius: var(--r-8) var(--r-4) var(--r-8) var(--r-8);
+  padding: 7px 10px;
+}
+.nv-mobile-chat .nv-turn-user .nv-turn-byline { flex-direction: row-reverse; }
+.nv-mobile-chat .nv-turn-agent { margin-right: 15%; }
+.nv-mobile-chat .nv-turn-agent .nv-turn-main {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-4) var(--r-8) var(--r-8) var(--r-8);
+  padding: 7px 10px;
+}
+
+/* Bottom sheets: .nv-trace-split (a side panel, closed by its own
+   nv-trace-close button), .nv-bind-menu and the "⋯" session-actions
+   .nv-menu-right dropdown (both closed by a row click or - on desktop
+   only - an outside-click listener, neither a CSS concern) all default
+   to desktop-style absolute/inline positioning. Repositioned to slide up
+   from the bottom, the same visual language as shared/bottom-sheet.jsx's
+   own .sheet, without a second BottomSheet component or touching any of
+   NV_SessionDoc's own state/close logic. */
+.nv-mobile-chat .nv-trace-split {
+  position: fixed; inset: auto 0 0 0; top: auto;
+  width: 100%; max-height: 60vh;
+  border-left: none; border-top: 1px solid var(--border-strong);
+  border-radius: 16px 16px 0 0;
+  box-shadow: var(--shadow);
+  z-index: 55;
+  animation: sheet-slide-up 0.18s ease;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.nv-mobile-chat .nv-bind-menu,
+.nv-mobile-chat .nv-menu-right {
+  position: fixed; inset: auto 0 0 0; top: auto; left: 0; right: 0;
+  width: 100%; max-height: 70vh; overflow-y: auto;
+  border-radius: 16px 16px 0 0;
+  animation: sheet-slide-up 0.18s ease;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* US-014 M5: the More tab - profile/theme, health cards, Platform
+   sections. .nv-profile-head/.nv-avatar/.nv-profile-name/.nv-profile-
+   role/.nv-seg (nv-chrome.jsx's own profile popover) reused as-is here -
+   plain flex boxes, nothing positioned as a popover, so they read fine
+   inline in a scrolling tab panel. .nv-health-grid (nv-system.jsx) is
+   already auto-fill/minmax responsive - no override needed. */
+.nv-mob-more { padding: var(--mobile-pad-y) var(--mobile-pad-x); }
+.nv-mob-profile { margin-bottom: 14px; }
+.nv-mob-more .nv-seg { margin-top: 10px; }
+.nv-mob-more-section-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-3);
+  margin: 18px 0 8px;
+}
+.nv-mob-plat-group-label {
+  font-size: 11px; font-weight: 600; color: var(--text-2);
+  margin: 12px 2px 6px;
+}
+.nv-mob-plat-list .nv-input { margin: 0 var(--mobile-pad-x) 10px; width: auto; }
+.nv-mob-fact-sheet { display: flex; flex-direction: column; gap: 8px; }
+.nv-mob-fact-chip {
+  align-self: flex-start;
+  font-size: 11px; font-weight: 600;
+  border: 1px solid currentColor; border-radius: var(--r-4);
+  padding: 1px 7px;
+}
+.nv-mob-fact-row {
+  display: flex; justify-content: space-between; gap: 10px;
+  padding: 6px 0; border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.nv-mob-fact-k { color: var(--text-3); }
+.nv-mob-fact-v { color: var(--text); text-align: right; word-break: break-word; }
+.nv-mob-fact-edit-note { color: var(--text-3); font-size: 12px; padding: 6px 0; }

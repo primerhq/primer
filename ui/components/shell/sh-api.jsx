@@ -194,6 +194,13 @@ var SH_api = {
     return window.primerApi.apiFetch("GET", "/toolsets?limit=200", null,
       { signal: signal });
   },
+  // M5: the mobile Platform fact sheet's one live action - triggers.py's
+  // synchronous fire_now (already used by the classic ui/components/
+  // triggers.jsx; not yet ported to the fresh console shell before now).
+  fireTrigger: function (id) {
+    return window.primerApi.apiFetch(
+      "POST", "/triggers/" + encodeURIComponent(id) + "/fire_now", {});
+  },
 
   // S2's document-by-path read (ui/components/knowledge.jsx:657-660).
   collectionDocument: function (cid, path, signal) {

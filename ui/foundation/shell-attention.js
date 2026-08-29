@@ -112,7 +112,10 @@ function SH_toAttentionItems(input) {
       toolCallId: rec.tool_call_id,
       toolName: rec.tool_name,
       kind: "approval",
-      title: rec.status + " " + rec.tool_name,
+      // The records endpoint's field is `decision` (approved/rejected);
+      // `status` never existed on ToolApprovalRecord (live-pass finding,
+      // M2 round - rec.status rendered "undefined <tool>").
+      title: rec.decision + " " + rec.tool_name,
       preview: rec.reason || "",
       at: rec.decided_at,
       resolved: true,
@@ -132,7 +135,7 @@ function SH_approvedByMap(records) {
   var out = {};
   for (var i = 0; i < (records || []).length; i++) {
     var rec = records[i];
-    if (rec.status !== "approved") continue;
+    if (rec.decision !== "approved") continue;
     out[rec.tool_call_id] = rec.decided_by || "you";
   }
   return out;

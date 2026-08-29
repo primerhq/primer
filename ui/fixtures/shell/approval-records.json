@@ -5,7 +5,7 @@
       "session_id": "sess-0ab99312",
       "tool_call_id": "tc-77",
       "tool_name": "workspace__write_file",
-      "status": "approved",
+      "decision": "approved",
       "decided_at": "2026-08-15T17:50:00+00:00",
       "reason": null
     },
@@ -14,7 +14,7 @@
       "session_id": "sess-0ab99312",
       "tool_call_id": "tc-76",
       "tool_name": "workspace__run_command",
-      "status": "rejected",
+      "decision": "rejected",
       "decided_at": "2026-08-15T17:44:00+00:00",
       "reason": "use the test runner, not a bare pytest"
     }

@@ -128,6 +128,12 @@ function NV_readUrl() {
 var EMPTY_WS_ITEMS = Object.freeze([]);
 
 function NV_Shell() {
+  // US-014 M1: a distinct mobile UX (not squeezed desktop), same state
+  // and resources - the swap below is purely which chrome renders.
+  // isTablet stays on the desktop branch (design: tablet keeps desktop
+  // layout); ?force-desktop=1 is handled inside useViewport itself, so
+  // isMobile is already false whenever that escape is active.
+  var isMobile = window.primerApi.useViewport().isMobile;
   var initial = React.useMemo(NV_readUrl, []);
   var widState = React.useState(initial.wid);
   var wid = widState[0];
@@ -541,30 +547,37 @@ function NV_Shell() {
   var viewName = ctx.view.name;
   return (
     <NV_ConsoleContext.Provider value={ctx}>
-      <div className="nv-root" data-testid="nv-root" data-view={viewName}>
-        <window.NV_ActivityBar />
-        <div className="nv-main">
-          <window.NV_Topbar />
-          <div className="nv-view" data-testid={"nv-view:" + viewName}>
-            {viewName === "studio" && typeof window.NV_Studio === "function"
-              ? <window.NV_Studio />
-              : null}
-            {viewName === "platform" && typeof window.NV_Platform === "function"
-              ? <window.NV_Platform />
-              : null}
-            {viewName === "system" && typeof window.NV_System === "function"
-              ? <window.NV_System />
-              : null}
-            {(viewName === "studio" && typeof window.NV_Studio !== "function")
-              || (viewName === "platform" && typeof window.NV_Platform !== "function")
-              || (viewName === "system" && typeof window.NV_System !== "function")
-              ? (
-                <div className="nv-view-pending" data-testid="nv-view-pending">
-                  <span>The {viewName} view lands in a later wiring phase.</span>
-                </div>
-              ) : null}
-          </div>
-        </div>
+      <div className="nv-root" data-testid="nv-root" data-view={viewName}
+        data-mobile={isMobile ? "true" : "false"}>
+        {isMobile && typeof window.NV_MobileShell === "function" ? (
+          <window.NV_MobileShell />
+        ) : (
+          <React.Fragment>
+            <window.NV_ActivityBar />
+            <div className="nv-main">
+              <window.NV_Topbar />
+              <div className="nv-view" data-testid={"nv-view:" + viewName}>
+                {viewName === "studio" && typeof window.NV_Studio === "function"
+                  ? <window.NV_Studio />
+                  : null}
+                {viewName === "platform" && typeof window.NV_Platform === "function"
+                  ? <window.NV_Platform />
+                  : null}
+                {viewName === "system" && typeof window.NV_System === "function"
+                  ? <window.NV_System />
+                  : null}
+                {(viewName === "studio" && typeof window.NV_Studio !== "function")
+                  || (viewName === "platform" && typeof window.NV_Platform !== "function")
+                  || (viewName === "system" && typeof window.NV_System !== "function")
+                  ? (
+                    <div className="nv-view-pending" data-testid="nv-view-pending">
+                      <span>The {viewName} view lands in a later wiring phase.</span>
+                    </div>
+                  ) : null}
+              </div>
+            </div>
+          </React.Fragment>
+        )}
         {typeof window.NV_OverlayHost === "function"
           ? <window.NV_OverlayHost />
           : null}

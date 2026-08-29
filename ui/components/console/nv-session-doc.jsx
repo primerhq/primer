@@ -938,6 +938,11 @@ var NV_DRAFTS = {};
 var NV_SESSION_CON_REF = { current: null };
 var NV_SESSION_INSTANCES = {};
 
+// props.queueLabel (US-014 M3): the mid-run send button's label,
+// default "Queue" - NV_MobileChatScreen passes "+Q" for the mockup's
+// compact mobile treatment. The queue BEHAVIOR (data-mode="queue", the
+// same steer-while-running semantics) is unconditional either way; this
+// only ever changes the button's text.
 function NV_Composer(props) {
   var con = NV_useConsole();
   var valState = React.useState(function () { return NV_DRAFTS[props.sid] || ""; });
@@ -1185,7 +1190,18 @@ function NV_Composer(props) {
             data-active={recording ? "true" : "false"}
             data-latched={latched ? "true" : "false"}
             onMouseDown={micDown} onMouseUp={micUp}
-            onMouseLeave={micLeave}>
+            onMouseLeave={micLeave}
+            // US-014 M3: touch devices fire mousedown/mouseup too, but
+            // often with enough lag (or not at all on some mobile
+            // browsers) that hold-to-talk feels broken - real touch
+            // handlers give the mobile chat screen the same latch
+            // semantics reliably. preventDefault suppresses the browser's
+            // OWN synthetic mouse events for this gesture, so touch and
+            // mouse never both fire for the same press (which would
+            // otherwise call micUp twice and read as an accidental
+            // double-tap latch).
+            onTouchStart={function (ev) { ev.preventDefault(); micDown(); }}
+            onTouchEnd={function (ev) { ev.preventDefault(); micUp(); }}>
             <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
               stroke="currentColor" strokeWidth="1.3">
               <rect x="5" y="1.5" width="4" height="7" rx="2" />
@@ -1202,7 +1218,8 @@ function NV_Composer(props) {
         <button type="button" className="nv-send-btn" data-testid="nv-send"
           data-mode={props.running ? "queue" : "send"}
           disabled={sending}
-          onClick={send}>{sending ? "Sending…" : (props.running ? "Queue" : "Send")}</button>
+          onClick={send}>{sending ? "Sending…"
+            : (props.running ? (props.queueLabel || "Queue") : "Send")}</button>
       </div>
       {sendErr ? (
         <div className="nv-form-error" data-testid="nv-composer-error">
@@ -1215,6 +1232,10 @@ function NV_Composer(props) {
 
 // ---------------------------------------------------------------------------
 // The session doc
+//
+// Props: sid (required). queueLabel (optional, US-014 M3) forwards
+// straight through to NV_Composer - see its own comment; every other
+// caller (desktop's NV_renderStudioDoc) omits it and keeps "Queue".
 // ---------------------------------------------------------------------------
 function NV_SessionDoc(props) {
   var con = NV_useConsole();
@@ -1985,6 +2006,7 @@ function NV_SessionDoc(props) {
         running={!!shown}
         statusShown={shown}
         degraded={degraded}
+        queueLabel={props.queueLabel}
         waitNote={session && session.parked_status
           ? "parked — waiting on " + (session.waiting_reason || "a wake")
           : null}

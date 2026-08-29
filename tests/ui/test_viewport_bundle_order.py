@@ -37,3 +37,20 @@ def test_viewport_loads_before_chrome() -> None:
     assert order.index("foundation/viewport.js") < order.index(
         "components/console/nv-chrome.jsx"
     )
+
+
+def test_viewport_loads_before_the_console_shell() -> None:
+    """US-014 M1: NV_Shell reads useViewport().isMobile at render time to
+    pick its chrome - same load-before-consumer contract as every other
+    reader here."""
+    order = _script_order()
+    assert order.index("foundation/viewport.js") < order.index(
+        "components/console/nv-shell.jsx"
+    )
+
+
+def test_mobile_shell_loads_before_the_console_shell() -> None:
+    order = _script_order()
+    assert order.index("components/console/nv-mobile-shell.jsx") < order.index(
+        "components/console/nv-shell.jsx"
+    )

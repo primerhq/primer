@@ -229,6 +229,10 @@
 <script type="text/babel" src="components/console/nv-overlays.jsx"></script>
 <script type="text/babel" src="components/console/nv-platform.jsx"></script>
 <script type="text/babel" src="components/console/nv-system.jsx"></script>
+<!-- US-014 M1: the mobile shell nv-shell.jsx swaps to on a phone
+     viewport (primerApi.useViewport().isMobile) - reuses the shared
+     mobile primitives below, so it must load after them. -->
+<script type="text/babel" src="components/console/nv-mobile-shell.jsx"></script>
 <script type="text/babel" src="components/console/nv-shell.jsx"></script>
 
 <!-- Tweaks panel + app -->
