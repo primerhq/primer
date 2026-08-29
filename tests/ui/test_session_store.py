@@ -413,6 +413,76 @@ def test_legacy_placeholder_renders_ahead_of_a_later_unrelated_record() -> None:
     assert rows[1]["text"] == "an answer"
 
 
+def test_text_delta_synthesizes_a_missed_part_start() -> None:
+    """Phase 2 (01a04ddf) live finding: a client that reconnects mid-
+    response never receives that part's part_start frame (the tap
+    streams forward only) - a text_delta for an unknown part_id used to
+    be dropped as a no-op forever, leaving the assistant's answer
+    invisible for the rest of the stream even though tokens kept
+    flowing. The first delta for an unknown part_id must now synthesize
+    the missed start using the delta's OWN kind field."""
+    ctx = _ctx()
+    rows = _transcript(ctx, "w14", "s14", [
+        {"class": "text_delta", "session_id": "s14", "part_id": "x:text",
+         "kind": "text", "delta": "Based on "},
+        {"class": "text_delta", "session_id": "s14", "part_id": "x:text",
+         "kind": "text", "delta": "what"},
+    ])
+    parts = [r for r in rows if r["kind"] == "part"]
+    assert len(parts) == 1
+    assert parts[0]["partId"] == "x:text"
+    assert parts[0]["text"] == "Based on what"
+    assert parts[0]["partKind"] == "text"
+
+
+def test_text_delta_for_an_already_finalized_part_is_still_a_no_op() -> None:
+    """The synthesize-on-miss fix must not resurrect a part whose durable
+    record already finalized it (a stale/duplicate delta arriving late) -
+    only a COMPLETELY absent entry gets synthesized."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var s = SS_getStore("w15", "s15");
+          SS_apply(s, {"class": "part_start", session_id: "s15",
+            part_id: "x:text", kind: "text"});
+          SS_apply(s, {"class": "assistant_token", session_id: "s15", seq: 1,
+            payload: {part_id: "x:text", text: "final"}});
+          SS_apply(s, {"class": "text_delta", session_id: "s15",
+            part_id: "x:text", kind: "text", delta: "MORE"});
+          var rows = SS_getSnapshot(s, "transcript");
+          var parts = rows.filter(function (r) { return r.kind === "part"; });
+          var rec = rows.filter(function (r) { return r.kind === "record"; })[0];
+          return JSON.stringify({ liveParts: parts.length, recordText: rec.text });
+        })()
+        """
+    ))
+    assert out["liveParts"] == 0
+    assert out["recordText"] == "final"
+
+
+def test_phase_frame_lands_on_its_own_channel() -> None:
+    """Phase 2 (01a04ddf): a PhaseFrame tap delta (primer/tap/delta.py,
+    class:"phase") is turn-scoped, not part-scoped, and rides its own
+    channel rather than "transcript"/"status" so a phase-only consumer
+    (the in-chat indicator) doesn't re-render on every token."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var s = SS_getStore("w13", "s13");
+          var before = SS_getSnapshot(s, "phase");
+          SS_apply(s, {"class": "phase", session_id: "s13",
+            phase: "executing", turn_no: 3});
+          var after = SS_getSnapshot(s, "phase");
+          return JSON.stringify({ before: before, after: after });
+        })()
+        """
+    ))
+    assert out["before"] is None
+    assert out["after"] == {"phase": "executing", "turnNo": 3}
+
+
 def test_status_updates_from_a_rest_shaped_record_too() -> None:
     """SS_updateStatus had the identical frame["class"]-only blind spot as
     SS_apply's old recordKind bug: a REST-seeded (kind, not class)

@@ -3725,6 +3725,29 @@ input, textarea, select { font: inherit; color: inherit; }
   color: var(--text);
 }
 .nv-bind-chip:hover { border-color: var(--accent-border); }
+.nv-session-state-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+.nv-session-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.nv-session-state-chip[data-state="running"] { color: var(--accent); border-color: var(--accent-border); }
+.nv-session-state-chip[data-state="running"] .nv-session-state-dot { background: var(--accent); }
+.nv-session-state-chip[data-state="parked"] { color: var(--warn, #d9a441); border-color: var(--warn, #d9a441); }
+.nv-session-state-chip[data-state="parked"] .nv-session-state-dot { background: var(--warn, #d9a441); }
+.nv-session-state-chip[data-state="ended"] { color: var(--text-3); }
 .nv-bind-menu {
   position: absolute;
   top: 34px;
@@ -3911,6 +3934,10 @@ input, textarea, select { font: inherit; color: inherit; }
   50% { opacity: 0; }
 }
 /* Model thinking: collapsed + muted; the toggle opens it in place. */
+.nv-phase-indicator {
+  display: flex; align-items: baseline; gap: 2px; padding-left: 30px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-4);
+}
 .nv-thought { display: flex; flex-direction: column; gap: 4px; padding-left: 30px; }
 .nv-thought-toggle {
   border: none; background: transparent; cursor: pointer;

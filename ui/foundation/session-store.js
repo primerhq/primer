@@ -66,12 +66,21 @@ function SS_getStore(wid, sid) {
     parts: {},           // part_id -> { kind, text, state, final }
     optimistic: {},       // clientId -> { clientId, text, state }
     status: null,         // { verb, object, startedMs } | null
+    // Phase 2 (01a04ddf): the live half of agent_phase. Written only by a
+    // PhaseFrame tap delta (class:"phase" - primer/tap/delta.py), so on a
+    // fresh mount/refresh this is null until one arrives - the consumer
+    // (nv-session-doc.jsx) is the one that falls back to the session
+    // poll's OWN agent_phase/agent_phase_turn_no for the acceptance
+    // invariant (refresh must render from served state, not a live
+    // frame). turnNo fences a reader against a delayed frame from a turn
+    // that already ended, mirroring the row field's own fencing.
+    agentPhase: null,      // { phase, turnNo } | null
     connState: (window.WTAP_hubConnState
       && window.WTAP_hubConnState(wid)) || "connecting",
     refs: 0,
-    _snap: { transcript: null, status: null, gates: null },
-    _dirty: { transcript: false, status: false, gates: false },
-    _sub: { transcript: [], status: [], gates: [] },
+    _snap: { transcript: null, status: null, gates: null, phase: null },
+    _dirty: { transcript: false, status: false, gates: false, phase: false },
+    _sub: { transcript: [], status: [], gates: [], phase: [] },
     _lastTranscriptCommit: 0,
     _flushScheduled: false,
     _catchUpInFlight: false,
@@ -224,11 +233,28 @@ function SS_apply(store, frame) {
   }
   if (kind === "text_delta" || kind === "reasoning_delta" || kind === "tool_input_delta") {
     var part = partId ? store.parts[partId] : null;
-    // A delta for a missing part is a no-op (the durable record will still
-    // arrive; A4). A part already finalized by its durable record ignores
-    // later deltas (guards the interleave, A4).
+    // Phase 2 (01a04ddf) fix: a client that connects/reconnects AFTER a
+    // part has already started (a hard refresh mid-response - exactly
+    // the acceptance-invariant scenario) never sees that part's
+    // part_start frame (the tap streams forward only, no replay) - the
+    // old no-op here left the assistant's answer invisible for the
+    // ENTIRE rest of the stream, not just the missed prefix, since every
+    // later delta for the same part_id kept landing on a still-missing
+    // entry (live finding: refresh mid-"responding" showed nothing until
+    // the durable record finally landed at stream end). A delta frame
+    // carries its own `kind` (DeltaFrame's own field, present on every
+    // frame - primer/tap/delta.py - not just part_start), so the first
+    // delta seen for an unknown part_id can synthesize the missed start.
+    // A part already finalized by its durable record still ignores later
+    // deltas (guards the interleave, A4) - this only fires when the
+    // entry is COMPLETELY absent, never once `part.final` is true.
+    if (!part && partId) {
+      part = store.parts[partId] = {
+        kind: frame.kind || "text", text: "", state: "streaming", final: false,
+      };
+    }
     if (part && !part.final) {
-      if (partId && !part.text) part.text = "";
+      if (!part.text) part.text = "";
       part.text = part.text + (typeof frame.delta === "string" ? frame.delta : "");
       part.state = "streaming";
       SS_markDirty(store, "transcript");
@@ -241,6 +267,17 @@ function SS_apply(store, frame) {
       ep.state = "done";   // an early caret hint; the durable record is the real finalize
       SS_markDirty(store, "transcript");
     }
+    return;
+  }
+  // Phase 2 (01a04ddf): agent_phase transition (primer/tap/delta.py's
+  // PhaseFrame). Turn-scoped, not part-scoped - stored as-is; the
+  // turn_no fence against a stale/delayed frame is the CONSUMER's job
+  // (it compares against the session poll's own turn_no, which this
+  // store never sees), same division of labour as rowBusy layering the
+  // polled session row over the store's live status.
+  if (kind === "phase") {
+    store.agentPhase = { phase: frame.phase, turnNo: frame.turn_no };
+    SS_markDirty(store, "phase");
     return;
   }
 
@@ -328,6 +365,10 @@ function SS_commit(store, channel) {
         connState: store.connState,
         degraded: SS_isDegraded(store),
       };
+    }
+  } else if (channel === "phase") {
+    if (store._dirty.phase) {
+      store._snap.phase = store.agentPhase;
     }
   }
   if (store._dirty[channel]) {

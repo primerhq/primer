@@ -143,6 +143,70 @@ def install_is_set_up(base_url: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# LAN-reachable mock LLM (container stacks sit in their own network
+# namespace - a 127.0.0.1-bound mock, like tests/_support/mock_llm_
+# fixtures.py's own session fixture, is unreachable from inside primer-
+# app there; scripts/e2e/run_mock_llm.py documents the same constraint
+# for the manual/diagnostic flow this fixture productionizes).
+# ---------------------------------------------------------------------------
+
+
+def _guess_lan_ip() -> str | None:
+    """Best-effort LAN IP so a container on the host's compose network can
+    reach this test process. Never raises - falls back to loopback (still
+    correct for a host-process primer server, just not a container one)."""
+    import socket as _socket
+
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return None
+
+
+@pytest.fixture(scope="session")
+def mock_llm_lan():
+    """Yield (registry, base_url) for a session-long mock OpenAI server
+    bound to 0.0.0.0 and advertised at its LAN IP, so a primer-app
+    CONTAINER (ui-bringup.sh's stack) can reach it - the plain 127.0.0.1
+    tests/_support/mock_llm_fixtures.py fixture only works for a host-
+    process server (tests/e2e's own suite)."""
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    from tests._support.mock_llm import ScriptRegistry, build_app
+
+    registry = ScriptRegistry()
+    s = socket.socket()
+    s.bind(("0.0.0.0", 0))
+    port = s.getsockname()[1]
+    s.close()
+    config = uvicorn.Config(
+        build_app(registry), host="0.0.0.0", port=port, log_level="warning",
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.05)
+    else:  # pragma: no cover - startup failure
+        raise RuntimeError("mock LLM server did not start")
+    host = _guess_lan_ip() or "127.0.0.1"
+    yield registry, f"http://{host}:{port}/v1"
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
 # httpx client (for test data setup + cleanup, NOT for behavior under test)
 # ---------------------------------------------------------------------------
 

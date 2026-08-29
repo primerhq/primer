@@ -42,6 +42,33 @@ def test_session_doc_reuses_the_pure_modules():
         assert mod in DOC, mod
 
 
+def test_session_state_chip_always_visible_in_the_header():
+    """Phase 2 (01a04ddf): the ONE served session_state, rendered as an
+    always-visible header chip right beside the binding chip - unlike the
+    bottom status strip (which only shows while a turn is actively
+    running), this must never be conditionally omitted."""
+    m = re.search(r"<NV_BindingChip[\s\S]{0,200}", DOC)
+    assert m and "<NV_SessionStateChip" in m.group(0), (
+        "the chip must sit right beside the binding chip, unconditionally "
+        "rendered - not gated behind a truthy check"
+    )
+    chip = DOC[DOC.index("NV_SESSION_STATE_LABEL"):
+               DOC.index("function NV_SessionHeader")]
+    assert 'data-testid="nv-session-state-chip"' in chip
+    for state in ("waiting", "running", "parked", "ended"):
+        assert state in chip
+
+
+def test_thought_seeds_open_from_live_expanded_and_reopens_on_it():
+    """Phase 2 (01a04ddf): "thinking tokens stream live" - the CURRENTLY
+    streaming reasoning part renders expanded by default (liveExpanded),
+    not the historical collapsed-by-default state every other reasoning
+    block gets."""
+    thought = DOC[DOC.index("function NV_Thought"):DOC.index("function NV_ToolBlock")]
+    assert "React.useState(!!props.liveExpanded)" in thought
+    assert "props.liveExpanded" in thought and "setOpen(true)" in thought
+
+
 def test_composer_never_locks_and_dictation_never_sends():
     # RETARGET (UX reconcile wave 4, audit A item 11): the old generic
     # "Send a message, Enter queues mid-run" placeholder covered every
@@ -146,8 +173,13 @@ def test_streaming_cursor_at_the_text_tail():
     assert 'data-streaming={row.payload && row.payload.streaming' in turn_text
 
     thought = DOC[DOC.index("function NV_Thought"):DOC.index("function NV_ToolBlock")]
-    assert "streaming" not in thought, (
-        "reasoning stays muted/collapsed - no cursor there (judgment call)"
+    assert "data-streaming" not in thought, (
+        "reasoning stays muted/collapsed - no blinking cursor there "
+        "(judgment call). Phase 2 (01a04ddf) added a DIFFERENT live-mid-"
+        "stream affordance (auto-expand while it's the active thinking "
+        "part, via liveExpanded) - that is not a cursor and does not "
+        "violate this design call, so this assertion narrowed to the "
+        "actual cursor markup instead of the bare word."
     )
 
     rule = STYLES[STYLES.index('.nv-turn-text.md-body[data-streaming="true"]'):]
@@ -401,13 +433,14 @@ def test_status_strip_rebuilds_elapsed_time_from_server_state_on_refresh():
           last_turn_at: "2026-08-29T00:00:00Z",
           created_at: "2026-08-28T00:00:00Z",
         };
+        var effectivePhase = null;
         """
         + snippet_src
     )
     result = json.loads(ctx.eval("JSON.stringify(shown)"))
     assert result["verb"] == "running", (
-        "with no records to replay, the fallback is the plain turn_status "
-        "label"
+        "with no records to replay and no served agent_phase either, the "
+        "fallback is the plain turn_status label"
     )
     assert result["startedMs"] == 1787961600000, (
         "startedMs must equal Date.parse(session.last_turn_at), not a "
@@ -433,6 +466,25 @@ def test_status_strip_rebuilds_elapsed_time_from_server_state_on_refresh():
     assert result2["verb"] == "grep_src"
     assert result2["startedMs"] == 1787961665000
 
+    # Phase 2 (01a04ddf): no records to replay yet (e.g. the SEV-2
+    # dual-write gap - the first instruction's user_input record hasn't
+    # landed), but agent_phase IS being served - the real signal must
+    # win over the bare, uninformative turn_status string ("running:
+    # running" read as broken, live finding 2026-08-29).
+    ctx.eval(
+        """
+        shown = null;
+        store.recordsBySeq = [];
+        effectivePhase = "thinking";
+        """
+        + snippet_src
+    )
+    result3 = json.loads(ctx.eval("JSON.stringify(shown)"))
+    assert result3["verb"] == "thinking", (
+        "agent_phase must win over the bare turn_status label when no "
+        "record replay answers directly"
+    )
+
     # No last_turn_at yet (session on its first-ever turn) - created_at
     # is the fallback, never Date.now() while either timestamp exists.
     ctx.eval(
@@ -456,6 +508,106 @@ def test_status_strip_rebuilds_elapsed_time_from_server_state_on_refresh():
         + snippet_src
     )
     assert ctx.eval("shown") is None
+
+
+def test_effective_phase_prefers_live_frame_then_served_field_fenced_by_turn_no():
+    """Phase 2 (01a04ddf): effectivePhase must (1) prefer the live
+    PhaseFrame tap delta when its turn_no matches the CURRENT turn (lower
+    latency than the poll), (2) fall back to the session row's OWN served
+    agent_phase when the live frame is missing or stale (a fresh mount
+    with no tap history yet - the acceptance invariant's whole point:
+    refresh must render from served state, not a live frame), and (3)
+    ignore either signal when its turn_no belongs to a turn that already
+    ended (both fields are additive/optional and only meaningful while
+    THIS turn is running - primer/model/workspace_session.py:628-661)."""
+    import json
+
+    from py_mini_racer import MiniRacer
+
+    start = DOC.index("var effectivePhase = null;")
+    end = DOC.index("\n\n", start)
+    snippet_src = DOC[start:end]
+
+    ctx = MiniRacer()
+
+    def run(session, phase_snap):
+        ctx.eval(
+            "var session = " + json.dumps(session) + ";"
+            "var phaseSnap = " + json.dumps(phase_snap) + ";"
+            + snippet_src
+        )
+        return ctx.eval("effectivePhase")
+
+    # No session at all (not yet loaded) - no phase to show.
+    assert run(None, None) is None
+
+    # Fresh mount / hard refresh: no live frame has arrived yet, but the
+    # session poll already carries agent_phase for the current turn - the
+    # acceptance invariant's exact scenario.
+    served = {"turn_no": 3, "agent_phase": "executing", "agent_phase_turn_no": 3}
+    assert run(served, None) == "executing"
+
+    # A live frame for the SAME turn wins over the served field (lower
+    # latency - the poll can be up to 2s stale).
+    assert run(served, {"phase": "responding", "turnNo": 3}) == "responding"
+
+    # A live frame from a turn that already ended (delayed publish) must
+    # be ignored, falling back to the served field for the CURRENT turn.
+    assert run(served, {"phase": "responding", "turnNo": 2}) == "executing"
+
+    # The served field itself stale (belongs to a prior turn) with no
+    # live frame either - no phase to show, not a stale one.
+    stale = {"turn_no": 4, "agent_phase": "executing", "agent_phase_turn_no": 3}
+    assert run(stale, None) is None
+
+
+def test_phase_indicator_suppressed_by_anything_more_specific():
+    """Phase 2 (01a04ddf): the in-chat presence indicator only fills the
+    gap nothing else already represents - see the pipeline useMemo's own
+    comment for the full rationale per suppression rule."""
+    import json
+
+    from py_mini_racer import MiniRacer
+
+    start = DOC.index("var lastFlat = flat.length")
+    end = DOC.index("var liveFromSeq = Infinity;", start)
+    snippet_src = DOC[start:end]
+
+    ctx = MiniRacer()
+
+    def indicator_pushed(flat, session, effective_phase):
+        ctx.eval(
+            "var flat = " + json.dumps(flat) + ";"
+            "var session = " + json.dumps(session) + ";"
+            "var effectivePhase = " + json.dumps(effective_phase) + ";"
+            + snippet_src
+        )
+        pushed = json.loads(ctx.eval("JSON.stringify(flat)"))
+        return pushed[-1]["kind"] == "phase_indicator" if pushed else False
+
+    running = {"session_state": "running"}
+
+    # The happy path: thinking, nothing else stands in for it yet.
+    assert indicator_pushed([{"seq": 1, "kind": "user_message"}], running, "thinking")
+    assert indicator_pushed([{"seq": 1, "kind": "user_message"}], running, "executing")
+
+    # "responding" is replaced by the live streaming text row itself.
+    assert not indicator_pushed(
+        [{"seq": 1, "kind": "assistant_message"}], running, "responding")
+    # "waiting" (between turns) gets no indicator.
+    assert not indicator_pushed([{"seq": 1, "kind": "user_message"}], running, "waiting")
+    # A live reasoning part already streaming IS the thinking indicator.
+    assert not indicator_pushed([{"seq": 1, "kind": "reasoning"}], running, "thinking")
+    # A tool call already in flight IS the executing indicator.
+    assert not indicator_pushed([{"seq": 1, "kind": "tool_call"}], running, "executing")
+    # No phase known at all - nothing to show.
+    assert not indicator_pushed([{"seq": 1, "kind": "user_message"}], running, None)
+    # Not genuinely running (parked/ended/waiting) - never paint a ghost
+    # indicator off a stale phase value.
+    assert not indicator_pushed(
+        [{"seq": 1, "kind": "user_message"}], {"session_state": "parked"}, "thinking")
+    # No session loaded yet.
+    assert not indicator_pushed([{"seq": 1, "kind": "user_message"}], None, "thinking")
 
 
 def test_decision_card_renders_routing_and_rejects_with_feedback():

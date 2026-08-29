@@ -355,6 +355,28 @@ function NV_BindingChip(props) {
   );
 }
 
+// Phase 2 (01a04ddf): the ONE served session_state (waiting/running/
+// parked/ended - a computed field on WorkspaceSession, always in the
+// session poll response) rendered as an always-visible header chip.
+// Unlike the bottom status strip (which only appears while a turn is
+// actively running), this reads directly off `session` with no store/tap
+// involvement at all, so it renders identically before the tap connects,
+// mid-turn, and after a hard refresh - the acceptance invariant, for
+// free, because it never depended on a live frame to begin with.
+var NV_SESSION_STATE_LABEL = {
+  waiting: "Waiting", running: "Running", parked: "Parked", ended: "Ended",
+};
+function NV_SessionStateChip(props) {
+  var state = (props.session && props.session.session_state) || "waiting";
+  return (
+    <span className="nv-session-state-chip" data-state={state}
+      data-testid="nv-session-state-chip">
+      <span className="nv-session-state-dot" />
+      {NV_SESSION_STATE_LABEL[state] || state}
+    </span>
+  );
+}
+
 function NV_SessionHeader(props) {
   var con = NV_useConsole();
   var session = props.session;
@@ -385,6 +407,7 @@ function NV_SessionHeader(props) {
       <NV_BindingChip sid={sid}
         binding={session && session.binding}
         onChanged={props.onChanged} />
+      <NV_SessionStateChip session={session} />
       {draft != null ? (
         <input className="nv-title-input" autoFocus value={draft}
           data-testid="nv-title-input"
@@ -529,9 +552,23 @@ function NV_SessionHeader(props) {
 // separate result rows rendered as empty chevron lines.
 // ---------------------------------------------------------------------------
 function NV_Thought(props) {
-  var openState = React.useState(false);
+  // Phase 2 (01a04ddf): "thinking tokens stream live then collapse into
+  // the thinking block when responding starts" - liveExpanded seeds the
+  // initial state (true only for the CURRENTLY streaming part while
+  // agent_phase is "thinking"), and the effect re-opens it if it becomes
+  // live again after having closed (unlikely, but cheap to handle). It
+  // deliberately does NOT force-close on liveExpanded turning false: the
+  // instant this row stops being the live part it is almost always
+  // superseded by a fresh instance anyway (its durable record lands with
+  // a real seq - a new React key, a new mount at open=false) - forcing a
+  // close here would only fight a user who manually reopened a STILL-
+  // mounted historical block in that narrow gap.
+  var openState = React.useState(!!props.liveExpanded);
   var open = openState[0];
   var setOpen = openState[1];
+  React.useEffect(function () {
+    if (props.liveExpanded) setOpen(true);
+  }, [props.liveExpanded]);
   var text = props.row.label || "";
   return (
     <div className="nv-thought" data-testid={"nv-thought:" + props.row.seq}
@@ -1356,6 +1393,7 @@ function NV_SessionDoc(props) {
   var transcriptSnap = window.useSessionStore(con.wid, sid, "transcript");
   var statusSnap = window.useSessionStore(con.wid, sid, "status");
   var gatesSnap = window.useSessionStore(con.wid, sid, "gates");
+  var phaseSnap = window.useSessionStore(con.wid, sid, "phase");
   var terminalRef = React.useRef(false);
   // Declared BEFORE the resources on purpose: a send into an ENDED
   // session REOPENS it server-side (steer's fourth behaviour), so the
@@ -1453,6 +1491,26 @@ function NV_SessionDoc(props) {
   var setRewindOpen = rewindOpenState[1];
 
   var session = detail.data || null;
+
+  // Phase 2 (01a04ddf): agent_phase, fenced by turn_no against a stale
+  // signal - either a delayed PhaseFrame from a turn that already ended,
+  // or the session row's own agent_phase surviving past ITS turn (the
+  // field is additive/optional and only meaningful while turn_status is
+  // "running" - primer/model/workspace_session.py:628-650). The live tap
+  // frame wins when it matches the CURRENT turn (lower latency); the
+  // polled session row is what makes this survive a hard refresh with
+  // zero live-frame history, per the acceptance invariant - a fresh
+  // mount has phaseSnap=null until a frame arrives, so it falls straight
+  // to the served field instead of showing nothing.
+  var effectivePhase = null;
+  if (session) {
+    if (phaseSnap && phaseSnap.turnNo === session.turn_no) {
+      effectivePhase = phaseSnap.phase;
+    } else if (session.agent_phase
+        && session.agent_phase_turn_no === session.turn_no) {
+      effectivePhase = session.agent_phase;
+    }
+  }
 
   // US-008 R3 item 2: refresh the shared "current console + current
   // session instance" lookup on every render (plain ref writes - see
@@ -1610,6 +1668,15 @@ function NV_SessionDoc(props) {
     && session.turn_status && session.turn_status !== "idle");
   if (!shown && rowBusy) {
     var replayed = NV_deriveStatusFromRecords(store.recordsBySeq);
+    // Phase 2 (01a04ddf): effectivePhase is a SERVED fact (agent_phase),
+    // strictly more accurate than the bare turn_status string below -
+    // without it this fallback showed "running: running" (session.
+    // turn_status's own value, literally) whenever no durable record
+    // yet answered NV_deriveStatusFromRecords, e.g. the very first
+    // instruction of a session, before its user_input record lands
+    // (live finding 2026-08-29, the SEV-2 dual-write gap). Still ranked
+    // below the replay: a tool NAME ("grep_src") is more specific than
+    // the bare phase word ("executing").
     shown = replayed
       ? {
         verb: replayed.verb, object: replayed.object,
@@ -1617,7 +1684,7 @@ function NV_SessionDoc(props) {
           || NV_lastTurnStartMs(store.recordsBySeq, session),
       }
       : {
-        verb: String(session.turn_status), object: "",
+        verb: effectivePhase || String(session.turn_status), object: "",
         startedMs: NV_lastTurnStartMs(store.recordsBySeq, session),
       };
   }
@@ -1675,6 +1742,35 @@ function NV_SessionDoc(props) {
         });
       }
     }
+    // Phase 2 (01a04ddf): the in-chat presence indicator - agent_phase
+    // rendered IN THE FLOW, between messages, for the gap no other row
+    // already covers. Suppressed the moment something more specific
+    // represents the same phase: "responding" is replaced by the live
+    // text part injected above (never both); "thinking" is replaced the
+    // instant a live reasoning part starts streaming (the tokens ARE the
+    // indicator once they exist - only the silence before the first one
+    // needs dots); "executing" is replaced by the tool block's own
+    // running/elapsed state once a call is actually in flight. "waiting"
+    // (between turns) gets no indicator - nothing is happening. Only
+    // shown while session_state is genuinely "running" - a stale phase
+    // value alongside "waiting"/"parked"/"ended" (however unlikely, the
+    // field is additive/optional) must never paint a ghost indicator.
+    var lastFlat = flat.length ? flat[flat.length - 1] : null;
+    var hasLiveContent = !!lastFlat
+      && (lastFlat.kind === "reasoning" || lastFlat.kind === "assistant_message");
+    var hasOpenToolCall = !!lastFlat && lastFlat.kind === "tool_call";
+    if (session && session.session_state === "running" && effectivePhase
+        && effectivePhase !== "responding" && effectivePhase !== "waiting"
+        && !hasLiveContent && !hasOpenToolCall) {
+      flat.push({
+        seq: (lastFlat ? lastFlat.seq : 0) + 1,
+        kind: "phase_indicator",
+        nodeId: null,
+        label: effectivePhase,
+        payload: {},
+        createdAt: null,
+      });
+    }
     var liveFromSeq = Infinity;
     if (shownActive) {
       for (var i = flat.length - 1; i >= 0; i--) {
@@ -1716,7 +1812,7 @@ function NV_SessionDoc(props) {
       flat: flat, rows: rows,
       resultsByCallId: resultsByCallId, turnOfSeq: turnOfSeq,
     };
-  }, [transcriptSnap, session, shownActive]);
+  }, [transcriptSnap, session, shownActive, effectivePhase]);
   var flat = pipeline.flat;
   var rows = pipeline.rows;
   var resultsByCallId = pipeline.resultsByCallId;
@@ -1921,9 +2017,28 @@ function NV_SessionDoc(props) {
       );
     }
     // Model thinking: collapsed + muted by design, never dressed as an
-    // answer. The toggle opens the full thought in place.
+    // answer. The toggle opens the full thought in place. Phase 2
+    // (01a04ddf): the CURRENTLY streaming reasoning part renders
+    // expanded live (the user watches it think), auto-collapsing the
+    // instant it stops being the live part (responding starts, or a new
+    // part supersedes it) - see NV_Thought's own comment.
     if (row.kind === "reasoning") {
-      return <NV_Thought key={row.seq} row={row} />;
+      var liveExpanded = !!(row.payload && row.payload.streaming
+        && effectivePhase === "thinking");
+      return <NV_Thought key={row.seq} row={row} liveExpanded={liveExpanded} />;
+    }
+    // Phase 2 (01a04ddf): the in-chat presence indicator - see the
+    // pipeline useMemo's own comment for the suppression rules.
+    if (row.kind === "phase_indicator") {
+      return (
+        <div key={row.seq} className="nv-phase-indicator"
+          data-phase={row.label} data-testid="nv-phase-indicator">
+          {row.label === "executing" ? "Executing" : "Thinking"}
+          <span className="thinking-dots">
+            <span>.</span><span>.</span><span>.</span>
+          </span>
+        </div>
+      );
     }
     // Tool traffic in the LIVE turn: same expandable block as folded
     // sections use, so a call reads identically mid-run and after.
