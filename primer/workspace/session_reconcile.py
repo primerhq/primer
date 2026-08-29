@@ -71,6 +71,15 @@ async def reconcile_sessions_to_workspace_lost(
             "status": SessionStatus.ENDED,
             "ended_reason": "workspace_lost",
             "ended_at": now,
+            # A worker whose workspace just went permanently unreachable is
+            # exactly the crash scenario turn_started_at exists to catch: it
+            # never reached run_one_session_turn's own cleanup (finally /
+            # build-executor-failure paths), so turn_status could still read
+            # "running" here. The workspace being gone forever makes any
+            # value moot - reset unconditionally rather than gating on the
+            # current value like the finally-block clear does.
+            "turn_status": "idle",
+            "turn_started_at": None,
         })
         try:
             await session_storage.update(updated_sess)

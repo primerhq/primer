@@ -728,6 +728,59 @@ class SqliteStorage(Storage[ModelT]):
             )
         return self._from_row(row[0], row[1])
 
+    async def update_unless(
+        self, entity: ModelT, *, field: str, forbidden: Any,
+        conn: object | None = None,
+    ) -> ModelT | None:
+        # SQLite serialises all writes through one shared connection
+        # under _write_guard(), so the guard-then-write is atomic by
+        # construction (no other write can interleave) - no separate
+        # lock needed, same reasoning as update() above.
+        del conn
+        await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
+        entity_id, data_json = self._to_row(entity)
+        sql = (
+            f'UPDATE "{self._table}" '
+            f"SET data = ?, updated_at = datetime('now') "
+            f"WHERE id = ? AND json_extract(data, '$.' || ?) IS NOT ? "
+            f"RETURNING id, data"
+        )
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                cur = await self._provider.connection.execute(
+                    sql, (data_json, entity_id, field, forbidden),
+                )
+                row = await cur.fetchone()
+                if event_kind is not None and row is not None:
+                    await _append_crud_event(
+                        self._provider.connection,
+                        event_type=f"{event_kind}.updated",
+                        entity_kind=event_kind, entity_id=entity_id,
+                        payload_json=data_json,
+                    )
+                exists = None
+                if row is None:
+                    exists = await (await self._provider.connection.execute(
+                        f'SELECT 1 FROM "{self._table}" WHERE id = ?',
+                        (entity_id,),
+                    )).fetchone()
+                if should_commit:
+                    await self._provider.connection.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name=self._model.__name__, op="update",
+            ) from exc
+        if row is None:
+            if not exists:
+                raise NotFoundError(
+                    f"{self._model.__name__} with id {entity_id!r} not found"
+                )
+            return None
+        return self._from_row(row[0], row[1])
+
     async def delete(self, id: str, *, conn: object | None = None) -> None:  # noqa: A002
         # SQLite uses a single shared connection so there is nothing to
         # thread; accept the kwarg for Protocol parity and ignore it.

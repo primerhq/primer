@@ -46,6 +46,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -95,6 +96,10 @@ class DeltaClass(StrEnum):
     REASONING_DELTA = "reasoning_delta"
     TOOL_INPUT_DELTA = "tool_input_delta"
     PART_END = "part_end"
+    # agent_phase transition (01a04d91-a7a0). Not id-keyed like the four
+    # above - a phase belongs to the turn, not a part - so it rides its
+    # own PhaseFrame rather than DeltaFrame (part_id has no meaning here).
+    PHASE = "phase"
 
 
 # kind -> the delta class for a *_delta frame.
@@ -125,6 +130,47 @@ class DeltaFrame(BaseModel):
     kind: str | None = None
     # Non-empty for *_delta frames; None for part_start / part_end.
     delta: str | None = None
+
+
+class PhaseFrame(BaseModel):
+    """One ephemeral agent_phase transition frame (01a04d91-a7a0).
+
+    Rides the same ``session:{sid}:delta`` channel as :class:`DeltaFrame`
+    (an old client keying off ``class`` ignores an unrecognised value
+    harmlessly, same as the delta classes) but is turn-scoped rather than
+    part-scoped, and published immediately on each transition rather than
+    batched - a phase change is a single small event, not a stream of
+    tokens, so DeltaBuffer's accumulate-then-flush machinery would only
+    add latency here for no benefit. ``turn_no`` fences a client against
+    a frame that arrives after a NEWER turn already started (a delayed
+    publish from a turn that has since ended) - compare against the
+    session row's own ``turn_no`` / ``agent_phase_turn_no`` and ignore a
+    mismatch, mirroring the row field's own fencing.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    class_: Literal[DeltaClass.PHASE] = Field(default=DeltaClass.PHASE, alias="class")
+    session_id: str
+    phase: Literal["thinking", "responding", "executing", "waiting"]
+    turn_no: int
+
+
+async def publish_phase_frame(
+    publish: DeltaPublish, *, session_id: str, phase: str, turn_no: int,
+) -> None:
+    """Publish one :class:`PhaseFrame`. Best-effort, mirrors DeltaBuffer's
+    own publish-failure handling: a degraded bus must not error the turn,
+    and the row write + turns.jsonl audit entry are the durable/recoverable
+    sources of truth this frame is purely a low-latency shortcut for."""
+    frame = PhaseFrame(session_id=session_id, phase=phase, turn_no=turn_no)
+    try:
+        await publish(
+            f"{DELTA_EVENT_PREFIX}{session_id}{DELTA_EVENT_SUFFIX}",
+            frame.model_dump(by_alias=True, mode="json"),
+        )
+    except Exception:  # noqa: BLE001 - bus is best-effort; degrade silently
+        logger.debug("phase frame: publish failed", exc_info=True)
 
 
 def part_id(node_id: str | None, kind: str) -> str:
@@ -328,5 +374,7 @@ __all__ = [
     "KIND_REASONING",
     "KIND_TEXT",
     "KIND_TOOL",
+    "PhaseFrame",
     "part_id",
+    "publish_phase_frame",
 ]

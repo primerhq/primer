@@ -4,7 +4,11 @@ See ``docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md``
 for the full design. Six core kinds (started, completed, failed,
 yielded, resumed, cancelled) carry the same shape across agent
 sessions and graph nodes; two graph-only kinds (superstep_started,
-superstep_ended) land in the graph-level file.
+superstep_ended) land in the graph-level file. ``phase`` (01a04d91-a7a0)
+is a seventh core kind: one entry per agent_phase transition within a
+turn (thinking/responding/executing/waiting), audited alongside the
+WorkspaceSession row write and tap frame dispatch.run_one_session_turn
+makes at the same moment.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ class TurnLogKind(str, Enum):
     CANCELLED = "cancelled"
     SUPERSTEP_STARTED = "superstep_started"
     SUPERSTEP_ENDED = "superstep_ended"
+    PHASE = "phase"
 
 
 class _TurnLogBase(BaseModel):
@@ -83,6 +88,19 @@ class TurnLogCancelled(_TurnLogBase):
     reason: str | None = None
 
 
+class TurnLogPhase(_TurnLogBase):
+    """agent_phase transition audit record (01a04d91-a7a0, PHASE 1 of the
+    execution-lifecycle revamp). One per actual transition (thinking ->
+    responding -> executing -> ... -> waiting), not per token - mirrors
+    the row write and tap frame dispatch.run_one_session_turn makes at
+    the same moment. ``turn_no`` (inherited from _TurnLogBase) is the
+    fence a reader compares against the session row's own turn_no /
+    WorkspaceSession.agent_phase_turn_no to ignore a stale entry."""
+
+    kind: Literal[TurnLogKind.PHASE] = TurnLogKind.PHASE
+    phase: Literal["thinking", "responding", "executing", "waiting"]
+
+
 class TurnLogSuperstepStarted(_TurnLogBase):
     kind: Literal[TurnLogKind.SUPERSTEP_STARTED] = TurnLogKind.SUPERSTEP_STARTED
     ready_node_ids: list[str] = Field(default_factory=list)
@@ -96,7 +114,7 @@ class TurnLogSuperstepEnded(_TurnLogBase):
 
 
 TurnLogEvent = Annotated[
-    TurnLogStarted | TurnLogCompleted | TurnLogFailed | TurnLogYielded | TurnLogResumed | TurnLogCancelled | TurnLogSuperstepStarted | TurnLogSuperstepEnded,
+    TurnLogStarted | TurnLogCompleted | TurnLogFailed | TurnLogYielded | TurnLogResumed | TurnLogCancelled | TurnLogPhase | TurnLogSuperstepStarted | TurnLogSuperstepEnded,
     Field(discriminator="kind"),
 ]
 
@@ -141,6 +159,7 @@ __all__ = [
     "TurnLogYielded",
     "TurnLogResumed",
     "TurnLogCancelled",
+    "TurnLogPhase",
     "TurnLogSuperstepStarted",
     "TurnLogSuperstepEnded",
     "TurnLogEvent",

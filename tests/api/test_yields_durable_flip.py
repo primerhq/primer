@@ -371,3 +371,46 @@ async def test_flip_never_arms_a_lease_on_a_row_that_already_ended(app):
     assert engine.calls == [], "no lease may be armed on an ended row"
     row = await storage.get("d-ended")
     assert row.parked_status == "parked", "the stale row must be left untouched"
+
+
+@pytest.mark.asyncio
+async def test_flip_rejects_a_row_ended_after_the_caller_snapshotted_it(app):
+    """The narrower TOCTOU the test above does NOT cover: a row that ends
+    IN THE GAP between a caller's read and this write, not before it.
+
+    Simulates the interleaving directly: `sess` is the caller's own
+    snapshot, taken while the row was still RUNNING (not ENDED) - so the
+    OLD snapshot-check (`if session.status == ENDED: return False`) would
+    have read False and let the write through. Between that read and this
+    call, a DIFFERENT worker independently ends the row in storage. The
+    fix is `Storage.update_unless` evaluating "is status ENDED" against
+    the row's CURRENT value at write time, not the stale `sess` argument -
+    so this must still reject even though `sess.status` says RUNNING.
+    """
+    sess = _make_ask_user_parked_session(session_id="d-race", tool_call_id="tcz")
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+    assert sess.status == SessionStatus.RUNNING
+
+    # The interleaving: a different worker ends the row AFTER `sess` was
+    # snapshotted (sess itself, held by this test, is never touched -
+    # exactly mirroring a caller whose in-memory copy is now stale).
+    ended = sess.model_copy(update={
+        "status": SessionStatus.ENDED, "ended_reason": "completed",
+    })
+    await storage.update(ended)
+
+    engine = _FlakyEngine(fail_times=0)
+    did = await durably_mark_session_resumable(
+        sess,  # the STALE snapshot - still status=RUNNING
+        event_key="ask_user:d-race:tcz",
+        payload={"response": "too late"},
+        session_storage=storage,
+        engine=engine,
+    )
+
+    assert did is False, "a row ended mid-flight must still be rejected"
+    assert engine.calls == [], "no lease may be armed on a row that ended mid-flight"
+    row = await storage.get("d-race")
+    assert row.status == SessionStatus.ENDED
+    assert row.parked_status == "parked", "the durable flip must not have landed"

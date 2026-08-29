@@ -52,6 +52,17 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self, entity: _T, *, field: str, forbidden: Any, conn=None,
+    ) -> _T | None:
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if _resolve_field(current, field) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str, *, conn=None) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")

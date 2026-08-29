@@ -420,3 +420,73 @@ class TestWorkspaceSessionStreamingFields:
         assert sess.cancel_requested_at is None
         assert sess.pause_requested_at is None
         assert sess.last_seq == 0
+
+
+class TestSessionState:
+    """session_state (01a04d91-a7a0, PHASE 1 of the execution-lifecycle
+    revamp): one served truth derived from (status, parked_status,
+    turn_status), computed fresh on every serialisation - never stored,
+    never accepted as input."""
+
+    def _sess(self, **overrides):
+        base = dict(
+            id="s1", workspace_id="w1",
+            binding=AgentSessionBinding(agent_id="ag"),
+            status=SessionStatus.RUNNING,
+            created_at=datetime(2026, 5, 28, tzinfo=timezone.utc),
+        )
+        base.update(overrides)
+        return WorkspaceSession(**base)
+
+    def test_ended_takes_precedence_over_everything(self):
+        # Even a row that ALSO carries turn_status="running" (a stale/
+        # transient combination) must read "ended" once status is ENDED -
+        # terminal, nothing else matters once true.
+        sess = self._sess(
+            status=SessionStatus.ENDED, turn_status="running",
+            parked_status="parked",
+        )
+        assert sess.session_state == "ended"
+
+    def test_parked_takes_precedence_over_running(self):
+        # The park write and the turn_status="idle" cleanup write are not
+        # atomic with each other (dispatch.run_one_session_turn's
+        # YieldToWorker branch vs. the streaming-phase finally moments
+        # later) - a reader can observe turn_status still "running" for a
+        # session that has already parked. Parked wins.
+        sess = self._sess(turn_status="running", parked_status="parked")
+        assert sess.session_state == "parked"
+
+        sess2 = self._sess(turn_status="running", parked_status="resumable")
+        assert sess2.session_state == "parked"
+
+    def test_running_when_turn_status_running_and_not_parked(self):
+        sess = self._sess(turn_status="running")
+        assert sess.session_state == "running"
+
+    def test_waiting_is_the_default_fallthrough(self):
+        for status, turn_status in [
+            (SessionStatus.CREATED, "idle"),
+            (SessionStatus.RUNNING, "idle"),
+            (SessionStatus.RUNNING, "claimable"),
+            (SessionStatus.WAITING, "idle"),
+            (SessionStatus.PAUSED, "idle"),
+        ]:
+            sess = self._sess(status=status, turn_status=turn_status)
+            assert sess.session_state == "waiting", (status, turn_status)
+
+    def test_computed_field_appears_in_serialisation(self):
+        sess = self._sess(turn_status="running")
+        dumped = sess.model_dump(mode="json")
+        assert dumped["session_state"] == "running"
+
+    def test_computed_field_is_not_accepted_as_input(self):
+        # A round-trip through a previously-serialised dump (which now
+        # includes session_state) must not choke on the extra key, and
+        # must not let a client-supplied session_state override the
+        # derived truth.
+        sess = self._sess(turn_status="running")
+        dumped = sess.model_dump(mode="json")
+        dumped["session_state"] = "ended"  # a malicious/stale client value
+        reloaded = WorkspaceSession.model_validate(dumped)
+        assert reloaded.session_state == "running"

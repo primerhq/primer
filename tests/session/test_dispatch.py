@@ -272,6 +272,68 @@ async def test_cancel_mid_stream_writes_cancelled_and_breaks(
     assert SessionMessageKind.CANCELLED in kinds
     assert SessionMessageKind.DONE not in kinds
 
+    # 01a04d91-a7a0: cancel goes through the same streaming-phase finally
+    # as every other exit; turn_status must not survive as "running".
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row.turn_status == "idle"
+    assert row.turn_started_at is None
+
+
+@pytest.mark.asyncio
+async def test_turn_status_reads_running_for_the_whole_streaming_window(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """Root-cause regression for the refresh-indicator diagnosis
+    (01a04d64-b4ba): turn_status was declared Literal["idle","claimable",
+    "running"] but "running" was never actually written anywhere, so a
+    REST client polling a session mid-turn always saw "idle" no matter
+    how long the real turn ran (confirmed live: every 1s poll across a
+    real ~106s turn read "idle"). A client (or the UI's rowBusy gate)
+    polling storage while the executor is genuinely blocked mid-invoke -
+    simulating a real, in-flight LLM call, not an instant fake one - must
+    now see turn_status="running" with a real turn_started_at."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    gate = asyncio.Event()
+
+    class _BlockedExecutor:
+        async def invoke(self, messages: list[Any], **kwargs: Any):
+            yield TextDelta(text="thinking", index=0)
+            await gate.wait()
+            yield Done(stop_reason="stop", raw_reason="stop")
+
+    async def _build_executor(session: WorkspaceSession):
+        return _BlockedExecutor()
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    turn_task = asyncio.create_task(run_one_session_turn(lease, deps))
+
+    await asyncio.sleep(0.05)
+    mid_stream_row = await storage.get(seeded_session.id)
+    assert mid_stream_row.turn_status == "running", (
+        "a client polling mid-turn must see 'running', not "
+        f"{mid_stream_row.turn_status!r} - this is the exact signal "
+        "nv-session-doc.jsx's rowBusy gate depends on"
+    )
+    assert mid_stream_row.turn_started_at is not None
+
+    gate.set()
+    outcome = await asyncio.wait_for(turn_task, timeout=2.0)
+    assert outcome.success is True
+
+    final_row = await storage.get(seeded_session.id)
+    assert final_row.turn_status == "idle"
+    assert final_row.turn_started_at is None
+
 
 @pytest.mark.asyncio
 async def test_yield_to_worker_writes_yielded_and_returns_no_drop(
@@ -315,6 +377,14 @@ async def test_yield_to_worker_writes_yielded_and_returns_no_drop(
     kinds = [json.loads(ln)["kind"] for ln in lines]
     assert SessionMessageKind.YIELDED in kinds
     assert SessionMessageKind.DONE not in kinds
+
+    # 01a04d91-a7a0: a park ends this turn (a resume dispatches a fresh
+    # one later) even though session.status never changes - the finally
+    # block must still clear turn_status back to idle here.
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row.turn_status == "idle"
+    assert row.turn_started_at is None
 
 
 @pytest.mark.asyncio
@@ -564,6 +634,12 @@ async def test_clean_completion_transitions_to_ended_completed(
     assert row.status == SessionStatus.ENDED
     assert row.ended_reason == "completed"
     assert row.ended_at is not None
+    # 01a04d91-a7a0: a real client polling turn_status mid-turn now sees
+    # "running" instead of "idle" the whole way through (root cause of the
+    # refresh-indicator diagnosis, task 01a04d64-b4ba); it must still land
+    # back on "idle" once the turn is actually done.
+    assert row.turn_status == "idle"
+    assert row.turn_started_at is None
 
 
 @pytest.mark.asyncio
@@ -686,6 +762,10 @@ async def test_executor_error_transitions_to_ended_failed(
     row = await storage.get(seeded_session.id)
     assert row.status == SessionStatus.ENDED
     assert row.ended_reason == "failed"
+    # 01a04d91-a7a0: the streaming-phase finally clears turn_status back
+    # to idle on every exit the try/except covers, including this one.
+    assert row.turn_status == "idle"
+    assert row.turn_started_at is None
 
 
 @pytest.mark.asyncio
@@ -779,6 +859,12 @@ async def test_build_executor_notfound_converges_to_ended_failed(
         f"session left at {row.status!r} instead of ENDED"
     )
     assert row.ended_reason == "failed"
+    # A build_executor failure exits before the streaming try/finally is
+    # ever reached, so it needs its own turn_status clear (01a04d91-a7a0) -
+    # the row must not be left at "running" just because the executor
+    # never got as far as invoke().
+    assert row.turn_status == "idle"
+    assert row.turn_started_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -987,25 +1073,32 @@ async def test_turn_start_consumes_claimable_and_mid_turn_steer_survives(
     fake_storage_provider,
 ) -> None:
     """C1 regression (dispatch-side half): run_one_session_turn must (a)
-    consume ("idle") a turn_status="claimable" it started with -- proving
-    a stale, already-serviced claimable can't spin-claim this session
-    forever -- and (b) leave turn_status="claimable" on the row if a NEW
-    wake_session() steer lands mid-turn, so the worker pool's
-    post-release re-arm (WorkerPool._maybe_rearm_session, exercised
-    end-to-end in tests/worker/test_pool.py) has a real signal to act on."""
+    consume a turn_status="claimable" it started with into "running" --
+    proving a stale, already-serviced claimable can't spin-claim this
+    session forever, AND that a real client polling turn_status mid-turn
+    now sees "running" instead of the "idle" it saw before task
+    01a04d64-b4ba/01a04d91-a7a0 (turn_status was declared but never
+    actually written as "running" anywhere) -- and (b) leave
+    turn_status="claimable" on the row if a NEW wake_session() steer lands
+    mid-turn, so the worker pool's post-release re-arm
+    (WorkerPool._maybe_rearm_session, exercised end-to-end in
+    tests/worker/test_pool.py) has a real signal to act on."""
     storage = fake_storage_provider.get_storage(WorkspaceSession)
     seeded_session.turn_status = "claimable"
     await storage.update(seeded_session)
 
     seen_turn_status_at_start = None
+    seen_turn_started_at_at_start = None
 
     class _SteeringExecutor:
         async def invoke(self, messages: list[Any], **kwargs: Any):
-            nonlocal seen_turn_status_at_start
+            nonlocal seen_turn_status_at_start, seen_turn_started_at_at_start
             # By the time the executor is invoked, the turn-start consume
-            # step must already have cleared turn_status to "idle".
+            # step must already have flipped turn_status to "running" and
+            # stamped turn_started_at.
             row = await storage.get(seeded_session.id)
             seen_turn_status_at_start = row.turn_status
+            seen_turn_started_at_at_start = row.turn_started_at
             yield TextDelta(text="thinking", index=0)
             # Simulate a wake_session() steer landing mid-turn (its
             # row-write half; the messages.jsonl append is irrelevant to
@@ -1028,9 +1121,13 @@ async def test_turn_start_consumes_claimable_and_mid_turn_steer_survives(
     outcome = await run_one_session_turn(lease, deps)
 
     assert outcome.success is True
-    assert seen_turn_status_at_start == "idle", (
-        "turn-start must consume ('idle') a claimable it started with, "
-        f"but the executor saw {seen_turn_status_at_start!r}"
+    assert seen_turn_status_at_start == "running", (
+        "turn-start must consume a claimable it started with into "
+        f"'running', but the executor saw {seen_turn_status_at_start!r}"
+    )
+    assert seen_turn_started_at_at_start is not None, (
+        "turn_started_at must be stamped in the same write that sets "
+        "turn_status='running'"
     )
     row = await storage.get(seeded_session.id)
     assert row.turn_status == "claimable", (

@@ -30,7 +30,7 @@ from datetime import datetime
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from primer.model.agent import _validate_response_format_schema
 from primer.model.common import Identifiable
@@ -608,6 +608,68 @@ class WorkspaceSession(Identifiable):
             "where it is while ``parked_status`` flips."
         ),
     )
+    turn_started_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Wall-clock time the current turn set turn_status='running' "
+            "(dispatch.run_one_session_turn, just before build_executor). "
+            "Cleared back to None in the same write that returns "
+            "turn_status to 'idle'. Additive/optional so existing rows "
+            "with no value simply read None. Exists for crash-safety "
+            "staleness heuristics: a worker that dies mid-turn (hard "
+            "crash, OOM kill, pod eviction) never reaches the cleanup "
+            "write, so a row can be observed at turn_status='running' "
+            "with no live worker behind it - callers that need to detect "
+            "that should compare this timestamp's age against a "
+            "plausible turn-duration ceiling rather than trusting "
+            "turn_status alone."
+        ),
+    )
+    agent_phase: Literal[
+        "thinking", "responding", "executing", "waiting",
+    ] | None = Field(
+        default=None,
+        description=(
+            "Finer-grained sub-state of an in-flight turn, written by "
+            "dispatch.run_one_session_turn as it watches the executor's "
+            "StreamEvents (primer.session.persistence.translate_stream_event "
+            "already sees the same events at the same layer). 'thinking' "
+            "covers request-sent-through-reasoning-tokens (a request just "
+            "sent, or ReasoningDelta events - reasoning is rendered as its "
+            "own collapsible block, not the final answer, so it counts as "
+            "thinking); 'responding' starts at the first non-reasoning "
+            "TextDelta; 'executing' starts at ToolCallStart and reverts to "
+            "'thinking' once the tool result is appended (the agent is "
+            "about to re-request a completion); 'waiting' is the value "
+            "between turns / on park / on turn end - the same moments "
+            "turn_status returns to 'idle'. Additive/optional, no "
+            "migration: existing rows simply read None (equivalent to "
+            "'waiting'). None whenever turn_status is 'idle' - only "
+            "meaningful while a turn is genuinely running, mirroring "
+            "turn_started_at's own scope."
+        ),
+    )
+    agent_phase_turn_no: int | None = Field(
+        default=None,
+        description=(
+            "turn_no this agent_phase value belongs to - the fence a "
+            "reader compares against the row's own turn_no to detect a "
+            "stale write (e.g. a delayed phase update from a turn that "
+            "already ended, arriving after the NEXT turn already started; "
+            "readers should ignore agent_phase when this doesn't match "
+            "turn_no). Additive/optional, no migration."
+        ),
+    )
+    agent_phase_stamped_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Wall-clock time agent_phase was last written. Same "
+            "crash-safety role as turn_started_at (staleness heuristic "
+            "for a worker that died between phase transitions), scoped to "
+            "the finer-grained phase signal rather than the coarser "
+            "turn_status. Additive/optional, no migration."
+        ),
+    )
     cancel_requested_at: datetime | None = Field(
         default=None,
         description=(
@@ -626,6 +688,50 @@ class WorkspaceSession(Identifiable):
             "without advancing to the next turn.  Cleared on resume."
         ),
     )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def session_state(self) -> Literal["waiting", "running", "parked", "ended"]:
+        """One served truth, derived from the three stored axes.
+
+        The stored axes (``status``, ``parked_status``, ``turn_status``)
+        stay exactly as they are - three separate columns, unchanged
+        write paths - this is purely a read-time projection, computed
+        fresh on every serialisation, never stored, never accepted as
+        input (a bare ``@property`` under ``@computed_field`` has no
+        setter, so passing ``session_state=`` into the constructor raises
+        same as any other unknown kwarg). Because it lives on
+        WorkspaceSession itself rather than a response subclass, every
+        route that serialises a WorkspaceSession (or a subclass like
+        SessionDetail) gets it automatically - no per-route wiring, no
+        route that could forget to add it.
+
+        Precedence (checked in this order - see each branch for why):
+        1. ``status == ENDED`` -> "ended". Terminal; nothing else matters
+           once true.
+        2. ``parked_status in ("parked", "resumable")`` -> "parked".
+           Checked before turn_status because the park write and the
+           turn_status="idle" cleanup write are NOT atomic with each
+           other (dispatch.run_one_session_turn's YieldToWorker branch
+           writes the park columns; the streaming-phase `finally` clears
+           turn_status moments later) - a reader could observe
+           turn_status still "running" for a session that has already
+           parked. Parked is the more specific/accurate transient truth.
+        3. ``turn_status == "running"`` -> "running". The real signal
+           01a04d91-a7a0 introduced - see that field's own docstring for
+           why this used to always read "idle" here instead.
+        4. Otherwise -> "waiting". Covers CREATED (never started),
+           RUNNING-but-idle-between-turns, WAITING, PAUSED, and
+           turn_status idle/claimable - every case where the session is
+           alive but nothing is actively executing right now.
+        """
+        if self.status == SessionStatus.ENDED:
+            return "ended"
+        if self.parked_status is not None:
+            return "parked"
+        if self.turn_status == "running":
+            return "running"
+        return "waiting"
 
 
 # ===========================================================================

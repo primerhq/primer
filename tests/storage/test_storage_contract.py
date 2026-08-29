@@ -149,6 +149,51 @@ async def test_create_and_delete_accept_conn(provider: StorageProvider) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_unless_applies_when_current_field_differs(
+    provider: StorageProvider,
+) -> None:
+    s = provider.get_storage(_Thing)
+    await s.create(_Thing(id="uu-1", name="a", status="created"))
+    result = await s.update_unless(
+        _Thing(id="uu-1", name="b", status="running"),
+        field="status", forbidden="ended",
+    )
+    assert result is not None and result.name == "b" and result.status == "running"
+    assert (await s.get("uu-1")).name == "b"
+
+
+@pytest.mark.asyncio
+async def test_update_unless_rejects_when_current_field_matches(
+    provider: StorageProvider,
+) -> None:
+    """The guard checks the row's CURRENT stored value, not the value on
+    the `entity` argument being written - that is the whole point (a
+    caller passing a stale snapshot must not be able to bypass it)."""
+    s = provider.get_storage(_Thing)
+    await s.create(_Thing(id="uu-2", name="a", status="ended"))
+    result = await s.update_unless(
+        _Thing(id="uu-2", name="b", status="running"),
+        field="status", forbidden="ended",
+    )
+    assert result is None
+    unchanged = await s.get("uu-2")
+    assert unchanged.name == "a" and unchanged.status == "ended", (
+        "a rejected update_unless must leave the row completely untouched"
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_unless_raises_not_found_for_a_missing_id(
+    provider: StorageProvider,
+) -> None:
+    s = provider.get_storage(_Thing)
+    with pytest.raises(NotFoundError):
+        await s.update_unless(
+            _Thing(id="uu-missing", name="x"), field="status", forbidden="ended",
+        )
+
+
+@pytest.mark.asyncio
 async def test_find_predicate_eq_and_in(provider: StorageProvider) -> None:
     s = provider.get_storage(_Thing)
     for i, name in enumerate(["a", "b", "c"]):

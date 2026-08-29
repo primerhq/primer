@@ -781,6 +781,63 @@ class PostgresStorage(Storage[ModelT]):
             )
         return self._from_row(row)
 
+    async def update_unless(
+        self, entity: ModelT, *, field: str, forbidden: Any,
+        conn: Any | None = None,
+    ) -> ModelT | None:
+        # The guard is part of the UPDATE's own WHERE clause, evaluated
+        # by Postgres against the row's CURRENT data in the same
+        # statement as the write - atomic by construction (MVCC), no
+        # separate lock needed. `forbidden` is compared as text, same
+        # as every other field-equality predicate this storage layer
+        # compiles (see storage/_predicate.py's `data->>'field'`).
+        await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
+        entity_id, data_json = self._to_row(entity)
+        sql = (
+            f'UPDATE {self._qualified} '
+            f'SET data = $2::jsonb, updated_at = now() '
+            f'WHERE id = $1 AND (data->>$3) IS DISTINCT FROM $4 '
+            f'RETURNING id, data'
+        )
+        try:
+            async with self._acquire_or_use(conn) as c:
+                if event_kind is None:
+                    row = await c.fetchrow(sql, entity_id, data_json, field, forbidden)
+                else:
+                    async with c.transaction():
+                        row = await c.fetchrow(
+                            sql, entity_id, data_json, field, forbidden,
+                        )
+                        if row is not None:
+                            await _append_crud_event(
+                                c, self._provider.schema,
+                                event_type=f"{event_kind}.updated",
+                                entity_kind=event_kind, entity_id=entity_id,
+                                payload_json=data_json,
+                            )
+                if row is None:
+                    # Ambiguous on its own: no id, or guard rejected. This
+                    # probe only disambiguates WHICH exception/return
+                    # shape to give the caller - it does not affect
+                    # whether the write above was safe, that was already
+                    # decided atomically by the WHERE clause.
+                    exists = await c.fetchval(
+                        f'SELECT 1 FROM {self._qualified} WHERE id = $1',
+                        entity_id,
+                    )
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
+        if row is None:
+            if not exists:
+                raise NotFoundError(
+                    f"{self._model.__name__} with id {entity_id!r} not found"
+                )
+            return None
+        return self._from_row(row)
+
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         await self._ensure_table()
         event_kind = kind_for_model(self._model)

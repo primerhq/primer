@@ -627,4 +627,43 @@ def translate_stream_event(
     return None
 
 
+def infer_agent_phase(event: StreamEvent) -> str | None:
+    """Map a raw StreamEvent to the agent_phase (01a04d91-a7a0) it
+    implies, or ``None`` if this event kind carries no phase information
+    (Usage, ToolCallDelta, an unmatched ExtendedEvent, etc.).
+
+    Deliberately operates on the RAW event, before translate_stream_event's
+    coalescing: TextDelta/ReasoningDelta only produce a durable record at a
+    flush point (ToolCallEnd or Done), which would tell a live phase signal
+    about "responding" started far too late — the whole point of the phase
+    field is to be true WHILE the tokens are streaming, not after they've
+    already been buffered into a record. A pure function, no side effects,
+    so the caller (dispatch.run_one_session_turn) decides what to do with a
+    transition (only writing/publishing on an actual change, not every
+    event) rather than this function doing it inline.
+
+    * ReasoningDelta -> "thinking" (reasoning renders as its own
+      collapsible block, distinct from the final answer - see agent_phase's
+      own docstring on WorkspaceSession).
+    * TextDelta -> "responding" (the final answer has started).
+    * ToolCallStart -> "executing".
+    * ToolCallEnd -> "thinking" (the tool result is about to be appended
+      and the agent will re-request a completion).
+    * Done / Error -> "waiting" (the turn is ending; dispatch's own
+      turn-status cleanup already fires around the same moment).
+    * Everything else -> None (no transition implied).
+    """
+    if isinstance(event, ReasoningDelta):
+        return "thinking"
+    if isinstance(event, TextDelta):
+        return "responding"
+    if isinstance(event, ToolCallStart):
+        return "executing"
+    if isinstance(event, ToolCallEnd):
+        return "thinking"
+    if isinstance(event, (Done, Error)):
+        return "waiting"
+    return None
+
+
 __all__ = ["WorkspaceMessageWriter", "WorkspaceIO", "_CoalesceState", "translate_stream_event"]
