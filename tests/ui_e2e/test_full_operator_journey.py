@@ -187,16 +187,21 @@ def test_multi_page_operator_journey_no_llm(
         page.locator("h1.page-title").get_by_text(
             "Workspaces", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
-        # The workspace row uses the backend-assigned id; assert it's
-        # in the rendered table.
-        page.locator(f"tr:has-text('{ids['workspace']}')").first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        # RETARGET (platform wave P1b item 7): the workspaces list moved
+        # from a <table>/<tr> to a .pc-card-grid of cards
+        # (data-testid="workspace-card-<id>") - missed in that wave's
+        # own e2e sweep since "tr:has-text" doesn't match the "<tr"/
+        # "tbody" substrings that sweep grepped for. The workspace row
+        # uses the backend-assigned id; assert its card is rendered.
+        ws_card = page.get_by_test_id(f"workspace-card-{ids['workspace']}")
+        ws_card.wait_for(state="visible", timeout=10_000)
 
-        # ----- 3. Enter the workspace (click the row)
-        # A row ENTERS the workspace rather than addressing its record:
-        # "#/w/<wid>" is how the shell says which workspace it is in.
-        page.locator(f"tr:has-text('{ids['workspace']}')").first.click()
+        # ----- 3. Enter the workspace (click Open)
+        # Unlike the old <tr>, the card itself carries no click-to-enter
+        # handler (only its Open button does, same as P1a's provider
+        # cards) - "#/w/<wid>" is how the shell says which workspace it
+        # is in.
+        page.get_by_test_id(f"workspace-card-open-{ids['workspace']}").click()
         page.wait_for_url(
             re.compile(rf"#/w/{re.escape(ids['workspace'])}\b"), timeout=10_000,
         )

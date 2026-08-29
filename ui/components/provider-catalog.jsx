@@ -182,26 +182,35 @@ function PC_ReachabilityBadge({ lastProbeAt, lastProbeOk }) {
 // is real, tested, currently-shipped functionality for three classes, kept
 // as a third small action rather than silently dropped to match a mockup
 // that likely never modeled cache invalidation at all.
-function PC_InstanceCard({ klass, row, discoverable, onOpen, onChanged }) {
+function PC_InstanceCard({ klass, row, onOpen, onChanged }) {
   const { apiFetch, useResource } = window.primerApi;
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [err, setErr] = React.useState("");
   const [busy, setBusy] = React.useState("");
   const encoded = encodeURIComponent(row.id);
 
-  // Wave P1a item 3: "models N probed live" - only attempted for a kind
-  // the served /_types data marks discoverable, never for one that is
-  // not (no wasted probe, no fake fact). GET .../discovered_models probes
-  // the SAVED row's own stored config server-side (secrets included), so
-  // this is a real live count, not a cached registration count.
+  // Wave P1a item 3 / CI fix: "models N probed live". Two real gates,
+  // not the old (broken) `discoverable ? key : null` pattern - useResource
+  // has no null-key skip, so that always fired the fetch anyway, 404ing
+  // on embedding/cross_encoder (GET .../discovered_models is an
+  // llm_providers-only route - providers.py:617, no per-id GET exists
+  // for the other classes) and 400ing on unreachable llm rows.
+  //
+  // canProbe is true only when BOTH hold: the route exists for this
+  // class (llm_providers only), and this row already has a confirmed
+  // successful probe (last_probe_ok - virgin/never-probed rows are
+  // excluded too, same virgin rule the reachability badge uses). No
+  // silent auto-probing on page load; a fresh/unreachable row simply
+  // shows no model count until something else establishes reachability.
+  const canProbe = klass.plural === "llm_providers" && row.last_probe_ok === true;
   const discovered = useResource(
-    discoverable ? `pc:discovered:${row.id}` : null,
-    (signal) => apiFetch(
-      "GET", `/${klass.plural}/${encoded}/discovered_models`, null, { signal },
-    ),
+    `pc:discovered:${row.id}`,
+    (signal) => canProbe
+      ? apiFetch("GET", `/${klass.plural}/${encoded}/discovered_models`, null, { signal })
+      : Promise.resolve(null),
     { pollMs: null },
   );
-  const modelCount = discoverable && discovered.data && Array.isArray(discovered.data.models)
+  const modelCount = canProbe && discovered.data && Array.isArray(discovered.data.models)
     ? discovered.data.models.length
     : null;
 
@@ -300,7 +309,7 @@ function PC_InstanceCard({ klass, row, discoverable, onOpen, onChanged }) {
   );
 }
 
-function PC_InstanceGrid({ klass, discoverable, onSelect, onRegisterRefetch }) {
+function PC_InstanceGrid({ klass, onSelect, onRegisterRefetch }) {
   const { usePagedList } = window.primerApi;
   const list = usePagedList({
     key: `catalog:${klass.plural}`,
@@ -344,7 +353,6 @@ function PC_InstanceGrid({ klass, discoverable, onSelect, onRegisterRefetch }) {
             key={row.id}
             klass={klass}
             row={row}
-            discoverable={discoverable}
             onOpen={onSelect}
             onChanged={(what) => {
               list.refetch();
