@@ -89,7 +89,7 @@ function NV_MobileApproveButton(props) {
       },
       function (err) {
         setBusy(false);
-        con.toast("Approve failed: " + ((err && err.message) || "unknown error"));
+        con.toast("Approve failed: " + ((err && (err.detail || err.message)) || "unknown error"));
       }
     );
   }

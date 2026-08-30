@@ -728,15 +728,35 @@ async def _session_usage_totals(
     return build_usage_frame(text.splitlines())
 
 
+# Dogfood round 2: providers.py's discovery probes used to seed exactly
+# this value onto every model whose endpoint didn't report a real
+# window (removed there now - see _probe_openai_compatible_models /
+# _probe_ollama_models). A profile already carrying it from before that
+# fix is indistinguishable from "an operator genuinely typed 32000", so
+# this path treats it as "never learned" rather than serving it as fact
+# - it is the one number that shipped a real user a confident-looking
+# wrong meter denominator ("98k / 32k" against an actual 131k model).
+_LEGACY_SEEDED_CONTEXT_LENGTH = 32000
+
+
 async def _session_context_length(
     session: WorkspaceSession, storage_provider,
 ) -> int | None:
-    """Best-effort context window size for session's bound model,
-    mirroring compact_session_endpoint's own resolution chain
-    (primer/api/routers/workspaces.py) - None whenever nothing is
-    resolvable (graph-bound, unbound, or a deleted agent/profile), which
-    the caller treats as "unknown", not an error."""
-    from primer.agent.compaction import lookup_context_length
+    """Best-effort context window size for session's bound model, or
+    None when nothing resolvable/trustworthy is available (graph-bound,
+    unbound, a deleted agent/profile, or the legacy-seeded fake above) -
+    the caller treats None as "unknown", not an error.
+
+    Deliberately does NOT call primer.agent.compaction.lookup_context_length:
+    that helper's fallback chain (configured value wins, else the curated
+    table) stays exactly as-is for compaction's own budget math, where a
+    stale/fake number is low-stakes (a slightly early or late summarise).
+    Serving a number to the user's face is higher-stakes, so this applies
+    a stricter, different precedence: a curated known-model value always
+    wins (it is real by construction), then the stored value UNLESS it is
+    the exact legacy seed.
+    """
+    from primer.agent.compaction import MODEL_CONTEXT_FALLBACK
     from primer.model.agent import Agent
     from primer.model_profile import resolve_model
 
@@ -756,9 +776,11 @@ async def _session_context_length(
         default_profile_id=agent.model.profile_id,
         override_profile_id=getattr(binding, "profile_id", None),
     )
-    return lookup_context_length(
-        model_name=llm_model.model_name, configured=llm_model.context_length,
-    )
+    if llm_model.model_name in MODEL_CONTEXT_FALLBACK:
+        return MODEL_CONTEXT_FALLBACK[llm_model.model_name]
+    if llm_model.context_length == _LEGACY_SEEDED_CONTEXT_LENGTH:
+        return None
+    return llm_model.context_length
 
 
 @top_session_router.get(

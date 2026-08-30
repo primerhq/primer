@@ -4153,6 +4153,17 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 button.nv-trace-line { cursor: pointer; }
 .nv-trace-icon { color: var(--text-4); width: 12px; text-align: center; }
+/* Dogfood round 2: [T]/[A] glyph badges - small, fixed-width, one
+   color per kind so a long trace scans by shape, not just text. */
+.nv-trace-glyph {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0;
+  font-size: 9px; font-weight: 700;
+  border: 1px solid var(--border-strong);
+}
+.nv-trace-glyph[data-kind="tool"] { color: var(--accent); border-color: var(--accent-border); }
+.nv-trace-glyph[data-kind="agent"] { color: var(--violet, var(--accent)); }
+.nv-trace-ts { color: var(--text-4); font-size: 10px; white-space: nowrap; flex-shrink: 0; }
 .nv-trace-label { color: var(--text-2); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nv-trace-dur { color: var(--text-4); font-size: 10px; white-space: nowrap; }
 .nv-trace-args {
@@ -4160,7 +4171,17 @@ button.nv-trace-line { cursor: pointer; }
   background: var(--bg-2); color: var(--text-2, var(--text));
   font-size: 10.5px; white-space: pre-wrap; word-break: break-word;
 }
+.nv-trace-args[data-error="true"] { color: var(--danger, #e06c5f); }
 .nv-trace-foot { font-size: 10.5px; color: var(--text-4); margin-top: 10px; line-height: 1.5; }
+/* The maximize overlay: same row/line/glyph language as the sidebar,
+   plus the expandable detail block only it renders. */
+.nv-trace-maximize-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 16px; }
+.nv-trace-detail { margin-left: 20px; display: flex; flex-direction: column; gap: 2px; }
+.nv-trace-detail-sec {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-4);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px;
+}
+.nv-trace-empty { color: var(--text-4); font-size: 11.5px; margin-left: 20px; }
 
 /* Composer */
 .nv-composer-wrap { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--bg-1); }

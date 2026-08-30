@@ -37,7 +37,7 @@ function NV_FileDoc(props) {
       },
       function (err) {
         if (err && err.status === 412) { setConflict(true); return; }
-        con.toast("Save failed: " + (err && err.message));
+        con.toast("Save failed: " + (err && (err.detail || err.message)));
       }
     );
   }

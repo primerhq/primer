@@ -192,6 +192,24 @@ _TURN_LOG_TERMINALS = frozenset({
     TurnLogKind.CANCELLED.value,
 })
 
+# Dogfood round 2: the trace overlay's expanded form shows a call's
+# result alongside its arguments - a tool's output (a read's full file,
+# a long command's stdout) can be arbitrarily large, and this is a debug
+# view riding the timeline response, not the transcript's own paginated
+# rendering, so it needs its own bound rather than inheriting one.
+_RESULT_OUTPUT_CAP = 4000
+
+
+def _capped_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """Size-capped view of a TOOL_RESULT payload for the trace overlay."""
+    output = payload.get("output")
+    text = output if isinstance(output, str) else json.dumps(output, default=str)
+    return {
+        "output": text[:_RESULT_OUTPUT_CAP],
+        "error": bool(payload.get("error")),
+        "truncated": len(text) > _RESULT_OUTPUT_CAP,
+    }
+
 
 def _parse_ts(value: Any) -> datetime | None:
     if not isinstance(value, str):
@@ -342,6 +360,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "arguments": payload.get("arguments") or {},
                 "status": None,
                 "duration_ms": None,
+                "result": None,
                 "children": [],
             }
             if payload.get("id"):
@@ -353,6 +372,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 parent["duration_ms"] = _delta_ms(
                     parent["ts"], rec.get("created_at"),
                 )
+                parent["result"] = _capped_result(payload)
             continue
         elif kind == _CLIENT_ACTION:
             # Task 13's leaf rule, preserved through this rewrite: the S3

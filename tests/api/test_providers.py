@@ -632,3 +632,78 @@ class TestProbeUrlStringification:
         assert result == {"models": [{"name": "probe-model"}]}
         assert isinstance(captured["url"], str)
         assert captured["url"] == "http://localhost:8080/v1/models"
+
+
+# ===========================================================================
+# Ollama per-model context_length (dogfood round 2)
+# ===========================================================================
+
+
+class TestOllamaContextLengthDiscovery:
+    """/api/tags (ollama.list()) never carries a model's context window;
+    /api/show's model_info does, under a per-architecture key
+    ("llama.context_length", "qwen2.context_length", ...) rather than a
+    fixed name - _probe_ollama_models now makes one extra /api/show call
+    per discovered model to read it, and simply leaves the field unset
+    when a model's call fails or reports nothing usable, rather than
+    seeding a fake (the bug a real deployment hit: a discovery-seeded
+    32000 became the served context meter denominator for a 200k+
+    model)."""
+
+    @pytest.mark.asyncio
+    async def test_reads_the_real_context_length_from_api_show(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from primer.api.routers.providers import _probe_ollama_models
+
+        class FakeAsyncClient:
+            def __init__(self, *, host, headers=None):
+                pass
+
+            async def list(self):
+                return {"models": [{"model": "qwen2.5:7b"}]}
+
+            async def show(self, name):
+                assert name == "qwen2.5:7b"
+                return SimpleNamespace(modelinfo={
+                    "general.architecture": "qwen2",
+                    "qwen2.context_length": 131072,
+                    "qwen2.embedding_length": 3584,
+                })
+
+        monkeypatch.setattr("ollama.AsyncClient", FakeAsyncClient)
+        result = await _probe_ollama_models({"url": "http://localhost:11434"})
+        assert result == {
+            "models": [{"name": "qwen2.5:7b", "context_length": 131072}],
+        }
+
+    @pytest.mark.asyncio
+    async def test_missing_or_failed_show_leaves_context_length_unset(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from primer.api.routers.providers import _probe_ollama_models
+
+        class FakeAsyncClient:
+            def __init__(self, *, host, headers=None):
+                pass
+
+            async def list(self):
+                return {"models": [
+                    {"model": "no-info:latest"},
+                    {"model": "boom:latest"},
+                ]}
+
+            async def show(self, name):
+                if name == "no-info:latest":
+                    return SimpleNamespace(modelinfo={"general.architecture": "x"})
+                raise RuntimeError("model not pulled")
+
+        monkeypatch.setattr("ollama.AsyncClient", FakeAsyncClient)
+        result = await _probe_ollama_models({"url": "http://localhost:11434"})
+        assert result == {
+            "models": [{"name": "no-info:latest"}, {"name": "boom:latest"}],
+        }

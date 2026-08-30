@@ -136,7 +136,7 @@ function NV_FilesSidebar() {
         SH_api.fileUpload(con.wid, dest, b64).then(function () {
           con.toast("Uploaded " + dest);
           refetch();
-        }, function (err) { con.toast("Upload failed: " + err.message); });
+        }, function (err) { con.toast("Upload failed: " + (err.detail || err.message)); });
       };
       reader.readAsDataURL(f);
     });

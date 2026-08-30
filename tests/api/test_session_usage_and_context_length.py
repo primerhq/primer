@@ -52,7 +52,7 @@ async def _seed_session(fake_storage_provider, sid: str, *, binding=None):
 
 async def _seed_agent_and_profile(
     fake_storage_provider, *, agent_id="ag1", profile_id="mp-1",
-    context_length=128_000,
+    context_length=128_000, model_name="scripted-model",
 ):
     from primer.model.agent import Agent, AgentModel
     from primer.model.model_profile import ModelProfile
@@ -66,7 +66,7 @@ async def _seed_agent_and_profile(
     await fake_storage_provider.get_storage(ModelProfile).create(
         ModelProfile(
             id=profile_id, description="test profile",
-            provider_id="prov-1", model_name="scripted-model",
+            provider_id="prov-1", model_name=model_name,
             context_length=context_length,
         )
     )
@@ -170,3 +170,56 @@ async def test_context_length_null_when_profile_deleted(
     r = await client.get("/v1/sessions/s-4")
     assert r.status_code == 200, r.text
     assert r.json()["context_length"] is None
+
+
+@pytest.mark.asyncio
+async def test_context_length_null_for_the_legacy_seeded_value(
+    client: httpx.AsyncClient, app, fake_storage_provider,
+):
+    """Dogfood round 2: a profile whose stored context_length is exactly
+    the old discovery-seeded default (providers.py's now-removed
+    _DEFAULT_LLM_CONTEXT_LENGTH) is indistinguishable from "an operator
+    genuinely typed 32000" - the honest move is to treat it as unknown
+    rather than serve it as fact, which is what shipped a real user a
+    confident-looking wrong meter denominator."""
+    await _seed_session(fake_storage_provider, "s-6")
+    await _seed_agent_and_profile(
+        fake_storage_provider, context_length=32_000, model_name="llm-openchat-x",
+    )
+    ws = _FakeWorkspace()
+    ws.write(".state/sessions/s-6/messages.jsonl", _DONE_LINES)
+
+    async def _get(wid):
+        return ws if wid == "ws-1" else None
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+
+    r = await client.get("/v1/sessions/s-6")
+    assert r.status_code == 200, r.text
+    assert r.json()["context_length"] is None
+    # usage is unaffected - it does not go through this precedence rule.
+    assert r.json()["usage"]["total_input_tokens"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_context_length_prefers_known_model_fallback_over_a_stored_value(
+    client: httpx.AsyncClient, app, fake_storage_provider,
+):
+    """A curated known-model value (primer/agent/compaction.py's
+    MODEL_CONTEXT_FALLBACK) is real by construction and always wins,
+    even over a stored value that happens to differ (e.g. a profile
+    someone hand-edited to something wrong, or the legacy seed itself -
+    this table lookup is checked BEFORE the legacy-seed check)."""
+    await _seed_session(fake_storage_provider, "s-7")
+    await _seed_agent_and_profile(
+        fake_storage_provider, context_length=32_000, model_name="gpt-4o",
+    )
+    ws = _FakeWorkspace()
+    ws.write(".state/sessions/s-7/messages.jsonl", _DONE_LINES)
+
+    async def _get(wid):
+        return ws if wid == "ws-1" else None
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+
+    r = await client.get("/v1/sessions/s-7")
+    assert r.status_code == 200, r.text
+    assert r.json()["context_length"] == 128_000

@@ -141,12 +141,6 @@ def _make_reserved_delete_guard(reserved_ids: frozenset[str], kind: str):
     return _guard
 
 
-# Default seeded when a discovery probe cannot reveal a model's true
-# context window (the OpenAI /v1/models and Ollama /api/tags endpoints
-# do not include it). The form lets operators override per-model.
-_DEFAULT_LLM_CONTEXT_LENGTH = 32000
-
-
 # ---- Discovery body shapes -------------------------------------------------
 
 
@@ -788,16 +782,19 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
             f"{provider!r}; populate the models list manually or "
             f"use the UI's 'Suggest models' fallback.",
         )
-    # Neither Ollama's /api/tags, OpenAI's /v1/models, nor Anthropic's
-    # /v1/models exposes a per-model context window. LLMModel requires
-    # context_length, so seed a sane default the operator can override
-    # in the form. OpenRouter's catalogue carries context_length
-    # verbatim, so skip the default for that branch. Gemini reports
-    # inputTokenLimit for most models but not all, so seed the default
-    # only where the helper omitted it.
-    if provider in ("ollama", "openresponses", "openchat", "anthropic", "gemini"):
-        for m in result.get("models", []):
-            m.setdefault("context_length", _DEFAULT_LLM_CONTEXT_LENGTH)
+    # Dogfood round 2: a seeded fake (formerly a blanket 32000 here) is
+    # worse than an honest gap - it silently became the served
+    # context_length for a real deployment (a user's llm-openchat model
+    # profile carried it verbatim). Each probe helper above now reports
+    # a real per-model context_length when its upstream exposes one
+    # (_probe_openai_compatible_models' context_length/max_model_len/
+    # max_context_length check, _probe_ollama_models' per-model
+    # /api/show, _discover_gemini_models' inputTokenLimit,
+    # _discover_openrouter_models' verbatim catalogue value) and simply
+    # omits the key otherwise - Anthropic's /v1/models never exposes one
+    # at all. The operator fills an unknown value in on the profile
+    # form; a required field left blank is an honest prompt, not a
+    # confident-looking lie.
     return result
 
 
@@ -901,17 +898,43 @@ async def _probe_ollama_models(config: dict[str, Any]) -> dict:
         # ollama.AsyncClient does not expose aclose() in all versions;
         # rely on httpx's GC for cleanup.
         pass
-    # ollama.list() returns a ListResponse with .models[].model (the name).
-    # context_length is not exposed on the list endpoint; would need a
-    # per-model `client.show(name)` call. Skip — operators edit it in
-    # the form.
+    # ollama.list() returns a ListResponse with .models[].model (the
+    # name); context_length is not on that endpoint but IS on the
+    # per-model `/api/show` response (modelinfo's key naming is
+    # per-architecture - "llama.context_length", "qwen2.context_length",
+    # etc. - so the real one is found by suffix, not a fixed name). One
+    # extra call per model, but this only runs from the operator-
+    # initiated Fetch/Discover action, not a hot path.
     models = getattr(resp, "models", None) or resp.get("models", [])
     out: list[dict[str, Any]] = []
     for m in models:
         name = getattr(m, "model", None) or (m.get("model") if isinstance(m, dict) else None)
-        if name:
-            out.append({"name": name})
+        if not name:
+            continue
+        entry: dict[str, Any] = {"name": name}
+        context_length = await _ollama_model_context_length(client, name)
+        if context_length is not None:
+            entry["context_length"] = context_length
+        out.append(entry)
     return {"models": out}
+
+
+async def _ollama_model_context_length(client: Any, name: str) -> int | None:
+    """Best-effort real context window for one Ollama model, or None.
+
+    A single model's /api/show failing (unpulled, a transient error) must
+    not fail the whole discovery probe - it just means that one model's
+    context_length stays unknown, same as any other provider gap.
+    """
+    try:
+        info = await client.show(name)
+    except Exception:  # noqa: BLE001 — network/SDK paths, one model at a time
+        return None
+    model_info = getattr(info, "modelinfo", None) or {}
+    for key, value in model_info.items():
+        if key.endswith(".context_length") and isinstance(value, int) and value > 0:
+            return value
+    return None
 
 
 async def _probe_openai_compatible_models(config: dict[str, Any]) -> dict:
@@ -931,11 +954,25 @@ async def _probe_openai_compatible_models(config: dict[str, Any]) -> dict:
             f"openai-compatible probe failed: {type(exc).__name__}: {exc}",
         ) from exc
     items = data.get("data") or []
-    # OpenAI returns {data: [{id, ...}, ...]}. context_length isn't in
-    # the list response (it's model-specific; the chat-completions API
-    # returns it on a per-request error path). The UI seeds a default
-    # context_length and the operator can edit it.
-    return {"models": [{"name": m["id"]} for m in items if "id" in m]}
+    # Real OpenAI itself never exposes context_length on /v1/models (it
+    # is model-specific and only surfaces via the chat-completions
+    # error path), but the OpenAI-compatible SERVERS this probe usually
+    # actually talks to (vLLM, llama.cpp server, LM Studio, text-
+    # generation-webui) commonly report the model's real window
+    # directly on each list entry, just under different field names -
+    # use it when present rather than seeding a guess when it isn't.
+    out: list[dict[str, Any]] = []
+    for m in items:
+        if "id" not in m:
+            continue
+        entry: dict[str, Any] = {"name": m["id"]}
+        for key in ("context_length", "max_model_len", "max_context_length"):
+            value = m.get(key)
+            if isinstance(value, int) and value > 0:
+                entry["context_length"] = value
+                break
+        out.append(entry)
+    return {"models": out}
 
 
 # ---- CrossEncoderProvider router -------------------------------------------

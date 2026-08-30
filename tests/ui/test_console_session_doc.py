@@ -59,6 +59,17 @@ def test_session_state_chip_always_visible_in_the_header():
         assert state in chip
 
 
+def test_usage_meter_has_stable_testids_for_e2e():
+    """Dogfood round 2: added for Playwright coverage of the null-vs-real
+    context_length rendering - there was no hook to target the meter
+    reliably before this."""
+    header = DOC[DOC.index("function NV_SessionHeader"):
+                 DOC.index("function NV_Thought")]
+    assert 'data-testid="nv-usage"' in header
+    assert 'data-testid="nv-usage-label"' in header
+    assert "data-pct={pct}" in header
+
+
 def test_thought_seeds_open_from_live_expanded_and_reopens_on_it():
     """Phase 2 (01a04ddf): "thinking tokens stream live" - the CURRENTLY
     streaming reasoning part renders expanded by default (liveExpanded),
@@ -67,6 +78,33 @@ def test_thought_seeds_open_from_live_expanded_and_reopens_on_it():
     thought = DOC[DOC.index("function NV_Thought"):DOC.index("function NV_ToolBlock")]
     assert "React.useState(!!props.liveExpanded)" in thought
     assert "props.liveExpanded" in thought and "setOpen(true)" in thought
+
+
+def test_error_surfaces_prefer_the_rfc7807_detail_over_the_bare_title():
+    """Dogfood round 2 SEV add-on: the console's error toasts/banners
+    read err.message, which ApiError (ui/foundation/api.js) sets from
+    the problem+json "title" only ("Conflict") - the actual explanation
+    the backend already threads through (exc.message -> "detail",
+    primer/api/errors.py) never rendered, so a real 409 showed the user
+    a bare "Conflict (req-...)" with no idea why. Every ApiError-
+    consuming site in this file must prefer err.detail, matching the
+    established `e.detail || e.message` convention nv-platform.jsx /
+    nv-system.jsx already used elsewhere - counting occurrences (rather
+    than a single "is present anywhere" check) catches a site that was
+    missed or a new one added the old way."""
+    assert DOC.count("err.detail || err.message") >= 9
+    # The two sites with an extra null-guard (err may be undefined) keep
+    # their guard but still prefer detail once err exists.
+    assert "(err && (err.detail || err.message))" in DOC
+    assert "(err && err.message)" not in DOC, (
+        "a guarded site reverted to title-only"
+    )
+    # The send-failure path feeds BOTH the inline banner (nv-composer-
+    # error) and the toast - the SEV's own report was exactly this path
+    # (a rewind's 409 on a busy session).
+    send_fn = DOC[DOC.index("function send() {"):]
+    send_fn = send_fn[:send_fn.index("\n  function micStart")]
+    assert '(err && (err.detail || err.message)) || "Steer failed"' in send_fn
 
 
 def test_composer_never_locks_and_dictation_never_sends():
@@ -780,9 +818,15 @@ def test_ask_card_answers_by_tool_call_id():
 
 
 def test_trace_is_a_split_not_an_overlay():
+    """The persistent trace SIDEBAR itself must stay a side panel, not a
+    modal - scoped to NV_TraceSplit's own body only (not the region up
+    to NV_Composer), since dogfood round 2 added a genuinely separate,
+    explicitly-requested scrim overlay (NV_TraceMaximize, the "maximize"
+    view) right after it in this file; that one opening a scrim is by
+    design, not a regression of this invariant."""
     assert "nv-trace-split" in DOC
     trace = DOC[DOC.index("function NV_TraceSplit"):]
-    trace = trace[:trace.index("function NV_Composer")]
+    trace = trace[:trace.index("function NV_TraceMaximize")]
     assert "nv-scrim" not in trace, "the trace opens BESIDE the transcript"
     assert "SH_api.timeline" in DOC
 
@@ -943,23 +987,13 @@ def test_trace_header_label_via_mini_racer():
     assert multi == "trace · 2 calls · 8s"
 
 
-def test_trace_row_expand_toggle_via_mini_racer():
-    """01a052a5 item 3: trace rows are expandable (a tool_call's own
-    arguments, previously dropped by the backend - primer/session/
-    timeline.py now includes them, tests/session/test_timeline_builder.py
-    pins that half). Same "stub React, run the real component" style as
-    test_divider_renders_as_a_rule_not_a_bubble_via_mini_racer, extended
-    to stub useState too (NV_TraceRow's one hook) since a real render
-    needs a controllable open/closed value, not just element-tree shape.
-
-    Also catches, by ACTUALLY branching on n.kind, two defects
-    source-grepping would miss: the icon check compared against the
-    literal string "tool" while the backend has only ever emitted
-    "tool_call" (the wrench glyph never rendered), and the args check
-    read n.args while the backend (and the new field) is n.arguments.
-    """
-    import json
-
+def _trace_mini_racer_ctx():
+    """Shared setup for the trace-row MiniRacer tests below: transpiles
+    the helpers + NV_TraceLine + NV_TraceSplit + NV_TraceMaximize +
+    NV_TraceRow as one block (function declarations are inert until
+    called, so NV_TraceSplit/NV_TraceMaximize's own hook/fetch bodies
+    never execute - only NV_TraceLine and NV_TraceRow are actually
+    invoked below) against a stub React + SH_shortTime."""
     from py_mini_racer import MiniRacer
 
     from primer.api._jsx_bundle import JSXBundler
@@ -967,7 +1001,7 @@ def test_trace_row_expand_toggle_via_mini_racer():
     bundler = JSXBundler(
         ui_dir=UI, babel_source=(UI / "vendor" / "babel.min.js").read_text(encoding="utf-8"),
     )
-    start = DOC.index("function NV_TraceRow")
+    start = DOC.index("function NV_traceElapsed")
     end = DOC.index("function NV_StatusStrip")
     transpiled = bundler._transform(DOC[start:end], "trace_row_test.jsx")
 
@@ -984,43 +1018,158 @@ def test_trace_row_expand_toggle_via_mini_racer():
             return [__openValue, function () {}];
           }
         };
+        function SH_shortTime(ts) { return ts ? "2:05 PM" : ""; }
+        function SH_traceHeaderLabel() { return "trace"; }
         """
     )
     ctx.eval(transpiled)
+    return ctx
 
-    def render(node, depth, index, open_):
-        ctx.eval("__openValue = " + ("true" if open_ else "false") + ";")
+
+def test_trace_line_is_one_line_and_never_expandable_via_mini_racer():
+    """Dogfood round 2: the sidebar's own row (NV_TraceLine) is a plain
+    div, always - it never becomes a button/toggle regardless of node
+    kind, and it renders the literal "[T]"/"[A]" glyph plus timestamp
+    plus label plus elapsed the ticket specifies. Real execution (not
+    source-grepping) is what actually proves clicking a sidebar row
+    can't do anything - a stray onClick would source-grep clean."""
+    import json
+
+    ctx = _trace_mini_racer_ctx()
+
+    def render(node, depth, index, agent_name=None, is_graph=False):
         ctx.eval(
-            "var __out = NV_TraceRow({node: " + json.dumps(node)
-            + ", depth: " + json.dumps(depth)
-            + ", index: " + json.dumps(index) + "});"
+            "var __out = NV_TraceLine({node: " + json.dumps(node)
+            + ", depth: " + json.dumps(depth) + ", index: " + json.dumps(index)
+            + ", agentName: " + json.dumps(agent_name)
+            + ", isGraph: " + json.dumps(is_graph) + "});"
         )
         return json.loads(ctx.eval("JSON.stringify(__out)"))
 
-    tool_call = {"kind": "tool_call", "label": "bash",
-                 "arguments": {"command": "ls"}, "duration_ms": 12}
+    tool = render(
+        {"kind": "tool_call", "name": "bash", "ts": "2026-08-30T10:00:00Z",
+         "duration_ms": 1200},
+        0, 0,
+    )
+    line = tool["children"][0]
+    assert line["type"] == "div", "the sidebar row must never be a button"
+    assert "onClick" not in line["props"]
+    tree = json.dumps(tool, ensure_ascii=False)
+    assert '"T"' in tree
+    assert "nv-trace-glyph" in tree
+    assert '"data-kind": "tool"' in tree
+    assert "bash" in tree
+    assert "1s" in tree
+    assert "nv-trace-args" not in tree, "the sidebar never shows arguments inline"
+
+    agent = render(
+        {"kind": "llm_call", "model": "gpt-4o", "duration_ms": 900}, 0, 1,
+        agent_name="operator",
+    )
+    tree = json.dumps(agent, ensure_ascii=False)
+    assert '"A"' in tree
+    assert '"data-kind": "agent"' in tree
+    assert "operator" in tree, "a plain agent-bound session shows its own agent name"
+
+
+def test_trace_line_agent_name_falls_back_to_node_attribution_for_graphs():
+    """A graph session has no single agent - the ticket's own fallback
+    rule: node attribution (node_id) first, then the model string."""
+    import json
+
+    ctx = _trace_mini_racer_ctx()
+
+    def render(node):
+        ctx.eval(
+            "var __out = NV_TraceLine({node: " + json.dumps(node)
+            + ', depth: 0, index: 0, agentName: "checkout-graph", isGraph: true});'
+        )
+        return json.loads(ctx.eval("JSON.stringify(__out)"))
+
+    with_node = render({"kind": "llm_call", "node_id": "validate-step", "model": "gpt-4o"})
+    assert "validate-step" in json.dumps(with_node)
+
+    without_node = render({"kind": "llm_call", "model": "gpt-4o"})
+    tree = json.dumps(without_node, ensure_ascii=False)
+    assert "gpt-4o" in tree
+    assert "checkout-graph" not in tree, (
+        "the raw graph id is not a real agent name - the model is a "
+        "closer real answer than the graph's own id"
+    )
+
+
+def test_trace_row_expand_toggle_via_mini_racer():
+    """The maximize overlay's own row (NV_TraceRow) IS a toggle now for
+    both tool_call and llm_call kinds - expanding a tool_call shows BOTH
+    its arguments and its paired result (timeline.py's tool_result
+    branch now attaches a size-capped result alongside status/
+    duration_ms), and expanding an llm_call shows its own call metadata.
+    Same "stub React, run the real component" style as
+    test_divider_renders_as_a_rule_not_a_bubble_via_mini_racer, extended
+    to stub useState (NV_TraceRow's one hook) since a real render needs
+    a controllable open/closed value, not just element-tree shape.
+    """
+    import json
+
+    ctx = _trace_mini_racer_ctx()
+
+    def render(node, depth, index, open_, agent_name=None, is_graph=False):
+        ctx.eval("__openValue = " + ("true" if open_ else "false") + ";")
+        ctx.eval(
+            "var __out = NV_TraceRow({node: " + json.dumps(node)
+            + ", depth: " + json.dumps(depth) + ", index: " + json.dumps(index)
+            + ", agentName: " + json.dumps(agent_name)
+            + ", isGraph: " + json.dumps(is_graph) + "});"
+        )
+        return json.loads(ctx.eval("JSON.stringify(__out)"))
+
+    tool_call = {
+        "kind": "tool_call", "name": "bash", "arguments": {"command": "ls"},
+        "duration_ms": 12000,
+        "result": {"output": "file1\nfile2", "error": False, "truncated": False},
+    }
 
     closed = render(tool_call, 0, 0, open_=False)
     line = closed["children"][0]
-    assert line["type"] == "button", "a row with real arguments must be a toggle"
+    assert line["type"] == "button", "a tool_call row must be a toggle"
     tree = json.dumps(closed, ensure_ascii=False)
     assert "▸" in tree
-    assert "⚙" in tree, "tool_call must get the wrench glyph, not the '·' fallback"
-    assert "nv-trace-args" not in tree, "collapsed must not render the args block"
+    assert '"T"' in tree, "tool_call must get the [T] glyph"
+    assert "nv-trace-args" not in tree, "collapsed must not render the detail block"
 
     opened = render(tool_call, 0, 0, open_=True)
     tree = json.dumps(opened, ensure_ascii=False)
     assert "▾" in tree
-    assert '"command": "ls"' in tree or '\\"command\\": \\"ls\\"' in tree
+    assert '"command": "ls"' in tree or '\\"command\\": \\"ls\\"' in tree, (
+        "arguments must be in the expanded body"
+    )
+    assert "file1" in tree, "the result must ALSO be in the expanded body"
 
-    no_args = render({"kind": "tool_call", "label": "ping", "arguments": {}}, 0, 1, open_=False)
-    line = no_args["children"][0]
-    assert line["type"] == "div", "no arguments means nothing to expand"
+    no_result_yet = render(
+        {"kind": "tool_call", "name": "grep", "arguments": {}, "result": None},
+        0, 1, open_=True,
+    )
+    assert "no result yet" in json.dumps(no_result_yet, ensure_ascii=False)
 
-    llm = render({"kind": "llm_call", "label": "gpt-4o"}, 0, 2, open_=False)
+    llm = render(
+        {"kind": "llm_call", "model": "gpt-4o", "profile_id": "mp-1",
+         "input_tokens": 10, "output_tokens": 5},
+        0, 2, open_=False, agent_name="operator",
+    )
+    line = llm["children"][0]
+    assert line["type"] == "button", "llm_call is now ALSO expandable"
     tree = json.dumps(llm, ensure_ascii=False)
-    assert "◇" in tree
-    assert "⚙" not in tree
+    assert '"A"' in tree
+    assert "operator" in tree
+
+    opened_llm = render(
+        {"kind": "llm_call", "model": "gpt-4o", "profile_id": "mp-1",
+         "input_tokens": 10, "output_tokens": 5},
+        0, 2, open_=True, agent_name="operator",
+    )
+    tree = json.dumps(opened_llm, ensure_ascii=False)
+    assert '"model": "gpt-4o"' in tree or '\\"model\\": \\"gpt-4o\\"' in tree
+    assert '"profile_id": "mp-1"' in tree or '\\"profile_id\\": \\"mp-1\\"' in tree
 
 
 def test_trace_split_uses_the_enriched_header_label():

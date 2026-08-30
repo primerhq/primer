@@ -81,6 +81,7 @@ def test_tool_result_folds_into_its_call():
     assert tool["status"] == "ok"
     assert tool["duration_ms"] == 1000
     assert tool["arguments"] == {"command": "ls -la"}
+    assert tool["result"] == {"output": "ok", "error": False, "truncated": False}
 
 
 def test_errored_tool_result_marks_the_call():
@@ -104,6 +105,37 @@ def test_tool_call_with_no_arguments_key_defaults_to_empty_dict():
     ]
     tl = build_turn_timeline(message_lines=lines, turn_log_lines=[], turn_no=0)
     assert tl["children"][0]["arguments"] == {}
+
+
+def test_tool_call_with_no_result_yet_has_a_null_result():
+    """A still-open call (no paired tool_result record yet) must carry
+    the key with a null value, not omit it - dogfood round 2's trace
+    overlay reads result unconditionally for every tool_call node."""
+    lines = [_rec(1, "tool_call", T0, id="c1", name="bash", arguments={})]
+    tl = build_turn_timeline(message_lines=lines, turn_log_lines=[], turn_no=0)
+    assert tl["children"][0]["result"] is None
+
+
+def test_tool_result_output_is_capped_and_flagged_when_oversized():
+    """Dogfood round 2: the trace overlay's expanded form shows results
+    alongside arguments - a tool's real output (a read's full file, a
+    long command's stdout) can be arbitrarily large, and this is a debug
+    view riding the timeline response, not the transcript's own
+    paginated rendering, so it needs its own bound."""
+    from primer.session.timeline import _RESULT_OUTPUT_CAP
+
+    huge = "x" * (_RESULT_OUTPUT_CAP + 500)
+    lines = [
+        _rec(1, "tool_call", T0, id="c1", name="read", arguments={}),
+        _rec(2, "tool_result", T1, call_id="c1", output=huge, error=False),
+        _rec(3, "done", T1, stop_reason="stop"),
+    ]
+    tl = build_turn_timeline(message_lines=lines, turn_log_lines=[], turn_no=0)
+    result = tl["children"][0]["result"]
+    assert len(result["output"]) == _RESULT_OUTPUT_CAP
+    assert result["output"] == huge[:_RESULT_OUTPUT_CAP]
+    assert result["truncated"] is True
+    assert result["error"] is False
 
 
 def test_client_action_is_a_leaf_under_the_call_it_delivered():

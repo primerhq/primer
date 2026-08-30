@@ -87,12 +87,12 @@ function NV_lastTurnStartMs(recordsBySeq, session) {
 // ---------------------------------------------------------------------------
 function NV_doInterrupt(wid, sid, refetchAll, toast) {
   return SH_api.interrupt(wid, sid).then(refetchAll, function (err) {
-    toast("Interrupt failed: " + err.message);
+    toast("Interrupt failed: " + (err.detail || err.message));
   });
 }
 function NV_doClose(wid, sid, refetchAll, toast) {
   return SH_api.cancel(wid, sid).then(refetchAll, function (err) {
-    toast("Close failed: " + err.message);
+    toast("Close failed: " + (err.detail || err.message));
   });
 }
 function NV_doRename(wid, sid, currentName, refetchAll, toast) {
@@ -101,7 +101,8 @@ function NV_doRename(wid, sid, currentName, refetchAll, toast) {
   }).then(function (name) {
     if (name == null) return;
     return SH_api.renameSession(wid, sid, name || null).then(
-      refetchAll, function (err) { toast("Rename failed: " + err.message); }
+      refetchAll,
+      function (err) { toast("Rename failed: " + (err.detail || err.message)); }
     );
   });
 }
@@ -120,7 +121,7 @@ function NV_doSplitRight(con, sid) {
 // overflow row both call this directly.
 function NV_doCompact(wid, sid, refetchAll, toast) {
   return SH_api.compact(wid, sid).then(refetchAll, function (err) {
-    toast("Compact failed: " + err.message);
+    toast("Compact failed: " + (err.detail || err.message));
   });
 }
 // 01a052a5: the target is already known (whichever message's icon was
@@ -128,7 +129,7 @@ function NV_doCompact(wid, sid, refetchAll, toast) {
 // step needed the way the old multi-candidate overlay required.
 function NV_doRewind(wid, sid, toSeq, refetchAll, toast) {
   return SH_api.rewind(wid, sid, toSeq).then(refetchAll, function (err) {
-    toast("Rewind failed: " + err.message);
+    toast("Rewind failed: " + (err.detail || err.message));
   });
 }
 // A rewind target must be a currently-visible user_input, strictly
@@ -264,7 +265,7 @@ function NV_BindingChip(props) {
                         con.toast("Binding switched — applies at the turn boundary");
                         props.onChanged();
                       }, function (err) {
-                        con.toast("Switch failed: " + err.message);
+                        con.toast("Switch failed: " + (err.detail || err.message));
                       });
                   }}>
                   <svg width="12" height="12" viewBox="0 0 12 12"
@@ -334,7 +335,7 @@ function NV_SessionHeader(props) {
     if (name == null || name === (session && session.name)) return;
     SH_api.renameSession(con.wid, sid, name || null).then(
       props.onChanged,
-      function (err) { con.toast("Rename failed: " + err.message); }
+      function (err) { con.toast("Rename failed: " + (err.detail || err.message)); }
     );
   }
 
@@ -363,11 +364,14 @@ function NV_SessionHeader(props) {
           {(session && session.name) || sid}
         </div>
       )}
-      <div className="nv-usage" title="context used">
+      <div className="nv-usage" title="context used"
+        data-testid="nv-usage" data-pct={pct}>
         <div className="nv-usage-bar">
           <div className="nv-usage-fill" style={{ width: pct + "%" }} />
         </div>
-        <span className="nv-usage-label">{usage.label || ""}</span>
+        <span className="nv-usage-label" data-testid="nv-usage-label">
+          {usage.label || ""}
+        </span>
       </div>
       {isGraph ? (
         <button type="button" className="nv-graphview-btn"
@@ -653,7 +657,7 @@ function NV_DecisionCard(props) {
             onClick={function () {
               SH_api.approve(item.sessionId, item.toolCallId).then(
                 props.onResolved,
-                function (err) { con.toast("Approve failed: " + err.message); }
+                function (err) { con.toast("Approve failed: " + (err.detail || err.message)); }
               );
             }}>Approve</button>
           <button type="button" className="nv-btn-reject"
@@ -662,7 +666,7 @@ function NV_DecisionCard(props) {
               if (!rejOpen) { setRej(true); return; }
               SH_api.reject(item.sessionId, item.toolCallId, reason).then(
                 props.onResolved,
-                function (err) { con.toast("Reject failed: " + err.message); }
+                function (err) { con.toast("Reject failed: " + (err.detail || err.message)); }
               );
             }}>Reject with feedback</button>
           <span className="nv-card-note">
@@ -882,6 +886,60 @@ function NV_artifactFor(row, info) {
   return null;
 }
 
+// Dogfood round 2: [T]/[A] rows read "glyph  timestamp  label  elapsed" -
+// shared by the sidebar's plain one-liner (NV_TraceLine) and the
+// maximize overlay's expandable one (NV_TraceRow), so the two surfaces
+// never drift on what a row actually says.
+function NV_traceElapsed(ms) {
+  return ms != null ? Math.round(ms / 1000) + "s" : "";
+}
+// llm_call nodes carry no agent id of their own (only profile_id/model) -
+// a plain agent-bound session runs as exactly one agent, so the
+// session's own binding IS the answer for every row. A graph session has
+// no single answer (each node can be a different step/sub-agent), so
+// the node's own attribution (node_id) or, failing that, the model
+// string, is the closest real thing to show instead of a misleading
+// constant.
+function NV_traceAgentName(node, sessionAgentName, isGraph) {
+  if (!isGraph && sessionAgentName) return sessionAgentName;
+  return node.node_id || node.model || sessionAgentName || "agent";
+}
+function NV_traceRowLabel(node, agentName, isGraph) {
+  if (node.kind === "tool_call") return node.name || "tool";
+  if (node.kind === "llm_call") return NV_traceAgentName(node, agentName, isGraph);
+  return node.label || node.kind || "";
+}
+function NV_traceGlyph(node) {
+  if (node.kind === "tool_call") return { char: "T", kind: "tool" };
+  if (node.kind === "llm_call") return { char: "A", kind: "agent" };
+  return null;
+}
+
+// The sidebar's own row: always one line, never expandable (dogfood
+// round 2 - a click here used to toggle an inline arguments block;
+// that detail view moved to the maximize overlay below).
+function NV_TraceLine(props) {
+  var n = props.node;
+  var glyph = NV_traceGlyph(n);
+  return (
+    <div className="nv-trace-row" style={{ paddingLeft: props.depth * 12 }}>
+      <div className="nv-trace-line" data-testid={"nv-trace-line:" + props.index}>
+        {glyph ? (
+          <span className="nv-trace-glyph" data-kind={glyph.kind}>{glyph.char}</span>
+        ) : (
+          <span className="nv-trace-icon">{n.kind === "node" ? "◆" : "·"}</span>
+        )}
+        <span className="nv-trace-ts">{SH_shortTime(n.ts)}</span>
+        <span className="nv-trace-label">
+          {NV_traceRowLabel(n, props.agentName, props.isGraph)}
+        </span>
+        <span style={{ flex: 1 }} />
+        <span className="nv-trace-dur">{NV_traceElapsed(n.duration_ms)}</span>
+      </div>
+    </div>
+  );
+}
+
 function NV_TraceSplit(props) {
   var timeline = window.primerApi.useResource(
     SH_api.keys.timeline(props.sid, props.turnNo),
@@ -899,64 +957,138 @@ function NV_TraceSplit(props) {
     return out;
   }
   var flatRows = flat(rows, 0, []);
+  var maxState = React.useState(false);
+  var maximized = maxState[0];
+  var setMaximized = maxState[1];
   return (
     <div className="nv-trace-split" data-testid="nv-trace-split">
       <div className="nv-trace-head">
         <span>{SH_traceHeaderLabel(props.turnNo, props.turnRows)}</span>
         <span style={{ flex: 1 }} />
+        <button type="button" className="nv-rail-iconbtn" title="Maximize"
+          data-testid="nv-trace-maximize-open"
+          onClick={function () { setMaximized(true); }}>⤢</button>
         <button type="button" className="nv-rail-iconbtn"
           data-testid="nv-trace-close"
           onClick={props.onClose}>×</button>
       </div>
       <div className="nv-trace-body">
         {flatRows.map(function (r, i) {
-          return <NV_TraceRow key={i} index={i} node={r.node} depth={r.depth} />;
+          return <NV_TraceLine key={i} index={i} node={r.node} depth={r.depth}
+            agentName={props.agentName} isGraph={props.isGraph} />;
         })}
         <div className="nv-trace-foot">
-          The trace is the only place raw tool arguments appear. It opens
-          beside the transcript — comparison never goes in an overlay.
+          Maximize for full arguments and results — the sidebar stays a
+          quick one-line scan.
+        </div>
+      </div>
+      {maximized ? (
+        <NV_TraceMaximize flatRows={flatRows} turnNo={props.turnNo}
+          turnRows={props.turnRows} agentName={props.agentName}
+          isGraph={props.isGraph}
+          onClose={function () { setMaximized(false); }} />
+      ) : null}
+    </div>
+  );
+}
+
+// The maximize overlay: every entry, expandable, showing BOTH arguments
+// AND the paired result for a tool_call (timeline.py's tool_result
+// branch now attaches a size-capped result alongside the existing
+// status/duration_ms) - the sidebar's own one-liners never carried
+// either, by design (dogfood round 2).
+function NV_TraceMaximize(props) {
+  return (
+    <div className="nv-scrim" data-testid="nv-trace-maximize-scrim"
+      onClick={props.onClose}>
+      <div className="nv-overlay-panel nv-trace-maximize" data-wide="true"
+        data-testid="nv-trace-maximize"
+        role="dialog" aria-label="Trace detail"
+        onClick={function (ev) { ev.stopPropagation(); }}>
+        <div className="nv-overlay-head">
+          <h3 className="nv-overlay-title">
+            {SH_traceHeaderLabel(props.turnNo, props.turnRows)}
+          </h3>
+          <span style={{ flex: 1 }} />
+          <button type="button" className="nv-rail-iconbtn"
+            data-testid="nv-trace-maximize-close"
+            onClick={props.onClose}>×</button>
+        </div>
+        <div className="nv-trace-maximize-body">
+          {props.flatRows.length ? props.flatRows.map(function (r, i) {
+            return <NV_TraceRow key={i} index={i} node={r.node} depth={r.depth}
+              agentName={props.agentName} isGraph={props.isGraph} />;
+          }) : (
+            <div className="nv-rewind-empty">No entries in this turn.</div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-// 01a052a5 item 3: a row's own component (not inline in the .map above) -
-// React hooks cannot live inside a callback, and each row's expand state
-// is independent (mirrors NV_ToolBlock's collapsed-by-default toggle).
+// The overlay's own row: expandable, showing whatever detail its kind
+// actually has - arguments+result for a tool_call, the call metadata
+// for an llm_call. Nothing else (a graph "node" boundary, a
+// client_action leaf) has any further detail to show, so those stay
+// one-line even here.
 function NV_TraceRow(props) {
   var openState = React.useState(false);
   var open = openState[0];
   var setOpen = openState[1];
   var n = props.node;
-  var hasArgs = n.kind === "tool_call"
-    && n.arguments && Object.keys(n.arguments).length > 0;
-  var Line = hasArgs ? "button" : "div";
-  var lineProps = hasArgs
+  var hasDetail = n.kind === "tool_call" || n.kind === "llm_call";
+  var Line = hasDetail ? "button" : "div";
+  var lineProps = hasDetail
     ? {
       type: "button",
       "data-testid": "nv-trace-row-toggle:" + props.index,
       onClick: function () { setOpen(!open); },
     }
     : {};
+  var glyph = NV_traceGlyph(n);
   return (
     <div className="nv-trace-row" style={{ paddingLeft: props.depth * 12 }}>
       <Line className="nv-trace-line" {...lineProps}>
-        {hasArgs ? (
+        {hasDetail ? (
           <span className="nv-thought-mark">{open ? "▾" : "▸"}</span>
         ) : null}
-        <span className="nv-trace-icon">
-          {n.kind === "llm_call" ? "◇" : n.kind === "tool_call" ? "⚙" : "·"}
+        {glyph ? (
+          <span className="nv-trace-glyph" data-kind={glyph.kind}>{glyph.char}</span>
+        ) : (
+          <span className="nv-trace-icon">{n.kind === "node" ? "◆" : "·"}</span>
+        )}
+        <span className="nv-trace-ts">{SH_shortTime(n.ts)}</span>
+        <span className="nv-trace-label">
+          {NV_traceRowLabel(n, props.agentName, props.isGraph)}
         </span>
-        <span className="nv-trace-label">{n.label || n.kind || ""}</span>
         <span style={{ flex: 1 }} />
-        <span className="nv-trace-dur">
-          {n.duration_ms != null ? n.duration_ms + "ms" : ""}
-        </span>
+        <span className="nv-trace-dur">{NV_traceElapsed(n.duration_ms)}</span>
       </Line>
-      {open && hasArgs ? (
+      {open && n.kind === "tool_call" ? (
+        <div className="nv-trace-detail">
+          <div className="nv-trace-detail-sec">arguments</div>
+          <pre className="nv-trace-args">
+            {JSON.stringify(n.arguments || {}, null, 2)}
+          </pre>
+          <div className="nv-trace-detail-sec">result</div>
+          {n.result ? (
+            <pre className="nv-trace-args" data-error={n.result.error ? "true" : "false"}>
+              {n.result.output}
+              {n.result.truncated ? "\n… (truncated)" : ""}
+            </pre>
+          ) : (
+            <div className="nv-trace-empty">(no result yet)</div>
+          )}
+        </div>
+      ) : null}
+      {open && n.kind === "llm_call" ? (
         <pre className="nv-trace-args">
-          {JSON.stringify(n.arguments, null, 2)}
+          {JSON.stringify({
+            model: n.model, profile_id: n.profile_id,
+            provider_id: n.provider_id, input_tokens: n.input_tokens,
+            output_tokens: n.output_tokens,
+          }, null, 2)}
         </pre>
       ) : null}
     </div>
@@ -1097,7 +1229,7 @@ function NV_Composer(props) {
           setStatus("done");
         }, function (err) {
           setStatus("error");
-          con.toast("Attach failed: " + ((err && err.message) || "upload error"));
+          con.toast("Attach failed: " + ((err && (err.detail || err.message)) || "upload error"));
         });
       };
       reader.readAsDataURL(f);
@@ -1153,7 +1285,7 @@ function NV_Composer(props) {
       props.onSendStarted();
     }, function (err) {
       setSending(false);
-      var msg = (err && err.message) ? err.message : "Steer failed";
+      var msg = (err && (err.detail || err.message)) || "Steer failed";
       var rid = (err && err.requestId) ? " (" + err.requestId + ")" : "";
       setSendErr(msg + rid);
       con.toast("Steer failed: " + msg);
@@ -2357,6 +2489,7 @@ function NV_SessionDoc(props) {
         {traceTurn != null ? (
           <NV_TraceSplit sid={sid} turnNo={traceTurn}
             turnRows={turnRowsFor(traceTurn)}
+            agentName={agentId} isGraph={!!graphId}
             onClose={function () { setTraceTurn(null); }} />
         ) : null}
       </div>
