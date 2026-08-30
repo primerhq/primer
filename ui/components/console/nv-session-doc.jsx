@@ -1059,6 +1059,55 @@ function NV_Composer(props) {
   var sendErr = sendErrState[0];
   var setSendErr = sendErrState[1];
   var inputRef = React.useRef(null);
+  // 01a052a5 item 5: zero-backend attachments - reuses the SAME upload
+  // primitive nv-files-sidebar.jsx's own Upload/drag-drop already calls
+  // (SH_api.fileUpload -> PUT .../files, base64 - binary-safe, any file
+  // type). What's new here is composer-local: a pending list rendered as
+  // removable chips, and folding each DONE upload's path into the sent
+  // text as a plain "Attached file: {path}" line the agent's existing
+  // file tools (read/glob/...) already act on - no message-schema
+  // change, no ImagePart/parts-array wiring (that's the separate,
+  // explicitly-filed vision-attachments design task).
+  var attachState = React.useState([]);
+  var attachments = attachState[0];
+  var setAttachments = attachState[1];
+  var attachInputRef = React.useRef(null);
+  var attachmentsPending = attachments.some(function (a) {
+    return a.status === "uploading";
+  });
+
+  function attachFiles(fileList) {
+    Array.prototype.slice.call(fileList || []).forEach(function (f) {
+      var token = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+      var dest = "uploads/" + token + "-" + f.name;
+      setAttachments(function (prev) {
+        return prev.concat([{ id: token, name: f.name, path: dest, status: "uploading" }]);
+      });
+      function setStatus(status) {
+        setAttachments(function (prev) {
+          return prev.map(function (a) {
+            return a.id === token ? Object.assign({}, a, { status: status }) : a;
+          });
+        });
+      }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var b64 = String(reader.result).split(",")[1] || "";
+        SH_api.fileUpload(con.wid, dest, b64).then(function () {
+          setStatus("done");
+        }, function (err) {
+          setStatus("error");
+          con.toast("Attach failed: " + ((err && err.message) || "upload error"));
+        });
+      };
+      reader.readAsDataURL(f);
+    });
+  }
+  function removeAttachment(id) {
+    setAttachments(function (prev) {
+      return prev.filter(function (a) { return a.id !== id; });
+    });
+  }
 
   function grow() {
     var el = inputRef.current;
@@ -1069,7 +1118,18 @@ function NV_Composer(props) {
 
   function send() {
     var text = String(val || "").trim();
-    if (!text || sending) return;
+    var readyAttachments = attachments.filter(function (a) {
+      return a.status === "done";
+    });
+    if ((!text && !readyAttachments.length) || sending || attachmentsPending) {
+      return;
+    }
+    // Attachment references are plain text, folded in here rather than
+    // a new message-part type - see the attachState comment above.
+    var attachLines = readyAttachments.map(function (a) {
+      return "Attached file: " + a.path;
+    }).join("\n");
+    var fullText = attachLines ? (text ? text + "\n\n" + attachLines : attachLines) : text;
     setSending(true);
     setSendErr(null);
     // The store owns the optimistic row and the steer POST; it removes the
@@ -1077,14 +1137,17 @@ function NV_Composer(props) {
     // text + shows the inline error (P0 send-failure behaviour).
     var clientId = "steer-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
     var promise = typeof props.onSend === "function"
-      ? props.onSend(text, clientId)
-      : SH_api.steer(con.wid, props.sid, text);
+      ? props.onSend(fullText, clientId)
+      : SH_api.steer(con.wid, props.sid, fullText);
     promise.then(function () {
       setVal("");
       // Clear only on success - a failed send restores the typed text
       // (P0 behaviour, untouched below) and the draft must restore with
-      // it, so a retry after a tab switch still has what was typed.
+      // it, so a retry after a tab switch still has what was typed. The
+      // same restore-on-failure now applies to attachments for free -
+      // they are only cleared in this success branch.
       delete NV_DRAFTS[props.sid];
+      setAttachments([]);
       setSending(false);
       grow();
       props.onSendStarted();
@@ -1215,11 +1278,40 @@ function NV_Composer(props) {
           <span className="nv-status-verb">{props.waitNote}</span>
         </div>
       ) : null}
+      {attachments.length ? (
+        <div className="nv-attach-chips" data-testid="nv-attach-chips">
+          {attachments.map(function (a) {
+            return (
+              <span key={a.id} className="nv-attach-chip nv-chip-pill"
+                data-status={a.status} data-testid={"nv-attach-chip:" + a.id}>
+                <span className="nv-attach-chip-name">{a.name}</span>
+                {a.status === "uploading" ? (
+                  <span className="nv-attach-chip-status">uploading…</span>
+                ) : null}
+                {a.status === "error" ? (
+                  <span className="nv-attach-chip-status">failed</span>
+                ) : null}
+                <button type="button" className="nv-attach-chip-remove"
+                  title="Remove attachment"
+                  data-testid={"nv-attach-remove:" + a.id}
+                  onClick={function () { removeAttachment(a.id); }}>×</button>
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
       <div className="nv-composer-row">
+        <input ref={attachInputRef} type="file" multiple
+          style={{ display: "none" }}
+          data-testid="nv-attach-input"
+          onChange={function (ev) {
+            attachFiles(ev.target.files);
+            ev.target.value = "";
+          }} />
         <button type="button" className="nv-composer-iconbtn" title="Attach"
           data-testid="nv-attach"
           onClick={function () {
-            con.toast("Attachments land with the upload flow polish.");
+            if (attachInputRef.current) attachInputRef.current.click();
           }}>
           <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
             stroke="currentColor" strokeWidth="1.3">
@@ -1299,7 +1391,7 @@ function NV_Composer(props) {
         ) : null}
         <button type="button" className="nv-send-btn" data-testid="nv-send"
           data-mode={props.running ? "queue" : "send"}
-          disabled={sending}
+          disabled={sending || attachmentsPending}
           onClick={send}>{sending ? "Sending…"
             : (props.running ? (props.queueLabel || "Queue") : "Send")}</button>
       </div>
