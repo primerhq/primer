@@ -461,6 +461,34 @@ def test_text_delta_for_an_already_finalized_part_is_still_a_no_op() -> None:
     assert out["recordText"] == "final"
 
 
+def test_a_second_turns_part_does_not_collide_with_the_first_turns_finalized_one() -> None:
+    """01a04e02: primer/tap/delta.py's part_id() is now turn-scoped
+    (f"{node}:{kind}:{turn_no}") specifically because store.parts is kept
+    alive for the WHOLE SESSION (scrollback needs a finished turn's parts
+    to still render), not reset per turn - node+kind alone repeated
+    across turns on the same node, so turn 2's part_start landed on turn
+    1's entry (SS_apply's part_start guard only creates when the key is
+    ABSENT) and then found it already `final: true`, silently dropping
+    every one of turn 2's deltas. This pins the fix at the store layer:
+    two turns' parts, same node+kind, DIFFERENT turn-scoped ids, both
+    accumulate independently."""
+    ctx = _ctx()
+    rows = _transcript(ctx, "w16", "s16", [
+        {"class": "part_start", "session_id": "s16", "part_id": "x:text:1", "kind": "text"},
+        {"class": "text_delta", "session_id": "s16", "part_id": "x:text:1", "delta": "turn one"},
+        {"class": "assistant_token", "session_id": "s16", "seq": 1,
+         "payload": {"text": "turn one", "part_id": "x:text:1"}},
+        {"class": "part_start", "session_id": "s16", "part_id": "x:text:2", "kind": "text"},
+        {"class": "text_delta", "session_id": "s16", "part_id": "x:text:2", "delta": "turn two"},
+    ])
+    records = [r for r in rows if r["kind"] == "record"]
+    parts = [r for r in rows if r["kind"] == "part"]
+    assert len(records) == 1 and records[0]["text"] == "turn one"
+    assert len(parts) == 1, "turn 2's live part must render, not be dropped"
+    assert parts[0]["partId"] == "x:text:2"
+    assert parts[0]["text"] == "turn two"
+
+
 def test_phase_frame_lands_on_its_own_channel() -> None:
     """Phase 2 (01a04ddf): a PhaseFrame tap delta (primer/tap/delta.py,
     class:"phase") is turn-scoped, not part-scoped, and rides its own

@@ -268,6 +268,7 @@ def translate_stream_event(
     state: _CoalesceState,
     node_id: str | None = None,
     delta_sink: "_DeltaSink | None" = None,
+    turn_no: int = 0,
 ) -> "SessionMessageRecord | list[SessionMessageRecord] | None":
     """Per-event translation following the chat-selective persistence cadence.
 
@@ -301,6 +302,13 @@ def translate_stream_event(
 
     Worker code is responsible for synthetic kinds (USER_INPUT, CANCELLED,
     YIELDED, RESUMED) — not produced by this translator from LLM events.
+
+    ``turn_no`` (01a04e02) rides into every ``part_id()`` call below - the
+    caller's current turn (``session.turn_no``, stable for the whole of
+    ``run_one_session_turn``) so a text/reasoning part's id never repeats
+    across turns on the same node. Defaults to 0 for callers that don't
+    care (most unit tests); production call sites always pass the real
+    value.
     """
     now = _now_utc()
 
@@ -335,6 +343,7 @@ def translate_stream_event(
             return None
         return translate_stream_event(
             inner, state, node_id=event.extended.node_id, delta_sink=delta_sink,
+            turn_no=turn_no,
         )
 
     if isinstance(event, _GraphTransitionEvent):
@@ -399,7 +408,7 @@ def translate_stream_event(
         # Keyed by node_id so interleaved sibling-node text never mixes.
         state.text_buffers[node_id] = state.text_buffers.get(node_id, "") + event.text
         if delta_sink is not None:
-            delta_sink.on_delta(part_id(node_id, KIND_TEXT), KIND_TEXT, event.text)
+            delta_sink.on_delta(part_id(node_id, KIND_TEXT, turn_no), KIND_TEXT, event.text)
         return None
 
     if isinstance(event, ReasoningDelta):
@@ -410,7 +419,7 @@ def translate_stream_event(
         )
         if delta_sink is not None:
             delta_sink.on_delta(
-                part_id(node_id, KIND_REASONING), KIND_REASONING, event.text
+                part_id(node_id, KIND_REASONING, turn_no), KIND_REASONING, event.text
             )
         return None
 
@@ -444,7 +453,7 @@ def translate_stream_event(
                     kind=SessionMessageKind.REASONING,
                     payload={
                         "text": thought,
-                        "part_id": part_id(node_id, KIND_REASONING),
+                        "part_id": part_id(node_id, KIND_REASONING, turn_no),
                     },
                     node_id=node_id,
                     created_at=now,
@@ -459,7 +468,7 @@ def translate_stream_event(
                     kind=SessionMessageKind.ASSISTANT_TOKEN,
                     payload={
                         "text": buffered,
-                        "part_id": part_id(node_id, KIND_TEXT),
+                        "part_id": part_id(node_id, KIND_TEXT, turn_no),
                     },
                     node_id=node_id,
                     created_at=now,
@@ -482,8 +491,8 @@ def translate_stream_event(
         # The text/reasoning parts end here; the tool-input part ends here too
         # (its part_id is the tool call id). A part with no deltas is a no-op.
         if delta_sink is not None:
-            delta_sink.close(part_id(node_id, KIND_TEXT))
-            delta_sink.close(part_id(node_id, KIND_REASONING))
+            delta_sink.close(part_id(node_id, KIND_TEXT, turn_no))
+            delta_sink.close(part_id(node_id, KIND_REASONING, turn_no))
             delta_sink.close(event.id)
         if len(records) == 1:
             return records[0]
@@ -555,7 +564,7 @@ def translate_stream_event(
                     kind=SessionMessageKind.REASONING,
                     payload={
                         "text": thought,
-                        "part_id": part_id(node_id, KIND_REASONING),
+                        "part_id": part_id(node_id, KIND_REASONING, turn_no),
                     },
                     node_id=node_id,
                     created_at=now,
@@ -570,7 +579,7 @@ def translate_stream_event(
                     kind=SessionMessageKind.ASSISTANT_TOKEN,
                     payload={
                         "text": buffered,
-                        "part_id": part_id(node_id, KIND_TEXT),
+                        "part_id": part_id(node_id, KIND_TEXT, turn_no),
                     },
                     node_id=node_id,
                     created_at=now,
@@ -605,8 +614,8 @@ def translate_stream_event(
         state.reasoning_buffers.pop(node_id, None)
         state.last_usage_by.pop(node_id, None)
         if delta_sink is not None:
-            delta_sink.close(part_id(node_id, KIND_TEXT))
-            delta_sink.close(part_id(node_id, KIND_REASONING))
+            delta_sink.close(part_id(node_id, KIND_TEXT, turn_no))
+            delta_sink.close(part_id(node_id, KIND_REASONING, turn_no))
         if records:
             records.append(done_record)
             return records

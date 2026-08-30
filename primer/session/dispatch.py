@@ -419,6 +419,7 @@ async def run_one_session_turn(
     # run leaves only an opaque tool call in the transcript.
     _delegation_token = set_delegation_sink(DelegationRecorder(
         writer=writer, event_bus=deps.event_bus, session_id=session_id,
+        turn_no=session.turn_no,
     ))
 
     # Sessions currently executing a turn, by workspace. Six writers mutate
@@ -465,7 +466,8 @@ async def run_one_session_turn(
 
             # Translate StreamEvent → SessionMessageRecord(s)
             result = translate_stream_event(
-                event, coalesce_state, delta_sink=delta_buffer
+                event, coalesce_state, delta_sink=delta_buffer,
+                turn_no=session.turn_no,
             )
             if result is None:
                 # Check cancel between events even when nothing was produced

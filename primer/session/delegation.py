@@ -52,16 +52,19 @@ class DelegationRecorder:
     interleaving into one another's buffers.
     """
 
-    def __init__(self, *, writer: Any, event_bus: Any, session_id: str) -> None:
+    def __init__(
+        self, *, writer: Any, event_bus: Any, session_id: str, turn_no: int = 0,
+    ) -> None:
         self._writer = writer
         self._bus = event_bus
         self._session_id = session_id
+        self._turn_no = turn_no
         self._state = _CoalesceState()
 
     async def on_event(
         self, ev: Any, *, delegate_tool_call_id: str | None,
     ) -> None:
-        result = translate_stream_event(ev, self._state)
+        result = translate_stream_event(ev, self._state, turn_no=self._turn_no)
         if result is None:
             return  # coalesced or not persistable; most events land here
         records = result if isinstance(result, list) else [result]

@@ -113,10 +113,10 @@ async def test_buffer_part_lifecycle_emits_start_delta_end() -> None:
     calls = _RecordingPublish()
     buf = DeltaBuffer(session_id="s1", publish=calls)
 
-    buf.on_delta(part_id(None, "text"), "text", "Hel")
-    buf.on_delta(part_id(None, "text"), "text", "lo")
+    buf.on_delta(part_id(None, "text", 0), "text", "Hel")
+    buf.on_delta(part_id(None, "text", 0), "text", "lo")
     await buf.flush()
-    buf.close(part_id(None, "text"))
+    buf.close(part_id(None, "text", 0))
     await buf.aclose()
 
     classes = [c[1]["class"] for c in calls.calls]
@@ -124,7 +124,7 @@ async def test_buffer_part_lifecycle_emits_start_delta_end() -> None:
     # The deltas were batched into one frame.
     assert calls.calls[1][1]["delta"] == "Hello"
     # Every frame carries the part_id; the channel is the delta channel.
-    assert all(c[1]["part_id"] == "x:text" for c in calls.calls)
+    assert all(c[1]["part_id"] == "x:text:0" for c in calls.calls)
     assert all(c[0].endswith(DELTA_EVENT_SUFFIX) for c in calls.calls)
     # No seq field -> the frame never advances the tap cursor.
     assert "seq" not in calls.calls[0][1]
@@ -242,18 +242,18 @@ def test_translate_feeds_sink_and_stamps_part_id() -> None:
         records = [records]
 
     # The live path saw every content delta.
-    assert ("x:text", "text", "hi") in sink.delta_calls
-    assert ("x:reasoning", "reasoning", "think") in sink.delta_calls
+    assert ("x:text:0", "text", "hi") in sink.delta_calls
+    assert ("x:reasoning:0", "reasoning", "think") in sink.delta_calls
     assert ("c1", "tool", '{"q":') in sink.delta_calls
     # The parts are closed at the durable record.
-    assert "x:text" in sink.close_calls
-    assert "x:reasoning" in sink.close_calls
+    assert "x:text:0" in sink.close_calls
+    assert "x:reasoning:0" in sink.close_calls
     assert "c1" in sink.close_calls
 
     # The durable records carry the matching part_id.
     by_kind = {r.kind: r for r in records}
-    assert by_kind[SessionMessageKind.ASSISTANT_TOKEN].payload["part_id"] == "x:text"
-    assert by_kind[SessionMessageKind.REASONING].payload["part_id"] == "x:reasoning"
+    assert by_kind[SessionMessageKind.ASSISTANT_TOKEN].payload["part_id"] == "x:text:0"
+    assert by_kind[SessionMessageKind.REASONING].payload["part_id"] == "x:reasoning:0"
     # The tool input part reconciles to the TOOL_CALL record by its id.
     assert by_kind[SessionMessageKind.TOOL_CALL].payload["id"] == "c1"
 
@@ -269,7 +269,7 @@ def test_translate_without_sink_is_unchanged() -> None:
     if not isinstance(records, list):
         records = [records]
     by_kind = {r.kind: r for r in records}
-    assert by_kind[SessionMessageKind.ASSISTANT_TOKEN].payload["part_id"] == "x:text"
+    assert by_kind[SessionMessageKind.ASSISTANT_TOKEN].payload["part_id"] == "x:text:0"
     assert by_kind[SessionMessageKind.TOOL_CALL].payload["id"] == "c1"
 
 
@@ -288,8 +288,8 @@ def test_translate_done_closes_parts_and_closes_reasoning_first() -> None:
     # Reasoning precedes the answer text in the flushed records.
     assert records[0].kind == SessionMessageKind.REASONING
     assert records[1].kind == SessionMessageKind.ASSISTANT_TOKEN
-    assert "x:text" in sink.close_calls
-    assert "x:reasoning" in sink.close_calls
+    assert "x:text:0" in sink.close_calls
+    assert "x:reasoning:0" in sink.close_calls
 
 
 # ---------------------------------------------------------------------------

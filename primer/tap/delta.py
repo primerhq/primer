@@ -173,14 +173,24 @@ async def publish_phase_frame(
         logger.debug("phase frame: publish failed", exc_info=True)
 
 
-def part_id(node_id: str | None, kind: str) -> str:
+def part_id(node_id: str | None, kind: str, turn_no: int) -> str:
     """Stable part_id shared by the delta frames and the durable record.
 
     Node-scoped so parallel fan-out nodes never collide (the coalesce state
     already keys text/reasoning by node_id, primer/session/persistence.py).
     ``None`` -> ``"x"`` so an agent-only part still has a stable id.
+
+    Turn-scoped (01a04e02) because the frontend's session-store.js keeps
+    ``store.parts`` alive for the WHOLE SESSION, not per turn (scrollback
+    needs a finished turn's parts to still render) - node_id+kind alone
+    repeats across turns on the same node, so turn 2's part landed on
+    turn 1's already-finalized entry and every one of its deltas was
+    silently dropped (SS_apply's ``part && !part.final`` guard). The
+    backend's own DeltaBuffer is already per-turn (a fresh instance per
+    call to primer.session.dispatch.run_one_session_turn) so it never hit
+    this - the collision was purely a frontend, cross-turn key reuse.
     """
-    return f"{node_id or 'x'}:{kind}"
+    return f"{node_id or 'x'}:{kind}:{turn_no}"
 
 
 def _split_by_bytes(text: str, max_bytes: int) -> list[str]:
