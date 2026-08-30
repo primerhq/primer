@@ -720,10 +720,38 @@ class WorkspaceSession(Identifiable):
         3. ``turn_status == "running"`` -> "running". The real signal
            01a04d91-a7a0 introduced - see that field's own docstring for
            why this used to always read "idle" here instead.
-        4. Otherwise -> "waiting". Covers CREATED (never started),
-           RUNNING-but-idle-between-turns, WAITING, PAUSED, and
-           turn_status idle/claimable - every case where the session is
-           alive but nothing is actively executing right now.
+        4. ``status in (WAITING, PAUSED) and turn_no > 0`` -> "parked"
+           (01a0518a). A completed-turn-rests-parked flip
+           (``_CLEAN_TURN_RESTS_PARKED`` in primer.session.dispatch)
+           means a clean stop now leaves the row at WAITING, not ENDED -
+           but WAITING is ALSO the value for two OTHER, older cases
+           (the executor's assistant-asked-a-question heuristic;
+           max_tokens/content_filter) that write the identical
+           (status=WAITING, ended_reason=None) shape, so there is no
+           stored field that distinguishes "just rested" from "blocked
+           on a specific answer" from "always been idle". Rather than
+           add a new column to encode a distinction the served
+           vocabulary was never that fine-grained about, ``turn_no > 0``
+           answers the question this vocabulary actually needs: "has
+           this session ever completed a turn?" - CREATED sessions
+           (never claimed, turn_no == 0) are genuinely fresh and stay
+           "waiting"; anything resting after at least one turn (WAITING
+           for any of the three reasons above, or an operator PAUSED
+           mid-flight) reads "parked" - resuming both looks the same to
+           a caller (send a new message; wake_session's existing
+           ``_RESUMABLE`` set already includes WAITING and PAUSED, see
+           that module) and the richer per-reason distinction (a real
+           question needing an answer vs. a turn just finished) is
+           exactly what the UI's own ``describeSessionState()``
+           (ui/components/session-state.jsx) already computes from
+           ``parked_event_keys``/``ended_reason`` for display - this
+           field was never meant to replace that, only to give it (and
+           every other consumer) one clean signal for "is a turn
+           genuinely in flight right now".
+        5. Otherwise -> "waiting". CREATED (turn_no == 0, never started)
+           and turn_status idle/claimable with turn_no == 0 - a session
+           alive but genuinely never having produced a turn to rest
+           after.
         """
         if self.status == SessionStatus.ENDED:
             return "ended"
@@ -731,6 +759,11 @@ class WorkspaceSession(Identifiable):
             return "parked"
         if self.turn_status == "running":
             return "running"
+        if (
+            self.status in (SessionStatus.WAITING, SessionStatus.PAUSED)
+            and self.turn_no > 0
+        ):
+            return "parked"
         return "waiting"
 
 

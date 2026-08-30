@@ -107,14 +107,29 @@ async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
     """Session recovery on startup.
 
     The claim engine + scheduler are in-memory; their state does NOT survive a
-    process restart. Persisted WorkspaceSession rows DO. Scan for non-ENDED
-    rows and re-arm the engine so workers can claim them again. Without this, a
-    session created in the previous process sits at status=RUNNING forever with
-    no owner — the diagnostic-report Bug 1.
+    process restart. Persisted WorkspaceSession rows DO. Scan for rows that
+    can still need a worker and re-arm the engine so they can be claimed
+    again. Without this, a session created in the previous process sits at
+    status=RUNNING forever with no owner — the diagnostic-report Bug 1.
+
+    01a0518a: with a clean turn resting the session WAITING instead of
+    ENDING it (_CLEAN_TURN_RESTS_PARKED), "every non-ENDED status" stopped
+    approximating "sessions that crashed mid-turn or have pending work" and
+    started meaning "essentially every agent session that ever completed a
+    turn, for the whole deployment's lifetime" — re-arming that whole
+    population on every restart would both defeat this function's own
+    stated scaling promise and fire a genuine, wasted LLM call per row (a
+    claimed WAITING session's turn is resumed unconditionally by
+    WorkspaceAgentExecutor.invoke, with no check that anything new actually
+    arrived). The predicate below narrows back to the two cases that
+    actually need re-arming: status=RUNNING (this function's original
+    purpose — no owner survived the restart) or turn_status="claimable"
+    (independent evidence of real pending work — a queued steer/resume
+    that hasn't been picked up yet), regardless of status.
     """
     try:
         from primer.int.claim import ClaimKind as _ClaimKind
-        from primer.model.storage import OffsetPage as _OffsetPage
+        from primer.model.storage import OffsetPage as _OffsetPage, Op as _Op
         from primer.model.workspace_session import (
             SessionStatus as _SessionStatus,
             WorkspaceSession as _WorkspaceSession,
@@ -122,19 +137,18 @@ async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
         from primer.storage.q import Q as _Q
 
         _session_storage = storage_provider.get_storage(_WorkspaceSession)
-        # Only LIVE (non-ENDED) sessions can still need work. Pushing
-        # the filter into the query (instead of list()-ing every row
-        # and dropping ENDED in Python) keeps recovery from loading the
-        # entire session history into memory at scale -- and the new
-        # B-tree index on sessions.status keeps the scan cheap. The
-        # IN-set mirrors "every status except ENDED" so a future status
-        # is recovered (fail-safe) rather than silently dropped.
-        _live_statuses = [
-            s.value for s in _SessionStatus if s != _SessionStatus.ENDED
-        ]
-        _live_predicate = (
-            _Q(_WorkspaceSession).where_in("status", _live_statuses).build()
+        # Pushing the filter into the query (instead of list()-ing every
+        # row and dropping the rest in Python) keeps recovery from loading
+        # the entire session history into memory at scale.
+        _running_q = _Q(_WorkspaceSession).where(
+            "status", _SessionStatus.RUNNING.value,
         )
+        _claimable_q = (
+            _Q(_WorkspaceSession)
+            .where("turn_status", "claimable")
+            .where("status", _SessionStatus.ENDED.value, _Op.NE)
+        )
+        _live_predicate = _Q.or_(_running_q, _claimable_q).build()
         _recovered_running = 0
         _recovered_other = 0
         _offset = 0

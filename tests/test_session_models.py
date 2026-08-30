@@ -490,3 +490,46 @@ class TestSessionState:
         dumped["session_state"] = "ended"  # a malicious/stale client value
         reloaded = WorkspaceSession.model_validate(dumped)
         assert reloaded.session_state == "running"
+
+    def test_resting_after_a_completed_turn_reads_parked(self):
+        # 01a0518a: _CLEAN_TURN_RESTS_PARKED leaves a clean stop at
+        # WAITING (not ENDED) with turn_no already bumped past 0 - this
+        # is the "parked" case the flip introduces. Covers all three
+        # WAITING-producing reasons (clean rest, assistant-asked-a-
+        # question, max_tokens/content_filter) since none of them leave
+        # a distinguishing field behind - turn_no > 0 is the only signal
+        # this vocabulary needs: "has this session ever produced a turn
+        # to rest after". PAUSED is folded in too (an operator pause
+        # after progress reads the same as a rest).
+        for status in (SessionStatus.WAITING, SessionStatus.PAUSED):
+            sess = self._sess(status=status, turn_status="idle", turn_no=1)
+            assert sess.session_state == "parked", status
+
+    def test_never_started_stays_waiting_even_at_waiting_status(self):
+        # The distinguisher is turn_no, not status: a WAITING/PAUSED row
+        # that has NEVER actually completed a turn (turn_no == 0 - not a
+        # real production shape today, but the boundary the property
+        # itself must get right) stays "waiting", not "parked".
+        for status in (SessionStatus.WAITING, SessionStatus.PAUSED):
+            sess = self._sess(status=status, turn_status="idle", turn_no=0)
+            assert sess.session_state == "waiting", status
+
+    def test_created_with_turn_no_zero_stays_waiting(self):
+        # A CREATED session (never claimed) is turn_no == 0 by
+        # definition - the "genuinely fresh" case the vocabulary reserves
+        # "waiting" for.
+        sess = self._sess(status=SessionStatus.CREATED, turn_status="idle", turn_no=0)
+        assert sess.session_state == "waiting"
+
+    def test_running_or_parked_status_still_win_over_turn_no(self):
+        # The turn_no>0 "parked" branch is checked AFTER running/
+        # parked_status - a session with turn_no>0 that is ACTIVELY
+        # running or on a real yielding-tool park must not be
+        # misclassified as merely "resting".
+        running = self._sess(turn_status="running", turn_no=3)
+        assert running.session_state == "running"
+
+        yielded = self._sess(
+            status=SessionStatus.WAITING, parked_status="parked", turn_no=3,
+        )
+        assert yielded.session_state == "parked"  # via parked_status, same value here

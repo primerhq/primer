@@ -110,6 +110,28 @@ async def _run(events, sink, last_done_reason=None):
 
 
 async def test_clean_completion_publishes_terminal():
+    """01a0518a: _CLEAN_TURN_RESTS_PARKED defaults True, so a clean stop
+    now rests the row WAITING (served as session_state="parked") instead
+    of ending it - the hold must still be released either way, which is
+    this test's actual point (see test_flag_off_clean_completion_still_
+    ends below for the pre-flip shape, preserved via the test seam)."""
+    sink: list[dict] = []
+    await _run(
+        [Done(stop_reason="stop", raw_reason="stop")], sink,
+        last_done_reason="stop",
+    )
+    assert len(sink) == 1
+    assert sink[0]["status"] == SessionStatus.WAITING.value
+    assert sink[0]["ended_reason"] is None
+
+
+async def test_flag_off_clean_completion_still_ends(monkeypatch):
+    """The pre-01a0518a shape, preserved via the flag's test seam: with
+    _CLEAN_TURN_RESTS_PARKED off, a clean stop still ends the session and
+    still announces on the bus."""
+    from primer.session import dispatch
+
+    monkeypatch.setattr(dispatch, "_CLEAN_TURN_RESTS_PARKED", False)
     sink: list[dict] = []
     await _run(
         [Done(stop_reason="stop", raw_reason="stop")], sink,

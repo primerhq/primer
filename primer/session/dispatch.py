@@ -49,6 +49,7 @@ from primer.model.turn_log import (
     TurnLogYielded,
 )
 from primer.model.yield_ import YieldToWorker
+from primer.session.autonomy import session_is_autonomous
 from primer.session.enqueue import SessionWakeDeps
 from primer.session.delegation import (
     DelegationRecorder,
@@ -852,6 +853,7 @@ async def run_one_session_turn(
     agent_status = await _read_agent_session_status(executor)
     new_status, ended_reason = _post_turn_status(
         last_done_reason, agent_status,
+        autonomous=session_is_autonomous(session),
     )
     # _post_turn_status returns ended_reason "completed", "failed" or None
     # (dispatch.py:833-842: max_tokens / content_filter park the session in
@@ -923,12 +925,27 @@ async def run_one_session_turn(
     relay_every_turn = bool(
         (session.metadata or {}).get(RELAY_EVERY_TURN_KEY)
     )
+    # 01a0518a: a clean stop/end_turn/stop_sequence now rests the session
+    # parked (WAITING/None) instead of ending it - the same "a final
+    # answer was produced" moment the ENDED+completed branch below used
+    # to catch, just without the session terminating to get there.
+    # Excludes an executor-set WAITING (assistant-asked-a-question
+    # heuristic): that already resolved to WAITING+None BEFORE the flip
+    # too and never relayed for an unmapped session, so it stays excluded
+    # here to avoid changing that pre-existing behavior.
+    clean_stop_now_parked = (
+        new_status == SessionStatus.WAITING
+        and ended_reason is None
+        and agent_status != SessionStatus.WAITING
+        and last_done_reason in ("stop", "end_turn", "stop_sequence")
+    )
     if deps.channel_dispatcher is not None and (
         relay_every_turn
         or (
             new_status == SessionStatus.ENDED
             and ended_reason == "completed"
         )
+        or clean_stop_now_parked
     ):
         try:
             from primer.channel.session_relay import (
@@ -1094,43 +1111,40 @@ _STOP_REASON_TO_STATUS: dict[str, tuple[SessionStatus, str | None]] = {
 }
 
 # PHASE 1 item 3 of the execution-lifecycle revamp (01a04d91-a7a0) -
-# PENDING USER CONFIRMATION per the revamp plan; the user's target model
-# wants a clean stop/end_turn to rest the session PARKED (resumable)
-# rather than ENDED+reopen-gate, matching how a yielding-tool park
-# already behaves. This is the smallest possible seam for that: a single
-# module-level flag _post_turn_status checks at call time (not baked
-# into the frozen _STOP_REASON_TO_STATUS dict above, so a test can flip
-# it per-case). MUST stay False until the leader relays the user's
-# answer - flipping it changes real session lifecycle semantics, not
-# just a served field.
+# USER-CONFIRMED (01a0518a): a clean stop/end_turn rests the session
+# PARKED (resumable) rather than ENDED+reopen-gate, matching how a
+# yielding-tool park already behaves. Default is now True; the module-
+# level flag stays in place as a test seam (_post_turn_status checks it
+# at call time, not baked into the frozen _STOP_REASON_TO_STATUS dict
+# above, so a test can still flip it per-case).
 #
-# Deliberately incomplete even once flipped, by design - two follow-ups
-# a "yes" answer would still need, called out here rather than guessed
-# at now:
+# The three edges the seam's own documentation called out before the
+# flip, resolved as part of 01a0518a:
 #   1. wake_session's reopen path (primer.session.enqueue) only special-
-#      cases an ENDED row today ("Sending a NEW message to an ENDED
-#      session reopens it" - this function's own docstring above). A
-#      session left at WAITING instead needs no reopen at all (WAITING
-#      already accepts a new instruction via the normal claimable path),
-#      but that is a claimable/claim-machine-adjacent behavior this flag
-#      has NOT been audited against yet - exactly the class of change
-#      the revamp brief calls out for a report-first check before
-#      flipping the default.
-#   2. session_state (WorkspaceSession.session_state) has no signal to
-#      distinguish "genuinely idle, never done anything" from "just
-#      finished a clean turn, resting parked" once status reads WAITING
-#      either way - both currently derive to session_state="waiting".
-#      Serving "parked" for the latter (matching this item's own stated
-#      intent) needs an additional distinguishing signal (e.g. turn_no >
-#      0, or a dedicated marker) that hasn't been added, since guessing
-#      at the exact shape before the flag's real semantics are confirmed
-#      risks building the wrong thing twice.
-_CLEAN_TURN_RESTS_PARKED = False
+#      cases an ENDED row ("Sending a NEW message to an ENDED session
+#      reopens it"). Audited: NO change needed. A session resting at
+#      WAITING never had its slot closed, so none of the ENDED-reopen
+#      steps (slot.reopen(), INVOCATION_DIVIDER, invocation-counter
+#      bump) apply - wake_session's existing _RESUMABLE set already
+#      includes WAITING (and PAUSED), so `row.status in _RESUMABLE ->
+#      RUNNING` on the normal (non-ENDED) branch already promotes a
+#      resting session correctly with zero code changes.
+#   2. session_state (WorkspaceSession.session_state) now distinguishes
+#      "genuinely idle, never done anything" from "resting after a
+#      completed turn" via turn_no > 0 (see that property's docstring
+#      for the full justification) - the former stays "waiting", the
+#      latter now reads "parked".
+#   3. ENDED consumers (lists/filters/counts/sweepers/analytics) were
+#      swept for accumulation effects now that a clean stop no longer
+#      reaches ENDED. Old ENDED rows are unaffected and stay ENDED.
+_CLEAN_TURN_RESTS_PARKED = True
 
 
 def _post_turn_status(
     last_done_reason: str | None,
     agent_status: SessionStatus | None,
+    *,
+    autonomous: bool = False,
 ) -> tuple[SessionStatus, str | None]:
     """Decide the WorkspaceSession.status to write after a clean turn.
 
@@ -1139,22 +1153,42 @@ def _post_turn_status(
     etc.). Otherwise fall back to the LLM's last stop reason. The default
     when neither is informative is ENDED/completed.
 
-    Every clean agent turn ENDS the session — there is no interactive
-    "stays WAITING" downgrade. Sending a NEW message to an ENDED session
-    reopens it (``wake_session``'s ENDED branch), so a one-shot caller
-    (trigger/webhook/API/e2e) never hangs on a session that finished
-    cleanly. The executor-set WAITING (assistant-asked-a-question
-    heuristic) is a distinct, legitimate wait and is preserved below.
+    With ``_CLEAN_TURN_RESTS_PARKED`` now on by default (01a0518a), a
+    clean agent turn rests the session WAITING (served as
+    session_state="parked" - see ``WorkspaceSession.session_state``)
+    instead of ENDING it. Sending a NEW message to a resting session
+    resumes it in place (``wake_session``'s existing ``_RESUMABLE`` set
+    already includes WAITING); a genuinely ENDED session still reopens
+    via ``wake_session``'s ENDED branch. The executor-set WAITING
+    (assistant-asked-a-question heuristic) is a distinct, legitimate
+    wait and is preserved below - both read "parked" once turn_no > 0,
+    since the served vocabulary doesn't distinguish the two reasons.
+
+    ``autonomous`` (``primer.session.autonomy.session_is_autonomous`` -
+    studio-agents-interact §8.1, pre-existing) is the one exemption to
+    the parked rest: a self-driving session (a graph, or an agent with
+    ``autonomous=True`` - trigger/webhook-fired one-shot sessions set
+    this explicitly, see ``agent_fresh_session.py``) has no interactive
+    human to resume it, so it must still END on a clean turn, exactly as
+    before the flip. Without this exemption a one-shot trigger session
+    rests parked forever, and a ``parallelism="skip"`` subscription gate
+    keyed on "any non-ENDED session with turn_no > 0" (see
+    ``primer.trigger.subscribers.session_holds_skip_gate``) would wedge
+    permanently closed after its very first successful fire.
 
     ``_CLEAN_TURN_RESTS_PARKED`` (see its own module-level docstring,
     right above ``_STOP_REASON_TO_STATUS``) is checked FIRST, before the
     executor-set-ENDED precedence below, so a definitive internal error
-    still always ENDs the session even once the flag is on - only the
-    plain clean-stop case changes.
+    still always ENDs the session even with the flag on - only the plain
+    clean-stop case changes. Flipping the flag off (test seam) restores
+    the old behavior: every clean turn ENDS the session.
     """
-    if _CLEAN_TURN_RESTS_PARKED and last_done_reason in (
-        "stop", "end_turn", "stop_sequence",
-    ) and agent_status != SessionStatus.ENDED:
+    if (
+        _CLEAN_TURN_RESTS_PARKED
+        and not autonomous
+        and last_done_reason in ("stop", "end_turn", "stop_sequence")
+        and agent_status != SessionStatus.ENDED
+    ):
         return (SessionStatus.WAITING, None)
     # An executor-set ENDED is authoritative.
     if agent_status == SessionStatus.ENDED:

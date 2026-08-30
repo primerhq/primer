@@ -36,7 +36,12 @@ async def _poll_phase_samples(
     """Poll the session every 100ms; return (status, session_state,
     agent_phase) samples. Each GET is a fresh, stateless read - the same
     shape a page refresh makes - so this loop is itself already a
-    repeated refresh-recovery proof, not just a liveness poll."""
+    repeated refresh-recovery proof, not just a liveness poll.
+
+    Stops at either terminal shape: "ended" (an executor-set ENDED, e.g.
+    an internal error, still always wins - see _post_turn_status) or
+    "parked" (01a0518a: _CLEAN_TURN_RESTS_PARKED default True means a
+    clean stop now rests here instead of "ended")."""
     samples: list[tuple[str | None, str | None, str | None]] = []
     deadline = asyncio.get_event_loop().time() + timeout_s
     while asyncio.get_event_loop().time() < deadline:
@@ -46,7 +51,7 @@ async def _poll_phase_samples(
         samples.append(
             (body.get("status"), body.get("session_state"), body.get("agent_phase"))
         )
-        if body.get("status") == "ended":
+        if body.get("session_state") in ("ended", "parked"):
             break
         await asyncio.sleep(0.1)
     return samples
@@ -59,10 +64,11 @@ async def test_phase_sequence_through_real_http_round_trip(
     """A real tool-calling turn against the mock provider must visit
     session_state="running" and the agent_phase sequence
     thinking -> executing -> (thinking ->) responding, in that order,
-    then land on session_state="ended" once the turn completes cleanly
-    (_CLEAN_TURN_RESTS_PARKED defaults False - see dispatch.py - so a
-    clean stop still ENDS the session today; this assertion is the
-    regression trip-wire for whenever that flag flips)."""
+    then land on session_state="parked" once the turn completes cleanly
+    (01a0518a: _CLEAN_TURN_RESTS_PARKED defaults True - see dispatch.py -
+    so a clean stop now rests the session parked/resumable instead of
+    ending it; this assertion is the regression trip-wire for the flag's
+    default)."""
     registry, base_url = mock_llm
     scenario = f"scripted:phase-{unique_suffix}"
     # Short but real delays (not 10-20s) - fast enough for the suite,
@@ -84,7 +90,7 @@ async def test_phase_sequence_through_real_http_round_trip(
     phases_seen = [p for (_, _, p) in samples if p is not None]
 
     assert "running" in states_seen, samples
-    assert states_seen[-1] == "ended", samples
+    assert states_seen[-1] == "parked", samples
 
     assert "thinking" in phases_seen, samples
     assert "executing" in phases_seen, samples
@@ -141,10 +147,13 @@ async def test_refresh_mid_phase_recovers_from_a_cold_client(
     original, narrower version of this test) but the SPECIFIC phase at
     that exact moment, for every phase a tool-calling turn actually
     visits: running+thinking, running+executing, running+responding, and
-    ended. "parked" (a real yielding-tool park, not a clean stop) is
-    covered separately below - a clean stop takes a structurally
-    different path (_CLEAN_TURN_RESTS_PARKED is off by default) and
-    never reaches parked_status at all."""
+    parked (01a0518a: _CLEAN_TURN_RESTS_PARKED defaults True, so a clean
+    stop now rests here via the turn_no>0 distinguisher, not via
+    parked_status). A REAL yielding-tool park (parked_status set
+    directly) is covered separately below by
+    test_parked_session_state_survives_a_hard_refresh - both read
+    session_state="parked" but reach it through different fields, which
+    is exactly the point of testing them separately."""
     registry, mock_base_url = mock_llm
     scenario = f"scripted:refresh-{unique_suffix}"
     agent = await make_scripted_agent(
@@ -183,17 +192,17 @@ async def test_refresh_mid_phase_recovers_from_a_cold_client(
                     f"warm={warm.get(field)!r} cold={cold.get(field)!r}"
                 )
             compared += 1
-        if warm.get("status") == "ended":
+        if warm.get("session_state") in ("ended", "parked"):
             break
         await asyncio.sleep(0.1)
 
     assert compared >= 4, (
         f"only compared {compared} distinct phases, expected at least "
-        f"thinking/executing/responding/ended: {seen_pairs}"
+        f"thinking/executing/responding/parked: {seen_pairs}"
     )
     assert ("running", "executing") in seen_pairs, seen_pairs
     assert ("running", "responding") in seen_pairs, seen_pairs
-    assert ("ended", None) in seen_pairs, seen_pairs
+    assert ("parked", None) in seen_pairs, seen_pairs
 
 
 @pytest.mark.asyncio
@@ -235,11 +244,12 @@ async def test_waiting_session_state_survives_a_hard_refresh(
 async def test_parked_session_state_survives_a_hard_refresh(
     client: httpx.AsyncClient, mock_llm, unique_suffix: str, tmp_path, base_url: str,
 ):
-    """The one session_state value the tool-calling-turn test above
-    cannot reach: a REAL yielding-tool park (a required-approval gate),
-    which sets parked_status independently of turn_status/agent_phase.
-    Must also survive a hard refresh via a cold client, per the same
-    acceptance invariant.
+    """The OTHER way to reach session_state="parked" that the tool-
+    calling-turn test above does not exercise: a REAL yielding-tool park
+    (a required-approval gate), which sets parked_status directly,
+    independently of turn_status/agent_phase/turn_no (unlike a clean
+    stop's turn_no>0 distinguisher, see 01a0518a). Must also survive a
+    hard refresh via a cold client, per the same acceptance invariant.
 
     Approval policies are unique on (toolset_id, tool_name), and DELETE
     does not itself invalidate the resolver's cache (POST .../invalidate
@@ -305,3 +315,77 @@ async def test_parked_session_state_survives_a_hard_refresh(
         # leaving misc__uuid_v4 gated for whichever test runs next.
         await client.delete(f"/v1/tool_approval_policies/{pol_id}")
         await client.post("/v1/tool_approval_policies/invalidate")
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_parks_then_resumes_on_new_message(
+    client: httpx.AsyncClient, mock_llm, unique_suffix: str, tmp_path, base_url: str,
+):
+    """01a0518a's own acceptance line: completed turn -> chip reads
+    parked -> new message resumes -> running again. A clean stop rests
+    the session parked (already covered above); this proves the OTHER
+    half - a resting session is genuinely resumable, not a dead end.
+    Sending a brand new message goes through steer_session's
+    RUNNING/WAITING branch (primer/api/routers/workspaces.py) into
+    wake_session, whose existing _RESUMABLE set already includes WAITING
+    (primer/session/enqueue.py) - the ENDED-reopen path is never touched
+    at all, confirming edge #1's audit (no code changes needed there)."""
+    registry, mock_base_url = mock_llm
+    scenario = f"scripted:resume-{unique_suffix}"
+    agent = await make_scripted_agent(
+        client, registry, mock_base_url, suffix=unique_suffix, scenario=scenario,
+        tools=[],
+        rules=[
+            Rule(when_last_user_contains="first-turn", emit_text="first answer"),
+            Rule(when_last_user_contains="second-turn", emit_text="second answer"),
+        ],
+    )
+    wid = await make_local_workspace(client, suffix=unique_suffix, root=tmp_path)
+    sid = await start_agent_session(
+        client, workspace_id=wid, agent_id=agent["agent_id"],
+        instructions="first-turn instruction",
+    )
+
+    deadline = asyncio.get_event_loop().time() + 15.0
+    warm: dict = {}
+    while asyncio.get_event_loop().time() < deadline:
+        r = await client.get(f"/v1/sessions/{sid}")
+        warm = r.json()
+        if warm.get("session_state") == "parked":
+            break
+        assert warm.get("status") != "ended", (
+            f"session ended instead of parking after a clean stop: {warm}"
+        )
+        await asyncio.sleep(0.1)
+    assert warm.get("session_state") == "parked", warm
+    assert warm.get("status") == "waiting", warm
+
+    # The chip reads parked - and a cold client (a hard refresh) must
+    # agree, per the same acceptance invariant every other phase is held
+    # to above.
+    cold = await _cold_snapshot(base_url, sid)
+    for field in ("status", "session_state"):
+        assert cold.get(field) == warm.get(field), (
+            f"refresh mismatch on a freshly-parked session, field {field!r}: "
+            f"warm={warm.get(field)!r} cold={cold.get(field)!r}"
+        )
+
+    r = await client.post(
+        f"/v1/workspaces/{wid}/sessions/{sid}/steer",
+        json={"instruction": "second-turn instruction"},
+    )
+    assert r.status_code in (200, 201, 202), r.text
+
+    deadline = asyncio.get_event_loop().time() + 15.0
+    saw_running = False
+    warm = {}
+    while asyncio.get_event_loop().time() < deadline:
+        r = await client.get(f"/v1/sessions/{sid}")
+        warm = r.json()
+        if warm.get("session_state") == "running":
+            saw_running = True
+        if saw_running and warm.get("session_state") == "parked":
+            break
+        await asyncio.sleep(0.05)
+    assert saw_running, f"resumed turn never observed running: {warm}"
+    assert warm.get("session_state") == "parked", warm

@@ -66,17 +66,21 @@ def _seed(base_url: str, mock_base_url: str, suffix: str, tmp_path: Path) -> dic
     return ids
 
 
-def _wait_for_status(client: httpx.Client, sid: str, target: str, *, timeout_s: float = 15.0) -> dict:
+def _wait_for_session_state(
+    client: httpx.Client, sid: str, target: str, *, timeout_s: float = 15.0,
+) -> dict:
     deadline = time.monotonic() + timeout_s
     last: dict = {}
     while time.monotonic() < deadline:
         r = client.get(f"/v1/sessions/{sid}")
         assert r.status_code == 200, r.text
         last = r.json()
-        if last.get("status") == target:
+        if last.get("session_state") == target:
             return last
         time.sleep(0.1)
-    raise AssertionError(f"never reached status={target!r}, last observed: {last}")
+    raise AssertionError(
+        f"never reached session_state={target!r}, last observed: {last}"
+    )
 
 
 def test_second_turns_answer_renders_not_silently_dropped(
@@ -106,20 +110,24 @@ def test_second_turns_answer_renders_not_silently_dropped(
         assert r.status_code == 201, f"create session failed: {r.status_code} {r.text}"
         sid = r.json()["id"]
 
-        # Turn 1 completes (a clean stop with no gated tool ends the
-        # session today - _CLEAN_TURN_RESTS_PARKED off by default, per
-        # tests/e2e/test_agent_phase_sequence_e2e.py's own note).
-        _wait_for_status(client, sid, "ended")
+        # Turn 1 completes. 01a0518a flipped _CLEAN_TURN_RESTS_PARKED on
+        # by default: a clean stop now rests the session WAITING/parked
+        # (session_state="parked") instead of ending it - see dispatch.
+        # py's _post_turn_status docstring. Wait on session_state, not
+        # the raw status field, matching what the flag's own e2e
+        # (tests/e2e/test_agent_phase_sequence_e2e.py) checks.
+        _wait_for_session_state(client, sid, "parked")
 
-        # Steer's fourth behaviour: sending into an ENDED session
-        # reopens it - this is turn 2, same session, same node, same
-        # part kind, and (pre-fix) the exact same part_id as turn 1's.
+        # Sending a new message into a resting (parked) session resumes
+        # it in place (wake_session's _RESUMABLE set already covers
+        # WAITING) - this is turn 2, same session, same node, same part
+        # kind, and (pre-fix) the exact same part_id as turn 1's.
         r = client.post(
             f"/v1/workspaces/{wid}/sessions/{sid}/steer",
             json={"instruction": "second-turn-instruction"},
         )
         assert r.status_code in (200, 201, 202), f"steer failed: {r.status_code} {r.text}"
-        _wait_for_status(client, sid, "ended")
+        _wait_for_session_state(client, sid, "parked")
 
         open_session_in_studio(page, console_url, wid, sid)
         doc = page.get_by_test_id(f"nv-session-doc:{sid}")
