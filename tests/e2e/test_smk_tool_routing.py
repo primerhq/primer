@@ -13,7 +13,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
@@ -43,7 +43,7 @@ async def test_agent_selects_specific_tools(authed_client, mock_llm, unique_suff
     )
     wid = await make_local_workspace(authed_client, suffix=unique_suffix, root=tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    assert (await wait_terminal(authed_client, sid)).get("status") == "ended"
+    assert (await wait_completed(authed_client, sid)).get("session_state") == "parked"
     # only the declared toolset tool was offered to the model (workspace file
     # tools are always present; no other toolset tools leak in)
     reqs = [r for r in registry.requests if r.get("model") == sc and r.get("tools")]
@@ -80,7 +80,7 @@ async def test_call_tool_dispatch(authed_client, mock_llm, unique_suffix, tmp_pa
     )
     wid = await make_local_workspace(authed_client, suffix=unique_suffix, root=tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    assert (await wait_terminal(authed_client, sid)).get("status") == "ended"
+    assert (await wait_completed(authed_client, sid)).get("session_state") == "parked"
     got = await authed_client.get(f"/v1/agents/{created}")
     assert got.status_code == 200, got.text
 
@@ -106,7 +106,7 @@ async def test_system_tools_manage_entities(authed_client, mock_llm, unique_suff
     )
     wid = await make_local_workspace(authed_client, suffix=unique_suffix, root=tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    assert (await wait_terminal(authed_client, sid)).get("status") == "ended"
+    assert (await wait_completed(authed_client, sid)).get("session_state") == "parked"
     got = await authed_client.get(f"/v1/agents/{new_agent_id}")
     assert got.status_code == 200, got.text
 
