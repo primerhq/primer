@@ -134,19 +134,38 @@ async def wake_session(
         user_input_seq: int | None = None
         if instruction:
             ws = await deps.workspace_registry.get_workspace(workspace_id)
-            slot = await ws.get_session(session_id)
-            if slot is not None:
-                await slot.append_instruction(instruction)
-            writer = WorkspaceMessageWriter(
-                workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
-            )
-            user_input_seq = await writer.append(SessionMessageRecord(
-                seq=1,  # overwritten by the writer's monotonic counter
-                kind=SessionMessageKind.USER_INPUT,
-                payload={"text": instruction},
-                created_at=datetime.now(timezone.utc),
-            ))
-            await writer.flush()
+            # get_workspace() itself is already defended against a
+            # concurrently-destroyed workspace (WorkspaceRegistry.get_workspace
+            # / the local backend's _reattach both degrade a gone/mid-teardown
+            # workspace to a clean NotFoundError). But once a live `ws` handle
+            # is in hand, a workspace DELETE racing this same wake_session can
+            # still tear down the on-disk root out from under the writes below
+            # (WorkspaceRegistry.destroy: pop-from-cache -> aclose -> rmtree,
+            # not serialised against a caller already holding `ws`) - a plain
+            # filesystem OSError (e.g. FileNotFoundError mid-rmtree) from
+            # either write is exactly that race, not a real internal error,
+            # so map it to the same NotFoundError this function already
+            # raises for "workspace not found" rather than letting it surface
+            # as an unhandled 500 (01a0518a/5e4f8c39 follow-up: T0716).
+            try:
+                slot = await ws.get_session(session_id)
+                if slot is not None:
+                    await slot.append_instruction(instruction)
+                writer = WorkspaceMessageWriter(
+                    workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
+                )
+                user_input_seq = await writer.append(SessionMessageRecord(
+                    seq=1,  # overwritten by the writer's monotonic counter
+                    kind=SessionMessageKind.USER_INPUT,
+                    payload={"text": instruction},
+                    created_at=datetime.now(timezone.utc),
+                ))
+                await writer.flush()
+            except OSError as exc:
+                raise NotFoundError(
+                    f"workspace {workspace_id!r} was removed while writing "
+                    f"session {session_id!r}'s instruction"
+                ) from exc
 
         # Replace the active external tool set for the turn this wake
         # triggers (None = leave the set unchanged; [] = clear it). Dumped
