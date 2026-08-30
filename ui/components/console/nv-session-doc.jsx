@@ -1965,12 +1965,19 @@ function NV_SessionDoc(props) {
   // 01a052a5: computed once per render (not per row inside renderTurn's
   // .map) so every eligible user_message's icon is an O(1) Set lookup -
   // NV_rewindCandidates itself is O(records), too costly to re-run once
-  // per visible row.
+  // per visible row. Memoized on records.length, NOT records itself:
+  // session-store.js's SS_insertRecord mutates recordsBySeq in place
+  // (push + sort), so the array reference never changes across a
+  // session's lifetime - a [records] dependency would freeze this at
+  // whatever it computed on the FIRST render (live e2e catch: a rewind
+  // icon that never appeared past the session's very first render,
+  // confirmed via window.SS_STORES - recordsBySeq had every record,
+  // useMemo just never re-ran).
   var rewindableSeqs = React.useMemo(function () {
     var set = {};
     NV_rewindCandidates(records).forEach(function (c) { set[c.seq] = true; });
     return set;
-  }, [records]);
+  }, [records.length]);
   function resultFor(row) {
     var id = (row.payload || {}).id
       || (row.payload || {}).tool_call_id || null;

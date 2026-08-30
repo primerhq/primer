@@ -140,7 +140,9 @@ def test_trace_rows_are_one_line_and_maximize_overlay_expands(
     tool_toggle.click()
     detail = overlay.locator(".nv-trace-detail").first
     expect(detail).to_be_visible(timeout=10_000)
-    detail_text = detail.inner_text()
+    # .nv-trace-detail-sec is CSS text-transform: uppercase - inner_text
+    # returns the rendered (uppercased) text, not the lowercase JSX literal.
+    detail_text = detail.inner_text().lower()
     assert "arguments" in detail_text
     assert "result" in detail_text
     assert "no result yet" not in detail_text, (
