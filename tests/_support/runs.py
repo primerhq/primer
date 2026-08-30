@@ -250,6 +250,19 @@ async def wait_completed(
     needs "the turn is over, whichever way it went" - then read
     ``session_state`` / ``status`` / ``ended_reason`` off the result to
     tell success from failure.
+
+    ``session_state="parked"`` is ALSO what a genuinely-yielding-tool
+    park reads (parked_status set) - including the transient window a
+    session sits in between "the operator answered" and "a worker has
+    actually claimed the row and cleared the park" (parked_status flips
+    ``"parked" -> "resumable"`` the instant the reply lands, then back to
+    ``None`` once claimed - see primer.session.yields and
+    primer.claim.adapters.sessions.on_release). Stopping here on THAT
+    transient shape is wrong - the turn hasn't run yet, so require
+    ``parked_status is None`` too: that's only true once a real
+    yielding-tool park has fully resolved, or - the case this helper
+    exists for - a clean stop rested the row via turn_no>0 with no
+    yielding-tool park in play at all.
     """
     iters = max(1, int(timeout_s / interval_s))
     last: dict = {}
@@ -257,7 +270,10 @@ async def wait_completed(
         resp = await client.get(f"/v1/sessions/{session_id}")
         if resp.status_code == 200:
             last = resp.json()
-            if last.get("status") in _TERMINAL or last.get("session_state") == "parked":
+            if last.get("status") in _TERMINAL or (
+                last.get("session_state") == "parked"
+                and last.get("parked_status") is None
+            ):
                 return last
         await asyncio.sleep(interval_s)
     return last

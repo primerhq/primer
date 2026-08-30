@@ -330,8 +330,12 @@ async def test_release_conductor_ask_user_then_gated_deploy(
     assert r.status_code == 202, r.text
 
     # 01a0518a: the approve-and-deploy turn's clean stop now rests the
-    # session parked, not ended - parked_status stays None (a real
-    # yielding-tool park would set it; this is the turn_no>0 rest path).
+    # session parked, not ended. wait_completed only stops once
+    # parked_status has settled back to None (it transiently reads
+    # "resumable" between the approval respond and the worker actually
+    # claiming + clearing the park - see wait_completed's own docstring),
+    # so a genuine yielding-tool park is never conflated with this
+    # turn_no>0 clean-rest path.
     final_a = await wait_completed(authed_client, sid_a, timeout_s=60)
     assert final_a.get("session_state") == "parked", final_a
     assert final_a.get("parked_status") is None, final_a
