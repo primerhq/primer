@@ -317,9 +317,71 @@ async def inject_resume_and_continue(
         )
         return await pool._end_session(session, reason="failed")
 
+    await _persist_resume_tool_result_record(pool, session, tool_result_part)
+
     # Continuation: clear park (on_release) + keep the lease so the next
     # claim runs the continuation LLM turn.
     return ReleaseOutcome(success=True, drop_lease=False)
+
+
+async def _persist_resume_tool_result_record(
+    pool: "WorkerPool", session, tool_result_part,
+) -> None:
+    """Write the modern TOOL_RESULT counterpart for a resumed tool call.
+
+    ``inject_resume_messages`` (above) only appends the legacy
+    ``{role,parts}`` Message lines that feed LLM context reconstruction;
+    the paired TOOL_CALL record was already written live before the park
+    (``primer.session.persistence``'s ``ToolCallEnd`` handler), but
+    nothing at park or resume time ever wrote the modern
+    ``SessionMessageRecord`` TOOL_RESULT counterpart that the messages
+    API + live tap read (01a04e0a). Payload shape mirrors the live-turn
+    write (``call_id``/``output``/``error`` - see
+    ``primer.session.persistence``'s ``_ExecutorToolResult`` handler),
+    NOT ``abandon_session_gate``'s ``id``/``name``/``result`` shape,
+    which ``primer.session.timeline`` cannot actually pair back to its
+    TOOL_CALL (it keys the lookup by ``call_id``).
+
+    Best-effort and best-effort ONLY: this is a secondary, display-side
+    record. The turn's continuation already stands on the legacy write
+    above having succeeded: a write failure here must not undo that or
+    end an otherwise-healthy session (the transcript stays served by
+    the UI's legacy-line tolerance in that case - see
+    ``_dedupe_legacy_user_input``).
+    """
+    if pool._storage is None:
+        return
+    from primer.model.workspace_session import (
+        SessionMessageKind,
+        SessionMessageRecord,
+        WorkspaceSession,
+    )
+    from primer.session.persistence import WorkspaceMessageWriter
+
+    try:
+        ws = await pool._load_workspace_for_persist(session.workspace_id)
+        writer = WorkspaceMessageWriter(
+            workspace_io=ws, session_id=session.id, start_seq=session.last_seq,
+        )
+        new_seq = await writer.append(SessionMessageRecord(
+            seq=1,  # overwritten by the writer's monotonic counter
+            kind=SessionMessageKind.TOOL_RESULT,
+            payload={
+                "call_id": tool_result_part.id,
+                "output": tool_result_part.output,
+                "error": tool_result_part.error,
+            },
+            created_at=datetime.now(timezone.utc),
+        ))
+        await writer.flush()
+        storage = pool._storage.get_storage(WorkspaceSession)
+        await storage.update(session.model_copy(update={"last_seq": new_seq}))
+    except Exception:  # noqa: BLE001 - best-effort, see docstring
+        logger.exception(
+            "resume: failed to persist modern TOOL_RESULT record for "
+            "session %s",
+            session.id,
+        )
 
 
 def build_invocation_services(pool: "WorkerPool", session, workspace, executor, tool_manager):
