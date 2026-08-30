@@ -1361,3 +1361,92 @@ async def test_session_tools_are_mcp_exposable(sp, workspace_registry):
         assert tid in tools, f"{tid} not registered"
         ok, reason = is_exposable(tools[tid], provider=ts)
         assert ok, f"{tid} not MCP-exposable: {reason}"
+
+
+# ===========================================================================
+# _reconcile_session_info (01a0529c): on-disk slot vs durable row overlay
+# ===========================================================================
+
+
+class TestReconcileSessionInfo:
+    """get_workspace_session / list_workspace_sessions overlay the durable
+    WorkspaceSession row's status onto the on-disk slot view when the row
+    is ahead of it (ENDED, or -- since 01a0529c -- a clean-rest WAITING).
+    ``_LiveWorkspace`` pre-populates "sess-1" as a ``_LiveSession`` stuck at
+    RUNNING (see fixture above); these tests seed a WorkspaceSession row
+    for that SAME id so the two views can disagree the way the real
+    dispatch/slot split does."""
+
+    @pytest.mark.asyncio
+    async def test_clean_rest_waiting_row_overlays_a_running_slot(
+        self, toolset, seeded, sp,
+    ) -> None:
+        """01a0529c: a clean turn rests the row WAITING without ever
+        touching the on-disk slot (no AgentSession.set_status call for
+        this case - see the closure's docstring). Without the overlay
+        this MCP tool would report the session as still "running" even
+        though the durable row already moved on to a resumable rest."""
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(sp, status=SessionStatus.WAITING, sid="sess-1", workspace_id=seeded)
+
+        result = await toolset.call(
+            tool_name="get_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "waiting"
+        assert body["info"]["status"] == "waiting"
+
+    @pytest.mark.asyncio
+    async def test_genuine_executor_waiting_passes_through_unchanged(
+        self, toolset, seeded, sp, workspace_registry,
+    ) -> None:
+        """A REAL executor-set wait (e.g. the assistant asked a question)
+        already has the slot reading WAITING at write time - the new
+        clean-rest branch only fires when the slot still reads RUNNING,
+        so it must be a no-op here. Sets BOTH the slot and the row to
+        WAITING, mirroring how a genuine executor-set wait actually
+        reaches storage (dispatch mirrors the executor's own decision
+        onto the row - see _post_turn_status's agent_status==WAITING
+        branch), unlike the clean-rest case this task fixes."""
+        from primer.model.workspace_session import SessionStatus
+
+        ws = await workspace_registry.get_workspace(seeded)
+        live_session = await ws.get_session("sess-1")
+        live_session._status = SessionStatus.WAITING
+        _seed_session(sp, status=SessionStatus.WAITING, sid="sess-1", workspace_id=seeded)
+
+        result = await toolset.call(
+            tool_name="get_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "waiting"
+
+    @pytest.mark.asyncio
+    async def test_ended_row_still_overlays_a_lagging_slot(
+        self, toolset, seeded, sp,
+    ) -> None:
+        """Pre-existing ENDED overlay branch, unregressed by the
+        clean-rest addition above."""
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(
+            sp,
+            status=SessionStatus.ENDED,
+            sid="sess-1",
+            workspace_id=seeded,
+            ended_reason="completed",
+        )
+
+        result = await toolset.call(
+            tool_name="get_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "ended"
+        assert body["info"]["ended_reason"] == "completed"
