@@ -96,7 +96,7 @@ function PC_ModelListField({ value, onChange }) {
   );
 }
 
-function PC_Field({ field, value, onChange, disabled, secretMask }) {
+function PC_Field({ field, value, onChange, disabled }) {
   let input;
   if (field.type === "model_list") {
     input = <PC_ModelListField value={value} onChange={onChange} />;
@@ -115,13 +115,17 @@ function PC_Field({ field, value, onChange, disabled, secretMask }) {
         type={field.type}
         required={field.required}
         disabled={disabled}
-        // 01a04d6a edit mode: a secret field's `value` is ALWAYS blank in
-        // the draft (see PC_ProviderForm's strip-on-edit effect) - the
-        // placeholder shows what is already stored, WITHOUT that string
-        // ever becoming the field's actual value, so it can never be the
-        // thing submitted back on save (the exact "never round-trip the
-        // mask" hazard - a value round-trips, a placeholder cannot).
-        placeholder={secretMask || field.placeholder}
+        placeholder={field.placeholder}
+        // 01a05198: on edit, a secret field's `value` is the served
+        // MASK STRING verbatim (GET's own masked serialization - see
+        // primer/model/common.py's _matches_served_mask) - unlike an
+        // earlier iteration of this form, it is NOT blanked out. Left
+        // untouched, the mask round-trips back on save exactly as
+        // received; the backend's preserve_masked_secrets on_pre_update
+        // hook recognizes that exact string and restores the real
+        // credential instead of persisting the mask literally. Typing a
+        // real replacement value submits that instead - it will not
+        // match the mask pattern, so it passes through unchanged.
         value={value || ""}
         onChange={(e) => onChange(e.target.value)}
       />
@@ -141,16 +145,6 @@ function PC_Field({ field, value, onChange, disabled, secretMask }) {
         {field.required ? <em className="req"> *</em> : null}
       </span>
       {input}
-      {secretMask ? (
-        // 01a04d6a: a field that already held a secret always needs
-        // re-entry to save, regardless of whether ITS OWN schema marks
-        // it optional (missingRequired() gates on secretMasks the same
-        // way) - PUT is a full replace, so blank here means "erase the
-        // working credential," never "no secret," once one was set.
-        <span className="field-help" data-testid={`provider-form-mask-${field.key}`}>
-          {`Currently ${secretMask} - required, re-enter to change (Save stays disabled while this is blank)`}
-        </span>
-      ) : null}
       {field.help ? <span className="field-help">{field.help}</span> : null}
     </label>
   );
@@ -386,18 +380,8 @@ function PC_ProviderForm({
     if (blank(draft.id)) return true;
     const check = (fields, scope) => (fields || []).some((f) => {
       const norm = PC_normalizeField(f);
+      if (!norm.required) return false;
       const holder = scope === "config" ? (draft.config || {}) : draft;
-      // 01a04d6a: a secret field that HAD a real value when editing
-      // started (captured as its mask on strip) must be re-entered to
-      // save, even when its OWN schema marks it optional. PUT is a full
-      // replace, not a merge - leaving an optional secret blank here
-      // does not mean "no secret" the way it would on a fresh create,
-      // it means "erase the working credential that was already there"
-      // (confirmed live: editing an unrelated field with the secret
-      // left blank silently wiped it). A field that never held a secret
-      // (no mask captured) has nothing to lose and stays exempt.
-      const hadSecret = !!secretMasks[`${scope}:${norm.key}`];
-      if (!norm.required && !hadSecret) return false;
       return blank(holder[norm.key]);
     });
     return check(shape.row_fields, "row") || check(shape.config_fields, "config");
@@ -416,48 +400,15 @@ function PC_ProviderForm({
   const selectedType = draft.provider || typeKeys[0] || "";
   const shape = typeMap[selectedType] || {};
 
-  // 01a04d6a edit mode: strip secret-shaped fields out of the incoming
-  // draft the moment `shape` is known (which fields are secrets can only
-  // be recognized once /_types answers - this can't happen in the
-  // parent before the form has even mounted). Each stripped field's
-  // ORIGINAL masked value is captured for display (PC_Field's
-  // secretMask prop) and then blanked in the draft itself, so a save
-  // that never touches the field submits an empty string - never the
-  // server's own masked placeholder round-tripping back as a "new"
-  // secret (see PC_Field's own comment for why a placeholder, not a
-  // value, is the only safe way to show it).
-  const strippedRef = React.useRef(false);
-  const [secretMasks, setSecretMasks] = React.useState({});
-  React.useEffect(() => {
-    if (!editing || strippedRef.current || !typeKeys.length) return;
-    const rowFields = (shape.row_fields || []).map(PC_normalizeField);
-    const configFields = (shape.config_fields || []).map(PC_normalizeField);
-    const masks = {};
-    const next = { ...draft };
-    let touched = false;
-    rowFields.forEach((f) => {
-      if (f.type === "password" && next[f.key]) {
-        masks[`row:${f.key}`] = next[f.key];
-        next[f.key] = "";
-        touched = true;
-      }
-    });
-    if (next.config) {
-      const nextConfig = { ...next.config };
-      configFields.forEach((f) => {
-        if (f.type === "password" && nextConfig[f.key]) {
-          masks[`config:${f.key}`] = nextConfig[f.key];
-          nextConfig[f.key] = "";
-          touched = true;
-        }
-      });
-      next.config = nextConfig;
-    }
-    strippedRef.current = true;
-    setSecretMasks(masks);
-    if (touched) onChange(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, typeKeys.length]);
+  // 01a05198: no strip-on-edit effect needed any more - a secret field's
+  // draft value on edit is simply whatever GET served (the mask
+  // string), left as-is. Untouched, it submits verbatim and the
+  // backend's preserve_masked_secrets on_pre_update hook restores the
+  // real credential (primer/model/common.py); typed over, the new value
+  // submits and passes through unchanged (it won't match the mask
+  // pattern). This is what makes the required-field gate above safe to
+  // read literally again: a masked value is never blank, so a
+  // schema-required secret left untouched no longer looks "missing."
 
   // The provider type decides whether an optional extra is needed; the
   // hint text comes from the shared capabilities helper so the wording
@@ -553,7 +504,6 @@ function PC_ProviderForm({
           key={`row:${f.key}`}
           field={f}
           value={draft[f.key]}
-          secretMask={secretMasks[`row:${f.key}`]}
           onChange={(next) => setField("row", f.key, next)}
         />
       ))}
@@ -569,7 +519,6 @@ function PC_ProviderForm({
             key={`config:${f.key}`}
             field={f}
             value={(draft.config || {})[f.key]}
-            secretMask={secretMasks[`config:${f.key}`]}
             onChange={(next) => setField("config", f.key, next)}
           />
         ))

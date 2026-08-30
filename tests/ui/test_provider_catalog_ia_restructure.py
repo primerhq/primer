@@ -157,46 +157,64 @@ def test_id_field_and_kind_select_are_disabled_while_editing() -> None:
     assert "disabled={editing}" in id_block
 
 
-def test_secret_fields_are_stripped_on_edit_mount_not_prefilled() -> None:
+def test_secret_fields_are_not_stripped_on_edit_mount() -> None:
+    """01a05198: no frontend strip-on-edit mechanism any more - the
+    backend now recognizes the served mask on write (preserve_masked_
+    secrets, primer/model/common.py) and restores the real credential,
+    so the form simply leaves a secret field's draft value as whatever
+    GET served (the mask string), same as every other field."""
     src = _form()
-    effect = src[src.index("const strippedRef = React.useRef(false);"):]
-    effect = effect[:effect.index("// The provider type decides")]
-    assert 'f.type === "password" && next[f.key]' in effect
-    assert 'next[f.key] = "";' in effect, (
-        "a stripped secret must become an empty string, never the "
-        "server's masked placeholder - that string round-tripping back "
-        "as a 'new' secret is the exact hazard this closes"
-    )
-    assert "setSecretMasks(masks)" in effect
+    assert "strippedRef" not in src
+    assert "secretMasks" not in src
+    assert "setSecretMasks" not in src
 
 
-def test_secret_mask_renders_only_as_help_text_never_as_a_value() -> None:
-    """The mask must never become the input's `value` prop - only its
-    placeholder/help text, so it can never be the thing Save submits."""
+def test_secret_field_has_no_special_value_override() -> None:
+    """PC_Field renders every field's value uniformly now - no
+    secret-specific placeholder/mask machinery left to diverge from the
+    plain `value || ""` every other field uses."""
     src = _form()
     field = src[src.index("function PC_Field"):src.index("function PC_ProbePanel")]
-    assert "placeholder={secretMask || field.placeholder}" in field
-    assert "value={value || \"\"}" in field
-    assert "value={secretMask" not in field
-    assert "required, re-enter to change" in field
+    assert "secretMask" not in field
+    assert 'value={value || ""}' in field
 
 
-def test_any_field_that_held_a_secret_gates_save_when_blank() -> None:
-    """LIVE FINDING: a schema-OPTIONAL secret left blank on edit and
-    saved does not "stay null" the way create's fresh-field case would -
-    PUT is a full replace, so it silently ERASES the working credential
-    that was already there (confirmed against a real running stack).
-    missingRequired() must therefore gate on "this field HAD a captured
-    mask" (secretMasks), not only on the field's own schema-required
-    flag - a field that never held a secret has nothing to lose and
-    stays exempt."""
+def test_mask_resubmitted_unchanged_enables_save() -> None:
+    """NEW CONTRACT (01a05198): missingRequired() reverted to schema-
+    required only - a secret field's draft value on edit is the served
+    mask string (non-blank), so a schema-required secret left untouched
+    no longer reads as "missing" and Save is not withheld. The backend's
+    preserve_masked_secrets hook is what makes resubmitting that string
+    safe (it restores the real value rather than persisting the mask
+    literally) - this test pins the FRONTEND half of that contract: nothing
+    here forces a re-type any more."""
     src = _form()
     missing_required = src[src.index("const missingRequired = () =>"):]
     missing_required = missing_required[:missing_required.index("const modelRowsIncomplete")]
-    assert "hadSecret" in missing_required
-    assert "secretMasks[`${scope}:${norm.key}`]" in missing_required
-    assert "if (!norm.required && !hadSecret) return false;" in missing_required
+    assert "hadSecret" not in missing_required
+    assert "secretMasks" not in missing_required
+    assert "if (!norm.required) return false;" in missing_required
     assert "blank(holder[norm.key])" in missing_required
+
+
+def test_a_cleared_optional_secret_still_gates_correctly() -> None:
+    """A secret field is not special-cased for blank-checking either
+    direction: an OPTIONAL secret the operator explicitly clears (now
+    genuinely blank, not the mask) still passes missingRequired() (matches
+    a fresh, never-set optional field's own behavior) - the backend's
+    preserve_masked_secrets only restores a value that MATCHES the served
+    mask pattern (primer/model/common.py's _matches_served_mask); a
+    genuinely empty submission does not match it and is stored as
+    cleared, not restored. A REQUIRED secret cleared the same way is
+    still caught by the unconditional `blank(holder[norm.key])` check
+    below - no separate branch needed for either case."""
+    src = _form()
+    missing_required = src[src.index("const missingRequired = () =>"):]
+    missing_required = missing_required[:missing_required.index("const modelRowsIncomplete")]
+    # One unconditional required-check covers both create and edit, for
+    # every field regardless of secret-ness - the exact simplicity the
+    # interim hadSecret gate had to give up safety for.
+    assert missing_required.count("blank(") == 2  # draft.id + holder[norm.key]
 
 
 # ---------------------------------------------------------------------------
