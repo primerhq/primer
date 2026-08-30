@@ -96,13 +96,14 @@ function PC_ModelListField({ value, onChange }) {
   );
 }
 
-function PC_Field({ field, value, onChange }) {
+function PC_Field({ field, value, onChange, disabled, secretMask }) {
   let input;
   if (field.type === "model_list") {
     input = <PC_ModelListField value={value} onChange={onChange} />;
   } else if (field.type === "enum") {
     input = (
-      <select value={value || ""} onChange={(e) => onChange(e.target.value)}>
+      <select value={value || ""} disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}>
         {(field.options || []).map((opt) => (
           <option key={opt} value={opt}>{opt}</option>
         ))}
@@ -113,7 +114,14 @@ function PC_Field({ field, value, onChange }) {
       <input
         type={field.type}
         required={field.required}
-        placeholder={field.placeholder}
+        disabled={disabled}
+        // 01a04d6a edit mode: a secret field's `value` is ALWAYS blank in
+        // the draft (see PC_ProviderForm's strip-on-edit effect) - the
+        // placeholder shows what is already stored, WITHOUT that string
+        // ever becoming the field's actual value, so it can never be the
+        // thing submitted back on save (the exact "never round-trip the
+        // mask" hazard - a value round-trips, a placeholder cannot).
+        placeholder={secretMask || field.placeholder}
         value={value || ""}
         onChange={(e) => onChange(e.target.value)}
       />
@@ -126,13 +134,23 @@ function PC_Field({ field, value, onChange }) {
   // caller comment for why there is no masked-tail DISPLAY here.
   const isSecret = field.type === "password";
   return (
-    <label className="field" data-field={field.key}>
+    <label className="field" data-field={field.key} data-locked={disabled ? "true" : "false"}>
       <span>
         {field.label}
         {isSecret ? " secret — masked on read" : ""}
         {field.required ? <em className="req"> *</em> : null}
       </span>
       {input}
+      {secretMask ? (
+        // 01a04d6a: a field that already held a secret always needs
+        // re-entry to save, regardless of whether ITS OWN schema marks
+        // it optional (missingRequired() gates on secretMasks the same
+        // way) - PUT is a full replace, so blank here means "erase the
+        // working credential," never "no secret," once one was set.
+        <span className="field-help" data-testid={`provider-form-mask-${field.key}`}>
+          {`Currently ${secretMask} - required, re-enter to change (Save stays disabled while this is blank)`}
+        </span>
+      ) : null}
       {field.help ? <span className="field-help">{field.help}</span> : null}
     </label>
   );
@@ -336,7 +354,9 @@ function PC_submittable(draft, shape, selectedType) {
   return cleaned;
 }
 
-function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest, onCancel }) {
+function PC_ProviderForm({
+  plural, typesPath, value, onChange, onSubmit, onTest, onCancel, editing,
+}) {
   const { useResource, apiFetch, useCapabilities, capabilityHint,
     EXTRA_FOR_PROVIDER_TYPE } = window.primerApi;
   const [busy, setBusy] = React.useState(false);
@@ -366,8 +386,18 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest,
     if (blank(draft.id)) return true;
     const check = (fields, scope) => (fields || []).some((f) => {
       const norm = PC_normalizeField(f);
-      if (!norm.required) return false;
       const holder = scope === "config" ? (draft.config || {}) : draft;
+      // 01a04d6a: a secret field that HAD a real value when editing
+      // started (captured as its mask on strip) must be re-entered to
+      // save, even when its OWN schema marks it optional. PUT is a full
+      // replace, not a merge - leaving an optional secret blank here
+      // does not mean "no secret" the way it would on a fresh create,
+      // it means "erase the working credential that was already there"
+      // (confirmed live: editing an unrelated field with the secret
+      // left blank silently wiped it). A field that never held a secret
+      // (no mask captured) has nothing to lose and stays exempt.
+      const hadSecret = !!secretMasks[`${scope}:${norm.key}`];
+      if (!norm.required && !hadSecret) return false;
       return blank(holder[norm.key]);
     });
     return check(shape.row_fields, "row") || check(shape.config_fields, "config");
@@ -385,6 +415,49 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest,
   const typeKeys = Object.keys(typeMap);
   const selectedType = draft.provider || typeKeys[0] || "";
   const shape = typeMap[selectedType] || {};
+
+  // 01a04d6a edit mode: strip secret-shaped fields out of the incoming
+  // draft the moment `shape` is known (which fields are secrets can only
+  // be recognized once /_types answers - this can't happen in the
+  // parent before the form has even mounted). Each stripped field's
+  // ORIGINAL masked value is captured for display (PC_Field's
+  // secretMask prop) and then blanked in the draft itself, so a save
+  // that never touches the field submits an empty string - never the
+  // server's own masked placeholder round-tripping back as a "new"
+  // secret (see PC_Field's own comment for why a placeholder, not a
+  // value, is the only safe way to show it).
+  const strippedRef = React.useRef(false);
+  const [secretMasks, setSecretMasks] = React.useState({});
+  React.useEffect(() => {
+    if (!editing || strippedRef.current || !typeKeys.length) return;
+    const rowFields = (shape.row_fields || []).map(PC_normalizeField);
+    const configFields = (shape.config_fields || []).map(PC_normalizeField);
+    const masks = {};
+    const next = { ...draft };
+    let touched = false;
+    rowFields.forEach((f) => {
+      if (f.type === "password" && next[f.key]) {
+        masks[`row:${f.key}`] = next[f.key];
+        next[f.key] = "";
+        touched = true;
+      }
+    });
+    if (next.config) {
+      const nextConfig = { ...next.config };
+      configFields.forEach((f) => {
+        if (f.type === "password" && nextConfig[f.key]) {
+          masks[`config:${f.key}`] = nextConfig[f.key];
+          nextConfig[f.key] = "";
+          touched = true;
+        }
+      });
+      next.config = nextConfig;
+    }
+    strippedRef.current = true;
+    setSecretMasks(masks);
+    if (touched) onChange(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, typeKeys.length]);
 
   // The provider type decides whether an optional extra is needed; the
   // hint text comes from the shared capabilities helper so the wording
@@ -432,13 +505,14 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest,
     && PC_DISCOVER_MODELS_PLURALS.indexOf(plural) >= 0;
 
   const fields = (
-    <div className="col" style={{ gap: 12, flex: 1, minWidth: 0 }}>
+    <div className="col" style={{ gap: 12, minWidth: 0 }}>
       <div className="field">
         <label className="field-label" htmlFor="pf-provider">provider</label>
         <select
           id="pf-provider"
           className="input"
           value={selectedType}
+          disabled={editing}
           onChange={(e) => setField("row", "provider", e.target.value)}
         >
           {typeKeys.map((k) => (
@@ -451,9 +525,13 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest,
             dropped it, so nothing warned an operator before they
             submitted a mismatched pair. */}
         <div className="field-help" data-testid="provider-form-t0379">
-          Provider and config alignment is NOT cross-validated
-          server-side (T0379): make sure the vendor name matches the
-          config shape you are filling in.
+          {editing
+            ? "Locked on edit: a provider's kind decides its config shape " +
+              "(T0379) - changing it here would leave stale fields from " +
+              "the old kind behind."
+            : "Provider and config alignment is NOT cross-validated " +
+              "server-side (T0379): make sure the vendor name matches " +
+              "the config shape you are filling in."}
         </div>
       </div>
 
@@ -466,6 +544,7 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest,
       <PC_Field
         field={PC_normalizeField({ key: "id", label: "id", required: true })}
         value={draft.id}
+        disabled={editing}
         onChange={(next) => setField("row", "id", next)}
       />
 
@@ -474,6 +553,7 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest,
           key={`row:${f.key}`}
           field={f}
           value={draft[f.key]}
+          secretMask={secretMasks[`row:${f.key}`]}
           onChange={(next) => setField("row", f.key, next)}
         />
       ))}
@@ -489,6 +569,7 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest,
             key={`config:${f.key}`}
             field={f}
             value={(draft.config || {})[f.key]}
+            secretMask={secretMasks[`config:${f.key}`]}
             onChange={(next) => setField("config", f.key, next)}
           />
         ))
@@ -517,10 +598,26 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest,
   return (
     <div className="col" style={{ gap: 12 }}
       data-testid={`provider-form-${plural}`}>
-      <div className="row" style={{ gap: 20, alignItems: "flex-start" }}>
+      {/* 01a04d6a: was a flex row (fields flex:1 vs. the probe panel's
+          fixed 240px) inside the default 420px Modal - the fields
+          column computed to a sliver once the probe panel's width and
+          the 20px gap were subtracted (S3 screenshot). A real grid with
+          an explicit fields column, sized against the WIDER modal this
+          form now opens in (ProviderCatalog passes width={720}), fixes
+          both the immediate squeeze and any future modal-width drift -
+          the column proportions are declared here, not fought over with
+          a competing fixed-width sibling. minmax(0, 1fr) - not the bare
+          1fr shorthand - so a long unbreakable value (a pasted URL/key)
+          cannot blow the fields column past its share (grid's default
+          auto minimum forces content-based sizing without it). */}
+      <div className="pc-form-grid" style={{
+        display: "grid",
+        gridTemplateColumns: showProbePanel ? "minmax(0, 1fr) 240px" : "minmax(0, 1fr)",
+        gap: 20, alignItems: "start",
+      }}>
         {fields}
         {showProbePanel ? (
-          <div className="col pc-form-right" style={{ gap: 10, width: 240, flexShrink: 0 }}>
+          <div className="col pc-form-right" style={{ gap: 10, minWidth: 0 }}>
             <PC_ProbePanel plural={plural} draft={draft} selectedType={selectedType} />
             <div className="field-help" data-testid="provider-form-capabilities-footnote">
               {PC_CAPABILITIES_FOOTNOTE}

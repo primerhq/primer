@@ -32,7 +32,7 @@ def test_nav_covers_the_grammar():
     # with no page would be an address that renders nothing.
     for nav in _grammar_platform_navs():
         if nav == "providers":
-            continue  # providers is the special-cased family page
+            continue  # providers mounts window.ProviderCatalog inline, not an NV_PLAT_PAGES entry
         assert f"{nav}: {{" in PLAT, f"no page config for {nav}"
     for group in ("Intelligence", "Workbench", "Automation", "Governance"):
         assert group in PLAT
@@ -41,11 +41,18 @@ def test_nav_covers_the_grammar():
 def test_cards_open_shared_overlays():
     # Cards address overlays (the shared-surface contract), never
     # private routes: every open/create goes through con.openOverlay.
+    #
+    # RETARGET (IA restructure 01a04d6a): "providers" dropped out of this
+    # set on purpose - the user directive kills the platform-page ->
+    # catalog-overlay -> form-overlay stack, so NV_PlatPage now mounts
+    # window.ProviderCatalog directly (see NV_ProvidersPlatPage) instead
+    # of addressing it through con.openOverlay at all.
     opens = re.findall(r"con\.openOverlay\(\"([a-z-]+)\"", PLAT)
     assert set(opens) >= {"agents", "graphs", "toolsets", "collections",
                           "workspaces", "new-workspace", "triggers",
                           "channels", "harnesses", "services",
-                          "approvals", "providers"}
+                          "approvals"}
+    assert "providers" not in opens
 
 
 def test_delete_is_confirm_guarded():
@@ -65,10 +72,17 @@ def test_search_query_resets_the_page():
 
 
 def test_providers_ride_the_real_plurals():
+    # RETARGET (IA restructure 01a04d6a): nv-platform.jsx no longer
+    # carries its own module-local copy of the provider-class registry
+    # (NV_PROV_CLASSES, deleted) - it mounts window.ProviderCatalog
+    # inline instead, which owns the one real PROVIDER_CLASSES registry.
+    # The check moves with the data.
+    catalog = (UI / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
     for plural in ("llm_providers", "embedding_providers", "tts_providers",
                    "web_search_providers", "workspace_providers",
                    "channel_providers", "ssp"):
-        assert plural in PLAT, plural
+        assert plural in catalog, plural
+    assert "NV_PROV_CLASSES" not in PLAT
 
 
 def test_approvals_page_carries_the_audit():

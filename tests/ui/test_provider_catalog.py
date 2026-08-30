@@ -134,7 +134,10 @@ def test_every_panel_class_can_reach_its_own_detail_view() -> None:
     every component being renamed to suit the host.
     """
     src = _read("components/provider-catalog.jsx")
-    classes = src[:src.index("function PC_FamilyChips")]
+    # RETARGET (IA restructure 01a04d6a): PC_FamilyChips renamed to
+    # PC_TypeFilter (it is now the type filter for the "all types
+    # together" page, not just a single-class family rail).
+    classes = src[:src.index("function PC_TypeFilter")]
     for key in ("ssp", "workspace", "channel"):
         block = classes[classes.index(f'key: "{key}"'):]
         block = block[:block.index("},")]
@@ -155,8 +158,12 @@ def test_creating_a_provider_refreshes_the_list_beside_the_form() -> None:
     the row only showed after navigating away and back.
     """
     src = _read("components/provider-catalog.jsx")
+    # RETARGET (IA restructure 01a04d6a): selectInstance is now declared
+    # BEFORE save (create and edit share one openCreate/openEdit/save
+    # trio) - "let body;" is the next stable anchor after save's own
+    # closing brace instead.
     save = src[src.index("const save = async (body) =>"):]
-    save = save[:save.index("const selectInstance")]
+    save = save[:save.index("let body;")]
     assert "listRefetchRef.current()" in save, (
         "the create has to refresh the list it just added a row to"
     )

@@ -47,21 +47,12 @@ var NV_PLAT_GROUPS = [
   { label: "Governance", ids: ["approvals"] },
 ];
 
-// The S4 catalog's class registry (provider-catalog.jsx keeps its copy
-// module-local, so the pills carry their own): key -> list plural.
-var NV_PROV_CLASSES = [
-  { key: "llm", label: "LLM", plural: "llm_providers" },
-  { key: "embedding", label: "Embedding", plural: "embedding_providers" },
-  { key: "cross_encoder", label: "Cross-Encoder", plural: "cross_encoder_providers" },
-  { key: "ssp", label: "Vector Stores", plural: "ssp" },
-  { key: "stt", label: "Speech-to-Text", plural: "stt_providers" },
-  { key: "tts", label: "Text-to-Speech", plural: "tts_providers" },
-  { key: "web_search", label: "Web Search", plural: "web_search_providers" },
-  { key: "web_fetch", label: "Web Fetch", plural: "web_fetch_providers" },
-  { key: "artifact_storage", label: "Artifact Storage", plural: "artifact_storage_providers" },
-  { key: "workspace", label: "Workspaces", plural: "workspace_providers" },
-  { key: "channel", label: "Channels", plural: "channel_providers" },
-];
+// IA restructure 01a04d6a: the old family-pill registry that used to
+// live here (a deliberate module-local duplicate of provider-catalog.
+// jsx's PROVIDER_CLASSES, per this file's own prior comment) is gone -
+// the platform page no longer renders its own providers UI at all, it
+// mounts window.ProviderCatalog inline (see NV_ProvidersPlatPage below),
+// which owns that registry as the one real copy.
 
 function NV_fact(k, v) {
   return v == null || v === "" ? null : [k, String(v)];
@@ -653,14 +644,37 @@ function NV_ApprovalsAudit() {
   );
 }
 
+// IA restructure 01a04d6a (user directive supersedes the mockup where
+// they conflict): the platform's "Providers" nav entry renders the
+// unified catalog INLINE - killing the three-layer stack (platform page
+// -> catalog overlay -> form overlay) this used to be. See provider-
+// catalog.jsx's own header comment for the full architecture (All
+// default view, type filter, Register-by-type, edit-in-place).
+// initialClass/initialInstanceId are only ever the SEED: ProviderCatalog
+// owns classKey/instanceId itself once mounted, so a static "all" here
+// is enough. onNavigate is a no-op - the overlay's URL-synced deep-link
+// granularity (a specific class/instance in the address bar) does not
+// carry over to an inline page; a scope reduction that comes with
+// killing the overlay, not a bug.
+function NV_ProvidersPlatPage() {
+  return (
+    <div className="nv-plat-main">
+      <div className="nv-plat-wrap" data-testid="nv-plat-page:providers">
+        <window.ProviderCatalog
+          initialClass="all"
+          initialInstanceId={null}
+          onNavigate={function () {}}
+        />
+      </div>
+    </div>
+  );
+}
+
 function NV_PlatPage() {
   var con = NV_useConsole();
-  var apiFetch = window.primerApi.apiFetch;
   var nav = con.view.nav || "providers";
-  var isProviders = nav === "providers";
-  var famState = React.useState("llm");
-  var fam = famState[0];
-  var setFam = famState[1];
+  if (nav === "providers") return <NV_ProvidersPlatPage />;
+  var apiFetch = window.primerApi.apiFetch;
   var qState = React.useState("");
   var q = qState[0];
   var setQ = qState[1];
@@ -684,38 +698,18 @@ function NV_PlatPage() {
   React.useEffect(function () { setPageNo(0); }, [q]);
 
   var page = NV_PLAT_PAGES[nav] || null;
-  var provClass = NV_PROV_CLASSES.find(function (c) { return c.key === fam; });
-  var listKey = isProviders
-    ? "nv-plat:providers:" + fam
-    : "nv-plat:" + nav;
+  var listKey = "nv-plat:" + nav;
   var res = window.primerApi.useResource(
     listKey,
     function (signal) {
-      if (isProviders) {
-        return apiFetch("GET", "/" + provClass.plural + "?limit=200", null,
-          { signal: signal });
-      }
       return page.list(apiFetch, signal);
     },
-    { pollMs: 15000, deps: [nav, fam] }
+    { pollMs: 15000, deps: [nav] }
   );
   var items = (res.data && res.data.items) || [];
 
-  function provCard(row) {
-    return {
-      name: row.name || row.id,
-      sub: [row.kind, row.model].filter(Boolean).join(" · "),
-      chip: row.active ? { label: "active config", color: "var(--green)" } : null,
-      facts: [
-        NV_fact("kind", row.kind),
-        NV_fact("base url", row.base_url),
-      ],
-      _row: row,
-    };
-  }
-
   var cards = items.map(function (row) {
-    return isProviders ? provCard(row) : page.card(row);
+    return page.card(row);
   }).map(function (c, i) { c._row = items[i]; return c; });
   var ql = q.trim().toLowerCase();
   if (ql) {
@@ -728,17 +722,13 @@ function NV_PlatPage() {
   var visible = cards.slice(p * NV_PLAT_PAGE_SIZE, (p + 1) * NV_PLAT_PAGE_SIZE);
 
   function openRow(row) {
-    if (isProviders) con.openOverlay("providers", fam, row.id || null);
-    else page.open(con, row, setModal);
+    page.open(con, row, setModal);
   }
   function runCreate() {
-    if (isProviders) con.openOverlay("providers", fam, null);
-    else if (page.create) page.create(con, setModal);
+    if (page.create) page.create(con, setModal);
   }
   function del(row) {
-    var path = isProviders
-      ? "/" + provClass.plural + "/" + encodeURIComponent(row.id)
-      : (page.delPath ? page.delPath(row) : null);
+    var path = page.delPath ? page.delPath(row) : null;
     if (!path) return;
     confirmDialog({
       title: "Delete " + (row.name || row.id),
@@ -757,8 +747,8 @@ function NV_PlatPage() {
     });
   }
 
-  var title = isProviders ? "Providers" : page.title;
-  var createLabel = isProviders ? "New provider" : page.createLabel;
+  var title = page.title;
+  var createLabel = page.createLabel;
   return (
     <div className="nv-plat-main">
       <div className="nv-plat-wrap" data-testid={"nv-plat-page:" + nav}>
@@ -791,20 +781,6 @@ function NV_PlatPage() {
               onClick={runCreate}>{createLabel}</button>
           ) : null}
         </div>
-        {isProviders ? (
-          <div className="nv-fam-pills" data-testid="nv-plat-fams">
-            {NV_PROV_CLASSES.map(function (cls) {
-              return (
-                <button type="button" key={cls.key} className="nv-fam-pill"
-                  data-active={cls.key === fam ? "true" : "false"}
-                  data-testid={"nv-fam:" + cls.key}
-                  onClick={function () { setFam(cls.key); setPageNo(0); }}>
-                  {cls.label}
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
         {res.error ? (
           <div className="nv-form-error">
             {res.error.detail || res.error.message}
@@ -821,8 +797,7 @@ function NV_PlatPage() {
         ) : null}
         <div className="nv-pcard-grid">
           {visible.map(function (c) {
-            var deletable = isProviders
-              || (page.delPath && page.delPath(c._row));
+            var deletable = page.delPath && page.delPath(c._row);
             return (
               <NV_PlatCard key={c._key || c.name} card={c}
                 onOpen={function () { openRow(c._row); }}

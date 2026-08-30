@@ -1,18 +1,41 @@
 /* global React, Icon, Btn, StatusPill, Banner, Modal, relativeTime */
 // ============================================================================
-// Unified provider catalog (S4 P2; platform wave P1a reconciliation).
+// Unified provider catalog (S4 P2; platform wave P1a reconciliation;
+// IA restructure 01a04d6a - user directive supersedes the mockup where
+// they conflict).
 //
-// One surface for every provider class: a family CHIPS row, a card grid of
-// instances for the selected family, and a "Register provider" dropdown that
-// opens a create modal. Classes that already have a purpose-built panel
-// (vector stores, workspaces, channels) host that component rather than
-// reimplementing it.
+// ONE page for every provider class: an "All" default view merges every
+// CRUD class's instances into a single card grid with a per-card type
+// label; a type filter row (PC_TypeFilter) narrows to one class (crud OR
+// panel); a "Register provider" dropdown (PC_RegisterAll) names the TYPE
+// up front, independent of whatever filter is currently active - picking
+// a crud type opens the create overlay (the kind select lives inside the
+// form, unchanged); picking a panel type (vector stores, workspaces,
+// channels) switches the filter to that class, whose own purpose-built
+// panel already carries its native create affordance rather than
+// reimplementing one here. Clicking a crud-class card opens the SAME
+// form overlay in EDIT mode (locked id, secrets render blank with the
+// current mask as help text, save = PUT).
 //
-// MOUNT CONTRACT (amendment M11d): props are exactly
-// {initialClass, initialInstanceId, onNavigate} and nothing else. S8
-// re-hosts this as an overlay, so any reach for the console's own
-// routing or address bar would have to be unpicked there. Navigation
-// leaves through onNavigate as a structured ref.
+// This used to be a three-layer stack (platform page -> this overlay ->
+// form overlay); the platform page's own "providers" nav entry now
+// mounts this component directly, inline, with no overlay hop - see
+// nv-platform.jsx's NV_PlatPage.
+//
+// MOUNT CONTRACT (amendment M11d, still holds when mounted inline):
+// props are exactly {initialClass, initialInstanceId, onNavigate} and
+// nothing else - no reach for the console's own routing or address bar.
+// Navigation leaves through onNavigate as a structured ref; the caller
+// decides whether that means an overlay URL (legacy deep link) or local
+// page state (the new inline mount).
+//
+// KNOWN GAP (judgment call, flagged not fixed): SSPDetail's own "back"
+// button (semantic-search.jsx) sends the legacy shell router shim back
+// to "/ssp", which resolves via that shim's overlay-name fallback -
+// with no real overlay open (the inline mount's whole point), that
+// fallback degrades to a no-op. Narrow, cosmetic (one dead back button
+// inside the SSP detail view specifically); not worth reaching into a
+// third file to patch for this pass.
 // ============================================================================
 
 const PROVIDER_CLASSES = [
@@ -40,9 +63,18 @@ const PROVIDER_CLASSES = [
     detail: () => window.ChannelProviderDetail },
 ];
 
+// IA restructure 01a04d6a: "All" is a synthetic, non-fetchable pseudo-
+// class - the type filter's default, showing every crud class's
+// instances merged into one grid (see PC_AllInstancesGrid). Prepended
+// here rather than folded into PROVIDER_CLASSES itself, which stays the
+// real backend-class registry every other lookup (Register dropdown,
+// per-card labels, plural/form lookups) keys off unmodified.
+const PC_ALL_TYPE_CHIPS = [{ key: "all", label: "All" }, ...PROVIDER_CLASSES];
+
 // One glyph per provider class, same 12x12 stroke language as the
 // platform nav (ui-ux pass 2026-08-26: the rail was bare text links).
 const PC_CLASS_ICONS = {
+  all: "M2.5 2.5h3.5v3.5H2.5Z M8 2.5h3.5v3.5H8Z M2.5 8h3.5v3.5H2.5Z M8 8h3.5v3.5H8Z",
   llm: "M2 4.5 7 2l5 2.5-5 2.5Z M2 7l5 2.5L12 7 M2 9.5 7 12l5-2.5",
   embedding: "M2 10h2.2V6.5H2Z M5.4 10h2.2V3H5.4Z M8.8 10H11V5H8.8Z M2 12h9",
   cross_encoder: "M2 3.5h6.5 M5.5 7h6.5 M2 10.5h6.5 M10 2l2 1.5-2 1.5 M4 5.5 2 7l2 1.5 M10 9l2 1.5-2 1.5",
@@ -60,10 +92,17 @@ const PC_CLASS_ICONS = {
 // app's own .chip-group/.chip pattern, already proven elsewhere - e.g. the
 // filter bars - rather than inventing a new control). Same classes/order the
 // rail always used; only the container markup changed.
-function PC_FamilyChips({ classes, selected, onSelect }) {
+//
+// IA restructure 01a04d6a: renamed from PC_FamilyChips - it is now the
+// TYPE FILTER for the unified "all types together" page, not just a
+// family rail for a single-class view. `classes` carries the synthetic
+// "All" entry prepended by the caller (PC_ALL_TYPE_CHIPS below); this
+// component itself stays a plain, presentational chip row with no
+// opinion about what "All" means.
+function PC_TypeFilter({ classes, selected, onSelect }) {
   return (
     <div className="chip-group pc-chips" role="tablist"
-      aria-label="Provider family" data-testid="provider-chips">
+      aria-label="Provider type" data-testid="provider-chips">
       {classes.map((cls) => (
         <span
           key={cls.key}
@@ -147,6 +186,40 @@ function PC_RegisterDropdown({ klass, onPick }) {
               </button>
             );
           })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// IA restructure 01a04d6a: the user-directed replacement for the "which
+// kind" register flow above WHEN NOTHING has narrowed the page to one
+// class yet (the default "All" view has no single `klass` to hand
+// PC_RegisterDropdown). Lists the 11 TYPES themselves - no fetch, no
+// annotations (those were per-KIND signals from a class's own /_types
+// data; a per-TYPE list has no such data to show) - picking one names
+// which provider family the operator wants; the kind picker stays where
+// it already lives, inside PC_ProviderForm's own select.
+function PC_RegisterAll({ onPick }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div className="pc-register" data-testid="provider-register-all">
+      <Btn kind="primary" data-testid="provider-register-all-toggle"
+        onClick={() => setOpen((v) => !v)}>
+        Register provider <Icon name={open ? "chevron-up" : "chevron-down"} size={11} />
+      </Btn>
+      {open ? (
+        <div className="pc-register-panel" role="menu"
+          data-testid="provider-register-all-panel">
+          <div className="pc-register-head">Type - decides which providers list</div>
+          {PROVIDER_CLASSES.map((cls) => (
+            <button type="button" key={cls.key} role="menuitem"
+              className="pc-register-row"
+              data-testid={`provider-register-type-${cls.key}`}
+              onClick={() => { setOpen(false); onPick(cls.key); }}>
+              <span>{cls.label}</span>
+            </button>
+          ))}
         </div>
       ) : null}
     </div>
@@ -273,7 +346,7 @@ function PC_InstanceCard({ klass, row, onOpen, onChanged }) {
       </div>
       <div className="pc-card-footer">
         <Btn kind="primary" size="sm" data-testid={`provider-card-open-${row.id}`}
-          onClick={() => onOpen(row.id)}>
+          onClick={() => onOpen(row)}>
           Open
         </Btn>
         <span style={{ flex: 1 }} />
@@ -362,6 +435,72 @@ function PC_InstanceGrid({ klass, onSelect, onRegisterRefetch }) {
         ))}
       </div>
       <Pager pager={list} label="providers" />
+    </div>
+  );
+}
+
+// IA restructure 01a04d6a: the "All" default view - every CRUD class's
+// instances in ONE grid, each card labelled with its own type so an
+// operator scanning the merged list still knows what they are looking
+// at. One combined fetch (Promise.all over each crud plural) rather than
+// N separate useResource calls, which would call hooks inside a loop.
+// Panel classes (vector stores, workspaces, channels) are deliberately
+// NOT merged in here - each already owns a purpose-built list/detail
+// pair with real, class-specific actions (reindex, channel rules, ...) a
+// generic card would either omit or fake; reachable via their own type
+// filter chip instead, unchanged from before this restructure.
+function PC_AllInstancesGrid({ onSelect, reloadKey }) {
+  const { apiFetch, useResource } = window.primerApi;
+  const crudClasses = PROVIDER_CLASSES.filter((c) => c.form === "crud");
+  const all = useResource(
+    `catalog:all-instances:${reloadKey}`,
+    (signal) => Promise.all(crudClasses.map((c) =>
+      apiFetch("GET", `/${c.plural}?limit=200`, null, { signal })
+        .then((r) => (r && r.items) || [])
+        .catch(() => [])
+    )).then((lists) => {
+      const rows = [];
+      crudClasses.forEach((c, i) => {
+        (lists[i] || []).forEach((row) => rows.push({ klass: c, row }));
+      });
+      return { rows: rows };
+    }),
+    { pollMs: 15000 },
+  );
+  const rows = (all.data && all.data.rows) || [];
+
+  if (all.error) {
+    return (
+      <Banner kind="error" title="Could not load providers">
+        {String(all.error.detail || all.error.title || all.error)}
+      </Banner>
+    );
+  }
+  if (!all.loading && rows.length === 0) {
+    return (
+      <div className="empty-state" data-testid="provider-empty-all">
+        <h3>No providers registered yet</h3>
+        <p>Use Register provider to add one.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="provider-instances-all" style={{ minWidth: 0, flex: "1 1 0" }}>
+      <div className="pc-card-grid">
+        {rows.map(({ klass, row }) => (
+          <div key={`${klass.key}:${row.id}`} className="pc-card-wrap">
+            <span className="pc-card-type-label"
+              data-testid={`provider-card-type-${row.id}`}>{klass.label}</span>
+            <PC_InstanceCard
+              klass={klass}
+              row={row}
+              onOpen={() => onSelect(klass, row)}
+              onChanged={() => all.refetch()}
+            />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -609,9 +748,9 @@ function PC_ActiveWebSearchPanel() {
 }
 
 function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
-  const [classKey, setClassKey] = React.useState(
-    initialClass || PROVIDER_CLASSES[0].key,
-  );
+  // IA restructure 01a04d6a: "all" is the default - the user directive's
+  // "ONE page, all types together" - not the first real class.
+  const [classKey, setClassKey] = React.useState(initialClass || "all");
   const [instanceId, setInstanceId] = React.useState(initialInstanceId || null);
   // The addressed instance wins. This was seeded once and never looked at
   // again, so a page inside the catalog that navigates on its own -- the
@@ -627,12 +766,20 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   const listRefetchRef = React.useRef(null);
   const [reloadKey, setReloadKey] = React.useState(0);
   const [draft, setDraft] = React.useState({});
-  // Platform wave P1a items 2/3/7: creation moved from an always-mounted
-  // inline form to a modal, opened by the register dropdown naming the
-  // kind up front. null = closed.
-  const [createOpen, setCreateOpen] = React.useState(false);
+  // IA restructure 01a04d6a: ONE modal, two modes - formOpen is whether
+  // it is showing at all; editingRow is null for create (the directive's
+  // "create = same overlay empty"), or the fetched row for edit (locked
+  // id, secrets blank - see PC_ProviderForm's `editing` prop). formKlass
+  // is the class the open form targets, independent of the page's own
+  // classKey/chip selection (opening "All" -> edit an LLM row must not
+  // require the page to already be filtered to "llm").
+  const [formOpen, setFormOpen] = React.useState(false);
+  const [editingRow, setEditingRow] = React.useState(null);
+  const [formKlass, setFormKlass] = React.useState(null);
 
-  const klass = PROVIDER_CLASSES.find((c) => c.key === classKey) || PROVIDER_CLASSES[0];
+  const isAll = classKey === "all";
+  const klass = isAll ? null
+    : PROVIDER_CLASSES.find((c) => c.key === classKey) || PROVIDER_CLASSES[0];
   const cls = klass;
 
   const selectClass = (key) => {
@@ -643,36 +790,80 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     }
   };
 
-  const save = async (body) => {
-    const { apiFetch } = window.primerApi;
-    const method = body.id && instanceId === body.id ? "PUT" : "POST";
-    const path = method === "PUT"
-      ? `/${cls.plural}/${encodeURIComponent(body.id)}`
-      : `/${cls.plural}`;
-    await apiFetch(method, path, body);
-    // Refresh the list beside the form. setReloadKey bumps a counter
-    // nothing depends on, so a created provider never appeared until the
-    // operator navigated away and back: the row action beside it already
-    // used this refetch, the create simply never called it.
-    if (listRefetchRef.current) listRefetchRef.current();
-    setReloadKey((k) => k + 1);
-    if (method === "POST" && body.id) {
-      setCreateOpen(false);
-      setDraft({});
-      // Select what was just made, which is where the operator is
-      // already looking.
-      selectInstance(body.id);
-      const toast = window.primerApi && window.primerApi.toastPush;
-      if (typeof toast === "function") {
-        toast({ kind: "success", title: "Provider created", detail: body.id });
-      }
-    }
-  };
-
   const selectInstance = (id) => {
     setInstanceId(id);
     if (typeof onNavigate === "function") {
-      onNavigate({ kind: "provider-instance", classKey: cls.key, id });
+      onNavigate({ kind: "provider-instance", classKey: (cls || {}).key || classKey, id });
+    }
+  };
+
+  // Register provider (PC_RegisterAll) names a TYPE, not a kind - a crud
+  // class opens the SAME form modal empty (create); a panel class has no
+  // generic form to open at all, so this just switches the filter to it,
+  // where its own native create affordance already lives.
+  function openCreate(key) {
+    const k = PROVIDER_CLASSES.find((c) => c.key === key);
+    if (!k || k.form === "panel") {
+      selectClass(key);
+      return;
+    }
+    setFormKlass(k);
+    setEditingRow(null);
+    setDraft({});
+    setFormOpen(true);
+  }
+
+  // New capability (01a04d6a): the SAME form modal, prefilled and locked
+  // to one row - see PC_ProviderForm's `editing`/`existingRow` props for
+  // how the id gets locked and secrets never round-trip the mask. Also
+  // focuses the page on that row's own class/instance (whether reached
+  // from a single-class view or the merged "All" grid), so the profiles
+  // panel below (LLM only) and the breadcrumb stay consistent with what
+  // is now open.
+  function openEdit(k, row) {
+    setFormKlass(k);
+    setEditingRow(row);
+    setDraft(row);
+    setFormOpen(true);
+    selectClass(k.key);
+    selectInstance(row.id);
+  }
+
+  function closeForm() {
+    setFormOpen(false);
+    setEditingRow(null);
+    setDraft({});
+  }
+
+  const save = async (body) => {
+    const { apiFetch } = window.primerApi;
+    const targetKlass = formKlass || cls;
+    const wasEditingId = editingRow ? editingRow.id : null;
+    const method = wasEditingId ? "PUT" : "POST";
+    const path = wasEditingId
+      ? `/${targetKlass.plural}/${encodeURIComponent(wasEditingId)}`
+      : `/${targetKlass.plural}`;
+    await apiFetch(method, path, body);
+    // Refresh the list beside the form. setReloadKey bumps a counter
+    // nothing depends on, so a created/updated provider never appeared
+    // until the operator navigated away and back: the row action beside
+    // it already used this refetch, the create/edit simply never called
+    // it. Also keys PC_AllInstancesGrid's merged fetch, so a save from
+    // ANY class's form is reflected in the "All" view too.
+    if (listRefetchRef.current) listRefetchRef.current();
+    setReloadKey((k) => k + 1);
+    closeForm();
+    const toast = window.primerApi && window.primerApi.toastPush;
+    if (typeof toast === "function") {
+      toast(wasEditingId
+        ? { kind: "success", title: "Provider updated", detail: wasEditingId }
+        : { kind: "success", title: "Provider created", detail: body.id });
+    }
+    if (!wasEditingId && body.id) {
+      // Select what was just made, which is where the operator is
+      // already looking.
+      selectClass(targetKlass.key);
+      selectInstance(body.id);
     }
   };
 
@@ -682,7 +873,11 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   // Their own panel renders its own create affordance, so the register
   // dropdown below is a crud-class-only control.
   let body;
-  if (cls.form === "panel") {
+  if (isAll) {
+    body = (
+      <PC_AllInstancesGrid onSelect={openEdit} reloadKey={reloadKey} />
+    );
+  } else if (cls.form === "panel") {
     const Detail = instanceId && cls.detail ? cls.detail() : null;
     const Panel = cls.panel();
     // Detail components predate the catalog and name their id after the
@@ -712,7 +907,14 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     body = (
       <PC_InstanceGrid
         klass={cls}
-        onSelect={selectInstance}
+        onSelect={(row) => {
+          // PC_InstanceCard's onOpen hands back the full row (its own
+          // onDelete path still calls onSelect(null) too, via
+          // onChanged below) - a real open needs every field to
+          // prefill the edit form, which an id alone cannot give it.
+          if (row == null) { selectInstance(null); return; }
+          openEdit(cls, row);
+        }}
         onRegisterRefetch={(fn) => { listRefetchRef.current = fn; }}
       />
     );
@@ -723,45 +925,40 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       <div className="row" style={{ alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         <h2 className="text-lg" style={{ margin: 0 }}>Providers</h2>
         <span style={{ flex: 1 }} />
-        {cls.form === "crud" ? (
-          <PC_RegisterDropdown
-            klass={cls}
-            onPick={(kind) => {
-              setDraft({ provider: kind });
-              setCreateOpen(true);
-            }}
-          />
-        ) : null}
+        <PC_RegisterAll onPick={openCreate} />
       </div>
-      <PC_FamilyChips
-        classes={PROVIDER_CLASSES}
-        selected={cls.key}
+      <PC_TypeFilter
+        classes={PC_ALL_TYPE_CHIPS}
+        selected={classKey}
         onSelect={selectClass}
       />
       <div className="col" style={{ gap: 16 }}>
-        {klass.key === "stt" || klass.key === "tts" ? <PC_ActiveSpeechPanel /> : null}
-        {klass.key === "web_search" ? <PC_ActiveWebSearchPanel /> : null}
-        <div data-testid={`provider-body-${klass.key}`}>{body}</div>
-        {klass.profiles && instanceId ? (
+        {!isAll && (klass.key === "stt" || klass.key === "tts")
+          ? <PC_ActiveSpeechPanel /> : null}
+        {!isAll && klass.key === "web_search" ? <PC_ActiveWebSearchPanel /> : null}
+        <div data-testid={`provider-body-${classKey}`}>{body}</div>
+        {!isAll && klass.profiles && instanceId ? (
           <PC_ProfilesPanel providerId={instanceId} />
         ) : null}
       </div>
-      {createOpen ? (
+      {formOpen ? (
         <Modal
-          title={`New ${cls.label} provider`}
-          onClose={() => { setCreateOpen(false); setDraft({}); }}
+          width={720}
+          title={`${editingRow ? "Edit" : "New"} ${formKlass.label} provider`}
+          onClose={closeForm}
         >
           <div className="pc-modal-chip mono text-sm muted"
             data-testid="provider-modal-schema-chip">
             schema-driven from /providers/_types
           </div>
           <window.PC_ProviderForm
-            plural={cls.plural}
-            typesPath={`/${cls.plural}/_types`}
+            plural={formKlass.plural}
+            typesPath={`/${formKlass.plural}/_types`}
             value={draft}
             onChange={setDraft}
             onSubmit={save}
-            onCancel={() => { setCreateOpen(false); setDraft({}); }}
+            onCancel={closeForm}
+            editing={!!editingRow}
           />
         </Modal>
       ) : null}
