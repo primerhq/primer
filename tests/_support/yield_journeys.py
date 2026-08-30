@@ -74,9 +74,11 @@ async def drive_park_on_tool(
             last = r.json()
             if last.get("parked_status") == "parked":
                 return sid, scenario, last
-            if last.get("status") in ("ended",):
+            if last.get("status") in ("ended",) or last.get("session_state") == "parked":
+                # The latter is the post-01a0518a shape: the turn
+                # finished cleanly without ever parking on the tool.
                 raise AssertionError(
-                    f"session {sid} ended before parking on {tool!r}: "
+                    f"session {sid} finished before parking on {tool!r}: "
                     f"reason={last.get('ended_reason')!r} body={last!r}"
                 )
         await asyncio.sleep(interval_s)

@@ -153,6 +153,9 @@ async def test_mcp_service_drives_a_session_end_to_end(
                 assert sid
 
                 # ---- (3) poll get_workspace_session over MCP to terminal.
+                # 01a0518a: this plain agent session's clean stop now rests
+                # it parked, not ended - accept either shape (session_state
+                # mirrors the REST route's own computed field).
                 final = None
                 for _ in range(120):
                     got = await sess.call_tool(
@@ -162,20 +165,24 @@ async def test_mcp_service_drives_a_session_end_to_end(
                     assert not got.isError, _result_text(got)
                     body = json.loads(_result_text(got))
                     info = body.get("info", {})
-                    if body.get("status") == "ended" or info.get("status") == "ended":
+                    if (
+                        body.get("status") == "ended" or info.get("status") == "ended"
+                        or body.get("session_state") == "parked"
+                        or info.get("session_state") == "parked"
+                    ):
                         final = body
                         break
                     await asyncio.sleep(0.5)
                 assert final is not None, (
-                    "MCP-created session never reached terminal over "
+                    "MCP-created session never completed its turn over "
                     "get_workspace_session (cross-process status mirror)"
                 )
-                assert final["info"]["ended_reason"] == "completed", final
+                assert final["info"].get("session_state") == "parked", final
 
                 # Thin-wrapper parity: the same row the REST route serves.
                 rest = await authed_client.get(f"/v1/sessions/{sid}")
                 assert rest.status_code == 200, rest.text
-                assert rest.json()["status"] == "ended", rest.json()
+                assert rest.json()["session_state"] == "parked", rest.json()
 
                 # ---- (4) read the transcript over MCP -- the result is there.
                 read_res = await sess.call_tool(
@@ -212,10 +219,13 @@ async def test_mcp_service_drives_a_session_end_to_end(
                 )
                 assert not cancelled.isError, _result_text(cancelled)
 
-                # Re-poll to terminal: the cancelled session ends. (A session
-                # that finished its one quick turn before the cancel landed
-                # ends 'completed'; one preempted mid-run ends 'cancelled' --
-                # either is a terminal end, which is the lifecycle assertion.)
+                # Re-poll to terminal: the cancel call itself always forces
+                # the row to ended/cancelled (cancel_session's inline
+                # CREATED/WAITING/PAUSED branch), independent of whether the
+                # turn had already cleanly finished (which, post-01a0518a,
+                # would otherwise just rest it parked) or was preempted
+                # mid-run - unlike a plain clean stop, an explicit cancel is
+                # exactly the "ENDED reserved for explicit end" case.
                 term = None
                 for _ in range(120):
                     got = await sess.call_tool(

@@ -148,14 +148,20 @@ async def _wait_for_terminal(
     timeout_s: float = 90.0,
     interval_s: float = 0.5,
 ) -> dict:
-    """Poll session until status='ended' OR timeout."""
+    """Poll session until the turn cleanly finishes OR timeout.
+
+    01a0518a: a plain interactive agent session's clean stop now rests
+    it WAITING (session_state="parked") instead of ending it - accept
+    either shape rather than only status=="ended" (which would never
+    arrive here and silently skip this test every run - see the
+    soft-skip check below)."""
     iters = max(1, int(timeout_s / interval_s))
     last: dict = {}
     for _ in range(iters):
         r = await client.get(f"/v1/sessions/{session_id}")
         if r.status_code == 200:
             last = r.json()
-            if last.get("status") == "ended":
+            if last.get("status") == "ended" or last.get("session_state") == "parked":
                 return last
         await asyncio.sleep(interval_s)
     return last
@@ -253,10 +259,12 @@ async def test_lmstudio_full_execution_journey_produces_observable_artifacts(
         # This avoids flaky-CI failure when LM Studio is loaded but
         # slow (large model, cold start). Real bug should land via
         # /v1/health worker pool capacity or other observability.
-        if final.get("status") != "ended":
+        if final.get("session_state") != "parked":
             pytest.skip(
-                f"session did not reach terminal status in 90s: "
-                f"status={final.get('status')!r}; LM Studio likely cold-loading"
+                f"session did not complete its turn in 90s: "
+                f"status={final.get('status')!r} "
+                f"session_state={final.get('session_state')!r}; "
+                f"LM Studio likely cold-loading"
             )
 
         # ----- assert observable execution artifacts -----

@@ -192,6 +192,11 @@ async def _wait_for_terminal(
 
     Returns the final session row regardless of status. Caller decides
     whether the timeout/non-terminal outcome is acceptable.
+
+    01a0518a: a plain interactive agent session's clean stop now rests
+    it WAITING (session_state="parked") instead of ending it - accept
+    either shape, or every caller here would spin the full timeout_s.
+    An autonomous (graph) session still reaches "ended" unaffected.
     """
     deadline_iters = max(1, int(timeout_s / interval_s))
     last_body: dict = {}
@@ -201,7 +206,10 @@ async def _wait_for_terminal(
             await asyncio.sleep(interval_s)
             continue
         last_body = resp.json()
-        if last_body.get("status") in _TERMINAL_STATUSES:
+        if (
+            last_body.get("status") in _TERMINAL_STATUSES
+            or last_body.get("session_state") == "parked"
+        ):
             return last_body
         await asyncio.sleep(interval_s)
     return last_body
@@ -289,7 +297,7 @@ async def test_t0037_session_resume_pause_resume_cancel_walk(
             session_id=session_id,
             timeout_s=60.0,
         )
-        assert final.get("status") == "ended", (
+        assert final.get("session_state") == "parked", (
             f"session did not reach terminal within 60s; final={final!r}"
         )
     finally:
@@ -844,7 +852,7 @@ async def test_t0135_steer_pre_resume_accepted_and_session_terminates(
             client, workspace_id=workspace_id, session_id=session_id,
             timeout_s=60.0,
         )
-        assert final.get("status") == "ended", (
+        assert final.get("session_state") == "parked", (
             f"steered session did not terminate within 60s: {final!r}"
         )
         # And the worker actually progressed (not zero-turn ended on
@@ -919,7 +927,7 @@ async def test_t0136_initial_instructions_plus_steer_both_run(
             client, workspace_id=workspace_id, session_id=session_id,
             timeout_s=60.0,
         )
-        assert final.get("status") == "ended", (
+        assert final.get("session_state") == "parked", (
             f"two-instruction session did not terminate: {final!r}"
         )
         assert final.get("turn_no", 0) > 0, (
@@ -1014,7 +1022,7 @@ async def test_t0137_cancel_running_session_converges_to_ended(
             client, workspace_id=workspace_id, session_id=session_id,
             timeout_s=120.0,  # the heavy prompt can take a while
         )
-        assert final.get("status") == "ended", (
+        assert final.get("session_state") == "parked", (
             f"cancelled session did not converge to terminal: {final!r}"
         )
         # If we observed RUNNING and successfully sent cancel, ended_reason
@@ -1093,7 +1101,7 @@ async def test_t0138_two_concurrent_sessions_both_terminate(
                 timeout_s=120.0,
             )
             finals.append(final)
-            assert final.get("status") == "ended", (
+            assert final.get("session_state") == "parked", (
                 f"session {sid!r} did not terminate cleanly: {final!r}"
             )
             # No 5xx on the GET path
@@ -1418,7 +1426,7 @@ async def test_t0271_six_concurrent_sessions_on_capacity_four_terminate(
                 client, workspace_id=wid, session_id=sid,
                 timeout_s=180.0,
             )
-            assert final.get("status") == "ended", (
+            assert final.get("session_state") == "parked", (
                 f"session {sid!r} did not terminate cleanly: {final!r}"
             )
 
@@ -1602,7 +1610,7 @@ async def test_t0341_session_pause_resume_observable_against_lm_studio(
             client, workspace_id=workspace_id, session_id=session_id,
             timeout_s=120.0,
         )
-        assert final.get("status") == "ended", (
+        assert final.get("session_state") == "parked", (
             f"pause+resume session did not converge to terminal: "
             f"{final!r}"
         )
@@ -1703,7 +1711,7 @@ async def test_t0179_concurrent_steer_and_cancel_no_5xx(
             client, workspace_id=workspace_id, session_id=session_id,
             timeout_s=120.0,
         )
-        assert final.get("status") == "ended", (
+        assert final.get("session_state") == "parked", (
             f"race winner did not push session to terminal: {final!r}"
         )
     finally:
@@ -1890,7 +1898,7 @@ async def test_t0490_two_pause_calls_on_running_session_clean(
             client, workspace_id=workspace_id, session_id=session_id,
             timeout_s=120.0,
         )
-        assert final.get("status") == "ended", (
+        assert final.get("session_state") == "parked", (
             f"session did not reach terminal after two-pause race: "
             f"{final!r}"
         )

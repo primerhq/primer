@@ -183,9 +183,13 @@ async def _wait_for_parked(
             last = r.json()
             if last.get("parked_status") == "parked":
                 return last
-            if last.get("status") == "ended":
-                # Session terminated before parking — LLM didn't call
-                # the gated tool, or worker hit a fatal error.
+            if last.get("status") == "ended" or last.get("session_state") == "parked":
+                # Session terminated (or, post-01a0518a, finished its
+                # turn and now rests parked) before parking on the gate
+                # — LLM didn't call the gated tool, or worker hit a
+                # fatal error. Return early rather than spin the full
+                # timeout; the caller's own soft-skip on parked_status
+                # still applies.
                 return last
         await asyncio.sleep(interval_s)
     return last
