@@ -338,9 +338,10 @@ async def _persist_resume_tool_result_record(
     API + live tap read (01a04e0a). Payload shape mirrors the live-turn
     write (``call_id``/``output``/``error`` - see
     ``primer.session.persistence``'s ``_ExecutorToolResult`` handler),
-    NOT ``abandon_session_gate``'s ``id``/``name``/``result`` shape,
-    which ``primer.session.timeline`` cannot actually pair back to its
-    TOOL_CALL (it keys the lookup by ``call_id``).
+    the same shape ``abandon_session_gate`` was fixed to use (01a05350)
+    after ``primer.session.timeline`` was found unable to pair its old
+    ``id``/``name``/``result`` shape back to a TOOL_CALL (it keys the
+    lookup by ``call_id``).
 
     Best-effort and best-effort ONLY: this is a secondary, display-side
     record. The turn's continuation already stands on the legacy write

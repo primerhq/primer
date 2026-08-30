@@ -94,8 +94,42 @@ class TestAbandonGate:
         )
         result = _records(io)[0]
         assert result["payload"]["error"] is True
-        assert result["payload"]["id"] == "tc-9"
-        assert "binding switched" in result["payload"]["result"]
+        # call_id/output, NOT id/result - primer/session/timeline.py's
+        # TOOL_CALL pairing looks up payload["call_id"] specifically
+        # (01a05350; matches the live-turn write shape in
+        # primer/session/persistence.py's _ExecutorToolResult handler).
+        assert result["payload"]["call_id"] == "tc-9"
+        assert "binding switched" in result["payload"]["output"]
+
+    async def test_result_pairs_with_its_tool_call_in_the_timeline(self):
+        """01a05350: an abandoned gate's synthesized TOOL_RESULT must
+        actually close its TOOL_CALL node in the timeline view, not fall
+        through as an unpaired record."""
+        from primer.session.timeline import build_turn_timeline
+
+        io = _IO()
+        tool_call_line = json.dumps({
+            "seq": 5,
+            "kind": "tool_call",
+            "created_at": datetime.now(UTC).isoformat(),
+            "payload": {"id": "tc-9", "name": "ask_user", "arguments": {}},
+        })
+        await abandon_session_gate(
+            sessions=_Sessions(_row()), workspace_io=io, row=_row(),
+            reason="binding switched",
+        )
+        abandoned_lines = [json.dumps(rec) for rec in _records(io)]
+
+        tl = build_turn_timeline(
+            message_lines=[tool_call_line, *abandoned_lines],
+            turn_log_lines=[], turn_no=0,
+        )
+        tool_node = next(
+            c for c in tl["children"] if c.get("tool_call_id") == "tc-9"
+        )
+        assert tool_node["status"] == "error"
+        assert tool_node["result"] is not None
+        assert "binding switched" in tool_node["result"]["output"]
 
     async def test_clears_both_park_fields_and_advances_last_seq(self):
         """M15: leaving parked_state populated would look resumable."""

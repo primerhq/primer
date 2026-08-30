@@ -300,7 +300,8 @@ async def test_resume_agent_persists_modern_tool_result_record(monkeypatch):
 
     # The modern TOOL_RESULT record was ALSO appended, shaped to match
     # what primer.session.timeline actually keys its TOOL_CALL pairing
-    # off of (call_id, NOT abandon_session_gate's "id").
+    # off of (call_id - abandon_session_gate was fixed to the same
+    # shape in 01a05350).
     assert len(fake_ws.lines) == 1
     written_sid, blob = fake_ws.lines[0]
     assert written_sid == sid

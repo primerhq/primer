@@ -79,14 +79,18 @@ async def abandon_session_gate(
     )
     now = datetime.now(UTC)
     # The pairing record comes first: a terminal written before it would
-    # leave a tool_use no result ever answers.
+    # leave a tool_use no result ever answers. Payload shape MUST match
+    # the live-turn write (primer/session/persistence.py's
+    # _ExecutorToolResult handler: call_id/output/error) - timeline.py's
+    # TOOL_CALL pairing looks up ``payload["call_id"]`` specifically, so
+    # the old {id, name, result} shape here silently never closed its
+    # TOOL_CALL in the trace/timeline (01a05350).
     await writer.append(SessionMessageRecord(
         seq=1,  # overwritten by the writer's monotonic counter
         kind=SessionMessageKind.TOOL_RESULT,
         payload={
-            "id": tool_call_id,
-            "name": str(mode or ""),
-            "result": result_text,
+            "call_id": tool_call_id,
+            "output": result_text,
             "error": True,
         },
         created_at=now,
