@@ -71,6 +71,22 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -218,7 +234,9 @@ async def test_toolcall_template_error_in_args() -> None:
     )
 
     async def stub_dispatcher(node, arguments):  # pragma: no cover — never reached
-        raise AssertionError("dispatcher should not be called when args resolution fails")
+        raise AssertionError(
+            "dispatcher should not be called when args resolution fails"
+        )
 
     async def agent_resolver(agent_id: str) -> Agent:
         raise KeyError(agent_id)

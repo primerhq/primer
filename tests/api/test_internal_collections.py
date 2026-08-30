@@ -24,7 +24,9 @@ from httpx import ASGITransport
 
 
 async def _bootstrap_and_wait(
-    client: httpx.AsyncClient, *, timeout_s: float = 30.0,
+    client: httpx.AsyncClient,
+    *,
+    timeout_s: float = 30.0,
 ) -> dict:
     """POST /bootstrap and return the resulting status.
 
@@ -36,6 +38,7 @@ async def _bootstrap_and_wait(
     resp = await client.post("/v1/internal_collections/bootstrap")
     assert resp.status_code == 200, resp.text
     return resp.json()
+
 
 from pydantic import SecretStr
 
@@ -59,6 +62,7 @@ from primer.model.storage import OffsetPage, OffsetPageResponse
 # ===========================================================================
 # Module-level patch: suppress the real Docling/HuggingFace ingest path
 # ===========================================================================
+
 
 # _ingest_ai_docs() defaults to DoclingSplitter (HybridChunker backed by a
 # sentence-transformers BertTokenizer) + DoclingLoader (IBM DocumentConverter).
@@ -140,6 +144,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id, *, conn=None):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -165,17 +185,26 @@ class _Storage:
         items = list(self._data.values())
         for field, value in _predicate_equalities(predicate):
             items = [
-                i for i in items
+                i
+                for i in items
                 if (getattr(i, field, None) == value)
                 or (value is None and getattr(i, field, None) is None)
             ]
         sliced = items[page.offset : page.offset + page.length]
         return OffsetPageResponse(
-            offset=page.offset, length=len(sliced), total=len(items), items=sliced,
+            offset=page.offset,
+            length=len(sliced),
+            total=len(items),
+            items=sliced,
         )
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
         # The document tree (and so the system-collection regeneration the
@@ -246,9 +275,9 @@ class _FakeStore:
         nothing.
         """
         return [
-            r for (c, _, _), r in self.records.items()
-            if c == cid
-            and all(r.meta.get(k) == v for k, v in (meta or {}).items())
+            r
+            for (c, _, _), r in self.records.items()
+            if c == cid and all(r.meta.get(k) == v for k, v in (meta or {}).items())
         ]
 
 
@@ -264,8 +293,7 @@ class _FakeEmbedder:
     async def embed(self, *, model, inputs, **kwargs):
         class _R:
             embeddings = [
-                type("E", (), {"vector": [0.1, 0.2, 0.3, 0.4]})()
-                for _ in inputs
+                type("E", (), {"vector": [0.1, 0.2, 0.3, 0.4]})() for _ in inputs
             ]
 
         return _R()
@@ -349,7 +377,10 @@ async def app(sp, pr, store):
             id="ssp-test",
             provider=SemanticSearchProviderType.PGVECTOR,
             config=PgVectorConfig(
-                hostname="x", username="u", password="p", database="d",  # type: ignore[arg-type]
+                hostname="x",
+                username="u",
+                password="p",
+                database="d",  # type: ignore[arg-type]
             ),
         )
     )
@@ -364,6 +395,7 @@ async def app(sp, pr, store):
     # does this unconditionally). This module builds its own app, so the
     # shared conftest mirror does not reach it.
     from primer.knowledge.system_collection import regenerate_system_collection
+
     await regenerate_system_collection(sp, toolset_providers={})
     return test_app
 
@@ -374,7 +406,10 @@ async def client(app):
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
         try:
-            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            await c.post(
+                "/v1/auth/register",
+                json={"username": "testuser", "password": "testpassword"},
+            )
         except Exception:
             pass
         yield c
@@ -412,9 +447,7 @@ class TestConfigCRUD:
 
     @pytest.mark.asyncio
     async def test_put_creates_and_get_returns(self, client) -> None:
-        put = await client.put(
-            "/v1/internal_collections/config", json=_config_body()
-        )
+        put = await client.put("/v1/internal_collections/config", json=_config_body())
         assert put.status_code == 200, put.text
         assert put.json()["embedding_provider_id"] == "hf-1"
 
@@ -423,14 +456,20 @@ class TestConfigCRUD:
         assert get.json()["activated_at"] is None
 
     @pytest.mark.asyncio
-    async def test_put_preserves_activated_at_when_editing_reranker(self, client) -> None:
+    async def test_put_preserves_activated_at_when_editing_reranker(
+        self, client
+    ) -> None:
         """Reranker / MMR don't define the vector space, so editing them
         post-activation succeeds and preserves activated_at."""
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
-        body2 = {**_config_body(), "cross_encoder": {
-            "provider_id": "ce-1", "model": "rerank-m",
-        }}
+        body2 = {
+            **_config_body(),
+            "cross_encoder": {
+                "provider_id": "ce-1",
+                "model": "rerank-m",
+            },
+        }
         resp = await client.put("/v1/internal_collections/config", json=body2)
         assert resp.status_code == 200, resp.text
         get = await client.get("/v1/internal_collections/config")
@@ -438,7 +477,9 @@ class TestConfigCRUD:
         assert get.json()["cross_encoder"]["model"] == "rerank-m"
 
     @pytest.mark.asyncio
-    async def test_put_rejects_vector_space_change_after_activation(self, client) -> None:
+    async def test_put_rejects_vector_space_change_after_activation(
+        self, client
+    ) -> None:
         """Changing embedding_model, embedding_provider_id, or
         search_provider_id post-activation would invalidate existing
         embeddings (different vector space) — reject 409."""
@@ -470,9 +511,7 @@ class TestConfigCRUD:
         delete = await client.delete("/v1/internal_collections/config")
         assert delete.status_code == 204
         assert app.state.internal_collections is None
-        search = await client.post(
-            "/v1/agents/search", json={"query": "anything"}
-        )
+        search = await client.post("/v1/agents/search", json={"query": "anything"})
         assert search.status_code == 503
 
     @pytest.mark.asyncio
@@ -499,9 +538,7 @@ class TestConfigCRUD:
         # Re-PUT + re-enable: the second activation starts from a
         # disabled collection, so a different embedding model cannot
         # surface dimension-mismatched stale vectors.
-        put2 = await client.put(
-            "/v1/internal_collections/config", json=_config_body()
-        )
+        put2 = await client.put("/v1/internal_collections/config", json=_config_body())
         assert put2.status_code == 200, put2.text
         await _bootstrap_and_wait(client)
         again = await client.get("/v1/collections/system")
@@ -549,7 +586,8 @@ class TestBootstrap:
 
     @pytest.mark.asyncio
     async def test_status_returns_idle_before_any_bootstrap(
-        self, client,
+        self,
+        client,
     ) -> None:
         resp = await client.get("/v1/internal_collections/bootstrap/status")
         assert resp.status_code == 200
@@ -560,7 +598,8 @@ class TestBootstrap:
 
     @pytest.mark.asyncio
     async def test_status_reflects_terminal_state(
-        self, client,
+        self,
+        client,
     ) -> None:
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
@@ -585,16 +624,12 @@ class TestSearchEndpoints:
     @pytest.mark.asyncio
     async def test_search_returns_503_when_inactive(self, client) -> None:
         for entity in ("agents", "graphs", "collections", "tools"):
-            resp = await client.post(
-                f"/v1/{entity}/search", json={"query": "anything"}
-            )
+            resp = await client.post(f"/v1/{entity}/search", json={"query": "anything"})
             assert resp.status_code == 503
             assert resp.json()["type"] == "/errors/subsystem-inactive"
 
     @pytest.mark.asyncio
-    async def test_search_resolves_but_is_inert_when_active(
-        self, client, sp
-    ) -> None:
+    async def test_search_resolves_but_is_inert_when_active(self, client, sp) -> None:
         """S2 pinned decision 15: the per-entity IC search surface stays
         REGISTERED BUT INERT until P5 deletes it. Activation no longer
         populates the five _internal_* namespaces - agent and graph
@@ -605,9 +640,7 @@ class TestSearchEndpoints:
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
 
-        resp = await client.post(
-            "/v1/agents/search", json={"query": "research"}
-        )
+        resp = await client.post("/v1/agents/search", json={"query": "research"})
         assert resp.status_code == 200, resp.text
         assert resp.json()["hits"] == []
 
@@ -619,9 +652,7 @@ class TestSearchEndpoints:
 
 class TestSearchToolset:
     @pytest.mark.asyncio
-    async def test_search_toolset_id_no_longer_resolves(
-        self, client, pr, sp
-    ) -> None:
+    async def test_search_toolset_id_no_longer_resolves(self, client, pr, sp) -> None:
         """S2 P5 deleted the search toolset: collections.semantic_search is
         the live path, so the reserved id is simply unknown now."""
         from primer.model.except_ import NotFoundError
@@ -644,14 +675,16 @@ async def test_system_collection_exists_without_ic_activation(client):
     r = await client.get("/v1/collections/system")
     assert r.status_code == 200
     assert r.json()["system"] is True
-    docs = await client.get("/v1/collections/system/docs",
-                            params={"parent": "", "depth": 1})
+    docs = await client.get(
+        "/v1/collections/system/docs", params={"parent": "", "depth": 1}
+    )
     assert docs.status_code == 200
     roots = {n["slug"] for n in docs.json()["nodes"]}
     assert {"agents", "graphs", "tools", "collections", "docs"} <= roots
 
 
 async def test_user_write_to_system_collection_403(client):
-    r = await client.post("/v1/collections/system/docs",
-                          json={"parent": "", "slug": "x", "body": "y"})
+    r = await client.post(
+        "/v1/collections/system/docs", json={"parent": "", "slug": "x", "body": "y"}
+    )
     assert r.status_code == 403

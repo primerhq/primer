@@ -61,6 +61,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -76,7 +92,9 @@ class _Storage:
                 total=len(items),
                 items=sliced,
             )
-        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+        return OffsetPageResponse(
+            offset=0, length=len(items), total=len(items), items=items
+        )
 
     async def find(self, predicate, page, *, order_by=None):
         """Evaluate the predicate tree in-memory against every stored entity."""
@@ -115,10 +133,7 @@ class _Storage:
                 return True
             return True
 
-        matched = [
-            item for item in self._data.values()
-            if _eval(predicate, item)
-        ]
+        matched = [item for item in self._data.values() if _eval(predicate, item)]
         if isinstance(page, OffsetPage):
             sliced = matched[page.offset : page.offset + page.length]
             return OffsetPageResponse(
@@ -133,6 +148,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -301,8 +321,12 @@ async def client(app):
 
 
 async def _create_workspace(client, *, name: str | None = None) -> str:
-    await client.post("/v1/workspace_providers", json=_provider().model_dump(mode="json"))
-    await client.post("/v1/workspace_templates", json=_template().model_dump(mode="json"))
+    await client.post(
+        "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+    )
+    await client.post(
+        "/v1/workspace_templates", json=_template().model_dump(mode="json")
+    )
     body: dict[str, Any] = {"template_id": "tpl-1"}
     if name is not None:
         body["name"] = name
@@ -473,7 +497,9 @@ class TestListPendingYields:
         assert item["tool_call_id"] == "tcid-watch-1"
 
     @pytest.mark.asyncio
-    async def test_approval_park_is_returned_with_kind_approval(self, client, sp) -> None:
+    async def test_approval_park_is_returned_with_kind_approval(
+        self, client, sp
+    ) -> None:
         wid = await _create_workspace(client)
         sess = _make_session(
             "sess-approval",
@@ -706,15 +732,12 @@ class TestDismissPendingMessage:
         from primer.model.workspace_session import PendingSessionMessage
 
         wid = await _create_workspace(client)
-        await sp.get_storage(WorkspaceSession).create(
-            _make_session("sess-dm1", wid)
-        )
+        await sp.get_storage(WorkspaceSession).create(_make_session("sess-dm1", wid))
         pend = self._pending("sess-dm1")
         await sp.get_storage(PendingSessionMessage).create(pend)
 
         resp = await client.delete(
-            f"/v1/workspaces/{wid}/sessions/sess-dm1"
-            f"/pending_messages/{pend.id}"
+            f"/v1/workspaces/{wid}/sessions/sess-dm1/pending_messages/{pend.id}"
         )
         assert resp.status_code == 204, resp.text
         left = await sp.get_storage(PendingSessionMessage).get(pend.id)
@@ -723,9 +746,7 @@ class TestDismissPendingMessage:
     @pytest.mark.asyncio
     async def test_dismiss_unknown_pending_404s(self, client, sp) -> None:
         wid = await _create_workspace(client)
-        await sp.get_storage(WorkspaceSession).create(
-            _make_session("sess-dm2", wid)
-        )
+        await sp.get_storage(WorkspaceSession).create(_make_session("sess-dm2", wid))
         resp = await client.delete(
             f"/v1/workspaces/{wid}/sessions/sess-dm2/pending_messages/nope"
         )
@@ -736,18 +757,13 @@ class TestDismissPendingMessage:
         from primer.model.workspace_session import PendingSessionMessage
 
         wid = await _create_workspace(client)
-        await sp.get_storage(WorkspaceSession).create(
-            _make_session("sess-dm3", wid)
-        )
-        await sp.get_storage(WorkspaceSession).create(
-            _make_session("sess-dm4", wid)
-        )
+        await sp.get_storage(WorkspaceSession).create(_make_session("sess-dm3", wid))
+        await sp.get_storage(WorkspaceSession).create(_make_session("sess-dm4", wid))
         pend = self._pending("sess-dm4")
         await sp.get_storage(PendingSessionMessage).create(pend)
 
         resp = await client.delete(
-            f"/v1/workspaces/{wid}/sessions/sess-dm3"
-            f"/pending_messages/{pend.id}"
+            f"/v1/workspaces/{wid}/sessions/sess-dm3/pending_messages/{pend.id}"
         )
         assert resp.status_code == 404
         kept = await sp.get_storage(PendingSessionMessage).get(pend.id)
@@ -853,10 +869,7 @@ class TestListPendingAttention:
 
         assert by_id["sess-attn-approval"]["agent_binding"]["agent_id"] == "agt-1"
         assert by_id["sess-attn-approval"]["agent_binding"]["kind"] == "agent"
-        assert (
-            by_id["sess-attn-approval"]["created_at"]
-            == "2026-07-01T09:00:00+00:00"
-        )
+        assert by_id["sess-attn-approval"]["created_at"] == "2026-07-01T09:00:00+00:00"
 
     @pytest.mark.asyncio
     async def test_workspace_id_filter_restricts_results(self, client, sp) -> None:
@@ -891,9 +904,7 @@ class TestListPendingAttention:
         await sp.get_storage(WorkspaceSession).create(sess1)
         await sp.get_storage(WorkspaceSession).create(sess2)
 
-        resp = await client.get(
-            "/v1/yields/pending", params={"workspace_id": wid1}
-        )
+        resp = await client.get("/v1/yields/pending", params={"workspace_id": wid1})
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["total"] == 1
@@ -902,9 +913,7 @@ class TestListPendingAttention:
     @pytest.mark.asyncio
     async def test_running_and_ended_sessions_excluded(self, client, sp) -> None:
         wid = await _create_workspace(client)
-        running = _make_session(
-            "sess-attn-running", wid, status=SessionStatus.RUNNING
-        )
+        running = _make_session("sess-attn-running", wid, status=SessionStatus.RUNNING)
         ended = _make_session("sess-attn-ended", wid, status=SessionStatus.ENDED)
         await sp.get_storage(WorkspaceSession).create(running)
         await sp.get_storage(WorkspaceSession).create(ended)
@@ -944,9 +953,7 @@ class TestListPendingAttention:
         assert data["items"][0]["session_id"] == "sess-attn-cap-2"
 
     @pytest.mark.asyncio
-    async def test_parked_at_none_falls_back_to_created_at(
-        self, client, sp
-    ) -> None:
+    async def test_parked_at_none_falls_back_to_created_at(self, client, sp) -> None:
         wid = await _create_workspace(client)
         sess = _make_session(
             "sess-attn-no-parked-at",
@@ -957,9 +964,7 @@ class TestListPendingAttention:
                 "tool_call_id": "tcid-no-parked-at",
                 "yielded": {
                     "tool_name": "ask_user",
-                    "event_key": (
-                        "ask_user:sess-attn-no-parked-at:tcid-no-parked-at"
-                    ),
+                    "event_key": ("ask_user:sess-attn-no-parked-at:tcid-no-parked-at"),
                     "resume_metadata": {"prompt": "?"},
                 },
             },

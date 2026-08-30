@@ -62,6 +62,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -86,6 +102,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -102,9 +123,7 @@ class _FakeVectorStore:
         self.deletes: list[tuple[str, str]] = []
         self.searches: list[tuple[str, list[float], int]] = []
 
-    async def create_collection(
-        self, collection_id, *, dimensions, distance="cosine"
-    ):
+    async def create_collection(self, collection_id, *, dimensions, distance="cosine"):
         self.collections[collection_id] = {
             "dimensions": dimensions,
             "distance": distance,
@@ -365,9 +384,7 @@ class TestBootstrap:
         await subsystem.aclose()
 
     @pytest.mark.asyncio
-    async def test_bootstrap_ingests_collections(
-        self, subsystem, store, sp
-    ) -> None:
+    async def test_bootstrap_ingests_collections(self, subsystem, store, sp) -> None:
         await sp.get_storage(Collection).create(_collection("kb-1"))
         result = await subsystem.bootstrap()
         assert result["counts"]["collections"] >= 1
@@ -471,7 +488,9 @@ class TestBootstrap:
         class _MismatchStore(_FakeVectorStore):
             """Store where every internal collection was already created at dim=9999."""
 
-            async def create_collection(self, collection_id, *, dimensions, distance="cosine"):
+            async def create_collection(
+                self, collection_id, *, dimensions, distance="cosine"
+            ):
                 # Simulate the store already holding this collection at a
                 # different dimension by raising ConflictError (same message
                 # format as the pgvector backend).
@@ -510,9 +529,7 @@ class TestBootstrap:
 
 class TestCDCWorker:
     @pytest.mark.asyncio
-    async def test_enqueue_then_worker_applies_upsert(
-        self, subsystem, store
-    ) -> None:
+    async def test_enqueue_then_worker_applies_upsert(self, subsystem, store) -> None:
         await subsystem.bootstrap()
         subsystem.start_worker()
         subsystem.enqueue(
@@ -539,9 +556,7 @@ class TestCDCWorker:
         await subsystem.aclose()
 
     @pytest.mark.asyncio
-    async def test_enqueue_then_worker_applies_delete(
-        self, subsystem, store
-    ) -> None:
+    async def test_enqueue_then_worker_applies_delete(self, subsystem, store) -> None:
         await subsystem.bootstrap()
         subsystem.start_worker()
         subsystem.enqueue(
@@ -663,5 +678,3 @@ def test_internal_collections_config_with_search_provider_id_constructs():
 # The ai-docs ingest class went with primer/ingest: the shipped docs are
 # written into the system collection as tree documents now, covered by
 # tests/knowledge/test_system_collection.py.
-
-

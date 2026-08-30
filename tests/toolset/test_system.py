@@ -65,6 +65,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -176,6 +192,11 @@ class _NullTxn:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
         self._content_store = _ContentStore()
@@ -345,6 +366,7 @@ class TestCatalog:
     @pytest.mark.asyncio
     async def test_each_tool_has_non_empty_description(self, system_toolset) -> None:
         from tests.toolset._desc_conformance import assert_tool_conforms
+
         async for t in system_toolset.list_tools():
             assert_tool_conforms(t)
             assert isinstance(t.args_schema, dict)
@@ -388,9 +410,7 @@ class TestCatalog:
 
 class TestLLMProviderTools:
     @pytest.mark.asyncio
-    async def test_create_get_update_delete_roundtrip(
-        self, system_toolset
-    ) -> None:
+    async def test_create_get_update_delete_roundtrip(self, system_toolset) -> None:
         body = _llm().model_dump(mode="json")
 
         result = await system_toolset.call(
@@ -413,9 +433,7 @@ class TestLLMProviderTools:
         assert not result.is_error
         assert json.loads(result.output)["limits"]["max_concurrency"] == 8
 
-        result = await system_toolset.call(
-            tool_name="list_llm_providers", arguments={}
-        )
+        result = await system_toolset.call(tool_name="list_llm_providers", arguments={})
         assert not result.is_error
         page = json.loads(result.output)
         assert page["total"] == 1
@@ -594,9 +612,7 @@ class TestFetchModels:
 
 class TestToolsetExtras:
     @pytest.mark.asyncio
-    async def test_list_toolset_tools_can_introspect_self(
-        self, system_toolset
-    ) -> None:
+    async def test_list_toolset_tools_can_introspect_self(self, system_toolset) -> None:
         result = await system_toolset.call(
             tool_name="list_toolset_tools",
             arguments={"toolset_id": SYSTEM_TOOLSET_ID},
@@ -654,7 +670,8 @@ class TestCollectionExtras:
             tool_name="put_document",
             arguments={
                 "collection_id": "kb-1",
-                "slug": "hello.txt", "path": "hello.txt",
+                "slug": "hello.txt",
+                "path": "hello.txt",
                 "content": "hello world",
             },
         )
@@ -720,7 +737,8 @@ class TestDocumentExtras:
             tool_name="put_document",
             arguments={
                 "collection_id": "kb-1",
-                "slug": "hello.txt", "path": "hello.txt",
+                "slug": "hello.txt",
+                "path": "hello.txt",
                 "content": "this is the content",
                 "title": "Hello",
             },
@@ -728,7 +746,11 @@ class TestDocumentExtras:
         assert not result.is_error, result.output
         result = await system_toolset.call(
             tool_name="get_document_content",
-            arguments={"collection_id": "kb-1", "slug": "hello.txt", "path": "hello.txt"},
+            arguments={
+                "collection_id": "kb-1",
+                "slug": "hello.txt",
+                "path": "hello.txt",
+            },
         )
         assert not result.is_error
         body = json.loads(result.output)
@@ -747,7 +769,8 @@ class TestDocumentExtras:
                 tool_name="put_document",
                 arguments={
                     "collection_id": "kb-1",
-                    "slug": "x.txt", "path": "x.txt",
+                    "slug": "x.txt",
+                    "path": "x.txt",
                     "content": content,
                 },
             )
@@ -773,9 +796,7 @@ class TestPagination:
             await system_toolset.call(
                 tool_name="create_llm_provider", arguments={"entity": body}
             )
-        result = await system_toolset.call(
-            tool_name="list_llm_providers", arguments={}
-        )
+        result = await system_toolset.call(tool_name="list_llm_providers", arguments={})
         assert not result.is_error
         page = json.loads(result.output)
         assert page["kind"] == "offset"
@@ -817,9 +838,7 @@ class TestPagination:
 
 class TestProviderRegistrySystemHandling:
     @pytest.mark.asyncio
-    async def test_get_toolset_resolves_reserved_id(
-        self, system_toolset, pr
-    ) -> None:
+    async def test_get_toolset_resolves_reserved_id(self, system_toolset, pr) -> None:
         provider = await pr.get_toolset(SYSTEM_TOOLSET_ID)
         assert provider is system_toolset
 
@@ -889,14 +908,19 @@ def _graph_thread() -> dict:
 @pytest.mark.parametrize(
     "create_tool,delete_tool,body_factory",
     [
-        ("create_embedding_provider", "delete_embedding_provider",
-         lambda: _emb().model_dump(mode="json")),
+        (
+            "create_embedding_provider",
+            "delete_embedding_provider",
+            lambda: _emb().model_dump(mode="json"),
+        ),
         ("create_cross_encoder_provider", "delete_cross_encoder_provider", _ce),
         ("create_toolset", "delete_toolset", _toolset_body),
-        ("create_agent", "delete_agent",
-         lambda: _agent().model_dump(mode="json")),
-        ("create_collection", "delete_collection",
-         lambda: _collection().model_dump(mode="json")),
+        ("create_agent", "delete_agent", lambda: _agent().model_dump(mode="json")),
+        (
+            "create_collection",
+            "delete_collection",
+            lambda: _collection().model_dump(mode="json"),
+        ),
         ("create_graph_thread", "delete_graph_thread", _graph_thread),
     ],
 )
@@ -910,9 +934,7 @@ async def test_crud_smoke_per_entity(
         tool_name=create_tool, arguments={"entity": body}
     )
     assert not create.is_error, create.output
-    delete = await system_toolset.call(
-        tool_name=delete_tool, arguments={"id": eid}
-    )
+    delete = await system_toolset.call(tool_name=delete_tool, arguments={"id": eid})
     assert not delete.is_error, delete.output
 
 
@@ -969,7 +991,8 @@ class TestExtras:
             tool_name="put_document",
             arguments={
                 "collection_id": "kb-1",
-                "slug": "x.txt", "path": "x.txt",
+                "slug": "x.txt",
+                "path": "x.txt",
                 "content": "x",
                 "meta": {"author": "alice"},
             },
@@ -1016,7 +1039,11 @@ class TestExtras:
     async def test_get_document_content_404(self, system_toolset) -> None:
         result = await system_toolset.call(
             tool_name="get_document_content",
-            arguments={"collection_id": "kb-1", "slug": "missing.md", "path": "missing.md"},
+            arguments={
+                "collection_id": "kb-1",
+                "slug": "missing.md",
+                "path": "missing.md",
+            },
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "not-found"
@@ -1118,9 +1145,7 @@ class TestExtras:
         assert json.loads(result.output)["type"] == "bad-request"
 
     @pytest.mark.asyncio
-    async def test_update_unknown_id_returns_not_found(
-        self, system_toolset
-    ) -> None:
+    async def test_update_unknown_id_returns_not_found(self, system_toolset) -> None:
         body = _llm().model_dump(mode="json")
         body["id"] = "missing"
         result = await system_toolset.call(
@@ -1131,9 +1156,7 @@ class TestExtras:
         assert json.loads(result.output)["type"] == "not-found"
 
     @pytest.mark.asyncio
-    async def test_delete_unknown_id_returns_not_found(
-        self, system_toolset
-    ) -> None:
+    async def test_delete_unknown_id_returns_not_found(self, system_toolset) -> None:
         result = await system_toolset.call(
             tool_name="delete_llm_provider", arguments={"id": "missing"}
         )
@@ -1246,9 +1269,7 @@ class TestSearchCollectionWired:
         )
         await wired_toolset.call(
             tool_name="create_collection",
-            arguments={
-                "entity": _collection(with_search=True).model_dump(mode="json")
-            },
+            arguments={"entity": _collection(with_search=True).model_dump(mode="json")},
         )
         result = await wired_toolset.call(
             tool_name="search_collection",
@@ -1268,9 +1289,7 @@ class TestSearchCollectionWired:
         assert store.calls and store.calls[0][0] == "kb-1"
 
     @pytest.mark.asyncio
-    async def test_unknown_collection_returns_not_found(
-        self, wired_toolset
-    ) -> None:
+    async def test_unknown_collection_returns_not_found(self, wired_toolset) -> None:
         result = await wired_toolset.call(
             tool_name="search_collection",
             arguments={"collection_id": "missing", "query": "x"},

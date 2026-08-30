@@ -4,6 +4,7 @@ They are the escalation path the runner's isolation exists to contain, so
 they belong with the rest of the construction surface, behind the same
 approval policies.
 """
+
 from __future__ import annotations
 
 from primer.toolset.crud import build_crud_toolset
@@ -17,6 +18,11 @@ PY_TOOLS = {
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def get_storage(self, model):  # pragma: no cover - never dispatched here
         return None
 
@@ -34,7 +40,8 @@ async def test_they_are_registered_on_the_crud_toolset() -> None:
 
 async def test_they_are_gone_from_the_system_toolset() -> None:
     provider = build_system_toolset(
-        storage_provider=_SP(), provider_registry=_PR(),
+        storage_provider=_SP(),
+        provider_registry=_PR(),
     )
     ids = {t.id async for t in provider.list_tools()}
     assert PY_TOOLS.isdisjoint(ids)

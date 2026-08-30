@@ -85,6 +85,22 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -189,7 +205,13 @@ def _agent(agent_id: str, *, system_prompt: list[str] | None = None) -> Agent:
 
 
 def _model() -> ResolvedModel:
-    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
+    return ResolvedModel(
+        profile_id="test-profile",
+        provider_id="test-provider",
+        model_name="m",
+        context_length=128_000,
+        config=ModelProfileConfig(),
+    )
 
 
 async def _build_executor(
@@ -271,9 +293,9 @@ class TestLinearGraph:
         )
         events = await _drain(executor.invoke([]))
         wrapped = [
-            e for e in events
-            if isinstance(e, ExtendedEvent)
-            and isinstance(e.extended, _GraphNodeEvent)
+            e
+            for e in events
+            if isinstance(e, ExtendedEvent) and isinstance(e.extended, _GraphNodeEvent)
         ]
         # The node's own stream events, wrapped and attributed. Asserted by
         # kind rather than by count: S7 threads an _LlmCall observability
@@ -320,9 +342,7 @@ class TestFanOutFanIn:
                 _AgentNodeRef(
                     id="D",
                     agent_id="x",
-                    input_template=(
-                        "B: {{ nodes.B.text }} | C: {{ nodes.C.text }}"
-                    ),
+                    input_template=("B: {{ nodes.B.text }} | C: {{ nodes.C.text }}"),
                 ),
                 _EndNode(id="exit"),
             ],
@@ -611,7 +631,9 @@ class TestThreadManagement:
         ts: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
         ms: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
         thread = await GraphExecutor.open_thread(
-            graph=graph, thread_storage=ts, title="t"  # type: ignore[arg-type]
+            graph=graph,
+            thread_storage=ts,
+            title="t",  # type: ignore[arg-type]
         )
         await ms.create(
             GraphNodeMessage(
@@ -663,13 +685,16 @@ class TestThreadManagement:
             ],
         )
         await GraphExecutor.open_thread(
-            graph=graph_a, thread_storage=ts  # type: ignore[arg-type]
+            graph=graph_a,
+            thread_storage=ts,  # type: ignore[arg-type]
         )
         await GraphExecutor.open_thread(
-            graph=graph_a, thread_storage=ts  # type: ignore[arg-type]
+            graph=graph_a,
+            thread_storage=ts,  # type: ignore[arg-type]
         )
         await GraphExecutor.open_thread(
-            graph=graph_b, thread_storage=ts  # type: ignore[arg-type]
+            graph=graph_b,
+            thread_storage=ts,  # type: ignore[arg-type]
         )
         page = await GraphExecutor.list_threads(
             thread_storage=ts,  # type: ignore[arg-type]

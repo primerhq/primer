@@ -17,6 +17,11 @@ class _SP:  # minimal storage_provider stub for build_workspace_ext_toolset
     def get_storage(self, model):  # pragma: no cover - never dispatched here
         return None
 
+    async def get_system_state(self):  # pragma: no cover - never dispatched here
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
 
 def test_workspace_ext_yielding_tools_flagged() -> None:
     from primer.toolset.workspace_ext import build_workspace_ext_toolset

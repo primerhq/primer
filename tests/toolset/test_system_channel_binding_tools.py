@@ -56,6 +56,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -85,6 +101,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 

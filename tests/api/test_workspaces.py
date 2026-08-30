@@ -67,6 +67,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -90,6 +106,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -109,9 +130,7 @@ class _SP:
 
 
 class _FakeAgentSession:
-    def __init__(
-        self, *, session_id: str, agent_id: str, workspace_id: str
-    ) -> None:
+    def __init__(self, *, session_id: str, agent_id: str, workspace_id: str) -> None:
         self.session_id = session_id
         self._agent_id = agent_id
         self._workspace_id = workspace_id
@@ -161,9 +180,7 @@ class _FakeStateRepo:
             "subject": "init",
             "body": "",
             "parent": None,
-            "files": [
-                {"path": "README.md", "status": "A", "patch": "+ hello\n"}
-            ],
+            "files": [{"path": "README.md", "status": "A", "patch": "+ hello\n"}],
         }
 
 
@@ -216,9 +233,7 @@ class _FakeWorkspace:
             tail = d[len(prefix) :]
             if not tail or (not recursive and "/" in tail):
                 continue
-            out.append(
-                FileEntry(path=d, kind="dir", size_bytes=0, modified_at=now)
-            )
+            out.append(FileEntry(path=d, kind="dir", size_bytes=0, modified_at=now))
         return sorted(out, key=lambda fe: fe.path)
 
     async def file_info(self, path):
@@ -418,7 +433,10 @@ async def client(app):
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
         try:
-            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            await c.post(
+                "/v1/auth/register",
+                json={"username": "testuser", "password": "testpassword"},
+            )
         except Exception:
             pass
         yield c
@@ -469,9 +487,7 @@ class TestWorkspaceProviderRouter:
             "kind": "local",
             "root_path": "/tmp/primer-ws-updated",
         }
-        put = await client.put(
-            "/v1/workspace_providers/local-1", json=updated
-        )
+        put = await client.put("/v1/workspace_providers/local-1", json=updated)
         assert put.status_code == 200, put.text
 
         get = await client.get("/v1/workspace_providers/local-1")
@@ -614,23 +630,26 @@ class TestWorkspaceTemplateRouter:
     @pytest.mark.asyncio
     async def test_container_template_round_trip(self, client) -> None:
         # Seed a container provider first.
-        await client.post("/v1/workspace_providers", json={
-            "id": "docker-2",
-            "provider": "container",
-            "config": {
-                "kind": "container",
-                "runtime": "docker",
-                "connection": {
-                    "kind": "socket",
-                    "socket_path": "/var/run/docker.sock",
+        await client.post(
+            "/v1/workspace_providers",
+            json={
+                "id": "docker-2",
+                "provider": "container",
+                "config": {
+                    "kind": "container",
+                    "runtime": "docker",
+                    "connection": {
+                        "kind": "socket",
+                        "socket_path": "/var/run/docker.sock",
+                    },
+                    "reachability": {
+                        "kind": "host_port",
+                        "bind_host": "127.0.0.1",
+                    },
+                    "image_pull_secrets": [],
                 },
-                "reachability": {
-                    "kind": "host_port",
-                    "bind_host": "127.0.0.1",
-                },
-                "image_pull_secrets": [],
             },
-        })
+        )
         body = {
             "id": "tpl-container-1",
             "description": "container tpl",
@@ -654,18 +673,21 @@ class TestWorkspaceTemplateRouter:
 
     @pytest.mark.asyncio
     async def test_kubernetes_template_round_trip(self, client) -> None:
-        await client.post("/v1/workspace_providers", json={
-            "id": "k8s-2",
-            "provider": "kubernetes",
-            "config": {
-                "kind": "kubernetes",
-                "variant": "system",
-                "connection": {"kind": "in_cluster"},
-                "namespace": "default",
-                "reachability": {"kind": "in_cluster"},
-                "image_pull_secrets": [],
+        await client.post(
+            "/v1/workspace_providers",
+            json={
+                "id": "k8s-2",
+                "provider": "kubernetes",
+                "config": {
+                    "kind": "kubernetes",
+                    "variant": "system",
+                    "connection": {"kind": "in_cluster"},
+                    "namespace": "default",
+                    "reachability": {"kind": "in_cluster"},
+                    "image_pull_secrets": [],
+                },
             },
-        })
+        )
         body = {
             "id": "tpl-k8s-1",
             "description": "k8s tpl",
@@ -689,11 +711,14 @@ class TestWorkspaceTemplateRouter:
     @pytest.mark.asyncio
     async def test_template_backend_kind_mismatch_returns_422(self, client) -> None:
         # Seed a local provider but use a container backend in the template.
-        await client.post("/v1/workspace_providers", json={
-            "id": "local-mismatch",
-            "provider": "local",
-            "config": {"kind": "local", "root_path": "/tmp"},
-        })
+        await client.post(
+            "/v1/workspace_providers",
+            json={
+                "id": "local-mismatch",
+                "provider": "local",
+                "config": {"kind": "local", "root_path": "/tmp"},
+            },
+        )
         bad = {
             "id": "tpl-bad",
             "description": "kind mismatch",
@@ -715,9 +740,7 @@ class TestWorkspaceTemplateRouter:
         await client.delete("/v1/workspace_providers/local-mismatch")
 
     @pytest.mark.asyncio
-    async def test_workspace_template_create_rejects_reserved_id(
-        self, client
-    ) -> None:
+    async def test_workspace_template_create_rejects_reserved_id(self, client) -> None:
         """POST /v1/workspace_templates with id=local-default returns 409."""
         body = {
             "id": "local-default",
@@ -769,9 +792,7 @@ class TestWorkspaceTemplateRouter:
 
         body = reserved.model_dump(mode="json")
         body["description"] = "attacker-edit"
-        put = await client.put(
-            "/v1/workspace_templates/local-default", json=body
-        )
+        put = await client.put("/v1/workspace_templates/local-default", json=body)
         assert put.status_code == 403, put.text
         ext = put.json()["extensions"]
         assert ext["error"] == "reserved_id_protected"
@@ -1017,7 +1038,9 @@ class TestWorkspaceRouter:
         )
         assert patch.status_code == 200, patch.text
         assert patch.json()["name"] == "Renamed box"
-        assert (await client.get(f"/v1/workspaces/{wid}")).json()["name"] == "Renamed box"
+        assert (await client.get(f"/v1/workspaces/{wid}")).json()[
+            "name"
+        ] == "Renamed box"
 
         # Clearing the name falls back to null.
         cleared = await client.patch(f"/v1/workspaces/{wid}", json={"name": "  "})
@@ -1410,9 +1433,7 @@ class TestFilesSubResource:
 
     async def test_make_dir_conflict(self, client, wsr) -> None:
         wid = await self._setup(client, wsr)
-        await client.post(
-            f"/v1/workspaces/{wid}/files/dir", params={"path": "src"}
-        )
+        await client.post(f"/v1/workspaces/{wid}/files/dir", params={"path": "src"})
         again = await client.post(
             f"/v1/workspaces/{wid}/files/dir", params={"path": "src"}
         )
@@ -1422,9 +1443,7 @@ class TestFilesSubResource:
         self, client, wsr
     ) -> None:
         wid = await self._setup(client, wsr)
-        await client.post(
-            f"/v1/workspaces/{wid}/files/dir", params={"path": "src"}
-        )
+        await client.post(f"/v1/workspaces/{wid}/files/dir", params={"path": "src"})
         await client.put(
             f"/v1/workspaces/{wid}/files",
             params={"path": "src/a.txt"},
@@ -1437,9 +1456,7 @@ class TestFilesSubResource:
 
     async def test_delete_dir_recursive(self, client, wsr) -> None:
         wid = await self._setup(client, wsr)
-        await client.post(
-            f"/v1/workspaces/{wid}/files/dir", params={"path": "src"}
-        )
+        await client.post(f"/v1/workspaces/{wid}/files/dir", params={"path": "src"})
         await client.put(
             f"/v1/workspaces/{wid}/files",
             params={"path": "src/a.txt"},
@@ -1450,9 +1467,13 @@ class TestFilesSubResource:
             params={"path": "src", "recursive": "true"},
         )
         assert ok.status_code == 204
-        listing = await client.get(f"/v1/workspaces/{wid}/files", params={
-            "path": ".", "recursive": "true",
-        })
+        listing = await client.get(
+            f"/v1/workspaces/{wid}/files",
+            params={
+                "path": ".",
+                "recursive": "true",
+            },
+        )
         paths = {e["path"] for e in listing.json()["items"]}
         assert "src" not in paths and "src/a.txt" not in paths
 
@@ -1638,7 +1659,9 @@ class TestLogSubResource:
         assert isinstance(entry["binary"], bool)
 
     @pytest.mark.asyncio
-    async def test_log_with_files_accepts_the_usual_boolean_spellings(self, client, wsr) -> None:
+    async def test_log_with_files_accepts_the_usual_boolean_spellings(
+        self, client, wsr
+    ) -> None:
         # A pasted link says with_files=true; a hand-built one says 1.
         await client.post(
             "/v1/workspace_providers", json=_provider().model_dump(mode="json")

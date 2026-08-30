@@ -17,6 +17,11 @@ from primer.int.claim import ClaimKind
 
 
 class _FakeStorageProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     """Minimal storage-provider stub for factory tests."""
 
     def get_storage(self, model_class):
@@ -36,6 +41,7 @@ class _FakeStorageProvider:
 
 class _FakePostgresEventBus:
     """Non-InMemory bus — factory should choose PostgresClaimEngine."""
+
     pass
 
 

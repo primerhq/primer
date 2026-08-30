@@ -52,6 +52,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -86,7 +91,9 @@ async def test_resolve_precedence_session_over_workspace_over_none():
 
     session = _FakeSession(
         workspace_id="ws-1",
-        metadata={SESSION_REPLY_BINDING_KEY: {"channel_id": "ch-sess", "anchor": "ts-1"}},
+        metadata={
+            SESSION_REPLY_BINDING_KEY: {"channel_id": "ch-sess", "anchor": "ts-1"}
+        },
     )
 
     # Session-scoped binding wins.

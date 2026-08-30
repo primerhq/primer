@@ -25,6 +25,11 @@ class _FakeStorage:
 
 
 class _FakeSP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self, row):
         self._s = _FakeStorage(row)
 
@@ -111,8 +116,10 @@ async def test_created_session_is_invoked_and_claimable():
     row = _row(SessionStatus.CREATED)
     deps, slot, sched, eng = _deps(row)
     out = await wake_session(
-        workspace_id="ws-1", session_id="sess-1",
-        instruction="hello", deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="hello",
+        deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
     assert out.turn_status == "claimable"
@@ -126,8 +133,10 @@ async def test_running_session_is_steered_without_status_change():
     row = _row(SessionStatus.RUNNING)
     deps, slot, sched, eng = _deps(row)
     out = await wake_session(
-        workspace_id="ws-1", session_id="sess-1",
-        instruction="steer me", deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="steer me",
+        deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
     assert out.turn_status == "claimable"
@@ -141,8 +150,10 @@ async def test_paused_session_resumes_and_clears_pause():
     row.pause_requested = True
     deps, slot, sched, eng = _deps(row)
     out = await wake_session(
-        workspace_id="ws-1", session_id="sess-1",
-        instruction=None, deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction=None,
+        deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
     assert out.pause_requested is False
@@ -173,8 +184,10 @@ async def test_ended_restartable_session_reopens_and_runs():
     ws = deps.workspace_registry._ws
 
     out = await wake_session(
-        workspace_id="ws-1", session_id="sess-1",
-        instruction="again", deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="again",
+        deps=deps,
     )
 
     assert out.status == SessionStatus.RUNNING
@@ -205,8 +218,10 @@ async def test_ended_non_restartable_raises_conflict():
     deps, slot, *_ = _deps(row)
     with pytest.raises(ConflictError):
         await wake_session(
-            workspace_id="ws-1", session_id="sess-1",
-            instruction="x", deps=deps,
+            workspace_id="ws-1",
+            session_id="sess-1",
+            instruction="x",
+            deps=deps,
         )
     assert slot.reopened is False
 
@@ -216,6 +231,8 @@ async def test_missing_session_raises_not_found():
     deps, *_ = _deps(None)
     with pytest.raises(NotFoundError):
         await wake_session(
-            workspace_id="ws-1", session_id="sess-1",
-            instruction="x", deps=deps,
+            workspace_id="ws-1",
+            session_id="sess-1",
+            instruction="x",
+            deps=deps,
         )

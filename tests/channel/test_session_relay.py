@@ -53,6 +53,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -111,7 +116,10 @@ async def test_final_result_posts_to_binding():
     )
 
     reached = await post_session_final_result(
-        dispatcher=d, session=session, storage_provider=sp, text="all done",
+        dispatcher=d,
+        session=session,
+        storage_provider=sp,
+        text="all done",
     )
 
     assert reached is True
@@ -134,7 +142,10 @@ async def test_empty_final_result_is_silent():
     )
 
     reached = await post_session_final_result(
-        dispatcher=d, session=session, storage_provider=sp, text="",
+        dispatcher=d,
+        session=session,
+        storage_provider=sp,
+        text="",
     )
 
     assert reached is False
@@ -156,7 +167,10 @@ async def test_quiet_binding_suppresses_final():
     )
 
     final = await post_session_final_result(
-        dispatcher=d, session=session, storage_provider=sp, text="done",
+        dispatcher=d,
+        session=session,
+        storage_provider=sp,
+        text="done",
     )
 
     assert final is False
@@ -173,7 +187,10 @@ async def test_no_binding_is_silent():
     session = _FakeSession(workspace_id="ws-relay", metadata={})
 
     final = await post_session_final_result(
-        dispatcher=d, session=session, storage_provider=sp, text="done",
+        dispatcher=d,
+        session=session,
+        storage_provider=sp,
+        text="done",
     )
 
     assert final is False

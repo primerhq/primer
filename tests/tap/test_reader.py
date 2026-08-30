@@ -90,7 +90,11 @@ def _line(seq: int, kind: str, **payload) -> bytes:
 
 
 async def _seed_session(
-    store, sid: str, *, agent_id: str | None = "ag1", graph_id: str | None = None,
+    store,
+    sid: str,
+    *,
+    agent_id: str | None = "ag1",
+    graph_id: str | None = None,
     status: SessionStatus = SessionStatus.RUNNING,
 ) -> WorkspaceSession:
     if graph_id is not None:
@@ -110,6 +114,11 @@ async def _seed_session(
 
 
 class _Provider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     """Minimal storage provider exposing ``get_storage`` over one store."""
 
     def __init__(self) -> None:
@@ -181,7 +190,10 @@ class TestReadSessionSince:
         io.write(_msg_path("s2"), first)
 
         events1, offset1 = await read_session_since(
-            io, workspace_id="ws-1", session=sess, after_seq=0,
+            io,
+            workspace_id="ws-1",
+            session=sess,
+            after_seq=0,
             selector=TapSelector(),
         )
         assert [e.class_ for e in events1] == [
@@ -196,8 +208,12 @@ class TestReadSessionSince:
 
         bytes_before = io.bytes_read
         events2, offset2 = await read_session_since(
-            io, workspace_id="ws-1", session=sess, after_seq=0,
-            selector=TapSelector(), from_offset=offset1,
+            io,
+            workspace_id="ws-1",
+            session=sess,
+            after_seq=0,
+            selector=TapSelector(),
+            from_offset=offset1,
         )
         # Only the NEW record comes back — seq 1/2 are not re-emitted.
         assert [e.class_ for e in events2] == [TapEventClass.DONE]
@@ -215,7 +231,10 @@ class TestReadSessionSince:
         io.write(_msg_path("s3"), full + partial)
 
         events, offset = await read_session_since(
-            io, workspace_id="ws-1", session=sess, after_seq=0,
+            io,
+            workspace_id="ws-1",
+            session=sess,
+            after_seq=0,
             selector=TapSelector(),
         )
         # Only the complete record is emitted; the partial is left for later.
@@ -227,8 +246,12 @@ class TestReadSessionSince:
         # Replace the file with the now-complete content.
         io.write(_msg_path("s3"), full + partial + rest)
         events2, offset2 = await read_session_since(
-            io, workspace_id="ws-1", session=sess, after_seq=0,
-            selector=TapSelector(), from_offset=offset,
+            io,
+            workspace_id="ws-1",
+            session=sess,
+            after_seq=0,
+            selector=TapSelector(),
+            from_offset=offset,
         )
         assert [e.class_ for e in events2] == [TapEventClass.DONE]
         assert offset2 == len(io._files[_msg_path("s3")])
@@ -249,7 +272,11 @@ class TestReadSessionSince:
             )
         )
         events, _ = await read_session_since(
-            io, workspace_id="ws-1", session=sess, after_seq=0, selector=sel,
+            io,
+            workspace_id="ws-1",
+            session=sess,
+            after_seq=0,
+            selector=sel,
         )
         assert [e.class_ for e in events] == [TapEventClass.TOOL_CALL]
 
@@ -319,8 +346,12 @@ class TestReadBatch:
             )
         )
         events, _ = await read_batch(
-            provider, io, workspace_id="ws-1", selector=sel,
-            cursor=TapCursor(seqs={}, known_as_of=_NOW), limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=sel,
+            cursor=TapCursor(seqs={}, known_as_of=_NOW),
+            limit=100,
         )
         assert [e.class_ for e in events] == [
             TapEventClass.TOOL_CALL,
@@ -334,12 +365,18 @@ class TestReadBatch:
         await _seed_session(provider.store, "s1", agent_id="ag1")
         io.write(
             _msg_path("s1"),
-            _line(1, "user_input") + _line(2, "tool_call")
-            + _line(3, "tool_result") + _line(4, "done"),
+            _line(1, "user_input")
+            + _line(2, "tool_call")
+            + _line(3, "tool_result")
+            + _line(4, "done"),
         )
         events, new_cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=TapCursor(seqs={}, known_as_of=_NOW), limit=2,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=TapCursor(seqs={}, known_as_of=_NOW),
+            limit=2,
         )
         assert len(events) == 2
         assert [e.class_ for e in events] == [
@@ -367,8 +404,12 @@ class TestReadBatch:
             )
         )
         events, new_cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=sel,
-            cursor=TapCursor(seqs={}, known_as_of=_NOW), limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=sel,
+            cursor=TapCursor(seqs={}, known_as_of=_NOW),
+            limit=100,
         )
         assert [e.session_id for e in events] == ["s-keep"]
         assert new_cursor.resume_seq("s-drop") == 0
@@ -379,8 +420,12 @@ class TestReadBatch:
         io = _FakeWorkspaceIO()  # no messages.jsonl for the session
         await _seed_session(provider.store, "s1", agent_id="ag1")
         events, new_cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=TapCursor(seqs={}, known_as_of=_NOW), limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=TapCursor(seqs={}, known_as_of=_NOW),
+            limit=100,
         )
         assert events == []
         assert new_cursor.resume_seq("s1") == 0
@@ -408,8 +453,12 @@ class TestReadBatchIncremental:
 
         cursor = TapCursor(seqs={}, known_as_of=_NOW)
         events1, cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=cursor, limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=cursor,
+            limit=100,
         )
         assert len(events1) == 2
         assert cursor.resume_seq("s1") == 2
@@ -422,8 +471,12 @@ class TestReadBatchIncremental:
         offset_after_first = cursor.resume_offset("s1")
 
         events2, cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=cursor, limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=cursor,
+            limit=100,
         )
 
         # Only the new record is returned — old records not re-emitted.
@@ -444,16 +497,24 @@ class TestReadBatchIncremental:
         cursor = TapCursor(seqs={}, known_as_of=_NOW)
 
         _, cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=cursor, limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=cursor,
+            limit=100,
         )
         offset_after_first = cursor.resume_offset("s1")
         assert offset_after_first > 0
 
         io.append(_msg_path("s1"), _line(2, "done"))
         _, cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=cursor, limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=cursor,
+            limit=100,
         )
         assert cursor.resume_offset("s1") > offset_after_first
 
@@ -468,14 +529,22 @@ class TestReadBatchIncremental:
         cursor = TapCursor(seqs={}, known_as_of=_NOW)
 
         _, cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=cursor, limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=cursor,
+            limit=100,
         )
 
         # No new data written — second drain must be empty.
         events2, _ = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=cursor, limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=cursor,
+            limit=100,
         )
         assert events2 == []
 
@@ -499,8 +568,12 @@ class TestReadBatchIncremental:
 
         cursor = TapCursor(seqs={}, known_as_of=_NOW)
         events1, cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=cursor, limit=2,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=cursor,
+            limit=2,
         )
         assert len(events1) == 2
         assert [e.class_ for e in events1] == [
@@ -515,8 +588,12 @@ class TestReadBatchIncremental:
 
         # Second drain returns EXACTLY the remaining two records — no skip, no dup.
         events2, cursor = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=cursor, limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=cursor,
+            limit=100,
         )
         assert len(events2) == 2
         assert [e.class_ for e in events2] == [
@@ -547,8 +624,12 @@ class TestReadBatchIncremental:
         )
 
         events, _ = await read_batch(
-            provider, io, workspace_id="ws-1", selector=TapSelector(),
-            cursor=cursor, limit=100,
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=cursor,
+            limit=100,
         )
         # Only seq 3 (> 2) must be returned despite the offset being 0.
         assert len(events) == 1

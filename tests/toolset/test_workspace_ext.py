@@ -25,6 +25,11 @@ from primer.toolset.workspace_ext import (
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     """Minimal storage_provider stub.
 
     Only ``subscribe_to_trigger`` touches storage and these tests never

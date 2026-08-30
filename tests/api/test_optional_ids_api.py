@@ -51,6 +51,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -71,9 +87,7 @@ class _Storage:
         offset = int(page.cursor) if page.cursor else 0
         sliced = items[offset : offset + page.length]
         next_cursor = (
-            str(offset + page.length)
-            if offset + page.length < len(items)
-            else None
+            str(offset + page.length) if offset + page.length < len(items) else None
         )
         return CursorPageResponse(next_cursor=next_cursor, items=sliced)
 
@@ -82,6 +96,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -150,9 +169,7 @@ async def test_update_with_omitted_id_uses_path_id(system_toolset) -> None:
     assert updated["id"] == "a1"
     assert updated["description"] == "after"
 
-    result = await system_toolset.call(
-        tool_name="get_agent", arguments={"id": "a1"}
-    )
+    result = await system_toolset.call(tool_name="get_agent", arguments={"id": "a1"})
     assert not result.is_error
     assert json.loads(result.output)["description"] == "after"
 
@@ -199,6 +216,22 @@ class _ThingStorage:
         return entity
 
     async def update(self, entity: _Thing) -> _Thing:
+        self._data[entity.id] = entity
+        return entity
+
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
         self._data[entity.id] = entity
         return entity
 
@@ -264,9 +297,7 @@ async def test_rest_update_invalid_body_returns_422(
     # `name` declared str; a nested object value fails validation and must
     # render as 422 (RequestValidationError), NOT a bare 500. This is the
     # regression guard for the raw-pydantic-ValidationError fix.
-    resp = await things_client.put(
-        "/things/t1", json={"name": {"nope": True}}
-    )
+    resp = await things_client.put("/things/t1", json={"name": {"nope": True}})
     assert resp.status_code == 422, resp.text
 
 
@@ -274,9 +305,7 @@ async def test_rest_update_invalid_body_returns_422(
 async def test_rest_update_mismatched_id_returns_409(
     things_client: httpx.AsyncClient,
 ) -> None:
-    resp = await things_client.put(
-        "/things/t1", json={"id": "different", "name": "x"}
-    )
+    resp = await things_client.put("/things/t1", json={"id": "different", "name": "x"})
     assert resp.status_code == 409, resp.text
 
 
@@ -309,6 +338,22 @@ class _ScopedStorage:
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         self._data.pop(id, None)
 
@@ -326,9 +371,7 @@ async def scoped_client() -> AsyncIterator[httpx.AsyncClient]:
     global _SCOPED_STORAGE  # noqa: PLW0603
 
     _SCOPED_STORAGE = _ScopedStorage()
-    _SCOPED_STORAGE._data["s1"] = _ScopedThing(
-        id="s1", parent_id="p1", name="before"
-    )
+    _SCOPED_STORAGE._data["s1"] = _ScopedThing(id="s1", parent_id="p1", name="before")
 
     router = make_crud_router(
         model_cls=_ScopedThing,
@@ -399,7 +442,9 @@ def _agent_body(description: str) -> dict[str, Any]:
     """A valid Agent body WITHOUT an id, mirroring ``_agent`` above."""
     return {
         "description": description,
-        "model": AgentModel(profile_id="anthropic-1--claude-sonnet-4-6").model_dump(mode="json"),
+        "model": AgentModel(profile_id="anthropic-1--claude-sonnet-4-6").model_dump(
+            mode="json"
+        ),
         "temperature": 0.0,
         "tools": [],
         "system_prompt": ["you are a test"],
@@ -418,9 +463,7 @@ async def test_create_without_id_autogenerates(system_toolset) -> None:
     assert re.fullmatch(r"agent-[0-9a-f]{12}", new_id), new_id
 
     # Retrievable from storage by the autogenerated id.
-    result = await system_toolset.call(
-        tool_name="get_agent", arguments={"id": new_id}
-    )
+    result = await system_toolset.call(tool_name="get_agent", arguments={"id": new_id})
     assert not result.is_error, result.output
     assert json.loads(result.output)["description"] == "no id supplied"
 

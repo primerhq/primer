@@ -55,22 +55,44 @@ class _ItemStorage:
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         del self._data[id]
 
-    async def list(self, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_Item]:
+    async def list(
+        self, page: Any, *, order_by: Any = None
+    ) -> OffsetPageResponse[_Item]:
         items = list(self._data.values())
         if isinstance(page, OffsetPage):
-            sliced = items[page.offset: page.offset + page.length]
+            sliced = items[page.offset : page.offset + page.length]
             return OffsetPageResponse(
                 offset=page.offset,
                 length=len(sliced),
                 total=len(items),
                 items=sliced,
             )
-        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+        return OffsetPageResponse(
+            offset=0, length=len(items), total=len(items), items=items
+        )
 
-    async def find(self, predicate: Any, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_Item]:
+    async def find(
+        self, predicate: Any, page: Any, *, order_by: Any = None
+    ) -> OffsetPageResponse[_Item]:
         if predicate is None:
             return await self.list(page, order_by=order_by)
         from primer.model.storage import FieldRef, Op, Predicate, Value
@@ -89,14 +111,16 @@ class _ItemStorage:
 
         matched = [i for i in self._data.values() if _matches(i, predicate)]
         if isinstance(page, OffsetPage):
-            sliced = matched[page.offset: page.offset + page.length]
+            sliced = matched[page.offset : page.offset + page.length]
             return OffsetPageResponse(
                 offset=page.offset,
                 length=len(sliced),
                 total=len(matched),
                 items=sliced,
             )
-        return OffsetPageResponse(offset=0, length=len(matched), total=len(matched), items=matched)
+        return OffsetPageResponse(
+            offset=0, length=len(matched), total=len(matched), items=matched
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +179,9 @@ async def scoped_client() -> AsyncIterator[httpx.AsyncClient]:
 
 
 @pytest.mark.asyncio
-async def test_scoped_list_filters_by_parent_id(scoped_client: httpx.AsyncClient) -> None:
+async def test_scoped_list_filters_by_parent_id(
+    scoped_client: httpx.AsyncClient,
+) -> None:
     resp = await scoped_client.get("/v1/workspaces/w1/items")
     assert resp.status_code == 200
     data = resp.json()
@@ -185,7 +211,9 @@ async def test_scoped_create_forces_parent_id(scoped_client: httpx.AsyncClient) 
 
 
 @pytest.mark.asyncio
-async def test_scoped_create_forces_parent_id_mismatch_422(scoped_client: httpx.AsyncClient) -> None:
+async def test_scoped_create_forces_parent_id_mismatch_422(
+    scoped_client: httpx.AsyncClient,
+) -> None:
     """Create with mismatched workspace_id is rejected with 422."""
     resp = await scoped_client.post(
         "/v1/workspaces/w1/items",
@@ -195,7 +223,9 @@ async def test_scoped_create_forces_parent_id_mismatch_422(scoped_client: httpx.
 
 
 @pytest.mark.asyncio
-async def test_scoped_create_sets_parent_id_when_absent(scoped_client: httpx.AsyncClient) -> None:
+async def test_scoped_create_sets_parent_id_when_absent(
+    scoped_client: httpx.AsyncClient,
+) -> None:
     """Create where body omits scope_field — factory fills it in from path."""
     # _Item requires workspace_id so we must supply it; supply the correct one.
     resp = await scoped_client.post(
@@ -207,7 +237,9 @@ async def test_scoped_create_sets_parent_id_when_absent(scoped_client: httpx.Asy
 
 
 @pytest.mark.asyncio
-async def test_scoped_get_returns_item_in_correct_parent(scoped_client: httpx.AsyncClient) -> None:
+async def test_scoped_get_returns_item_in_correct_parent(
+    scoped_client: httpx.AsyncClient,
+) -> None:
     resp = await scoped_client.get("/v1/workspaces/w1/items/item-x")
     assert resp.status_code == 200
     assert resp.json()["id"] == "item-x"

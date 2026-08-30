@@ -94,7 +94,8 @@ class _Store:
         # rows cannot show a re-index leaving stale chunks behind, which
         # is one of the things this module is supposed to prevent.
         self.puts = [
-            r for r in self.puts
+            r
+            for r in self.puts
             if not (r.collection_id == cid and r.document_id == did)
         ]
 
@@ -306,9 +307,12 @@ class TestBatchEmbedEquivalence:
         text = "x" * (max_chars * n_chunks)
         n = await index_document(
             document=_document(text=text),
-            collection=_collection(chunking=ChunkingConfig(
-                max_chars=max_chars, overlap=0,
-            )),
+            collection=_collection(
+                chunking=ChunkingConfig(
+                    max_chars=max_chars,
+                    overlap=0,
+                )
+            ),
             provider_registry=reg,
             semantic_search_registry=ssr,
             content_store=_body_store(text=text),
@@ -409,7 +413,9 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800, "c" * 800])),
+            content_store=_body_store(
+                text="\n\n".join(["a" * 800, "b" * 800, "c" * 800])
+            ),
         )
         assert len(await store.get("kb-1", "doc-1")) == 3
 
@@ -437,9 +443,12 @@ class _DocStore:
 
     async def list(self, page, *, order_by=None):
         items = list(self._docs.values())
-        sliced = items[page.offset:page.offset + page.length]
+        sliced = items[page.offset : page.offset + page.length]
         return OffsetPageResponse(
-            offset=page.offset, length=len(sliced), total=len(items), items=sliced,
+            offset=page.offset,
+            length=len(sliced),
+            total=len(items),
+            items=sliced,
         )
 
 
@@ -463,13 +472,18 @@ class _PerDocContentStore:
 
 
 class _StorageProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self, docs, collections, bodies=None):
         self._doc_store = _DocStore(docs)
         self._coll_store = _CollStore(collections)
         # Default: every doc has a body, so backfill has something to index.
-        self._bodies = bodies if bodies is not None else {
-            d.id: f"body of {d.id}" for d in docs
-        }
+        self._bodies = (
+            bodies if bodies is not None else {d.id: f"body of {d.id}" for d in docs}
+        )
 
     def get_storage(self, model_cls):
         if model_cls is Document:
@@ -519,9 +533,11 @@ class TestDimensionMismatchDetection:
             async def embed(self, *, model, inputs):
                 nonlocal embed_call_count
                 embed_call_count += 1
+
                 # Return 384-dim vectors (mismatch vs stored 768).
                 class _R:
                     embeddings = [type("V", (), {"vector": [0.1] * 384})()]
+
                 return _R()
 
         reg = AsyncMock()
@@ -575,6 +591,7 @@ class TestDimensionMismatchDetection:
             async def embed(self, *, model, inputs):
                 class _R:
                     embeddings = [type("V", (), {"vector": [0.1] * 384})()]
+
                 return _R()
 
         reg = AsyncMock()
@@ -592,16 +609,20 @@ class TestDimensionMismatchDetection:
             )
 
         assert exc_info.value.status_code == 422
-        assert "re-ingest" in exc_info.value.message.lower() or \
-               "re-index" in exc_info.value.message.lower()
+        assert (
+            "re-ingest" in exc_info.value.message.lower()
+            or "re-index" in exc_info.value.message.lower()
+        )
 
 
 async def test_index_document_noop_when_search_off():
     coll = Collection(id="c-off", description="grep only")  # search=None
     doc = Document(collection_id="c-off", slug="a", path="a")
     n = await index_document(
-        document=doc, collection=coll,
-        provider_registry=None, semantic_search_registry=None,
+        document=doc,
+        collection=coll,
+        provider_registry=None,
+        semantic_search_registry=None,
         content_store=_NullContentStore(),
     )
     assert n == 0
@@ -624,7 +645,8 @@ async def test_chunking_config_drives_split():
     ssr = AsyncMock()
     ssr.get_store = AsyncMock(return_value=store)
     coll = Collection(
-        id="c-chunk", description="d",
+        id="c-chunk",
+        description="d",
         search=CollectionSearchConfig(
             embedder=CollectionEmbedder(provider_id="e", model="m"),
             vector_store_provider_id="s",
@@ -633,7 +655,8 @@ async def test_chunking_config_drives_split():
     )
     doc = Document(collection_id="c-chunk", slug="big", path="big")
     n = await index_document(
-        document=doc, collection=coll,
+        document=doc,
+        collection=coll,
         provider_registry=reg,
         semantic_search_registry=ssr,
         content_store=_OneDocContentStore(doc.id, "## A\n\n" + "x" * 900),
@@ -661,22 +684,29 @@ async def test_move_rewrites_path_meta_without_reembedding():
     from primer.model.vector import EmbeddingRecord
 
     rec = EmbeddingRecord(
-        collection_id="c1", document_id="d1", chunk_id="0",
-        text="body", vector=[0.1, 0.2], meta={"path": "old/leaf"},
+        collection_id="c1",
+        document_id="d1",
+        chunk_id="0",
+        text="body",
+        vector=[0.1, 0.2],
+        meta={"path": "old/leaf"},
     )
     store = _MetaStore([rec])
     ssr = AsyncMock()
     ssr.get_store = AsyncMock(return_value=store)
     coll = Collection(
-        id="c1", description="d",
+        id="c1",
+        description="d",
         search=CollectionSearchConfig(
             embedder=CollectionEmbedder(provider_id="e", model="m"),
             vector_store_provider_id="s",
         ),
     )
     await rewrite_document_path_meta(
-        document_id="d1", collection=coll,
-        semantic_search_registry=ssr, new_path="dst/leaf",
+        document_id="d1",
+        collection=coll,
+        semantic_search_registry=ssr,
+        new_path="dst/leaf",
     )
     assert store.puts[0].meta["path"] == "dst/leaf"
     assert store.puts[0].vector == rec.vector  # metadata only, no re-embed
@@ -712,8 +742,10 @@ class TestIndexDocuments:
 
         docs = [
             Document(
-                id=f"doc-{i}", collection_id="kb-1",
-                slug=f"doc-{i}", path=f"doc-{i}",
+                id=f"doc-{i}",
+                collection_id="kb-1",
+                slug=f"doc-{i}",
+                path=f"doc-{i}",
             )
             for i in range(20)
         ]
@@ -760,8 +792,10 @@ class TestIndexDocuments:
 
         docs = [
             Document(
-                id=f"doc-{i}", collection_id="kb-1",
-                slug=f"doc-{i}", path=f"doc-{i}",
+                id=f"doc-{i}",
+                collection_id="kb-1",
+                slug=f"doc-{i}",
+                path=f"doc-{i}",
             )
             for i in range(5)
         ]
@@ -772,8 +806,10 @@ class TestIndexDocuments:
                 return bodies[doc_id]
 
         kwargs = dict(
-            documents=docs, collection=_collection(),
-            provider_registry=reg, semantic_search_registry=ssr,
+            documents=docs,
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
             content_store=_Bodies(),
         )
         assert await index_documents(**kwargs) == 5

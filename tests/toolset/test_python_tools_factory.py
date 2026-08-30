@@ -1,4 +1,5 @@
 """S5 P1: the python-toolset tools are built by a shared, re-scopable factory."""
+
 from __future__ import annotations
 
 from primer.toolset._python_tools import build_python_toolset_tools
@@ -11,6 +12,11 @@ PY_TOOLS = {
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def get_storage(self, model):  # pragma: no cover - never dispatched here
         return None
 

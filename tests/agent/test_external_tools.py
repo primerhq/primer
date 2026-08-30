@@ -45,10 +45,24 @@ class _MemStorage:
         self.rows[row.id] = row
         return row
 
+    async def update_unless(
+        self,
+        row,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(row.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {row.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[row.id] = row
+        return row
 
-_SYSTEM = PrincipalRef(
-    type="system", id="test", display="test", source="local"
-)
+
+_SYSTEM = PrincipalRef(type="system", id="test", display="test", source="local")
 
 
 async def test_provider_lists_defs_as_external_tools():

@@ -49,6 +49,22 @@ class _AgentStorage:
         self._items[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         from primer.model.except_ import NotFoundError
 
@@ -58,9 +74,9 @@ class _AgentStorage:
 
     async def list(self, page: OffsetPage, *, order_by=None):
         items = list(self._items.values())
-        return OffsetPageResponse[
-            _Agent
-        ](items=items, total=len(items), offset=0, length=len(items))
+        return OffsetPageResponse[_Agent](
+            items=items, total=len(items), offset=0, length=len(items)
+        )
 
     async def find(self, predicate, page, *, order_by=None):
         return await self.list(page)
@@ -139,12 +155,12 @@ def test_cdc_kind_conflicting_model_raises() -> None:
 
 
 @pytest_asyncio.fixture
-async def crud_app() -> AsyncIterator[tuple[httpx.AsyncClient, _CDCObserver, list[str]]]:
+async def crud_app() -> AsyncIterator[
+    tuple[httpx.AsyncClient, _CDCObserver, list[str]]
+]:
     global _SHARED_STORAGE  # noqa: PLW0603
 
-    _SHARED_STORAGE = _AgentStorage(
-        items=[_Agent(id="existing", name="pre-seeded")]
-    )
+    _SHARED_STORAGE = _AgentStorage(items=[_Agent(id="existing", name="pre-seeded")])
     user_calls: list[str] = []
 
     async def _user_on_create(entity_id: str, request: Request) -> None:
@@ -185,12 +201,18 @@ async def test_no_imperative_cdc_side_effects_on_mutations(crud_app) -> None:
     """POST/PUT/DELETE no longer converge inline or feed the dead
     internal-collections queue: the event log + dispatcher own CDC now."""
     client, observer, _ = crud_app
-    assert (await client.post(
-        "/v1/agents", json={"id": "new-agent", "name": "Alice"},
-    )).status_code == 201
-    assert (await client.put(
-        "/v1/agents/existing", json={"id": "existing", "name": "renamed"},
-    )).status_code == 200
+    assert (
+        await client.post(
+            "/v1/agents",
+            json={"id": "new-agent", "name": "Alice"},
+        )
+    ).status_code == 201
+    assert (
+        await client.put(
+            "/v1/agents/existing",
+            json={"id": "existing", "name": "renamed"},
+        )
+    ).status_code == 200
     assert (await client.delete("/v1/agents/existing")).status_code == 204
     assert observer.calls == []
 

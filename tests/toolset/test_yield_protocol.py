@@ -43,6 +43,11 @@ from primer.worker.yield_resume_registry import (
 
 
 class _YieldSP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     """Minimal storage_provider stub for build_workspace_ext_toolset.
 
     The ``sleep`` handler reads nothing from storage; only the
@@ -72,16 +77,19 @@ class TestHandlerSignatureIntrospection:
     def test_legacy_handler_no_ctx(self):
         async def handler(arguments):
             return ToolCallResult(output="ok")
+
         assert _handler_takes_ctx(handler) is False
 
     def test_yielding_handler_keyword_only_ctx(self):
         async def handler(arguments, *, ctx: ToolContext):  # noqa: ARG001
             return Yielded(tool_name="", event_key="x:1")
+
         assert _handler_takes_ctx(handler) is True
 
     def test_yielding_handler_positional_or_keyword_ctx(self):
         async def handler(arguments, ctx=None):  # noqa: ARG001
             return ToolCallResult(output="ok")
+
         assert _handler_takes_ctx(handler) is True
 
 
@@ -95,9 +103,11 @@ class TestLegacyDispatch:
     async def test_legacy_handler_called_without_ctx(self):
         async def handler(arguments):
             return ToolCallResult(output=f"got {arguments['x']}")
+
         tool = _make_tool("ts", "echo")
         provider = InternalToolsetProvider(
-            toolset_id="ts", registry={"echo": (tool, handler)},
+            toolset_id="ts",
+            registry={"echo": (tool, handler)},
         )
         result = await provider.call(tool_name="echo", arguments={"x": 42})
         assert result.output == "got 42"
@@ -107,9 +117,11 @@ class TestLegacyDispatch:
         # NOT pass it — passing unexpected kwargs would TypeError.
         async def handler(arguments):
             return ToolCallResult(output="ok")
+
         tool = _make_tool("ts", "echo")
         provider = InternalToolsetProvider(
-            toolset_id="ts", registry={"echo": (tool, handler)},
+            toolset_id="ts",
+            registry={"echo": (tool, handler)},
         )
         result = await provider.call(
             tool_name="echo",
@@ -139,7 +151,8 @@ class TestYieldingDispatch:
 
         tool = _make_tool("ts", "snooze")
         provider = InternalToolsetProvider(
-            toolset_id="ts", registry={"snooze": (tool, handler)},
+            toolset_id="ts",
+            registry={"snooze": (tool, handler)},
         )
         ctx = ToolContext(tool_call_id="tc-1", session_id="s", workspace_id="w")
         with pytest.raises(YieldToWorker) as info:
@@ -160,9 +173,11 @@ class TestYieldingDispatch:
         # returns Yielded → ConfigError (programming bug).
         async def handler(arguments, *, ctx: ToolContext = None):  # type: ignore[assignment]
             return Yielded(tool_name="", event_key="x:1")
+
         tool = _make_tool("ts", "broken")
         provider = InternalToolsetProvider(
-            toolset_id="ts", registry={"broken": (tool, handler)},
+            toolset_id="ts",
+            registry={"broken": (tool, handler)},
         )
         # Calling without ctx means the handler runs with ctx=None;
         # returning Yielded with ctx=None is the bug we trap.
@@ -180,17 +195,20 @@ class TestResumeHookRegistry:
         # Snapshot + restore the registry around each test so we
         # don't leak state.
         from primer.worker.yield_resume_registry import _registry
+
         self._snapshot = dict(_registry)
         _reset_for_tests()
 
     def teardown_method(self):
         from primer.worker.yield_resume_registry import _registry
+
         _reset_for_tests()
         _registry.update(self._snapshot)
 
     def test_register_then_lookup(self):
         def hook(meta, payload, ctx):
             return ToolCallResult(output="ok")
+
         register_resume_hook("widget", hook)
         assert has_resume_hook("widget")
         assert get_resume_hook("widget") is hook
@@ -198,6 +216,7 @@ class TestResumeHookRegistry:
     def test_register_same_hook_twice_is_idempotent(self):
         def hook(meta, payload, ctx):
             return ToolCallResult(output="ok")
+
         register_resume_hook("widget", hook)
         register_resume_hook("widget", hook)  # no raise
         assert get_resume_hook("widget") is hook
@@ -208,6 +227,7 @@ class TestResumeHookRegistry:
 
         def hook_b(meta, payload, ctx):
             return ToolCallResult(output="b")
+
         register_resume_hook("widget", hook_a)
         with pytest.raises(ConfigError, match="already registered"):
             register_resume_hook("widget", hook_b)
@@ -231,6 +251,7 @@ class TestSleepToolE2E:
         # Sleep with seconds=0 returns directly without yielding —
         # there's nothing to wait for.
         from primer.toolset.workspace_ext import build_workspace_ext_toolset
+
         provider = build_workspace_ext_toolset(storage_provider=_YieldSP())
         result = await provider.call(
             tool_name="sleep",
@@ -239,16 +260,20 @@ class TestSleepToolE2E:
         )
         assert result.is_error is False
         import json
+
         body = json.loads(result.output)
         assert body == {"requested_seconds": 0.0, "elapsed_seconds": 0.0}
 
     async def test_nonzero_seconds_yields(self):
         from primer.toolset.workspace_ext import build_workspace_ext_toolset
+
         provider = build_workspace_ext_toolset(storage_provider=_YieldSP())
         ctx = ToolContext(tool_call_id="tc-z", session_id="s", workspace_id="w")
         with pytest.raises(YieldToWorker) as info:
             await provider.call(
-                tool_name="sleep", arguments={"seconds": 30.0}, ctx=ctx,
+                tool_name="sleep",
+                arguments={"seconds": 30.0},
+                ctx=ctx,
             )
         assert info.value.yielded.tool_name == "sleep"
         assert info.value.yielded.event_key == "timer:tc-z"
@@ -260,6 +285,7 @@ class TestSleepToolE2E:
         # with a normal (empty) event payload — should return the
         # standard {requested_seconds, elapsed_seconds} shape.
         from datetime import datetime, timedelta, timezone
+
         hook = get_resume_hook("sleep")
         parked_at = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
         meta = {
@@ -269,6 +295,7 @@ class TestSleepToolE2E:
         result = hook(meta, {}, _RESUME_CTX)  # empty event payload (timer fire)
         assert result.is_error is False
         import json
+
         body = json.loads(result.output)
         assert body["requested_seconds"] == 30.0
         # elapsed_seconds is computed from real now() so it'll be
@@ -278,6 +305,7 @@ class TestSleepToolE2E:
 
     async def test_sleep_resume_hook_cancelled(self):
         from datetime import datetime, timezone
+
         hook = get_resume_hook("sleep")
         parked_at = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
         meta = {
@@ -292,6 +320,7 @@ class TestSleepToolE2E:
         result = hook(meta, cancelled, _RESUME_CTX)
         assert result.is_error is False
         import json
+
         body = json.loads(result.output)
         assert body["cancelled"] is True
         assert body["cancel_reason"] == "user changed mind"
@@ -302,6 +331,7 @@ class TestSleepToolE2E:
         # 300s cap was removed (it's now the global cap), so very
         # large values are accepted at the validation layer.
         from primer.toolset.workspace_ext import build_workspace_ext_toolset
+
         provider = build_workspace_ext_toolset(storage_provider=_YieldSP())
         ctx = ToolContext(tool_call_id="tc-x", session_id="s", workspace_id="w")
         result = await provider.call(
@@ -316,10 +346,13 @@ class TestSleepToolE2E:
         # at the tool layer; the worker pool's global cap (M2)
         # bounds total wait.
         from primer.toolset.workspace_ext import build_workspace_ext_toolset
+
         provider = build_workspace_ext_toolset(storage_provider=_YieldSP())
         ctx = ToolContext(tool_call_id="tc-l", session_id="s", workspace_id="w")
         with pytest.raises(YieldToWorker) as info:
             await provider.call(
-                tool_name="sleep", arguments={"seconds": 3600.0}, ctx=ctx,
+                tool_name="sleep",
+                arguments={"seconds": 3600.0},
+                ctx=ctx,
             )
         assert info.value.yielded.timeout == 3600.0

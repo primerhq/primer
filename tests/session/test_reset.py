@@ -26,6 +26,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self, row):
         self._s = _Storage(row)
 
@@ -80,10 +85,13 @@ async def test_reset_reopens_row_and_writes_divider():
     slot = _Slot()
     ws = _WS(slot)
     deps = SessionResetDeps(
-        storage_provider=_SP(row), workspace_registry=_Registry(ws),
+        storage_provider=_SP(row),
+        workspace_registry=_Registry(ws),
     )
     out, invocation = await reset_session(
-        workspace_id="ws-1", session_id="sess-1", deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        deps=deps,
     )
     assert out.status == SessionStatus.CREATED
     assert out.ended_reason is None
@@ -102,10 +110,13 @@ async def test_reset_clears_stale_interrupt_requested():
     slot = _Slot()
     ws = _WS(slot)
     deps = SessionResetDeps(
-        storage_provider=_SP(row), workspace_registry=_Registry(ws),
+        storage_provider=_SP(row),
+        workspace_registry=_Registry(ws),
     )
     out, _invocation = await reset_session(
-        workspace_id="ws-1", session_id="sess-1", deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        deps=deps,
     )
     assert out.interrupt_requested is False
 
@@ -115,7 +126,8 @@ async def test_reset_rejects_non_ended():
     row = _ended_row()
     row.status = SessionStatus.RUNNING
     deps = SessionResetDeps(
-        storage_provider=_SP(row), workspace_registry=_Registry(_WS(_Slot())),
+        storage_provider=_SP(row),
+        workspace_registry=_Registry(_WS(_Slot())),
     )
     with pytest.raises(ConflictError):
         await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
@@ -125,7 +137,8 @@ async def test_reset_rejects_non_ended():
 async def test_reset_rejects_workspace_lost():
     row = _ended_row(reason="workspace_lost")
     deps = SessionResetDeps(
-        storage_provider=_SP(row), workspace_registry=_Registry(_WS(_Slot())),
+        storage_provider=_SP(row),
+        workspace_registry=_Registry(_WS(_Slot())),
     )
     with pytest.raises(ConflictError):
         await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
