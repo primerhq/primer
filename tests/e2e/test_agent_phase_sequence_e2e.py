@@ -122,6 +122,42 @@ async def _cold_snapshot(base_url: str, sid: str) -> dict:
         return r.json()
 
 
+async def _bracketed_cold_compare(
+    client: httpx.AsyncClient, base_url: str, sid: str, *, max_attempts: int = 5,
+) -> tuple[dict, dict]:
+    """Warm-cold-warm bracket: read warm (A), take a cold snapshot, read
+    warm again (B). ``_cold_snapshot`` pays a real register+login round
+    trip a same-process warm GET does not, so a live turn can genuinely
+    advance its phase between A and the cold read - comparing cold
+    against a single warm sample then races the turn itself, not the
+    refresh-recovery path under test (confirmed live: a mismatch report
+    where both reads were individually correct, just from different
+    instants). Only trust the bracket once A and B agree on
+    (session_state, agent_phase): that proves the phase held still for
+    the whole window, so the cold read in between reflects that SAME
+    phase. Retries (bounded) since the live phase can keep moving; the
+    mock's multi-second phases make a stable window near-certain within
+    a few attempts.
+
+    Returns ``(warm, cold)`` from the stable attempt. Raises
+    ``AssertionError`` if no attempt stabilizes within ``max_attempts``.
+    """
+    for _ in range(max_attempts):
+        ra = await client.get(f"/v1/sessions/{sid}")
+        warm_a = ra.json()
+        cold = await _cold_snapshot(base_url, sid)
+        rb = await client.get(f"/v1/sessions/{sid}")
+        warm_b = rb.json()
+        pair_a = (warm_a.get("session_state"), warm_a.get("agent_phase"))
+        pair_b = (warm_b.get("session_state"), warm_b.get("agent_phase"))
+        if pair_a == pair_b:
+            return warm_a, cold
+    raise AssertionError(
+        f"phase never held still across a warm-cold-warm bracket after "
+        f"{max_attempts} attempts for session {sid}"
+    )
+
+
 # turn_no deliberately excluded: it is bumped by the claim engine's
 # on_release hook in a SEPARATE commit from the terminal status write
 # (tests/_support/runs.py's wait_turn_advanced docstring documents this
@@ -185,11 +221,15 @@ async def test_refresh_mid_phase_recovers_from_a_cold_client(
         # auto_start=False.
         if pair not in seen_pairs and pair != ("waiting", None):
             seen_pairs.add(pair)
-            cold = await _cold_snapshot(base_url, sid)
+            stable_warm, cold = await _bracketed_cold_compare(client, base_url, sid)
+            stable_pair = (
+                stable_warm.get("session_state"), stable_warm.get("agent_phase"),
+            )
+            seen_pairs.add(stable_pair)
             for field in _DISPLAY_FIELDS:
-                assert cold.get(field) == warm.get(field), (
-                    f"refresh mismatch at phase {pair} on field {field!r}: "
-                    f"warm={warm.get(field)!r} cold={cold.get(field)!r}"
+                assert cold.get(field) == stable_warm.get(field), (
+                    f"refresh mismatch at phase {stable_pair} on field {field!r}: "
+                    f"warm={stable_warm.get(field)!r} cold={cold.get(field)!r}"
                 )
             compared += 1
         if warm.get("session_state") in ("ended", "parked"):
