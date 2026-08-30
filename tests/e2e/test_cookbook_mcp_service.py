@@ -48,6 +48,7 @@ from tests._support.mock_llm import Rule
 from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
+    wait_completed,
 )
 from tests._support.smk import smk
 
@@ -189,10 +190,15 @@ async def test_mcp_service_drives_a_session_end_to_end(
 
                 # Thin-wrapper parity: the REST route's own computed field
                 # (backed by the DB row, not the on-disk mirror) does see
-                # the session resting parked.
-                rest = await authed_client.get(f"/v1/sessions/{sid}")
-                assert rest.status_code == 200, rest.text
-                assert rest.json()["session_state"] == "parked", rest.json()
+                # the session resting parked. POLL rather than a one-shot
+                # GET: the transcript write (what the loop above waits on)
+                # and the row's terminal-status write are not ordered
+                # relative to each other from an outside observer - PONG
+                # can land in messages.jsonl a beat before
+                # _post_turn_status/_clear_turn_running settle the row, so
+                # a single GET can legitimately still read "running".
+                rest = await wait_completed(authed_client, sid, timeout_s=30.0)
+                assert rest.get("session_state") == "parked", rest
 
                 # ---- (5) cancel a freshly-created session over MCP.
                 created2 = await sess.call_tool(
