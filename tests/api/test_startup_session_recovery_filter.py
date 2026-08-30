@@ -1,17 +1,20 @@
-"""Startup session recovery filters to LIVE (non-ENDED) sessions.
+"""Startup session recovery re-arms only genuinely recoverable sessions.
 
 Recovery used to ``list()`` every session row and drop ENDED in Python
-(an OOM risk at scale). It now ``find()``s with a status-IN predicate so
-the database only returns sessions that could still need work -- and the
-new ``sessions.status`` B-tree index keeps that scan cheap.
+(an OOM risk at scale), then ``find()`` with a broad non-ENDED predicate.
+Since completed turns rest parked (the clean-turn-rests-parked flip), a
+broad predicate would re-arm every session that ever completed a turn on
+every restart -- one wasted LLM call each. Recovery now selects only
+``status == RUNNING`` (a worker died mid-turn) or
+``turn_status == "claimable"`` (real pending work).
 
-These tests boot the real lifespan against a tmp SQLite DB (backend
-agnostic: the predicate is the same on both backends) with an in-memory
-scheduler so a claim engine exists, seed a mix of statuses, and assert:
+Per-case unit coverage of that predicate lives in
+``test_session_recovery_filter.py``. These tests keep the FULL-LIFESPAN
+angle: boot the real lifespan against a tmp SQLite DB with an in-memory
+scheduler, seed a mix of statuses, and assert:
 
-* recovery calls ``find`` (not ``list``) with a predicate that selects
-  every non-ENDED status, and
-* only the live sessions get re-armed on the claim engine.
+* recovery filters in the database via ``find`` (never ``list``), and
+* end to end, exactly the recoverable sessions get re-armed.
 """
 
 from __future__ import annotations
@@ -42,12 +45,15 @@ from primer.model.workspace_session import (
 )
 
 
-def _session(sid: str, status: SessionStatus) -> WorkspaceSession:
+def _session(
+    sid: str, status: SessionStatus, turn_status: str = "idle"
+) -> WorkspaceSession:
     return WorkspaceSession(
         id=sid,
         workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="agent-1"),
         status=status,
+        turn_status=turn_status,
         created_at=datetime.now(UTC),
     )
 
@@ -77,6 +83,11 @@ async def _seed(db_path: Path) -> None:
         await storage.create(_session("s-waiting", SessionStatus.WAITING))
         await storage.create(_session("s-paused", SessionStatus.PAUSED))
         await storage.create(_session("s-ended", SessionStatus.ENDED))
+        await storage.create(
+            _session(
+                "s-claimable", SessionStatus.WAITING, turn_status="claimable"
+            )
+        )
     finally:
         await provider.aclose()
 
@@ -121,36 +132,16 @@ async def test_recovery_uses_find_with_live_status_predicate(
     async with app.router.lifespan_context(app):
         pass
 
-    # Recovery queried via find(), never list(), for sessions.
+    # Recovery queried via find(), never list(), for sessions: the filter
+    # runs in the database, not in Python. The exact predicate values are
+    # covered behaviorally below and per-case in
+    # test_session_recovery_filter.py; asserting on predicate internals
+    # here would just re-pin the Q object structure.
     preds = captured.get("find_predicates")
     assert preds, "recovery should call find() on the session storage"
-
-    # The predicate must select every NON-ended status (fail-safe filter).
-    def _collect_values(p):  # type: ignore[no-untyped-def]
-        vals: set[str] = set()
-        right = getattr(p, "right", None)
-        rv = getattr(right, "value", None)
-        if isinstance(rv, list):
-            vals.update(str(v) for v in rv)
-        elif rv is not None:
-            vals.add(str(rv))
-        return vals
-
-    status_pred = next(
-        (
-            p
-            for p in preds
-            if getattr(getattr(p, "left", None), "name", None) == "status"
-        ),
-        None,
+    assert "list_called" not in captured, (
+        "recovery must not list() the whole session table"
     )
-    assert status_pred is not None, "recovery must filter on the status field"
-    selected = _collect_values(status_pred)
-    expected_live = {
-        s.value for s in SessionStatus if s != SessionStatus.ENDED
-    }
-    assert selected == expected_live
-    assert SessionStatus.ENDED.value not in selected
 
 
 @pytest.mark.asyncio
@@ -166,7 +157,10 @@ async def test_recovery_rearms_only_live_sessions(
         engine = app.state.claim_engine
         from primer.int.claim import ClaimKind
 
-        # The four live sessions are claimable; the ENDED one is not re-armed.
+        # Only genuinely recoverable sessions are re-armed: a RUNNING row
+        # (worker died mid-turn) and a claimable one (pending work). A
+        # resting/idle WAITING row rests parked - re-arming it on every
+        # boot would fire a wasted LLM call per historical session.
         # InMemoryClaimEngine holds armed leases keyed by (kind, entity_id).
         armed = {
             entity_id
@@ -174,6 +168,7 @@ async def test_recovery_rearms_only_live_sessions(
             if kind == ClaimKind.SESSION
         }
 
-    live = {"s-created", "s-running", "s-waiting", "s-paused"}
-    assert live <= armed, f"expected all live sessions armed, got {armed}"
+    assert armed == {"s-running", "s-claimable"}, (
+        f"expected exactly the recoverable sessions armed, got {armed}"
+    )
     assert "s-ended" not in armed, "ENDED session must not be re-armed"

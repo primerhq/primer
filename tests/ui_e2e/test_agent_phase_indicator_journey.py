@@ -207,11 +207,15 @@ def test_phase_indicator_and_state_chip_survive_refresh_at_every_phase(
         )
         expect(page.get_by_test_id("nv-phase-indicator")).not_to_be_visible()
 
-        # --- Phase 4: ended (clean stop; agent_phase reads None again) ----
-        _wait_for_phase(client, sid, session_state="ended", agent_phase=None)
-        _expect_chip_state(page, "ended")
+        # --- Phase 4: parked (01a0518a flipped _CLEAN_TURN_RESTS_PARKED
+        # on by default - a clean stop now correctly rests the session
+        # session_state="parked" instead of ending it; agent_phase still
+        # clears to None at rest either way, per dispatch.py's
+        # _post_turn_status). ----
+        _wait_for_phase(client, sid, session_state="parked", agent_phase=None)
+        _expect_chip_state(page, "parked")
 
         page.reload()
         open_session_in_studio(page, console_url, wid, sid)
-        _expect_chip_state(page, "ended")
+        _expect_chip_state(page, "parked")
         expect(page.get_by_test_id("nv-phase-indicator")).not_to_be_visible()
