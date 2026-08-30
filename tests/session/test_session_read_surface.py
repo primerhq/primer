@@ -93,6 +93,24 @@ class TestSessionDetail:
     def test_defaults_to_no_pending_messages(self):
         assert SessionDetail(**_row().model_dump()).pending_messages == []
 
+    def test_defaults_usage_and_context_length_to_none(self):
+        """01a052a5 item 2: both derived server-side per request (see
+        get_session_by_id), never stored on the row - a bare construction
+        with no override carries no opinion either way."""
+        detail = SessionDetail(**_row().model_dump())
+        assert detail.usage is None
+        assert detail.context_length is None
+
+    def test_usage_and_context_length_are_flat_siblings_too(self):
+        detail = SessionDetail(
+            **_row().model_dump(),
+            usage={"total_input_tokens": 1000, "total_output_tokens": 500},
+            context_length=64_000,
+        )
+        dumped = detail.model_dump(mode="json")
+        assert dumped["usage"]["total_input_tokens"] == 1000
+        assert dumped["context_length"] == 64_000
+
     def test_every_row_field_survives_the_subclass(self):
         """The reason for subclassing: no existing reader breaks."""
         row = _row(binding_epoch=3, last_seq=9, next_unprocessed_seq=10)

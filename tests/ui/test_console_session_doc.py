@@ -943,6 +943,86 @@ def test_trace_header_label_via_mini_racer():
     assert multi == "trace · 2 calls · 8s"
 
 
+def test_trace_row_expand_toggle_via_mini_racer():
+    """01a052a5 item 3: trace rows are expandable (a tool_call's own
+    arguments, previously dropped by the backend - primer/session/
+    timeline.py now includes them, tests/session/test_timeline_builder.py
+    pins that half). Same "stub React, run the real component" style as
+    test_divider_renders_as_a_rule_not_a_bubble_via_mini_racer, extended
+    to stub useState too (NV_TraceRow's one hook) since a real render
+    needs a controllable open/closed value, not just element-tree shape.
+
+    Also catches, by ACTUALLY branching on n.kind, two defects
+    source-grepping would miss: the icon check compared against the
+    literal string "tool" while the backend has only ever emitted
+    "tool_call" (the wrench glyph never rendered), and the args check
+    read n.args while the backend (and the new field) is n.arguments.
+    """
+    import json
+
+    from py_mini_racer import MiniRacer
+
+    from primer.api._jsx_bundle import JSXBundler
+
+    bundler = JSXBundler(
+        ui_dir=UI, babel_source=(UI / "vendor" / "babel.min.js").read_text(encoding="utf-8"),
+    )
+    start = DOC.index("function NV_TraceRow")
+    end = DOC.index("function NV_StatusStrip")
+    transpiled = bundler._transform(DOC[start:end], "trace_row_test.jsx")
+
+    ctx = MiniRacer()
+    ctx.eval(
+        """
+        var __openValue = false;
+        var React = {
+          createElement: function (type, props) {
+            var children = Array.prototype.slice.call(arguments, 2);
+            return { type: type, props: props || {}, children: children };
+          },
+          useState: function (init) {
+            return [__openValue, function () {}];
+          }
+        };
+        """
+    )
+    ctx.eval(transpiled)
+
+    def render(node, depth, index, open_):
+        ctx.eval("__openValue = " + ("true" if open_ else "false") + ";")
+        ctx.eval(
+            "var __out = NV_TraceRow({node: " + json.dumps(node)
+            + ", depth: " + json.dumps(depth)
+            + ", index: " + json.dumps(index) + "});"
+        )
+        return json.loads(ctx.eval("JSON.stringify(__out)"))
+
+    tool_call = {"kind": "tool_call", "label": "bash",
+                 "arguments": {"command": "ls"}, "duration_ms": 12}
+
+    closed = render(tool_call, 0, 0, open_=False)
+    line = closed["children"][0]
+    assert line["type"] == "button", "a row with real arguments must be a toggle"
+    tree = json.dumps(closed, ensure_ascii=False)
+    assert "▸" in tree
+    assert "⚙" in tree, "tool_call must get the wrench glyph, not the '·' fallback"
+    assert "nv-trace-args" not in tree, "collapsed must not render the args block"
+
+    opened = render(tool_call, 0, 0, open_=True)
+    tree = json.dumps(opened, ensure_ascii=False)
+    assert "▾" in tree
+    assert '"command": "ls"' in tree or '\\"command\\": \\"ls\\"' in tree
+
+    no_args = render({"kind": "tool_call", "label": "ping", "arguments": {}}, 0, 1, open_=False)
+    line = no_args["children"][0]
+    assert line["type"] == "div", "no arguments means nothing to expand"
+
+    llm = render({"kind": "llm_call", "label": "gpt-4o"}, 0, 2, open_=False)
+    tree = json.dumps(llm, ensure_ascii=False)
+    assert "◇" in tree
+    assert "⚙" not in tree
+
+
 def test_trace_split_uses_the_enriched_header_label():
     """NV_TraceSplit's header renders SH_traceHeaderLabel(turnNo, turnRows)
     rather than the bare "trace · turn N" string directly, and the caller
@@ -1024,28 +1104,51 @@ def test_divider_renders_as_a_rule_not_a_bubble_via_mini_racer():
     assert other["type"] == "NOT_A_DIVIDER"
 
 
-def test_rewind_and_compact_are_wired_not_gated():
-    # US-008 R3 item 4: both the overflow menu row and the palette verb
-    # now call the real endpoints - the S1 P2 "needs the endpoint" gate
-    # from earlier rounds is gone. Scoped to NV_SessionHeader specifically
-    # (item 2 registered a palette "Rewind Session"/"Compact Session"
-    # verb elsewhere in this file, so an unscoped search would land on
-    # the wrong "Rewind"/"Compact" occurrence).
+def test_compact_is_wired_not_gated():
+    # US-008 R3 item 4: the overflow menu row calls the real endpoint -
+    # the S1 P2 "needs the endpoint" gate from earlier rounds is gone.
+    # Scoped to NV_SessionHeader specifically (item 2 registered a
+    # palette "Compact Session" verb elsewhere in this file, so an
+    # unscoped search would land on the wrong "Compact" occurrence).
     header = DOC[DOC.index("function NV_SessionHeader"):
                  DOC.index("function NV_Thought")]
-    rewind = re.search(r"Rewind[\s\S]{0,200}", header)
-    assert rewind and "disabled" not in rewind.group(0)
-    assert "props.onOpenRewind" in header
     compact = re.search(r"Compact[\s\S]{0,200}", header)
     assert compact and "disabled" not in compact.group(0)
     assert "props.onCompact" in header
-    # Both call the real backend, not a stub - and Rewind opens a picker
-    # (notes 2.4: "radio list of user turns") rather than firing blind.
+    # Calls the real backend, not a stub.
     assert "SH_api.compact(wid, sid)" in DOC
-    assert "SH_api.rewind(wid, sid, toSeq)" in DOC
-    assert "NV_RewindPicker" in DOC
-    assert 'data-testid="nv-rewind-confirm"' in DOC
-    assert 'data-testid="nv-rewind-cancel"' in DOC
+
+
+def test_rewind_moved_from_the_menu_to_a_per_message_icon():
+    """01a052a5 item 4: "Rewind..." no longer lives in NV_SessionHeader's
+    overflow menu, nor behind a separate palette verb / multi-candidate
+    picker (dead affordances per the user's dogfood - both just
+    reopened a list to re-pick a target already visible on screen). It
+    is now the ONLY rewind entry point: an icon beside each eligible
+    user message in renderTurn, calling NV_doRewind directly with that
+    row's own seq."""
+    header = DOC[DOC.index("function NV_SessionHeader"):
+                 DOC.index("function NV_Thought")]
+    assert "onOpenRewind" not in header
+    assert 'data-verb="session.rewind"' not in header
+    assert ">Rewind" not in header
+
+    user_branch = DOC[DOC.index('if (row.kind === "user_message")'):
+                       DOC.index("nv-turn-text", DOC.index('if (row.kind === "user_message")'))]
+    assert "rewindableSeqs[row.seq]" in user_branch
+    assert 'data-testid={"nv-rewind-here:" + row.seq}' in user_branch
+    assert "confirmDialog(" in user_branch
+    assert "NV_doRewind(con.wid, sid, row.seq, refetchAll, con.toast)" in user_branch
+
+    # The old multi-candidate picker and its palette verb are gone
+    # entirely, not just unreached - a palette-only verb (no rendered
+    # pointer affordance) is exactly what the dual-render guard
+    # (test_shell_dual_render_guard.py) prohibits.
+    assert "function NV_RewindPicker" not in DOC
+    assert 'id: "session.rewind"' not in DOC
+    assert "SH_api.rewind(wid, sid, toSeq)" in DOC, (
+        "NV_doRewind (still the one function calling the endpoint) must survive"
+    )
 
 
 def test_rewind_candidates_match_check_rewind_target_via_mini_racer():
@@ -1073,7 +1176,7 @@ def test_rewind_candidates_match_check_rewind_target_via_mini_racer():
         encoding="utf-8"
     )
     start = DOC.index("function NV_rewindCandidates")
-    end = DOC.index("function NV_RewindPicker")
+    end = DOC.index("\n// ---", start)
     candidates_src = DOC[start:end]
 
     ctx = MiniRacer()

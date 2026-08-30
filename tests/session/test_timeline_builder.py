@@ -31,7 +31,8 @@ def _agent_turn():
         _rec(2, "llm_call", T1, profile_id="prof-1", provider_id="prov-1",
              model="m-1", input_tokens=11, output_tokens=7, duration_ms=900,
              status="ok"),
-        _rec(3, "tool_call", T1, id="c1", name="bash", arguments="{}"),
+        _rec(3, "tool_call", T1, id="c1", name="bash",
+             arguments={"command": "ls -la"}),
         _rec(4, "done", T1, stop_reason="tool_use"),
         _rec(5, "tool_result", T2, call_id="c1", output="ok", error=False),
         _rec(6, "llm_call", T2, profile_id="prof-1", provider_id="prov-1",
@@ -79,6 +80,7 @@ def test_tool_result_folds_into_its_call():
     assert tool["name"] == "bash"
     assert tool["status"] == "ok"
     assert tool["duration_ms"] == 1000
+    assert tool["arguments"] == {"command": "ls -la"}
 
 
 def test_errored_tool_result_marks_the_call():
@@ -89,6 +91,19 @@ def test_errored_tool_result_marks_the_call():
     ]
     tl = build_turn_timeline(message_lines=lines, turn_log_lines=[], turn_no=0)
     assert tl["children"][0]["status"] == "error"
+
+
+def test_tool_call_with_no_arguments_key_defaults_to_empty_dict():
+    """01a052a5 item 3: the trace panel's expand toggle always has a dict
+    to JSON.stringify, never undefined - a call record predating this
+    field (or one for a no-arg tool) must not break that."""
+    lines = [
+        _rec(1, "tool_call", T0, id="c1", name="ping"),
+        _rec(2, "tool_result", T1, call_id="c1", output="pong", error=False),
+        _rec(3, "done", T1, stop_reason="stop"),
+    ]
+    tl = build_turn_timeline(message_lines=lines, turn_log_lines=[], turn_no=0)
+    assert tl["children"][0]["arguments"] == {}
 
 
 def test_client_action_is_a_leaf_under_the_call_it_delivered():

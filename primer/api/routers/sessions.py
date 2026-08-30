@@ -687,10 +687,78 @@ class SessionDetail(WorkspaceSession):
             "out when it realizes one."
         ),
     )
+    usage: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Token totals folded from the visible DONE records (see "
+            "primer.session.usage.session_usage) - turns, "
+            "total_input_tokens, total_output_tokens, etc. Null when the "
+            "log could not be read."
+        ),
+    )
+    context_length: int | None = Field(
+        default=None,
+        description=(
+            "Context window size of the currently bound model, resolved "
+            "the same way compaction budgets it. Null for a graph-bound "
+            "session or one whose agent/model can no longer be resolved."
+        ),
+    )
 
 
 # A pathological queue must not make a detail read unbounded.
 _PENDING_PAGE = 100
+
+
+async def _session_usage_totals(
+    session: WorkspaceSession, workspace_registry,
+) -> dict[str, int] | None:
+    """Best-effort token totals for ``session``, or ``None`` if the log
+    is unreadable - mirrors build_usage_frame's own shape (tap.py), the
+    only other place session_usage() is assembled into a response."""
+    from primer.api.routers.tap import build_usage_frame
+
+    workspace = await workspace_registry.get_workspace(session.workspace_id)
+    if workspace is None:
+        return None
+    state_path = getattr(workspace, "state_path", ".state")
+    rel = f"{state_path}/sessions/{session.id}/messages.jsonl"
+    raw = await workspace.read_file(rel)
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    return build_usage_frame(text.splitlines())
+
+
+async def _session_context_length(
+    session: WorkspaceSession, storage_provider,
+) -> int | None:
+    """Best-effort context window size for session's bound model,
+    mirroring compact_session_endpoint's own resolution chain
+    (primer/api/routers/workspaces.py) - None whenever nothing is
+    resolvable (graph-bound, unbound, or a deleted agent/profile), which
+    the caller treats as "unknown", not an error."""
+    from primer.agent.compaction import lookup_context_length
+    from primer.model.agent import Agent
+    from primer.model_profile import resolve_model
+
+    binding = session.binding
+    if getattr(binding, "kind", None) != "agent":
+        return None
+    agent = getattr(binding, "agent_snapshot", None)
+    if agent is None:
+        agent_id = getattr(binding, "agent_id", None)
+        if not agent_id:
+            return None
+        agent = await storage_provider.get_storage(Agent).get(agent_id)
+    if agent is None:
+        return None
+    llm_model = await resolve_model(
+        storage_provider,
+        default_profile_id=agent.model.profile_id,
+        override_profile_id=getattr(binding, "profile_id", None),
+    )
+    return lookup_context_length(
+        model_name=llm_model.model_name, configured=llm_model.context_length,
+    )
 
 
 @top_session_router.get(
@@ -703,6 +771,7 @@ async def get_session_by_id(
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
     storage_provider=Depends(get_storage_provider),
+    workspace_registry=Depends(get_workspace_registry),
 ) -> SessionDetail:
     s = await sessions.get(session_id)
     if s is None:
@@ -728,7 +797,27 @@ async def get_session_by_id(
             session_id,
         )
 
-    return SessionDetail(**s.model_dump(), pending_messages=pending)
+    usage: dict[str, int] | None = None
+    try:
+        usage = await _session_usage_totals(s, workspace_registry)
+    except Exception:  # noqa: BLE001 - the row is the answer; usage is extra
+        logger.exception(
+            "session detail: computing usage failed for %s", session_id,
+        )
+
+    context_length: int | None = None
+    try:
+        context_length = await _session_context_length(s, storage_provider)
+    except Exception:  # noqa: BLE001 - same as usage above
+        logger.exception(
+            "session detail: resolving context_length failed for %s",
+            session_id,
+        )
+
+    return SessionDetail(
+        **s.model_dump(), pending_messages=pending,
+        usage=usage, context_length=context_length,
+    )
 
 
 @top_session_router.get(

@@ -339,6 +339,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "node_id": rec.get("node_id"),
                 "tool_call_id": payload.get("id"),
                 "name": payload.get("name"),
+                "arguments": payload.get("arguments") or {},
                 "status": None,
                 "duration_ms": None,
                 "children": [],

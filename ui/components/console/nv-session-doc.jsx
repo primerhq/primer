@@ -90,19 +90,6 @@ function NV_doInterrupt(wid, sid, refetchAll, toast) {
     toast("Interrupt failed: " + err.message);
   });
 }
-function NV_doPark(wid, sid, refetchAll, toast) {
-  return SH_api.pause(wid, sid).then(refetchAll, function (err) {
-    toast("Park failed: " + err.message);
-  });
-}
-// Nothing you can type resumes a parked session from the palette the way
-// sending a message does from the composer (sh-api.jsx's pause/cancel
-// comment) - so "Resume Session" lands the operator in the composer
-// rather than calling an endpoint that does not exist.
-function NV_doResume() {
-  var el = document.querySelector('[data-testid="nv-composer-input"]');
-  if (el && typeof el.focus === "function") el.focus();
-}
 function NV_doClose(wid, sid, refetchAll, toast) {
   return SH_api.cancel(wid, sid).then(refetchAll, function (err) {
     toast("Close failed: " + err.message);
@@ -136,10 +123,9 @@ function NV_doCompact(wid, sid, refetchAll, toast) {
     toast("Compact failed: " + err.message);
   });
 }
-// Rewind needs a target turn first (notes 2.4: "picker overlay — radio
-// list of user turns"), so both the overflow row and the palette verb
-// only OPEN the picker; the actual SH_api.rewind call happens once the
-// operator confirms a choice (NV_RewindPicker's onConfirm below).
+// 01a052a5: the target is already known (whichever message's icon was
+// clicked), so this is called directly off a confirmDialog - no picker
+// step needed the way the old multi-candidate overlay required.
 function NV_doRewind(wid, sid, toSeq, refetchAll, toast) {
   return SH_api.rewind(wid, sid, toSeq).then(refetchAll, function (err) {
     toast("Rewind failed: " + err.message);
@@ -185,56 +171,6 @@ function NV_rewindCandidates(records) {
     out.push({ seq: rec.seq, text: (rec.payload && rec.payload.text) || "" });
   }
   return out;
-}
-
-function NV_RewindPicker(props) {
-  var selState = React.useState(null);
-  var sel = selState[0];
-  var setSel = selState[1];
-  var candidates = props.candidates || [];
-  return (
-    <div className="nv-scrim" data-testid="nv-rewind-scrim"
-      onClick={props.onClose}>
-      <div className="nv-overlay-panel nv-rewind-picker"
-        data-testid="nv-rewind-picker"
-        role="dialog" aria-label="Rewind session"
-        onClick={function (ev) { ev.stopPropagation(); }}>
-        <div className="nv-overlay-head">
-          <h3 className="nv-overlay-title">Rewind to a kept turn</h3>
-        </div>
-        <div className="nv-rewind-body">
-          {!candidates.length ? (
-            <div className="nv-rewind-empty">
-              No earlier turn to rewind to.
-            </div>
-          ) : candidates.map(function (c) {
-            return (
-              <label key={c.seq} className="nv-rewind-row"
-                data-testid={"nv-rewind-option:" + c.seq}>
-                <input type="radio" name="nv-rewind-target"
-                  checked={sel === c.seq}
-                  onChange={function () { setSel(c.seq); }} />
-                <span className="nv-rewind-text">
-                  {String(c.text || "(turn #" + c.seq + ")").slice(0, 140)}
-                </span>
-              </label>
-            );
-          })}
-        </div>
-        <div className="nv-rewind-actions">
-          <button type="button" className="nv-menu-row"
-            data-testid="nv-rewind-cancel"
-            onClick={props.onClose}>Cancel</button>
-          <button type="button" className="nv-btn-primary"
-            data-testid="nv-rewind-confirm"
-            disabled={sel == null}
-            onClick={function () { props.onConfirm(sel); }}>
-            Rewind
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -467,22 +403,6 @@ function NV_SessionHeader(props) {
         {ovfOpen ? (
           <div className="nv-menu nv-menu-right"
             onClick={function (ev) { ev.stopPropagation(); }}>
-            {!NV_sessionIsOver(session) ? (
-              <button type="button" className="nv-menu-row"
-                data-verb="session.park"
-                onClick={function () {
-                  setOvf(false);
-                  var verb = con.registry.get("session.park");
-                  if (verb) verb.run();
-                }}>Park Session</button>
-            ) : null}
-            <button type="button" className="nv-menu-row"
-              data-verb="session.resume"
-              onClick={function () {
-                setOvf(false);
-                var verb = con.registry.get("session.resume");
-                if (verb) verb.run();
-              }}>Resume Session</button>
             <button type="button" className="nv-menu-row"
               data-verb="session.splitRight"
               onClick={function () {
@@ -491,14 +411,13 @@ function NV_SessionHeader(props) {
                 if (verb) verb.run();
               }}>Split Right</button>
             <div className="nv-menu-sep" />
-            <button type="button" className="nv-menu-row"
-              data-verb="session.rewind"
-              onClick={function () {
-                setOvf(false);
-                props.onOpenRewind();
-              }}>
-              Rewind…
-            </button>
+            {/* 01a052a5: "Rewind..." moved out of this menu entirely -
+                a per-message icon beside each eligible user message
+                (see renderTurn's user_message branch) now targets a
+                turn directly, and the old multi-candidate picker
+                (NV_RewindPicker) is gone along with the palette verb
+                that opened it - both dead the moment clicking the
+                target itself replaced re-selecting it from a list. */}
             <button type="button" className="nv-menu-row"
               data-verb="session.compact"
               onClick={function () {
@@ -991,35 +910,55 @@ function NV_TraceSplit(props) {
       </div>
       <div className="nv-trace-body">
         {flatRows.map(function (r, i) {
-          var n = r.node;
-          return (
-            <div key={i} className="nv-trace-row"
-              style={{ paddingLeft: r.depth * 12 }}>
-              <div className="nv-trace-line">
-                <span className="nv-trace-icon">
-                  {n.kind === "llm_call" ? "◇" : n.kind === "tool" ? "⚙" : "·"}
-                </span>
-                <span className="nv-trace-label">
-                  {n.label || n.kind || ""}
-                </span>
-                <span style={{ flex: 1 }} />
-                <span className="nv-trace-dur">
-                  {n.duration_ms != null ? n.duration_ms + "ms" : ""}
-                </span>
-              </div>
-              {n.args ? (
-                <div className="nv-trace-args">
-                  {JSON.stringify(n.args)}
-                </div>
-              ) : null}
-            </div>
-          );
+          return <NV_TraceRow key={i} index={i} node={r.node} depth={r.depth} />;
         })}
         <div className="nv-trace-foot">
           The trace is the only place raw tool arguments appear. It opens
           beside the transcript — comparison never goes in an overlay.
         </div>
       </div>
+    </div>
+  );
+}
+
+// 01a052a5 item 3: a row's own component (not inline in the .map above) -
+// React hooks cannot live inside a callback, and each row's expand state
+// is independent (mirrors NV_ToolBlock's collapsed-by-default toggle).
+function NV_TraceRow(props) {
+  var openState = React.useState(false);
+  var open = openState[0];
+  var setOpen = openState[1];
+  var n = props.node;
+  var hasArgs = n.kind === "tool_call"
+    && n.arguments && Object.keys(n.arguments).length > 0;
+  var Line = hasArgs ? "button" : "div";
+  var lineProps = hasArgs
+    ? {
+      type: "button",
+      "data-testid": "nv-trace-row-toggle:" + props.index,
+      onClick: function () { setOpen(!open); },
+    }
+    : {};
+  return (
+    <div className="nv-trace-row" style={{ paddingLeft: props.depth * 12 }}>
+      <Line className="nv-trace-line" {...lineProps}>
+        {hasArgs ? (
+          <span className="nv-thought-mark">{open ? "▾" : "▸"}</span>
+        ) : null}
+        <span className="nv-trace-icon">
+          {n.kind === "llm_call" ? "◇" : n.kind === "tool_call" ? "⚙" : "·"}
+        </span>
+        <span className="nv-trace-label">{n.label || n.kind || ""}</span>
+        <span style={{ flex: 1 }} />
+        <span className="nv-trace-dur">
+          {n.duration_ms != null ? n.duration_ms + "ms" : ""}
+        </span>
+      </Line>
+      {open && hasArgs ? (
+        <pre className="nv-trace-args">
+          {JSON.stringify(n.arguments, null, 2)}
+        </pre>
+      ) : null}
     </div>
   );
 }
@@ -1482,14 +1421,6 @@ function NV_SessionDoc(props) {
   var nodeFilterState = React.useState(null);
   var nodeFilter = nodeFilterState[0];
   var setNodeFilter = nodeFilterState[1];
-  // US-008 R3 item 4: the rewind picker overlay (notes 2.4). Lives here,
-  // not in NV_SessionHeader, because it needs the record list to derive
-  // candidates - the overflow menu's Rewind row and the palette verb
-  // both just open it (see NV_SESSION_INSTANCES.openRewind below).
-  var rewindOpenState = React.useState(false);
-  var rewindOpen = rewindOpenState[0];
-  var setRewindOpen = rewindOpenState[1];
-
   var session = detail.data || null;
 
   // Phase 2 (01a04ddf): agent_phase, fenced by turn_no against a stale
@@ -1521,7 +1452,6 @@ function NV_SessionDoc(props) {
   // component body - available here regardless of textual order.
   NV_SESSION_INSTANCES[sid] = {
     wid: con.wid, session: session, refetchAll: refetchAll,
-    openRewind: function () { setRewindOpen(true); },
   };
   React.useEffect(function () {
     return function () { delete NV_SESSION_INSTANCES[sid]; };
@@ -1554,9 +1484,16 @@ function NV_SessionDoc(props) {
       return { sid: fsid, wid: wid, con: c, refetchAll: refetch };
     }
     // contexts: ["session"] hard-gates on docKind; requiresLive mirrors
-    // nv-sessions-sidebar.jsx's NV_SessionContextMenu, the one place this
-    // business rule already existed (Interrupt/Park/Close hide once a
+    // nv-rail.jsx's NV_Rail_SessionContextMenu, the one place this
+    // business rule already existed (Interrupt/Close hide once a
     // session has ended, Rename/Split Right/Compact/Rewind do not).
+    // Park/Resume Session (01a052a5) removed from this menu entirely -
+    // dead post-flip: a clean stop now rests a session parked
+    // automatically (primer/session/dispatch.py's
+    // _CLEAN_TURN_RESTS_PARKED), and resuming one is just sending a
+    // message, which the composer already does - "Resume Session" never
+    // called a real endpoint even before the flip, it only focused the
+    // composer input.
     reg({
       id: "session.interrupt", label: "Interrupt Session",
       contexts: ["session"], requiresLive: true,
@@ -1565,21 +1502,6 @@ function NV_SessionDoc(props) {
         var f = focused(); if (!f) return;
         NV_doInterrupt(f.wid, f.sid, f.refetchAll, f.con.toast);
       },
-    });
-    reg({
-      id: "session.park", label: "Park Session",
-      contexts: ["session"], requiresLive: true,
-      surfaces: ["palette", "tab-menu"],
-      run: function () {
-        var f = focused(); if (!f) return;
-        NV_doPark(f.wid, f.sid, f.refetchAll, f.con.toast);
-      },
-    });
-    reg({
-      id: "session.resume", label: "Resume Session",
-      contexts: ["session"],
-      surfaces: ["palette", "tab-menu"],
-      run: function () { NV_doResume(); },
     });
     reg({
       id: "session.close", label: "Close Session",
@@ -1617,16 +1539,6 @@ function NV_SessionDoc(props) {
       run: function () {
         var f = focused(); if (!f) return;
         NV_doCompact(f.wid, f.sid, f.refetchAll, f.con.toast);
-      },
-    });
-    reg({
-      id: "session.rewind", label: "Rewind Session",
-      contexts: ["session"],
-      surfaces: ["palette", "tab-menu"],
-      run: function () {
-        var f = focused(); if (!f) return;
-        var inst = NV_SESSION_INSTANCES[f.sid] || {};
-        if (typeof inst.openRewind === "function") inst.openRewind();
       },
     });
   }, [con.registry]);
@@ -1817,6 +1729,15 @@ function NV_SessionDoc(props) {
   var rows = pipeline.rows;
   var resultsByCallId = pipeline.resultsByCallId;
   var turnOfSeq = pipeline.turnOfSeq;
+  // 01a052a5: computed once per render (not per row inside renderTurn's
+  // .map) so every eligible user_message's icon is an O(1) Set lookup -
+  // NV_rewindCandidates itself is O(records), too costly to re-run once
+  // per visible row.
+  var rewindableSeqs = React.useMemo(function () {
+    var set = {};
+    NV_rewindCandidates(records).forEach(function (c) { set[c.seq] = true; });
+    return set;
+  }, [records]);
   function resultFor(row) {
     var id = (row.payload || {}).id
       || (row.payload || {}).tool_call_id || null;
@@ -2010,6 +1931,27 @@ function NV_SessionDoc(props) {
               {row.createdAt ? (
                 <span className="nv-turn-time">{SH_shortTime(row.createdAt)}</span>
               ) : null}
+              <span style={{ flex: 1 }} />
+              {rewindableSeqs[row.seq] ? (
+                <button type="button" className="nv-trace-toggle"
+                  title="Rewind to here"
+                  data-testid={"nv-rewind-here:" + row.seq}
+                  onClick={function () {
+                    confirmDialog({
+                      title: "Rewind session",
+                      message: "Discard everything after this message?",
+                      danger: true,
+                    }).then(function (ok) {
+                      if (ok) NV_doRewind(con.wid, sid, row.seq, refetchAll, con.toast);
+                    });
+                  }}>
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+                    stroke="currentColor" strokeWidth="1.3">
+                    <path d="M2.5 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M2.7 6A4 4 0 1 0 3.6 3" strokeLinecap="round" />
+                  </svg>
+                </button>
+              ) : null}
             </div>
             <div className="nv-turn-text">{row.label}</div>
           </div>
@@ -2063,9 +2005,13 @@ function NV_SessionDoc(props) {
           </span>
           {row.kind === "done" || row.kind === "cancelled" ? (
             <button type="button" className="nv-trace-toggle"
+              title="View trace"
               data-testid={"nv-trace-open:" + row.seq}
               onClick={function () { setTraceTurn(traceTurnFor(row)); }}>
-              trace
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+                stroke="currentColor" strokeWidth="1.3">
+                <path d="M2 3.5h8M2 6h8M2 8.5h5" strokeLinecap="round" />
+              </svg>
             </button>
           ) : null}
         </div>
@@ -2081,9 +2027,13 @@ function NV_SessionDoc(props) {
           <span>{msg}</span>
           <span style={{ flex: 1 }} />
           <button type="button" className="nv-trace-toggle"
+            title="View trace"
             data-testid={"nv-trace-open:" + row.seq}
             onClick={function () { setTraceTurn(traceTurnFor(row)); }}>
-            trace
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+              stroke="currentColor" strokeWidth="1.3">
+              <path d="M2 3.5h8M2 6h8M2 8.5h5" strokeLinecap="round" />
+            </svg>
           </button>
         </div>
       );
@@ -2134,10 +2084,16 @@ function NV_SessionDoc(props) {
             <span style={{ flex: 1 }} />
             {row.seq != null ? (
               <button type="button" className="nv-trace-toggle"
+                title="View trace"
                 data-testid={"nv-trace-open:" + row.seq}
                 onClick={function () {
                   setTraceTurn(traceTurnFor(row));
-                }}>trace</button>
+                }}>
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+                  stroke="currentColor" strokeWidth="1.3">
+                  <path d="M2 3.5h8M2 6h8M2 8.5h5" strokeLinecap="round" />
+                </svg>
+              </button>
             ) : null}
           </div>
           <div className="nv-turn-text md-body"
@@ -2204,19 +2160,9 @@ function NV_SessionDoc(props) {
         onChanged={refetchAll}
         onDeleted={function () { con.setDoc(null); }}
         onExport={exportTranscript}
-        onOpenRewind={function () { setRewindOpen(true); }}
         onCompact={function () {
           NV_doCompact(con.wid, sid, refetchAll, con.toast);
         }} />
-      {rewindOpen ? (
-        <NV_RewindPicker
-          candidates={NV_rewindCandidates(records)}
-          onClose={function () { setRewindOpen(false); }}
-          onConfirm={function (toSeq) {
-            setRewindOpen(false);
-            NV_doRewind(con.wid, sid, toSeq, refetchAll, con.toast);
-          }} />
-      ) : null}
       {nodeFilter ? (
         <div className="nv-node-filter" data-testid="graph-node-filter">
           <span>Showing <span className="nv-mono">{nodeFilter}</span> only</span>
