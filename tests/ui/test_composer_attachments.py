@@ -44,6 +44,28 @@ def test_attach_button_opens_a_hidden_file_input():
     assert "attachInputRef.current.click()" in composer
 
 
+def test_hidden_file_input_lives_outside_the_nv_composer_container():
+    """Regression pin: test_shell_journeys.py::
+    test_send_and_steer_keep_the_composer_writable locates the composer's
+    text field via `get_by_test_id("nv-composer").locator("input, textarea")`
+    - a generic tag-based locator that matched BOTH the real textarea and
+    this hidden upload <input> when it lived inside that container
+    (strict-mode violation, "resolved to 2 elements"). Fixed at the
+    source (not a test-side :not([type=file]) patch, which would leave
+    every OTHER generic locator against nv-composer with the same trap):
+    the file input renders as a sibling of the nv-composer div, inside a
+    wrapping Fragment, so it is structurally never a descendant of the
+    testid container regardless of what a generic locator selects for."""
+    composer = _composer()
+    attach_input_at = composer.index('data-testid="nv-attach-input"')
+    composer_wrap_at = composer.index('data-testid="nv-composer"')
+    assert attach_input_at < composer_wrap_at, (
+        "the hidden file input must render BEFORE (i.e. outside) the "
+        "nv-composer container opens"
+    )
+    assert "<React.Fragment>" in composer
+
+
 def test_attach_reuses_the_existing_upload_primitive():
     """Same call shape as nv-files-sidebar.jsx's own upload() - no new
     backend endpoint, no new wire format."""

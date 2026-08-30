@@ -1263,144 +1263,153 @@ function NV_Composer(props) {
   }, []);
 
   return (
-    <div className="nv-composer-wrap" data-testid="nv-composer">
-      <NV_StatusStrip shown={props.statusShown}
-        onInterrupt={props.onInterrupt} />
-      {props.degraded ? (
-        <div className="nv-status-strip" data-testid="nv-reconnect">
-          <span className="nv-dot-attention" />
-          <span className="nv-status-verb">reconnecting…</span>
-        </div>
-      ) : null}
-      {props.waitNote ? (
-        <div className="nv-status-strip">
-          <span className="nv-dot-attention" />
-          <span className="nv-status-verb">{props.waitNote}</span>
-        </div>
-      ) : null}
-      {attachments.length ? (
-        <div className="nv-attach-chips" data-testid="nv-attach-chips">
-          {attachments.map(function (a) {
-            return (
-              <span key={a.id} className="nv-attach-chip nv-chip-pill"
-                data-status={a.status} data-testid={"nv-attach-chip:" + a.id}>
-                <span className="nv-attach-chip-name">{a.name}</span>
-                {a.status === "uploading" ? (
-                  <span className="nv-attach-chip-status">uploading…</span>
-                ) : null}
-                {a.status === "error" ? (
-                  <span className="nv-attach-chip-status">failed</span>
-                ) : null}
-                <button type="button" className="nv-attach-chip-remove"
-                  title="Remove attachment"
-                  data-testid={"nv-attach-remove:" + a.id}
-                  onClick={function () { removeAttachment(a.id); }}>×</button>
-              </span>
-            );
-          })}
-        </div>
-      ) : null}
-      <div className="nv-composer-row">
-        <input ref={attachInputRef} type="file" multiple
-          style={{ display: "none" }}
-          data-testid="nv-attach-input"
-          onChange={function (ev) {
-            attachFiles(ev.target.files);
-            ev.target.value = "";
-          }} />
-        <button type="button" className="nv-composer-iconbtn" title="Attach"
-          data-testid="nv-attach"
-          onClick={function () {
-            if (attachInputRef.current) attachInputRef.current.click();
-          }}>
-          <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
-            stroke="currentColor" strokeWidth="1.3">
-            <path d="M12 6.5 7.5 11a3 3 0 0 1-4.2-4.2L8 2a2 2 0 0 1 2.8 2.8L6.2 9.4a1 1 0 0 1-1.4-1.4l4-4" />
-          </svg>
-        </button>
-        <div className="nv-composer-field"
-          data-recording={recording ? "true" : "false"}>
-          {recording ? (
-            <span className="nv-wave">
-              <span /><span /><span />
-            </span>
-          ) : null}
-          <textarea ref={inputRef} value={val} rows={1}
-            data-testid="nv-composer-input"
-            placeholder={props.terminal
-              ? "Send to reopen this session…"
-              : props.running && !props.waitNote
-                ? "Steer mid-run — queues to the turn boundary"
-                : "Message " + (props.agentName || "agent") + "…"}
-            onChange={function (ev) {
-              var v = ev.target.value;
-              setVal(v);
-              NV_DRAFTS[props.sid] = v;
-            }}
-            onKeyDown={function (ev) {
-              if (ev.key === "Enter" && !ev.shiftKey
-                  && !ev.nativeEvent.isComposing) {
-                ev.preventDefault();
-                send();
-                return;
-              }
-              // US-008 behavior 3 (notes 2.4): "/" in an EMPTY composer
-              // opens the palette instead of typing - non-empty text
-              // types "/" normally (no special-casing once there is any
-              // text), and an IME composition never triggers it, same
-              // guard as Enter above.
-              if (ev.key === "/" && !val && !ev.nativeEvent.isComposing) {
-                ev.preventDefault();
-                var verb = con.registry.get("palette.open");
-                if (verb) verb.run();
-              }
-            }} />
-        </div>
-        {props.micEnabled ? (
-          <button type="button" className="nv-composer-iconbtn"
-            title={"Hold to talk, or double-tap to latch. Release "
-              + "lands as editable text, never auto-sends."}
-            data-testid="nv-mic"
-            data-active={recording ? "true" : "false"}
-            data-latched={latched ? "true" : "false"}
-            onMouseDown={micDown} onMouseUp={micUp}
-            onMouseLeave={micLeave}
-            // US-014 M3: touch devices fire mousedown/mouseup too, but
-            // often with enough lag (or not at all on some mobile
-            // browsers) that hold-to-talk feels broken - real touch
-            // handlers give the mobile chat screen the same latch
-            // semantics reliably. preventDefault suppresses the browser's
-            // OWN synthetic mouse events for this gesture, so touch and
-            // mouse never both fire for the same press (which would
-            // otherwise call micUp twice and read as an accidental
-            // double-tap latch).
-            onTouchStart={function (ev) { ev.preventDefault(); micDown(); }}
-            onTouchEnd={function (ev) { ev.preventDefault(); micUp(); }}>
+    <React.Fragment>
+      {/* 01a052a5 follow-up: a real <input type="file"> deliberately
+          rendered OUTSIDE the nv-composer testid container - Playwright
+          locators against that container that select generic
+          `input, textarea` (test_shell_journeys.py's writable-composer
+          check) must resolve to exactly the one visible text field, not
+          also match this hidden upload picker. display:none keeps it
+          out of the flex layout regardless of DOM position. */}
+      <input ref={attachInputRef} type="file" multiple
+        style={{ display: "none" }}
+        data-testid="nv-attach-input"
+        onChange={function (ev) {
+          attachFiles(ev.target.files);
+          ev.target.value = "";
+        }} />
+      <div className="nv-composer-wrap" data-testid="nv-composer">
+        <NV_StatusStrip shown={props.statusShown}
+          onInterrupt={props.onInterrupt} />
+        {props.degraded ? (
+          <div className="nv-status-strip" data-testid="nv-reconnect">
+            <span className="nv-dot-attention" />
+            <span className="nv-status-verb">reconnecting…</span>
+          </div>
+        ) : null}
+        {props.waitNote ? (
+          <div className="nv-status-strip">
+            <span className="nv-dot-attention" />
+            <span className="nv-status-verb">{props.waitNote}</span>
+          </div>
+        ) : null}
+        {attachments.length ? (
+          <div className="nv-attach-chips" data-testid="nv-attach-chips">
+            {attachments.map(function (a) {
+              return (
+                <span key={a.id} className="nv-attach-chip nv-chip-pill"
+                  data-status={a.status} data-testid={"nv-attach-chip:" + a.id}>
+                  <span className="nv-attach-chip-name">{a.name}</span>
+                  {a.status === "uploading" ? (
+                    <span className="nv-attach-chip-status">uploading…</span>
+                  ) : null}
+                  {a.status === "error" ? (
+                    <span className="nv-attach-chip-status">failed</span>
+                  ) : null}
+                  <button type="button" className="nv-attach-chip-remove"
+                    title="Remove attachment"
+                    data-testid={"nv-attach-remove:" + a.id}
+                    onClick={function () { removeAttachment(a.id); }}>×</button>
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
+        <div className="nv-composer-row">
+          <button type="button" className="nv-composer-iconbtn" title="Attach"
+            data-testid="nv-attach"
+            onClick={function () {
+              if (attachInputRef.current) attachInputRef.current.click();
+            }}>
             <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
               stroke="currentColor" strokeWidth="1.3">
-              <rect x="5" y="1.5" width="4" height="7" rx="2" />
-              <path d="M2.5 6.5a4.5 4.5 0 0 0 9 0M7 11v2" />
+              <path d="M12 6.5 7.5 11a3 3 0 0 1-4.2-4.2L8 2a2 2 0 0 1 2.8 2.8L6.2 9.4a1 1 0 0 1-1.4-1.4l4-4" />
             </svg>
           </button>
-        ) : null}
-        {props.running ? (
-          <button type="button" className="nv-stop-btn"
-            data-testid="nv-stop" data-verb="session.interrupt"
-            title="Interrupt the running turn"
-            onClick={props.onInterrupt}>Stop</button>
-        ) : null}
-        <button type="button" className="nv-send-btn" data-testid="nv-send"
-          data-mode={props.running ? "queue" : "send"}
-          disabled={sending || attachmentsPending}
-          onClick={send}>{sending ? "Sending…"
-            : (props.running ? (props.queueLabel || "Queue") : "Send")}</button>
-      </div>
-      {sendErr ? (
-        <div className="nv-form-error" data-testid="nv-composer-error">
-          {sendErr}
+          <div className="nv-composer-field"
+            data-recording={recording ? "true" : "false"}>
+            {recording ? (
+              <span className="nv-wave">
+                <span /><span /><span />
+              </span>
+            ) : null}
+            <textarea ref={inputRef} value={val} rows={1}
+              data-testid="nv-composer-input"
+              placeholder={props.terminal
+                ? "Send to reopen this session…"
+                : props.running && !props.waitNote
+                  ? "Steer mid-run — queues to the turn boundary"
+                  : "Message " + (props.agentName || "agent") + "…"}
+              onChange={function (ev) {
+                var v = ev.target.value;
+                setVal(v);
+                NV_DRAFTS[props.sid] = v;
+              }}
+              onKeyDown={function (ev) {
+                if (ev.key === "Enter" && !ev.shiftKey
+                    && !ev.nativeEvent.isComposing) {
+                  ev.preventDefault();
+                  send();
+                  return;
+                }
+                // US-008 behavior 3 (notes 2.4): "/" in an EMPTY composer
+                // opens the palette instead of typing - non-empty text
+                // types "/" normally (no special-casing once there is any
+                // text), and an IME composition never triggers it, same
+                // guard as Enter above.
+                if (ev.key === "/" && !val && !ev.nativeEvent.isComposing) {
+                  ev.preventDefault();
+                  var verb = con.registry.get("palette.open");
+                  if (verb) verb.run();
+                }
+              }} />
+          </div>
+          {props.micEnabled ? (
+            <button type="button" className="nv-composer-iconbtn"
+              title={"Hold to talk, or double-tap to latch. Release "
+                + "lands as editable text, never auto-sends."}
+              data-testid="nv-mic"
+              data-active={recording ? "true" : "false"}
+              data-latched={latched ? "true" : "false"}
+              onMouseDown={micDown} onMouseUp={micUp}
+              onMouseLeave={micLeave}
+              // US-014 M3: touch devices fire mousedown/mouseup too, but
+              // often with enough lag (or not at all on some mobile
+              // browsers) that hold-to-talk feels broken - real touch
+              // handlers give the mobile chat screen the same latch
+              // semantics reliably. preventDefault suppresses the browser's
+              // OWN synthetic mouse events for this gesture, so touch and
+              // mouse never both fire for the same press (which would
+              // otherwise call micUp twice and read as an accidental
+              // double-tap latch).
+              onTouchStart={function (ev) { ev.preventDefault(); micDown(); }}
+              onTouchEnd={function (ev) { ev.preventDefault(); micUp(); }}>
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
+                stroke="currentColor" strokeWidth="1.3">
+                <rect x="5" y="1.5" width="4" height="7" rx="2" />
+                <path d="M2.5 6.5a4.5 4.5 0 0 0 9 0M7 11v2" />
+              </svg>
+            </button>
+          ) : null}
+          {props.running ? (
+            <button type="button" className="nv-stop-btn"
+              data-testid="nv-stop" data-verb="session.interrupt"
+              title="Interrupt the running turn"
+              onClick={props.onInterrupt}>Stop</button>
+          ) : null}
+          <button type="button" className="nv-send-btn" data-testid="nv-send"
+            data-mode={props.running ? "queue" : "send"}
+            disabled={sending || attachmentsPending}
+            onClick={send}>{sending ? "Sending…"
+              : (props.running ? (props.queueLabel || "Queue") : "Send")}</button>
         </div>
-      ) : null}
-    </div>
+        {sendErr ? (
+          <div className="nv-form-error" data-testid="nv-composer-error">
+            {sendErr}
+          </div>
+        ) : null}
+      </div>
+    </React.Fragment>
   );
 }
 
