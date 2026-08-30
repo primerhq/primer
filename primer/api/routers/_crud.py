@@ -30,7 +30,7 @@ from primer.api.errors import common_responses
 from primer.api.routers import _managed as _managed_mod
 from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
-from primer.model.common import Identifiable
+from primer.model.common import Identifiable, preserve_masked_secrets
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import (
     CursorPageResponse,
@@ -131,6 +131,21 @@ _OnPreDeleteHook = Callable[[Any, Request], Awaitable[None]] | None
 # when the row does not exist in storage. Use for reserved-id guards
 # that must return 403 regardless of storage state.
 _OnPreDeleteIdHook = Callable[[str, Request], Awaitable[None]] | None
+
+
+async def preserve_masked_secrets_on_update(entity: Any, existing: Any, request: Request) -> None:
+    """Ready-made ``on_pre_update`` hook for any provider-shaped entity
+    carrying ``SecretStr`` fields (directly or nested in a ``config``
+    union) - GET serves them masked and PUT here is a full replace, so
+    without this a client that never touched a secret field would
+    persist the literal mask placeholder (or an empty string) over the
+    real credential. See :func:`primer.model.common.preserve_masked_secrets`
+    for the mask-recognition rule. A model that already needs its own
+    ``on_pre_update`` for other checks should call
+    ``preserve_masked_secrets(entity, existing)`` directly instead of
+    wiring this adapter, and compose it with the rest of that hook.
+    """
+    preserve_masked_secrets(entity, existing)
 
 # List-enrich hook signature: ``(page_response, request) -> page_response``.
 # Called AFTER storage.list()/storage.find() on the unscoped GET
@@ -678,4 +693,4 @@ def make_crud_router(
     return router
 
 
-__all__ = ["make_crud_router"]
+__all__ = ["make_crud_router", "preserve_masked_secrets_on_update"]

@@ -54,6 +54,7 @@ from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.api.registries import WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
 from primer.api.routers._crud import make_crud_router
+from primer.model.common import preserve_masked_secrets
 from primer.api.routers._references import ReferenceCheck
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
 from primer.model.except_ import (
@@ -342,7 +343,9 @@ async def _reject_reserved_workspace_provider_delete(
 async def _reject_reserved_workspace_provider_update(
     entity, existing, request: Request
 ) -> None:
-    """Reject PUT /v1/workspace_providers/<reserved-id> (403).
+    """Reject PUT /v1/workspace_providers/<reserved-id> (403); otherwise
+    preserve any secret field (e.g. a Postgres-backed config's password)
+    the PUT never actually touched.
 
     Reserved providers (see ``RESERVED_WORKSPACE_PROVIDER_IDS``) are
     auto-recreated from config on boot; mutating them via the API would
@@ -360,6 +363,8 @@ async def _reject_reserved_workspace_provider_update(
                 ),
             },
         )
+    # 01a05198: see primer.model.common.preserve_masked_secrets.
+    preserve_masked_secrets(entity, existing)
 
 
 # ReferenceCheck.child_storage takes the raw Request (the FastAPI deps

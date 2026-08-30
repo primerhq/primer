@@ -28,7 +28,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
 from primer.api.errors import common_responses
-from primer.api.routers._crud import make_crud_router
+from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.model.provider import SpeechToTextProvider, TextToSpeechProvider
 from primer.model.speech import ACTIVE_SPEECH_CONFIG_ID, ActiveSpeechConfig
 from primer.speech.discovery import list_models, list_voices
@@ -261,6 +261,7 @@ stt_providers_router = make_crud_router(
     plural="stt_providers",
     tag="speech",
     on_pre_delete_id=_cascade_blocker("stt_provider_id"),
+    on_pre_update=preserve_masked_secrets_on_update,
     on_update=_invalidator("stt_registry"),
     on_delete=_invalidator("stt_registry"),
 )
@@ -271,6 +272,7 @@ tts_providers_router = make_crud_router(
     plural="tts_providers",
     tag="speech",
     on_pre_delete_id=_cascade_blocker("tts_provider_id"),
+    on_pre_update=preserve_masked_secrets_on_update,
     on_update=_invalidator("tts_registry"),
     on_delete=_invalidator("tts_registry"),
 )

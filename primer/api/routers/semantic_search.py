@@ -36,7 +36,7 @@ from pydantic import BaseModel, ValidationError
 from primer.api.deps import get_semantic_search_registry, get_semantic_search_storage
 from primer.api.errors import common_responses
 from primer.api.registries.provider_registry import RESERVED_SSP_IDS
-from primer.api.routers._crud import make_crud_router
+from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.api.routers.providers import _form_field
 from primer.model.except_ import NotFoundError
 from primer.model.provider import (
@@ -291,6 +291,7 @@ semantic_search_router = make_crud_router(
     on_update=_on_update,
     on_delete=_on_update,
     on_pre_create=_reject_reserved_ssp_create,
+    on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_reject_reserved_ssp_delete,
 )
 

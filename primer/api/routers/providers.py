@@ -65,7 +65,8 @@ from primer.api.registries.provider_registry import (
     RESERVED_LLM_IDS,
 )
 from primer.api.routers._cdc_hooks import register_cdc_kind
-from primer.api.routers._crud import make_crud_router
+from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.model.common import preserve_masked_secrets
 from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderProvider,
@@ -523,6 +524,7 @@ llm_provider_router = make_crud_router(
     on_update=_invalidate_llm,
     on_delete=_invalidate_llm,
     on_pre_create=_make_reserved_create_guard(RESERVED_LLM_IDS, "llm_provider"),
+    on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_LLM_IDS, "llm_provider"),
 )
 
@@ -809,6 +811,7 @@ embedding_provider_router = make_crud_router(
     on_update=_invalidate_embedder,
     on_delete=_invalidate_embedder,
     on_pre_create=_make_reserved_create_guard(RESERVED_EMBEDDER_IDS, "embedding_provider"),
+    on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_EMBEDDER_IDS, "embedding_provider"),
 )
 
@@ -945,6 +948,7 @@ cross_encoder_provider_router = make_crud_router(
     on_update=_invalidate_cross_encoder,
     on_delete=_invalidate_cross_encoder,
     on_pre_create=_make_reserved_create_guard(RESERVED_CROSS_ENCODER_IDS, "cross_encoder_provider"),
+    on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_CROSS_ENCODER_IDS, "cross_encoder_provider"),
 )
 
@@ -1318,13 +1322,20 @@ def _validate_python_toolset(entity: Toolset) -> None:
 async def _toolset_on_pre_update(
     entity: Toolset, existing: Toolset, request: Request
 ) -> None:
-    """Validate python source and own ``source_version`` server-side.
+    """Preserve unrotated secrets, then validate python source and own
+    ``source_version`` server-side.
+
+    01a05198: a full-replace PUT that never touched client_secret / env
+    / headers would otherwise persist the served mask placeholder (or
+    an empty value) over the real credential - see
+    :func:`primer.model.common.preserve_masked_secrets`.
 
     The client's version is advisory. If two operators edit concurrently they
     both send the version they read, and a parked resume could not tell which
     code it was about to run. The server bumps instead, so the number always
     moves when the source does.
     """
+    preserve_masked_secrets(entity, existing)
     if entity.provider != ToolsetProviderType.PYTHON:
         return
     _validate_python_toolset(entity)

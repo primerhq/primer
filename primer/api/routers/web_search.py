@@ -28,7 +28,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
 from primer.api.errors import common_responses
-from primer.api.routers._crud import make_crud_router
+from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.model.web_search import (
     ACTIVE_WEB_SEARCH_CONFIG_ID,
     ActiveWebSearchConfig,
@@ -228,6 +228,7 @@ web_search_providers_router = make_crud_router(
     plural="web_search_providers",
     tag="web-search",
     on_pre_create=_reject_reserved_create,
+    on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_pre_delete_id_chain,
     on_update=_invalidate_registry,
     on_delete=_invalidate_registry,
