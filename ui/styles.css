@@ -4174,6 +4174,17 @@ button.nv-trace-line { cursor: pointer; }
   color: var(--text-2); cursor: pointer;
 }
 .nv-interrupt-btn:hover { border-color: var(--red); color: var(--red); }
+/* 01a052a5 item 5: pending attachment chips, above the input row. */
+.nv-attach-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 0; }
+.nv-attach-chip { gap: 7px; }
+.nv-attach-chip[data-status="uploading"] { opacity: 0.7; }
+.nv-attach-chip[data-status="error"] { border-color: var(--danger, #e06c5f); color: var(--danger, #e06c5f); }
+.nv-attach-chip-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nv-attach-chip-status { color: var(--text-4); font-size: 10.5px; }
+.nv-attach-chip-remove {
+  border: none; background: transparent; color: inherit; cursor: pointer;
+  padding: 0; line-height: 1; font-size: 13px;
+}
 .nv-composer-row { display: flex; align-items: flex-end; gap: 8px; padding: 10px 14px 12px; }
 .nv-composer-iconbtn {
   width: var(--hit); height: var(--hit);
