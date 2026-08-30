@@ -135,16 +135,16 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
     """
     provider_id = f"llm-u0047-{unique_suffix}"
     try:
-        # RETARGET (platform wave P1a items 2/7): creation moved back to a
-        # modal, opened by "Register provider" naming a kind up front (the
-        # form's own kind dropdown is re-picked below to Anthropic
-        # regardless of which kind the register dropdown opened with) -
-        # the round trip out to a detail page and back is still gone, and
-        # the list still has to show the new row in place, just now
-        # behind that one extra click.
+        # RETARGET (IA restructure 01a04d6a): "Register provider" now
+        # names the TYPE ("llm") up front rather than the kind directly -
+        # the form's own kind dropdown is STILL re-picked below to
+        # Anthropic regardless of which kind the type pick defaulted the
+        # form to. The round trip out to a detail page and back is still
+        # gone, and the list still has to show the new row in place, just
+        # now behind Register -> type -> (re-pick kind) -> Save.
         open_legacy_route(page, console_url, "providers/llm")
-        page.get_by_test_id("provider-register-toggle").click()
-        page.get_by_test_id("provider-register-kind-anthropic").click()
+        page.get_by_test_id("provider-register-all-toggle").click()
+        page.get_by_test_id("provider-register-type-llm").click()
         form = page.get_by_test_id("provider-form-llm_providers")
         form.wait_for(state="visible", timeout=15_000)
 

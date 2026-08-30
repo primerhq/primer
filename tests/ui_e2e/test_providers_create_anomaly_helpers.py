@@ -39,14 +39,16 @@ def test_u0010_embedding_provider_modal_shows_t0025_static_models_helper(
     phrasing and the (T0025) tag are present so a future copy-edit can't
     silently drop the anomaly reference.
     """
-    # RETARGET (platform wave P1a items 2/7): creation is back to a modal
-    # - "Register provider" -> pick a kind -> the form (same testids as
-    # before) renders inside it.
+    # RETARGET (IA restructure 01a04d6a): "Register provider" now names
+    # the TYPE ("embedding"), not the kind directly - the kind ("openai")
+    # is re-picked inside the form, same mechanic every retargeted test
+    # in this file uses.
     open_legacy_route(page, console_url, "providers/embedding")
-    page.get_by_test_id("provider-register-toggle").click()
-    page.get_by_test_id("provider-register-kind-openai").click()
+    page.get_by_test_id("provider-register-all-toggle").click()
+    page.get_by_test_id("provider-register-type-embedding").click()
     form = page.get_by_test_id("provider-form-embedding_providers")
     form.wait_for(state="visible", timeout=15_000)
+    form.locator("#pf-provider").select_option(value="openai")
     # The form root renders before /\_types resolves, so wait for the
     # field the helper hangs off before reading the text: a bare
     # inner_text() here reads an empty shell and reports the copy as
@@ -88,11 +90,18 @@ def test_u0011_llm_provider_modal_shows_t0379_cross_validation_warning(
     Defence: if a future copy-edit drops the T0379 reference, this
     test catches it before the anomaly drift propagates to operators.
     """
+    # RETARGET (IA restructure 01a04d6a): same mechanic as U0010 above -
+    # Register provider names the TYPE, the kind is picked inside the
+    # form. The T0379 copy itself is unconditional create-mode text
+    # (provider-form.jsx's PC_ProviderForm), untouched by the restructure
+    # beyond moving alongside a new editing-mode variant - this assertion
+    # still targets the same string.
     open_legacy_route(page, console_url, "providers/llm")
-    page.get_by_test_id("provider-register-toggle").click()
-    page.get_by_test_id("provider-register-kind-anthropic").click()
+    page.get_by_test_id("provider-register-all-toggle").click()
+    page.get_by_test_id("provider-register-type-llm").click()
     form = page.get_by_test_id("provider-form-llm_providers")
     form.wait_for(state="visible", timeout=15_000)
+    form.locator("#pf-provider").select_option(value="anthropic")
 
     modal_text = form.inner_text()
     assert "Provider" in modal_text and "config" in modal_text, (
@@ -125,17 +134,19 @@ def test_provider_create_disabled_until_model_name_filled(
     ``body.models.0.name: Field required``. The fix requires every
     non-optional model field to be non-empty before enabling Create.
 
-    RETARGET (platform wave P1a items 2/7): creation is back to a modal -
-    "Register provider" -> pick a kind -> the form (same testids, same
-    gate logic) renders inside it.
+    RETARGET (IA restructure 01a04d6a): "Register provider" now names
+    the TYPE ("embedding") up front instead of the kind directly - the
+    kind ("openai") is re-picked inside the form (same testids, same
+    gate logic once it renders).
     """
     from playwright.sync_api import expect
 
     open_legacy_route(page, console_url, "providers/embedding")
-    page.get_by_test_id("provider-register-toggle").click()
-    page.get_by_test_id("provider-register-kind-openai").click()
+    page.get_by_test_id("provider-register-all-toggle").click()
+    page.get_by_test_id("provider-register-type-embedding").click()
     form = page.get_by_test_id("provider-form-embedding_providers")
     form.wait_for(state="visible", timeout=15_000)
+    form.locator("#pf-provider").select_option(value="openai")
 
     save_btn = form.get_by_test_id("provider-form-save")
     model_list = form.get_by_test_id("provider-form-model-list")

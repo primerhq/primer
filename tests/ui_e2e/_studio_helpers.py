@@ -260,6 +260,9 @@ def open_provider_catalog(
     that only cares about the catalog wants.
     """
     if via == "url":
+        # RETARGET (IA restructure 01a04d6a): the "providers" overlay
+        # mount is untouched (a pasted/bookmarked deep link still works),
+        # so this leg is unchanged.
         target = "providers"
         if cls:
             target += ":" + cls
@@ -269,17 +272,28 @@ def open_provider_catalog(
             page.goto(f"{console_url}#/w/{wid}?overlay={target}")
         else:
             page.goto(f"{console_url}#/w/?overlay={target}")
-    else:
-        # The pointer path (flag day): activity bar -> Platform ->
-        # Providers -> the create affordance opens the shared catalog
-        # overlay. An overlay only the URL can reach is one a user
-        # cannot find, which is what this branch checks.
-        expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
-        page.get_by_test_id("nv-go-platform").click()
-        row = page.get_by_test_id("nv-plat-row:providers")
-        expect(row).to_be_visible(timeout=10_000)
-        row.click()
-        page.get_by_test_id("nv-plat-create").click()
-    body = page.get_by_test_id("nv-overlay-body")
+        body = page.get_by_test_id("nv-overlay-body")
+        expect(body).to_be_visible(timeout=timeout)
+        return body
+
+    # RETARGET (IA restructure 01a04d6a): the pointer path used to be
+    # activity bar -> Platform -> Providers -> a "New provider" button
+    # that opened the catalog as an overlay - "an overlay only the URL
+    # can reach is one a user cannot find," per this helper's original
+    # intent. The restructure killed that overlay hop: the Providers nav
+    # row now renders the catalog INLINE (nv-platform.jsx's
+    # NV_ProvidersPlatPage), so reaching the row already IS reaching the
+    # catalog body - there is no separate create click needed (or even
+    # possible: the platform chrome's own generic create button doesn't
+    # exist for providers any more, ProviderCatalog carries its own
+    # Register control). The reachability property this checks - can a
+    # user find it through the UI, not only a pasted URL - is unaffected
+    # by the mount changing from an overlay panel to an inline page.
+    expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
+    page.get_by_test_id("nv-go-platform").click()
+    row = page.get_by_test_id("nv-plat-row:providers")
+    expect(row).to_be_visible(timeout=10_000)
+    row.click()
+    body = page.get_by_test_id("nv-plat-page:providers")
     expect(body).to_be_visible(timeout=timeout)
     return body
