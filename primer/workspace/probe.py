@@ -5,6 +5,8 @@ Lives in the API process, ticks every ~30s, pings each ``running`` /
 misses (``running`` -> ``failed``) or three-strike hits while failed
 (``failed`` -> ``running``). Writes results back to the persisted
 :class:`primer.model.workspace.Workspace` row via the storage provider.
+Waits one interval before its first tick (see ``start_delay_seconds``) so a
+freshly-started process doesn't count its own boot-time settling as misses.
 
 Owned by the API lifespan; uses the :class:`WorkspaceRegistry` to resolve
 live workspace handles. The registry stays a pure cache — the probe
@@ -55,16 +57,41 @@ class WorkspaceProbeTask:
         storage_provider: "StorageProvider",
         registry: "WorkspaceRegistry",
         interval_seconds: float = 30.0,
+        start_delay_seconds: float | None = None,
     ) -> None:
         self._sp = storage_provider
         self._registry = registry
         self._interval = interval_seconds
+        # A freshly-started process (e.g. the replacement pod in a rolling
+        # deploy) begins every workspace at a clean 0-miss streak (the
+        # counters below are in-process, not persisted) and would otherwise
+        # start ticking immediately — racing ahead of the app's own startup
+        # (session recovery, registries settling) and the workspace
+        # runtime's own readiness. A boot-time grace delay before the first
+        # tick keeps that race from being counted as real misses (01a0533c,
+        # live SEV: a rollout's booting pod struck out its own healthy
+        # workspace before the app had finished settling). Defaults to one
+        # full interval.
+        self._start_delay = (
+            interval_seconds if start_delay_seconds is None else start_delay_seconds
+        )
         self._miss_counts: dict[str, int] = defaultdict(int)
         self._hit_counts: dict[str, int] = defaultdict(int)
         self._stop_event = asyncio.Event()
 
     async def start(self) -> None:
-        """Run the probe loop until :meth:`stop` is called."""
+        """Run the probe loop until :meth:`stop` is called.
+
+        Waits ``start_delay_seconds`` before the first tick — see the
+        docstring on ``__init__`` for why.
+        """
+        if self._start_delay > 0:
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=self._start_delay
+                )
+            except TimeoutError:
+                pass
         while not self._stop_event.is_set():
             try:
                 await self.tick()

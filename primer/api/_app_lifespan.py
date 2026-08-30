@@ -322,21 +322,6 @@ def _make_lifespan(config: AppConfig):
         app.state.internal_collections = None
         app.state.config = config
 
-        # Workspace health-probe loop. Pings each running/failed
-        # workspace at ``workspace_probe_interval_seconds`` cadence,
-        # flips phase on three-strike misses/hits. Lives next to the
-        # workspace_registry (its sole non-storage dependency).
-        workspace_probe = WorkspaceProbeTask(
-            storage_provider=storage_provider,
-            registry=workspace_registry,
-            interval_seconds=config.workspace_probe_interval_seconds,
-        )
-        app.state.workspace_probe = workspace_probe
-        workspace_probe_runner = asyncio.create_task(
-            workspace_probe.start(), name="workspace-probe",
-        )
-        app.state.workspace_probe_runner = workspace_probe_runner
-
         # Resolve the cookie-signing secret (env var > db > auto-generate).
         # Stashed on app.state so the auth router + middleware can sign /
         # verify session cookies without re-reading from storage on every
@@ -941,6 +926,31 @@ def _make_lifespan(config: AppConfig):
             approval_resolver=approval_resolver,
         )
         logger.info("lifespan: MCP /v1/mcp mounted")
+
+        # Workspace health-probe loop. Pings each running/failed workspace
+        # at ``workspace_probe_interval_seconds`` cadence, flips phase on
+        # three-strike misses/hits. Started here — AFTER recover_sessions
+        # and worker_pool.start() above, immediately before the app
+        # declares itself ready — not up near workspace_registry's own
+        # construction, so a booting pod structurally cannot probe before
+        # it can actually serve: a freshly-started replacement pod used to
+        # begin ticking (with a clean, in-process 0-miss streak) hundreds
+        # of lines before the app had settled, so its first few pings
+        # raced the app's own startup rather than reflecting real
+        # workspace health, and three strikes (default 90s) was enough to
+        # flip a perfectly healthy workspace to failed (01a0533c, live
+        # SEV). WorkspaceProbeTask also waits one interval before its own
+        # first tick (defense-in-depth for any other construction site).
+        workspace_probe = WorkspaceProbeTask(
+            storage_provider=storage_provider,
+            registry=workspace_registry,
+            interval_seconds=config.workspace_probe_interval_seconds,
+        )
+        app.state.workspace_probe = workspace_probe
+        workspace_probe_runner = asyncio.create_task(
+            workspace_probe.start(), name="workspace-probe",
+        )
+        app.state.workspace_probe_runner = workspace_probe_runner
 
         logger.info(
             "primer API ready",
