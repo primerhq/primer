@@ -44,7 +44,7 @@ from tests._support.mock_llm import Rule
 from tests._support.runs import (
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
@@ -200,12 +200,13 @@ async def test_code_interpreter_runs_untrusted_code_in_sandbox(
         )
 
         # Container sessions need extra time (image boot + the tool turns).
-        # NOTE: a *failed* session also reports status "ended", so we additionally
-        # require ended_reason "completed" -- a turn-0 build failure (e.g. an
-        # unresolved toolset) would surface here as "failed".
-        final = await wait_terminal(authed_client, sid, timeout_s=180.0, interval_s=1.0)
-        assert final.get("status") == "ended", f"session did not reach ended: {final}"
-        assert final.get("ended_reason") == "completed", (
+        # NOTE: a *failed* session still reports status "ended"; a session
+        # that completes cleanly now rests session_state="parked" instead
+        # (01a0518a) - wait_completed returns on either shape, so a turn-0
+        # build failure (e.g. an unresolved toolset) is still distinguished
+        # from a clean finish below.
+        final = await wait_completed(authed_client, sid, timeout_s=180.0, interval_s=1.0)
+        assert final.get("session_state") == "parked", (
             f"session did not complete cleanly: {final}"
         )
 

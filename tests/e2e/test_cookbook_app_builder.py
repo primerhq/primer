@@ -51,7 +51,12 @@ from pathlib import Path
 import pytest
 
 from tests._support.mock_llm import Rule
-from tests._support.runs import make_local_workspace, make_scripted_agent, wait_terminal
+from tests._support.runs import (
+    make_local_workspace,
+    make_scripted_agent,
+    wait_completed,
+    wait_terminal,
+)
 from tests._support.smk import smk
 from tests._support.testconfig import requires
 from tests._support.model_profiles import agent_model, seed_llm_provider
@@ -288,9 +293,12 @@ async def test_app_builder_provisions_and_runs_mini_app(
         )
         assert r.status_code in (200, 201), r.text
         build_sid = r.json()["id"]
-        build_final = await wait_terminal(authed_client, build_sid, timeout_s=120)
-        assert build_final.get("status") == "ended", build_final
-        assert build_final.get("ended_reason") == "completed", (
+        # 01a0518a: a plain interactive agent session (binding.kind="agent",
+        # no autonomous override) now rests parked on a clean stop instead
+        # of ending - unlike run_sid below, which is a trigger-fired GRAPH
+        # session and stays autonomous/ends as before.
+        build_final = await wait_completed(authed_client, build_sid, timeout_s=120)
+        assert build_final.get("session_state") == "parked", (
             f"the builder agent did not finish provisioning the app: {build_final}"
         )
 

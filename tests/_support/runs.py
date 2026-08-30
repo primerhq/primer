@@ -210,6 +210,16 @@ async def wait_terminal(
     timeout_s: float = 60.0,
     interval_s: float = 0.5,
 ) -> dict:
+    """Poll until the session reaches ``status in _TERMINAL`` ("ended").
+
+    01a0518a: a clean stop on a plain INTERACTIVE agent session
+    (start_agent_session, no autonomous override) no longer reaches
+    "ended" - it rests WAITING/parked instead, so this will burn its
+    full timeout_s and return a non-"ended" row for that case. Still
+    correct for autonomous sessions (graphs, or an explicit
+    autonomous=True), which always end on completion regardless of the
+    flag. For a plain agent session, use :func:`wait_completed` instead.
+    """
     iters = max(1, int(timeout_s / interval_s))
     last: dict = {}
     for _ in range(iters):
@@ -217,6 +227,37 @@ async def wait_terminal(
         if resp.status_code == 200:
             last = resp.json()
             if last.get("status") in _TERMINAL:
+                return last
+        await asyncio.sleep(interval_s)
+    return last
+
+
+async def wait_completed(
+    client: httpx.AsyncClient,
+    session_id: str,
+    *,
+    timeout_s: float = 60.0,
+    interval_s: float = 0.5,
+) -> dict:
+    """Poll until an interactive agent session's turn cleanly finishes,
+    however it now surfaces.
+
+    01a0518a: a clean stop on a plain interactive (non-autonomous) agent
+    session rests it WAITING (session_state="parked") instead of ending
+    it; a genuine failure/internal error still reaches ENDED as before
+    (the flag only gates the plain clean-stop case). Use this instead of
+    :func:`wait_terminal` for a plain agent session where the caller
+    needs "the turn is over, whichever way it went" - then read
+    ``session_state`` / ``status`` / ``ended_reason`` off the result to
+    tell success from failure.
+    """
+    iters = max(1, int(timeout_s / interval_s))
+    last: dict = {}
+    for _ in range(iters):
+        resp = await client.get(f"/v1/sessions/{session_id}")
+        if resp.status_code == 200:
+            last = resp.json()
+            if last.get("status") in _TERMINAL or last.get("session_state") == "parked":
                 return last
         await asyncio.sleep(interval_s)
     return last

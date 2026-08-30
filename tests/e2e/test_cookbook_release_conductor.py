@@ -51,7 +51,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 
@@ -329,9 +329,11 @@ async def test_release_conductor_ask_user_then_gated_deploy(
     )
     assert r.status_code == 202, r.text
 
-    final_a = await wait_terminal(authed_client, sid_a, timeout_s=60)
-    assert final_a.get("status") == "ended", final_a
-    assert final_a.get("ended_reason") == "completed", final_a
+    # 01a0518a: the approve-and-deploy turn's clean stop now rests the
+    # session parked, not ended - parked_status stays None (a real
+    # yielding-tool park would set it; this is the turn_no>0 rest path).
+    final_a = await wait_completed(authed_client, sid_a, timeout_s=60)
+    assert final_a.get("session_state") == "parked", final_a
     assert final_a.get("parked_status") is None, final_a
 
     msgs_a = tmp_path / wid_a / ".state" / "sessions" / sid_a / "messages.jsonl"
@@ -384,8 +386,8 @@ async def test_release_conductor_ask_user_then_gated_deploy(
     )
     assert r.status_code == 202, r.text
 
-    final_r = await wait_terminal(authed_client, sid_r, timeout_s=60)
-    assert final_r.get("status") == "ended", final_r
+    final_r = await wait_completed(authed_client, sid_r, timeout_s=60)
+    assert final_r.get("session_state") == "parked", final_r
     assert final_r.get("parked_status") is None, final_r
 
     msgs_r = tmp_path / wid_r / ".state" / "sessions" / sid_r / "messages.jsonl"

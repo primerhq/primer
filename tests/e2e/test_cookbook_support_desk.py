@@ -43,7 +43,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
@@ -176,8 +176,8 @@ async def _run_kb_agent(
         authed_client, workspace_id=wid, agent_id=agent["agent_id"],
         instructions=query,
     )
-    final = await wait_terminal(authed_client, run, timeout_s=120)
-    assert final.get("status") == "ended", final
+    final = await wait_completed(authed_client, run, timeout_s=120)
+    assert final.get("session_state") == "parked", final
     msgs_file = tmp_path / wid / ".state" / "sessions" / run / "messages.jsonl"
     assert msgs_file.exists(), f"session messages.jsonl missing at {msgs_file}"
     return msgs_file.read_text(encoding="utf-8")

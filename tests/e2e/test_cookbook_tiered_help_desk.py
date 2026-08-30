@@ -52,7 +52,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 
@@ -126,7 +126,7 @@ async def test_front_line_hands_off_to_the_specialist(
             authed_client, workspace_id=wid,
             agent_id=front["agent_id"], instructions=_QUESTION,
         )
-        await wait_terminal(authed_client, sid)
+        await wait_completed(authed_client, sid)
 
         row = (await authed_client.get(f"/v1/sessions/{sid}")).json()
 
@@ -206,7 +206,7 @@ async def test_handoff_to_an_unknown_specialist_is_refused(
             authed_client, workspace_id=wid,
             agent_id=front["agent_id"], instructions=_QUESTION,
         )
-        await wait_terminal(authed_client, sid)
+        await wait_completed(authed_client, sid)
 
         row = (await authed_client.get(f"/v1/sessions/{sid}")).json()
         assert row["binding"]["agent_id"] == front["agent_id"], (

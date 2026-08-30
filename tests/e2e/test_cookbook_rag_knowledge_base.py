@@ -40,7 +40,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
@@ -233,8 +233,8 @@ async def test_qa_agent_cites_source(
             authed_client, workspace_id=wid, agent_id=agent["agent_id"],
             instructions=_PRINTER_QUERY,
         )
-        final = await wait_terminal(authed_client, run, timeout_s=120)
-        assert final.get("status") == "ended", final
+        final = await wait_completed(authed_client, run, timeout_s=120)
+        assert final.get("session_state") == "parked", final
 
         # The session's on-disk message log is the source of truth for the
         # full turn record (the turn_log endpoint carries event metadata only,

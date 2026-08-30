@@ -31,7 +31,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
@@ -145,8 +145,10 @@ async def test_meta_agent_builds_from_use_case(
             authed_client, workspace_id=wid, agent_id=meta["agent_id"],
             instructions="Use case: build an agent that returns the current date and time.",
         )
-        final = await wait_terminal(authed_client, sid, timeout_s=60)
-        assert final.get("status") == "ended", final
+        # 01a0518a: a plain agent session's clean stop now rests it
+        # parked, not ended.
+        final = await wait_completed(authed_client, sid, timeout_s=60)
+        assert final.get("session_state") == "parked", final
 
         # search_tools was dispatched AND returned real hits including the
         # datetime tool (proves the discovery step ran against the catalogue).
@@ -177,8 +179,8 @@ async def test_meta_agent_builds_from_use_case(
             authed_client, workspace_id=wid, agent_id=built_id,
             instructions="what time is it",
         )
-        run_final = await wait_terminal(authed_client, run, timeout_s=60)
-        assert run_final.get("status") == "ended", run_final
+        run_final = await wait_completed(authed_client, run, timeout_s=60)
+        assert run_final.get("session_state") == "parked", run_final
     finally:
         await authed_client.delete(f"/v1/agents/{built_id}")
         if config_active:
