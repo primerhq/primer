@@ -31,8 +31,6 @@
 > behaviour the published docs describe. There are no transition releases
 > between v0.6.x and v2.0.0: the revamp lands as one branch, and the next
 > tag is v2.0.0, when this notice goes away.
->
-> Programme summary: [docs/ux-revamp.md](https://github.com/primerhq/primer/blob/main/docs/ux-revamp.md)
 <!-- transition-banner:end -->
 
 ---
