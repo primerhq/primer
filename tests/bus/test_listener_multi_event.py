@@ -118,3 +118,79 @@ async def test_single_event_does_not_accumulate(tmp_path):
     assert got.parked_status == "resumable"
     assert "resume_event_payloads" not in got.parked_state
     assert got.parked_state["resume_event_payload"] == {"response": "x"}
+
+
+async def test_colliding_fanout_siblings_both_land_and_route(tmp_path):
+    """01a0518f: two concurrent fan-out siblings can legitimately share a
+    raw provider tool_call_id ("call_0"). Their node-qualified event_keys
+    ("<kind>:<session_id>:<node_id>:<tool_call_id>") still differ, and the
+    resume_event_payloads dict must key on the FULL disambiguated tail
+    (_dispatch_key_for) - not the bare tool_call_id - or the second
+    sibling's reply silently overwrites the first's."""
+    storage, engine, listener = await _build(tmp_path)
+    keys = ["ask_user:s1:worker[0]:call_0", "ask_user:s1:worker[1]:call_0"]
+    await storage.create(_multi(keys, keys[0]))
+    await listener._handle_event(_Event(keys[0], {"response": "region 0"}))
+    await listener._handle_event(_Event(keys[1], {"response": "region 1"}))
+    got = await storage.get("s1")
+    payloads = got.parked_state.get("resume_event_payloads")
+    assert set(payloads.keys()) == {"worker[0]:call_0", "worker[1]:call_0"}
+    assert payloads["worker[0]:call_0"]["payload"] == {"response": "region 0"}
+    assert payloads["worker[1]:call_0"]["payload"] == {"response": "region 1"}
+
+
+async def test_mixed_legacy_and_scoped_keys_do_not_cross_route(tmp_path):
+    """01a0518f: a multi-event park whose keys are a MIX of the legacy
+    bare-tool_call_id shape (a pending item that predates the scoping fix,
+    or a non-graph park) and the new node-qualified shape must accumulate
+    both under their own distinct dispatch keys, with neither clobbering
+    or being mistaken for the other."""
+    storage, engine, listener = await _build(tmp_path)
+    keys = ["ask_user:s1:tc-legacy", "ask_user:s1:worker[0]:call_0"]
+    await storage.create(_multi(keys, keys[0]))
+    await listener._handle_event(_Event(keys[0], {"response": "legacy"}))
+    await listener._handle_event(_Event(keys[1], {"response": "scoped"}))
+    got = await storage.get("s1")
+    payloads = got.parked_state.get("resume_event_payloads")
+    assert set(payloads.keys()) == {"tc-legacy", "worker[0]:call_0"}
+    assert payloads["tc-legacy"]["payload"] == {"response": "legacy"}
+    assert payloads["worker[0]:call_0"]["payload"] == {"response": "scoped"}
+
+
+async def test_dispatch_key_identical_via_rest_handler_and_bus_listener(tmp_path):
+    """01a0518f: the durable flip is one shared function
+    (durably_mark_session_resumable) - assert directly that calling it
+    (the REST handlers' own path) and driving the same event through the
+    bus listener produce byte-identical resume_event_payloads keying for
+    a plain (non-graph, non-scoped) event_key, proving the two delivery
+    paths cannot diverge on this. Same storage/db throughout (two
+    identically-shaped rows, one per path) - a second SqliteStorageProvider
+    leaked its background connection thread past the test's event loop
+    closing in an earlier version of this test."""
+    from primer.session.yields import durably_mark_session_resumable
+
+    storage, _engine, listener = await _build(tmp_path)
+
+    sess_a = _multi(["ask_user:sA:tc1", "ask_user:sA:tc2"], "ask_user:sA:tc1")
+    sess_a.id = "sA"
+    await storage.create(sess_a)
+    await listener._handle_event(_Event("ask_user:sA:tc1", {"response": "x"}))
+    via_listener = (await storage.get("sA")).parked_state["resume_event_payloads"]
+
+    sess_b = _multi(["ask_user:sB:tc1", "ask_user:sB:tc2"], "ask_user:sB:tc1")
+    sess_b.id = "sB"
+    await storage.create(sess_b)
+    await durably_mark_session_resumable(
+        sess_b, event_key="ask_user:sB:tc1", payload={"response": "x"},
+        session_storage=storage, engine=None,
+    )
+    via_rest = (await storage.get("sB")).parked_state["resume_event_payloads"]
+
+    # Same dispatch-key shape and payload from both delivery paths; only
+    # the per-session event_key text differs (sA vs sB), as expected.
+    assert set(via_listener) == set(via_rest) == {"tc1"}
+    assert via_listener["tc1"]["payload"] == via_rest["tc1"]["payload"] == {
+        "response": "x",
+    }
+    assert via_listener["tc1"]["event_key"] == "ask_user:sA:tc1"
+    assert via_rest["tc1"]["event_key"] == "ask_user:sB:tc1"

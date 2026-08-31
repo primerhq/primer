@@ -44,6 +44,40 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _dispatch_key_for(event_key: str, *, session_id: str) -> str:
+    """The ``resume_event_payloads`` accumulation key for ``event_key``.
+
+    Every event_key producer emits the fixed shape
+    ``"<kind>:<session_id>:<tail>"`` (``kind`` a hardcoded, colon-free
+    literal like ``"tool_approval"``/``"ask_user"``; see
+    primer/agent/tool_manager.py, primer/graph/_node_dispatch.py,
+    primer/toolset/_system_crud.py, primer/channel/inbox.py). ``tail`` is
+    a bare ``tool_call_id`` for a non-graph park, or (01a0518f)
+    ``"<node_id>:<tool_call_id>"`` once a graph-checkpoint capture site
+    scopes it - two concurrent fan-out siblings can legitimately share a
+    raw provider tool_call_id, so accumulating multi-event replies by the
+    bare tail alone silently overwrote one sibling's reply with the
+    other's.
+
+    Strips the ``"<kind>:<session_id>:"`` prefix POSITIONALLY: ``kind`` is
+    recovered with ONE bounded split (safe - it's always a colon-free
+    literal), then the prefix is built from that ``kind`` plus the CALLER'S
+    OWN KNOWN ``session_id`` (never re-derived by counting colons in the
+    string), and stripped with an exact ``startswith``/slice. This is
+    immune to a session_id or a future kind ever containing a colon -
+    unlike splitting the whole string positionally, which would shift
+    every character after it into the wrong field. Falls back to the full
+    event_key when the expected prefix isn't found (defensive; every known
+    producer emits this exact shape) - degrading to today's behaviour
+    rather than raising.
+    """
+    kind = event_key.split(":", 1)[0]
+    prefix = f"{kind}:{session_id}:"
+    if event_key.startswith(prefix):
+        return event_key[len(prefix):]
+    return event_key
+
+
 async def durably_mark_session_resumable(
     session: WorkspaceSession,
     *,
@@ -65,8 +99,11 @@ async def durably_mark_session_resumable(
     * Stamp the singular ``resume_event_payload`` / ``resume_event_key`` (the
       single-event resume path + a "last fired" hint).
     * For a MULTI-event park (``parked_event_keys`` set) also accumulate
-      ``resume_event_payloads[fired_tcid]`` so a second concurrent reply is
-      preserved rather than overwritten.
+      ``resume_event_payloads[dispatch_key]`` (see :func:`_dispatch_key_for`
+      - 01a0518f: the event_key's tail past the fixed ``kind:session_id:``
+      prefix, node-qualified for a graph park) so a second concurrent reply
+      is preserved rather than overwritten - including two fan-out siblings
+      that happen to share a raw provider tool_call_id.
     * ``storage.update_unless`` the flipped row, guarded on ``status`` -
       see below.
     * Re-arm the claim lease via ``engine.mark_resumable`` (park dropped it)
@@ -95,9 +132,9 @@ async def durably_mark_session_resumable(
     Idempotency (the listener may also process the NOTIFY): a single-event
     park only advances from ``parked``, so a second flip is a no-op; a
     multi-event park may advance from ``resumable`` and re-accumulates the
-    same ``fired_tcid`` with identical data. Returns True when the row was
-    advanced/accumulated, False when the guard rejected it (including the
-    ENDED race above, resolved at write time rather than read time).
+    same ``dispatch_key`` with identical data. Returns True when the row
+    was advanced/accumulated, False when the guard rejected it (including
+    the ENDED race above, resolved at write time rather than read time).
     """
     is_multi = bool(session.parked_event_keys)
     allowed = ("parked", "resumable") if is_multi else ("parked",)
@@ -114,9 +151,9 @@ async def durably_mark_session_resumable(
     state["resume_event_payload"] = dict(payload or {})
     state["resume_event_key"] = event_key
     if is_multi:
-        fired_tcid = event_key.rsplit(":", 1)[-1]
+        dispatch_key = _dispatch_key_for(event_key, session_id=session.id)
         payloads = dict(state.get("resume_event_payloads") or {})
-        payloads[fired_tcid] = {
+        payloads[dispatch_key] = {
             "payload": dict(payload or {}),
             "event_key": event_key,
         }

@@ -62,19 +62,36 @@ async def write_approval_record_for_graph(
     # form the shared builder expects. A tcid that matches neither (or no
     # tcid at all -> legacy drain) is skipped.
     resume_metadata: dict | None = None
-    entry = next(
-        (e for e in (checkpoint.get("pending_agent_yields") or [])
-         if e.get("tool_call_id") == tcid),
-        None,
-    )
+    ay_matches = [
+        e for e in (checkpoint.get("pending_agent_yields") or [])
+        if e.get("tool_call_id") == tcid
+    ]
+    if len(ay_matches) > 1:
+        # 01a0518f: two concurrent fan-out siblings can share a raw
+        # provider tool_call_id; the resume payload only ever carries
+        # tool_call_id, so first-match is the same ambiguity the resume
+        # path already has - logged so a real collision is visible.
+        logger.warning(
+            "write_approval_record_for_graph: %d pending_agent_yields "
+            "share tool_call_id=%r on session %s; resolving the first",
+            len(ay_matches), tcid, session.id,
+        )
+    entry = ay_matches[0] if ay_matches else None
     if entry is not None and entry.get("tool_name") == "_approval":
         resume_metadata = entry.get("resume_metadata") or {}
     else:
-        disp = next(
-            (d for d in (checkpoint.get("pending_dispatch") or [])
-             if d.get("tool_call_id") == tcid),
-            None,
-        )
+        disp_matches = [
+            d for d in (checkpoint.get("pending_dispatch") or [])
+            if d.get("tool_call_id") == tcid
+        ]
+        if len(disp_matches) > 1:
+            logger.warning(
+                "write_approval_record_for_graph: %d pending_dispatch "
+                "entries share tool_call_id=%r on session %s; resolving "
+                "the first",
+                len(disp_matches), tcid, session.id,
+            )
+        disp = disp_matches[0] if disp_matches else None
         if disp is not None:
             resume_metadata = disp.get("resume_metadata") or {}
     if resume_metadata is None:
@@ -136,18 +153,29 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     executor = getattr(executor_or_driver, "_executor", executor_or_driver)
 
     # Replies to drain this cycle. A multi-event park accumulates every
-    # reply that arrived into ``resume_event_payloads`` (tcid -> reply);
-    # we drain them ALL so a concurrent second reply isn't lost. A
-    # single-event park / timeout / cancel uses the singular path
-    # (classified payload, resumed_tcid from the fired key, or None for
-    # the legacy drain-all).
+    # reply that arrived into ``resume_event_payloads`` (dispatch_key ->
+    # reply, see primer.session.yields._dispatch_key_for - 01a0518f: the
+    # dict key is node-qualified for a graph park so two fan-out siblings
+    # sharing a raw tool_call_id don't overwrite each other's reply); we
+    # drain them ALL so a concurrent second reply isn't lost. Every entry
+    # still carries its own full ``event_key`` verbatim regardless of the
+    # dict key's shape, so the bare tool_call_id downstream matching
+    # (graph_value_yield_toolcall etc., which key checkpoint entries by
+    # tool_call_id, not the compound dispatch key) is recovered from
+    # THAT, the same rsplit-last-segment extraction used everywhere else
+    # on this path - never from the dict key itself. A single-event park
+    # / timeout / cancel uses the singular path (classified payload,
+    # resumed_tcid from the fired key, or None for the legacy drain-all).
     raw_state = session.parked_state or {}
     payloads_map = raw_state.get("resume_event_payloads")
     ck = parked.graph_checkpoint
     if payloads_map:
         replies = [
-            (tcid, (entry or {}).get("payload") or {})
-            for tcid, entry in payloads_map.items()
+            (
+                (entry or {}).get("event_key", "").rsplit(":", 1)[-1] or None,
+                (entry or {}).get("payload") or {},
+            )
+            for entry in payloads_map.values()
         ]
     else:
         resume_event_key = raw_state.get("resume_event_key")
@@ -227,11 +255,18 @@ def graph_value_yield_toolcall(pool: "WorkerPool", checkpoint, tcid) -> bool:
     """
     from primer.graph._node_refs import _PendingToolCall, _is_value_yield_toolcall
 
-    raw = next(
-        (e for e in (checkpoint.get("pending_toolcalls") or [])
-         if e.get("tool_call_id") == tcid),
-        None,
-    )
+    matches = [
+        e for e in (checkpoint.get("pending_toolcalls") or [])
+        if e.get("tool_call_id") == tcid
+    ]
+    if len(matches) > 1:
+        # 01a0518f: see write_approval_record_for_graph's comment above.
+        logger.warning(
+            "graph_value_yield_toolcall: %d pending_toolcalls share "
+            "tool_call_id=%r; resolving the first",
+            len(matches), tcid,
+        )
+    raw = matches[0] if matches else None
     if raw is None:
         return False
     entry = _PendingToolCall(
@@ -254,11 +289,18 @@ def graph_nested_agent_yield(pool: "WorkerPool", checkpoint, tcid):
     continuation walk (:meth:`_resume_graph_continuation`) rather than the
     flat ask_user / approval path.
     """
-    ay = next(
-        (e for e in (checkpoint.get("pending_agent_yields") or [])
-         if e.get("tool_call_id") == tcid),
-        None,
-    )
+    matches = [
+        e for e in (checkpoint.get("pending_agent_yields") or [])
+        if e.get("tool_call_id") == tcid
+    ]
+    if len(matches) > 1:
+        # 01a0518f: see write_approval_record_for_graph's comment above.
+        logger.warning(
+            "graph_nested_agent_yield: %d pending_agent_yields share "
+            "tool_call_id=%r; resolving the first",
+            len(matches), tcid,
+        )
+    ay = matches[0] if matches else None
     if ay is None or not ay.get("frames"):
         return None
     return ay
@@ -374,11 +416,18 @@ async def graph_agent_tool_result(pool: "WorkerPool", checkpoint, tcid, payload)
     the fired tcid is not a hook-backed agent yield."""
     from primer.model.chat import Message, ToolResultPart
 
-    ay = next(
-        (e for e in (checkpoint.get("pending_agent_yields") or [])
-         if e.get("tool_call_id") == tcid),
-        None,
-    )
+    matches = [
+        e for e in (checkpoint.get("pending_agent_yields") or [])
+        if e.get("tool_call_id") == tcid
+    ]
+    if len(matches) > 1:
+        # 01a0518f: see write_approval_record_for_graph's comment above.
+        logger.warning(
+            "graph_agent_tool_result: %d pending_agent_yields share "
+            "tool_call_id=%r; resolving the first",
+            len(matches), tcid,
+        )
+    ay = matches[0] if matches else None
     if ay is None or ay.get("tool_name") in (None, "_approval"):
         return None
     try:
