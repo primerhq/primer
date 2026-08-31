@@ -245,6 +245,25 @@ class _CoalesceState:
     # leaves a dangling entry, but it's bounded to this _CoalesceState's
     # lifetime (one run) — not worth cleanup machinery.
     tool_names: dict[tuple[str | None, str], str] = field(default_factory=dict)
+    # 01a0518f: per-node monotonic counter, incremented once per
+    # ToolCallStart, feeding the scoped tool-call id below. node_id alone
+    # disambiguates SIBLINGS sharing a raw id within the same tool-round,
+    # but not two DIFFERENT tool-rounds on the SAME node (loop.py issues a
+    # fresh llm.stream() per round, and each adapter's id counter resets
+    # every stream call — see persistence.py's module comment / the
+    # tool_names note above) — the seq closes that gap too.
+    tool_call_seq: dict[str | None, int] = field(default_factory=dict)
+    # Raw provider id -> scoped id ("<node>:tool:<turn_no>:<seq>", mirrors
+    # part_id()'s node:kind:turn_no convention with a seq appended since,
+    # unlike text/reasoning, more than one tool call can happen per node
+    # per turn). Minted at ToolCallStart (before ToolCallDelta needs it),
+    # read (not popped) through ToolCallEnd, and popped at the matching
+    # _ExecutorToolResult — the one guaranteed-last consumer, since
+    # loop.py's tool-rounds are strictly sequential (every round's
+    # _ExecutorToolResult events land before the NEXT round's
+    # ToolCallStart can reuse the same raw id). Keyed by (node_id, raw_id)
+    # like tool_names above, for the identical reason.
+    scoped_call_ids: dict[tuple[str | None, str], str] = field(default_factory=dict)
 
 
 class _DeltaSink(Protocol):
@@ -430,17 +449,30 @@ def translate_stream_event(
         # Keyed by (node_id, id): synthesized ids can collide across
         # concurrent fan-out siblings, so node_id disambiguates.
         state.tool_names[(node_id, event.id)] = event.name
+        # 01a0518f: mint the scoped id NOW (not at End) - ToolCallDelta,
+        # which arrives between Start and End, needs the same id the
+        # durable TOOL_CALL record will carry, for live-arguments
+        # reconciliation to work. See _CoalesceState.scoped_call_ids.
+        seq = state.tool_call_seq.get(node_id, 0) + 1
+        state.tool_call_seq[node_id] = seq
+        state.scoped_call_ids[(node_id, event.id)] = (
+            f"{node_id or 'x'}:{KIND_TOOL}:{turn_no}:{seq}"
+        )
         return None
 
     if isinstance(event, ToolCallDelta):
         # Like TextDelta this coalesces into the single TOOL_CALL record
         # (produced on ToolCallEnd), so it produces no durable record of its
         # own - but it feeds the delta sink so a client can render the
-        # arguments as they stream. The part_id is the tool call id, not a
-        # node-scoped id, because the paired TOOL_CALL record carries the same
-        # id and the client reconciles the live arguments to it by that id.
+        # arguments as they stream. The part_id is the SCOPED tool-call id
+        # (01a0518f - was the raw id verbatim), because the paired TOOL_CALL
+        # record carries the same scoped id and the client reconciles the
+        # live arguments to it by that id. Falls back to the raw id if
+        # ToolCallStart's mint is missing (defensive; every real adapter
+        # emits Start before Delta).
         if delta_sink is not None:
-            delta_sink.on_delta(event.id, KIND_TOOL, event.arguments_delta)
+            scoped_id = state.scoped_call_ids.get((node_id, event.id), event.id)
+            delta_sink.on_delta(scoped_id, KIND_TOOL, event.arguments_delta)
         return None
 
     if isinstance(event, ToolCallEnd):
@@ -475,25 +507,47 @@ def translate_stream_event(
                 )
             )
             state.text_buffers[node_id] = ""
+        # 01a0518f: the durable TOOL_CALL id is the SCOPED id minted at
+        # ToolCallStart (was the raw provider id verbatim, which
+        # restarts at the same value every llm.stream() call and can
+        # collide across tool-rounds and concurrent fan-out siblings -
+        # see _CoalesceState.scoped_call_ids). Read, not popped: the
+        # LATER _ExecutorToolResult event for this same call still needs
+        # to resolve back to it.
+        scoped_id = state.scoped_call_ids.get((node_id, event.id), event.id)
         records.append(
             SessionMessageRecord(
                 seq=1,
                 kind=SessionMessageKind.TOOL_CALL,
                 payload={
-                    "id": event.id,
+                    "id": scoped_id,
                     "name": state.tool_names.pop((node_id, event.id), None),
                     "arguments": event.arguments,
+                    # 01a0518f: the raw provider id, preserved alongside
+                    # the scoped "id" above. primer.session.delegation's
+                    # DelegationRecorder stamps a delegated record's
+                    # payload["delegate_tool_call_id"] with the raw id
+                    # (it never sees this _CoalesceState's scoped-id
+                    # minting - a genuinely separate _CoalesceState
+                    # instance for the subagent's own content), so
+                    # primer.session.timeline's delegation-nesting lookup
+                    # needs the raw id to find its parent, not the scoped
+                    # one. Every OTHER consumer keys off "id"/"call_id"
+                    # (the scoped id) as usual - this field exists solely
+                    # for that one cross-_CoalesceState-boundary lookup.
+                    "raw_id": event.id,
                 },
                 node_id=node_id,
                 created_at=now,
             )
         )
         # The text/reasoning parts end here; the tool-input part ends here too
-        # (its part_id is the tool call id). A part with no deltas is a no-op.
+        # (its part_id is the SCOPED tool call id, matching what ToolCallDelta
+        # opened it under above). A part with no deltas is a no-op.
         if delta_sink is not None:
             delta_sink.close(part_id(node_id, KIND_TEXT, turn_no))
             delta_sink.close(part_id(node_id, KIND_REASONING, turn_no))
-            delta_sink.close(event.id)
+            delta_sink.close(scoped_id)
         if len(records) == 1:
             return records[0]
         return records
@@ -519,11 +573,23 @@ def translate_stream_event(
     if isinstance(event, ExtendedEvent) and isinstance(
         event.extended, _ExecutorToolResult
     ):
+        # 01a0518f: resolve back to the SAME scoped id the paired
+        # TOOL_CALL record carries (was the raw provider id verbatim) -
+        # this is the LAST consumer of the mapping entry, so pop it
+        # (loop.py's tool-rounds are strictly sequential: every round's
+        # results land before the next round's ToolCallStart could reuse
+        # the same raw id, so popping here can't race a later Start for
+        # the same key). Falls back to the raw id if the mapping is
+        # somehow missing (defensive; every real dispatch pairs a
+        # ToolCallEnd with exactly one later result).
+        scoped_call_id = state.scoped_call_ids.pop(
+            (node_id, event.extended.call_id), event.extended.call_id,
+        )
         return SessionMessageRecord(
             seq=1,
             kind=SessionMessageKind.TOOL_RESULT,
             payload={
-                "call_id": event.extended.call_id,
+                "call_id": scoped_call_id,
                 "output": event.extended.output,
                 "error": event.extended.error,
                 # UX reconcile wave 5: a workspace tool's own extra data
@@ -542,11 +608,22 @@ def translate_stream_event(
     if isinstance(event, ExtendedEvent) and isinstance(
         event.extended, _ClientAction
     ):
+        # 01a0518f: resolve to the SAME scoped id the paired TOOL_CALL
+        # record carries (was the raw id verbatim) - a client-delivered
+        # tool's streaming ToolCallEnd has already run by the time
+        # _dispatch_tool_calls builds this event (loop.py dispatches
+        # AFTER the assistant message is fully built), so the mapping is
+        # already populated. Read, not popped: the notifying contract
+        # still emits a TOOL_RESULT after this delivery frame (loop.py's
+        # own comment: "tool_call -> client_action -> tool_result"),
+        # which is the actual last consumer.
         return SessionMessageRecord(
             seq=1,
             kind=SessionMessageKind.CLIENT_ACTION,
             payload={
-                "call_id": event.extended.call_id,
+                "call_id": state.scoped_call_ids.get(
+                    (node_id, event.extended.call_id), event.extended.call_id,
+                ),
                 "name": event.extended.name,
                 "arguments": dict(event.extended.arguments or {}),
             },

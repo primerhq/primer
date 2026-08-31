@@ -138,6 +138,52 @@ def test_tool_result_output_is_capped_and_flagged_when_oversized():
     assert result["error"] is False
 
 
+def _node_rec(seq, kind, ts, node_id, **payload):
+    """Like _rec, but sets the RECORD-level node_id field (as a graph
+    fan-out sibling's persisted records genuinely do), not just the
+    payload - _tree() reads rec["node_id"], not payload["node_id"], for
+    everything except _GRAPH_TRANSITION."""
+    return json.dumps({
+        "seq": seq, "kind": kind, "payload": payload, "created_at": ts,
+        "node_id": node_id,
+    })
+
+
+def test_fanout_siblings_sharing_a_raw_tool_call_id_do_not_overwrite_each_other():
+    """01a0518f: THE regression this task exists for, reproduced at the
+    timeline level. Two concurrent fan-out sibling nodes can legitimately
+    mint the identical raw provider tool_call_id ("call_0" restarts every
+    llm.stream() call - persistence.py's own module comment). Before the
+    fix, _tree()'s `calls` dict was keyed by the bare id alone: the
+    second sibling's TOOL_CALL record would silently overwrite the
+    first's entry in that dict, and BOTH tool_result records would then
+    pair to whichever entry happened to still be there - one sibling's
+    real result, or neither. With scoped ids (persistence.py) plus the
+    node-keyed `calls` dict (timeline.py) as defense-in-depth, each
+    sibling gets its own entry and its own correctly-paired result."""
+    lines = [
+        _node_rec(1, "tool_call", T0, "worker[0]", id="call_0", name="fs__read", arguments={}),
+        _node_rec(2, "tool_call", T0, "worker[1]", id="call_0", name="fs__read", arguments={}),
+        _node_rec(3, "tool_result", T1, "worker[0]", call_id="call_0", output="from sibling 0", error=False),
+        _node_rec(4, "tool_result", T1, "worker[1]", call_id="call_0", output="from sibling 1", error=True),
+        _rec(5, "done", T2, stop_reason="stop"),
+    ]
+    tl = build_turn_timeline(message_lines=lines, turn_log_lines=[], turn_no=0)
+
+    tool_calls = [c for c in tl["children"] if c["kind"] == "tool_call"]
+    assert len(tool_calls) == 2, (
+        f"expected 2 distinct tool_call entries (one per sibling), got "
+        f"{len(tool_calls)}: {tool_calls}"
+    )
+    by_node = {c["node_id"]: c for c in tool_calls}
+    assert set(by_node) == {"worker[0]", "worker[1]"}
+    # Each sibling's result pairs to ITS OWN call, not the other's.
+    assert by_node["worker[0]"]["status"] == "ok"
+    assert by_node["worker[0]"]["result"]["output"] == "from sibling 0"
+    assert by_node["worker[1]"]["status"] == "error"
+    assert by_node["worker[1]"]["result"]["output"] == "from sibling 1"
+
+
 def test_client_action_is_a_leaf_under_the_call_it_delivered():
     """S3 writes one delivery record per notifying call into this log."""
     lines = [

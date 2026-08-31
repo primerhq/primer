@@ -241,21 +241,29 @@ def test_translate_feeds_sink_and_stamps_part_id() -> None:
     if not isinstance(records, list):
         records = [records]
 
+    # 01a0518f: the tool part_id is the SCOPED id minted at ToolCallStart
+    # ("x:tool:0:1" - node "x"/None, kind "tool", turn 0, seq 1), not the
+    # raw provider id "c1" verbatim - it restarts at the same value every
+    # llm.stream() call and can collide across tool-rounds / concurrent
+    # fan-out siblings.
+    scoped_tool_id = "x:tool:0:1"
+
     # The live path saw every content delta.
     assert ("x:text:0", "text", "hi") in sink.delta_calls
     assert ("x:reasoning:0", "reasoning", "think") in sink.delta_calls
-    assert ("c1", "tool", '{"q":') in sink.delta_calls
+    assert (scoped_tool_id, "tool", '{"q":') in sink.delta_calls
     # The parts are closed at the durable record.
     assert "x:text:0" in sink.close_calls
     assert "x:reasoning:0" in sink.close_calls
-    assert "c1" in sink.close_calls
+    assert scoped_tool_id in sink.close_calls
 
     # The durable records carry the matching part_id.
     by_kind = {r.kind: r for r in records}
     assert by_kind[SessionMessageKind.ASSISTANT_TOKEN].payload["part_id"] == "x:text:0"
     assert by_kind[SessionMessageKind.REASONING].payload["part_id"] == "x:reasoning:0"
-    # The tool input part reconciles to the TOOL_CALL record by its id.
-    assert by_kind[SessionMessageKind.TOOL_CALL].payload["id"] == "c1"
+    # The tool input part reconciles to the TOOL_CALL record by its
+    # (now scoped) id - live and durable still agree.
+    assert by_kind[SessionMessageKind.TOOL_CALL].payload["id"] == scoped_tool_id
 
 
 def test_translate_without_sink_is_unchanged() -> None:
