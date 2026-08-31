@@ -177,14 +177,14 @@ def _ask_item(sid, *, tool_call_id, prompt):
 
 
 def _route_pending_items(page, wid, items):
-    """Route GET /v1/workspaces/{wid}/yields/pending → {items}."""
-    page.route(
-        f"**/v1/workspaces/{wid}/yields/pending",
-        lambda route: route.fulfill(
+    """Route the pending-yield feeds (aggregated + session-scoped) → {items}."""
+    def _fulfill(route):
+        route.fulfill(
             status=200, content_type="application/json",
             body=json.dumps({"items": items}),
-        ),
-    )
+        )
+    page.route(f"**/v1/workspaces/{wid}/yields/pending*", _fulfill)
+    page.route(f"**/v1/workspaces/{wid}/sessions/*/yields/pending*", _fulfill)
 
 
 # ===========================================================================
@@ -198,8 +198,8 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
     """U0058 — Re-pointed to the Studio's Action Required. The old
     single-panel "draft resets when the polled tool_call_id changes"
     invariant maps to the Studio's per-item respond state: each pending
-    yield is its own ``action-item`` keyed by tool_call_id
-    (studio-activity.jsx ``respondState``), so a draft typed into item A
+    yield is its own decision card keyed by tool_call_id
+    (the shell rail's attention list ``respondState``), so a draft typed into item A
     never bleeds into item B when the pending snapshot swaps.
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
@@ -212,25 +212,24 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
                 body=json.dumps({"items": state["items"]}),
             )
 
-        page.route(f"**/v1/workspaces/{wid}/yields/pending", _on_pending)
+        page.route(f"**/v1/workspaces/{wid}/yields/pending*", _on_pending)
+        page.route(f"**/v1/workspaces/{wid}/sessions/*/yields/pending*", _on_pending)
 
-        open_studio(page, console_url, wid)
-        # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for action-item content.
-        expand_debug_sidebar(page)
-        item = page.locator("[data-testid='action-item']").first
+        # The console renders the cards INLINE in the session doc.
+        open_session_in_studio(page, console_url, wid, sid)
+        item = page.get_by_test_id("nv-ask:tc-A")
         expect(item).to_be_visible(timeout=10_000)
         expect(item).to_contain_text("What is your name?")
 
-        # Type a draft into item A's respond input.
-        inp = item.locator("[data-testid='respond']")
+        # Type a draft into card A's answer input.
+        inp = item.get_by_test_id("nv-ask-answer")
         inp.fill("partial draft text")
         assert (inp.input_value() or "") == "partial draft text"
 
         # Swap the pending snapshot to a DIFFERENT yield (new tcid + prompt);
         # the next reconcile poll (15s) or a manual wait surfaces item B.
         state["items"] = [_ask_item(sid, tool_call_id="tc-B", prompt="Pick a color?")]
-        item_b = page.locator("[data-testid='action-item']").filter(has_text="Pick a color?").first
+        item_b = page.get_by_test_id("nv-ask:tc-B")
         # Two full poll periods. The pending snapshot polls every 15s on both
         # shells, woken early by a workspace tap - but the tap never fires here
         # because /yields/pending is route-mocked, so the backstop poll is the
@@ -240,7 +239,7 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
         # phase and one period is no longer reliably enough.
         expect(item_b).to_be_visible(timeout=35_000)
         # Item B's respond input is empty — the draft was scoped to item A.
-        inp_b = item_b.locator("[data-testid='respond']")
+        inp_b = item_b.get_by_test_id("nv-ask-answer")
         assert (inp_b.input_value() or "") == "", (
             f"draft bled into the new pending item: {inp_b.input_value()!r}"
         )
@@ -249,7 +248,7 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
 
 
 # ===========================================================================
-# U0060 — /respond error → inline on the action-item (not a toast)
+# U0060 — /respond error → inline on the decision card (not a toast)
 # ===========================================================================
 
 
@@ -257,7 +256,7 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
     """U0060 — Re-pointed to the Studio's Action Required. A server 500
-    from ``/ask_user/respond`` renders INLINE on the action-item (the
+    from ``/ask_user/respond`` renders INLINE on the decision card (the
     per-item ``rs.error`` red line), NOT as a generic toast — the
     operator sees the failure exactly where the submission happened and
     the item stays put to retry.
@@ -278,25 +277,23 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
             ),
         )
 
-        open_studio(page, console_url, wid)
-        # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for action-item content.
-        expand_debug_sidebar(page)
-        item = page.locator("[data-testid='action-item']").first
+        # The console renders the cards INLINE in the session doc.
+        open_session_in_studio(page, console_url, wid, sid)
+        item = page.get_by_test_id("nv-ask:tc-500")
         expect(item).to_be_visible(timeout=10_000)
 
-        respond = item.locator("[data-testid='respond']")
+        respond = item.get_by_test_id("nv-ask-answer")
         respond.fill("Alice")
         respond.press("Enter")
 
-        # An inline error line renders on the item (studio-activity.jsx sets
+        # An inline error line renders on the item (the shell rail's attention list sets
         # rs.error to the failure's detail/title/message, else "Respond
         # failed"). Wait for the red line to appear, then confirm it carries
         # a failure marker — and that it is inline, NOT a toast.
         page.wait_for_timeout(1_000)
         item_text = (item.text_content() or "").lower()
         assert any(m in item_text for m in ("synthetic 500", "internal error", "respond failed", "500")), (
-            f"no inline error marker on the action-item: {item_text!r}"
+            f"no inline error marker on the decision card: {item_text!r}"
         )
         assert page.locator(".toast").filter(has_text="Respond failed").count() == 0, (
             "respond error should render inline on the item, not as a toast"
@@ -315,28 +312,21 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
 def test_u0070_pause_button_disabled_when_status_not_running(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0070 — Re-pointed to the Studio's ``ctrl-pause`` on the GRAPH
-    panel. Task 13 moved Pause (and Cancel) off the agent panel onto
-    SessionGraphPanel — the agent panel (SessionAgentPanel) has no Pause
-    control at all now (Stop/End/Restart only). Per studio-center.jsx
-    SessionGraphPanel the Pause button is still
-    ``disabled={!wid || status !== "running" || pauseMut.loading}`` with
-    a title "Enabled only when running" for a non-running (CREATED)
-    session — same logic as the retired ST_SessionControls cluster, now
-    pinned against a graph-bound session. Pins both the disabled attr AND
-    the title affordance.
+    """U0070 — Re-pointed twice (Studio → shell → console): the
+    status-gated control is now the composer's Stop/Send swap. Stop (the
+    interrupt affordance) renders ONLY while a run is live; a CREATED
+    graph session shows Send. The park/interrupt verbs additionally
+    live on the session row's context menu, gated by the ended state.
     """
     wid, sid, cleanup_urls = _seed_graph_ladder(base_url, unique_suffix, tmp_path)
     try:
         open_session_in_studio(page, console_url, wid, sid, kind="graph")
 
-        pause = page.locator("[data-testid='ctrl-pause']").first
-        expect(pause).to_be_visible(timeout=10_000)
-        expect(pause).to_be_disabled()
-        # Title affordance explains why.
-        title = pause.get_attribute("title") or ""
-        assert "Enabled only when running" in title, (
-            f"expected disabled-reason title, got {title!r}"
+        send = page.get_by_test_id("nv-send")
+        expect(send).to_be_visible(timeout=10_000)
+        # No live run: the interrupt affordance must not be offered.
+        assert page.get_by_test_id("nv-interrupt").count() == 0, (
+            "Stop/interrupt rendered for a session that is not running"
         )
     finally:
         _cleanup(base_url, cleanup_urls)
@@ -351,7 +341,7 @@ def test_u0067_resume_re_toasts_on_repeat_click(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
     """U0067 — Re-pointed: the Studio's agent panel has no dedicated
-    Resume control anymore (studio-center.jsx's retired
+    Resume control anymore (the shell session document's retired
     ST_SessionControls cluster is defined but never mounted by
     SessionAgentPanel). Per session-adapter.jsx's SA_useSessionConversation
     comment, "one input, four behaviours": a Composer send to a CREATED
@@ -369,9 +359,9 @@ def test_u0067_resume_re_toasts_on_repeat_click(
     try:
         open_session_in_studio(page, console_url, wid, sid, kind="agent")
 
-        composer = page.locator("textarea[placeholder='Send a message…']")
+        composer = page.get_by_test_id("nv-composer-input")
         composer.wait_for(state="visible", timeout=10_000)
-        send_btn = page.locator("[data-testid='chat-send-btn']")
+        send_btn = page.get_by_test_id("nv-send")
 
         # First send — invokes the CREATED session (steer semantics). The
         # persisted USER_INPUT is the surviving positive signal (no

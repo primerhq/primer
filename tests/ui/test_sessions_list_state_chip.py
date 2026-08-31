@@ -8,7 +8,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 LIST = (UI / "components" / "sessions-list.jsx").read_text(encoding="utf-8")
-CHROME = (UI / "components" / "chrome.jsx").read_text(encoding="utf-8")
 
 
 def test_row_chip_uses_decoder() -> None:

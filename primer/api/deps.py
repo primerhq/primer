@@ -132,6 +132,13 @@ def get_artifact_storage_provider_storage(
     return storage_provider.get_storage(ArtifactStorageProvider)
 
 
+def get_event_subscription_storage(
+    storage_provider=Depends(get_storage_provider),
+) -> "Storage":
+    from primer.model.event import EventSubscription
+    return storage_provider.get_storage(EventSubscription)
+
+
 def get_oidc_provider_storage(
     storage_provider=Depends(get_storage_provider),
 ) -> "Storage":
@@ -252,24 +259,43 @@ def get_document_storage(
 
 
 def get_document_service(request: Request):
-    """Build a request-scoped :class:`DocumentService` for the path-addressed
+    """Request-scoped :class:`DocumentService` for the path-addressed
     document routes.
 
-    The path-addressed routes do NOT go through ``make_crud_router`` (and so
-    do not fire the Document CDC ``on_create`` / ``on_update`` indexing hook).
-    We therefore wire the service with an explicit best-effort ``indexer``
-    that re-indexes the body AFTER the atomic entity + content write commits
-    (the service calls the hook only after its ``transaction()`` block exits),
-    so a path-addressed PUT still indexes the document when search is on -
-    behaviour-preserving relative to the CRUD path. The indexer is wired here
-    rather than in the route so the dependency owns the registry lookups.
+    Retained alongside :func:`get_document_tree_service` until S2 Task 21
+    ports the console off the flat document surface; deleting the routes
+    before their UI moves would break every knowledge page.
     """
     from primer.api.routers.knowledge import build_document_indexer
-
-    sp = get_storage_provider(request)
     from primer.knowledge.document_service import DocumentService
 
+    sp = get_storage_provider(request)
     return DocumentService(sp, indexer=build_document_indexer(request))
+
+
+def get_document_tree_service(request: Request):
+    """Build a request-scoped :class:`DocumentTreeService` for the docs routes.
+
+    The tree routes do NOT go through ``make_crud_router`` (and so do not
+    fire a CDC indexing hook), so the service is wired with an explicit
+    best-effort ``indexer`` that re-indexes the body AFTER the atomic
+    entity + content write commits. The indexer is wired here rather than
+    in the route so the dependency owns the registry lookups.
+    """
+    from primer.api.routers.knowledge import (
+        build_document_indexer,
+        build_document_path_rewriter,
+        build_document_unindexer,
+    )
+    from primer.knowledge.tree import DocumentTreeService
+
+    sp = get_storage_provider(request)
+    return DocumentTreeService(
+        sp,
+        indexer=build_document_indexer(request),
+        unindexer=build_document_unindexer(request),
+        path_rewriter=build_document_path_rewriter(request),
+    )
 
 
 def get_workspace_provider_storage(
@@ -303,13 +329,6 @@ def get_external_tool_call_storage(
     from primer.model.external_tool import ExternalToolCall
 
     return sp.get_storage(ExternalToolCall)
-
-
-def get_chat_storage(
-    sp: "StorageProvider" = Depends(get_storage_provider),
-):
-    from primer.model.chats import Chat
-    return sp.get_storage(Chat)
 
 
 def get_internal_collections_config_storage(
@@ -613,11 +632,11 @@ __all__ = [
     "get_channel_dispatcher",
     "get_channel_inbox",
     "get_channel_registry",
-    "get_chat_storage",
     "get_claim_engine",
     "get_collection_storage",
     "get_cross_encoder_provider_storage",
     "get_document_service",
+    "get_document_tree_service",
     "get_document_storage",
     "get_embedding_provider_storage",
     "get_event_bus",

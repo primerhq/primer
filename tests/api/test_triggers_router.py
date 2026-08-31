@@ -264,7 +264,7 @@ async def test_delete_cascades_subscriptions(client, fake_storage_provider):
 
     # Create a chat_message subscription
     sub_body = {
-        "config": {"kind": "chat_message", "chat_id": "ch-1"},
+        "config": {"kind": "session_append", "session_id": "sess-1"},
         "payload_template": None,
         "parallelism": "skip",
     }

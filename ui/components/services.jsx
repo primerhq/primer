@@ -9,7 +9,7 @@
 //   GET  /services/{id}/versions             — published versions, newest first
 //   POST /services/{id}/_activate            — activate / roll back
 // Publishing itself is NOT a console affordance: agents publish via the
-// publish_service tool and operators via primectl (spec phase 4); the
+// publish_service tool (spec phase 4); the
 // Versions tab says so in its empty state.
 
 // ============================================================================
@@ -59,7 +59,9 @@ function SV_ServicesPage({ serviceId }) {
 }
 
 function SV_ServicesList() {
-  const { useResource, apiFetch } = window.primerApi;
+  const { useResource, apiFetch, useRouter } = window.primerApi;
+  // Row clicks navigate; see the note on the detail view below.
+  const { navigate } = useRouter();
   const [filter, setFilter] = React.useState("");
   const [creating, setCreating] = React.useState(false);
 
@@ -133,7 +135,7 @@ function SV_ServicesList() {
                 <tr
                   key={s.id}
                   style={{ cursor: "pointer" }}
-                  onClick={() => { window.location.hash = "#/services/" + encodeURIComponent(s.id); }}
+                  onClick={() => { navigate("/services/" + encodeURIComponent(s.id)); }}
                   data-testid={`service-row-${s.name}`}
                 >
                   <td className="mono">{s.name}</td>
@@ -189,10 +191,13 @@ function SV_ServiceModal({ existing, onClose, onSaved }) {
 
   const submit = async () => {
     if (viewerAuth === "none" && (!existing || existing.viewer_auth !== "none")) {
-      const ok = window.confirm(
-        "Anonymous viewing serves this app WITHOUT login. The manifest "
-        + "tool allowlist still applies to gateway calls. Continue?",
-      );
+      const ok = await window.confirmDialog({
+        title: "Serve without login?",
+        message: "Anonymous viewing serves this app WITHOUT login. The "
+          + "manifest tool allowlist still applies to gateway calls.",
+        confirmLabel: "Continue",
+        danger: true,
+      });
       if (!ok) return;
     }
     setBusy(true);
@@ -283,7 +288,11 @@ function SV_ServiceModal({ existing, onClose, onSaved }) {
 
 function SV_ServiceDetail({ serviceId }) {
   const { useResource, apiFetch, useRouter } = window.primerApi;
-  const { query } = useRouter();
+  // navigate, not window.location.hash: a direct hash write bypasses the
+  // router shim and speaks the pre-S8 grammar, which the shell's url
+  // parser does not understand, so it falls back to the default
+  // workspace and rewrites the address away.
+  const { query, navigate } = useRouter();
   const tab = query.tab === "versions" ? "versions" : "config";
   const [editing, setEditing] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
@@ -303,8 +312,8 @@ function SV_ServiceDetail({ serviceId }) {
   const vitems = (versions.data && versions.data.items) || [];
 
   const setTab = (t) => {
-    window.location.hash = "#/services/" + encodeURIComponent(serviceId)
-      + (t === "versions" ? "?tab=versions" : "");
+    navigate("/services/" + encodeURIComponent(serviceId)
+      + (t === "versions" ? "?tab=versions" : ""));
   };
 
   const activate = async (versionId) => {
@@ -323,7 +332,7 @@ function SV_ServiceDetail({ serviceId }) {
   const doDelete = async () => {
     try {
       await apiFetch("DELETE", "/services/" + encodeURIComponent(serviceId));
-      window.location.hash = "#/services";
+      navigate("/services");
     } catch (err) {
       setError(SV_extractError(err));
       setConfirmDelete(false);
@@ -420,9 +429,9 @@ function SV_ServiceDetail({ serviceId }) {
               <div className="ico-wrap"><Icon name="box" size={22} /></div>
               <div className="head">No versions published</div>
               <div className="sub">
-                Publish from an agent with the publish_service tool, or with
-                primectl. Each publish is an immutable version; activation is
-                a pointer swap.
+                Publish from an agent with the publish_service tool. Each
+                publish is an immutable version; activation is a pointer
+                swap.
               </div>
             </div>
           )}

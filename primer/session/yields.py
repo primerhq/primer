@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from primer.int.claim import ClaimKind
 from primer.model.except_ import NotFoundError
-from primer.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 
 if TYPE_CHECKING:
     from primer.int.claim import ClaimEngine
@@ -67,21 +67,47 @@ async def durably_mark_session_resumable(
     * For a MULTI-event park (``parked_event_keys`` set) also accumulate
       ``resume_event_payloads[fired_tcid]`` so a second concurrent reply is
       preserved rather than overwritten.
-    * ``storage.update`` the flipped row.
+    * ``storage.update_unless`` the flipped row, guarded on ``status`` -
+      see below.
     * Re-arm the claim lease via ``engine.mark_resumable`` (park dropped it)
       so the claim loop re-claims the row WITHOUT relying on any bus. When no
       engine is wired (e.g. the lightweight test app) the durable storage
       flip still lands; the lease re-arm is simply skipped.
 
+    ENDED-transition race: ``parked_status`` survives the ENDED transition
+    (only reopen/abandon clear it), so a session a DIFFERENT worker ended
+    between the caller's own read of ``session`` and this write still
+    carries ``parked_status="parked"`` on the copy passed in here. Only
+    checking ``session.status`` (the caller's stale snapshot) would miss a
+    row that ended IN that gap - this used to be a snapshot check for
+    exactly that reason and was a real, if narrow, TOCTOU: nothing stopped
+    the row from ending between the check and ``storage.update`` landing.
+    The fix is a conditional write, not a better-timed read:
+    ``session_storage.update_unless(..., field="status",
+    forbidden=SessionStatus.ENDED.value)`` asks the BACKEND to evaluate
+    "is status ENDED" against the row's CURRENT value in the same
+    statement as the write (see ``Storage.update_unless``), so there is no
+    gap left for the row to end in. ``flip_sessions_parked_on``'s query-level
+    exclusion (below) is a separate, complementary optimization - it keeps
+    an already-ended row out of the candidate set at all, which this
+    function's own guard would also correctly reject if it slipped through.
+
     Idempotency (the listener may also process the NOTIFY): a single-event
     park only advances from ``parked``, so a second flip is a no-op; a
     multi-event park may advance from ``resumable`` and re-accumulates the
     same ``fired_tcid`` with identical data. Returns True when the row was
-    advanced/accumulated, False when the guard rejected it.
+    advanced/accumulated, False when the guard rejected it (including the
+    ENDED race above, resolved at write time rather than read time).
     """
     is_multi = bool(session.parked_event_keys)
     allowed = ("parked", "resumable") if is_multi else ("parked",)
     if session.parked_status not in allowed:
+        return False
+    if session.status == SessionStatus.ENDED:
+        # Cheap early exit ONLY: the caller's own snapshot already says
+        # ENDED, so skip the round trip. This is NOT the safety guarantee
+        # (a snapshot cannot be) - update_unless below is what actually
+        # closes the race for a row that ends AFTER this check runs.
         return False
     state = dict(session.parked_state or {})
     # Singular fields: the single-event resume path + a "last fired" hint.
@@ -99,7 +125,13 @@ async def durably_mark_session_resumable(
         "parked_status": "resumable",
         "parked_state": state,
     })
-    await session_storage.update(updated)
+    landed = await session_storage.update_unless(
+        updated, field="status", forbidden=SessionStatus.ENDED.value,
+    )
+    if landed is None:
+        # The row's CURRENT status was ENDED at write time - rejected
+        # atomically, not from the (possibly stale) snapshot above.
+        return False
     # Re-arm the engine lease (park dropped it). mark_resumable upserts a
     # fresh claimable lease when none exists.
     if engine is not None:
@@ -132,8 +164,9 @@ async def durably_wake_session(
     first attempt lost. When the lease is already healthy the upsert is a
     harmless no-op, which is the common case for an ordinary double-reply.
 
-    A raising ``storage.update`` still propagates untouched: the caller must
-    NOT report a reply accepted when the durable stamp never landed.
+    A raising ``storage.update_unless`` still propagates untouched: the
+    caller must NOT report a reply accepted when the durable stamp never
+    landed.
 
     Returns the underlying helper's bool (True when this call advanced the
     row, False when the guard rejected it).
@@ -188,6 +221,43 @@ def _tool_call_id_for(blob: dict[str, Any]) -> str | None:
     yielded = blob.get("yielded") or {}
     metadata = yielded.get("resume_metadata") or {}
     return metadata.get("tool_call_id")
+
+
+# Tokens that read as an affirmative approval. Matched case-folded
+# against the reply's whitespace-split tokens.
+_AFFIRMATIVE = {"yes", "y", "approve", "approved", "ok", "okay", "sure", "go"}
+# Tokens that read as a refusal. A negative anywhere in the reply vetoes
+# a co-occurring affirmative ("no yes" -> rejected) so the parse fails
+# closed against ambiguous intent, which is the only safe direction for
+# something that decides whether a tool runs.
+_NEGATIVE = {
+    "no", "n", "nope", "nah", "deny", "denied", "reject", "rejected",
+    "cancel", "stop", "dont", "don't", "do not",
+}
+
+
+def classify_approval_text(text: str) -> bool | None:
+    """Read a free-text reply to an approval gate.
+
+    Returns True to approve, False to reject, and None when the reply
+    is not a decision at all, so the caller can keep asking rather than
+    guess.
+
+    Ported verbatim from the chat surface, including its tokenisation:
+    replies are lowercased and split on whitespace, with no punctuation
+    stripping. "yes." therefore does not approve, and the multi-word
+    "do not" entry above can never match. Both are worth fixing, but not
+    silently inside a port, because either change alters which replies
+    approve a tool call.
+    """
+    tokens = (text or "").strip().lower().split()
+    if not tokens:
+        return None
+    if any(t in _NEGATIVE for t in tokens):
+        return False
+    if any(t in _AFFIRMATIVE for t in tokens):
+        return True
+    return None
 
 
 async def respond_to_yield(
@@ -265,3 +335,97 @@ __all__ = [
     "durably_wake_session",
     "respond_to_yield",
 ]
+
+
+async def flip_sessions_parked_on(
+    event_key: str,
+    payload,
+    *,
+    session_storage,
+    engine,
+) -> int:
+    """Find every session parked on ``event_key`` and durably flip it.
+
+    The single shared core behind BOTH wake deliveries: the volatile
+    bus's YieldEventListener (transport-fast) and the event-log
+    dispatcher's flip sink (durable replay). Guarded flips make the
+    two racing each other a harmless no-op.
+
+    Single-event parks match on the singular ``parked_event_key``; a
+    membership fallback covers multi-event parks (graph supersteps),
+    gated to human-reply keys so the common path stays one keyed
+    query. Returns the number of rows advanced.
+    """
+    from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+
+    def _excluding_ended(pred: Predicate) -> Predicate:
+        """AND *pred* with status != ENDED.
+
+        parked_status survives the ENDED transition (only reopen/abandon
+        clear it), so a session a DIFFERENT worker ended before this
+        find() runs still matches parked_status="parked" here. This is a
+        candidate-set optimization, not the safety guarantee: it just
+        keeps an already-ended row out of the loop below entirely, so it
+        never reaches durably_mark_session_resumable at all in the common
+        case. That function's own write is independently guarded (its
+        storage.update_unless call, atomic against the row's CURRENT
+        status) - so a row that slips past this filter, or ends in the
+        narrower gap between this find() and that write, is still
+        rejected there rather than getting a lease armed on it and
+        hitting workspace_executor's "cannot invoke ENDED session" guard.
+        """
+        return Predicate(
+            left=pred,
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="status"),
+                op=Op.NE,
+                right=Value(value=SessionStatus.ENDED.value),
+            ),
+        )
+
+    predicate = _excluding_ended(Predicate(
+        left=Predicate(
+            left=FieldRef(name="parked_status"),
+            op=Op.EQ,
+            right=Value(value="parked"),
+        ),
+        op=Op.AND,
+        right=Predicate(
+            left=FieldRef(name="parked_event_key"),
+            op=Op.EQ,
+            right=Value(value=event_key),
+        ),
+    ))
+    page = await session_storage.find(predicate, OffsetPage(length=200))
+    flipped = 0
+    for sess in page.items:
+        if await durably_mark_session_resumable(
+            sess, event_key=event_key, payload=payload,
+            session_storage=session_storage, engine=engine,
+        ):
+            flipped += 1
+
+    if flipped == 0 and event_key.startswith(("ask_user:", "tool_approval:")):
+        member_pred = _excluding_ended(Predicate(
+            left=Predicate(
+                left=FieldRef(name="parked_status"),
+                op=Op.IN,
+                right=Value(value=["parked", "resumable"]),
+            ),
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="parked_event_keys"),
+                op=Op.CONTAINS,
+                right=Value(value=event_key),
+            ),
+        ))
+        page2 = await session_storage.find(member_pred, OffsetPage(length=200))
+        for sess in page2.items:
+            if await durably_mark_session_resumable(
+                sess, event_key=event_key, payload=payload,
+                session_storage=session_storage, engine=engine,
+            ):
+                flipped += 1
+    return flipped
+

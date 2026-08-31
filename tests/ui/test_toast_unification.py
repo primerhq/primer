@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
-APP = UI / "app.jsx"
+SHELL = UI / "components" / "console" / "nv-shell.jsx"
 USE_MUTATION = UI / "foundation" / "use-mutation.js"
 
 
@@ -25,17 +25,18 @@ def test_use_mutation_still_falls_back_to_toast_push() -> None:
     assert "ns.toastPush" in src
 
 
-def test_app_points_global_toast_push_at_rendered_stack() -> None:
-    src = APP.read_text(encoding="utf-8")
-    # app.jsx overrides the global toastPush so it feeds the rendered stack.
+def test_the_shell_points_global_toast_push_at_rendered_stack() -> None:
+    src = SHELL.read_text(encoding="utf-8")
+    # The shell overrides the global toastPush so it feeds the one
+    # rendered stack; an unrendered queue swallows mutation errors.
     assert "api.toastPush = " in src
     # …and it ultimately routes to app's pushToast (via the stable ref wrapper).
     assert "pushToastRef.current" in src
     assert "pushToastRef = React.useRef(pushToast)" in src
 
 
-def test_app_also_wires_global_toast_dismiss() -> None:
-    src = APP.read_text(encoding="utf-8")
+def test_the_shell_also_wires_global_toast_dismiss() -> None:
+    src = SHELL.read_text(encoding="utf-8")
     assert "api.toastDismiss = " in src
     assert "removeToastRef.current" in src
 

@@ -6,13 +6,15 @@ from typing import Any
 
 import pytest
 
-from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+)
 from primer.model.embedding import EmbedResponse, Embedding
 from primer.model.except_ import BadRequestError, ConfigError
 from primer.model.search import (
     CollectionCrossEncoder,
-    CollectionSearch,
-    MmrConfig,
 )
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
 from primer.search.searcher import CollectionSearcher
@@ -120,13 +122,17 @@ def _hit(
     )
 
 
-def _collection(*, search: CollectionSearch | None = None) -> Collection:
+def _collection(
+    *, cross_encoder: CollectionCrossEncoder | None = None
+) -> Collection:
     return Collection(
         id="c1",
         description="t",
-        embedder=CollectionEmbedder(provider_id="p", model="m"),
-        search_provider_id="ssp-test",
-        search=search,
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="p", model="m"),
+            vector_store_provider_id="ssp-test",
+            cross_encoder=cross_encoder,
+        ),
     )
 
 
@@ -147,9 +153,7 @@ class TestConstruction:
 
     def test_cer_config_without_cross_encoder_raises(self) -> None:
         coll = _collection(
-            search=CollectionSearch(
-                cer=CollectionCrossEncoder(provider_id="p", model="m"),
-            ),
+            cross_encoder=CollectionCrossEncoder(provider_id="p", model="m"),
         )
         with pytest.raises(ConfigError, match="cross-encoder"):
             CollectionSearcher(
@@ -158,16 +162,6 @@ class TestConstruction:
                 vector_store=_FakeVectorStore([]),
                 cross_encoder=None,
             )
-
-    def test_mmr_only_does_not_require_cross_encoder(self) -> None:
-        coll = _collection(search=CollectionSearch(mmr=MmrConfig()))
-        # Should not raise.
-        CollectionSearcher(
-            collection=coll,
-            embedder=_FakeEmbedder([1.0]),
-            vector_store=_FakeVectorStore([]),
-        )
-
 
 # ===========================================================================
 # Pre-pipeline validation
@@ -226,7 +220,7 @@ class TestVanillaPassthrough:
     async def test_empty_vector_store_result_returns_empty(self) -> None:
         store = _FakeVectorStore([])
         searcher = CollectionSearcher(
-            collection=_collection(search=CollectionSearch(mmr=MmrConfig())),
+            collection=_collection(),
             embedder=_FakeEmbedder([1.0, 0.0]),
             vector_store=store,
         )
@@ -261,13 +255,8 @@ class TestCrossEncoderRerank:
 
         searcher = CollectionSearcher(
             collection=_collection(
-                search=CollectionSearch(
-                    cer=CollectionCrossEncoder(
-                        provider_id="p",
-                        model="rerank-m",
-                        top_n=10,
-                        batch_size=4,
-                    ),
+                cross_encoder=CollectionCrossEncoder(
+                    provider_id="p", model="rerank-m", top_n=10, batch_size=4,
                 ),
             ),
             embedder=_FakeEmbedder([1.0, 0.0]),
@@ -293,10 +282,8 @@ class TestCrossEncoderRerank:
         ce = _FakeCrossEncoder([])
         searcher = CollectionSearcher(
             collection=_collection(
-                search=CollectionSearch(
-                    cer=CollectionCrossEncoder(
-                        provider_id="p", model="m", top_n=75
-                    ),
+                cross_encoder=CollectionCrossEncoder(
+                    provider_id="p", model="m", top_n=75
                 ),
             ),
             embedder=_FakeEmbedder([1.0]),
@@ -313,217 +300,8 @@ class TestCrossEncoderRerank:
 # ===========================================================================
 
 
-class TestMmr:
-    @pytest.mark.asyncio
-    async def test_mmr_overfetch_default_max_50_or_10k(self) -> None:
-        store = _FakeVectorStore([])
-        searcher = CollectionSearcher(
-            collection=_collection(
-                search=CollectionSearch(mmr=MmrConfig()),
-            ),
-            embedder=_FakeEmbedder([1.0, 0.0]),
-            vector_store=store,
-        )
-        # k=3 → max(50, 30) = 50
-        await searcher.search("q", k=3)
-        assert store.calls[0]["k"] == 50
-        # k=10 → max(50, 100) = 100
-        await searcher.search("q", k=10)
-        assert store.calls[1]["k"] == 100
-
-    @pytest.mark.asyncio
-    async def test_mmr_explicit_fetch_k_honored(self) -> None:
-        store = _FakeVectorStore([])
-        searcher = CollectionSearcher(
-            collection=_collection(
-                search=CollectionSearch(mmr=MmrConfig(fetch_k=8)),
-            ),
-            embedder=_FakeEmbedder([1.0, 0.0]),
-            vector_store=store,
-        )
-        await searcher.search("q", k=3)
-        # k=3 vs explicit fetch_k=8 → 8.
-        assert store.calls[0]["k"] == 8
-
-    @pytest.mark.asyncio
-    async def test_mmr_lambda_one_equals_relevance_only(self) -> None:
-        # With λ=1.0 the diversity term is zero ⇒ ranking by similarity.
-        # Build candidates ordered by descending similarity.
-        cands = [
-            _hit("a", text="x", vector=[1.0, 0.0]),  # highest sim
-            _hit("b", text="y", vector=[0.99, 0.01]),
-            _hit("c", text="z", vector=[0.0, 1.0]),  # lowest sim
-        ]
-        store = _FakeVectorStore(cands)
-        searcher = CollectionSearcher(
-            collection=_collection(
-                search=CollectionSearch(
-                    mmr=MmrConfig(lambda_mult=1.0, fetch_k=3),
-                ),
-            ),
-            embedder=_FakeEmbedder([1.0, 0.0]),
-            vector_store=store,
-        )
-        out = await searcher.search("q", k=3)
-        assert [h.record.chunk_id for h in out] == ["a", "b", "c"]
-
-    @pytest.mark.asyncio
-    async def test_mmr_lambda_zero_first_pick_is_most_relevant(self) -> None:
-        # With λ=0.0 the very first selection is still the most-relevant
-        # (selected list is empty, so diversity term doesn't apply yet).
-        # The second pick will be the most-distant from the first.
-        cands = [
-            _hit("near1", text="x", vector=[1.0, 0.0]),
-            _hit("near2", text="y", vector=[0.99, 0.01]),
-            _hit("far", text="z", vector=[0.0, 1.0]),
-        ]
-        store = _FakeVectorStore(cands)
-        searcher = CollectionSearcher(
-            collection=_collection(
-                search=CollectionSearch(
-                    mmr=MmrConfig(lambda_mult=0.0, fetch_k=3),
-                ),
-            ),
-            embedder=_FakeEmbedder([1.0, 0.0]),
-            vector_store=store,
-        )
-        out = await searcher.search("q", k=2)
-        chunk_ids = [h.record.chunk_id for h in out]
-        # First pick = most-relevant. Second pick = most-distant from first.
-        assert chunk_ids[0] == "near1"
-        assert chunk_ids[1] == "far"
-
-    @pytest.mark.asyncio
-    async def test_mmr_returns_at_most_k(self) -> None:
-        cands = [
-            _hit(f"c{i}", text=f"d{i}", vector=[1.0, 0.0]) for i in range(5)
-        ]
-        store = _FakeVectorStore(cands)
-        searcher = CollectionSearcher(
-            collection=_collection(
-                search=CollectionSearch(mmr=MmrConfig(fetch_k=5)),
-            ),
-            embedder=_FakeEmbedder([1.0, 0.0]),
-            vector_store=store,
-        )
-        out = await searcher.search("q", k=3)
-        assert len(out) == 3
-
-    @pytest.mark.asyncio
-    async def test_mmr_handles_fewer_candidates_than_k(self) -> None:
-        cands = [_hit("c0", text="d", vector=[1.0, 0.0])]
-        store = _FakeVectorStore(cands)
-        searcher = CollectionSearcher(
-            collection=_collection(
-                search=CollectionSearch(mmr=MmrConfig(fetch_k=5)),
-            ),
-            embedder=_FakeEmbedder([1.0, 0.0]),
-            vector_store=store,
-        )
-        out = await searcher.search("q", k=10)
-        assert len(out) == 1
-
-    @pytest.mark.asyncio
-    async def test_mmr_missing_vector_raises_config_error(self) -> None:
-        # Manually construct a SearchResult whose record has no vector.
-        # ``model_construct`` skips Pydantic validation so we can inject
-        # the empty list directly.
-        bad_record = EmbeddingRecord.model_construct(
-            collection_id="c1",
-            document_id="d1",
-            chunk_id="bad",
-            text="no vector",
-            vector=[],
-            meta={},
-        )
-        store = _FakeVectorStore(
-            [SearchResult(record=bad_record, score=None)]
-        )
-        searcher = CollectionSearcher(
-            collection=_collection(
-                search=CollectionSearch(mmr=MmrConfig(fetch_k=1)),
-            ),
-            embedder=_FakeEmbedder([1.0, 0.0]),
-            vector_store=store,
-        )
-        with pytest.raises(ConfigError, match="no vector"):
-            await searcher.search("q", k=1)
-
-
 # ===========================================================================
 # Both MMR + CER together
 # ===========================================================================
 
 
-class TestBothEnabled:
-    @pytest.mark.asyncio
-    async def test_overfetch_uses_max_of_both(self) -> None:
-        store = _FakeVectorStore([])
-        ce = _FakeCrossEncoder([])
-        searcher = CollectionSearcher(
-            collection=_collection(
-                search=CollectionSearch(
-                    mmr=MmrConfig(fetch_k=20),
-                    cer=CollectionCrossEncoder(
-                        provider_id="p", model="m", top_n=80
-                    ),
-                ),
-            ),
-            embedder=_FakeEmbedder([1.0]),
-            vector_store=store,
-            cross_encoder=ce,
-        )
-        await searcher.search("q", k=5)
-        # max(k=5, top_n=80, fetch_k=20) = 80.
-        assert store.calls[0]["k"] == 80
-
-    @pytest.mark.asyncio
-    async def test_pipeline_runs_cer_before_mmr(self) -> None:
-        # Two clusters of near-duplicate vectors plus one outlier.
-        cands = [
-            _hit(
-                "near_high_ce_1",
-                text="paris france",
-                vector=[1.0, 0.0],
-                score=0.5,
-            ),
-            _hit(
-                "near_high_ce_2",
-                text="paris france capital",
-                vector=[0.99, 0.01],
-                score=0.5,
-            ),
-            _hit(
-                "far_low_ce",
-                text="bananas in pyjamas",
-                vector=[0.0, 1.0],
-                score=0.5,
-            ),
-        ]
-        store = _FakeVectorStore(cands)
-        # Cross-encoder ranks: near_high_ce_1=10, near_high_ce_2=8, far_low_ce=1.
-        ce = _FakeCrossEncoder([10.0, 8.0, 1.0])
-
-        searcher = CollectionSearcher(
-            collection=_collection(
-                search=CollectionSearch(
-                    cer=CollectionCrossEncoder(
-                        provider_id="p", model="m", top_n=3
-                    ),
-                    mmr=MmrConfig(lambda_mult=0.3, fetch_k=3),
-                ),
-            ),
-            embedder=_FakeEmbedder([1.0, 0.0]),
-            vector_store=store,
-            cross_encoder=ce,
-        )
-        out = await searcher.search("q", k=2)
-        # CER promoted near_high_ce_1 to position 0.
-        # MMR's first pick = the most-relevant item (near_high_ce_1).
-        # MMR's second pick at λ=0.3 weights diversity > relevance:
-        #   - near_high_ce_2: 0.3*≈1.0 − 0.7*≈1.0 ≈ −0.4 (near-duplicate)
-        #   - far_low_ce:     0.3*0.0 − 0.7*0.0 =     0.0 (maximally distant)
-        # The diversity penalty makes far_low_ce win cleanly.
-        # NB: MMR uses VECTORS for the diversity decision, not CE scores.
-        assert out[0].record.chunk_id == "near_high_ce_1"
-        assert out[1].record.chunk_id == "far_low_ce"

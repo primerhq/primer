@@ -82,6 +82,131 @@ def console_url(base_url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Getting past the setup gate
+# ---------------------------------------------------------------------------
+
+
+_SETUP_PROVIDER_ID = "uie2e-setup-llm"
+_SETUP_MODEL = "fake-model"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def install_is_set_up(base_url: str) -> None:
+    """Leave the install past the S5 setup gate before any journey runs.
+
+    The console refuses to render its shell until setup is complete and
+    shows the wizard instead: "Configure this install". Completeness
+    needs an LLMProvider and a ModelProfile, and those come from the
+    wizard, not from the startup seed pass, so a fresh bring-up serves
+    the wizard to every journey. Each one then waits out its Playwright
+    timeout on a shell element that is never coming, which is what left
+    this whole lane red and, at 30 minutes of timeouts, unable to even
+    report why.
+
+    Seeding a provider is what a first-run operator does in the wizard.
+    The seed pass then has the profile it needs to create the reserved
+    agents, which are the remaining predicates.
+    """
+    import httpx as _httpx
+
+    from tests._support.model_profiles import seed_llm_provider_with
+
+    with _httpx.Client(base_url=base_url, timeout=60.0) as c:
+        status = c.get("/v1/auth/status")
+        if status.status_code == 200 and status.json().get("setup_complete"):
+            return
+
+        r = seed_llm_provider_with(c, {
+            "id": _SETUP_PROVIDER_ID,
+            "provider": "ollama",
+            "config": {"url": "http://127.0.0.1:9999"},
+            "models": [{"name": _SETUP_MODEL, "context_length": 4096}],
+            "limits": {"max_concurrency": 1},
+        })
+        assert r.status_code in (200, 201, 409), (
+            f"could not seed the setup provider: {r.status_code} {r.text}"
+        )
+        # Re-run the ensure pass now that a profile exists: the reserved
+        # agents are stamped with the default profile and cannot be
+        # created before one is there.
+        seeded = c.post("/v1/setup/seed")
+        assert seeded.status_code == 200, (
+            f"ensure pass failed: {seeded.status_code} {seeded.text}"
+        )
+
+        status = c.get("/v1/auth/status")
+        body = status.json() if status.status_code == 200 else {}
+        assert body.get("setup_complete"), (
+            "the console will serve the setup wizard to every journey; "
+            f"still missing: {body.get('setup_missing')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# LAN-reachable mock LLM (container stacks sit in their own network
+# namespace - a 127.0.0.1-bound mock, like tests/_support/mock_llm_
+# fixtures.py's own session fixture, is unreachable from inside primer-
+# app there; scripts/e2e/run_mock_llm.py documents the same constraint
+# for the manual/diagnostic flow this fixture productionizes).
+# ---------------------------------------------------------------------------
+
+
+def _guess_lan_ip() -> str | None:
+    """Best-effort LAN IP so a container on the host's compose network can
+    reach this test process. Never raises - falls back to loopback (still
+    correct for a host-process primer server, just not a container one)."""
+    import socket as _socket
+
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return None
+
+
+@pytest.fixture(scope="session")
+def mock_llm_lan():
+    """Yield (registry, base_url) for a session-long mock OpenAI server
+    bound to 0.0.0.0 and advertised at its LAN IP, so a primer-app
+    CONTAINER (ui-bringup.sh's stack) can reach it - the plain 127.0.0.1
+    tests/_support/mock_llm_fixtures.py fixture only works for a host-
+    process server (tests/e2e's own suite)."""
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    from tests._support.mock_llm import ScriptRegistry, build_app
+
+    registry = ScriptRegistry()
+    s = socket.socket()
+    s.bind(("0.0.0.0", 0))
+    port = s.getsockname()[1]
+    s.close()
+    config = uvicorn.Config(
+        build_app(registry), host="0.0.0.0", port=port, log_level="warning",
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.05)
+    else:  # pragma: no cover - startup failure
+        raise RuntimeError("mock LLM server did not start")
+    host = _guess_lan_ip() or "127.0.0.1"
+    yield registry, f"http://{host}:{port}/v1"
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
 # httpx client (for test data setup + cleanup, NOT for behavior under test)
 # ---------------------------------------------------------------------------
 

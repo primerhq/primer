@@ -65,9 +65,7 @@ class _FakeLLM:
 class _PlainToolsetProvider:
     """Fake toolset 't1' exposing a single non-yielding tool 'do_it'."""
 
-    async def list_tools(
-        self, *, principal: str | None = None
-    ) -> AsyncIterator[Tool]:
+    async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
         yield Tool(
             id="do_it",
             description="does the thing",
@@ -95,9 +93,7 @@ class _PlainToolsetProvider:
 class _YieldingToolsetProvider:
     """Fake toolset 't1' exposing a yielding tool 'wait' (ask_user-style)."""
 
-    async def list_tools(
-        self, *, principal: str | None = None
-    ) -> AsyncIterator[Tool]:
+    async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
         yield Tool(
             id="wait",
             description="waits for the human",
@@ -143,6 +139,11 @@ class _Store:
 
 
 class _StorageProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self, *, agent: Agent, provider_row: _ProviderRow) -> None:
         self._agent = agent
         self._provider_row = provider_row

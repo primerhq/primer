@@ -30,6 +30,8 @@ from collections.abc import Awaitable, Callable
 from primer.int.claim import ClaimKind, Lease, ParkRequest, ReleaseOutcome
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
+import primer.observability.metrics as _metrics
+from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
     SessionMessageKind,
@@ -41,16 +43,26 @@ from primer.model.turn_log import (
     TurnLogCancelled,
     TurnLogCompleted,
     TurnLogFailed,
+    TurnLogPhase,
     TurnLogResumed,
     TurnLogStarted,
     TurnLogYielded,
 )
 from primer.model.yield_ import YieldToWorker
+from primer.session.autonomy import session_is_autonomous
+from primer.session.enqueue import SessionWakeDeps
+from primer.session.delegation import (
+    DelegationRecorder,
+    reset_delegation_sink,
+    set_delegation_sink,
+)
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.session.pending_messages import realize_next_pending
 from primer.session.persistence import (
     WorkspaceIO,
     WorkspaceMessageWriter,
     _CoalesceState,
+    infer_agent_phase,
     translate_stream_event,
 )
 from primer.observability.turn_log_writer import (
@@ -109,6 +121,14 @@ class SessionDispatchDeps:
     workspace_registry: Any | None = None
     artifact_registry: Any | None = None
 
+    # Wake wiring for the drain checkpoint: realizing a queued steer goes
+    # through wake_session, which needs the scheduler and claim engine to
+    # arm the next turn. Optional because unit-test pools build deps
+    # without them; absent means queued steers simply wait for the next
+    # checkpoint that does have the wiring.
+    scheduler: Any | None = None
+    claim_engine: Any | None = None
+
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -152,11 +172,24 @@ async def run_one_session_turn(
     #   running another turn. This is what makes "I cancelled it but
     #   nothing happened" actually terminate after the api restarts.
     if session.status == SessionStatus.ENDED:
+        # A lease that leaked through onto an already-ENDED row can still
+        # carry a stale turn_status="running" from whatever crashed before
+        # ever reaching this function's own cleanup - heal it here too so
+        # it can't outlive the session it belonged to.
+        if session.turn_status == "running":
+            async with session_lifecycle_lock().acquire(session_id):
+                await _clear_turn_running(session_storage, session_id)
         return ReleaseOutcome(success=True, drop_lease=True)
     if session.cancel_requested:
         session.status = SessionStatus.ENDED
         session.ended_reason = "cancelled"
         session.ended_at = _now()
+        # Per the comment above, this branch is itself a crash-recovery
+        # path (cancel_requested carried over from a process that died
+        # mid-turn) - reset unconditionally, same rationale as
+        # session_reconcile's workspace_lost transition.
+        session.turn_status = "idle"
+        session.turn_started_at = None
         await session_storage.update(session)
         return ReleaseOutcome(success=True, drop_lease=True)
     # * If pause_requested is set, the operator paused the session while it
@@ -181,6 +214,7 @@ async def run_one_session_turn(
                 new_status=SessionStatus.PAUSED,
             )
             await _clear_interrupt_requested(session_storage, session_id)
+            await _clear_turn_running(session_storage, session_id)
         # Drop the lease but preserve the park columns: a paused session that
         # was 'resumable' keeps its marker + parked_state so a later /resume
         # re-arms the lease and replays the hook. preserve_park also blocks
@@ -221,15 +255,37 @@ async def run_one_session_turn(
     # scheduler. This is the authoritative fresh read (not the possibly-cached
     # `session` object loaded above), so it also covers the case where the
     # worker's `session` snapshot predates that write.
+    # Same write also flips turn_status to "running" with a fresh
+    # turn_started_at - unconditionally, not just when it was "claimable" -
+    # since every path reaching this point is genuinely about to build an
+    # executor and stream a turn. Before this, nothing in the codebase ever
+    # wrote "running" (grep-confirmed): turn_status went idle -> claimable
+    # -> idle, so REST clients polling it mid-turn always saw "idle" and had
+    # no way to reconstruct a busy state after a refresh (live diagnosis,
+    # task 01a04d64-b4ba). _clear_turn_running (below) is the matching
+    # cleanup for every exit this turn can take.
     seed_seq = session.last_seq
+    _phase_stamp = _now()
     async with session_lifecycle_lock().acquire(session_id):
         fresh_before_turn = await session_storage.get(session_id)
         if fresh_before_turn is not None:
             seed_seq = fresh_before_turn.last_seq
-            if fresh_before_turn.turn_status == "claimable":
-                await session_storage.update(
-                    fresh_before_turn.model_copy(update={"turn_status": "idle"})
-                )
+            await session_storage.update(
+                fresh_before_turn.model_copy(update={
+                    "turn_status": "running",
+                    "turn_started_at": _phase_stamp,
+                    # agent_phase (01a04d91-a7a0, PHASE 1 of the
+                    # execution-lifecycle revamp): "thinking" the instant
+                    # the turn is claimed, mirroring turn_status="running"
+                    # in the same write. The streaming loop below advances
+                    # it on real transitions (see infer_agent_phase);
+                    # _clear_turn_running's callers reset it to None
+                    # alongside turn_status="idle" on every exit.
+                    "agent_phase": "thinking",
+                    "agent_phase_turn_no": session.turn_no,
+                    "agent_phase_stamped_at": _phase_stamp,
+                })
+            )
 
     # ------------------------------------------------------------------
     # 2. Build executor
@@ -260,9 +316,12 @@ async def run_one_session_turn(
                 ended_reason="failed",
             )
             await _clear_interrupt_requested(session_storage, session_id)
+            await _clear_turn_running(session_storage, session_id)
         return ReleaseOutcome(success=False, drop_lease=True)
     if executor is None:
         logger.warning("executor builder returned None for session %s", session_id)
+        async with session_lifecycle_lock().acquire(session_id):
+            await _clear_turn_running(session_storage, session_id)
         return ReleaseOutcome(success=False, drop_lease=True)
 
     # ------------------------------------------------------------------
@@ -296,12 +355,37 @@ async def run_one_session_turn(
 
     # `started` marks the boundary just before the executor begins streaming.
     _turn_started_at = _now()
+    await _event_recorder(deps).emit(
+        "turn.started",
+        workspace_id=session.workspace_id,
+        session_id=session_id,
+        payload={"turn_no": session.turn_no},
+    )
     await _safe_turn_log(turn_log, TurnLogStarted(
         seq=0,
         ts=_turn_started_at,
         turn_no=session.turn_no,
         model=None,
         input_message_count=0,
+    ))
+
+    # agent_phase (01a04d91-a7a0): the row already reads "thinking" (set
+    # alongside turn_status="running" at step 1.5, before build_executor);
+    # publish the matching live tap frame + audit entry now that
+    # deps.event_bus/turn_log both exist. _agent_phase tracks the LOCAL
+    # notion of "what we last wrote" so the streaming loop below only acts
+    # on genuine transitions (infer_agent_phase can return the same value
+    # many times in a row - e.g. every ReasoningDelta - and only the first
+    # one after a change should trigger a write/publish/log).
+    _agent_phase = "thinking"
+    from primer.tap.delta import publish_phase_frame
+    if deps.event_bus is not None:
+        await publish_phase_frame(
+            deps.event_bus.publish, session_id=session_id,
+            phase=_agent_phase, turn_no=session.turn_no,
+        )
+    await _safe_turn_log(turn_log, TurnLogPhase(
+        seq=0, ts=_now(), turn_no=session.turn_no, phase=_agent_phase,
     ))
 
     # Intentionally no start acknowledgement here. Per-session channel threads
@@ -330,10 +414,62 @@ async def run_one_session_turn(
     # ------------------------------------------------------------------
     coalesce_state = _CoalesceState()
 
+    # Subagent runs execute inline in this turn with no writer of
+    # their own, so the recorder is published here and picked up by
+    # the invoke loops through a contextvar. Without it a delegated
+    # run leaves only an opaque tool call in the transcript.
+    _delegation_token = set_delegation_sink(DelegationRecorder(
+        writer=writer, event_bus=deps.event_bus, session_id=session_id,
+        turn_no=session.turn_no,
+    ))
+
+    # Sessions currently executing a turn, by workspace. Six writers mutate
+    # SessionStatus outside the lifecycle lock, so a transition-delta gauge
+    # would drift; this try/finally is the one exact chokepoint (park,
+    # error, cancel and clean exits all run the finally below).
+    _metrics.sessions_active.labels(session.workspace_id).inc()
+
+    # Ephemeral delta stream: the live content the durable log omits, on a
+    # separate bus channel. A degraded bus is swallowed inside the buffer, so
+    # the durable record still completes each part (UI falls back gracefully).
+    from primer.tap.delta import DeltaBuffer
+    delta_buffer = (
+        DeltaBuffer(session_id=session_id, publish=deps.event_bus.publish)
+        if deps.event_bus is not None else None
+    )
+    if delta_buffer is not None:
+        await delta_buffer.start()
+
     try:
         async for event in executor.invoke([]):
+            # agent_phase (01a04d91-a7a0): inspect the RAW event, before
+            # translate_stream_event's coalescing, so "responding"/
+            # "executing" are true the instant the tokens/tool call start
+            # arriving rather than only once a buffer later flushes. Only
+            # acts on an actual change - infer_agent_phase legitimately
+            # returns the same value on many consecutive events (every
+            # ReasoningDelta while still "thinking", say).
+            _new_phase = infer_agent_phase(event)
+            if _new_phase is not None and _new_phase != _agent_phase:
+                _agent_phase = _new_phase
+                await _write_agent_phase(
+                    session_storage, session_id, session.turn_no, _agent_phase,
+                )
+                if deps.event_bus is not None:
+                    await publish_phase_frame(
+                        deps.event_bus.publish, session_id=session_id,
+                        phase=_agent_phase, turn_no=session.turn_no,
+                    )
+                await _safe_turn_log(turn_log, TurnLogPhase(
+                    seq=0, ts=_now(), turn_no=session.turn_no,
+                    phase=_agent_phase,
+                ))
+
             # Translate StreamEvent → SessionMessageRecord(s)
-            result = translate_stream_event(event, coalesce_state)
+            result = translate_stream_event(
+                event, coalesce_state, delta_sink=delta_buffer,
+                turn_no=session.turn_no,
+            )
             if result is None:
                 # Check cancel between events even when nothing was produced
                 if cancel_event.is_set():
@@ -353,6 +489,8 @@ async def run_one_session_turn(
                 await deps.event_bus.publish(
                     f"session:{session_id}:tick", {"seq": seq}
                 )
+                if rec.kind == SessionMessageKind.GRAPH_TRANSITION:
+                    await _emit_graph_transition(deps, session, rec)
 
             # Honour cancel after processing the current batch
             if cancel_event.is_set():
@@ -380,11 +518,38 @@ async def run_one_session_turn(
             yield_kind=_classify_yield_kind(park),
             event_key=park.yielded.event_key,
         ))
+        # agent_phase: an explicit "waiting" transition at the moment of
+        # park (rather than relying solely on the finally block's
+        # reset-to-None below), so a live client / the turns.jsonl audit
+        # sees the same "the agent stopped actively working" signal a
+        # clean completion's Done event already produces via
+        # infer_agent_phase - YieldToWorker is a Python exception, never
+        # a StreamEvent, so infer_agent_phase never sees it.
+        if _agent_phase != "waiting":
+            _agent_phase = "waiting"
+            await _write_agent_phase(
+                session_storage, session_id, session.turn_no, _agent_phase,
+            )
+            if deps.event_bus is not None:
+                await publish_phase_frame(
+                    deps.event_bus.publish, session_id=session_id,
+                    phase=_agent_phase, turn_no=session.turn_no,
+                )
+            await _safe_turn_log(turn_log, TurnLogPhase(
+                seq=0, ts=_now(), turn_no=session.turn_no,
+                phase=_agent_phase,
+            ))
         rec = _yielded_record(park)
         seq = await writer.append(rec)
         await writer.flush()
         await deps.event_bus.publish(
             f"session:{session_id}:tick", {"seq": seq}
+        )
+        await _event_recorder(deps).emit(
+            "session.parked",
+            workspace_id=session.workspace_id,
+            session_id=session_id,
+            payload={"event_key": park.yielded.event_key},
         )
         await turn_log.aclose()
 
@@ -473,6 +638,11 @@ async def run_one_session_turn(
             yielded=yielded_stamped,
             llm_messages=llm_message_dicts,
             turn_no=session.turn_no,
+            # Captured at park, not at resume: a switch applied while the
+            # session waits bumps the row's epoch, and the resume must be
+            # able to notice it is running for a binding that has been
+            # replaced.
+            binding_epoch=session.binding_epoch,
             # started_at is the true turn start (for resume latency reporting),
             # not the park moment; _turn_started_at was captured before the
             # executor began streaming.
@@ -480,6 +650,11 @@ async def run_one_session_turn(
             tool_call_id=park.tool_call_id,
             graph_checkpoint=graph_checkpoint,
             frames=list(getattr(park, "frames", []) or []),
+            # Frozen at park so a fenced resume rebuilds the SAME toolset
+            # even after the attachment TTL has expired: a resumed prompt
+            # that disagreed with the parked one would be a silent
+            # mid-turn capability change.
+            client_tools_attached=_has_client_toolset(executor),
         )
 
         logger.info(
@@ -496,6 +671,7 @@ async def run_one_session_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
 
+        _observe_turn(session, "parked", _turn_started_at)
         return ReleaseOutcome(
             success=True,
             drop_lease=True,
@@ -570,18 +746,39 @@ async def run_one_session_turn(
                 session,
                 new_status=SessionStatus.ENDED,
                 ended_reason="failed",
+                expected_epoch=session.binding_epoch,
             )
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _advance_drain_cursor(session_storage, session_id)
+        await _publish_terminal(
+            deps, session, SessionStatus.ENDED, "failed",
+        )
         await turn_log.aclose()
+        await _apply_pending_switch_at_checkpoint(deps, session)
+        await _realize_pending_at_checkpoint(deps, session)
+        _observe_turn(session, "failed", _turn_started_at)
         return ReleaseOutcome(success=False, drop_lease=True)
 
     finally:
+        _metrics.sessions_active.labels(session.workspace_id).dec()
+        reset_delegation_sink(_delegation_token)
         cancel_task.cancel()
         try:
             await cancel_task
         except (asyncio.CancelledError, Exception):
             pass
+        if delta_buffer is not None:
+            await delta_buffer.aclose()
+        # The one chokepoint this comment already promises (park, error,
+        # cancel and clean exits all run this finally) - reuse it to clear
+        # turn_status back to "idle" for all four, rather than repeating
+        # the clear at each of their own separate terminal-transition lock
+        # blocks below. _clear_turn_running no-ops if turn_status isn't
+        # "running" (e.g. a wake_session() raced in "claimable" during this
+        # turn's cleanup), so it can never stomp a fresh claim.
+        async with session_lifecycle_lock().acquire(session_id):
+            await _clear_turn_running(session_storage, session_id)
 
     # ------------------------------------------------------------------
     # 5b. Cancel path — write CANCELLED record, transition row to ENDED
@@ -631,10 +828,18 @@ async def run_one_session_turn(
                 new_status=new_status,
                 ended_reason=ended_reason,
                 executor=executor,
+                expected_epoch=session.binding_epoch,
             )
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _advance_drain_cursor(session_storage, session_id)
+        await _publish_terminal(
+            deps, session, new_status, ended_reason,
+        )
         await turn_log.aclose()
+        await _apply_pending_switch_at_checkpoint(deps, session)
+        await _realize_pending_at_checkpoint(deps, session)
+        _observe_turn(session, "cancelled", _turn_started_at)
         return ReleaseOutcome(success=True, drop_lease=True)
 
     # ------------------------------------------------------------------
@@ -648,6 +853,17 @@ async def run_one_session_turn(
     agent_status = await _read_agent_session_status(executor)
     new_status, ended_reason = _post_turn_status(
         last_done_reason, agent_status,
+        autonomous=session_is_autonomous(session),
+    )
+    # _post_turn_status returns ended_reason "completed", "failed" or None
+    # (dispatch.py:833-842: max_tokens / content_filter park the session in
+    # WAITING with no ended_reason). Only "failed" is a failure; a None
+    # reason means the turn ran to a clean stop the session can continue
+    # from, so it counts as completed.
+    _observe_turn(
+        session,
+        "failed" if ended_reason == "failed" else "completed",
+        _turn_started_at,
     )
     # Serialize the terminal transition + interrupt-flag clear against a
     # concurrent resume/pause/cancel/interrupt API call (T0432-style lost
@@ -663,9 +879,32 @@ async def run_one_session_turn(
             new_status=new_status,
             ended_reason=ended_reason,
             executor=executor,
+            expected_epoch=session.binding_epoch,
         )
         await _clear_interrupt_requested(session_storage, session_id)
         await _persist_last_seq(session_storage, session_id, writer.last_seq)
+        await _advance_drain_cursor(session_storage, session_id)
+
+    await _event_recorder(deps).emit(
+        "session.replied",
+        workspace_id=session.workspace_id,
+        session_id=session_id,
+        payload={
+            "turn_no": session.turn_no,
+            "finish_reason": last_done_reason,
+        },
+    )
+    await _publish_terminal(
+        deps, session, new_status, ended_reason,
+    )
+
+    # Every terminal exit drains, not just this one: a queued steer is
+    # the user's message, and dropping it because their turn errored
+    # or they hit Stop loses work silently. Realization deletes the
+    # row and the queue is finite, so a failing session retries each
+    # queued message at most once rather than looping.
+    await _apply_pending_switch_at_checkpoint(deps, session)
+    await _realize_pending_at_checkpoint(deps, session)
 
     await _safe_turn_log(turn_log, TurnLogCompleted(
         seq=0,
@@ -679,15 +918,34 @@ async def run_one_session_turn(
     ))
     await turn_log.aclose()
 
-    # Final-result relay: on a clean terminal completion, post the last-turn
-    # assistant text to the session's reply binding so a channel-triggered
-    # session reports its outcome. Derived from the just-flushed
-    # messages.jsonl (the source of truth) via the ported window scan. No-ops
-    # for non-channel / quiet bindings and when the derived text is empty.
-    if (
-        new_status == SessionStatus.ENDED
-        and ended_reason == "completed"
-        and deps.channel_dispatcher is not None
+    # Final-result relay: on a clean finish, post the last-turn assistant
+    # text to the session's reply binding. A thread-mapped interactive
+    # session (crosscheck M4) relays after EVERY drained turn, not only at
+    # session end, because a channel conversation continues turn by turn.
+    relay_every_turn = bool(
+        (session.metadata or {}).get(RELAY_EVERY_TURN_KEY)
+    )
+    # 01a0518a: a clean stop/end_turn/stop_sequence now rests the session
+    # parked (WAITING/None) instead of ending it - the same "a final
+    # answer was produced" moment the ENDED+completed branch below used
+    # to catch, just without the session terminating to get there.
+    # Excludes an executor-set WAITING (assistant-asked-a-question
+    # heuristic): that already resolved to WAITING+None BEFORE the flip
+    # too and never relayed for an unmapped session, so it stays excluded
+    # here to avoid changing that pre-existing behavior.
+    clean_stop_now_parked = (
+        new_status == SessionStatus.WAITING
+        and ended_reason is None
+        and agent_status != SessionStatus.WAITING
+        and last_done_reason in ("stop", "end_turn", "stop_sequence")
+    )
+    if deps.channel_dispatcher is not None and (
+        relay_every_turn
+        or (
+            new_status == SessionStatus.ENDED
+            and ended_reason == "completed"
+        )
+        or clean_stop_now_parked
     ):
         try:
             from primer.channel.session_relay import (
@@ -721,6 +979,35 @@ async def run_one_session_turn(
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _binding_ref(session: WorkspaceSession) -> str:
+    """Bounded turn label: the agent or graph the session is bound to.
+
+    Bounded by the number of agent/graph definitions, never by session
+    volume (12-s7-design.md section 2 decision 3).
+    """
+    binding = session.binding
+    return (
+        getattr(binding, "agent_id", None)
+        or getattr(binding, "graph_id", None)
+        or "unknown"
+    )
+
+
+def _observe_turn(
+    session: WorkspaceSession, status: str, started_at: datetime,
+) -> None:
+    """Record one turn against the S7 turn instruments.
+
+    Boundary is run_one_session_turn: called once on each of the four
+    exits a started turn can take (parked, failed, cancelled, completed).
+    """
+    ref = _binding_ref(session)
+    _metrics.turns_total.labels(ref, status).inc()
+    _metrics.turn_duration_seconds.labels(ref, status).observe(
+        max(0.0, (_now() - started_at).total_seconds())
+    )
 
 
 # Maps the actual event_key prefixes emitted by the toolset / tool_manager
@@ -820,12 +1107,44 @@ _STOP_REASON_TO_STATUS: dict[str, tuple[SessionStatus, str | None]] = {
     "error": (SessionStatus.ENDED, "failed"),
     "content_filter": (SessionStatus.WAITING, None),
     "graph_ended": (SessionStatus.ENDED, "completed"),
+    "graph_failed": (SessionStatus.ENDED, "failed"),
 }
+
+# PHASE 1 item 3 of the execution-lifecycle revamp (01a04d91-a7a0) -
+# USER-CONFIRMED (01a0518a): a clean stop/end_turn rests the session
+# PARKED (resumable) rather than ENDED+reopen-gate, matching how a
+# yielding-tool park already behaves. Default is now True; the module-
+# level flag stays in place as a test seam (_post_turn_status checks it
+# at call time, not baked into the frozen _STOP_REASON_TO_STATUS dict
+# above, so a test can still flip it per-case).
+#
+# The three edges the seam's own documentation called out before the
+# flip, resolved as part of 01a0518a:
+#   1. wake_session's reopen path (primer.session.enqueue) only special-
+#      cases an ENDED row ("Sending a NEW message to an ENDED session
+#      reopens it"). Audited: NO change needed. A session resting at
+#      WAITING never had its slot closed, so none of the ENDED-reopen
+#      steps (slot.reopen(), INVOCATION_DIVIDER, invocation-counter
+#      bump) apply - wake_session's existing _RESUMABLE set already
+#      includes WAITING (and PAUSED), so `row.status in _RESUMABLE ->
+#      RUNNING` on the normal (non-ENDED) branch already promotes a
+#      resting session correctly with zero code changes.
+#   2. session_state (WorkspaceSession.session_state) now distinguishes
+#      "genuinely idle, never done anything" from "resting after a
+#      completed turn" via turn_no > 0 (see that property's docstring
+#      for the full justification) - the former stays "waiting", the
+#      latter now reads "parked".
+#   3. ENDED consumers (lists/filters/counts/sweepers/analytics) were
+#      swept for accumulation effects now that a clean stop no longer
+#      reaches ENDED. Old ENDED rows are unaffected and stay ENDED.
+_CLEAN_TURN_RESTS_PARKED = True
 
 
 def _post_turn_status(
     last_done_reason: str | None,
     agent_status: SessionStatus | None,
+    *,
+    autonomous: bool = False,
 ) -> tuple[SessionStatus, str | None]:
     """Decide the WorkspaceSession.status to write after a clean turn.
 
@@ -834,13 +1153,43 @@ def _post_turn_status(
     etc.). Otherwise fall back to the LLM's last stop reason. The default
     when neither is informative is ENDED/completed.
 
-    Every clean agent turn ENDS the session — there is no interactive
-    "stays WAITING" downgrade. Sending a NEW message to an ENDED session
-    reopens it (``wake_session``'s ENDED branch), so a one-shot caller
-    (trigger/webhook/API/e2e) never hangs on a session that finished
-    cleanly. The executor-set WAITING (assistant-asked-a-question
-    heuristic) is a distinct, legitimate wait and is preserved below.
+    With ``_CLEAN_TURN_RESTS_PARKED`` now on by default (01a0518a), a
+    clean agent turn rests the session WAITING (served as
+    session_state="parked" - see ``WorkspaceSession.session_state``)
+    instead of ENDING it. Sending a NEW message to a resting session
+    resumes it in place (``wake_session``'s existing ``_RESUMABLE`` set
+    already includes WAITING); a genuinely ENDED session still reopens
+    via ``wake_session``'s ENDED branch. The executor-set WAITING
+    (assistant-asked-a-question heuristic) is a distinct, legitimate
+    wait and is preserved below - both read "parked" once turn_no > 0,
+    since the served vocabulary doesn't distinguish the two reasons.
+
+    ``autonomous`` (``primer.session.autonomy.session_is_autonomous`` -
+    studio-agents-interact §8.1, pre-existing) is the one exemption to
+    the parked rest: a self-driving session (a graph, or an agent with
+    ``autonomous=True`` - trigger/webhook-fired one-shot sessions set
+    this explicitly, see ``agent_fresh_session.py``) has no interactive
+    human to resume it, so it must still END on a clean turn, exactly as
+    before the flip. Without this exemption a one-shot trigger session
+    rests parked forever, and a ``parallelism="skip"`` subscription gate
+    keyed on "any non-ENDED session with turn_no > 0" (see
+    ``primer.trigger.subscribers.session_holds_skip_gate``) would wedge
+    permanently closed after its very first successful fire.
+
+    ``_CLEAN_TURN_RESTS_PARKED`` (see its own module-level docstring,
+    right above ``_STOP_REASON_TO_STATUS``) is checked FIRST, before the
+    executor-set-ENDED precedence below, so a definitive internal error
+    still always ENDs the session even with the flag on - only the plain
+    clean-stop case changes. Flipping the flag off (test seam) restores
+    the old behavior: every clean turn ENDS the session.
     """
+    if (
+        _CLEAN_TURN_RESTS_PARKED
+        and not autonomous
+        and last_done_reason in ("stop", "end_turn", "stop_sequence")
+        and agent_status != SessionStatus.ENDED
+    ):
+        return (SessionStatus.WAITING, None)
     # An executor-set ENDED is authoritative.
     if agent_status == SessionStatus.ENDED:
         # Translate ended-but-stop-reason into a finer reason when we can.
@@ -856,6 +1205,16 @@ def _post_turn_status(
     if mapped is None:
         return (SessionStatus.ENDED, "completed")
     return mapped
+
+
+def _has_client_toolset(executor: Any) -> bool:
+    """Did this turn's tool manager carry the client toolset (S3 s4)?"""
+    from primer.toolset.client import CLIENT_TOOLSET_ID
+
+    inner = getattr(executor, "_executor", executor)
+    manager = getattr(inner, "_tool_manager", None)
+    providers = getattr(manager, "toolset_providers", None)
+    return bool(providers) and CLIENT_TOOLSET_ID in providers
 
 
 async def _persist_last_seq(
@@ -880,6 +1239,217 @@ async def _persist_last_seq(
         )
 
 
+async def _advance_drain_cursor(session_storage, session_id: str) -> None:
+    """Advance the drain checkpoint cursor at a fully drained turn.
+
+    The cursor marks where the next turn scan starts. It moves ONLY
+    here, at a checkpoint the loop reached by finishing a turn, and only
+    forwards: on the chat surface, advancing it mid-turn let a crash
+    replay records the previous turn had already consumed.
+
+    ``last_seq`` is by definition the highest seq assigned to this
+    session, so the next unconsumed record is the one after it. That is
+    why this needs no log read (plan errata E5): the loop already knows
+    the turn terminated, and the row already carries the high-water
+    mark. Re-reads fresh and never downgrades, so a concurrent steer
+    that pushed the cursor further is not clobbered.
+    """
+    fresh = await session_storage.get(session_id)
+    if fresh is None:
+        return
+    target = fresh.last_seq + 1
+    if target > fresh.next_unprocessed_seq:
+        await session_storage.update(
+            fresh.model_copy(update={"next_unprocessed_seq": target})
+        )
+
+
+def _event_recorder(deps: SessionDispatchDeps):
+    """Recorder over the deps refs; built per call, it is stateless."""
+    from primer.events.recorder import recorder_for
+
+    return recorder_for(deps.storage_provider, deps.event_bus)
+
+
+async def _emit_graph_transition(
+    deps: SessionDispatchDeps,
+    session: "WorkspaceSession",
+    rec: "SessionMessageRecord",
+) -> None:
+    """Land graph.node_entered/exited from a GRAPH_TRANSITION record.
+
+    One site for every executor: the record loop is where node
+    lifecycle already surfaces, so no recorder threading into the
+    graph package is needed.
+    """
+    payload = rec.payload or {}
+    phase = payload.get("phase")
+    if phase not in ("enter", "exit"):
+        return
+    event_payload = {
+        "graph_node_id": payload.get("node_id"),
+        "node_kind": payload.get("node_kind"),
+    }
+    if phase == "enter":
+        await _event_recorder(deps).emit(
+            "graph.node_entered",
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            payload=event_payload,
+        )
+    else:
+        event_payload["status"] = payload.get("status")
+        await _event_recorder(deps).emit(
+            "graph.node_exited",
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            payload=event_payload,
+        )
+
+
+async def _publish_terminal(
+    deps: SessionDispatchDeps,
+    session: "WorkspaceSession",
+    status: SessionStatus,
+    ended_reason: str | None,
+) -> None:
+    """Announce that this turn reached a terminal state.
+
+    The interactive webhook hold (primer/trigger/hold.py) awaits this key
+    instead of polling the row, per S6 section 9. Advisory: a publish
+    failure must never block the lease release, so it is swallowed with a
+    log and the hold falls back to its wait cap.
+
+    An ENDED status additionally lands a durable ``session.ended`` on
+    the platform event log (the recorder swallows its own failures).
+    """
+    session_id = session.id
+    if status == SessionStatus.ENDED:
+        await _event_recorder(deps).emit(
+            "session.ended",
+            workspace_id=session.workspace_id,
+            session_id=session_id,
+            payload={"ended_reason": ended_reason},
+        )
+    if deps.event_bus is None:
+        return
+    try:
+        await deps.event_bus.publish(
+            f"session:{session_id}:terminal",
+            {"status": status.value, "ended_reason": ended_reason},
+        )
+    except Exception:  # noqa: BLE001 - advisory; never block the release
+        logger.warning(
+            "session %s: terminal event publish failed", session_id,
+            exc_info=True,
+        )
+
+
+def _snapshot_resolver(deps: "SessionDispatchDeps"):
+    """Resolve the live definition of a switch's incoming target.
+
+    Returns None when the row is gone rather than raising, so a switch
+    to a since-deleted agent degrades to a snapshot-less binding the
+    executor builder resolves live instead of wedging the session.
+    """
+
+    async def _resolve(binding):
+        from primer.model.agent import Agent
+        from primer.model.graph import Graph
+
+        try:
+            if getattr(binding, "kind", None) == "graph":
+                return await deps.storage_provider.get_storage(Graph).get(
+                    binding.graph_id
+                )
+            return await deps.storage_provider.get_storage(Agent).get(
+                binding.agent_id
+            )
+        except Exception:  # noqa: BLE001 - a missing target is not fatal
+            return None
+
+    return _resolve
+
+
+async def _apply_pending_switch_at_checkpoint(
+    deps: "SessionDispatchDeps", session,
+) -> None:
+    """Apply a switch queued during this turn, before the queue drains.
+
+    Ordering is the point: realizing a queued steer first would run the
+    user's follow-up under the OUTGOING binding, which is exactly what
+    next-turn switch semantics forbid.
+
+    Runs outside the lifecycle lock for the same reason the realize
+    does, and swallows failures for the same reason too: the turn has
+    already terminated and released its lease. The request stays queued
+    and applies at the next checkpoint.
+    """
+    try:
+        sessions = deps.storage_provider.get_storage(WorkspaceSession)
+        fresh = await sessions.get(session.id)
+        if fresh is None or fresh.pending_binding_switch is None:
+            return
+        from primer.session.binding_switch import apply_binding_switch
+
+        await apply_binding_switch(
+            sessions=sessions,
+            workspace_io=deps.workspace_io,
+            row=fresh,
+            request=fresh.pending_binding_switch,
+            actor=str(fresh.pending_binding_switch.get("actor") or "system"),
+            resolve_snapshot=_snapshot_resolver(deps),
+        )
+    except Exception:
+        logger.exception(
+            "drain checkpoint: applying a queued binding switch failed for %s",
+            session.id,
+        )
+
+
+async def _realize_pending_at_checkpoint(
+    deps: "SessionDispatchDeps", session, 
+) -> None:
+    """Turn exactly one queued steer into a real turn.
+
+    A steer that arrived while this turn was open was stored as a
+    seq-less pending row rather than written into the log. The turn has
+    now terminated, so the queue head can safely become a USER_INPUT and
+    arm the next turn.
+
+    Exactly one, because realizing the whole queue would write several
+    user messages against a single turn and break the 1:1 pairing the
+    drain counts. The rest follow at later checkpoints.
+
+    Failures are swallowed: the turn already reached a terminal state and
+    released its lease, so a storage hiccup here must not unwind that.
+    The row stays queued for the next checkpoint.
+    """
+    if deps.scheduler is None or deps.claim_engine is None:
+        return
+    if deps.workspace_registry is None:
+        return
+    try:
+        wake_deps = SessionWakeDeps(
+            storage_provider=deps.storage_provider,
+            scheduler=deps.scheduler,
+            claim_engine=deps.claim_engine,
+            workspace_registry=deps.workspace_registry,
+            event_bus=deps.event_bus,
+        )
+        await realize_next_pending(
+            storage_provider=deps.storage_provider,
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            wake_deps=wake_deps,
+        )
+    except Exception:
+        logger.exception(
+            "drain checkpoint: realizing a queued steer failed for %s",
+            session.id,
+        )
+
+
 async def _clear_interrupt_requested(session_storage, session_id: str) -> None:
     """Best-effort clear of a (possibly stale) ``interrupt_requested`` flag.
 
@@ -901,6 +1471,108 @@ async def _clear_interrupt_requested(session_storage, session_id: str) -> None:
         )
 
 
+async def _clear_turn_running(session_storage, session_id: str) -> None:
+    """Best-effort reset of ``turn_status``/``turn_started_at`` (and the
+    finer-grained ``agent_phase``/``agent_phase_turn_no``/
+    ``agent_phase_stamped_at``) to idle.
+
+    The counterpart to the "set running" write made right before
+    build_executor (step 2). Called from the finally block guarding the
+    streaming phase (covers park/error/cancel/clean-completion - the four
+    ways a turn that reached streaming can end) and from both pre-streaming
+    exits (build-executor failure, executor-is-None) that return before
+    that finally is ever reached.
+
+    Only clears when turn_status is CURRENTLY "running" - never when it
+    reads "claimable" - so a wake_session() that raced in a fresh claim
+    during this turn's own cleanup is never stomped back to idle and
+    stranded (the exact bug the claimable-consume step earlier in this
+    function exists to avoid). Always called from inside a
+    ``session_lifecycle_lock`` critical section, matching every other
+    read-modify-write in this module - belt-and-suspenders alongside the
+    ``update_unless`` guard below, not a substitute for it: the
+    ``fresh.turn_status == "running"`` check is a CHEAP EARLY EXIT on a
+    snapshot (mirrors primer.session.yields.durably_mark_session_resumable's
+    own two-layer pattern - see its docstring), not the safety guarantee
+    itself. The actual guarantee is ``update_unless``, which the backend
+    evaluates against the row's CURRENT ``turn_status`` in the same
+    statement as the write - so even a wake_session() that lands in the
+    gap between this function's own read and write (the lock reduces but
+    does not by itself prove there is no such gap across every caller)
+    is still caught atomically, not by a stale Python-side snapshot.
+
+    A worker that hard-crashes (OOM kill, pod eviction) between the
+    "running" write and reaching either of these cleanup points never
+    calls this - the row is left at turn_status="running" with a real
+    turn_started_at. primer.workspace.session_reconcile.
+    reconcile_sessions_to_workspace_lost covers the case where the crash
+    took the workspace down with it (unconditional reset, since the
+    workspace being gone makes any value moot); a worker crash that
+    leaves the workspace reachable is not covered by any reconciler today
+    and would need a dedicated lease-staleness sweep to catch.
+    """
+    fresh = await session_storage.get(session_id)
+    if fresh is None or fresh.turn_status != "running":
+        return
+    updated = fresh.model_copy(update={
+        "turn_status": "idle",
+        "turn_started_at": None,
+        # agent_phase is scoped to "while a turn is genuinely running"
+        # (its own docstring) - clear it in the same write, same guard,
+        # so it can never survive past the turn_status it's a
+        # finer-grained sub-state of.
+        "agent_phase": None,
+        "agent_phase_turn_no": None,
+        "agent_phase_stamped_at": None,
+    })
+    await session_storage.update_unless(
+        updated, field="turn_status", forbidden="claimable",
+    )
+
+
+async def _write_agent_phase(
+    session_storage, session_id: str, turn_no: int, phase: str,
+) -> None:
+    """Best-effort agent_phase row write (01a04d91-a7a0).
+
+    No session_lifecycle_lock here, unlike every other read-modify-write
+    in this module: agent_phase/agent_phase_turn_no/agent_phase_stamped_at
+    have exactly ONE writer for the lifetime of a turn (this dispatch
+    call) - nothing else ever touches THOSE THREE FIELDS. But
+    model_copy(update=...) + a plain update() replaces the WHOLE row, so
+    a stale ``fresh`` snapshot still risks reverting a DIFFERENT field a
+    concurrent writer touched in the gap between this function's own read
+    and write - most notably wake_session() flipping turn_status to
+    "claimable" mid-turn (the exact hazard _clear_turn_running's own
+    docstring documents). Guarding with ``update_unless`` closes that: the
+    backend evaluates "is turn_status currently claimable" against the
+    row's CURRENT value in the same statement as the write, so a raced-in
+    claimable is never silently reverted back to whatever ``fresh`` saw
+    turn_status as - mirrors primer.session.yields' established pattern for
+    this exact class of race (see durably_mark_session_resumable's
+    docstring). A rejected write (turn_status already claimable) is a
+    silent no-op here: the turn is ending/being steered either way, so
+    one skipped phase transition is harmless - the row already reads
+    "claimable", not something the phase field could make more correct.
+    """
+    fresh = await session_storage.get(session_id)
+    if fresh is None:
+        return
+    updated = fresh.model_copy(update={
+        "agent_phase": phase,
+        "agent_phase_turn_no": turn_no,
+        "agent_phase_stamped_at": _now(),
+    })
+    try:
+        await session_storage.update_unless(
+            updated, field="turn_status", forbidden="claimable",
+        )
+    except Exception:  # noqa: BLE001 - best-effort, never block the turn
+        logger.exception(
+            "session %s: failed to write agent_phase=%r", session_id, phase,
+        )
+
+
 async def _transition_session_status(
     session_storage,
     session: WorkspaceSession,
@@ -908,6 +1580,7 @@ async def _transition_session_status(
     new_status: SessionStatus,
     ended_reason: str | None = None,
     executor=None,
+    expected_epoch: int | None = None,
 ) -> None:
     """Update the WorkspaceSession row in storage. Idempotent on no-op.
 
@@ -928,6 +1601,17 @@ async def _transition_session_status(
     # Re-read the current row so we don't overwrite concurrent changes.
     fresh = await session_storage.get(session.id)
     if fresh is None:
+        return
+    if expected_epoch is not None and fresh.binding_epoch != expected_epoch:
+        # The binding switched while this turn ran. The terminal status
+        # describes work done for a binding the session has left, so
+        # writing it would clobber the switch that replaced it. The next
+        # turn writes its own status under the current binding.
+        logger.info(
+            "session %s: voiding a terminal write from epoch %s "
+            "(row is at epoch %s)",
+            session.id, expected_epoch, fresh.binding_epoch,
+        )
         return
     if fresh.status == new_status and (
         ended_reason is None or fresh.ended_reason == ended_reason

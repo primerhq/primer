@@ -106,6 +106,11 @@ class ChannelAdapter(ABC):
     _sp: Any
     _bus: Any
     _claim_engine: Any
+    # S6: the inbound path creates and steers sessions, so it needs the
+    # session collaborators too. Declared with None defaults on the ABC so an
+    # adapter that predates the wiring still builds.
+    _workspace_registry: Any = None
+    _scheduler: Any = None
 
     @abstractmethod
     async def initialize(self) -> None: ...
@@ -184,38 +189,32 @@ class ChannelAdapter(ABC):
 
     # -- shared inbound routing --------------------------------------------
 
+    async def collect_inbound_media(self, raw: Any) -> list:
+        """Build artifact-backed media parts for one raw inbound message.
+
+        Default: no media. Platform adapters override by delegating to their
+        own download helper; the factory passes the result to
+        ``route_event(media_parts=...)`` (S6 section 6).
+        """
+        del raw
+        return []
+
     def _inbound_router(self):
         """Build a :class:`ChannelInboundRouter` from the adapter's wiring, or
-        ``None`` when chat-surface dispatch is not configured (no storage
-        provider). The ``route``/``route_event`` paths share one router build,
-        so :meth:`_event_router` is an alias.
+        ``None`` when inbound dispatch is not configured (no storage
+        provider).
         """
         if self._sp is None:
             return None
-        from primer.channel.chat_inbox import ChatResponseInbox
         from primer.channel.correlation import CorrelationStore
         from primer.channel.inbound_router import ChannelInboundRouter
-        gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus,
-            claim_engine=self._claim_engine)
         return ChannelInboundRouter(
             self._sp, CorrelationStore(self._sp), event_bus=self._bus,
-            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
-
-    def _event_router(self):
-        """Alias of :meth:`_inbound_router` for the normalized-event path; the
-        caller routes a ``ChannelEvent`` through ``route_event``."""
-        return self._inbound_router()
-
-    async def _resolve_thread_chat(self, thread_external_id: str):
-        """Look up the chat bound to (this channel, thread_external_id)."""
-        from primer.channel.chat_router import ChatChannelRouter
-        from primer.channel.correlation import CorrelationStore
-        router = ChatChannelRouter(
-            storage_provider=self._sp,
-            correlation_store=CorrelationStore(self._sp))
-        return await router._find_thread_chat(
-            channel_id=self._channel.id, thread_external_id=thread_external_id)
+            claim_engine=self._claim_engine,
+            scheduler=getattr(self, "_scheduler", None),
+            workspace_registry=getattr(self, "_workspace_registry", None),
+            artifact_registry=getattr(self, "_artifacts", None),
+        )
 
     # -- shared outbound-media fan-out -------------------------------------
 

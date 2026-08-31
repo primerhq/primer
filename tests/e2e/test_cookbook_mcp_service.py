@@ -48,6 +48,7 @@ from tests._support.mock_llm import Rule
 from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
+    wait_completed,
 )
 from tests._support.smk import smk
 
@@ -152,44 +153,52 @@ async def test_mcp_service_drives_a_session_end_to_end(
                 sid = json.loads(_result_text(created))["id"]
                 assert sid
 
-                # ---- (3) poll get_workspace_session over MCP to terminal.
-                final = None
+                # ---- (3) poll the transcript over MCP until the reply lands.
+                # 01a0518a: the on-disk AgentSession slot (what
+                # workspaces__get_workspace_session's SessionInfo mirrors) is
+                # only ever explicitly synced to ENDED on a terminal
+                # transition (_sync_agent_session_ended in dispatch.py) - a
+                # clean stop that now rests the session WAITING/parked has
+                # no equivalent mirror (set_status(WAITING, ...) requires a
+                # structured waiting_state - "user asked a question" /
+                # "tool approval" - that doesn't exist for a plain rest), so
+                # SessionInfo.status stays "running" forever from this
+                # cross-process MCP view. Poll the transcript itself instead
+                # of the status mirror - a directly MCP-visible, unambiguous
+                # signal that the turn actually completed, and the thing an
+                # MCP-as-a-service client cares about anyway.
+                content = ""
                 for _ in range(120):
-                    got = await sess.call_tool(
-                        "workspaces__get_workspace_session",
-                        arguments={"workspace_id": wid, "session_id": sid},
+                    read_res = await sess.call_tool(
+                        "workspaces__read_workspace_file",
+                        arguments={
+                            "workspace_id": wid,
+                            "path": f".state/sessions/{sid}/messages.jsonl",
+                        },
                     )
-                    assert not got.isError, _result_text(got)
-                    body = json.loads(_result_text(got))
-                    info = body.get("info", {})
-                    if body.get("status") == "ended" or info.get("status") == "ended":
-                        final = body
-                        break
+                    if not read_res.isError:
+                        content = json.loads(_result_text(read_res))["content"]
+                        if "PONG" in content:
+                            break
                     await asyncio.sleep(0.5)
-                assert final is not None, (
-                    "MCP-created session never reached terminal over "
-                    "get_workspace_session (cross-process status mirror)"
-                )
-                assert final["info"]["ended_reason"] == "completed", final
-
-                # Thin-wrapper parity: the same row the REST route serves.
-                rest = await authed_client.get(f"/v1/sessions/{sid}")
-                assert rest.status_code == 200, rest.text
-                assert rest.json()["status"] == "ended", rest.json()
-
-                # ---- (4) read the transcript over MCP -- the result is there.
-                read_res = await sess.call_tool(
-                    "workspaces__read_workspace_file",
-                    arguments={
-                        "workspace_id": wid,
-                        "path": f".state/sessions/{sid}/messages.jsonl",
-                    },
-                )
-                assert not read_res.isError, _result_text(read_res)
-                content = json.loads(_result_text(read_res))["content"]
                 assert "PONG" in content, (
-                    "session transcript read over MCP did not carry the result"
+                    "MCP-created session never produced its reply in the "
+                    "transcript (get_workspace_session's on-disk mirror "
+                    "does not reflect a clean-stop rest, see 01a0518a; the "
+                    "transcript is the reliable cross-process signal)"
                 )
+
+                # Thin-wrapper parity: the REST route's own computed field
+                # (backed by the DB row, not the on-disk mirror) does see
+                # the session resting parked. POLL rather than a one-shot
+                # GET: the transcript write (what the loop above waits on)
+                # and the row's terminal-status write are not ordered
+                # relative to each other from an outside observer - PONG
+                # can land in messages.jsonl a beat before
+                # _post_turn_status/_clear_turn_running settle the row, so
+                # a single GET can legitimately still read "running".
+                rest = await wait_completed(authed_client, sid, timeout_s=30.0)
+                assert rest.get("session_state") == "parked", rest
 
                 # ---- (5) cancel a freshly-created session over MCP.
                 created2 = await sess.call_tool(
@@ -212,10 +221,13 @@ async def test_mcp_service_drives_a_session_end_to_end(
                 )
                 assert not cancelled.isError, _result_text(cancelled)
 
-                # Re-poll to terminal: the cancelled session ends. (A session
-                # that finished its one quick turn before the cancel landed
-                # ends 'completed'; one preempted mid-run ends 'cancelled' --
-                # either is a terminal end, which is the lifecycle assertion.)
+                # Re-poll to terminal: the cancel call itself always forces
+                # the row to ended/cancelled (cancel_session's inline
+                # CREATED/WAITING/PAUSED branch), independent of whether the
+                # turn had already cleanly finished (which, post-01a0518a,
+                # would otherwise just rest it parked) or was preempted
+                # mid-run - unlike a plain clean stop, an explicit cancel is
+                # exactly the "ENDED reserved for explicit end" case.
                 term = None
                 for _ in range(120):
                     got = await sess.call_tool(

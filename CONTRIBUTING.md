@@ -89,7 +89,7 @@ make docker-build   # build the primer image
 ```
 
 The repository layout is described in [AGENTS.md](AGENTS.md) section 2:
-`primer/<subsystem>/` is the backend, `ui/` the console, `primectl/` the CLI,
+`primer/<subsystem>/` is the backend, `ui/` the workspace shell,
 `tests/` the test suites, and `docs/dev/` the authoritative developer reference
 (start at [docs/dev/README.md](docs/dev/README.md) before changing a subsystem).
 
@@ -145,7 +145,6 @@ Definition of Done in [AGENTS.md](AGENTS.md) section 4). In summary:
 - **Tests**: add or extend unit tests and, for user-visible flows, e2e coverage.
 - **Regressions**: keep the suites green; do not weaken a test to hide a real
   regression - fix the cause.
-- **primectl**: keep the CLI in parity when you add an API endpoint.
 
 If a track is genuinely not applicable, say so explicitly with a one-line
 reason rather than skipping it silently.

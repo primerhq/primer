@@ -44,12 +44,14 @@ class InvalidationTopic(str, Enum):
 
 ROLE_TIMER_SCHEDULER = "timer-scheduler"
 ROLE_TIMEOUT_SWEEPER = "timeout-sweeper"
-ROLE_CHAT_SWEEPER = "chat-sweeper"
 ROLE_HARNESS_SWEEPER = "harness-sweeper"
 ROLE_WATCHER_MANAGER = "watcher-manager"
 ROLE_MCP_BRIDGE = "mcp-bridge"
 ROLE_COORDINATOR_SWEEPER = "coordinator-sweeper"
 ROLE_STUCK_SESSION_SWEEPER = "stuck-session-sweeper"
+ROLE_EVENT_DISPATCHER = "event-dispatcher"
+ROLE_EVENT_RETENTION = "event-retention"
+ROLE_WORKSPACE_EVENTS = "workspace-events"
 
 
 class RateLimiterLease(AbstractAsyncContextManager["RateLimiterLease"]):
@@ -180,7 +182,6 @@ __all__ = [
     "LeadershipLease",
     "RateLimiter",
     "RateLimiterLease",
-    "ROLE_CHAT_SWEEPER",
     "ROLE_COORDINATOR_SWEEPER",
     "ROLE_HARNESS_SWEEPER",
     "ROLE_MCP_BRIDGE",

@@ -19,6 +19,7 @@ from tests._support.runs import (
     make_scripted_agent,
     start_agent_session,
     start_graph_session,
+    wait_completed,
     wait_terminal,
 )
 from tests._support.smk import smk
@@ -171,7 +172,7 @@ async def test_tools_via_agent(authed_client, mock_llm, unique_suffix, tmp_path)
     )
     wid = await _ws(authed_client, unique_suffix, tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    assert (await wait_terminal(authed_client, sid)).get("status") == "ended"
+    assert (await wait_completed(authed_client, sid)).get("session_state") == "parked"
     rd = await authed_client.get(f"/v1/workspaces/{wid}/files/read", params={"path": "agent.txt", "encoding": "text"})
     assert "VIA-TOOL" in rd.json()["content"]
 
@@ -190,7 +191,7 @@ async def test_two_agents_share_files(authed_client, mock_llm, unique_suffix, tm
         ],
     )
     sid1 = await start_agent_session(authed_client, workspace_id=wid, agent_id=prod["agent_id"])
-    assert (await wait_terminal(authed_client, sid1)).get("status") == "ended"
+    assert (await wait_completed(authed_client, sid1)).get("session_state") == "parked"
     # reviewer reads it
     rev = await make_scripted_agent(
         authed_client, registry, base_url, suffix=f"r{unique_suffix}", scenario=f"scripted:wsp15r-{unique_suffix}",
@@ -201,7 +202,7 @@ async def test_two_agents_share_files(authed_client, mock_llm, unique_suffix, tm
         ],
     )
     sid2 = await start_agent_session(authed_client, workspace_id=wid, agent_id=rev["agent_id"])
-    assert (await wait_terminal(authed_client, sid2)).get("status") == "ended"
+    assert (await wait_completed(authed_client, sid2)).get("session_state") == "parked"
     # the producer's file is present in the shared workspace
     rd = await authed_client.get(f"/v1/workspaces/{wid}/files/read", params={"path": "report.txt", "encoding": "text"})
     assert "PRODUCED" in rd.json()["content"]
@@ -481,10 +482,11 @@ async def test_container_backend_graph_session(authed_client, mock_llm, unique_s
 @smk("SMK-WSP-12")
 @requires("workspace:container")
 async def test_container_backend_agent_session(authed_client, mock_llm, unique_suffix):
-    """Agent-bound session on a container workspace runs to clean terminal.
+    """Agent-bound session on a container workspace runs to a clean finish.
 
-    Proves: create_session + commit work on the pod. The session reaches
-    ``ended`` status with no /errors/internal in last_error.
+    Proves: create_session + commit work on the pod. The turn finishes
+    cleanly (session_state="parked" - 01a0518a) with no /errors/internal
+    in last_error.
     """
     registry, base_url = mock_llm
     sc = f"scripted:cas-{unique_suffix}"
@@ -500,10 +502,13 @@ async def test_container_backend_agent_session(authed_client, mock_llm, unique_s
     try:
         sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
 
-        # Poll to terminal -- container sessions need extra time
-        final = await wait_terminal(authed_client, sid, timeout_s=120.0, interval_s=1.0)
-        assert final.get("status") == "ended", (
-            f"container agent session did not reach ended: {final}"
+        # Poll to terminal -- container sessions need extra time. 01a0518a:
+        # a plain interactive agent session's clean stop now rests it
+        # parked, not ended (unlike the graph-session container/k8s tests
+        # below, which stay on wait_terminal - graphs are autonomous).
+        final = await wait_completed(authed_client, sid, timeout_s=120.0, interval_s=1.0)
+        assert final.get("session_state") == "parked", (
+            f"container agent session did not complete cleanly: {final}"
         )
         last_err = final.get("last_error")
         if last_err:

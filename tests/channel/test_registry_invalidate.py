@@ -244,7 +244,7 @@ async def _seed_with_chats(
         ),
     ))
     chats = (
-        ChatConfig(enabled=True, default_agent="agent-x")
+        ChatConfig(enabled=True)
         if enabled
         else ChatConfig(enabled=False)
     )
@@ -398,7 +398,7 @@ async def test_channel_update_enabling_chats_warms_adapter_end_to_end(
             row = await c_storage.get("ch-1")
             await c_storage.update(row.model_copy(update={
                 "config": SlackChannelConfig(
-                    chats=ChatConfig(enabled=True, default_agent="agent-x"),
+                    chats=ChatConfig(enabled=True),
                 ),
             }))
             await _invalidate_and_rewarm_channel("ch-1", req)

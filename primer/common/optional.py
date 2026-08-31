@@ -19,7 +19,6 @@ _find_spec = find_spec
 # platform SDKs import; per-platform detail comes from channel_platforms().
 EXTRA_MODULES: dict[str, tuple[str, ...]] = {
     "huggingface": ("sentence_transformers",),
-    "docling": ("docling",),
     "lance": ("lancedb",),
     "kubernetes": ("kubernetes_asyncio",),
     "docker": ("aiodocker",),

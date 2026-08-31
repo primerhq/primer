@@ -60,6 +60,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -83,6 +99,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -268,9 +289,7 @@ class _FakeVectorStore:
         self.collections: dict[str, dict] = {}
         self.records: dict[tuple[str, str, str], Any] = {}
 
-    async def create_collection(
-        self, collection_id, *, dimensions, distance="cosine"
-    ):
+    async def create_collection(self, collection_id, *, dimensions, distance="cosine"):
         self.collections[collection_id] = {
             "dimensions": dimensions,
             "distance": distance,
@@ -284,9 +303,9 @@ class _FakeVectorStore:
                 del self.records[key]
 
     async def put(self, record):
-        self.records[
-            (record.collection_id, record.document_id, record.chunk_id)
-        ] = record
+        self.records[(record.collection_id, record.document_id, record.chunk_id)] = (
+            record
+        )
 
     async def delete(self, cid, doc_id):
         for key in list(self.records.keys()):
@@ -416,6 +435,7 @@ class TestCatalog:
     @pytest.mark.asyncio
     async def test_every_tool_has_clear_description(self, toolset) -> None:
         from tests.toolset._desc_conformance import assert_tool_conforms
+
         async for tool in toolset.list_tools():
             assert tool.toolset_id == WORKSPACES_TOOLSET_ID
             assert_tool_conforms(tool)
@@ -496,14 +516,10 @@ class TestBootstrapIngestsWorkspacesTools:
 
         tools_coll = INTERNAL_COLLECTION_IDS["tool"]
         ingested_ids = {
-            doc_id
-            for (cid, doc_id, _) in store.records.keys()
-            if cid == tools_coll
+            doc_id for (cid, doc_id, _) in store.records.keys() if cid == tools_coll
         }
         ws_ingested = {
-            doc_id
-            for doc_id in ingested_ids
-            if doc_id.startswith("workspaces::")
+            doc_id for doc_id in ingested_ids if doc_id.startswith("workspaces::")
         }
         # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
         # plus workspace_tap = 27, plus restart_workspace_session (Task 8)
@@ -538,9 +554,7 @@ class TestSubResourceHandlers:
 
     @pytest.mark.asyncio
     async def test_get_workspace(self, toolset, seeded) -> None:
-        result = await toolset.call(
-            tool_name="get_workspace", arguments={"id": seeded}
-        )
+        result = await toolset.call(tool_name="get_workspace", arguments={"id": seeded})
         assert not result.is_error
         assert json.loads(result.output)["id"] == seeded
 
@@ -705,9 +719,7 @@ class TestSubResourceHandlers:
         assert "commits" in json.loads(result.output)
 
     @pytest.mark.asyncio
-    async def test_create_workspace_404_on_missing_template(
-        self, toolset
-    ) -> None:
+    async def test_create_workspace_404_on_missing_template(self, toolset) -> None:
         await toolset.call(
             tool_name="create_workspace_provider",
             arguments={"entity": _provider().model_dump(mode="json")},
@@ -720,17 +732,13 @@ class TestSubResourceHandlers:
         assert json.loads(result.output)["type"] == "not-found"
 
     @pytest.mark.asyncio
-    async def test_delete_workspace_via_toolset(
-        self, toolset, seeded
-    ) -> None:
+    async def test_delete_workspace_via_toolset(self, toolset, seeded) -> None:
         result = await toolset.call(
             tool_name="delete_workspace", arguments={"id": seeded}
         )
         assert not result.is_error
         # Subsequent get returns not-found
-        get = await toolset.call(
-            tool_name="get_workspace", arguments={"id": seeded}
-        )
+        get = await toolset.call(tool_name="get_workspace", arguments={"id": seeded})
         assert get.is_error
 
 
@@ -769,9 +777,7 @@ class TestErrorPaths:
 
     @pytest.mark.asyncio
     async def test_get_validation_error(self, toolset) -> None:
-        result = await toolset.call(
-            tool_name="get_workspace_provider", arguments={}
-        )
+        result = await toolset.call(tool_name="get_workspace_provider", arguments={})
         assert result.is_error
         assert json.loads(result.output)["type"] == "validation-error"
 
@@ -826,9 +832,7 @@ class TestErrorPaths:
         assert json.loads(result.output)["type"] == "not-found"
 
     @pytest.mark.asyncio
-    async def test_delete_workspace_unknown_returns_not_found(
-        self, toolset
-    ) -> None:
+    async def test_delete_workspace_unknown_returns_not_found(self, toolset) -> None:
         result = await toolset.call(
             tool_name="delete_workspace", arguments={"id": "no-such"}
         )
@@ -926,9 +930,7 @@ class TestErrorPaths:
         assert json.loads(result.output)["type"] == "bad-request"
 
     @pytest.mark.asyncio
-    async def test_read_invalid_utf8_text_encoding(
-        self, toolset, seeded
-    ) -> None:
+    async def test_read_invalid_utf8_text_encoding(self, toolset, seeded) -> None:
         # Write binary, read as text → should reject
         import base64
 
@@ -1149,7 +1151,12 @@ class TestCreateWorkspaceSession:
 
 
 def _seed_session(
-    sp, *, status, sid="sess-c1", workspace_id="ws-stub", ended_reason=None,
+    sp,
+    *,
+    status,
+    sid="sess-c1",
+    workspace_id="ws-stub",
+    ended_reason=None,
 ):
     from datetime import datetime, timezone
 
@@ -1268,7 +1275,10 @@ class TestSteerWorkspaceSession:
         from primer.model.workspace_session import SessionStatus
 
         _seed_session(
-            sp, status=SessionStatus.ENDED, sid="sess-c1", workspace_id=seeded,
+            sp,
+            status=SessionStatus.ENDED,
+            sid="sess-c1",
+            workspace_id=seeded,
             ended_reason="completed",
         )
         result = await session_toolset.call(
@@ -1294,7 +1304,10 @@ class TestSteerWorkspaceSession:
         from primer.model.workspace_session import SessionStatus
 
         _seed_session(
-            sp, status=SessionStatus.ENDED, sid="sess-c1", workspace_id=seeded,
+            sp,
+            status=SessionStatus.ENDED,
+            sid="sess-c1",
+            workspace_id=seeded,
             ended_reason="workspace_lost",
         )
         result = await session_toolset.call(
@@ -1348,3 +1361,92 @@ async def test_session_tools_are_mcp_exposable(sp, workspace_registry):
         assert tid in tools, f"{tid} not registered"
         ok, reason = is_exposable(tools[tid], provider=ts)
         assert ok, f"{tid} not MCP-exposable: {reason}"
+
+
+# ===========================================================================
+# _reconcile_session_info (01a0529c): on-disk slot vs durable row overlay
+# ===========================================================================
+
+
+class TestReconcileSessionInfo:
+    """get_workspace_session / list_workspace_sessions overlay the durable
+    WorkspaceSession row's status onto the on-disk slot view when the row
+    is ahead of it (ENDED, or -- since 01a0529c -- a clean-rest WAITING).
+    ``_LiveWorkspace`` pre-populates "sess-1" as a ``_LiveSession`` stuck at
+    RUNNING (see fixture above); these tests seed a WorkspaceSession row
+    for that SAME id so the two views can disagree the way the real
+    dispatch/slot split does."""
+
+    @pytest.mark.asyncio
+    async def test_clean_rest_waiting_row_overlays_a_running_slot(
+        self, toolset, seeded, sp,
+    ) -> None:
+        """01a0529c: a clean turn rests the row WAITING without ever
+        touching the on-disk slot (no AgentSession.set_status call for
+        this case - see the closure's docstring). Without the overlay
+        this MCP tool would report the session as still "running" even
+        though the durable row already moved on to a resumable rest."""
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(sp, status=SessionStatus.WAITING, sid="sess-1", workspace_id=seeded)
+
+        result = await toolset.call(
+            tool_name="get_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "waiting"
+        assert body["info"]["status"] == "waiting"
+
+    @pytest.mark.asyncio
+    async def test_genuine_executor_waiting_passes_through_unchanged(
+        self, toolset, seeded, sp, workspace_registry,
+    ) -> None:
+        """A REAL executor-set wait (e.g. the assistant asked a question)
+        already has the slot reading WAITING at write time - the new
+        clean-rest branch only fires when the slot still reads RUNNING,
+        so it must be a no-op here. Sets BOTH the slot and the row to
+        WAITING, mirroring how a genuine executor-set wait actually
+        reaches storage (dispatch mirrors the executor's own decision
+        onto the row - see _post_turn_status's agent_status==WAITING
+        branch), unlike the clean-rest case this task fixes."""
+        from primer.model.workspace_session import SessionStatus
+
+        ws = await workspace_registry.get_workspace(seeded)
+        live_session = await ws.get_session("sess-1")
+        live_session._status = SessionStatus.WAITING
+        _seed_session(sp, status=SessionStatus.WAITING, sid="sess-1", workspace_id=seeded)
+
+        result = await toolset.call(
+            tool_name="get_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "waiting"
+
+    @pytest.mark.asyncio
+    async def test_ended_row_still_overlays_a_lagging_slot(
+        self, toolset, seeded, sp,
+    ) -> None:
+        """Pre-existing ENDED overlay branch, unregressed by the
+        clean-rest addition above."""
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(
+            sp,
+            status=SessionStatus.ENDED,
+            sid="sess-1",
+            workspace_id=seeded,
+            ended_reason="completed",
+        )
+
+        result = await toolset.call(
+            tool_name="get_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "ended"
+        assert body["info"]["ended_reason"] == "completed"

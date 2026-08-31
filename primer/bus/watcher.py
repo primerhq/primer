@@ -214,10 +214,12 @@ class WatcherManager(_BackgroundTask):
         workspace_root_resolver: WorkspaceProbeResolver,
         scan_interval_seconds: float = DEFAULT_SCAN_INTERVAL_SECONDS,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
+        storage_provider=None,
     ) -> None:
         super().__init__(name="yield-watcher-manager")
         self._bus = bus
         self._scheduler = scheduler
+        self._sp = storage_provider
         self._resolve = workspace_root_resolver
         self._scan = scan_interval_seconds
         # poll_interval_seconds is kept for API compatibility but no longer
@@ -295,7 +297,14 @@ class WatcherManager(_BackgroundTask):
         # Bind event_key into the on_change closure so the publish
         # path doesn't have to reverse-lookup the watcher.
         async def on_change(changes: list[dict], _key=event_key) -> None:
-            await self._bus.publish(_key, {"changes": changes})
+            if self._sp is not None:
+                from primer.events.wake import emit_session_wake
+
+                await emit_session_wake(
+                    self._sp, self._bus, _key, {"changes": changes},
+                )
+            else:
+                await self._bus.publish(_key, {"changes": changes})
 
         watcher = EventDrivenWatcher(
             probe=probe,

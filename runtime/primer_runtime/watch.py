@@ -129,17 +129,34 @@ def _resolve_watch_paths(
             full_pattern = str(root / pattern)
         resolved_patterns.append(full_pattern)
 
-        # Collect parent dirs (resolve any existing dirs that match so far)
+        # Collect watch dirs (resolve any existing matches so far). A match
+        # that IS a directory is watched itself; a file match watches its
+        # parent. Watching the parent of a directory match was how the
+        # default pattern "." escaped to the FILESYSTEM ROOT: root/"." is
+        # the workspace root, whose parent is "/" - and awatch("/") builds
+        # a recursive watch of the entire container (/proc included)
+        # synchronously on the event loop, wedging the server at 100% CPU.
         expanded = glob.glob(full_pattern, recursive=True)
         if expanded:
             for p in expanded:
-                watch_dirs.add(str(pathlib.Path(p).parent))
+                match = pathlib.Path(p)
+                watch_dirs.add(str(match if match.is_dir() else match.parent))
         else:
             # Pattern points to something that doesn't exist yet; watch the
             # deepest existing ancestor.
             watch_dirs.add(str(_deepest_existing(pathlib.Path(full_pattern).parent, root)))
 
-    return list(watch_dirs), resolved_patterns
+    # Belt-and-braces: never watch anything above the workspace root.
+    # _resolve_safe guards pattern ESCAPES, but a computed dir (a parent
+    # of a match) could still land outside; clamp those to the root.
+    clamped: list[str] = []
+    for d in watch_dirs:
+        resolved = pathlib.Path(d).resolve()
+        if resolved == root or root in resolved.parents:
+            clamped.append(str(resolved))
+        else:
+            clamped.append(str(root))
+    return sorted(set(clamped)), resolved_patterns
 
 
 def _glob_anchor(pattern: str) -> str:

@@ -1,8 +1,8 @@
-"""The Modal component supports a width override so wide content (the
-collection document browser) is not crushed by the default 420px .modal
-cap. The collection browse modal opts into a wide modal; without the
-override the fixed-width left tree column starved the content pane to a
-few pixels (one word per line)."""
+"""The Modal component supports a width override so wide content is not
+crushed by the default 420px .modal cap. The override exists because the
+collection document browser (then a modal) had its content pane starved
+to a few pixels by the fixed-width left tree column; that browser is now
+a full page, but the override stays for any caller that needs it."""
 
 from __future__ import annotations
 
@@ -28,9 +28,16 @@ def test_modal_applies_width_to_modal_element() -> None:
     assert "style={width ? { width } : undefined}" in SHARED
 
 
-def test_collection_browse_modal_opts_into_wide() -> None:
-    # The collection doc browser passes a wide width to its Modal.
-    assert 'width="min(92vw, 1280px)"' in KNOWLEDGE
+def test_collection_doc_browser_is_not_modal_confined() -> None:
+    """The document browser is a full-page view, not a width-capped modal.
+
+    It used to be a Modal that needed the width override to stop the fixed
+    left tree column starving the content pane. The collections rebuild
+    made it a page instead, which answers the same problem without the
+    override; the modals that remain are narrow forms.
+    """
+    assert "KN_CollectionDetail" in KNOWLEDGE
+    assert 'className="col kn-tree"' in KNOWLEDGE
 
 
 def test_bundle_transpiles_with_modal_width() -> None:

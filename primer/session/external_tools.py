@@ -85,6 +85,7 @@ async def apply_tool_results(
     session_storage: Any,
     engine: Any,
     event_bus: Any,
+    storage_provider: Any = None,
 ) -> int:
     """Validate ALL ids, then wake each matched park. 409-atomic.
 
@@ -112,7 +113,14 @@ async def apply_tool_results(
             session_storage=session_storage,
             engine=engine,
         )
-        if event_bus is not None:
+        if storage_provider is not None:
+            from primer.events.wake import emit_session_wake
+
+            await emit_session_wake(
+                storage_provider, event_bus,
+                targets[r.tool_call_id], payload,
+            )
+        elif event_bus is not None:
             try:
                 await event_bus.publish(targets[r.tool_call_id], payload)
             except Exception:  # noqa: BLE001 - durable flip already landed

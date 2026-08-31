@@ -27,8 +27,17 @@ class TapEventClass(StrEnum):
     # -- mirrored from SessionMessageKind (values must match exactly) --------
     USER_INPUT = "user_input"
     ASSISTANT_TOKEN = "assistant_token"
+    # Model reasoning text, streamed alongside the answer by providers
+    # that expose it. Display only, like its SessionMessageKind twin.
+    REASONING = "reasoning"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    # Push-frame for an invoker-supplied (external) tool call, so a live
+    # client sees the call as it happens and again on reconnect replay.
+    EXTERNAL_TOOL_CALL = "external_tool_call"
+    # Binding hand-off attribution, so a shared transcript stays
+    # readable when the agent behind a session changes mid-workstream.
+    AGENT_MARKER = "agent_marker"
     YIELDED = "yielded"
     RESUMED = "resumed"
     DONE = "done"
@@ -41,11 +50,27 @@ class TapEventClass(StrEnum):
     # not activity: the tap reader skips it (see primer/tap/reader.py) so it is
     # never surfaced on the activity rail.
     COMPACTION_MARKER = "compaction_marker"
+    # ---- tap-only classes -------------------------------------------
+    # Derived frames, not records. The SSE loop builds these from the
+    # session row plus the log and they never advance the tap cursor,
+    # so a reconnecting client re-derives the current snapshot instead
+    # of replaying a historical one. They are idempotent by design:
+    # receiving the same frame twice must render twice with no effect,
+    # which is why they carry state rather than deltas.
+    USAGE = "usage"
+    PENDING_STEER = "pending_steer"
+    # Structural marker for a rewind: the replay walk drops visible rows
+    # past its to_seq. Nothing is deleted, so the log stays append-only.
+    REWIND_MARKER = "rewind_marker"
 
     # -- tap-layer extension -------------------------------------------------
     GRAPH_TRANSITION = "graph_transition"
-
-
+    # Mirrors SessionMessageKind.CLIENT_ACTION: the browser-facing delivery
+    # frame for a notifying tool call.
+    CLIENT_ACTION = "client_action"
+    # One event per model call. Trace-tab material: the transcript
+    # renderer skips it (ui/components/session-adapter.jsx).
+    LLM_CALL = "llm_call"
 class TapEvent(BaseModel):
     """Normalised tap event ready for wire transmission.
 

@@ -41,9 +41,19 @@ function _wpSummary(p) {
   return "";
 }
 
-function WorkspaceProvidersPage({ pushToast }) {
+function WorkspaceProvidersPage({ pushToast, onOpen }) {
   const { useRouter, useViewport, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
+  // The provider catalog hosts this page and hands it onOpen, its own
+  // "select this instance". The page ignored it and navigated to
+  // /workspaces/providers/<id> instead, which is a DIFFERENT address for
+  // the same surface, so opening a provider from the catalog jumped out
+  // of the catalog. navigate stays as the fallback for a host that
+  // supplies nothing.
+  const open = (id) => {
+    if (typeof onOpen === "function") onOpen(id);
+    else navigate(`/workspaces/providers/${encodeURIComponent(id)}`);
+  };
   const { isMobile } = useViewport();
   const [createOpen, setCreateOpen] = React.useState(false);
 
@@ -60,6 +70,7 @@ function WorkspaceProvidersPage({ pushToast }) {
     <WorkspaceProviderCreateModal
       onClose={() => setCreateOpen(false)}
       pushToast={pushToast}
+      onCreated={open}
     />
   ) : null;
 
@@ -104,7 +115,7 @@ function WorkspaceProvidersPage({ pushToast }) {
                 subtitle={p.provider}
                 pill={<window.WorkspaceBackendBadge kind={p.provider} />}
                 meta={_wpSummary(p)}
-                onClick={() => navigate(`/workspaces/providers/${encodeURIComponent(p.id)}`)}
+                onClick={() => open(p.id)}
               />
             )}
           />
@@ -121,7 +132,7 @@ function WorkspaceProvidersPage({ pushToast }) {
               </thead>
               <tbody>
                 {items.map((p) => (
-                  <tr key={p.id} onClick={() => navigate(`/workspaces/providers/${encodeURIComponent(p.id)}`)} style={{ cursor: "pointer" }}>
+                  <tr key={p.id} onClick={() => open(p.id)} style={{ cursor: "pointer" }}>
                     <td className="mono">{p.id}</td>
                     <td><window.WorkspaceBackendBadge kind={p.provider} /></td>
                     <td className="mono muted text-sm">{_wpSummary(p)}</td>
@@ -223,7 +234,7 @@ function _wpFromProvider(row) {
   return out;
 }
 
-function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null }) {
+function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onCreated = null }) {
   const { useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const isEdit = !!existing;
@@ -251,7 +262,8 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null }) {
           detail: row.id,
         });
         if (!isEdit) {
-          navigate(`/workspaces/providers/${encodeURIComponent(row.id)}`);
+          if (typeof onCreated === "function") onCreated(row.id);
+          else navigate(`/workspaces/providers/${encodeURIComponent(row.id)}`);
         }
       },
       onError: (err) => {

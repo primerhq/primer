@@ -23,10 +23,13 @@ using the scripted mock-LLM harness:
 
 Why this is a working (non-skipped) test:
   The deterministic, REST-queryable signal that invoke_graph really ran the
-  child graph is that the OUTER session reaches ``status=ended`` with
-  ``ended_reason`` != "failed". The session can only end normally if the
-  agent's ``when_tool_result=True`` rule fired, and that rule fires only once
-  the invoke_graph tool returned a tool_result -- which requires the child
+  child graph is that the OUTER session's turn cleanly finishes with
+  ``ended_reason`` != "failed" - which, since 01a0518a's parked-flip, means
+  ``session_state="parked"`` (a clean stop) rather than ``status="ended"``
+  (reserved for an explicit end/failure); see ``wait_completed`` in
+  tests/_support/runs.py. The turn can only finish cleanly if the agent's
+  ``when_tool_result=True`` rule fired, and that rule fires only once the
+  invoke_graph tool returned a tool_result -- which requires the child
   graph to have run to its End node and produced output. A failure inside the
   child graph would surface as a failed/errored tool_result and a non-normal
   session end (or no terminal at all). The inner graph's own output text
@@ -55,7 +58,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
     wait_turn_advanced,
 )
 
@@ -135,14 +138,15 @@ async def test_session_invoke_graph_runs_child_graph_to_completion(
         )
 
         # ----- 4. Drive to terminal --------------------------------------
-        final = await wait_terminal(client, session_id, timeout_s=90)
-        assert final.get("status") == "ended", (
+        final = await wait_completed(client, session_id, timeout_s=90)
+        assert final.get("session_state") in ("parked", "ended"), (
             f"invoke_graph session did not reach terminal; the child graph "
             f"run + tool_result plumb-back must complete the turn: {final!r}"
         )
-        # The session ended NORMALLY: a failed invoke_graph (child graph error)
-        # would surface as ended_reason=failed. Accept normal/None; reject
-        # an explicit failure.
+        # The turn finished NORMALLY: a failed invoke_graph (child graph
+        # error) would surface as ended_reason=failed. A clean success now
+        # rests session_state="parked" instead of ending (01a0518a) -
+        # accept either non-failure shape; reject an explicit failure.
         assert final.get("ended_reason") != "failed", (
             f"invoke_graph session ended in failure -- the child graph or the "
             f"tool plumb-back errored: {final!r}"

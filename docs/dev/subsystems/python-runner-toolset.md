@@ -1,9 +1,39 @@
 # Python-runner toolset
 
+## 1. Purpose
+
 Registers a python module as a toolset. Source lives in the toolset record;
 tools are derived from it by AST; calls execute out of process.
 
-## Modules
+## 2. Conceptual model
+
+The source is untrusted by construction: agents can reach
+`create_python_toolset`, so an agent can author a tool. Everything here
+follows from that. The host reads the module structurally and never
+imports it; the sandbox runs it in a fresh process it cannot escape; and
+the two sides talk over one JSON round trip whose shape the host
+validates.
+
+Registration and execution are therefore completely separate concerns. A
+module that raises at import time still registers cleanly, because
+registration never ran it.
+
+## 3. Architecture patterns implemented
+
+- **Structural inspection over evaluation.** Annotations are mapped over
+  the AST rather than evaluated, so building a tool descriptor cannot run
+  operator code.
+- **The host owns every security-relevant identifier.** The tool names a
+  yield kind; the host builds the `event_key` from the real
+  `ToolContext`.
+- **Scoped tool names.** Tools park under `{toolset_id}__{tool_id}`
+  because the resume registry is keyed process-wide and python tool names
+  are operator-chosen.
+- **One shared resume hook, not a closure per tool.**
+  `register_resume_hook` is idempotent on the (name, hook) pair, so a
+  module-level function lets a provider rebuild re-register harmlessly.
+
+## 4. Code layout
 
 | File | Responsibility |
 | --- | --- |
@@ -16,7 +46,17 @@ tools are derived from it by AST; calls execute out of process.
 | `yielding.py` | Yield request to `Yielded`, with host-built event keys. |
 | `provider.py` | `PythonToolsetProvider` plus the shared resume hook. |
 
-## Registration never executes the module
+## 5. Data model
+
+The durable state is the toolset record: its source, its
+`source_version`, and the `Tool` descriptors derived from them. Nothing
+the sandbox produces is persisted except through the normal tool-result
+path. `RegisteredTool.lineno` is carried alongside each descriptor so the
+console outline can jump to a function.
+
+## 6. Lifecycle
+
+### Registration never executes the module
 
 The source is untrusted: agents can reach `create_python_toolset`, so an agent
 can author a tool. The host therefore inspects it structurally and never
@@ -24,7 +64,7 @@ imports it. Annotations are mapped over the AST rather than evaluated, for the
 same reason. A module that raises at import time still registers cleanly, and
 there is a test asserting that.
 
-## Wire protocol
+### Wire protocol
 
 One JSON round trip over stdin/stdout:
 
@@ -39,7 +79,7 @@ sandbox -> {ok: true, value}
 Output that is not exactly one response object is an error, never a value: a
 runner that died half way must not be able to look like a tool that succeeded.
 
-## Yielding and resume
+### Yielding and resume
 
 The tool names a *kind*; the host builds the `event_key` from the real
 `ToolContext`. A function that could supply its own key could name
@@ -59,7 +99,9 @@ Resume hooks receive a `ResumeContext` (see
 session and an async `resolve_provider`. That is how the shared hook finds
 which toolset's source to run.
 
-## source_version
+## 7. Persistence
+
+### source_version
 
 Stamped into `resume_metadata` at park time and checked on resume. If the
 source moved, the resume refuses: running current code against an answer to
@@ -67,7 +109,9 @@ the old question is worse than refusing, because the operator answered a
 prompt the new code may no longer ask. The server owns the bump, so two
 concurrent editors cannot land on the same number.
 
-## The console builder
+## 8. Public surfaces
+
+### The console builder
 
 `ui/components/toolsets/python-editor.jsx` is the page; the editing surface
 itself is `python-code-editor.jsx`, wrapping CodeMirror 6 from
@@ -114,3 +158,43 @@ which is the gap an operator needs to see before saving.
 
 `RegisteredTool.lineno` exists for this: the outline can list a function only
 if it can also jump to it.
+
+## 9. Internal contracts
+
+- **Output that is not exactly one response object is an error, never a
+  value.** A runner that died half way must not be able to look like a
+  tool that succeeded.
+- **A tool may name a yield KIND, never an event key.** A function that
+  could supply its own key could name `ask_user:{another_session}:{their_tcid}`
+  and resume a park it does not own.
+- **A moved `source_version` refuses the resume.** Running current code
+  against an answer to the old question is worse than refusing, because
+  the operator answered a prompt the new code may no longer ask.
+- **Validation always answers 200; the PUT still 422s.** Source that does
+  not register is the normal state of a half-written function, so treating
+  it as an HTTP error would make the editor's happy path an error path. A
+  save is a different question, and an invalid source is a rejected write.
+
+## 10. Testing patterns
+
+The pure halves (`docstring.py`, `schema.py`) are unit-tested directly.
+Registration is tested against modules that would fail if they were ever
+imported, which is what pins the never-execute contract. The runner is
+exercised end to end through `tests/toolset/`, and the console builder's
+two rendering paths both carry `data-testid="python-source"`, with the
+CodeMirror one distinguished by `data-editor="codemirror"`, because every
+static test passes either way and only the e2e suite can tell them apart.
+
+## 11. Historical decisions
+
+- **Completions are deliberately not general Python.** Why: the list
+  covers the six names primer injects and the docstring sections, because
+  those appear in no Python documentation anywhere. General completion is
+  the editor's job, not ours.
+- **The CodeMirror bundle is vendored as a single pinned IIFE.** Why: it
+  is the only vendored file with transitive packages baked in, so
+  `ui/vendor/MANIFEST.md` spells out what "no transitive deps" means for
+  it: resolved once, pinned by version, frozen into a file whose hash is
+  recorded.
+- **The editor degrades to a textarea.** Why: a failed bundle load should
+  cost syntax highlighting, not the ability to edit a tool.

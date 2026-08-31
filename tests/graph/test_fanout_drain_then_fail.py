@@ -81,6 +81,22 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -186,7 +202,13 @@ def _agent(agent_id: str) -> Agent:
 
 
 def _model() -> ResolvedModel:
-    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
+    return ResolvedModel(
+        profile_id="test-profile",
+        provider_id="test-provider",
+        model_name="m",
+        context_length=128_000,
+        config=ModelProfileConfig(),
+    )
 
 
 async def _build_executor(*, graph: Graph, llm: _FailingFakeLLM):
@@ -266,7 +288,9 @@ async def test_drain_then_fail_completes_siblings_then_terminates() -> None:
     captured_node_states: list[dict] = []
     original_save_state = executor._save_state
 
-    async def tap_save(*, iteration, node_states, status, ended_reason=None, ended_detail=None):
+    async def tap_save(
+        *, iteration, node_states, status, ended_reason=None, ended_detail=None
+    ):
         captured_node_states.append(dict(node_states))
         return await original_save_state(
             iteration=iteration,
@@ -298,6 +322,7 @@ async def test_drain_then_fail_completes_siblings_then_terminates() -> None:
     # The successful workers' NodeOutputs landed in node_states; the failing
     # worker is FAILED. Look at the last superstep's node_states snapshot.
     from primer.model.graph import NodeRuntimeStatus
+
     last_states = captured_node_states[-1]
     assert last_states["worker[0]"].status == NodeRuntimeStatus.ENDED
     assert last_states["worker[2]"].status == NodeRuntimeStatus.ENDED

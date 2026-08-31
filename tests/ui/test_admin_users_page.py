@@ -4,9 +4,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ADMIN = ROOT / "ui" / "components" / "admin_users.jsx"
-CHROME = ROOT / "ui" / "components" / "chrome.jsx"
+ADMIN_OVERLAY = ROOT / "ui" / "components" / "console" / "nv-system.jsx"
 APP = ROOT / "ui" / "app.jsx"
-ROUTER = ROOT / "ui" / "foundation" / "router.js"
 INDEX = ROOT / "ui" / "index.html"
 
 
@@ -70,19 +69,16 @@ def test_registered_in_bundle_order() -> None:
     assert order.index("components/admin_users.jsx") < order.index("app.jsx")
 
 
-def test_router_has_admin_users_route() -> None:
-    assert "AdminUsersPage" in ROUTER.read_text()
-    assert "/admin/users" in ROUTER.read_text()
-
-
-def test_app_wires_admin_users_page() -> None:
-    src = APP.read_text()
-    assert "admin-users" in src
+def test_the_admin_overlay_renders_the_users_page() -> None:
+    """The console has no route table: the overlay host IS the wiring."""
+    src = (ROOT / "ui" / "components" / "console" / "nv-system.jsx").read_text()
     assert "ADM_AdminUsersPage" in src
 
 
-def test_chrome_nav_has_users_entry() -> None:
-    assert "admin-users" in CHROME.read_text()
+def test_admin_overlay_has_users_section() -> None:
+    """The shell has no per-page nav: admin surfaces are sections of
+    the one search-first admin overlay."""
+    assert '"users"' in ADMIN_OVERLAY.read_text()
 
 
 def test_keys_drilldown_present() -> None:
@@ -95,6 +91,66 @@ def test_keys_drilldown_present() -> None:
     assert "adm-revoke-key-btn" in src
     assert "/admin/users/" in src
     assert "/tokens" in src
+
+
+def test_extract_error_reads_extensions_not_detail() -> None:
+    """R5 fix: primer/api/errors.py's _http_exception_handler reduces a raw
+    HTTPException({error, message}) dict detail to RFC7807's own STRING
+    `detail`; the dict survives verbatim under `extensions`
+    (ui/foundation/api.js's ApiError: this.envelope = envelope, this.detail
+    = envelope.detail, a string). The old `envDetail && typeof envDetail
+    === "object"` check on `envelope.detail` could never be true, so `code`
+    was always null (message still rendered via the string fallback, so
+    this was invisible in the UI)."""
+    src = _src()
+    start = src.index("function ADM_extractError(")
+    end = src.index("\n}", start)
+    body = src[start:end]
+    assert "env.extensions" in body
+    assert "env.detail" not in body
+
+
+def test_disable_quick_action_present() -> None:
+    """notes section 4: Force-rotation + Disable per row - Disable is a
+    genuine one-click PATCH {disabled} action (no backend gap, unlike
+    force-rotation - see the row-level comment); anti-lockout can refuse
+    it too, so it needs its own inline error surface, not just the Edit
+    modal's."""
+    src = _src()
+    assert "toggle-disabled-btn-" in src
+    assert '{ disabled: !user.disabled }' in src
+    start = src.index("function ADM_UserRow(")
+    end = src.index("\n// ====", start)
+    body = src[start:end]
+    assert "ADM_extractError(err)" in body, "anti-lockout on Disable surfaces inline"
+
+
+def test_generate_password_option_on_create() -> None:
+    """Backend addendum (generate_password param, R5 password ruling):
+    the create form offers a checkbox alternative to typing a password,
+    and posts generate_password instead when checked."""
+    src = _src()
+    assert "adm-generate-password" in src
+    assert "generatePassword" in src
+    assert "body.generate_password = true" in src
+
+
+def test_force_rotation_quick_action_present() -> None:
+    """notes section 4: Force-rotation per row is now a real one-click
+    action (the backend gap that used to block it is closed) - PATCHes
+    generate_password: true and shows the returned plaintext once via
+    the shared ADM_PasswordOneTimeDialog."""
+    src = _src()
+    assert "force-rotation-btn-" in src
+    assert "generate_password: true" in src
+    assert "ADM_PasswordOneTimeDialog" in src
+    assert "window.ADM_PasswordOneTimeDialog" in src
+
+
+def test_plaintext_one_time_display_present() -> None:
+    src = _src()
+    assert "plaintext-display" in src
+    assert "copy-password-btn" in src
 
 
 def test_admin_users_transpiles() -> None:

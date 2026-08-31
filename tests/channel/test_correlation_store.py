@@ -3,7 +3,6 @@ import pytest
 from pathlib import Path
 from primer.channel.correlation import (
     CorrelationStore,
-    ACTIVE_CHAT_ANCHOR,
     _TABLE,
     _UNIQUE_INDEX,
 )
@@ -35,18 +34,15 @@ async def test_upsert_updates_tool_call_same_anchor(tmp_path: Path):
     page = await s.list_for_channel("ch-1")
     assert len(page) == 1  # upsert, not insert
 
-@pytest.mark.asyncio
-async def test_active_chat_helpers(tmp_path: Path):
-    s = await _store(tmp_path)
-    await s.set_active_chat("ch-1", "chat-1")
-    rec = await s.lookup("ch-1", ACTIVE_CHAT_ANCHOR)
-    assert rec.chat_id == "chat-1"
 
 @pytest.mark.asyncio
-async def test_upsert_chat_and_clear(tmp_path: Path):
+async def test_upsert_thread_session_and_clear(tmp_path: Path):
     s = await _store(tmp_path)
-    await s.upsert_chat(channel_id="ch-1", anchor="th-9", chat_id="chat-9")
-    assert (await s.lookup("ch-1", "th-9")).chat_id == "chat-9"
+    await s.upsert_thread_session(
+        channel_id="ch-1", anchor="th-9", workspace_id="ws-9",
+        session_id="sess-9",
+    )
+    assert (await s.lookup("ch-1", "th-9")).session_id == "sess-9"
     await s.clear("ch-1", "th-9")
     assert await s.lookup("ch-1", "th-9") is None
 
@@ -101,17 +97,22 @@ async def test_concurrent_upsert_session_resolves_to_single_row(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_upsert_chat_resolves_to_single_row(tmp_path: Path):
+async def test_concurrent_upsert_thread_session_resolves_to_single_row(
+    tmp_path: Path,
+):
     s = await _store(tmp_path)
     await s._ensure_unique_index()
 
-    async def _w(cid: str):
-        return await s.upsert_chat(channel_id="ch-1", anchor="th-1", chat_id=cid)
+    async def _w(sid: str):
+        return await s.upsert_thread_session(
+            channel_id="ch-1", anchor="th-1", workspace_id="ws-1",
+            session_id=sid,
+        )
 
-    await asyncio.gather(_w("chat-a"), _w("chat-b"))
+    await asyncio.gather(_w("sess-a"), _w("sess-b"))
     rows = await s.list_for_channel("ch-1")
     assert len(rows) == 1
-    assert rows[0].chat_id in {"chat-a", "chat-b"}
+    assert rows[0].session_id in {"sess-a", "sess-b"}
 
 
 @pytest.mark.asyncio

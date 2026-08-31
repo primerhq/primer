@@ -41,16 +41,20 @@ function MC_relTime(iso) {
 }
 
 // Extract a {code, message} from an ApiError envelope. Mirrors
-// AT_extractError so PUT failures surface the same way as the API
-// tokens page.
+// ADM_extractError/AT_extractError (R5 fix): primer/api/errors.py's
+// _http_exception_handler reduces a raw HTTPException({code, message})
+// dict detail to RFC7807's own STRING `detail` - the dict survives
+// verbatim under `extensions`, never under `detail` itself, so the old
+// `envDetail && typeof envDetail === "object"` check here could never
+// be true and `code` was always null.
 function MC_extractError(err) {
   const env = err && err.envelope;
-  const envDetail = env && env.detail;
+  const ext = env && env.extensions;
   let code = null;
   let msg = null;
-  if (envDetail && typeof envDetail === "object") {
-    code = envDetail.code || null;
-    msg = envDetail.message || null;
+  if (ext && typeof ext === "object") {
+    code = ext.code || ext.error || null;
+    msg = ext.message || null;
   }
   if (!msg && typeof err.detail === "string") msg = err.detail;
   if (!msg) msg = (err && (err.title || err.message)) || "Request failed";
@@ -351,10 +355,11 @@ function MC_EndpointPanel({ exposure, availableItems }) {
 // ============================================================================
 
 function MC_ToolsPanel({ exposure, available }) {
-  const { apiFetch } = window.primerApi;
+  const { apiFetch, Pager } = window.primerApi;
 
   const items = Array.isArray(available.data?.items) ? available.data.items : [];
   const row = exposure.data;
+  const masterEnabled = !!(row && row.enabled);
   const persistedAllowed = React.useMemo(
     () => new Set(Array.isArray(row && row.allowed_tools) ? row.allowed_tools : []),
     [row && row.allowed_tools],
@@ -369,9 +374,19 @@ function MC_ToolsPanel({ exposure, available }) {
   }, [persistedAllowed]);
 
   // Filter state.
+  const [search, setSearch] = React.useState("");
   const [toolsetFilter, setToolsetFilter] = React.useState([]); // [] = no filter
   const [exposableOnly, setExposableOnly] = React.useState(false);
   const [allowedOnly, setAllowedOnly] = React.useState(false);
+
+  // Client-side pager over the filtered set - /mcp_exposure/available has
+  // no server-side offset/limit (the catalogue is small enough to fetch
+  // whole; select-all/draft/search all need the full array in memory
+  // anyway), so this is a plain page-through of visibleItems rather than
+  // the shared usePagedList hook (which owns limit/offset query params
+  // against a server-paginated endpoint).
+  const PAGE_SIZE = 25;
+  const [pageOffset, setPageOffset] = React.useState(0);
 
   // PUT state.
   const [saving, setSaving] = React.useState(false);
@@ -400,18 +415,46 @@ function MC_ToolsPanel({ exposure, available }) {
   }, [items]);
 
   const visibleItems = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
     return items.filter((it) => {
       if (toolsetFilter.length > 0 && !toolsetFilter.includes(it.toolset_id)) {
         return false;
       }
       if (exposableOnly && !it.exposable) return false;
       if (allowedOnly && !draft.has(it.scoped_id)) return false;
+      if (q) {
+        const hay = (it.scoped_id + " " + (it.description || "")).toLowerCase();
+        if (hay.indexOf(q) === -1) return false;
+      }
       return true;
     });
-  }, [items, toolsetFilter, exposableOnly, allowedOnly, draft]);
+  }, [items, search, toolsetFilter, exposableOnly, allowedOnly, draft]);
+
+  // Filters changing invalidates the current page - snap back to the top
+  // rather than stranding the user on a now out-of-range offset.
+  React.useEffect(() => {
+    setPageOffset(0);
+  }, [search, toolsetFilter.join(","), exposableOnly, allowedOnly]);
+
+  const pageItems = React.useMemo(
+    () => visibleItems.slice(pageOffset, pageOffset + PAGE_SIZE),
+    [visibleItems, pageOffset],
+  );
+  const pager = {
+    items: pageItems,
+    total: visibleItems.length,
+    loading: false,
+    hasPrev: pageOffset > 0,
+    hasNext: pageOffset + PAGE_SIZE < visibleItems.length,
+    rangeStart: visibleItems.length === 0 ? 0 : pageOffset + 1,
+    rangeEnd: Math.min(pageOffset + PAGE_SIZE, visibleItems.length),
+    prev: () => setPageOffset((o) => Math.max(0, o - PAGE_SIZE)),
+    next: () => setPageOffset((o) => o + PAGE_SIZE),
+  };
 
   const toggleScoped = (scoped_id, exposable) => {
     if (!exposable) return; // Non-exposable rows are not editable.
+    if (!masterEnabled) return; // Notes 4: checkboxes disabled while the master toggle is off.
     setDraft((prev) => {
       const next = new Set(prev);
       if (next.has(scoped_id)) next.delete(scoped_id);
@@ -420,13 +463,15 @@ function MC_ToolsPanel({ exposure, available }) {
     });
   };
 
-  // Select-all checkbox state. Operates over the CURRENTLY-VISIBLE
-  // exposable rows so it respects the filter chips and the
-  // exposable/allowed-only toggles. Non-exposable rows are never
-  // affected (the server would reject the id anyway).
+  // Select-all checkbox state. Operates over the CURRENT PAGE's
+  // exposable rows so it respects the filter chips, the
+  // exposable/allowed-only toggles, AND the pager - "select all" means
+  // all rows actually on screen, not every match across every page.
+  // Non-exposable rows are never affected (the server would reject the
+  // id anyway); nothing is affected while the master toggle is off.
   const visibleExposable = React.useMemo(
-    () => visibleItems.filter((it) => it.exposable),
-    [visibleItems],
+    () => (masterEnabled ? pageItems.filter((it) => it.exposable) : []),
+    [pageItems, masterEnabled],
   );
   const visibleSelectedCount = React.useMemo(
     () => visibleExposable.reduce((n, it) => n + (draft.has(it.scoped_id) ? 1 : 0), 0),
@@ -505,6 +550,14 @@ function MC_ToolsPanel({ exposure, available }) {
         style={{ padding: "10px 12px", flexWrap: "wrap", gap: 10 }}
       >
         <span style={{ fontSize: 13, fontWeight: 600 }}>Exposed tools</span>
+        <input
+          className="input"
+          style={{ width: 200 }}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search tool or description…"
+          data-testid="mcp-tool-search"
+        />
         <div
           style={{
             display: "flex",
@@ -547,9 +600,10 @@ function MC_ToolsPanel({ exposure, available }) {
           <input
             type="checkbox"
             checked={allowedOnly}
+            data-testid="mcp-allowed-only-filter"
             onChange={(e) => setAllowedOnly(e.target.checked)}
           />
-          Allowed only
+          Allowed only <span className="mono">· {draft.size}</span>
         </label>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           <Btn
@@ -596,6 +650,16 @@ function MC_ToolsPanel({ exposure, available }) {
         </div>
       )}
 
+      {!masterEnabled && (
+        <div style={{ padding: "0 12px 10px" }} data-testid="mcp-master-off-hint">
+          <Banner
+            kind="info"
+            title="MCP endpoint is disabled"
+            detail="Per-tool checkboxes are read-only until you enable the endpoint above."
+          />
+        </div>
+      )}
+
       {available.loading && items.length === 0 && (
         <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>
           Loading catalogue…
@@ -618,6 +682,8 @@ function MC_ToolsPanel({ exposure, available }) {
       )}
 
       {visibleItems.length > 0 && (
+        <React.Fragment>
+        <Pager pager={pager} label="tools" />
         <table
           data-testid="mcp-tools-table"
           className="table"
@@ -633,8 +699,10 @@ function MC_ToolsPanel({ exposure, available }) {
                   onChange={toggleAllVisible}
                   disabled={visibleExposable.length === 0}
                   title={
-                    visibleExposable.length === 0
-                      ? "No exposable tools in the current filter"
+                    !masterEnabled
+                      ? "MCP endpoint is disabled"
+                      : visibleExposable.length === 0
+                      ? "No exposable tools on this page"
                       : allVisibleSelected
                       ? `Deselect all ${visibleExposable.length} visible tools`
                       : someVisibleSelected
@@ -648,11 +716,20 @@ function MC_ToolsPanel({ exposure, available }) {
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Tool</th>
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Toolset</th>
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Description</th>
+              {/* Platform wave P4 item 4: GET /mcp_exposure/available now
+                  carries yields/requires_workspace/tool_class/
+                  required_role per row (primer/mcp/exposure.py's
+                  list_available_tools, platform wave P2 #28) - the same
+                  shared CapabilityBadges the agent tool picker already
+                  renders, so an operator building this allowlist can
+                  tell a workspace-only or yielding tool apart from a
+                  plain one before exposing it. */}
+              <th style={{ textAlign: "left", padding: "8px 12px" }}>Flags</th>
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Status</th>
             </tr>
           </thead>
           <tbody>
-            {visibleItems.map((it) => {
+            {pageItems.map((it) => {
               const staged = draft.has(it.scoped_id);
               const persisted = persistedAllowed.has(it.scoped_id);
               return (
@@ -669,8 +746,10 @@ function MC_ToolsPanel({ exposure, available }) {
                       <input
                         type="checkbox"
                         checked={staged}
+                        disabled={!masterEnabled}
                         onChange={() => toggleScoped(it.scoped_id, true)}
                         aria-label={`Allow ${it.scoped_id}`}
+                        title={!masterEnabled ? "MCP endpoint is disabled" : undefined}
                       />
                     ) : (
                       <Icon name="x-circle" size={14} className="muted" />
@@ -706,6 +785,10 @@ function MC_ToolsPanel({ exposure, available }) {
                     {it.description || <span className="muted">—</span>}
                   </td>
                   <td style={{ padding: "6px 12px" }}>
+                    <window.primerApi.CapabilityBadges tool={it}
+                      testid={`tool-flags-${it.scoped_id}`} />
+                  </td>
+                  <td style={{ padding: "6px 12px" }}>
                     {it.exposable ? (
                       <span className="pill pill-claimed" style={{ fontSize: 10.5 }}>
                         exposable
@@ -725,6 +808,7 @@ function MC_ToolsPanel({ exposure, available }) {
             })}
           </tbody>
         </table>
+        </React.Fragment>
       )}
     </div>
   );

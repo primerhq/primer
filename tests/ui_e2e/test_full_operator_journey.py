@@ -17,6 +17,8 @@ LM Studio reachability.
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 import httpx
@@ -30,6 +32,7 @@ import pytest
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-02", "SMK-UI-03", "SMK-UI-04", "SMK-UI-06")
 
 
@@ -172,27 +175,35 @@ def test_multi_page_operator_journey_no_llm(
     """
     ids = _seed_full_set(base_url, unique_suffix, tmp_path)
     try:
-        # ----- 1. Dashboard (initial nav done by `page` fixture)
-        page.locator("h1.page-title").first.wait_for(
+        # ----- 1. The shell itself (initial nav done by `page` fixture)
+        # There is no dashboard page any more, and no page-title outside
+        # an overlay: landing on the console lands you in a workspace.
+        page.get_by_test_id("nv-root").wait_for(
             state="visible", timeout=10_000,
         )
 
         # ----- 2. Workspaces list
-        page.goto(f"{console_url}#/workspaces", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "workspaces")
         page.locator("h1.page-title").get_by_text(
             "Workspaces", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
-        # The workspace row uses the backend-assigned id; assert it's
-        # in the rendered table.
-        page.locator(f"tr:has-text('{ids['workspace']}')").first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        # RETARGET (platform wave P1b item 7): the workspaces list moved
+        # from a <table>/<tr> to a .pc-card-grid of cards
+        # (data-testid="workspace-card-<id>") - missed in that wave's
+        # own e2e sweep since "tr:has-text" doesn't match the "<tr"/
+        # "tbody" substrings that sweep grepped for. The workspace row
+        # uses the backend-assigned id; assert its card is rendered.
+        ws_card = page.get_by_test_id(f"workspace-card-{ids['workspace']}")
+        ws_card.wait_for(state="visible", timeout=10_000)
 
-        # ----- 3. Workspace detail (click the row)
-        page.locator(f"tr:has-text('{ids['workspace']}')").first.click()
-        # URL transitions to /workspaces/{id}
+        # ----- 3. Enter the workspace (click Open)
+        # Unlike the old <tr>, the card itself carries no click-to-enter
+        # handler (only its Open button does, same as P1a's provider
+        # cards) - "#/w/<wid>" is how the shell says which workspace it
+        # is in.
+        page.get_by_test_id(f"workspace-card-open-{ids['workspace']}").click()
         page.wait_for_url(
-            f"**/console/#/workspaces/{ids['workspace']}**", timeout=10_000,
+            re.compile(rf"#/w/{re.escape(ids['workspace'])}\b"), timeout=10_000,
         )
         # The detail page renders the workspace id somewhere in the
         # header — be permissive on layout, just confirm presence.
@@ -201,7 +212,7 @@ def test_multi_page_operator_journey_no_llm(
         )
 
         # ----- 4. Agents list
-        page.goto(f"{console_url}#/agents", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "agents")
         page.locator("h1.page-title").get_by_text(
             "Agents", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -211,15 +222,13 @@ def test_multi_page_operator_journey_no_llm(
 
         # ----- 5. Agent detail
         page.locator(f"tr:has-text('{ids['agent']}')").first.click()
-        page.wait_for_url(
-            f"**/console/#/agents/{ids['agent']}**", timeout=10_000,
-        )
+        wait_for_overlay_url(page, f"agents/{ids['agent']}", timeout=10_000)
         page.get_by_text(ids["agent"], exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )
 
         # ----- 6. Graphs list
-        page.goto(f"{console_url}#/graphs", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "graphs")
         page.locator("h1.page-title").get_by_text(
             "Graphs", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -228,7 +237,7 @@ def test_multi_page_operator_journey_no_llm(
         )
 
         # ----- 7. Toolsets list
-        page.goto(f"{console_url}#/toolsets", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "toolsets")
         page.locator("h1.page-title").get_by_text(
             "Toolsets", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -237,19 +246,34 @@ def test_multi_page_operator_journey_no_llm(
         )
 
         # ----- 8. Providers > LLM list
-        page.goto(
-            f"{console_url}#/providers/llm", wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "providers/llm")
         page.locator("h1.page-title").first.wait_for(
             state="visible", timeout=10_000,
         )
-        page.locator(f"tr:has-text('{ids['llm']}')").first.wait_for(
-            state="visible", timeout=10_000,
+        # The catalog lists instances as cards beside the form, not as
+        # table rows: S4 P4 retired the per-class provider pages and
+        # their tables. The list paginates at 25 with no search field
+        # (provider-catalog.jsx's PC_InstanceList) and the shared stack
+        # legitimately accumulates fixture residue across rounds (by
+        # design), which can push this seed past page 1 - page forward
+        # rather than assuming page 1.
+        llm_row = page.get_by_test_id("provider-instances-llm").get_by_text(
+            ids["llm"], exact=True,
         )
+        next_btn = page.get_by_test_id("pager-next")
+        for _ in range(50):
+            if llm_row.count() > 0 or next_btn.is_disabled():
+                break
+            next_btn.click()
+            page.wait_for_timeout(300)
+        llm_row.first.wait_for(state="visible", timeout=10_000)
 
-        # ----- 9. Back to dashboard
+        # ----- 9. Back to the shell
+        # There is no dashboard page and no page title outside an
+        # overlay, same as step 1: landing on the console lands you in a
+        # workspace.
         page.goto(f"{console_url}#/", wait_until="domcontentloaded")
-        page.locator("h1.page-title").first.wait_for(
+        page.get_by_test_id("nv-root").wait_for(
             state="visible", timeout=10_000,
         )
 

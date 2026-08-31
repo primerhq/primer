@@ -175,6 +175,17 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                 duration_ms=(time.monotonic() - t0) * 1000.0,
                 error_code=error_code,
             )
+            from primer.events.recorder import actor_of, recorder_for
+
+            await recorder_for(deps.storage_provider).emit(
+                "mcp.tool_called",
+                actor=actor_of(principal),
+                payload={
+                    "tool": name,
+                    "ok": ok,
+                    "error_code": error_code,
+                },
+            )
 
     # Silence unused-import warnings on INVALID_PARAMS — kept in scope
     # so future handlers (e.g. session-init validation) can reuse the

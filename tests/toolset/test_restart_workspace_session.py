@@ -71,8 +71,29 @@ class _Storage:
         self._data[row.id] = row
         return row
 
+    async def update_unless(
+        self,
+        row,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(row.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {row.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[row.id] = row
+        return row
+
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._s = _Storage()
 
@@ -181,7 +202,10 @@ class TestRestartWorkspaceSession:
         from primer.model.workspace_session import SessionStatus
 
         _seed_session(
-            sp, sid="sess-1", wid="ws-1", status=SessionStatus.RUNNING,
+            sp,
+            sid="sess-1",
+            wid="ws-1",
+            status=SessionStatus.RUNNING,
         )
         result = await session_toolset.call(
             tool_name="restart_workspace_session",
@@ -191,9 +215,7 @@ class TestRestartWorkspaceSession:
         assert json.loads(result.output)["type"] == "conflict"
 
     @pytest.mark.asyncio
-    async def test_restart_missing_session_is_not_found(
-        self, session_toolset
-    ) -> None:
+    async def test_restart_missing_session_is_not_found(self, session_toolset) -> None:
         result = await session_toolset.call(
             tool_name="restart_workspace_session",
             arguments={"workspace_id": "ws-1", "session_id": "nope"},
@@ -202,9 +224,7 @@ class TestRestartWorkspaceSession:
         assert json.loads(result.output)["type"] == "not-found"
 
     @pytest.mark.asyncio
-    async def test_restart_without_scheduler_is_unavailable(
-        self, sp, registry
-    ) -> None:
+    async def test_restart_without_scheduler_is_unavailable(self, sp, registry) -> None:
         ts = build_workspaces_toolset(
             storage_provider=sp,
             workspace_registry=registry,

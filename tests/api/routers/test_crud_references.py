@@ -22,7 +22,14 @@ from primer.api.errors import register_error_handlers
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
 from primer.model.except_ import ConflictError
-from primer.model.storage import FieldRef, OffsetPage, OffsetPageResponse, Op, Predicate, Value
+from primer.model.storage import (
+    FieldRef,
+    OffsetPage,
+    OffsetPageResponse,
+    Op,
+    Predicate,
+    Value,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +57,9 @@ class _FakeStorage:
     def __init__(self, items: list[Any]) -> None:
         self._items = items
 
-    async def find(self, predicate: Any, page: OffsetPage, **_: Any) -> OffsetPageResponse[Any]:  # type: ignore[override]
+    async def find(
+        self, predicate: Any, page: OffsetPage, **_: Any
+    ) -> OffsetPageResponse[Any]:  # type: ignore[override]
         # Evaluate the simple EQ predicate manually.
         from primer.model.storage import FieldRef, Op, Predicate, Value
 
@@ -295,14 +304,36 @@ class _IParentStorage:
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         self._data.pop(id, None)
 
-    async def list(self, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_IParent]:
+    async def list(
+        self, page: Any, *, order_by: Any = None
+    ) -> OffsetPageResponse[_IParent]:
         items = list(self._data.values())
-        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+        return OffsetPageResponse(
+            offset=0, length=len(items), total=len(items), items=items
+        )
 
-    async def find(self, predicate: Any, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_IParent]:
+    async def find(
+        self, predicate: Any, page: Any, *, order_by: Any = None
+    ) -> OffsetPageResponse[_IParent]:
         return await self.list(page, order_by=order_by)
 
 
@@ -321,14 +352,36 @@ class _IChildStorage:
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         self._data.pop(id, None)
 
-    async def list(self, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_IChild]:
+    async def list(
+        self, page: Any, *, order_by: Any = None
+    ) -> OffsetPageResponse[_IChild]:
         items = list(self._data.values())
-        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+        return OffsetPageResponse(
+            offset=0, length=len(items), total=len(items), items=items
+        )
 
-    async def find(self, predicate: Any, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_IChild]:
+    async def find(
+        self, predicate: Any, page: Any, *, order_by: Any = None
+    ) -> OffsetPageResponse[_IChild]:
         """Filter by a simple EQ predicate on parent_id."""
         matched: list[_IChild] = []
         if isinstance(predicate, Predicate) and predicate.op == Op.EQ:
@@ -349,7 +402,9 @@ class _IChildStorage:
                 total=len(matched),
                 items=sliced,
             )
-        return OffsetPageResponse(offset=0, length=len(matched), total=len(matched), items=matched)
+        return OffsetPageResponse(
+            offset=0, length=len(matched), total=len(matched), items=matched
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -380,12 +435,8 @@ async def references_client() -> AsyncIterator[httpx.AsyncClient]:
     global _PARENT_STORAGE, _CHILD_STORAGE  # noqa: PLW0603
 
     # Seed: two parents p1, p2; one child of p1 only.
-    _PARENT_STORAGE = _IParentStorage(
-        items=[_IParent(id="p1"), _IParent(id="p2")]
-    )
-    _CHILD_STORAGE = _IChildStorage(
-        items=[_IChild(id="c1", parent_id="p1")]
-    )
+    _PARENT_STORAGE = _IParentStorage(items=[_IParent(id="p1"), _IParent(id="p2")])
+    _CHILD_STORAGE = _IChildStorage(items=[_IChild(id="c1", parent_id="p1")])
 
     parent_router = make_crud_router(
         model_cls=_IParent,
@@ -451,8 +502,7 @@ async def test_reference_check_allows_delete_when_no_child(
 
 
 @pytest.mark.asyncio
-async def test_references_composes_with_user_on_pre_delete(
-) -> None:
+async def test_references_composes_with_user_on_pre_delete() -> None:
     """When both references= and on_pre_delete are set, the reference check
     fires first; on_pre_delete fires afterwards on success."""
     global _PARENT_STORAGE, _CHILD_STORAGE  # noqa: PLW0603

@@ -2,9 +2,9 @@
 
 Mirrors :mod:`tests.worker.test_harness_claim_loop`: spin up the real
 :class:`WorkerPool` against an in-memory event bus + claim engine, seed
-a delayed Trigger row + a ChatMessage Subscription pointing at a real
-chat, upsert a TRIGGER lease, then poll the chat's messages until the
-subscription dispatched a user_message.
+a delayed Trigger row + a session_append Subscription pointing at a real
+session with an open turn, upsert a TRIGGER lease, then poll until the
+subscription queued the steer as a PendingSessionMessage.
 
 Catchup behaviour for scheduled triggers is unit-tested at the
 ``_run_engine_trigger`` level inside this module so we don't have to
@@ -22,11 +22,10 @@ from primer.bus.in_memory import InMemoryEventBus
 from primer.claim.factory import ClaimEngineFactory
 from primer.int.claim import ClaimKind
 from primer.model.agent import Agent, AgentModel
-from primer.model.chats import Chat, ChatMessage
 from primer.model.scheduler import WorkerConfig
 from primer.model.storage import OffsetPage
 from primer.model.trigger import (
-    ChatMessageSubConfig,
+    SessionAppendSubConfig,
     DelayedTriggerConfig,
     ScheduledTriggerConfig,
     Subscription,
@@ -50,17 +49,29 @@ async def _seed_agent(storage_provider) -> Agent:
     return agent
 
 
-async def _seed_chat(storage_provider, agent_id: str) -> Chat:
-    chat = Chat(
-        id="cn-trig",
-        agent_id=agent_id,
-        last_seq=0,
-        status="active",
-        turn_status="idle",
+async def _seed_session(storage_provider, agent_id: str):
+    """A session mid-turn, so the steer queues instead of waking it.
+
+    Queueing is what this test can observe without a live workspace slot:
+    ``wake_session`` needs one to append the instruction, the pending-row
+    path does not.
+    """
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
+
+    session = WorkspaceSession(
+        id="sess-trig",
+        workspace_id="ws-trig",
+        binding=AgentSessionBinding(agent_id=agent_id),
+        status=SessionStatus.RUNNING,
+        turn_status="running",
         created_at=_now(),
     )
-    await storage_provider.get_storage(Chat).create(chat)
-    return chat
+    await storage_provider.get_storage(WorkspaceSession).create(session)
+    return session
 
 
 @pytest.mark.asyncio
@@ -73,7 +84,7 @@ async def test_pool_routes_trigger_lease_to_fire(
     scheduler = InMemoryScheduler(storage_provider=fake_storage_provider)
 
     agent = await _seed_agent(fake_storage_provider)
-    await _seed_chat(fake_storage_provider, agent.id)
+    await _seed_session(fake_storage_provider, agent.id)
 
     # Seed the trigger + subscription rows.
     triggers = fake_storage_provider.get_storage(Trigger)
@@ -88,8 +99,9 @@ async def test_pool_routes_trigger_lease_to_fire(
     await triggers.create(t)
     sub = Subscription(
         id="sb-pool", trigger_id="tr-pool",
-        config=ChatMessageSubConfig(chat_id="cn-trig"),
+        config=SessionAppendSubConfig(session_id="sess-trig"),
         payload_template="hello",
+        parallelism="queue",
         enabled=True,
         created_at=_now(),
     )
@@ -109,35 +121,41 @@ async def test_pool_routes_trigger_lease_to_fire(
         ),
         scheduler=scheduler,
         storage=fake_storage_provider,
-        workspace_registry=None,
+        # session_append refuses to dispatch without a workspace registry
+        # (it needs one to reach a woken session's on-disk slot). The queue
+        # path this test exercises never dereferences it, so a stand-in is
+        # enough to get past that guard.
+        workspace_registry=object(),
         provider_registry=fake_provider_registry,
         event_bus=bus,
-        chat_tick_router=None,
         engine=engine,
     )
     try:
         await pool.start()
         await engine.upsert(ClaimKind.TRIGGER, "tr-pool", priority=10)
 
-        messages_storage = fake_storage_provider.get_storage(ChatMessage)
-        # Poll until a user_message lands.
+        from primer.model.workspace_session import PendingSessionMessage
+
+        pending_storage = fake_storage_provider.get_storage(
+            PendingSessionMessage
+        )
+        # Poll until the steer is queued on the target session.
         landed = None
         for _ in range(60):
             await asyncio.sleep(0.05)
-            page = await messages_storage.list(OffsetPage(offset=0, length=10))
-            user_msgs = [m for m in page.items if m.kind == "user_message"]
-            if user_msgs:
-                landed = user_msgs[0]
+            page = await pending_storage.list(OffsetPage(offset=0, length=10))
+            if page.items:
+                landed = page.items[0]
                 break
         assert landed is not None, (
-            "trigger lease did not produce a user_message — "
+            "trigger lease did not queue a steer - "
             "WorkerPool TRIGGER dispatch is not wired"
         )
-        assert landed.payload.get("content") == "hello"
-        # The fire_id stamped on the message must reference our trigger.
-        trig = landed.payload.get("trigger") or {}
-        assert trig.get("trigger_id") == "tr-pool"
-        assert trig.get("subscription_id") == "sb-pool"
+        assert landed.session_id == "sess-trig"
+        # The rendered payload is the queued row's leading text part.
+        assert any(
+            part.get("text") == "hello" for part in landed.parts
+        ), f"expected the rendered payload in the parts; got {landed.parts}"
 
         # Trigger row's last_fired_at was bumped + on_release disabled it
         # (delayed → one-off).
@@ -209,7 +227,6 @@ async def test_run_engine_trigger_catchup_all_replays_missed_ticks(
         workspace_registry=None,
         provider_registry=fake_provider_registry,
         event_bus=bus,
-        chat_tick_router=None,
         engine=engine,
     )
     # Skip start() — we drive _run_engine_trigger directly.

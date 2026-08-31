@@ -51,8 +51,6 @@ async def tools(tmp_path):
             "entity": Collection(
                 id="c1",
                 description="test",
-                embedder=CollectionEmbedder(provider_id="hf-1", model="m"),
-                search_provider_id="ssp-1",
             ).model_dump(mode="json")
         },
     )
@@ -69,11 +67,11 @@ async def test_put_then_get_by_path(tools):
     r = await call(
         provider,
         "put_document",
-        {"collection_id": "c1", "path": "a/b.md", "content": "hello", "title": "B"},
+        {"collection_id": "c1", "slug": "b.md", "path": "a/b.md", "content": "hello", "title": "B"},
     )
     assert not r.is_error, r.output
     g = await call(
-        provider, "get_document_content", {"collection_id": "c1", "path": "a/b.md"}
+        provider, "get_document_content", {"collection_id": "c1", "slug": "b.md", "path": "a/b.md"}
     )
     assert not g.is_error, g.output
     body = json.loads(g.output)
@@ -96,11 +94,11 @@ async def test_put_empty_content(tools):
     r = await call(
         provider,
         "put_document",
-        {"collection_id": "c1", "path": "empty.md", "content": ""},
+        {"collection_id": "c1", "slug": "empty.md", "path": "empty.md", "content": ""},
     )
     assert not r.is_error, r.output
     g = await call(
-        provider, "get_document_content", {"collection_id": "c1", "path": "empty.md"}
+        provider, "get_document_content", {"collection_id": "c1", "slug": "empty.md", "path": "empty.md"}
     )
     assert not g.is_error, g.output
     assert json.loads(g.output)["content"] == ""
@@ -129,7 +127,7 @@ async def test_list_documents(tools):
 async def test_move_document(tools):
     provider, _sp = tools
     r = await call(
-        provider, "put_document", {"collection_id": "c1", "path": "a.md", "content": "x"}
+        provider, "put_document", {"collection_id": "c1", "slug": "a.md", "path": "a.md", "content": "x"}
     )
     assert not r.is_error, r.output
     mv = await call(
@@ -137,12 +135,12 @@ async def test_move_document(tools):
     )
     assert not mv.is_error, mv.output
     gone = await call(
-        provider, "get_document_content", {"collection_id": "c1", "path": "a.md"}
+        provider, "get_document_content", {"collection_id": "c1", "slug": "a.md", "path": "a.md"}
     )
     assert gone.is_error
     assert json.loads(gone.output)["type"] == "not-found"
     moved = await call(
-        provider, "get_document_content", {"collection_id": "c1", "path": "b.md"}
+        provider, "get_document_content", {"collection_id": "c1", "slug": "b.md", "path": "b.md"}
     )
     assert not moved.is_error, moved.output
     assert json.loads(moved.output)["content"] == "x"
@@ -151,7 +149,7 @@ async def test_move_document(tools):
 async def test_get_missing_is_not_found_tool_error(tools):
     provider, _sp = tools
     g = await call(
-        provider, "get_document_content", {"collection_id": "c1", "path": "nope.md"}
+        provider, "get_document_content", {"collection_id": "c1", "slug": "nope.md", "path": "nope.md"}
     )
     assert g.is_error
     assert json.loads(g.output)["type"] == "not-found"

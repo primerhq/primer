@@ -68,6 +68,22 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -106,9 +122,9 @@ class _InMemoryStorage(Generic[_T]):
         if p.op == Op.EQ:
             return getattr(entity, p.left.name) == p.right.value
         if p.op == Op.AND:
-            return _InMemoryStorage._eval(
-                p.left, entity
-            ) and _InMemoryStorage._eval(p.right, entity)
+            return _InMemoryStorage._eval(p.left, entity) and _InMemoryStorage._eval(
+                p.right, entity
+            )
         raise NotImplementedError(f"op {p.op!r} not supported")
 
 
@@ -142,7 +158,13 @@ def _agent(agent_id: str) -> Agent:
 
 
 def _model() -> ResolvedModel:
-    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
+    return ResolvedModel(
+        profile_id="test-profile",
+        provider_id="test-provider",
+        model_name="m",
+        context_length=128_000,
+        config=ModelProfileConfig(),
+    )
 
 
 async def _build_executor(*, graph: Graph, llm: _FakeLLM, agents: dict[str, Agent]):

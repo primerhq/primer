@@ -210,6 +210,104 @@ async def test_can_demote_when_second_admin_exists(client, app):
 
 
 @pytest.mark.asyncio
+async def test_create_with_generate_password_returns_plaintext_once_and_logs_in(client):
+    r = await client.post(
+        "/v1/admin/users",
+        json={"username": "iris", "role": "user", "generate_password": True},
+    )
+    assert r.status_code == 201, r.text
+    got = r.json()
+    assert "password_hash" not in got
+    assert got["must_change_password"] is True
+    plaintext = got["generated_password"]
+    assert plaintext and len(plaintext) >= 8
+
+    login = await client.post(
+        "/v1/auth/login", json={"username": "iris", "password": plaintext},
+    )
+    assert login.status_code == 200, login.text
+
+
+@pytest.mark.asyncio
+async def test_create_without_generate_password_has_no_plaintext_field(client):
+    r = await client.post(
+        "/v1/admin/users", json={"username": "jack", "role": "restricted"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["generated_password"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_password_and_generate_password_together(client):
+    r = await client.post(
+        "/v1/admin/users",
+        json={
+            "username": "kate", "role": "user",
+            "password": "katepassword", "generate_password": True,
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["extensions"]["error"] == "conflicting_password_fields"
+
+
+@pytest.mark.asyncio
+async def test_patch_force_rotation_returns_new_plaintext_and_invalidates_old(client):
+    create = await client.post(
+        "/v1/admin/users",
+        json={"username": "leo", "password": "leooldpassword", "role": "user"},
+    )
+    user_id = create.json()["id"]
+
+    patch = await client.patch(
+        f"/v1/admin/users/{user_id}", json={"generate_password": True},
+    )
+    assert patch.status_code == 200, patch.text
+    got = patch.json()
+    assert got["must_change_password"] is True
+    plaintext = got["generated_password"]
+    assert plaintext and len(plaintext) >= 8
+
+    old = await client.post(
+        "/v1/auth/login", json={"username": "leo", "password": "leooldpassword"},
+    )
+    assert old.status_code == 401, old.text
+
+    new = await client.post(
+        "/v1/auth/login", json={"username": "leo", "password": plaintext},
+    )
+    assert new.status_code == 200, new.text
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_password_and_generate_password_together(client):
+    create = await client.post(
+        "/v1/admin/users",
+        json={"username": "mia", "password": "miaoldpassword", "role": "user"},
+    )
+    user_id = create.json()["id"]
+
+    r = await client.patch(
+        f"/v1/admin/users/{user_id}",
+        json={"password": "mianewpassword", "generate_password": True},
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["extensions"]["error"] == "conflicting_password_fields"
+
+
+@pytest.mark.asyncio
+async def test_patch_without_password_fields_has_no_plaintext_field(client):
+    create = await client.post(
+        "/v1/admin/users",
+        json={"username": "nina", "password": "ninapassword", "role": "user"},
+    )
+    user_id = create.json()["id"]
+
+    r = await client.patch(f"/v1/admin/users/{user_id}", json={"email": "n@x.com"})
+    assert r.status_code == 200, r.text
+    assert r.json()["generated_password"] is None
+
+
+@pytest.mark.asyncio
 async def test_can_delete_when_second_admin_exists(client, app):
     await app.state.storage_provider.get_storage(User).create(
         User(

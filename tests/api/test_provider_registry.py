@@ -42,11 +42,32 @@ class _FakeStorage:
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         self._data.pop(id, None)
 
 
 class _FakeStorageProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _FakeStorage] = {}
 
@@ -181,7 +202,9 @@ class TestCrossEncoderResolution:
     @pytest.mark.asyncio
     async def test_lookup_constructs_and_caches(self) -> None:
         sp = _FakeStorageProvider()
-        await sp.get_storage(CrossEncoderProvider).create(_make_cross_encoder_provider())
+        await sp.get_storage(CrossEncoderProvider).create(
+            _make_cross_encoder_provider()
+        )
 
         ctor = MagicMock(return_value=MagicMock())
         registry = ProviderRegistry(sp, cross_encoder_factory=lambda p: ctor(p))
@@ -201,7 +224,9 @@ class TestCrossEncoderResolution:
     @pytest.mark.asyncio
     async def test_invalidate_drops_cache_and_calls_aclose(self) -> None:
         sp = _FakeStorageProvider()
-        await sp.get_storage(CrossEncoderProvider).create(_make_cross_encoder_provider())
+        await sp.get_storage(CrossEncoderProvider).create(
+            _make_cross_encoder_provider()
+        )
 
         adapter = MagicMock()
         adapter.aclose = AsyncMock()

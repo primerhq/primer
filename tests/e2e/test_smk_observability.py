@@ -11,7 +11,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 
@@ -26,6 +26,10 @@ async def test_prometheus_metrics_endpoint(authed_client):
     body = r.text
     assert "# TYPE" in body  # Prometheus exposition format
     assert "_total" in body  # at least one counter is exported
+    # S7: the gap instruments are declared at import time, so their TYPE
+    # lines are exported even before the first sample lands.
+    for family in ("worker_tasks_total", "turns_total", "sessions_active"):
+        assert f"# TYPE {family}" in body, f"{family} missing from /metrics"
 
 
 @smk("SMK-OBS-02")
@@ -61,7 +65,7 @@ async def test_session_turn_log_after_run(authed_client, mock_llm, unique_suffix
     )
     wid = await make_local_workspace(authed_client, suffix=unique_suffix, root=tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    await wait_terminal(authed_client, sid)
+    await wait_completed(authed_client, sid)
     tl = await authed_client.get(f"/v1/sessions/{sid}/turn_log")
     assert tl.status_code == 200, tl.text
     body = tl.json()

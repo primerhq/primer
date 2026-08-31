@@ -21,6 +21,7 @@ from tests._support.runs import (
     make_scripted_agent,
     start_agent_session,
     start_graph_session,
+    wait_completed,
     wait_terminal,
 )
 from tests._support.smk import smk
@@ -188,8 +189,8 @@ async def test_stdio_mcp_approval_park_resume(
             authed_client, sid, min_turn_no=initial_turn_no + 1, timeout_s=90.0)
 
         # ----- Session reaches terminal -----
-        final = await wait_terminal(authed_client, sid, timeout_s=90)
-        assert final.get("status") == "ended", final
+        final = await wait_completed(authed_client, sid, timeout_s=90)
+        assert final.get("session_state") == "parked", final
 
         # ----- The real stdio MCP bump tool executed EXACTLY ONCE -----
         # The gated tool runs exactly once after approval: the approval-resume
@@ -282,8 +283,8 @@ async def test_subscribe_to_trigger_park_resume(
         assert body["turn_no"] > initial_turn_no, body
 
         # ----- Session reaches terminal -----
-        final = await wait_terminal(authed_client, sid, timeout_s=90)
-        assert final.get("status") == "ended", final
+        final = await wait_completed(authed_client, sid, timeout_s=90)
+        assert final.get("session_state") == "parked", final
 
         # The one-shot parked_session subscription was consumed on fire.
         r = await authed_client.get(f"/v1/triggers/{trigger_id}/subscriptions")

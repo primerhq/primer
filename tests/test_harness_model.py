@@ -116,12 +116,10 @@ def test_collection_carries_harness_id():
     from primer.model.collection import Collection, CollectionEmbedder, Document
     c = Collection(
         id="c1", description="x",
-        embedder=CollectionEmbedder(provider_id="p", model="m"),
-        search_provider_id="s",
         harness_id="h1",
     )
     assert c.harness_id == "h1"
-    d = Document(id="d1", collection_id="c1", name="n", path="d1.md", meta={}, harness_id="h1")
+    d = Document(id="d1", collection_id="c1", slug="d1.md", path="d1.md", meta={}, harness_id="h1")
     assert d.harness_id == "h1"
 
 

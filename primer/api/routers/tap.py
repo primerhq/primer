@@ -14,7 +14,7 @@ end-to-end:
 * **Selector** arrives as an optional ``?selector=`` query parameter carrying a
   base64url- or raw-JSON-encoded :class:`TapSelector`. A GET stream has no
   body, so a query parameter keeps the surface cacheable, reconnect-friendly,
-  and CLI-trivial (``primectl tap`` just appends ``?selector=``).
+  and trivial for any client to build: append ``?selector=``.
 * **Cursor / reconnect** comes from the ``Last-Event-ID`` request header
   (SSE-native, set automatically by browsers/`httpx-sse` on reconnect) and
   falls back to ``?cursor=``; the header wins. Both decode via the tolerant
@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -182,6 +183,17 @@ def _frame(event: TapEvent) -> str:
     return f"id: {event.cursor}\ndata: {data}\n\n"
 
 
+def _delta_frame(frame: dict) -> str:
+    """Render one ephemeral delta frame as a bare SSE ``data:`` line.
+
+    No ``id:`` line: deltas never advance the tap cursor (the durable tick is
+    the only cursor pointer), so a reconnect resumes from the durable log,
+    not from deltas. An old client that keys off ``class`` and ``seq`` sees a
+    frame with neither and ignores it (the existing seq guard drops it).
+    """
+    return f"data: {json.dumps(frame)}\n\n"
+
+
 async def _stream_tap(
     *,
     router: "WorkspaceTapRouter",
@@ -217,27 +229,42 @@ async def _stream_tap(
             # high-water mark so pre-existing history is NOT replayed.
             cursor.advance(row.id, row.last_seq)
 
-    sub = router.subscribe(workspace_id)
+    tick_sub = router.subscribe(workspace_id)
+    delta_sub = router.subscribe_delta(workspace_id)
+    combined: asyncio.Queue = asyncio.Queue()
+
+    async def _pump(sub, tag):
+        try:
+            async for item in sub:
+                await combined.put((tag, item))
+        except asyncio.CancelledError:
+            pass
+        except StopAsyncIteration:
+            pass
+        except Exception:
+            logger.exception("workspace tap: %s pump failed", tag)
+
+    pump_tick = asyncio.create_task(_pump(tick_sub, "tick"))
+    pump_delta = asyncio.create_task(_pump(delta_sub, "delta"))
     try:
         while True:
             try:
-                wtick = await asyncio.wait_for(
-                    sub.__anext__(), timeout=_KEEPALIVE_INTERVAL_S
+                tag, item = await asyncio.wait_for(
+                    combined.get(), timeout=_KEEPALIVE_INTERVAL_S
                 )
             except TimeoutError:
                 # Idle: emit a keepalive comment so proxies do not reap us.
                 yield ": keepalive\n\n"
                 continue
-            except StopAsyncIteration:
-                return
 
+            if tag == "delta":
+                yield _delta_frame(item)
+                continue
+
+            wtick = item
             sid = wtick.session_id
             entry = in_scope.get(sid)
             if entry is None:
-                # Session not yet confirmed in scope — re-resolve it now.
-                # We do NOT cache a negative result: scope membership is
-                # mutable (e.g. status transitions) so each tick re-evaluates
-                # until the session enters scope or the connection closes.
                 row = await _resolve_single_in_scope(
                     sessions_storage,
                     workspace_id=workspace_id,
@@ -246,7 +273,6 @@ async def _stream_tap(
                 )
                 if row is None:
                     continue
-                # A newly-in-scope session starts from seq 0 (full), per spec.
                 in_scope[sid] = (row, 0)
                 entry = in_scope[sid]
 
@@ -263,13 +289,88 @@ async def _stream_tap(
 
             for ev in events:
                 cursor.advance(sid, ev.seq)
-                # STAMP: overwrite the reader's per-session placeholder with the
-                # full multi-session token so each frame's id: is a resumable
-                # Last-Event-ID. This is the load-bearing seam.
                 ev.cursor = cursor.encode()
                 yield _frame(ev)
     finally:
-        await sub.aclose()
+        await tick_sub.aclose()
+        await delta_sub.aclose()
+        pump_tick.cancel()
+        pump_delta.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Derived envelopes
+# ---------------------------------------------------------------------------
+#
+# These are frames, not records. They are built from the session row plus
+# the log, never advance the tap cursor, and carry STATE rather than
+# deltas, so a client that reconnects re-derives the current snapshot
+# instead of replaying a historical one, and one that receives the same
+# frame twice renders it twice with no effect.
+
+
+def build_usage_frame(raw_lines: list[str]) -> dict:
+    """Token totals for what the session currently shows."""
+    from primer.session.usage import session_usage
+
+    usage = session_usage(raw_lines)
+    return {
+        "turns": usage.turns,
+        "last_input_tokens": usage.last_input_tokens,
+        "last_output_tokens": usage.last_output_tokens,
+        "total_input_tokens": usage.total_input_tokens,
+        "total_output_tokens": usage.total_output_tokens,
+        "total_cached_input_tokens": usage.total_cached_input_tokens,
+        "total_reasoning_tokens": usage.total_reasoning_tokens,
+    }
+
+
+def build_compaction_frame(raw_lines: list[str]) -> dict | None:
+    """The newest visible compaction, or None if nothing is folded.
+
+    Derived from the marker rather than parsed off the wire: the tap
+    reader deliberately skips compaction_marker records, because the
+    executor assigns them a seq out of band and parsing one would let a
+    shared seq drop a real record. Deriving sidesteps that entirely.
+    """
+    from primer.model.workspace_session import SessionMessageKind
+    from primer.session.replay import visible_records
+
+    marker = None
+    for rec in visible_records(raw_lines):
+        if rec.get("kind") == SessionMessageKind.COMPACTION_MARKER.value:
+            marker = rec
+    if marker is None:
+        return None
+    payload = marker.get("payload") or {}
+    return {
+        "marker_seq": marker.get("seq"),
+        "summary": payload.get("summary"),
+        "replaced_from_seq": payload.get("replaced_from_seq"),
+        "replaced_to_seq": payload.get("replaced_to_seq"),
+        "tokens_before": payload.get("tokens_before"),
+        "tokens_after": payload.get("tokens_after"),
+    }
+
+
+def build_pending_steer_frame(rows: list) -> dict:
+    """Queued steers that have not been realized yet.
+
+    Always returns a frame, even when empty: the client has to be able
+    to watch the queue reach zero, which a frame emitted only when
+    non-empty could never express.
+    """
+    return {
+        "count": len(rows),
+        "items": [
+            {
+                "id": row.id,
+                "parts": list(row.parts or []),
+                "enqueued_at": row.enqueued_at.isoformat(),
+            }
+            for row in rows
+        ],
+    }
 
 
 @tap_router.get("/workspaces/{workspace_id}/tap")

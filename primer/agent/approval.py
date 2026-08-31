@@ -26,6 +26,7 @@ from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.tool_approval import (
     ApprovalType,
+    ApproverSpec,
     LlmApprovalConfig,
     PolicyApprovalConfig,
     RequiredApprovalConfig,
@@ -67,10 +68,42 @@ class ApprovalContext:
 
 @dataclass
 class ApprovalVerdict:
-    """Result of a gate evaluation."""
+    """Result of a gate evaluation.
+
+    ``approvers`` is the per-call routing a policy/llm evaluation may
+    return (P6); None falls back to the policy row's own ``approvers``,
+    and None there means anyone.
+    """
 
     required: bool
     reason: str | None = None
+    approvers: ApproverSpec | None = None
+
+
+def _coerce_approvers(raw: Any, *, policy_id: str) -> ApproverSpec | None:
+    """Validate an evaluator-returned approvers object, fail-soft.
+
+    Routing is advisory metadata on top of an already-tripped gate: a
+    malformed spec must not fail the call OR silently widen access, so
+    it degrades to None (= the policy row's own spec, or anyone).
+    """
+    if raw is None:
+        return None
+    try:
+        return ApproverSpec.model_validate(raw)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "policy %s returned a malformed approvers object %r; "
+            "falling back to the policy-level spec", policy_id, raw,
+        )
+        return None
+
+
+def effective_approvers(
+    policy: ToolApprovalPolicy, verdict: ApprovalVerdict,
+) -> ApproverSpec | None:
+    """Per-call routing wins over the policy row's default."""
+    return verdict.approvers or policy.approvers
 
 
 class ApprovalResolver:
@@ -171,6 +204,17 @@ async def _dispatch_llm_judge(
         "properties": {
             "required": {"type": "boolean"},
             "reason": {"type": "string"},
+            # Optional per-call routing (P6): who may decide this call.
+            "approvers": {
+                "type": "object",
+                "properties": {
+                    "kind": {"enum": ["anyone", "roles", "users"]},
+                    "roles": {"type": "array", "items": {"type": "string"}},
+                    "users": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["kind"],
+                "additionalProperties": False,
+            },
         },
         "required": ["required"],
         "additionalProperties": False,
@@ -226,7 +270,11 @@ async def evaluate_approval_gate(
                 reason=f"rego gate errored: {exc}",
             )
         return ApprovalVerdict(
-            required=verdict.required, reason=verdict.reason,
+            required=verdict.required,
+            reason=verdict.reason,
+            approvers=_coerce_approvers(
+                verdict.approvers, policy_id=policy.id,
+            ),
         )
 
     if cfg.type == ApprovalType.LLM:
@@ -255,7 +303,13 @@ async def evaluate_approval_gate(
         reason = (
             reason_raw if isinstance(reason_raw, str) and reason_raw else None
         )
-        return ApprovalVerdict(required=required, reason=reason)
+        return ApprovalVerdict(
+            required=required,
+            reason=reason,
+            approvers=_coerce_approvers(
+                raw.get("approvers"), policy_id=policy.id,
+            ),
+        )
 
     return ApprovalVerdict(
         required=True,
@@ -267,5 +321,6 @@ __all__ = [
     "ApprovalContext",
     "ApprovalResolver",
     "ApprovalVerdict",
+    "effective_approvers",
     "evaluate_approval_gate",
 ]

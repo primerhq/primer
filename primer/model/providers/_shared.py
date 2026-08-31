@@ -8,7 +8,44 @@ HTTP configs in both the LLM and embedding families.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, HttpUrl, PositiveInt, SecretStr
+from typing import Annotated
+
+from pydantic import BaseModel, Field, HttpUrl, PlainSerializer, PositiveInt, SecretStr
+
+
+def _mask_with_tail(secret: SecretStr) -> str:
+    """Mask an API key but leave its last 4 characters visible.
+
+    Platform wave P2 addendum (B), signed off for api-key-class secrets
+    ONLY: standard practice (GitHub/Stripe-style masked token display)
+    - "this is the key I rotated in" is visible without the key itself
+    ever round-tripping over the wire. A key of 4 characters or fewer
+    stays fully masked (no tail) rather than exposing the whole thing;
+    real API keys are always far longer than 4 characters, so this only
+    ever protects a pathological/test value, never a real key's tail.
+    """
+    value = secret.get_secret_value()
+    if len(value) <= 4:
+        return "**********"
+    return "**********" + value[-4:]
+
+
+# Applied ONLY to LLM/embedding provider api_key-style fields (this
+# module's own api_key, plus llm.py's per-vendor api_key fields and
+# embedding.py's HuggingFaceConfig.token) - NOT to passwords or DSN-
+# credential fields (primer/model/providers/storage.py's `password`,
+# primer/model/providers/artifact.py's access_key/secret_key pair,
+# primer/model/providers/toolset.py's client_secret/env/headers,
+# primer/model/providers/cross_encoder.py's `token`), which keep the
+# full, tail-less "**********" mask. `when_used="json"` only - a
+# mode="python" dump (e.g. providers.py's discover_saved_llm_models,
+# which needs the REAL secret to actually probe upstream) still yields
+# the plain SecretStr instance, unmasked, exactly as before this field
+# existed.
+ApiKeySecret = Annotated[
+    SecretStr,
+    PlainSerializer(_mask_with_tail, return_type=str, when_used="json"),
+]
 
 
 class _HttpApiKeyConfig(BaseModel):
@@ -30,7 +67,7 @@ class _HttpApiKeyConfig(BaseModel):
         ...,
         description="Base URL of the provider's HTTP endpoint.",
     )
-    api_key: SecretStr | None = Field(
+    api_key: ApiKeySecret | None = Field(
         default=None,
         description=(
             "Optional API key forwarded as the Authorization bearer. "

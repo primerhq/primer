@@ -20,7 +20,14 @@ from typing import Any
 import pytest
 
 from primer.model.harness import Harness, HarnessOperation, HarnessStatus
-from primer.model.storage import FieldRef, OffsetPage, OffsetPageResponse, Op, Predicate, Value
+from primer.model.storage import (
+    FieldRef,
+    OffsetPage,
+    OffsetPageResponse,
+    Op,
+    Predicate,
+    Value,
+)
 from primer.toolset.harness import HARNESS_TOOLSET_ID, build_harness_toolset_provider
 from pydantic import SecretStr
 
@@ -53,6 +60,22 @@ class _Storage:
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str):
         from primer.model.except_ import NotFoundError
 
@@ -63,31 +86,33 @@ class _Storage:
     async def list(self, page, *, order_by=None):
         items = list(self._data.values())
         if isinstance(page, OffsetPage):
-            sliced = items[page.offset: page.offset + page.length]
+            sliced = items[page.offset : page.offset + page.length]
             return OffsetPageResponse(
                 offset=page.offset,
                 length=len(sliced),
                 total=len(items),
                 items=sliced,
             )
-        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+        return OffsetPageResponse(
+            offset=0, length=len(items), total=len(items), items=items
+        )
 
     async def find(self, predicate, page, *, order_by=None):
         """Evaluate predicate against all rows and return matching items."""
         items = [
-            item
-            for item in self._data.values()
-            if _eval_predicate(predicate, item)
+            item for item in self._data.values() if _eval_predicate(predicate, item)
         ]
         if isinstance(page, OffsetPage):
-            sliced = items[page.offset: page.offset + page.length]
+            sliced = items[page.offset : page.offset + page.length]
             return OffsetPageResponse(
                 offset=page.offset,
                 length=len(sliced),
                 total=len(items),
                 items=sliced,
             )
-        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+        return OffsetPageResponse(
+            offset=0, length=len(items), total=len(items), items=items
+        )
 
 
 def _eval_predicate(pred: Predicate, obj: Any) -> bool:
@@ -113,6 +138,11 @@ def _eval_predicate(pred: Predicate, obj: Any) -> bool:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -247,7 +277,11 @@ class TestRegister:
 
         r2 = await toolset.call(
             tool_name="harness__register",
-            arguments={"name": "Second", "slug": "dup-slug", "git_url": "https://github.com/example/repo2"},
+            arguments={
+                "name": "Second",
+                "slug": "dup-slug",
+                "git_url": "https://github.com/example/repo2",
+            },
         )
         assert r2.is_error
         body = _result(r2)
@@ -287,8 +321,12 @@ class TestList:
 
     @pytest.mark.asyncio
     async def test_list_filter_by_status(self, toolset, sp) -> None:
-        _make_harness(sp, id="hns_a3", slug="ready-one", name="Ready", status=HarnessStatus.READY)
-        _make_harness(sp, id="hns_b3", slug="draft-one", name="Draft", status=HarnessStatus.DRAFT)
+        _make_harness(
+            sp, id="hns_a3", slug="ready-one", name="Ready", status=HarnessStatus.READY
+        )
+        _make_harness(
+            sp, id="hns_b3", slug="draft-one", name="Draft", status=HarnessStatus.DRAFT
+        )
 
         result = await toolset.call(
             tool_name="harness__list",
@@ -492,6 +530,7 @@ class TestCatalog:
 @pytest.mark.asyncio
 async def test_harness_tools_conform(toolset) -> None:
     from tests.toolset._desc_conformance import assert_tool_conforms
+
     count = 0
     async for tool in toolset.list_tools():
         assert_tool_conforms(tool)
@@ -562,7 +601,9 @@ class TestInstall:
         assert body["type"] == "overrides-schema-missing"
 
     @pytest.mark.asyncio
-    async def test_install_enqueues_when_schema_present(self, toolset, sp, event_bus) -> None:
+    async def test_install_enqueues_when_schema_present(
+        self, toolset, sp, event_bus
+    ) -> None:
         h = _make_harness(sp, status=HarnessStatus.READY)
         h.overrides_schema = {"type": "object", "properties": {}}
         sp.get_storage(Harness)._data[h.id] = h

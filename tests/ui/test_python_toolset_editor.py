@@ -28,12 +28,17 @@ def test_the_editor_exists_and_exports() -> None:
 def test_it_exposes_its_testids() -> None:
     src = EDITOR.read_text(encoding="utf-8")
     for tid in ("python-editor", "python-save",
-                "python-derived-tools", "python-tool-row",
+                "python-derived-tools",
                 "python-isolation-level", "python-registration-error",
                 "python-derived-empty",
                 # the builder surface
                 "python-add-function", "python-outline", "python-live-status"):
         assert f'"{tid}"' in src, tid
+    # Suffixed per-row with the tool id (R4 review nit: was a single
+    # static testid shared by every row) - checked separately since the
+    # exact-string form above would never match a "prefix:" testid.
+    assert '"python-tool-row:" + t.id' in src
+    assert '"python-outline-row:" + (t.id || t.fn_name)' in src
 
 
 def test_the_editing_surface_testid_lives_with_the_editor() -> None:
@@ -143,6 +148,7 @@ def test_registered_before_the_toolsets_page() -> None:
         raise AssertionError(f"{frag} is not registered")
 
     assert idx("toolsets/python-editor.jsx") < idx("components/toolsets.jsx")
+    assert idx("components/shared/capability-badges.jsx") < idx("toolsets/python-editor.jsx")
 
 
 def test_the_bundle_builds_with_the_editor() -> None:
@@ -174,3 +180,47 @@ def test_apierror_still_has_no_extensions_property() -> None:
     api = (UI / "foundation" / "api.js").read_text(encoding="utf-8")
     assert "this.envelope = envelope;" in api
     assert "this.extensions" not in api
+
+
+def test_outline_renders_every_verdict_not_just_the_first() -> None:
+    """R4 Workbench: dry-run validate now returns a per-tool array
+    (batch-2 register_module_report) -- one bad function used to make the
+    whole outline go empty ("no functions registered"); it must now show
+    every OTHER function that still registered, plus the refused one with
+    its own reason."""
+    src = EDITOR.read_text(encoding="utf-8")
+    assert 't.ok === false' in src
+    assert 'data-testid="python-outline-refused-reason"' in src
+    # The row itself is tagged so a test (or an operator inspecting the
+    # DOM) can tell refused from registered without parsing the reason.
+    assert 'data-ok={refused ? "0" : "1"}' in src
+
+
+def test_diagnostics_mark_every_refused_tools_line() -> None:
+    # Not just the single module-level error line -- PY_diagnosticsFor
+    # now walks `tools` too, so N independently-broken functions each get
+    # their own CodeMirror gutter mark.
+    src = EDITOR.read_text(encoding="utf-8")
+    code = _code_only(src)
+    assert "function PY_diagnosticsFor(source, error, tools)" in code
+    assert "(tools || []).forEach" in code
+    assert 't.ok === false && t.lineno' in code
+
+
+def test_live_status_reports_partial_success() -> None:
+    # A module with 3 good + 1 refused function used to collapse to
+    # "does not register" (validation.ok was false). It must now say how
+    # many registered AND how many were refused.
+    src = EDITOR.read_text(encoding="utf-8")
+    assert "registered, " in src and "refused" in src
+
+
+def test_outline_and_derived_tools_use_the_shared_capability_badges() -> None:
+    # The single ad-hoc "yields" pill is replaced by the shared y/w/r/n
+    # CapabilityBadges component (batch-2 catalogue-badges data, R4
+    # Intelligence/Workbench groups) so every tool picker in the console
+    # speaks the same badge language.
+    src = EDITOR.read_text(encoding="utf-8")
+    assert "CapabilityBadges" in src
+    assert "python-outline-yields" not in src
+    assert "python-tool-yields" not in src

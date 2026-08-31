@@ -25,6 +25,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-05", status="partial")
 
 
@@ -53,8 +54,13 @@ def test_collection_document_path_browser_full_journey(
     provider_id = f"emb-doc-{unique_suffix}"
     ssp_id = f"ssp-doc-{unique_suffix}"
     collection_id = f"col-doc-{unique_suffix}"
-    first_path = "concepts/slo.md"
-    moved_path = "concepts/slo-renamed.md"
+    # S2 addresses a document by parent + slug, and the tree route
+    # enforces a [a-z0-9-]+ slug: a file extension is not part of a path
+    # any more. Created at the root, so the path IS the slug.
+    first_slug = "slo"
+    moved_slug = "slo-renamed"
+    first_path = first_slug
+    moved_path = moved_slug
 
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/embedding_providers", json={
@@ -68,9 +74,9 @@ def test_collection_document_path_browser_full_journey(
         })
         assert r.status_code == 201, f"seed embedding provider failed: {r.text}"
 
-        # Collections now require a SemanticSearchProvider bound at create
-        # (Collection.search_provider_id). A self-contained local lance
-        # index keeps this seed offline.
+        # Semantic search needs a provider to hold the vectors; it is
+        # bound below, through the search route. A self-contained local
+        # lance index keeps this seed offline.
         r = c.post("/v1/ssp", json={
             "id": ssp_id,
             "provider": "lance",
@@ -81,39 +87,47 @@ def test_collection_document_path_browser_full_journey(
         r = c.post("/v1/collections", json={
             "id": collection_id,
             "description": "task15 doc browser test",
+        })
+        assert r.status_code == 201, f"seed collection failed: {r.text}"
+
+        # Bind (embedder, SSP) through the search route: S2 moved this
+        # off the create body, where the old keys were silently dropped.
+        r = c.put(f"/v1/collections/{collection_id}/search", json={
             "embedder": {
                 "provider_id": provider_id,
                 "model": "sentence-transformers/all-MiniLM-L6-v2",
             },
-            "search_provider_id": ssp_id,
+            "vector_store_provider_id": ssp_id,
         })
-        assert r.status_code == 201, f"seed collection failed: {r.text}"
+        assert r.status_code in (200, 201, 202), f"enable search: {r.text}"
 
     try:
-        page.goto(
-            f"{console_url}#/knowledge/collections",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "knowledge/collections")
         page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
 
         # Select the collection row to reveal the detail panel.
         page.locator(f"tr:has-text('{collection_id}')").first.click()
 
-        # Open the path-addressed browser. For a user collection the detail
-        # panel's primary button is labelled "Documents" (it opens the
-        # path-browser modal); the old "Browse by path" label was removed when
-        # the buttons were consolidated.
-        page.get_by_role("button", name="Documents").first.click()
-        modal = page.locator(".modal").first
-        modal.wait_for(state="visible", timeout=5_000)
+        # S2 made documents a path tree and the browser the collection's
+        # own view: opening a collection IS opening its documents, so the
+        # "Documents" button that used to raise a path-browser modal is
+        # gone along with the modal. The tree, the grep box and the header
+        # actions are all on the page.
+        browser = page.get_by_test_id("nv-overlay-body")
 
         # ---- create ----
-        modal.get_by_role("button", name="New document").first.click()
-        modal.get_by_placeholder("concepts/slo.md").fill(first_path)
-        modal.get_by_placeholder(
-            "Document body. Stored in the content store and indexed for search.",
-        ).fill("# SLO\n\nNinety-nine point nine percent.")
-        modal.get_by_role("button", name="Create").first.click()
+        # A document is addressed by parent + slug now, not by typing a
+        # whole path into one box.
+        browser.get_by_role("button", name="New document").first.click()
+        new_modal = page.locator(".modal").first
+        new_modal.wait_for(state="visible", timeout=5_000)
+        new_modal.get_by_placeholder(
+            "slug (lowercase letters, digits, hyphens)",
+        ).fill(first_slug)
+        new_modal.get_by_placeholder("# Body").fill(
+            "# SLO\n\nNinety-nine point nine percent.",
+        )
+        new_modal.get_by_role("button", name="Create").first.click()
         # First create indexes the doc, which lazily downloads the embedding
         # model on a cold container — allow generous time for that one-off.
         page.get_by_text("Document created", exact=False).first.wait_for(
@@ -121,19 +135,18 @@ def test_collection_document_path_browser_full_journey(
         )
 
         # ---- list + open ----
-        # The leaf lives under a collapsed "concepts/" folder — the file-tree
-        # explorer defaults folders closed, so expand it before clicking the
-        # leaf (clicking a folder row toggles it open).
-        modal.get_by_text("concepts", exact=True).first.click()
-        modal.locator(f"text={first_path.split('/')[-1]}").first.click()
-        # Content pane shows the path + body.
-        expect(modal.get_by_text(first_path, exact=False).first).to_be_visible()
+        browser.get_by_text(first_slug, exact=True).first.click()
+        # Content pane shows the path.
+        expect(
+            browser.get_by_text(first_slug, exact=False).first
+        ).to_be_visible()
 
         # ---- edit ----
-        modal.get_by_role("button", name="Edit").first.click()
-        textarea = modal.locator("textarea.textarea").first
+        # The document body editor is a textarea carrying the shared
+        # input classes, not a "textarea" class of its own.
+        textarea = browser.locator("textarea.input").first
         textarea.fill("# SLO\n\nEdited body.")
-        modal.get_by_role("button", name="Save", exact=True).first.click()
+        browser.get_by_role("button", name="Save", exact=True).first.click()
         page.get_by_text("Document saved", exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )
@@ -143,17 +156,15 @@ def test_collection_document_path_browser_full_journey(
         # modal whose primary action is also "Move". Scope the confirm to that
         # nested modal (the one that owns the new-path input) and match exactly
         # so we don't re-target the header trigger behind the overlay.
-        modal.get_by_role("button", name="Move", exact=True).first.click()
-        # `.last`: the :has() selector matches both the outer browse modal
-        # (which transitively contains the nested modal's input) and the nested
-        # move modal itself; the nested one renders later in the DOM, so .last
-        # scopes to it — otherwise the outer modal exposes two "Move" buttons
-        # (the header trigger + the nested confirm).
-        move_modal = page.locator(
-            ".modal:has(input[placeholder='new/path.md'])"
-        ).last
+        browser.get_by_role("button", name="Move", exact=True).first.click()
+        # Only one modal now: the browser is the page, not an outer modal,
+        # so nothing else contains the move input.
+        move_modal = page.locator(".modal").first
         move_modal.wait_for(state="visible", timeout=5_000)
-        move_modal.get_by_placeholder("new/path.md").fill(moved_path)
+        # Parent stays root; only the slug changes, which is the rename
+        # case the old single-path box expressed by retyping the whole
+        # thing.
+        move_modal.get_by_placeholder("New slug (optional)").fill(moved_slug)
         move_modal.get_by_role("button", name="Move", exact=True).click()
         page.get_by_text("Document moved", exact=False).first.wait_for(
             state="visible", timeout=10_000,
@@ -173,9 +184,13 @@ def test_collection_document_path_browser_full_journey(
             assert r.status_code == 404
 
         # ---- delete ----
-        modal.get_by_role("button", name="Delete").first.click()
-        # Confirm in the nested modal.
-        page.get_by_role("button", name="Delete").last.click()
+        browser.get_by_role("button", name="Delete").first.click()
+        # Confirm through the themed window.confirm replacement. Its
+        # action carries the default OK/Cancel wording, not the verb of
+        # whatever asked, so it is reached by its own handle: matching
+        # "Delete" here found the page's own button again and confirmed
+        # nothing.
+        page.get_by_test_id("dialog-confirm").click()
         page.get_by_text("Document deleted", exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )

@@ -99,6 +99,14 @@ function _SLS_NodeErrorBadge({ error, code }) {
 function _SLS_Frame({ m }) {
   const kind = m.kind;
 
+  // S7/M13: llm_call is per-model-call trace data, not a transcript row.
+  // The Trace panel reads it from the timeline endpoint and the paged
+  // /messages read still returns it; only the renderers skip it. Without
+  // this the "unknown / future frame kinds" fallback at the bottom of
+  // this function would print a dim "llm_call" line per model call in
+  // the session-detail live stream and the graph node inspector.
+  if (kind === "llm_call") return null;
+
   // Coalesced assistant blob.
   if (kind === "_assistant_message") {
     return (

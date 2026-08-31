@@ -5,8 +5,13 @@ from __future__ import annotations
 import pytest
 from fastapi.exceptions import RequestValidationError
 
-from primer.model.collection import Collection, CollectionEmbedder, Document
-from primer.model.search import CollectionCrossEncoder, CollectionSearch, MmrConfig
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+    Document,
+)
+from primer.model.search import CollectionCrossEncoder
 
 
 _SSP_BODY = {
@@ -27,8 +32,12 @@ def _collection(**overrides) -> Collection:
     body = dict(
         id="kb-1",
         description="test collection",
-        embedder=CollectionEmbedder(provider_id="hf-1", model="all-MiniLM-L6-v2"),
-        search_provider_id="ssp-test",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(
+                provider_id="hf-1", model="all-MiniLM-L6-v2"
+            ),
+            vector_store_provider_id="ssp-test",
+        ),
     )
     body.update(overrides)
     return Collection(**body)
@@ -38,7 +47,7 @@ def _document(**overrides) -> Document:
     body = dict(
         id="doc-1",
         collection_id="kb-1",
-        name="hello.txt",
+        slug="hello.txt",
         path="hello.txt",
         meta={},
     )
@@ -265,115 +274,24 @@ class TestSystemCollectionGuard:
         assert resp.status_code == 201, resp.text
 
 
-class TestEmbedderImmutability:
-    """PUT /collections/{id} must reject changes to embedder fields."""
+class TestSearchNotEnabled:
+    """Collections without a search block answer search routes with 409."""
 
     @pytest.mark.asyncio
-    async def test_provider_id_change_rejected(self) -> None:
-        from primer.api.routers.knowledge import _validate_embedder_immutable
-
-        existing = _collection(id="c1")
-        changed = _collection(
-            id="c1",
-            embedder=CollectionEmbedder(provider_id="other-provider", model="all-MiniLM-L6-v2"),
-        )
-        with pytest.raises(RequestValidationError) as exc_info:
-            await _validate_embedder_immutable(changed, existing, request=None)
-        errs = exc_info.value.errors()
-        locs = [tuple(e["loc"]) for e in errs]
-        assert ("body", "embedder", "provider_id") in locs
+    async def test_search_route_409s(self, client) -> None:
+        r = await client.post("/v1/collections", json={"description": "grep only"})
+        cid = r.json()["id"]
+        s = await client.post(f"/v1/collections/{cid}/search", json={"query": "x"})
+        assert s.status_code == 409
+        assert "semantic search is not enabled" in s.text
 
     @pytest.mark.asyncio
-    async def test_model_change_rejected(self) -> None:
-        from primer.api.routers.knowledge import _validate_embedder_immutable
-
-        existing = _collection(id="c1")
-        changed = _collection(
-            id="c1",
-            embedder=CollectionEmbedder(provider_id="hf-1", model="other-model"),
-        )
-        with pytest.raises(RequestValidationError) as exc_info:
-            await _validate_embedder_immutable(changed, existing, request=None)
-        errs = exc_info.value.errors()
-        locs = [tuple(e["loc"]) for e in errs]
-        assert ("body", "embedder", "model") in locs
-
-    @pytest.mark.asyncio
-    async def test_unchanged_embedder_passes(self) -> None:
-        from primer.api.routers.knowledge import _validate_embedder_immutable
-
-        existing = _collection(id="c1")
-        same = _collection(id="c1", description="updated description")
-        # Must not raise.
-        await _validate_embedder_immutable(same, existing, request=None)
-
-    @pytest.mark.asyncio
-    async def test_search_update_with_mmr_allowed(self, client) -> None:
-        """PUT with changed search.mmr succeeds (search is mutable)."""
-        await client.post("/v1/ssp", json=_SSP_BODY)
-        coll = _collection(id="c-search").model_dump(mode="json")
-        created = await client.post("/v1/collections", json=coll)
-        assert created.status_code == 201, created.text
-
-        updated = {
-            **coll,
-            "search": {
-                "mmr": {"lambda_mult": 0.7, "fetch_k": 40},
-            },
-        }
-        put = await client.put("/v1/collections/c-search", json=updated)
-        assert put.status_code == 200, put.text
-        assert put.json()["search"]["mmr"]["lambda_mult"] == pytest.approx(0.7)
-        assert put.json()["search"]["mmr"]["fetch_k"] == 40
-
-    @pytest.mark.asyncio
-    async def test_search_update_with_cer_allowed(self, client) -> None:
-        """PUT with changed search.cer succeeds (search is mutable)."""
-        await client.post("/v1/ssp", json=_SSP_BODY)
-        coll = _collection(id="c-cer").model_dump(mode="json")
-        await client.post("/v1/collections", json=coll)
-
-        updated = {
-            **coll,
-            "search": {
-                "cer": {
-                    "provider_id": "ce-prov",
-                    "model": "BAAI/bge-reranker-v2-m3",
-                    "top_n": 50,
-                },
-            },
-        }
-        put = await client.put("/v1/collections/c-cer", json=updated)
-        assert put.status_code == 200, put.text
-        assert put.json()["search"]["cer"]["top_n"] == 50
-
-    @pytest.mark.asyncio
-    async def test_embedder_provider_change_rejected_via_route(self, client) -> None:
-        """PUT that changes embedder.provider_id must return 422."""
-        await client.post("/v1/ssp", json=_SSP_BODY)
-        coll = _collection(id="c-immutable").model_dump(mode="json")
-        await client.post("/v1/collections", json=coll)
-
-        bad = {
-            **coll,
-            "embedder": {"provider_id": "other", "model": "all-MiniLM-L6-v2"},
-        }
-        put = await client.put("/v1/collections/c-immutable", json=bad)
-        assert put.status_code == 422, put.text
-
-    @pytest.mark.asyncio
-    async def test_embedder_model_change_rejected_via_route(self, client) -> None:
-        """PUT that changes embedder.model must return 422."""
-        await client.post("/v1/ssp", json=_SSP_BODY)
-        coll = _collection(id="c-immutable-model").model_dump(mode="json")
-        await client.post("/v1/collections", json=coll)
-
-        bad = {
-            **coll,
-            "embedder": {"provider_id": "hf-1", "model": "different-model"},
-        }
-        put = await client.put("/v1/collections/c-immutable-model", json=bad)
-        assert put.status_code == 422, put.text
+    async def test_indexed_documents_route_409s(self, client) -> None:
+        r = await client.post("/v1/collections", json={"description": "grep only"})
+        cid = r.json()["id"]
+        s = await client.get(f"/v1/collections/{cid}/indexed_documents")
+        assert s.status_code == 409
+        assert "semantic search is not enabled" in s.text
 
 
 class TestDocumentRouter:
@@ -402,63 +320,3 @@ class TestDocumentRouter:
     async def test_delete_missing_document_404(self, client) -> None:
         resp = await client.delete("/v1/documents/nope")
         assert resp.status_code == 404
-
-
-class TestConvertUploadedFile:
-    """The /documents/_convert_file endpoint short-circuits docling for
-    already-text formats (.md / .txt). Regression test for the upload
-    failing on markdown source files."""
-
-    @pytest.mark.asyncio
-    async def test_markdown_extension_returns_text_verbatim(self, client):
-        body = b"# Hello\n\nThis is *markdown*.\n"
-        resp = await client.post(
-            "/v1/documents/_convert_file",
-            files={"file": ("note.md", body, "text/markdown")},
-        )
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        assert data["filename"] == "note.md"
-        assert data["bytes_loaded"] == len(body)
-        assert data["text"] == body.decode("utf-8")
-
-    @pytest.mark.asyncio
-    async def test_plain_text_extension_returns_text_verbatim(self, client):
-        body = b"plain text content"
-        resp = await client.post(
-            "/v1/documents/_convert_file",
-            files={"file": ("note.txt", body, "text/plain")},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["text"] == "plain text content"
-
-    @pytest.mark.asyncio
-    async def test_markdown_via_content_type_only(self, client):
-        """A file without a known extension but tagged
-        text/markdown still goes through the passthrough path."""
-        body = b"# heading\nbody\n"
-        resp = await client.post(
-            "/v1/documents/_convert_file",
-            files={"file": ("blob", body, "text/markdown")},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["text"] == body.decode("utf-8")
-
-    @pytest.mark.asyncio
-    async def test_empty_file_rejected(self, client):
-        resp = await client.post(
-            "/v1/documents/_convert_file",
-            files={"file": ("empty.md", b"", "text/markdown")},
-        )
-        assert resp.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_non_utf8_text_rejected_with_clear_message(self, client):
-        # Latin-1 byte outside ASCII / UTF-8.
-        body = b"\xff\xfe garbage"
-        resp = await client.post(
-            "/v1/documents/_convert_file",
-            files={"file": ("bad.md", body, "text/markdown")},
-        )
-        assert resp.status_code == 400
-        assert "UTF-8" in resp.json().get("detail", "")

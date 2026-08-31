@@ -45,6 +45,7 @@ from playwright.sync_api import expect
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-10")
 
 
@@ -116,7 +117,7 @@ def test_u0110_policy_modal_llm_judge_journey(
       * Provider→model effect: picking a provider unblocks the model
         select and prefills the first available model.
       * Each mutation (create, toggle, delete) surfaces the documented
-        toast title via approvals.jsx + chrome.jsx toaster wiring.
+        toast title via approvals.jsx + the console shell toaster wiring.
       * The delete confirmation modal is a real gate — the row only
         disappears after the confirm button in the modal is clicked.
     """
@@ -130,30 +131,35 @@ def test_u0110_policy_modal_llm_judge_journey(
 
     try:
         # --- 1. Verify seeded provider is listed on /providers/llm --
-        page.goto(
-            f"{console_url}#/providers/llm",
-            wait_until="domcontentloaded",
+        open_legacy_route(page, console_url, "providers/llm")
+        # The catalog renders provider rows as cards, not a table, so
+        # there is no tbody to filter - and this surface (provider-
+        # catalog.jsx's PC_InstanceList) has no search field at all, just
+        # a 25-per-page pager. The shared stack legitimately accumulates
+        # fixture residue across rounds (by design, not a bug to clean
+        # up), which can push a freshly seeded row past page 1. Page
+        # forward until it's found or there's nowhere left to go, rather
+        # than assuming page 1.
+        provider_row = page.get_by_test_id("provider-instances-llm").get_by_text(
+            pid, exact=True,
         )
-        provider_row = page.locator("tbody tr", has_text=pid)
+        next_btn = page.get_by_test_id("pager-next")
+        for _ in range(50):  # generous bound: 50 pages * 25/page = 1250 rows
+            if provider_row.count() > 0 or next_btn.is_disabled():
+                break
+            next_btn.click()
+            page.wait_for_timeout(300)
         expect(provider_row.first).to_be_visible(timeout=15_000)
 
         # --- 2. Open the policy modal from the Tools page ----------
-        # The approval-policy authoring surface moved off the Approvals
-        # page onto the per-tool Tools table: each row's Add/Edit button
-        # opens the same AP_NewPolicyModal (free-form id / toolset / tool
+        # uiv2 cutover: the standalone Tools catalog page retired; the
+        # Approvals page's config hint now opens the same
+        # AP_NewPolicyModal directly (free-form id / toolset / tool
         # inputs are still editable, so we override them below).
-        page.goto(
-            f"{console_url}#/tools",
-            wait_until="domcontentloaded",
-        )
-        page.locator("h1.page-title").get_by_text(
-            "Tools", exact=False,
-        ).first.wait_for(state="visible", timeout=15_000)
+        open_legacy_route(page, console_url, "approvals")
 
-        # --- 3. Open the New-policy modal via a tool row -----------
-        add_btn = page.get_by_role("button", name="Add", exact=True).or_(
-            page.get_by_role("button", name="Edit", exact=True)
-        ).first
+        # --- 3. Open the New-policy modal via the config hint -------
+        add_btn = page.get_by_test_id("approvals-config-link")
         expect(add_btn).to_be_visible(timeout=15_000)
         add_btn.click()
 

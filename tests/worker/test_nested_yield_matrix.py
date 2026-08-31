@@ -117,7 +117,11 @@ class _PlainToolset:
             id="do_it",
             description="does the thing",
             toolset_id="t1",
-            args_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            args_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": True,
+            },
         )
 
     def is_yielding(self, tool_name: str) -> bool:
@@ -127,7 +131,9 @@ class _PlainToolset:
         del tool_name
         return "admin"
 
-    async def call(self, *, tool_name, arguments, principal=None, ctx=None) -> ToolCallResult:  # noqa: ANN001
+    async def call(
+        self, *, tool_name, arguments, principal=None, ctx=None
+    ) -> ToolCallResult:  # noqa: ANN001
         return ToolCallResult(output="did the thing", is_error=False)
 
 
@@ -144,7 +150,11 @@ class _GatedYieldingToolset:
             id="do_wait",
             description="gated and yielding",
             toolset_id="t1",
-            args_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            args_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": True,
+            },
         )
 
     def is_yielding(self, tool_name: str) -> bool:
@@ -154,7 +164,9 @@ class _GatedYieldingToolset:
         del tool_name
         return "admin"
 
-    async def call(self, *, tool_name, arguments, principal=None, ctx=None) -> ToolCallResult:  # noqa: ANN001
+    async def call(
+        self, *, tool_name, arguments, principal=None, ctx=None
+    ) -> ToolCallResult:  # noqa: ANN001
         assert ctx is not None
         raise YieldToWorker(
             Yielded(
@@ -179,6 +191,11 @@ class _Store:
 
 
 class _AgentStorageProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     """Storage facade for the subagent leg: serves Agent + LLMProvider rows.
 
     Wraps the real _FakeStorageProvider so the WorkspaceSession storage the
@@ -186,7 +203,9 @@ class _AgentStorageProvider:
     LLMProvider lookups (driven by resume_subagent) resolve to our fakes.
     """
 
-    def __init__(self, *, base: _FakeStorageProvider, agent: Agent, provider_row: _ProviderRow) -> None:
+    def __init__(
+        self, *, base: _FakeStorageProvider, agent: Agent, provider_row: _ProviderRow
+    ) -> None:
         self._base = base
         self._agent = agent
         self._provider_row = provider_row
@@ -313,7 +332,12 @@ def _context(*, tools: list[str], sid: str) -> AgentResumeContext:
 
 
 def _agent_frame(
-    *, sid: str, invoke_tcid: str, sub_history: list[dict], tools: list[str], depth: int = 0
+    *,
+    sid: str,
+    invoke_tcid: str,
+    sub_history: list[dict],
+    tools: list[str],
+    depth: int = 0,
 ) -> AgentFrame:
     return AgentFrame(
         agent_id="agent-sub",
@@ -324,7 +348,9 @@ def _agent_frame(
     )
 
 
-def _build_pool(*, base_storage, agent_storage, registry, resolver) -> tuple[WorkerPool, InMemoryClaimEngine]:
+def _build_pool(
+    *, base_storage, agent_storage, registry, resolver
+) -> tuple[WorkerPool, InMemoryClaimEngine]:
     """A real pool + engine.
 
     The pool's WorkspaceSession storage (used by the engine/adapter) comes from
@@ -335,7 +361,9 @@ def _build_pool(*, base_storage, agent_storage, registry, resolver) -> tuple[Wor
     """
     session_storage = base_storage.get_storage(WorkspaceSession)
     engine = InMemoryClaimEngine(
-        adapters={ClaimKind.SESSION: SessionClaimAdapter(session_storage=session_storage)},
+        adapters={
+            ClaimKind.SESSION: SessionClaimAdapter(session_storage=session_storage)
+        },
     )
     pool = WorkerPool(
         config=WorkerConfig(concurrency=1),
@@ -373,12 +401,17 @@ def _make_session(
         tool_name=leaf.tool_name,
         event_key=leaf.event_key,
         timeout=leaf.timeout if leaf.timeout is not None else 600.0,
-        resume_metadata={**(leaf.resume_metadata or {}), "parked_at_iso": parked_at.isoformat()},
+        resume_metadata={
+            **(leaf.resume_metadata or {}),
+            "parked_at_iso": parked_at.isoformat(),
+        },
     )
     if session_history is None:
         sess_turn = Message(
             role="assistant",
-            parts=[ToolCallPart(id=invoke_tcid, name="system__invoke_agent", arguments={})],
+            parts=[
+                ToolCallPart(id=invoke_tcid, name="system__invoke_agent", arguments={})
+            ],
         )
         session_history = [sess_turn.model_dump(mode="json")]
 
@@ -418,12 +451,18 @@ async def _claim(engine, sid: str):
 
 def _wire_session_executor(pool, monkeypatch):
     executor = _RecordingExecutor()
-    monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _w: _async_return(_NoopPersist()))
-    monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async_return(executor))
+    monkeypatch.setattr(
+        pool, "_load_workspace_for_persist", lambda _w: _async_return(_NoopPersist())
+    )
+    monkeypatch.setattr(
+        pool, "_build_agent_executor", lambda _s, _w: _async_return(executor)
+    )
     return executor
 
 
-def _injected_tool_result(executor: _RecordingExecutor, expect_id: str) -> ToolResultPart:
+def _injected_tool_result(
+    executor: _RecordingExecutor, expect_id: str
+) -> ToolResultPart:
     """Pull the ToolResultPart the continuation delivered into the session turn."""
     assert len(executor.injected) == 1, "exactly one inject_resume_messages call"
     msgs = executor.injected[0]
@@ -466,20 +505,40 @@ async def test_subagent_approval_gate_approve_redispatches_and_delivers(monkeypa
     llm = _ScriptedLLM(scripts=[_final_text_script("approved and done")])
     registry = _ProviderRegistry(llm=llm, toolset=_PlainToolset())
     resolver = _PoliciesOnlyResolver(
-        [ToolApprovalPolicy(id="p", toolset_id="t1", tool_name="do_it", approval=RequiredApprovalConfig())]
+        [
+            ToolApprovalPolicy(
+                id="p",
+                toolset_id="t1",
+                tool_name="do_it",
+                approval=RequiredApprovalConfig(),
+            )
+        ]
     )
     base = _FakeStorageProvider()
-    agent_storage = _AgentStorageProvider(base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row())
-    pool, engine = _build_pool(base_storage=base, agent_storage=agent_storage, registry=registry, resolver=resolver)
+    agent_storage = _AgentStorageProvider(
+        base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row()
+    )
+    pool, engine = _build_pool(
+        base_storage=base,
+        agent_storage=agent_storage,
+        registry=registry,
+        resolver=resolver,
+    )
 
     frame = _agent_frame(
-        sid=sid, invoke_tcid=invoke_tcid,
-        sub_history=_sub_history("t1__do_it", gated_call_id), tools=["t1__do_it"],
+        sid=sid,
+        invoke_tcid=invoke_tcid,
+        sub_history=_sub_history("t1__do_it", gated_call_id),
+        tools=["t1__do_it"],
     )
     sess = _make_session(
         sid,
-        leaf=_approval_leaf(sid=sid, gated_call_id=gated_call_id, gated_name="t1__do_it"),
-        leaf_tcid=gated_call_id, invoke_tcid=invoke_tcid, frames=[frame],
+        leaf=_approval_leaf(
+            sid=sid, gated_call_id=gated_call_id, gated_name="t1__do_it"
+        ),
+        leaf_tcid=gated_call_id,
+        invoke_tcid=invoke_tcid,
+        frames=[frame],
         resume_event_payload={"decision": "approved"},
     )
     await base.get_storage(WorkspaceSession).create(sess)
@@ -524,20 +583,40 @@ async def test_subagent_approval_gate_reject_clean_error_tool_never_runs(monkeyp
     llm = _ScriptedLLM(scripts=[_final_text_script("ok it was rejected")])
     registry = _ProviderRegistry(llm=llm, toolset=_ExplodingToolset())
     resolver = _PoliciesOnlyResolver(
-        [ToolApprovalPolicy(id="p", toolset_id="t1", tool_name="do_it", approval=RequiredApprovalConfig())]
+        [
+            ToolApprovalPolicy(
+                id="p",
+                toolset_id="t1",
+                tool_name="do_it",
+                approval=RequiredApprovalConfig(),
+            )
+        ]
     )
     base = _FakeStorageProvider()
-    agent_storage = _AgentStorageProvider(base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row())
-    pool, engine = _build_pool(base_storage=base, agent_storage=agent_storage, registry=registry, resolver=resolver)
+    agent_storage = _AgentStorageProvider(
+        base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row()
+    )
+    pool, engine = _build_pool(
+        base_storage=base,
+        agent_storage=agent_storage,
+        registry=registry,
+        resolver=resolver,
+    )
 
     frame = _agent_frame(
-        sid=sid, invoke_tcid=invoke_tcid,
-        sub_history=_sub_history("t1__do_it", gated_call_id), tools=["t1__do_it"],
+        sid=sid,
+        invoke_tcid=invoke_tcid,
+        sub_history=_sub_history("t1__do_it", gated_call_id),
+        tools=["t1__do_it"],
     )
     sess = _make_session(
         sid,
-        leaf=_approval_leaf(sid=sid, gated_call_id=gated_call_id, gated_name="t1__do_it"),
-        leaf_tcid=gated_call_id, invoke_tcid=invoke_tcid, frames=[frame],
+        leaf=_approval_leaf(
+            sid=sid, gated_call_id=gated_call_id, gated_name="t1__do_it"
+        ),
+        leaf_tcid=gated_call_id,
+        invoke_tcid=invoke_tcid,
+        frames=[frame],
         resume_event_payload={"decision": "rejected", "reason": "no thanks"},
     )
     await base.get_storage(WorkspaceSession).create(sess)
@@ -571,8 +650,12 @@ async def test_subagent_ask_user_resume_continues_and_completes(monkeypatch):
     llm = _ScriptedLLM(scripts=[_final_text_script("your name is Alice")])
     registry = _ProviderRegistry(llm=llm, toolset=_PlainToolset())
     base = _FakeStorageProvider()
-    agent_storage = _AgentStorageProvider(base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row())
-    pool, engine = _build_pool(base_storage=base, agent_storage=agent_storage, registry=registry, resolver=None)
+    agent_storage = _AgentStorageProvider(
+        base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row()
+    )
+    pool, engine = _build_pool(
+        base_storage=base, agent_storage=agent_storage, registry=registry, resolver=None
+    )
 
     leaf = Yielded(
         tool_name="ask_user",
@@ -580,12 +663,18 @@ async def test_subagent_ask_user_resume_continues_and_completes(monkeypatch):
         resume_metadata={"prompt": "what is your name?"},
     )
     frame = _agent_frame(
-        sid=sid, invoke_tcid=invoke_tcid,
-        sub_history=_sub_history("t1__do_it", ask_call_id), tools=["t1__do_it"],
+        sid=sid,
+        invoke_tcid=invoke_tcid,
+        sub_history=_sub_history("t1__do_it", ask_call_id),
+        tools=["t1__do_it"],
     )
     sess = _make_session(
-        sid, leaf=leaf, leaf_tcid=ask_call_id, invoke_tcid=invoke_tcid,
-        frames=[frame], resume_event_payload={"response": "Alice"},
+        sid,
+        leaf=leaf,
+        leaf_tcid=ask_call_id,
+        invoke_tcid=invoke_tcid,
+        frames=[frame],
+        resume_event_payload={"response": "Alice"},
     )
     await base.get_storage(WorkspaceSession).create(sess)
 
@@ -616,31 +705,42 @@ async def test_two_deep_ask_user_unwinds_s2_then_s1(monkeypatch):
     keyed by the SESSION's invoke_agent call id. Both subagent turns re-run for
     real (two scripted LLM streams)."""
     sid = "sess-two-deep"
-    s1_invoke_tcid = "invoke-S1"   # session -> S1
-    s2_invoke_tcid = "invoke-S2"   # S1 -> S2
+    s1_invoke_tcid = "invoke-S1"  # session -> S1
+    s2_invoke_tcid = "invoke-S2"  # S1 -> S2
     ask_call_id = "ask-call-deep"  # S2's ask_user call
 
     # S2 resumes (ask answer) -> text; then S1 resumes (S2's result) -> text.
-    llm = _ScriptedLLM(scripts=[
-        _final_text_script("S2 says blue"),
-        _final_text_script("S1 wraps: blue"),
-    ])
+    llm = _ScriptedLLM(
+        scripts=[
+            _final_text_script("S2 says blue"),
+            _final_text_script("S1 wraps: blue"),
+        ]
+    )
     registry = _ProviderRegistry(llm=llm, toolset=_PlainToolset())
     base = _FakeStorageProvider()
-    agent_storage = _AgentStorageProvider(base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row())
-    pool, engine = _build_pool(base_storage=base, agent_storage=agent_storage, registry=registry, resolver=None)
+    agent_storage = _AgentStorageProvider(
+        base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row()
+    )
+    pool, engine = _build_pool(
+        base_storage=base, agent_storage=agent_storage, registry=registry, resolver=None
+    )
 
     # Root-first: S1 outer (invoked by session via s1_invoke_tcid; its own
     # pending child call is s2_invoke_tcid), S2 inner (invoked by S1 via
     # s2_invoke_tcid; its pending call is the ask_user call).
     f_s1 = _agent_frame(
-        sid=sid, invoke_tcid=s1_invoke_tcid,
+        sid=sid,
+        invoke_tcid=s1_invoke_tcid,
         sub_history=_sub_history("system__invoke_agent", s2_invoke_tcid),
-        tools=["t1__do_it"], depth=0,
+        tools=["t1__do_it"],
+        depth=0,
     )
     f_s2 = _agent_frame(
-        sid=sid, invoke_tcid=s2_invoke_tcid,
-        sub_history=_sub_history("t1__do_it", ask_call_id), tools=["t1__do_it"], depth=1,
+        sid=sid,
+        invoke_tcid=s2_invoke_tcid,
+        sub_history=_sub_history("t1__do_it", ask_call_id),
+        tools=["t1__do_it"],
+        depth=1,
     )
     leaf = Yielded(
         tool_name="ask_user",
@@ -648,14 +748,21 @@ async def test_two_deep_ask_user_unwinds_s2_then_s1(monkeypatch):
         resume_metadata={"prompt": "color?"},
     )
     sess = _make_session(
-        sid, leaf=leaf, leaf_tcid=ask_call_id, invoke_tcid=s1_invoke_tcid,
-        frames=[f_s1, f_s2], resume_event_payload={"response": "blue"},
+        sid,
+        leaf=leaf,
+        leaf_tcid=ask_call_id,
+        invoke_tcid=s1_invoke_tcid,
+        frames=[f_s1, f_s2],
+        resume_event_payload={"response": "blue"},
     )
     await base.get_storage(WorkspaceSession).create(sess)
 
     # PARK shape: two frames, outer-first, with distinct invoke ids.
     rehydrated = ParkedState.from_jsonable(sess.parked_state)
-    assert [f.tool_call_id for f in rehydrated.frames] == [s1_invoke_tcid, s2_invoke_tcid]
+    assert [f.tool_call_id for f in rehydrated.frames] == [
+        s1_invoke_tcid,
+        s2_invoke_tcid,
+    ]
     assert rehydrated.yielded.tool_name == "ask_user"
 
     executor = _wire_session_executor(pool, monkeypatch)
@@ -697,38 +804,63 @@ async def test_subagent_approval_on_yielding_tool_reparks_then_completes(monkeyp
     RETAINING the in-flight innermost subagent -> fire-the-event -> full
     two-level unwind to completion) end to end."""
     sid = "sess-gated-yield"
-    s1_invoke_tcid = "invoke-S1-gy"     # session -> S1
-    s2_invoke_tcid = "invoke-S2-gy"     # S1 -> S2
+    s1_invoke_tcid = "invoke-S1-gy"  # session -> S1
+    s2_invoke_tcid = "invoke-S2-gy"  # S1 -> S2
     gated_call_id = "gated-yield-call"  # S2's gated+yielding tool call
 
     # TWO subagent LLM turns run in phase 2: S2 resumes (timer fired) -> text,
     # then S1 resumes (S2's result) -> text. (Phase 1's gated re-dispatch yields
     # before any LLM turn, so no script is consumed there.)
-    llm = _ScriptedLLM(scripts=[
-        _final_text_script("S2 saw the timer fire"),
-        _final_text_script("S1 wraps: timer done"),
-    ])
+    llm = _ScriptedLLM(
+        scripts=[
+            _final_text_script("S2 saw the timer fire"),
+            _final_text_script("S1 wraps: timer done"),
+        ]
+    )
     registry = _ProviderRegistry(llm=llm, toolset=_GatedYieldingToolset())
     resolver = _PoliciesOnlyResolver(
-        [ToolApprovalPolicy(id="p", toolset_id="t1", tool_name="do_wait", approval=RequiredApprovalConfig())]
+        [
+            ToolApprovalPolicy(
+                id="p",
+                toolset_id="t1",
+                tool_name="do_wait",
+                approval=RequiredApprovalConfig(),
+            )
+        ]
     )
     base = _FakeStorageProvider()
-    agent_storage = _AgentStorageProvider(base=base, agent=_agent(tools=["t1__do_wait"]), provider_row=_provider_row())
-    pool, engine = _build_pool(base_storage=base, agent_storage=agent_storage, registry=registry, resolver=resolver)
+    agent_storage = _AgentStorageProvider(
+        base=base, agent=_agent(tools=["t1__do_wait"]), provider_row=_provider_row()
+    )
+    pool, engine = _build_pool(
+        base_storage=base,
+        agent_storage=agent_storage,
+        registry=registry,
+        resolver=resolver,
+    )
 
     f_s1 = _agent_frame(
-        sid=sid, invoke_tcid=s1_invoke_tcid,
+        sid=sid,
+        invoke_tcid=s1_invoke_tcid,
         sub_history=_sub_history("system__invoke_agent", s2_invoke_tcid),
-        tools=["t1__do_wait"], depth=0,
+        tools=["t1__do_wait"],
+        depth=0,
     )
     f_s2 = _agent_frame(
-        sid=sid, invoke_tcid=s2_invoke_tcid,
-        sub_history=_sub_history("t1__do_wait", gated_call_id), tools=["t1__do_wait"], depth=1,
+        sid=sid,
+        invoke_tcid=s2_invoke_tcid,
+        sub_history=_sub_history("t1__do_wait", gated_call_id),
+        tools=["t1__do_wait"],
+        depth=1,
     )
     sess = _make_session(
         sid,
-        leaf=_approval_leaf(sid=sid, gated_call_id=gated_call_id, gated_name="t1__do_wait"),
-        leaf_tcid=gated_call_id, invoke_tcid=s1_invoke_tcid, frames=[f_s1, f_s2],
+        leaf=_approval_leaf(
+            sid=sid, gated_call_id=gated_call_id, gated_name="t1__do_wait"
+        ),
+        leaf_tcid=gated_call_id,
+        invoke_tcid=s1_invoke_tcid,
+        frames=[f_s1, f_s2],
         resume_event_payload={"decision": "approved"},
     )
     await base.get_storage(WorkspaceSession).create(sess)
@@ -741,7 +873,9 @@ async def test_subagent_approval_on_yielding_tool_reparks_then_completes(monkeyp
     assert executor.injected == [], "phase-1 approve re-parks; no inject yet"
 
     row = await base.get_storage(WorkspaceSession).get(sid)
-    assert row.parked_event_key == f"timer:{sid}:{gated_call_id}", "re-parked on the tool's own timer leaf"
+    assert row.parked_event_key == f"timer:{sid}:{gated_call_id}", (
+        "re-parked on the tool's own timer leaf"
+    )
     reparked = ParkedState.from_jsonable(row.parked_state)
     assert reparked.yielded.tool_name == "sleep"
     # BOTH frames are preserved across the mid-unwind re-park: S2 (whose own
@@ -755,11 +889,13 @@ async def test_subagent_approval_on_yielding_tool_reparks_then_completes(monkeyp
     # blob (the re-park left resume_event_payload=None) and re-claim.
     phase2_blob = dict(row.parked_state)
     phase2_blob["resume_event_payload"] = {"fired": True}
-    row2 = row.model_copy(update={
-        "parked_status": "resumable",
-        "parked_state": phase2_blob,
-        "parked_at": datetime.now(timezone.utc) - timedelta(seconds=1),
-    })
+    row2 = row.model_copy(
+        update={
+            "parked_status": "resumable",
+            "parked_state": phase2_blob,
+            "parked_at": datetime.now(timezone.utc) - timedelta(seconds=1),
+        }
+    )
     await base.get_storage(WorkspaceSession).update(row2)
 
     await pool._run_engine_session(await _claim(engine, sid))

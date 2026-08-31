@@ -53,6 +53,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
+    wait_for_status,
     wait_terminal,
 )
 from tests._support.smk import smk
@@ -285,9 +286,15 @@ async def test_onboarding_assembly_composes_subgraphs(
             authed_client, workspace_id=wid, agent_id=coordinator["agent_id"],
             instructions="Onboard the new customer.",
         )
-        final = await wait_terminal(authed_client, sid, timeout_s=180)
-        assert final.get("status") == "ended", final
-        assert final.get("ended_reason") == "completed", final
+        # 01a0518a: the coordinator is a plain (interactive, non-autonomous)
+        # agent session, so its clean stop now rests it WAITING/parked
+        # instead of ENDING it - wait_terminal (status in {"ended"}) would
+        # poll its full timeout_s and never see that value, which is
+        # exactly the ~3min hang this test was filed for. Wait for the new
+        # terminal-like shape instead.
+        final = await wait_for_status(authed_client, sid, "waiting", timeout_s=180)
+        assert final.get("status") == "waiting", final
+        assert final.get("session_state") == "parked", final
 
         transcript = _session_transcript(tmp_path, wid, sid)
 

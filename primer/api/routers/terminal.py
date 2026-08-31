@@ -184,9 +184,12 @@ async def workspace_terminal_ws(
     # per-workspace ``terminal_user_access`` toggle AND the caller holds at
     # least the ``user`` role (``restricted`` never gets a shell). Otherwise
     # close 4403 (mirrors the 4401 auth close above). The toggle lives on the
-    # resolved workspace handle, so this gate runs after get_workspace.
+    # persisted WorkspaceRow (not the live workspace handle), so this gate
+    # fetches the row separately -- only for non-admin callers, to avoid an
+    # extra storage read on the common admin path.
     if require_role_ws(websocket, "admin") is None:
-        toggled = bool(getattr(workspace, "terminal_user_access", False))
+        row = await registry.get_workspace_row(workspace_id)
+        toggled = bool(row.terminal_user_access)
         if not (toggled and require_user_ws(websocket) is not None):
             await websocket.accept()
             await websocket.close(code=4403, reason="forbidden_role")

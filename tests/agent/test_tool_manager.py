@@ -306,6 +306,49 @@ class TestWorkspaceRouting:
         assert len(ws.executed) == 1
 
     @pytest.mark.asyncio
+    async def test_workspace_tool_metadata_reaches_the_result_part(self) -> None:
+        """UX reconcile wave 5: a workspace tool's own ToolResult.metadata
+        (grep's match_count/file_count, ...) used to be dropped here -
+        the model never needed it, but neither did anything downstream."""
+        from primer.workspace.tool import ToolResult
+
+        class _MetaTool(_FakeWorkspaceTool):
+            async def execute(self, args, ctx):
+                return ToolResult(
+                    output="ok", truncated=False,
+                    metadata={"match_count": 3, "file_count": 2},
+                )
+
+        ws = _MetaTool()
+        sess = _FakeAgentSession()
+        mgr = ToolExecutionManager(
+            workspace_tools={"fake_ws_tool": ws},  # type: ignore[arg-type]
+            workspace_session=sess,  # type: ignore[arg-type]
+        )
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(id="c", name="workspace__fake_ws_tool", arguments={"x": 1})
+        )
+        assert result.metadata == {"match_count": 3, "file_count": 2}
+
+    @pytest.mark.asyncio
+    async def test_workspace_tool_empty_metadata_is_none_not_an_empty_dict(self) -> None:
+        """_FakeWorkspaceTool's default ToolResult(metadata={}) - the
+        overwhelming majority of tools that never set metadata should
+        not persist an empty dict on every single tool_result record."""
+        ws = _FakeWorkspaceTool()
+        sess = _FakeAgentSession()
+        mgr = ToolExecutionManager(
+            workspace_tools={"fake_ws_tool": ws},  # type: ignore[arg-type]
+            workspace_session=sess,  # type: ignore[arg-type]
+        )
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(id="c", name="workspace__fake_ws_tool", arguments={"x": 1})
+        )
+        assert result.metadata is None
+
+    @pytest.mark.asyncio
     async def test_workspace_tool_invalid_args_returns_error_result(self) -> None:
         ws = _FakeWorkspaceTool()
         sess = _FakeAgentSession()

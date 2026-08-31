@@ -190,7 +190,6 @@ def _default_cross_encoder_factory(  # pragma: no cover
 
 
 _SYSTEM_TOOLSET_ID = "system"
-_SEARCH_TOOLSET_ID = "search"
 _WORKSPACES_TOOLSET_ID = "workspaces"
 _MISC_TOOLSET_ID = "misc"
 # `web` has always been prefix-less; unchanged.
@@ -198,19 +197,22 @@ _WEB_TOOLSET_ID = "web"
 _HARNESS_TOOLSET_ID = "harness"
 _TRIGGER_TOOLSET_ID = "trigger"
 _WORKSPACE_EXT_TOOLSET_ID = "workspace_ext"
+_COLLECTIONS_TOOLSET_ID = "collections"
+_CRUD_TOOLSET_ID = "crud"
 
 # Public: ids that are always resolvable by the live registry (built-in
 # providers), so external reference-integrity checks can skip the
 # Toolset storage lookup for them.
 RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _SYSTEM_TOOLSET_ID,
-    _SEARCH_TOOLSET_ID,
     _WORKSPACES_TOOLSET_ID,
     _MISC_TOOLSET_ID,
     _WEB_TOOLSET_ID,
     _HARNESS_TOOLSET_ID,
     _TRIGGER_TOOLSET_ID,
     _WORKSPACE_EXT_TOOLSET_ID,
+    _COLLECTIONS_TOOLSET_ID,
+    _CRUD_TOOLSET_ID,
 })
 
 # ---------------------------------------------------------------------------
@@ -327,13 +329,14 @@ class ProviderRegistry:
         ) = None,
         toolset_factory: Callable[[Toolset], ToolsetProvider] | None = None,
         system_toolset_provider: ToolsetProvider | None = None,
-        search_toolset_provider: ToolsetProvider | None = None,
         workspaces_toolset_provider: ToolsetProvider | None = None,
         misc_toolset_provider: ToolsetProvider | None = None,
+        collections_toolset_provider: ToolsetProvider | None = None,
         web_toolset_provider: ToolsetProvider | None = None,
         harness_toolset_provider: ToolsetProvider | None = None,
         trigger_toolset_provider: ToolsetProvider | None = None,
         workspace_ext_toolset_provider: ToolsetProvider | None = None,
+        crud_toolset_provider: ToolsetProvider | None = None,
         rate_limiter: RateLimiter | None = None,
         trace_llm_io: bool = False,
     ) -> None:
@@ -363,7 +366,6 @@ class ProviderRegistry:
         # subsystem bootstrap (or the lifespan handler if a config row
         # already exists at startup); ``None`` means the subsystem is
         # inactive and ``get_toolset('search')`` raises NotFoundError.
-        self._search_toolset_provider = search_toolset_provider
         # Reserved id ``workspaces`` resolves to this immutable
         # provider — always built at app startup. Mirrors ``system``:
         # its tools dogfood the workspace REST API to agents.
@@ -372,6 +374,11 @@ class ProviderRegistry:
         # always built at app startup. Stateless utilities
         # (get_datetime, sleep, uuid_v4, hash, calculate).
         self._misc_toolset_provider = misc_toolset_provider
+        # Reserved id ``collections`` resolves to the always-on
+        # document-tree toolset: list / tree / read / grep and the
+        # write side, with semantic_search pointing at grep when a
+        # collection has no search block.
+        self._collections_toolset_provider = collections_toolset_provider
         # Reserved id ``web`` (no underscore prefix) resolves to the
         # immutable web toolset built at app startup.
         # DuckDuckGo search + http-request primitives.
@@ -392,6 +399,7 @@ class ProviderRegistry:
         # ONLY in a workspace session (filtered out on chats by the
         # ToolExecutionManager resolution choke point).
         self._workspace_ext_toolset_provider = workspace_ext_toolset_provider
+        self._crud_toolset_provider = crud_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -469,13 +477,6 @@ class ProviderRegistry:
             and toolset_id == _SYSTEM_TOOLSET_ID
         ):
             return self._system_toolset_provider
-        # Reserved id `search` resolves to the search toolset built
-        # when the internal collections subsystem is activated.
-        if (
-            self._search_toolset_provider is not None
-            and toolset_id == _SEARCH_TOOLSET_ID
-        ):
-            return self._search_toolset_provider
         # Reserved id `workspaces` resolves to the always-on
         # workspace dogfood toolset built at app startup.
         if (
@@ -490,6 +491,13 @@ class ProviderRegistry:
             and toolset_id == _MISC_TOOLSET_ID
         ):
             return self._misc_toolset_provider
+        # Reserved id `collections` resolves to the always-on document
+        # tree toolset built at app startup.
+        if (
+            self._collections_toolset_provider is not None
+            and toolset_id == _COLLECTIONS_TOOLSET_ID
+        ):
+            return self._collections_toolset_provider
         # Reserved id `web` resolves to the always-on web toolset
         # built at app startup.
         if (
@@ -518,6 +526,14 @@ class ProviderRegistry:
             and toolset_id == _WORKSPACE_EXT_TOOLSET_ID
         ):
             return self._workspace_ext_toolset_provider
+        # Reserved id `crud` resolves to the always-on platform-construction
+        # toolset built at app startup (S5). Approval policies keyed on
+        # toolset_id="crud" gate every tool in it.
+        if (
+            self._crud_toolset_provider is not None
+            and toolset_id == _CRUD_TOOLSET_ID
+        ):
+            return self._crud_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -582,13 +598,13 @@ class ProviderRegistry:
         # by an accidental write to the reserved ids.
         if toolset_id in (
             _SYSTEM_TOOLSET_ID,
-            _SEARCH_TOOLSET_ID,
             _WORKSPACES_TOOLSET_ID,
             _MISC_TOOLSET_ID,
             _WEB_TOOLSET_ID,
             _HARNESS_TOOLSET_ID,
             _TRIGGER_TOOLSET_ID,
             _WORKSPACE_EXT_TOOLSET_ID,
+            _CRUD_TOOLSET_ID,
         ):
             return
         async with self._lock:

@@ -21,6 +21,20 @@
 
 </div>
 
+<!-- transition-banner:start -->
+> **Primer is mid-revamp.** `main` is landing the operator-first UX revamp:
+> agent-independent sessions, wiki-style collections, agent-driven client
+> tools, voice, and a single IDE-style shell. Plain chat and the classic
+> console are being removed.
+>
+> **v0.6.x is the last stable pre-revamp release.** Pin it if you want the
+> behaviour the published docs describe. There are no transition releases
+> between v0.6.x and v2.0.0: the revamp lands as one branch, and the next
+> tag is v2.0.0, when this notice goes away.
+>
+> Programme summary: [docs/ux-revamp.md](https://github.com/primerhq/primer/blob/main/docs/ux-revamp.md)
+<!-- transition-banner:end -->
+
 ---
 
 ## Why Primer
@@ -142,7 +156,6 @@ The bare `pipx install primer-ai` installs a lean core (REST API, console, MCP, 
 |---|---|---|
 | *(core)* | REST API, console, MCP server and client, SQLite/Postgres storage, API-based LLM and embedder providers, local workspaces | ~345M |
 | `huggingface` | local embeddings, local cross-encoder reranking, exact Ollama token counts | heavy (torch) |
-| `docling` | PDF/DOCX/PPTX ingestion and structure-aware splitting | heavy |
 | `lance` | embedded LanceDB vector store | light |
 | `channels` | Slack, Telegram and Discord | light |
 | `docker` | container workspace backend | light |
@@ -154,7 +167,7 @@ pipx install 'primer-ai[lance,channels]'    # a la carte
 pipx install 'primer-ai[full]'              # everything
 ```
 
-An extra is resolved at import time, so enabling one is install plus restart. Without it the feature is not hidden, just honest: the API returns a `ConfigError` naming the extra, the console labels the option "(not installed)", and `GET /v1/capabilities` (or `primectl capabilities`) reports exactly what this deployment has.
+An extra is resolved at import time, so enabling one is install plus restart. Without it the feature is not hidden, just honest: the API returns a `ConfigError` naming the extra, the console labels the option "(not installed)", and `GET /v1/capabilities` reports exactly what this deployment has.
 
 **Docker** (no Python toolchain required):
 
@@ -163,9 +176,7 @@ docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest        # slim
 docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest-full   # batteries included
 ```
 
-`:latest` is the slim image: core plus the light operational extras (lance, channels, docker, kubernetes). It boots cleanly and skips the default providers it cannot construct. For local HuggingFace embeddings or Docling ingestion, use `:latest-full`.
-
-> **Tag change.** `:latest` used to be the batteries-included image. It is now slim. If you rely on HuggingFace or Docling from the image, switch to `:latest-full`. The old `-fat` and `-slim` suffixes still resolve for one release cycle.
+`:latest` is the slim image: core plus the light operational extras (lance, channels, docker, kubernetes). It boots cleanly and skips the default providers it cannot construct. For local HuggingFace embeddings, use `:latest-full`.
 
 **From source** (for contributors):
 
@@ -207,7 +218,7 @@ Primer is a stack of layers, where each layer keeps the one below it from gettin
 - **Sharing** - harnesses package a working configuration into a versioned, git-backed bundle.
 - **Edges** - channels, web search, and approval gates handle where agents reach outside the platform.
 
-At runtime, requests arrive from many edges (REST/console, MCP clients, chat channels, triggers), become **sessions / chats / graph runs** that a worker pool claims and drives; each turn calls LLM providers, tools, workspaces, and collections, and can park on a human or event and resume later - all backed by Postgres.
+At runtime, requests arrive from many edges (REST/shell, MCP clients, messaging channels, triggers), become **sessions / graph runs** that a worker pool claims and drives; each turn calls LLM providers, tools, workspaces, and collections, and can park on a human or event and resume later - all backed by Postgres.
 
 ## Documentation
 

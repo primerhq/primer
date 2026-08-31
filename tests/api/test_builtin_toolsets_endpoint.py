@@ -91,6 +91,29 @@ async def test_all_tools_emits_scoped_ids(client):
 
 
 @pytest.mark.asyncio
+async def test_all_tools_carries_capability_badges(client):
+    """The y/w/r/n capability badges (primer.model.chat.Tool.yields /
+    .requires_workspace / .tool_class / .required_role) surface here too,
+    not just on the flat /tools/catalogue -- both share ``_catalogue_tools``."""
+    r = await client.get("/v1/tools")
+    body = r.json()
+    by_id = {it["id"]: it for it in body["items"]}
+    system_tools = {t["id"]: t for t in by_id["system"]["tools"]}
+
+    ask_user = system_tools["ask_user"]
+    assert ask_user["yields"] is True
+    assert ask_user["requires_workspace"] is False
+    assert ask_user["tool_class"] in ("standard", "notifying")
+    assert ask_user["required_role"] is None or isinstance(
+        ask_user["required_role"], str
+    )
+
+    wait_for_event = system_tools["wait_for_event"]
+    assert wait_for_event["yields"] is True
+    assert wait_for_event["requires_workspace"] is True
+
+
+@pytest.mark.asyncio
 async def test_all_tools_marks_search_unavailable_without_ic(client):
     r = await client.get("/v1/tools")
     by_id = {it["id"]: it for it in r.json()["items"]}

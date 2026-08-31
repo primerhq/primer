@@ -12,11 +12,10 @@ from primer.model.channel_event import (
     EventSender,
     NormalizedEventType,
 )
-from primer.model.chats import Chat
 from primer.model.event_matcher import EventMatcher
 from primer.model.trigger import (
     ChannelTriggerConfig,
-    ChatMessageSubConfig,
+    SessionAppendSubConfig,
     Subscription,
     Trigger,
 )
@@ -32,9 +31,15 @@ def _now() -> datetime:
 async def test_matching_sub_dispatches_non_matching_skipped(
     fake_storage_provider, fake_claim_engine, fake_scheduler, seeded_agent,
 ):
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
+
     triggers = fake_storage_provider.get_storage(Trigger)
     subs = fake_storage_provider.get_storage(Subscription)
-    chats = fake_storage_provider.get_storage(Chat)
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
 
     t = Trigger(
         id="tr-c", slug="tr-c", name="channel", description=None,
@@ -45,24 +50,28 @@ async def test_matching_sub_dispatches_non_matching_skipped(
     )
     await triggers.create(t)
 
-    chat = Chat(
-        id="cn-1", agent_id=seeded_agent.id, last_seq=0,
-        status="active", turn_status="idle",
+    session = WorkspaceSession(
+        id="cn-1", workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id=seeded_agent.id),
+        status=SessionStatus.RUNNING, turn_status="running",
         created_at=_now(),
     )
-    await chats.create(chat)
+    await sessions.create(session)
 
     sub_open = Subscription(
         id="sb-open", trigger_id="tr-c",
-        config=ChatMessageSubConfig(chat_id="cn-1"),
+        config=SessionAppendSubConfig(session_id="cn-1"),
         payload_template="hi",
+        # The seeded session is mid-turn; queue so the steer is delivered
+        # as a pending row rather than dropped as busy.
+        parallelism="queue",
         event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED),
         enabled=True,
         created_at=_now(),
     )
     sub_cmd = Subscription(
         id="sb-cmd", trigger_id="tr-c",
-        config=ChatMessageSubConfig(chat_id="cn-1"),
+        config=SessionAppendSubConfig(session_id="cn-1"),
         payload_template="hi",
         event_matcher=EventMatcher(
             event_type=NormalizedEventType.MESSAGE_POSTED, command_name="deploy",
@@ -91,6 +100,7 @@ async def test_matching_sub_dispatches_non_matching_skipped(
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
+        workspace_registry=object(),
     )
     res = await fire_trigger(
         trigger_id="tr-c", scheduled_for=None, deps=deps,

@@ -598,7 +598,7 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
         </select>
         {noEmbed && (
           <div className="field-help" style={{ color: "var(--amber)" }}>
-            No embedding providers configured. Create one at <span className="mono">/providers/embedding</span> first.
+            No embedding providers configured. Create one at <span className="mono">/providers?class=embedding</span> first.
           </div>
         )}
         {vectorSpaceLocked && !noEmbed && <div className="field-help muted">{lockedHint}</div>}
@@ -637,7 +637,7 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
             </select>
             {(rerankers.data?.items ?? []).length === 0 && !rerankers.loading && (
               <div className="field-help" style={{ color: "var(--amber)" }}>
-                No cross-encoder providers configured. Create one at <span className="mono">/providers/cross_encoder</span> first.
+                No cross-encoder providers configured. Create one at <span className="mono">/providers?class=cross_encoder</span> first.
               </div>
             )}
           </div>

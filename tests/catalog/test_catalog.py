@@ -150,6 +150,22 @@ class _FakeCollectionStorage:
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -235,8 +251,6 @@ def _collection(
     return Collection(
         id=coll_id,
         description=description,
-        embedder=CollectionEmbedder(provider_id="p", model="m"),
-        search_provider_id="ssp-test",
     )
 
 
@@ -298,8 +312,9 @@ class TestInitialize:
         ]
         for coll in storage._data.values():
             assert coll.system is True
-            assert coll.embedder.provider_id == "p1"
-            assert coll.embedder.model == "m1"
+            # S2: the row carries no search block; the catalog's vector
+            # operations run off its own configured provider ids.
+            assert coll.search is None
         # Vector store collections also created with the same ids.
         assert sorted(vstore.collections.keys()) == [
             "_catalog_agents",
@@ -329,8 +344,6 @@ class TestInitialize:
             Collection(
                 id="_catalog_agents",
                 description="user squatting on the reserved id",
-                embedder=CollectionEmbedder(provider_id="p", model="m"),
-                search_provider_id="ssp-test",
                 system=False,
             )
         )
@@ -338,23 +351,23 @@ class TestInitialize:
             await catalog.initialize()
 
     @pytest.mark.asyncio
-    async def test_refuses_to_bind_system_row_with_different_embedder(
-        self,
-    ) -> None:
+    async def test_binds_an_existing_system_row(self) -> None:
         catalog, _, _, storage = _make_catalog()
-        # System row with a different provider — re-embedding belongs to
-        # the activation API, not initialize().
+        # S2: the row records no embedder, so initialize() can no longer
+        # detect a provider/model mismatch and simply binds the row. A
+        # dimension change is still caught by the vector store; a
+        # same-dimension model swap is the activation API's job to
+        # re-embed.
         await storage.create(
             Collection(
                 id="_catalog_agents",
                 description="x",
-                embedder=CollectionEmbedder(provider_id="other", model="other"),
-                search_provider_id="ssp-test",
                 system=True,
             )
         )
-        with pytest.raises(ConfigError, match="provider/model"):
-            await catalog.initialize()
+        await catalog.initialize()
+        row = await storage.get("_catalog_agents")
+        assert row is not None and row.system is True
 
 
 # ===========================================================================
@@ -446,18 +459,14 @@ class TestIndex:
     async def test_indexes_graph(self) -> None:
         catalog, _, vstore, _ = _make_catalog()
         await catalog.initialize()
-        await catalog.index(
-            SemanticEntityType.GRAPH, _graph("rg-1", "Graph 1")
-        )
+        await catalog.index(SemanticEntityType.GRAPH, _graph("rg-1", "Graph 1"))
         assert "rg-1" in vstore._records["_catalog_graphs"]
 
     @pytest.mark.asyncio
     async def test_indexes_collection(self) -> None:
         catalog, _, vstore, _ = _make_catalog()
         await catalog.initialize()
-        await catalog.index(
-            SemanticEntityType.COLLECTION, _collection("kb-1")
-        )
+        await catalog.index(SemanticEntityType.COLLECTION, _collection("kb-1"))
         assert "kb-1" in vstore._records["_catalog_collections"]
 
 

@@ -54,18 +54,18 @@ async def test_run_engine_registers_and_cancels_scope_for_chat():
                 cancelled["hit"] = True
                 raise
 
-        lease = _make_lease(ClaimKind.CHAT, "c1", "wrk-test")
-        pool._in_flight.add((ClaimKind.CHAT, "c1"))
+        lease = _make_lease(ClaimKind.HARNESS, "c1", "wrk-test")
+        pool._in_flight.add((ClaimKind.HARNESS, "c1"))
         task = asyncio.create_task(pool._run_engine(lease, _handler))
         await asyncio.wait_for(started.wait(), timeout=1.0)
 
-        scope = pool._active_scopes.get((ClaimKind.CHAT, "c1"))
+        scope = pool._active_scopes.get((ClaimKind.HARNESS, "c1"))
         assert scope is not None
         scope.cancel("preempted")
         await asyncio.wait_for(task, timeout=1.0)
 
         assert cancelled["hit"] is True
-        assert (ClaimKind.CHAT, "c1") not in pool._active_scopes  # cleaned up
-        assert (ClaimKind.CHAT, "c1") not in pool._in_flight
+        assert (ClaimKind.HARNESS, "c1") not in pool._active_scopes  # cleaned up
+        assert (ClaimKind.HARNESS, "c1") not in pool._in_flight
     finally:
         await scheduler.aclose()

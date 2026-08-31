@@ -6,6 +6,9 @@
 (function () {
   const { useState, useEffect, useRef, useCallback } = window.React;
 
+  // Three consecutive fetch failures mark a resource `degraded` (the
+  // flag exposed to consumers). It no longer kills the poll loop, which
+  // now backs off exponentially and retries instead.
   const MAX_ERRORS = 3;
   const cache = new Map(); // effectiveKey -> entry
 
@@ -30,7 +33,12 @@
   }
 
   function snapshotOf(entry) {
-    return { data: entry.data, error: entry.error, loading: entry.loading };
+    return {
+      data: entry.data,
+      error: entry.error,
+      loading: entry.loading,
+      degraded: entry.errorCount >= MAX_ERRORS,
+    };
   }
 
   // Reference + structural equality. Used to skip re-renders when a
@@ -61,6 +69,7 @@
       && entry._lastSnap
       && entry._lastSnap.loading === snap.loading
       && entry._lastSnap.error === snap.error
+      && entry._lastSnap.degraded === snap.degraded
       && _eq(entry._lastSnap.data, snap.data)
     ) {
       return;
@@ -91,12 +100,17 @@
     clearTimer(entry);
     if (!entry.fetcher) return;
     if (!(entry.pollMs > 0)) return;
-    if (entry.errorCount >= MAX_ERRORS) return;
     if (entry.pauseWhile && entry.pauseWhile()) return;
+    // Backoff: while erroring the delay grows 2x per failure, clamped to
+    // 60s, and the loop never stops (a success resets errorCount, see
+    // runFetch) so it recovers on its own instead of dying.
+    const delay = entry.errorCount > 0
+      ? Math.min(entry.pollMs * Math.pow(2, entry.errorCount), 60000)
+      : entry.pollMs;
     entry.timer = setTimeout(() => {
       entry.timer = null;
       runFetch(entry, key);
-    }, entry.pollMs);
+    }, delay);
   }
 
   async function runFetch(entry, key) {
@@ -161,20 +175,22 @@
   }
 
   function useResource(cacheKey, fetcher, opts = {}) {
-    const { pollMs = 0, pauseWhile, deps } = opts;
+    const { pollMs = 0, pauseWhile, deps, ignoreIdle = false } = opts;
     const effectiveKey = composeKey(cacheKey, deps);
 
     const [snap, setSnap] = useState(() => {
       const entry = cache.get(effectiveKey);
       return entry
         ? snapshotOf(entry)
-        : { data: undefined, error: null, loading: true };
+        : { data: undefined, error: null, loading: true, degraded: false };
     });
 
     const fetcherRef = useRef(fetcher);
     fetcherRef.current = fetcher;
     const pauseWhileRef = useRef(pauseWhile);
     pauseWhileRef.current = pauseWhile;
+    const ignoreIdleRef = useRef(ignoreIdle);
+    ignoreIdleRef.current = ignoreIdle;
 
     useEffect(() => {
       ensureVisibility();
@@ -189,10 +205,11 @@
         // global idle flag set by ui/foundation/idle.js. Either pausing
         // means we skip the next scheduled poll. When the idle flag
         // clears, idle.js calls refetchAll() to resume every active
-        // entry immediately.
+        // entry immediately. opts.ignoreIdle opts out of the global
+        // idle skip only; the caller's own pauseWhile still applies.
         const fn = pauseWhileRef.current;
         if (typeof fn === "function" && fn()) return true;
-        if (window.primerApi && window.primerApi.idle === true) return true;
+        if (!ignoreIdleRef.current && window.primerApi && window.primerApi.idle === true) return true;
         return false;
       };
 
@@ -236,6 +253,12 @@
       if (entry.timer != null) {
         clearTimer(entry);
         schedule(entry, effectiveKey);
+      } else if (pollMs > 0 && entry.abortCtrl == null && !entry.loading) {
+        // 0 -> N on a SETTLED entry: no timer was ever pending and no
+        // fetch is in flight, so without this the loop never restarts
+        // - a doc that stopped polling at "ended" stayed frozen after
+        // a reopen flipped its cadence back on (BDD round 2).
+        schedule(entry, effectiveKey);
       }
     }, [effectiveKey, pollMs]);
 
@@ -246,7 +269,13 @@
       runFetch(entry, effectiveKey);
     }, [effectiveKey]);
 
-    return { data: snap.data, error: snap.error, loading: snap.loading, refetch };
+    return {
+      data: snap.data,
+      error: snap.error,
+      loading: snap.loading,
+      degraded: snap.degraded,
+      refetch,
+    };
   }
 
   // Internal helpers exposed for useMutation's optimistic/invalidates

@@ -56,6 +56,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -85,6 +101,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -184,8 +205,8 @@ async def test_create_channel_binding_creates_subscription_on_channel_trigger(
                 "command_name": "deploy",
             },
             "config": {
-                "kind": "start_chat",
-                "agent_id": "deployer",
+                "kind": "session_append",
+                "session_id": "sess-1",
             },
             "reply_target": "source_thread",
         },
@@ -209,7 +230,7 @@ async def test_create_channel_binding_unknown_trigger_returns_trigger_not_found(
         tool_name="create_channel_binding",
         arguments={
             "trigger_id": "no-such-trigger",
-            "config": {"kind": "start_chat", "agent_id": "deployer"},
+            "config": {"kind": "session_append", "session_id": "sess-1"},
         },
     )
     assert result.is_error
@@ -229,7 +250,7 @@ async def test_list_channel_bindings_returns_subscriptions(sp: _SP, system_tools
         tool_name="create_channel_binding",
         arguments={
             "trigger_id": "trg-ch-1",
-            "config": {"kind": "start_chat", "agent_id": "deployer"},
+            "config": {"kind": "session_append", "session_id": "sess-1"},
         },
     )
 
@@ -266,7 +287,7 @@ async def test_delete_channel_binding_removes_subscription(sp: _SP, system_tools
         tool_name="create_channel_binding",
         arguments={
             "trigger_id": "trg-ch-1",
-            "config": {"kind": "start_chat", "agent_id": "deployer"},
+            "config": {"kind": "session_append", "session_id": "sess-1"},
         },
     )
     sub_id = json.loads(create_result.output)["id"]

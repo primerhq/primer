@@ -1,0 +1,74 @@
+[
+  {
+    "cursor": "c0",
+    "seq": 41,
+    "workspace_id": "ws-3f8a9bc1d4e2",
+    "session_id": "sess-4f1a2b3c",
+    "agent_id": "operator",
+    "graph_id": null,
+    "node_id": null,
+    "class": "user_input",
+    "ts": "2026-08-16T09:40:00+00:00",
+    "payload": {"content": "Wire the payments webhook and add a test"}
+  },
+  {
+    "cursor": "c1",
+    "seq": 42,
+    "workspace_id": "ws-3f8a9bc1d4e2",
+    "session_id": "sess-4f1a2b3c",
+    "agent_id": "operator",
+    "graph_id": null,
+    "node_id": null,
+    "class": "tool_call",
+    "ts": "2026-08-16T09:40:03+00:00",
+    "payload": {
+      "tool_call_id": "tc-1",
+      "name": "workspace__grep",
+      "arguments": {"pattern": "webhook", "path": "src/"}
+    }
+  },
+  {
+    "cursor": "c2",
+    "seq": 43,
+    "workspace_id": "ws-3f8a9bc1d4e2",
+    "session_id": "sess-4f1a2b3c",
+    "agent_id": "operator",
+    "graph_id": null,
+    "node_id": null,
+    "class": "tool_result",
+    "ts": "2026-08-16T09:40:05+00:00",
+    "payload": {
+      "tool_call_id": "tc-1",
+      "content": "src/api.ts:88\nsrc/api.ts:104",
+      "metadata": {"match_count": 2, "file_count": 1, "truncated": false}
+    }
+  },
+  {
+    "cursor": "c3",
+    "seq": 44,
+    "workspace_id": "ws-3f8a9bc1d4e2",
+    "session_id": "sess-4f1a2b3c",
+    "agent_id": "operator",
+    "graph_id": null,
+    "node_id": null,
+    "class": "yielded",
+    "ts": "2026-08-16T09:41:00+00:00",
+    "payload": {
+      "tool_call_id": "tc-2",
+      "tool_name": "_approval",
+      "resume_metadata": {"original_call": {"name": "workspace__write_file"}}
+    }
+  },
+  {
+    "cursor": "c4",
+    "seq": 45,
+    "workspace_id": "ws-3f8a9bc1d4e2",
+    "session_id": "sess-4f1a2b3c",
+    "agent_id": "operator",
+    "graph_id": null,
+    "node_id": null,
+    "class": "assistant_token",
+    "ts": "2026-08-16T09:41:55+00:00",
+    "payload": {"content": "Added the handler and a retry test."}
+  }
+]

@@ -15,7 +15,7 @@ Pages traversed:
   /console/ (initial nav) → /channels/providers → New-provider
   modal → submit → provider detail →
   /channels/channels → New-channel modal (with the "Chats"
-  fieldset: enabled + default_agent) → submit → row visible →
+  fieldset: enabled) → submit → row visible →
   /workspaces/{wid}?tab=channels → "Link channel" modal → submit
   → channel shown as linked on the workspace.
 
@@ -25,7 +25,7 @@ Multi-subsystem exercise in one test:
      config (we drive the Discord path: 60-char bot_token).
   2. Channels list + create modal with provider-reference integrity
      (the dropdown lists the just-created provider) PLUS the Chats
-     fieldset — chats enabled + a default_agent picked from the
+     fieldset — chats enabled, picked from the
      live /agents endpoint.
   3. Workspace-detail Channels tab → Link-channel modal: the
      channel dropdown is populated from the live /channels endpoint;
@@ -37,7 +37,7 @@ Multi-subsystem exercise in one test:
 
 Covers backlog item U0108.
 
-API-seeds an Agent (for the channel's default_agent) plus the
+API-seeds an Agent plus the
 WorkspaceProvider + Template + Workspace via httpx (no UI for those
 — WorkspaceTemplate creation is API-only); then drives the
 provider + channel creates through the UI and links the channel to
@@ -52,6 +52,7 @@ from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_workspace_settings
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 
 
 # 60-char placeholder; satisfies DiscordChannelProviderConfig.bot_token
@@ -63,7 +64,7 @@ def _seed(base_url: str, suffix: str) -> dict[str, str]:
     """Seed Agent + WorkspaceProvider + Template + Workspace via API.
 
     Returns ids. The Agent is needed so the channel-create modal's
-    "Chats" fieldset has a default_agent to select; the workspace is
+    "Chats" fieldset can be enabled; the workspace is
     the link target on the workspace detail page.
     """
     ids = {
@@ -163,7 +164,7 @@ def test_u0108_channels_operator_onboarding_journey(
          id + bot_token (Discord) → submit → provider detail page.
       3. Navigate /channels/channels → "New channel" → pick the
          provider just created + fill external_id, enable Chats +
-         pick the seeded agent as default_agent → submit → channel
+         enable chats → submit → channel
          row visible.
       4. Navigate /workspaces/{wid}?tab=channels → "Link channel"
          modal → pick the channel just created → submit → the
@@ -183,10 +184,7 @@ def test_u0108_channels_operator_onboarding_journey(
 
     try:
         # ----- 1. /channels/providers → New provider --------------------
-        page.goto(
-            f"{console_url}#/channels/providers",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "channels/providers")
         new_provider_btn = page.get_by_role(
             "button", name="New provider", exact=True,
         )
@@ -212,18 +210,13 @@ def test_u0108_channels_operator_onboarding_journey(
         # Modal closes; Designer's onSuccess navigates to the new
         # provider's detail page.
         expect(page.locator(".modal")).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/channels/providers/{cp_id}**", timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"channels/providers/{cp_id}")
         expect(page.get_by_role("button", name="Probe").first).to_be_visible(
             timeout=10_000,
         )
 
         # ----- 2. /channels/channels → New channel (with Chats) ---------
-        page.goto(
-            f"{console_url}#/channels/channels",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "channels")
         new_channel_btn = page.get_by_role(
             "button", name="New channel", exact=True,
         )
@@ -246,21 +239,14 @@ def test_u0108_channels_operator_onboarding_journey(
             f"snowflake-{unique_suffix}",
         )
 
-        # ----- Chats fieldset: enable + pick the seeded default_agent.
-        # "Chats enabled" is a switch-style toggle button; clicking it reveals
-        # the rest of the chat controls (default_agent, relay mode, etc.).
+        # ----- Chats fieldset: enable inbound on this room.
+        # "Chats enabled" is a switch-style toggle button; clicking it
+        # reveals the relay-mode control. Per-channel agent selection is
+        # gone: a thread IS a session, so the channel trigger's
+        # subscription names the agent (S6 section 7).
         chats_enabled = modal.get_by_test_id("channel-chats-enabled")
         chats_enabled.click()
         expect(chats_enabled).to_have_attribute("aria-checked", "true")
-
-        # The default_agent select is the second select.mono in the modal
-        # (the first is the provider dropdown). Wait for the seeded agent
-        # to be available as an option, then select it.
-        default_agent_select = modal.locator("select.select").nth(1)
-        expect(
-            default_agent_select.locator(f"option[value='{agent_id}']")
-        ).to_be_attached(timeout=10_000)
-        default_agent_select.select_option(agent_id)
 
         # Submit. Channel modal Btn label is "Create channel".
         modal.get_by_role("button", name="Create channel", exact=True).click()
@@ -277,11 +263,10 @@ def test_u0108_channels_operator_onboarding_journey(
             assert r.status_code == 200, r.text
             chats = r.json().get("config", {}).get("chats", {})
             assert chats.get("enabled") is True, r.json()
-            assert chats.get("default_agent") == agent_id, r.json()
 
         # ----- 3. Studio → Settings modal → Channels → Link channel -----
         # Re-pointed: the old ``?tab=channels`` workspace-detail tab moved
-        # into the Studio Settings modal (studio-settings.jsx), which renders
+        # into the workspace's own tabs in the workspaces overlay, which render
         # the SAME WS_ChannelsTab. Open it and drive the reused Link-channel
         # flow. The settings overlay is itself a ``workspace-settings`` modal,
         # so scope the Link-channel button to that panel.

@@ -32,15 +32,25 @@ from primer.model.chat import (
     Done,
     Error,
     ExtendedEvent,
+    ReasoningDelta,
     StreamEvent,
     TextDelta,
+    ToolCallDelta,
     ToolCallEnd,
     ToolCallStart,
     Usage,
+    _ClientAction,
     _ExecutorToolResult,
     _GraphNodeEvent,
+    _LlmCall,
 )
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
+from primer.tap.delta import (
+    KIND_REASONING,
+    KIND_TEXT,
+    KIND_TOOL,
+    part_id,
+)
 
 # Reusable validator for the discriminated ``StreamEvent`` union.  Used to
 # reconstruct the inner StreamEvent carried by a forwarded ``_GraphNodeEvent``
@@ -215,6 +225,13 @@ class _CoalesceState:
     """
 
     text_buffers: dict[str | None, str] = field(default_factory=dict)
+    # Model reasoning / extended thinking, coalesced exactly like the
+    # answer text. Flushed as a REASONING record BEFORE the buffered
+    # answer at every flush point, so the transcript orders thought ->
+    # action the way the model produced them. Until 2026-08-25 the
+    # adapters' ReasoningDelta events were silently dropped here and
+    # thinking never reached the transcript at all.
+    reasoning_buffers: dict[str | None, str] = field(default_factory=dict)
     last_usage_by: dict[str | None, Usage] = field(default_factory=dict)
     # Tool name carried from ToolCallStart (which has it) to the paired
     # ToolCallEnd (same id, but no name field), keyed by (node_id, tool_call
@@ -230,23 +247,44 @@ class _CoalesceState:
     tool_names: dict[tuple[str | None, str], str] = field(default_factory=dict)
 
 
+class _DeltaSink(Protocol):
+    """Duck-typed ephemeral-delta sink (``primer.tap.delta.DeltaBuffer``).
+
+    ``translate_stream_event`` is synchronous, so it can only drive the
+    *synchronous* half of the buffer: :meth:`on_delta` per content delta and
+    :meth:`close` when the durable record for a part is produced. The buffer
+    publishes its own frames on a separate async cadence; the translator
+    never blocks on I/O. Absent (``None``) the live path is skipped and the
+    durable-record behaviour is byte-identical to before.
+    """
+
+    def on_delta(self, pid: str, kind: str, delta: str) -> None: ...
+
+    def close(self, pid: str) -> None: ...
+
+
 def translate_stream_event(
     event: StreamEvent,
     state: _CoalesceState,
     node_id: str | None = None,
+    delta_sink: "_DeltaSink | None" = None,
+    turn_no: int = 0,
 ) -> "SessionMessageRecord | list[SessionMessageRecord] | None":
     """Per-event translation following the chat-selective persistence cadence.
 
     | Event                | Output                                          |
     |----------------------|-------------------------------------------------|
     | TextDelta            | None (coalesces into state.text_buffers[node])  |
+    | ReasoningDelta       | None (coalesces into state.reasoning_buffers)   |
     | Usage                | None (accumulated in state.last_usage_by[node]) |
     | ToolCallStart        | None (records name in state.tool_names[node,id])|
-    | ToolCallEnd          | flush text buffer (if any), then TOOL_CALL      |
+    | ToolCallEnd          | flush reasoning, then text, then TOOL_CALL      |
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
+    | ExtendedEvent(_ClientAction)       | CLIENT_ACTION                  |
+    | ExtendedEvent(_LlmCall)            | LLM_CALL                       |
     | ExtendedEvent(_GraphNodeEvent) | reconstruct inner StreamEvent and    |
     |                      |   recurse with node_id=event.extended.node_id   |
-    | Done                 | flush text buffer (if any), then DONE           |
+    | Done                 | flush reasoning + text buffers, then DONE       |
     |                      |   payload includes usage envelope when present  |
     | Error                | ERROR                                           |
     | _GraphErrorEvent     | ERROR (graph runtime terminal failure)          |
@@ -264,6 +302,13 @@ def translate_stream_event(
 
     Worker code is responsible for synthetic kinds (USER_INPUT, CANCELLED,
     YIELDED, RESUMED) — not produced by this translator from LLM events.
+
+    ``turn_no`` (01a04e02) rides into every ``part_id()`` call below - the
+    caller's current turn (``session.turn_no``, stable for the whole of
+    ``run_one_session_turn``) so a text/reasoning part's id never repeats
+    across turns on the same node. Defaults to 0 for callers that don't
+    care (most unit tests); production call sites always pass the real
+    value.
     """
     now = _now_utc()
 
@@ -296,7 +341,10 @@ def translate_stream_event(
             # Inner event isn't a reconstructable StreamEvent — drop, exactly
             # as an unhandled event would be dropped on the agent path.
             return None
-        return translate_stream_event(inner, state, node_id=event.extended.node_id)
+        return translate_stream_event(
+            inner, state, node_id=event.extended.node_id, delta_sink=delta_sink,
+            turn_no=turn_no,
+        )
 
     if isinstance(event, _GraphTransitionEvent):
         # Graph-runtime node-lifecycle transition (spec §2.6). Maps 1:1 to a
@@ -359,6 +407,20 @@ def translate_stream_event(
     if isinstance(event, TextDelta):
         # Keyed by node_id so interleaved sibling-node text never mixes.
         state.text_buffers[node_id] = state.text_buffers.get(node_id, "") + event.text
+        if delta_sink is not None:
+            delta_sink.on_delta(part_id(node_id, KIND_TEXT, turn_no), KIND_TEXT, event.text)
+        return None
+
+    if isinstance(event, ReasoningDelta):
+        # Same coalescing discipline as TextDelta; flushed as a
+        # REASONING record at the same flush points.
+        state.reasoning_buffers[node_id] = (
+            state.reasoning_buffers.get(node_id, "") + event.text
+        )
+        if delta_sink is not None:
+            delta_sink.on_delta(
+                part_id(node_id, KIND_REASONING, turn_no), KIND_REASONING, event.text
+            )
         return None
 
     if isinstance(event, ToolCallStart):
@@ -370,15 +432,44 @@ def translate_stream_event(
         state.tool_names[(node_id, event.id)] = event.name
         return None
 
+    if isinstance(event, ToolCallDelta):
+        # Like TextDelta this coalesces into the single TOOL_CALL record
+        # (produced on ToolCallEnd), so it produces no durable record of its
+        # own - but it feeds the delta sink so a client can render the
+        # arguments as they stream. The part_id is the tool call id, not a
+        # node-scoped id, because the paired TOOL_CALL record carries the same
+        # id and the client reconciles the live arguments to it by that id.
+        if delta_sink is not None:
+            delta_sink.on_delta(event.id, KIND_TOOL, event.arguments_delta)
+        return None
+
     if isinstance(event, ToolCallEnd):
         records: list[SessionMessageRecord] = []
+        thought = state.reasoning_buffers.get(node_id, "")
+        if thought:
+            records.append(
+                SessionMessageRecord(
+                    seq=1,
+                    kind=SessionMessageKind.REASONING,
+                    payload={
+                        "text": thought,
+                        "part_id": part_id(node_id, KIND_REASONING, turn_no),
+                    },
+                    node_id=node_id,
+                    created_at=now,
+                )
+            )
+            state.reasoning_buffers[node_id] = ""
         buffered = state.text_buffers.get(node_id, "")
         if buffered:
             records.append(
                 SessionMessageRecord(
                     seq=1,
                     kind=SessionMessageKind.ASSISTANT_TOKEN,
-                    payload={"text": buffered},
+                    payload={
+                        "text": buffered,
+                        "part_id": part_id(node_id, KIND_TEXT, turn_no),
+                    },
                     node_id=node_id,
                     created_at=now,
                 )
@@ -397,9 +488,33 @@ def translate_stream_event(
                 created_at=now,
             )
         )
+        # The text/reasoning parts end here; the tool-input part ends here too
+        # (its part_id is the tool call id). A part with no deltas is a no-op.
+        if delta_sink is not None:
+            delta_sink.close(part_id(node_id, KIND_TEXT, turn_no))
+            delta_sink.close(part_id(node_id, KIND_REASONING, turn_no))
+            delta_sink.close(event.id)
         if len(records) == 1:
             return records[0]
         return records
+
+    if isinstance(event, ExtendedEvent) and isinstance(event.extended, _LlmCall):
+        call = event.extended
+        return SessionMessageRecord(
+            seq=1,  # WorkspaceMessageWriter overwrites
+            kind=SessionMessageKind.LLM_CALL,
+            payload={
+                "profile_id": call.profile_id,
+                "provider_id": call.provider_id,
+                "model": call.model,
+                "input_tokens": call.input_tokens,
+                "output_tokens": call.output_tokens,
+                "duration_ms": call.duration_ms,
+                "status": call.status,
+            },
+            node_id=node_id,
+            created_at=now,
+        )
 
     if isinstance(event, ExtendedEvent) and isinstance(
         event.extended, _ExecutorToolResult
@@ -411,6 +526,29 @@ def translate_stream_event(
                 "call_id": event.extended.call_id,
                 "output": event.extended.output,
                 "error": event.extended.error,
+                # UX reconcile wave 5: a workspace tool's own extra data
+                # (grep's match_count/file_count, ...) used to be dropped
+                # here, the last of three drop points on this path
+                # (ToolResultPart -> _ExecutorToolResult -> here). Additive
+                # and defensive: a record persisted before this field
+                # existed simply has no "metadata" key, and every reader
+                # of this payload already treats it as optional.
+                "metadata": event.extended.metadata,
+            },
+            node_id=node_id,
+            created_at=now,
+        )
+
+    if isinstance(event, ExtendedEvent) and isinstance(
+        event.extended, _ClientAction
+    ):
+        return SessionMessageRecord(
+            seq=1,
+            kind=SessionMessageKind.CLIENT_ACTION,
+            payload={
+                "call_id": event.extended.call_id,
+                "name": event.extended.name,
+                "arguments": dict(event.extended.arguments or {}),
             },
             node_id=node_id,
             created_at=now,
@@ -418,13 +556,31 @@ def translate_stream_event(
 
     if isinstance(event, Done):
         records = []
+        thought = state.reasoning_buffers.get(node_id, "")
+        if thought:
+            records.append(
+                SessionMessageRecord(
+                    seq=1,
+                    kind=SessionMessageKind.REASONING,
+                    payload={
+                        "text": thought,
+                        "part_id": part_id(node_id, KIND_REASONING, turn_no),
+                    },
+                    node_id=node_id,
+                    created_at=now,
+                )
+            )
+            state.reasoning_buffers[node_id] = ""
         buffered = state.text_buffers.get(node_id, "")
         if buffered:
             records.append(
                 SessionMessageRecord(
                     seq=1,
                     kind=SessionMessageKind.ASSISTANT_TOKEN,
-                    payload={"text": buffered},
+                    payload={
+                        "text": buffered,
+                        "part_id": part_id(node_id, KIND_TEXT, turn_no),
+                    },
                     node_id=node_id,
                     created_at=now,
                 )
@@ -455,7 +611,11 @@ def translate_stream_event(
         # stale usage envelope (mirrors the text-buffer clear discipline) and
         # the dicts don't accumulate dead keys across many nodes.
         state.text_buffers.pop(node_id, None)
+        state.reasoning_buffers.pop(node_id, None)
         state.last_usage_by.pop(node_id, None)
+        if delta_sink is not None:
+            delta_sink.close(part_id(node_id, KIND_TEXT, turn_no))
+            delta_sink.close(part_id(node_id, KIND_REASONING, turn_no))
         if records:
             records.append(done_record)
             return records
@@ -470,9 +630,48 @@ def translate_stream_event(
             created_at=now,
         )
 
-    # All other events (StreamStart, ReasoningDelta, ToolCallDelta, MediaDelta,
+    # All other events (StreamStart, ToolCallDelta, MediaDelta,
     # ExtendedEvent without _ExecutorToolResult / _GraphNodeEvent) — silently
     # dropped. (ToolCallStart is handled above: it records the tool name.)
+    return None
+
+
+def infer_agent_phase(event: StreamEvent) -> str | None:
+    """Map a raw StreamEvent to the agent_phase (01a04d91-a7a0) it
+    implies, or ``None`` if this event kind carries no phase information
+    (Usage, ToolCallDelta, an unmatched ExtendedEvent, etc.).
+
+    Deliberately operates on the RAW event, before translate_stream_event's
+    coalescing: TextDelta/ReasoningDelta only produce a durable record at a
+    flush point (ToolCallEnd or Done), which would tell a live phase signal
+    about "responding" started far too late — the whole point of the phase
+    field is to be true WHILE the tokens are streaming, not after they've
+    already been buffered into a record. A pure function, no side effects,
+    so the caller (dispatch.run_one_session_turn) decides what to do with a
+    transition (only writing/publishing on an actual change, not every
+    event) rather than this function doing it inline.
+
+    * ReasoningDelta -> "thinking" (reasoning renders as its own
+      collapsible block, distinct from the final answer - see agent_phase's
+      own docstring on WorkspaceSession).
+    * TextDelta -> "responding" (the final answer has started).
+    * ToolCallStart -> "executing".
+    * ToolCallEnd -> "thinking" (the tool result is about to be appended
+      and the agent will re-request a completion).
+    * Done / Error -> "waiting" (the turn is ending; dispatch's own
+      turn-status cleanup already fires around the same moment).
+    * Everything else -> None (no transition implied).
+    """
+    if isinstance(event, ReasoningDelta):
+        return "thinking"
+    if isinstance(event, TextDelta):
+        return "responding"
+    if isinstance(event, ToolCallStart):
+        return "executing"
+    if isinstance(event, ToolCallEnd):
+        return "thinking"
+    if isinstance(event, (Done, Error)):
+        return "waiting"
     return None
 
 

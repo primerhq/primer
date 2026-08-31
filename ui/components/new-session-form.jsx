@@ -288,12 +288,15 @@ function SharedNewSessionForm(props) {
   // For graph bindings with an object input_schema, the dynamic form replaces
   // the free-text instructions field.
   var usesGraphInputForm = kind === "graph" && hasObjectSchema;
+  // An agent binding may be left unpicked: submitting without one means
+  // "the system default agent", and the server resolves it. A graph
+  // binding still needs a graph, since there is no default graph.
   var canSubmit =
     !loading
     && !create.loading
     && !uploading
     && effectiveWid
-    && (kind === "agent" ? !!agentId : !!graphId);
+    && (kind === "agent" ? true : !!graphId);
 
   // Append newly-picked files to the attachment list. The input is reset so
   // re-picking the SAME file fires another change event.
@@ -360,10 +363,14 @@ function SharedNewSessionForm(props) {
       }
     }
 
+    // Omitting binding entirely is what asks for the system default
+    // agent. Sending {kind:"agent", agent_id:null} would be a request to
+    // bind to an agent called null, which is a different thing.
     var binding = kind === "agent"
-      ? { kind: "agent", agent_id: agentId }
+      ? (agentId ? { kind: "agent", agent_id: agentId } : null)
       : { kind: "graph", graph_id: graphId };
-    var body = { binding: binding, auto_start: autoStart };
+    var body = { auto_start: autoStart };
+    if (binding) body.binding = binding;
     if (name.trim()) body.name = name.trim();
     if (usesGraphInputForm) {
       // Submit the schema-driven object as `graph_input`; the server validates

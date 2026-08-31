@@ -109,8 +109,11 @@ class TestDiscoverAnthropic:
         body = r.json()
         assert body["models"][0]["name"] == "claude-opus-4-5"
         assert body["models"][0]["display_name"] == "Claude Opus 4.5"
-        # /v1/models exposes no context window; the route seeds a default.
-        assert body["models"][0]["context_length"] > 0
+        # Dogfood round 2: /v1/models exposes no context window and there
+        # is no other way to learn it for Anthropic - the route must NOT
+        # invent one (a seeded fake is what shipped a real user a wrong,
+        # confident-looking "32k" meter denominator).
+        assert not body["models"][0].get("context_length")
 
     @respx.mock
     @pytest.mark.asyncio
@@ -153,7 +156,7 @@ class TestDiscoverGemini:
                             "supportedGenerationMethods": ["generateContent"],
                         },
                         {
-                            # No inputTokenLimit -> route seeds default.
+                            # No inputTokenLimit -> stays unknown, not seeded.
                             "name": "models/gemini-2.5-pro",
                             "supportedGenerationMethods": ["generateContent"],
                         },
@@ -179,8 +182,8 @@ class TestDiscoverGemini:
         assert names == ["gemini-2.5-flash", "gemini-2.5-pro"]
         assert body["models"][0]["display_name"] == "Gemini 2.5 Flash"
         assert body["models"][0]["context_length"] == 1048576
-        # Missing inputTokenLimit gets the seeded default.
-        assert body["models"][1]["context_length"] > 0
+        # Missing inputTokenLimit stays unknown - no seeded default.
+        assert not body["models"][1].get("context_length")
 
     @respx.mock
     @pytest.mark.asyncio
@@ -234,8 +237,44 @@ class TestDiscoverOpenChat:
         body = r.json()
         names = [m["name"] for m in body["models"]]
         assert names == ["llama-3.1-8b-instruct", "qwen2.5-coder-7b"]
-        # /v1/models exposes no context window; the route seeds a default.
-        assert body["models"][0]["context_length"] > 0
+        # A bare /v1/models entry (real OpenAI shape) exposes no context
+        # window - stays unknown, not seeded.
+        assert not body["models"][0].get("context_length")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_reads_a_real_context_length_when_the_server_reports_one(
+        self, client,
+    ) -> None:
+        """Dogfood round 2: OpenAI-compatible SERVERS this probe actually
+        talks to in practice (vLLM, llama.cpp server, LM Studio, text-
+        generation-webui) commonly report the model's real window right
+        on the /v1/models entry, under one of a few different field
+        names - use it instead of guessing."""
+        respx.get("http://oc-test.local/v1/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={"data": [
+                    {"id": "llama-3.1-8b-instruct", "context_length": 131072},
+                    {"id": "qwen2.5-coder-7b", "max_model_len": 32768},
+                    {"id": "mistral-7b", "max_context_length": 8192},
+                    {"id": "bare-model"},
+                ]},
+            ),
+        )
+        r = await client.post(
+            "/v1/llm_providers/_discover_models",
+            json={
+                "provider": "openchat",
+                "config": {"url": "http://oc-test.local/v1", "flavor": "lmstudio"},
+            },
+        )
+        assert r.status_code == 200, r.text
+        by_name = {m["name"]: m for m in r.json()["models"]}
+        assert by_name["llama-3.1-8b-instruct"]["context_length"] == 131072
+        assert by_name["qwen2.5-coder-7b"]["context_length"] == 32768
+        assert by_name["mistral-7b"]["context_length"] == 8192
+        assert not by_name["bare-model"].get("context_length")
 
     @respx.mock
     @pytest.mark.asyncio
@@ -308,11 +347,14 @@ class TestDiscoverModelsOnASavedProvider:
         assert seen.get("api_key") == "sk-real-secret"
 
     @pytest.mark.asyncio
-    async def test_seeds_a_context_length_the_probe_cannot_know(
+    async def test_never_invents_a_context_length_the_probe_cannot_know(
         self, client, monkeypatch
     ) -> None:
-        """/v1/models does not report a context window; a ModelProfile
-        requires one, so the response carries a default to override."""
+        """Dogfood round 2: /v1/models not reporting a context window
+        must leave the field unset, not seed a plausible-looking fake -
+        a ModelProfile.context_length is required, so an unknown value
+        is an honest prompt for the operator to fill in on the form, not
+        something this route gets to guess at."""
         async def _fake_probe(config):
             return {"models": [{"name": "m-1"}]}
 
@@ -332,4 +374,123 @@ class TestDiscoverModelsOnASavedProvider:
         )
         r = await client.get("/v1/llm_providers/saved-probe-2/discovered_models")
         assert r.status_code == 200, r.text
-        assert r.json()["models"][0]["context_length"] > 0
+        assert not r.json()["models"][0].get("context_length")
+
+
+class TestProbeStateStamping:
+    """Platform wave P2 (#4/#5): last_probe_at/last_probe_ok/last_error
+    are stamped onto the stored LLMProvider row by the one route that
+    actually probes a persisted provider."""
+
+    @pytest.mark.asyncio
+    async def test_virgin_row_has_no_probe_state(self, client) -> None:
+        await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "probe-virgin",
+                "provider": "openresponses",
+                "config": {"url": "http://example.invalid", "flavor": "other"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        got = await client.get("/v1/llm_providers/probe-virgin")
+        assert got.json()["last_probe_at"] is None
+        assert got.json()["last_probe_ok"] is False
+        assert got.json()["last_error"] is None
+
+    @pytest.mark.asyncio
+    async def test_success_stamps_ok_and_at(self, client, monkeypatch) -> None:
+        async def _fake_probe(config):
+            return {"models": [{"name": "m-1"}]}
+
+        monkeypatch.setattr(
+            "primer.api.routers.providers._probe_openai_compatible_models",
+            _fake_probe,
+        )
+        await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "probe-ok",
+                "provider": "openresponses",
+                "config": {"url": "http://example.invalid", "flavor": "other"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        r = await client.get("/v1/llm_providers/probe-ok/discovered_models")
+        assert r.status_code == 200, r.text
+
+        got = await client.get("/v1/llm_providers/probe-ok")
+        body = got.json()
+        assert body["last_probe_at"] is not None
+        assert body["last_probe_ok"] is True
+        assert body["last_error"] is None
+
+    @pytest.mark.asyncio
+    async def test_failure_stamps_error_and_leaves_ok_false(
+        self, client, monkeypatch,
+    ) -> None:
+        from primer.model.except_ import BadRequestError
+
+        async def _fake_probe(config):
+            raise BadRequestError("upstream said no")
+
+        monkeypatch.setattr(
+            "primer.api.routers.providers._probe_openai_compatible_models",
+            _fake_probe,
+        )
+        await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "probe-fail",
+                "provider": "openresponses",
+                "config": {"url": "http://example.invalid", "flavor": "other"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        r = await client.get("/v1/llm_providers/probe-fail/discovered_models")
+        assert r.status_code >= 400
+
+        got = await client.get("/v1/llm_providers/probe-fail")
+        body = got.json()
+        assert body["last_probe_at"] is not None
+        assert body["last_probe_ok"] is False
+        assert "upstream said no" in body["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_a_later_success_clears_a_prior_error(
+        self, client, monkeypatch,
+    ) -> None:
+        from primer.model.except_ import BadRequestError
+
+        calls = {"n": 0}
+
+        async def _flaky_probe(config):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise BadRequestError("first attempt failed")
+            return {"models": [{"name": "m-1"}]}
+
+        monkeypatch.setattr(
+            "primer.api.routers.providers._probe_openai_compatible_models",
+            _flaky_probe,
+        )
+        await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "probe-recover",
+                "provider": "openresponses",
+                "config": {"url": "http://example.invalid", "flavor": "other"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        first = await client.get("/v1/llm_providers/probe-recover/discovered_models")
+        assert first.status_code >= 400
+        second = await client.get(
+            "/v1/llm_providers/probe-recover/discovered_models",
+        )
+        assert second.status_code == 200, second.text
+
+        got = await client.get("/v1/llm_providers/probe-recover")
+        body = got.json()
+        assert body["last_probe_ok"] is True
+        assert body["last_error"] is None

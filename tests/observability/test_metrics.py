@@ -197,3 +197,69 @@ class TestResetForTest:
         import primer.observability.metrics as m
         m.reset_for_test()
         assert isinstance(m.registry, CollectorRegistry)
+
+class TestS7GapMetrics:
+    def test_worker_tasks_total_labels(self) -> None:
+        import primer.observability.metrics as m
+        assert isinstance(m.worker_tasks_total, Counter)
+        m.worker_tasks_total.labels("host-0", "session", "ok").inc()
+        val = m.worker_tasks_total.labels("host-0", "session", "ok")._value.get()
+        assert val == 1.0
+
+    def test_worker_task_duration_observes(self) -> None:
+        import primer.observability.metrics as m
+        assert isinstance(m.worker_task_duration_seconds, Histogram)
+        m.worker_task_duration_seconds.labels("host-0", "chat", "ok").observe(4.0)
+        s = m.worker_task_duration_seconds.labels("host-0", "chat", "ok")._sum.get()
+        assert s == pytest.approx(4.0)
+
+    def test_turns_total_labels(self) -> None:
+        import primer.observability.metrics as m
+        assert isinstance(m.turns_total, Counter)
+        m.turns_total.labels("ag-1", "completed").inc()
+        assert m.turns_total.labels("ag-1", "completed")._value.get() == 1.0
+
+    def test_turn_duration_has_long_buckets(self) -> None:
+        import primer.observability.metrics as m
+        assert isinstance(m.turn_duration_seconds, Histogram)
+        m.turn_duration_seconds.labels("ag-1", "completed").observe(240.0)
+        s = m.turn_duration_seconds.labels("ag-1", "completed")._sum.get()
+        assert s == pytest.approx(240.0)
+        assert 300 in m._TASK_BUCKETS
+
+    def test_llm_calls_total_labels(self) -> None:
+        import primer.observability.metrics as m
+        assert isinstance(m.llm_calls_total, Counter)
+        m.llm_calls_total.labels("prov-1", "prof-1", "ok").inc()
+        assert m.llm_calls_total.labels("prov-1", "prof-1", "ok")._value.get() == 1.0
+
+    def test_llm_profile_tokens_total_labels(self) -> None:
+        import primer.observability.metrics as m
+        assert isinstance(m.llm_profile_tokens_total, Counter)
+        m.llm_profile_tokens_total.labels("prof-1", "in").inc(120)
+        assert m.llm_profile_tokens_total.labels("prof-1", "in")._value.get() == 120.0
+
+    def test_sessions_active_is_a_gauge(self) -> None:
+        import primer.observability.metrics as m
+        assert isinstance(m.sessions_active, Gauge)
+        m.sessions_active.labels("ws-1").inc()
+        m.sessions_active.labels("ws-1").inc()
+        m.sessions_active.labels("ws-1").dec()
+        assert m.sessions_active.labels("ws-1")._value.get() == 1.0
+
+
+class TestS7ResetMirror:
+    def test_reset_redeclares_every_collector(self) -> None:
+        import primer.observability.metrics as m
+        before = {c._name for c in list(m.registry._collector_to_names)}
+        m.reset_for_test()
+        after = {c._name for c in list(m.registry._collector_to_names)}
+        assert before == after
+
+    def test_reset_zeroes_the_new_metrics(self) -> None:
+        import primer.observability.metrics as m
+        m.worker_tasks_total.labels("host-0", "session", "ok").inc(9)
+        m.sessions_active.labels("ws-1").set(4)
+        m.reset_for_test()
+        assert m.worker_tasks_total.labels("host-0", "session", "ok")._value.get() == 0.0
+        assert m.sessions_active.labels("ws-1")._value.get() == 0.0

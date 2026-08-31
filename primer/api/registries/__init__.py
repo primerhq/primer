@@ -8,6 +8,11 @@
   configured provider id.
 """
 
+from primer.api.registries.speech_registry import (
+    SpeechRegistry,
+    default_stt_factory,
+    default_tts_factory,
+)
 from primer.api.registries.channel_registry import ChannelRegistry
 from primer.api.registries.provider_registry import ProviderRegistry
 from primer.api.registries.semantic_search_registry import (
@@ -17,6 +22,9 @@ from primer.api.registries.workspace_registry import WorkspaceRegistry
 
 
 __all__ = [
+    "SpeechRegistry",
+    "default_stt_factory",
+    "default_tts_factory",
     "ChannelRegistry",
     "ProviderRegistry",
     "SemanticSearchRegistry",

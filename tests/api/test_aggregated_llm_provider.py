@@ -36,11 +36,32 @@ class _FakeStorage:
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         self._data.pop(id, None)
 
 
 class _FakeStorageProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _FakeStorage] = {}
 
@@ -77,7 +98,9 @@ async def test_factory_builds_aggregated_llm_via_default_resolver():
     sp = _FakeStorageProvider()
     await sp.get_storage(LLMProvider).create(_member_row("member-1"))
     await sp.get_storage(LLMProvider).create(
-        _agg_row("agg-1", [AggregatedMember(provider_id="member-1", model_name="claude-x")])
+        _agg_row(
+            "agg-1", [AggregatedMember(provider_id="member-1", model_name="claude-x")]
+        )
     )
     # DEFAULT factory (no llm_factory injected) so resolve_member=self.get_llm wired.
     registry = ProviderRegistry(sp)
@@ -91,10 +114,14 @@ async def test_nested_member_raises_bad_request_at_resolve():
     # agg-2 points at agg-1 (another aggregated provider) -> nesting.
     await sp.get_storage(LLMProvider).create(_member_row("member-1"))
     await sp.get_storage(LLMProvider).create(
-        _agg_row("agg-1", [AggregatedMember(provider_id="member-1", model_name="claude-x")])
+        _agg_row(
+            "agg-1", [AggregatedMember(provider_id="member-1", model_name="claude-x")]
+        )
     )
     await sp.get_storage(LLMProvider).create(
-        _agg_row("agg-2", [AggregatedMember(provider_id="agg-1", model_name="virtual-1")])
+        _agg_row(
+            "agg-2", [AggregatedMember(provider_id="agg-1", model_name="virtual-1")]
+        )
     )
     registry = ProviderRegistry(sp)
     outer = await registry.get_llm("agg-2")
@@ -106,7 +133,9 @@ async def test_nested_member_raises_bad_request_at_resolve():
 async def test_self_reference_raises_bad_request():
     sp = _FakeStorageProvider()
     await sp.get_storage(LLMProvider).create(
-        _agg_row("agg-1", [AggregatedMember(provider_id="agg-1", model_name="virtual-1")])
+        _agg_row(
+            "agg-1", [AggregatedMember(provider_id="agg-1", model_name="virtual-1")]
+        )
     )
     registry = ProviderRegistry(sp)
     agg = await registry.get_llm("agg-1")
@@ -124,7 +153,9 @@ async def test_member_edit_is_picked_up_lazily_per_call():
     sp = _FakeStorageProvider()
     await sp.get_storage(LLMProvider).create(_member_row("member-1"))
     await sp.get_storage(LLMProvider).create(
-        _agg_row("agg-1", [AggregatedMember(provider_id="member-1", model_name="claude-x")])
+        _agg_row(
+            "agg-1", [AggregatedMember(provider_id="member-1", model_name="claude-x")]
+        )
     )
 
     versions = {"member-1": 0}
@@ -132,6 +163,7 @@ async def test_member_edit_is_picked_up_lazily_per_call():
     def factory(row: LLMProvider):
         if row.provider == LLMProviderType.AGGREGATED:
             from primer.llm.aggregated import AggregatedLLM as _Agg
+
             return _Agg(row, resolve_member=registry.get_llm)
         return AggregatedMemberStub(version=versions[row.id])
 
@@ -178,7 +210,7 @@ class TestAggregatedRest:
                 "failover_point": "before_first_token",
                 "failover_on": "transient_and_config",
             },
-                        "limits": {"max_concurrency": 4},
+            "limits": {"max_concurrency": 4},
         }
         body.update(overrides)
         return body
@@ -197,8 +229,10 @@ class TestAggregatedRest:
         r = await client.post("/v1/llm_providers", json=body)
         assert r.status_code == 422, r.text
         # RFC7807 envelope.
-        assert r.headers["content-type"].startswith("application/problem+json") \
+        assert (
+            r.headers["content-type"].startswith("application/problem+json")
             or "type" in r.json()
+        )
 
     @pytest.mark.asyncio
     async def test_get_models_returns_virtual_names(self, client):
@@ -214,13 +248,16 @@ class TestAggregatedRest:
         r = await client.post("/v1/llm_providers", json=self._body(id="agg-models"))
         assert r.status_code in (200, 201), r.text
 
-        rp = await client.post("/v1/model_profiles", json={
-            "id": "agg-models--virtual-1",
-            "description": "Virtual model served by the aggregated pool.",
-            "provider_id": "agg-models",
-            "model_name": "virtual-1",
-            "context_length": 128000,
-        })
+        rp = await client.post(
+            "/v1/model_profiles",
+            json={
+                "id": "agg-models--virtual-1",
+                "description": "Virtual model served by the aggregated pool.",
+                "provider_id": "agg-models",
+                "model_name": "virtual-1",
+                "context_length": 128000,
+            },
+        )
         assert rp.status_code in (200, 201), rp.text
 
         rm = await client.get("/v1/llm_providers/agg-models/models")

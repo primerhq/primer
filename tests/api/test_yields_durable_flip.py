@@ -26,7 +26,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
-from primer.session.yields import durably_mark_session_resumable
+from primer.session.yields import durably_mark_session_resumable, flip_sessions_parked_on
 
 
 class _FlakyEngine:
@@ -195,6 +195,9 @@ async def test_tool_approval_respond_flips_row_without_listener(app, client):
     assert row.parked_state["resume_event_payload"] == {
         "decision": "approved",
         "reason": None,
+        # Stamped by the respond route (P6 approver routing); the
+        # fixture client's auto-registered first user is the admin.
+        "decided_by": "testuser",
     }
 
 
@@ -338,3 +341,76 @@ async def test_healthy_double_reply_still_repairs_idempotently(app, client):
     # The guard still protects the first reply's payload from being clobbered.
     after = await storage.get("d-2x")
     assert after.parked_state["resume_event_payload"] == {"response": "one"}
+
+
+@pytest.mark.asyncio
+async def test_flip_never_arms_a_lease_on_a_row_that_already_ended(app):
+    """Cross-review race closure: ending a session does NOT clear
+    parked_status (only reset.py's reopen / abandon.py clear it), so a
+    row a DIFFERENT worker ended between a caller's own status check and
+    this publish still reads parked_status="parked" with the matching
+    event_key here. Without the fix, flip_sessions_parked_on's find()
+    would still pick it up, durably_mark_session_resumable would arm a
+    lease on it, and the next claim would hit workspace_executor's
+    "cannot invoke ENDED session" guard - reproducing the original crash
+    through a narrower window. Exercises the real find() predicates, not
+    just the in-memory guard, since the fix is at that query layer."""
+    sess = _make_ask_user_parked_session(session_id="d-ended", tool_call_id="tce")
+    sess.status = SessionStatus.ENDED
+    sess.ended_reason = "completed"
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+    engine = _FlakyEngine(fail_times=0)
+
+    flipped = await flip_sessions_parked_on(
+        "ask_user:d-ended:tce", {"response": "too late"},
+        session_storage=storage, engine=engine,
+    )
+
+    assert flipped == 0
+    assert engine.calls == [], "no lease may be armed on an ended row"
+    row = await storage.get("d-ended")
+    assert row.parked_status == "parked", "the stale row must be left untouched"
+
+
+@pytest.mark.asyncio
+async def test_flip_rejects_a_row_ended_after_the_caller_snapshotted_it(app):
+    """The narrower TOCTOU the test above does NOT cover: a row that ends
+    IN THE GAP between a caller's read and this write, not before it.
+
+    Simulates the interleaving directly: `sess` is the caller's own
+    snapshot, taken while the row was still RUNNING (not ENDED) - so the
+    OLD snapshot-check (`if session.status == ENDED: return False`) would
+    have read False and let the write through. Between that read and this
+    call, a DIFFERENT worker independently ends the row in storage. The
+    fix is `Storage.update_unless` evaluating "is status ENDED" against
+    the row's CURRENT value at write time, not the stale `sess` argument -
+    so this must still reject even though `sess.status` says RUNNING.
+    """
+    sess = _make_ask_user_parked_session(session_id="d-race", tool_call_id="tcz")
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+    assert sess.status == SessionStatus.RUNNING
+
+    # The interleaving: a different worker ends the row AFTER `sess` was
+    # snapshotted (sess itself, held by this test, is never touched -
+    # exactly mirroring a caller whose in-memory copy is now stale).
+    ended = sess.model_copy(update={
+        "status": SessionStatus.ENDED, "ended_reason": "completed",
+    })
+    await storage.update(ended)
+
+    engine = _FlakyEngine(fail_times=0)
+    did = await durably_mark_session_resumable(
+        sess,  # the STALE snapshot - still status=RUNNING
+        event_key="ask_user:d-race:tcz",
+        payload={"response": "too late"},
+        session_storage=storage,
+        engine=engine,
+    )
+
+    assert did is False, "a row ended mid-flight must still be rejected"
+    assert engine.calls == [], "no lease may be armed on a row that ended mid-flight"
+    row = await storage.get("d-race")
+    assert row.status == SessionStatus.ENDED
+    assert row.parked_status == "parked", "the durable flip must not have landed"

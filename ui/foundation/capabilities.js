@@ -23,13 +23,25 @@
   }
 
   function useCapabilities() {
-    // Static per-process data: fetch once, no polling. apiFetch is read
-    // off the namespace at call time, not captured at module scope, so
-    // the docs embeds' stub api still works (see providers.jsx's note).
+    // Mostly static, but not entirely. The extras block IS per-process:
+    // which optional packages are installed cannot change under a
+    // running server. The speech block is not: stt_configured and
+    // tts_configured are "does a provider row exist", and rows come and
+    // go while the console is open.
+    //
+    // Fetched once, that made the answer a snapshot from whenever the
+    // page happened to load. Registering a speech provider and going
+    // back to a session left the mic and the speaker toggle missing
+    // until the page was reloaded, because the affordance was gated on
+    // a fact the console had stopped asking about.
+    //
+    // apiFetch is read off the namespace at call time, not captured at
+    // module scope, so the docs embeds' stub api still works (see
+    // providers.jsx's note).
     return window.primerApi.useResource(
       "capabilities",
       (signal) => window.primerApi.apiFetch("GET", "/capabilities", null, { signal }),
-      { pollMs: 0 },
+      { pollMs: 10000 },
     );
   }
 

@@ -531,6 +531,7 @@ def build_misc_toolset(
                         note="non-yielding; one-way",
                     ),
                 ],
+                tool_class="notifying",
                 required_role="user",
             ),
             _inform_user_handler,

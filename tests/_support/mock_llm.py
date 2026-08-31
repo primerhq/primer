@@ -6,6 +6,7 @@ request (rule matching), so loops + concurrent fan-out stay deterministic.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,6 +38,16 @@ class Rule:
     # instead of a streamed 200 (lets a scenario model force e.g. a 429).
     emit_status: int = 200
     emit_error_message: str | None = None
+    # Slow-streaming support (01a04d91-a7a0, refresh-mid-turn diagnosis):
+    # every default rule above resolves in a single event loop tick, which
+    # can never reproduce what a real multi-second LLM call does to
+    # turn_status/the UI's rowBusy gate. chunk_delay_s sleeps between EACH
+    # emitted SSE chunk (the role-preamble, every word-chunk of emit_text,
+    # and before the tool_calls chunk); text_chunk_words splits emit_text
+    # into that many words per chunk instead of one lump. Both default to
+    # 0/unset so every existing rule keeps resolving instantly.
+    chunk_delay_s: float = 0.0
+    text_chunk_words: int = 0
 
     def matches(self, req: dict[str, Any]) -> bool:
         msgs = req.get("messages", [])
@@ -141,6 +152,8 @@ def build_app(registry: ScriptRegistry) -> Starlette:
 
         async def gen():
             yield _chunk(model, {"role": "assistant"})
+            if rule.chunk_delay_s:
+                await asyncio.sleep(rule.chunk_delay_s)
             if rule.emit_tool:
                 tc = [
                     {
@@ -154,9 +167,32 @@ def build_app(registry: ScriptRegistry) -> Starlette:
                     }
                 ]
                 yield _chunk(model, {"tool_calls": tc})
+                if rule.chunk_delay_s:
+                    # Real, pollable gap between the tool-calls delta and
+                    # the finish_reason chunk (01a04d91-a7a0): a
+                    # zero-gap pair collapses ToolCallStart+ToolCallEnd
+                    # (primer.llm._openai_compat._translate_chunk emits
+                    # Start on the delta chunk, End on the finish_reason
+                    # chunk) into sub-millisecond real time - long enough
+                    # for a live tap frame to catch but invisible to any
+                    # REST poll, which is exactly how the first version of
+                    # this e2e regression test silently never observed
+                    # agent_phase="executing" despite the tool call
+                    # genuinely happening (confirmed via the durable
+                    # tool_call/tool_result records).
+                    await asyncio.sleep(rule.chunk_delay_s)
                 yield _chunk(model, {}, finish="tool_calls")
             else:
-                yield _chunk(model, {"content": rule.emit_text or "ok"})
+                text = rule.emit_text or "ok"
+                words = text.split(" ") if rule.text_chunk_words else [text]
+                step = rule.text_chunk_words or len(words)
+                for i in range(0, len(words), step):
+                    piece = " ".join(words[i:i + step])
+                    if i > 0:
+                        piece = " " + piece
+                    yield _chunk(model, {"content": piece})
+                    if rule.chunk_delay_s and i + step < len(words):
+                        await asyncio.sleep(rule.chunk_delay_s)
                 yield _chunk(model, {}, finish="stop")
             usage = {
                 "id": "mock",
@@ -180,3 +216,66 @@ def build_app(registry: ScriptRegistry) -> Starlette:
             Route("/v1/chat/completions", chat, methods=["POST"]),
         ]
     )
+
+
+def slow_turn_with_mid_stream_tool_call(
+    *,
+    tool_name: str = "misc__uuid_v4",
+    tool_args: dict[str, Any] | None = None,
+    final_text: str = (
+        "Based on what the tool returned, here is my detailed answer, "
+        "explained step by step so the reasoning is easy to follow."
+    ),
+    total_seconds: float = 15.0,
+) -> list[Rule]:
+    """Two rules that together reproduce a genuinely long-running real
+    turn: 01a04d64-b4ba's live diagnosis needed exactly this shape (a
+    turn spanning 10-20s across two real LLM round-trips with a tool
+    call in between) and had no way to get it except a real, rate-
+    limited, sometimes-unreachable provider. Register on a model id with
+    ``registry.register(model_id, slow_turn_with_mid_stream_tool_call())``
+    and bind an agent/profile to a llm_providers row pointed at the
+    mock_llm fixture's base_url (or a standalone run of this module, see
+    scripts/e2e/run_mock_llm.py, for a real HTTP round-trip against a
+    live :8765-style stack).
+
+    A single OpenAI-shaped response is either a text message or a
+    tool-calls message (this mock's ``gen()`` mirrors that split), so the
+    "mid-stream tool call" is spread across the two real round-trips a
+    tool-calling turn actually makes, matching what the live diagnosis
+    observed (two separate real "OpenChat stream starting" log lines
+    ~25s apart): round-trip 1 spends ~half of *total_seconds* split into
+    two real, independently-pollable gaps - a "thinking" gap before the
+    tool-calls chunk (a client polling mid-thought sees genuine business,
+    not a reasoning delta - reasoning-capable providers would
+    additionally stream reasoning deltas here, which this mock does not
+    model), then an "executing" gap between the tool-calls delta and the
+    finish_reason chunk (mock_llm.py's ``gen()`` - without this second
+    gap, primer.llm._openai_compat._translate_chunk's ToolCallStart and
+    ToolCallEnd collapse into sub-millisecond real time, long enough for
+    a live tap frame but invisible to a REST poll) - then calls
+    *tool_name*; round-trip 2, triggered once the tool result is back
+    (``when_tool_result=True``), streams the final answer as slow
+    multi-word chunks for the remaining ~half.
+    """
+    half = max(1.0, total_seconds / 2)
+    words_per_chunk = 3
+    final_chunk_count = max(1, len(final_text.split(" ")) / words_per_chunk)
+    return [
+        Rule(
+            when_tool_result=False,
+            emit_tool=tool_name,
+            emit_args=tool_args or {},
+            # Split in two: chunk_delay_s gaps BOTH the pre-tool-call
+            # "thinking" wait and the tool-calls-delta -> finish_reason
+            # "executing" wait (see gen()), so round-trip 1's total wall
+            # time still lands at ~half, not 2x it.
+            chunk_delay_s=half / 2,
+        ),
+        Rule(
+            when_tool_result=True,
+            emit_text=final_text,
+            chunk_delay_s=half / final_chunk_count,
+            text_chunk_words=words_per_chunk,
+        ),
+    ]

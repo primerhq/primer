@@ -10,7 +10,7 @@ the graphs editor and the Studio run-view:
 
   #6 The dark/light toggle did not restyle the canvas because G6 styling used
      hardcoded hex literals. The palette is now read from the CSS design tokens
-     via getComputedStyle (same pattern as studio-terminal.jsx's xterm theme)
+     via getComputedStyle (the same pattern the terminal uses for its theme)
      and re-applied on a data-theme change via a MutationObserver.
 
 Static source-grep + a bundle-transpile gate, matching the other UI canvas

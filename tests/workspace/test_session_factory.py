@@ -461,10 +461,18 @@ async def test_explicit_resume_of_created_session_sends_claim_upsert(
 
 
 class _FakeLiveWorkspace:
-    """Records start_session calls; otherwise a no-op."""
+    """Records start_session calls; otherwise a no-op.
+
+    Also implements the WorkspaceIO.append_message_line surface (01a04dde-b331:
+    start_workspace_session now writes the modern USER_INPUT
+    SessionMessageRecord via WorkspaceMessageWriter right after
+    start_session's legacy write), so the fake fully satisfies what a
+    real live_workspace handle provides.
+    """
 
     def __init__(self) -> None:
         self.started: list[dict] = []
+        self.message_lines: dict[str, bytes] = {}
 
     async def start_session(
         self, binding, *, id, instructions, parent_session_id, name=None
@@ -477,6 +485,11 @@ class _FakeLiveWorkspace:
                 "parent_session_id": parent_session_id,
                 "name": name,
             }
+        )
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        self.message_lines[session_id] = (
+            self.message_lines.get(session_id, b"") + line
         )
 
 
@@ -562,6 +575,88 @@ async def test_start_workspace_session_agent_happy_path(
     assert live.started[0]["id"] == sess.id
     # auto_start enqueued the same sid with the scheduler.
     assert fake_scheduler.enqueued == [sess.id]
+
+
+@pytest.mark.asyncio
+async def test_start_workspace_session_writes_modern_user_input_too(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    """01a04dde-b331 write-side fix: initial_instructions must land as a
+    modern SessionMessageRecord(kind=USER_INPUT) too, not just the
+    legacy {role,parts} Message line start_session already wrote - the
+    exact asymmetry that let a real create-with-initial_instructions
+    turn show GET /messages returning only the legacy line even
+    several seconds into a RUNNING turn (live-verified). The row's
+    last_seq must be baked in from construction so it matches the log
+    from the moment the row exists - a worker claiming this session's
+    auto_start turn must never seed its own writer at a stale value and
+    collide seqs with this record."""
+    import json as _json
+
+    await _seed_workspace(fake_storage_provider)
+    await _seed_agent(fake_storage_provider)
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(
+        fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+    )
+
+    sess = await start_workspace_session(
+        workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        initial_instructions="boot the thing",
+        graph_input=None,
+        auto_start=True,
+        metadata={},
+        parent_session_id=None,
+        deps=deps,
+    )
+
+    # The legacy write still happened, unchanged (start_session's own
+    # contract - this fix is additive, not a replacement).
+    assert live.started[0]["instructions"] == "boot the thing"
+
+    # The modern write landed too, via WorkspaceMessageWriter.
+    lines = live.message_lines.get(sess.id, b"").decode().splitlines()
+    assert len(lines) == 1
+    record = _json.loads(lines[0])
+    assert record["kind"] == "user_input"
+    assert record["seq"] == 1
+    assert record["payload"]["text"] == "boot the thing"
+
+    # The row's last_seq matches the log from the moment it exists - no
+    # window where a worker's own claim could seed a stale start_seq=0
+    # and collide with this record's seq=1.
+    assert sess.last_seq == 1
+
+
+@pytest.mark.asyncio
+async def test_start_workspace_session_no_instructions_no_modern_write(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    """No initial_instructions -> no legacy line, no modern record, no
+    change to last_seq - the fix only fires when there's something to
+    write, matching start_session's own existing "if instructions"
+    guard (primer/workspace/session.py's AgentSession.start)."""
+    await _seed_workspace(fake_storage_provider)
+    await _seed_agent(fake_storage_provider)
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(
+        fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+    )
+
+    sess = await start_workspace_session(
+        workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        initial_instructions=None,
+        graph_input=None,
+        auto_start=False,
+        metadata={},
+        parent_session_id=None,
+        deps=deps,
+    )
+
+    assert sess.id not in live.message_lines
+    assert sess.last_seq == 0
 
 
 @pytest.mark.asyncio

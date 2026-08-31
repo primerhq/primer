@@ -18,6 +18,11 @@ from primer.toolset.system import build_system_toolset
 
 
 class _Storage:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
 
@@ -26,6 +31,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -62,9 +72,7 @@ async def test_invoke_agent_returns_subagent_text(monkeypatch, system_provider):
         assert kwargs["prompt"] == "summarise X"
         return "the summary"
 
-    monkeypatch.setattr(
-        "primer.toolset.system.run_subagent", _fake_run_subagent
-    )
+    monkeypatch.setattr("primer.toolset.system.run_subagent", _fake_run_subagent)
     res = await system_provider.call(
         tool_name="invoke_agent",
         arguments={"agent_id": "agent-B", "prompt": "summarise X"},

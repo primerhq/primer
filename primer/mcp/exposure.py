@@ -31,7 +31,7 @@ from collections.abc import AsyncIterator
 
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.mcp.safety import is_exposable, tool_scoped_id
-from primer.model.chat import Tool
+from primer.model.chat import Tool, tool_catalogue_flags
 from primer.model.mcp_exposure import McpExposure
 from primer.model.provider import Toolset
 from primer.model.storage import OffsetPage
@@ -314,6 +314,13 @@ async def list_available_tools(deps: ExposureDeps) -> list[dict]:
     * ``exposable`` -- :func:`is_exposable` verdict.
     * ``reason`` -- denial reason string (``None`` when ``exposable``).
     * ``currently_allowed`` -- membership in the live allowlist.
+    * ``yields`` / ``requires_workspace`` / ``tool_class`` / ``required_role``
+      -- the same y/w/r/n capability badges every other "list tools"
+      route re-adds via :func:`~primer.model.chat.tool_catalogue_flags`;
+      this was the one catalogue consumer that omitted them (platform
+      wave P2, #28) -- an operator building the MCP allowlist could not
+      tell a workspace-only or yielding tool apart from a plain one
+      before deciding to expose it.
 
     The shape feeds the Phase 8 console table directly.
     """
@@ -330,6 +337,7 @@ async def list_available_tools(deps: ExposureDeps) -> list[dict]:
             "exposable": ok,
             "reason": reason,
             "currently_allowed": scoped in allowed_set,
+            **tool_catalogue_flags(tool),
         })
     return out
 

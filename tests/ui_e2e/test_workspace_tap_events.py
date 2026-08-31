@@ -28,6 +28,7 @@ import os
 import httpx
 import pytest
 from playwright.sync_api import expect
+from tests.ui_e2e._studio_helpers import open_workspace_settings
 
 
 # ---------------------------------------------------------------------------
@@ -132,10 +133,7 @@ def test_workspace_tap_events_tab(
 
     try:
         # Navigate to the workspace detail page, Events tab
-        page.goto(
-            console_url + f"#/workspaces/{wid}?tab=events",
-            wait_until="domcontentloaded",
-        )
+        open_workspace_settings(page, console_url, wid, "events")
 
         # 1. The Events tab button must be visible in the tab strip
         events_tab_btn = page.locator("button", has_text="Events").first
@@ -205,10 +203,7 @@ def test_workspace_tap_class_filter(
     wid = ids["workspace_id"]
 
     try:
-        page.goto(
-            console_url + f"#/workspaces/{wid}?tab=events",
-            wait_until="domcontentloaded",
-        )
+        open_workspace_settings(page, console_url, wid, "events")
 
         # Activate Events tab
         events_tab_btn = page.locator("button", has_text="Events").first

@@ -32,7 +32,6 @@
   //                       render standalone without a parent).
   //   api-token-create -> AT_ApiTokensPage (page-level; AT_CreateTokenDialog is
   //                       a modal that requires onClose/onCreated/onDone).
-  //   chat-stream      -> ChatsPage (page-level list + detail stream).
   //   collection-list  -> CollectionsPage (page-level knowledge list).
   const REGISTRY = {
     "agents-page": {
@@ -41,33 +40,79 @@
       props: { onOpen: function () {}, pushToast: function () {} },
     },
     "sessions-list": {
-      // The global sessions list/detail pages were retired: sessions now live
-      // inside the workspace Studio (studio.jsx). This embed renders the Studio
-      // for the fixture workspace, so it shows the left sidebar's Sessions list
-      // + Files tree over fixture data. `wid` must match the workspace + session
-      // rows in sessions-list.json.
-      component: "Studio",
+      // Sessions live in the console shell (NV_Shell since the
+      // three-view flag day; the sh shell died with it). The shell
+      // reads the workspace from the hash rather than a prop, so the
+      // hash names the workspace whose rows sessions-list.json holds.
+      component: "NV_Shell",
       fixtures: "sessions-list",
-      props: { wid: "ws-blogassistant", pushToast: function () {} },
+      hash: "#/w/ws-blogassistant",
+      props: {},
     },
     "session-detail": {
-      // Same Studio render, but `initialOpen` seeds an open session tab so the
-      // capture shows the center transcript panel (SessionLiveStream). The
-      // session in session-detail.json is terminal (ended), so the transcript
-      // renders fully from GET /sessions/{sid}/messages history with no live
-      // tap (the harness has no SSE backend).
-      component: "Studio",
+      // The same shell with one session open, so the capture shows the
+      // transcript beside the rail.
+      //
+      // The session in session-detail.json is terminal (ended), so the
+      // transcript renders fully from GET /sessions/{sid}/messages with
+      // no live tap; the harness has no SSE backend.
+      component: "NV_Shell",
       fixtures: "session-detail",
-      props: {
-        wid: "ws-blogassistant",
-        initialOpen: "session:sess-briefwriter",
-        pushToast: function () {},
-      },
+      hash: "#/w/ws-blogassistant?doc=session:sess-briefwriter",
+      props: {},
     },
-    "chat-stream": {
-      component: "ChatsPage",
-      fixtures: "chat-stream",
-      props: { onOpen: function () {}, pushToast: function () {} },
+    // ---- the v2 shell ids the concept pages fence -------------------
+    // These reuse the fixture files their surface already has: a fixture
+    // is a recorded set of API responses, and two embeds looking at the
+    // same surface want the same recording.
+    "shell-session": {
+      // The shell as an operator meets it: rail, tabs, one open session.
+      component: "NV_Shell",
+      fixtures: "session-detail",
+      hash: "#/w/ws-blogassistant?doc=session:sess-briefwriter",
+      props: { wid: "ws-blogassistant" },
+    },
+    "client-tool-open-file": {
+      // The same workspace with a FILE open, which is what a client tool
+      // delivering "open this" produces.
+      component: "NV_Shell",
+      fixtures: "session-detail",
+      hash: "#/w/ws-blogassistant?doc=file:draft.md",
+      props: { wid: "ws-blogassistant" },
+    },
+    "collections-tree": {
+      // A collection open at its document tree: paths on the left, the
+      // grep box above them.
+      component: "CollectionsPage",
+      fixtures: "collection-list",
+      props: { pushToast: function () {} },
+    },
+    "providers-catalog": {
+      // One catalog, every provider class on the rail.
+      component: "ProviderCatalog",
+      fixtures: "llm-provider-openrouter",
+      props: { initialClass: "llm" },
+    },
+    "wizard-provider": {
+      // First run, step 1: name the provider that will serve the models.
+      component: "SetupWizardSteps",
+      fixtures: "llm-provider-openrouter",
+      props: { onComplete: function () {} },
+    },
+    "wizard-profile": {
+      // First run, step 2: pick the default model. initialStep is why the
+      // wizard takes one; the harness cannot click through to get here.
+      component: "SetupWizardSteps",
+      fixtures: "llm-provider-openrouter",
+      props: {
+        onComplete: function () {},
+        initialStep: 2,
+        initialModels: [
+          { name: "gpt-4o-mini" },
+          { name: "gpt-4o" },
+          { name: "o4-mini" },
+        ],
+      },
     },
     "workspaces": {
       component: "WorkspacesPage",
@@ -122,28 +167,14 @@
       props: {},
     },
     "llm-provider-openrouter": {
-      component: "ProvidersPage",
+      component: "ProviderCatalog",
       fixtures: "llm-provider-openrouter",
-      props: { kind: "llm", pushToast: function () {} },
+      props: { initialClass: "llm", onNavigate: function () {} },
     },
     "quickstart-agents": {
       component: "AgentsPage",
       fixtures: "quickstart-agents",
       props: { onOpen: function () {}, pushToast: function () {} },
-    },
-    "chat-agent-switch": {
-      // ChatDetail renders the conversation view WITH the composer, which
-      // is where CT_AgentSwitcher (the agent selector chip) lives. The list
-      // page (ChatsPage) never shows the selector, so the embed mounts the
-      // detail directly. chatId must match the concrete keys in the fixture
-      // (the stub resolves "GET /chats/chat-blog-launch-001" et al.).
-      component: "ChatDetail",
-      fixtures: "chat-agent-switch",
-      props: {
-        chatId: "chat-blog-launch-001",
-        pushToast: function () {},
-        onBack: function () {},
-      },
     },
     "internal-collections-enable": {
       component: "InternalCollectionsPage",
@@ -156,9 +187,9 @@
       props: { onOpen: function () {}, pushToast: function () {} },
     },
     "embedding-provider": {
-      component: "ProvidersPage",
+      component: "ProviderCatalog",
       fixtures: "embedding-provider",
-      props: { kind: "embedding", pushToast: function () {} },
+      props: { initialClass: "embedding", onNavigate: function () {} },
     },
     "ssp": {
       component: "SSPListPage",
@@ -166,16 +197,14 @@
       props: { pushToast: function () {} },
     },
     "cross-encoder-provider": {
-      // ProvidersPage selects the cross_encoder_providers endpoint when
-      // kind is "rerank" (also accepts "cross_encoder").
-      component: "ProvidersPage",
+      component: "ProviderCatalog",
       fixtures: "cross-encoder-provider",
-      props: { kind: "rerank", pushToast: function () {} },
+      props: { initialClass: "cross_encoder", onNavigate: function () {} },
     },
     "web-search": {
-      component: "WebSearchPage",
+      component: "ProviderCatalog",
       fixtures: "web-search",
-      props: { pushToast: function () {} },
+      props: { initialClass: "web_search", onNavigate: function () {} },
     },
     "workspace-provider-create": {
       // The workspace providers list/create lives in WorkspaceProvidersPage

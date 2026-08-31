@@ -13,7 +13,7 @@ from primer.api.deps import get_artifact_storage_provider_storage
 from primer.api.registries.artifact_storage_registry import (
     DEFAULT_ARTIFACT_PROVIDER_ID,
 )
-from primer.api.routers._crud import make_crud_router
+from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.model.provider import ArtifactStorageProvider
 
 
@@ -48,6 +48,7 @@ artifact_storage_router = make_crud_router(
     tag="artifact-storage-providers",
     on_update=_on_update,
     on_delete=_on_update,
+    on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_reject_reserved_delete,
 )
 

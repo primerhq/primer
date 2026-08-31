@@ -1,6 +1,6 @@
 """Provider-agnostic interface ABCs.
 
-Eleven abstract base classes are exported:
+Thirteen abstract base classes are exported:
 
 * :class:`LLM` -- streaming chat interface (text/multimodal in,
   :class:`StreamEvent` out).
@@ -24,6 +24,10 @@ Eleven abstract base classes are exported:
   executions concurrently.
 * :class:`WorkspaceBackend` -- backend-agnostic factory + lifecycle
   for :class:`Workspace` instances.
+* :class:`ASR` -- speech-to-text interface (audio bytes in,
+  :class:`primer.model.speech.Transcription` out).
+* :class:`TTS` -- streaming text-to-speech interface (text in, audio
+  chunks out as they are synthesised).
 * :class:`Scheduler` -- distributed coordinator that decides which
   worker runs which session; enqueues, leases, and atomically
   completes turns. See
@@ -33,10 +37,12 @@ See ``research/abc_interface.md`` for the design rationale and
 per-provider adapter mapping rules.
 """
 
+from primer.int.asr import ASR
 from primer.int.cross_encoder import CrossEncoder
 from primer.int.embedder import Embedder
 from primer.int.llm import LLM
 from primer.int.scheduler import Scheduler
+from primer.int.tts import TTS
 from primer.int.storage import Storage
 from primer.int.storage_provider import StorageProvider
 from primer.int.toolset import ToolsetProvider
@@ -49,11 +55,13 @@ from primer.int.workspace import Workspace, WorkspaceBackend
 
 
 __all__ = [
+    "ASR",
     "CrossEncoder",
     "Embedder",
     "LLM",
     "MaintenanceReport",
     "Scheduler",
+    "TTS",
     "Storage",
     "StorageProvider",
     "ToolsetProvider",

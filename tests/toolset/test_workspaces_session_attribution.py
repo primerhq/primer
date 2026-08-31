@@ -53,6 +53,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -76,6 +92,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -92,7 +113,8 @@ class _LiveWorkspace:
         self.id = workspace_id
         self._sessions: dict[str, Any] = {}
         self.runtime_meta = WorkspaceRuntimeMeta(
-            url="ws://127.0.0.1:5959/", token=SecretStr("t"),
+            url="ws://127.0.0.1:5959/",
+            token=SecretStr("t"),
         )
 
     async def get_session(self, session_id):
@@ -218,7 +240,8 @@ async def seeded(session_toolset, sp):
 
 @pytest.mark.asyncio
 async def test_create_session_stamps_ctx_initiated_by(
-    session_toolset, seeded,
+    session_toolset,
+    seeded,
 ) -> None:
     """A ctx carrying a per-call identity stamps the child row from it."""
     ctx = ToolContext(
@@ -226,7 +249,10 @@ async def test_create_session_stamps_ctx_initiated_by(
         session_id="sess-parent",
         workspace_id=seeded,
         initiated_by=PrincipalRef(
-            type="api_token", id="tok-1", display="ci", role="user",
+            type="api_token",
+            id="tok-1",
+            display="ci",
+            role="user",
             source="internal",
         ),
     )
@@ -247,7 +273,8 @@ async def test_create_session_stamps_ctx_initiated_by(
 
 @pytest.mark.asyncio
 async def test_create_session_falls_back_to_system_with_no_manager_identity(
-    session_toolset, seeded,
+    session_toolset,
+    seeded,
 ) -> None:
     """No ctx at all (or a ctx with no initiated_by) -> system fallback."""
     result = await session_toolset.call(

@@ -156,3 +156,51 @@ class TestLifespanTracingWiring:
         app = FastAPI(lifespan=_make_lifespan(cfg))
         async with app.router.lifespan_context(app):
             assert tracing_module._provider is None
+
+
+class TestS7InstrumentsAreExported:
+    """The gap instruments must reach the Prometheus text, not just the
+    registry: a metric declared but never exported is invisible to the
+    collector scrape that delivers OTLP metrics (2026-08-15 amendment)."""
+
+    @pytest.mark.asyncio
+    async def test_metrics_text_carries_the_s7_families(
+        self, sqlite_config: AppConfig
+    ) -> None:
+        import primer.observability.metrics as m
+
+        m.reset_for_test()
+        try:
+            m.worker_tasks_total.labels("host-0", "session", "ok").inc()
+            m.turns_total.labels("ag-1", "completed").inc()
+            m.llm_calls_total.labels("prov-1", "prof-1", "ok").inc()
+            m.llm_profile_tokens_total.labels("prof-1", "in").inc(5)
+            m.sessions_active.labels("ws-1").set(2)
+            m.worker_task_duration_seconds.labels(
+                "host-0", "session", "ok",
+            ).observe(1.0)
+            m.turn_duration_seconds.labels("ag-1", "completed").observe(2.0)
+
+            app = create_app(sqlite_config)
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=ASGITransport(app=app),
+                    base_url="http://test",
+                    follow_redirects=True,
+                ) as client:
+                    response = await client.get("/metrics")
+            body = response.text
+            for family in (
+                "worker_tasks_total",
+                "worker_task_duration_seconds",
+                "turns_total",
+                "turn_duration_seconds",
+                "llm_calls_total",
+                "llm_profile_tokens_total",
+                "sessions_active",
+            ):
+                assert f"# TYPE {family}" in body, f"{family} missing from /metrics"
+            assert 'worker{' not in body  # labels render inside the family
+            assert 'session_id="' not in body
+        finally:
+            m.reset_for_test()

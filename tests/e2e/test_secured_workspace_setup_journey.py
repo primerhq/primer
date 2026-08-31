@@ -225,13 +225,14 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
         assert body["type"].endswith("/conflict"), body
         assert ch_id in body.get("detail", ""), body
 
-        # ----- 9c. Negative-cascade probe: WorkspaceProvider DELETE is
-        # NOT blocked by a referencing WorkspaceTemplate (no on_delete
-        # handler on the provider router — see workspaces.py:145-151).
-        # Confirming this in the same journey freezes the contract: a
-        # future PR that silently adds cascade-block here breaks the
-        # test, forcing a deliberate spec update before landing.
-        # We probe via a SECOND, throwaway WorkspaceProvider/Template
+        # ----- 9c. Cascade probe: WorkspaceProvider DELETE while a
+        # WorkspaceTemplate references it answers 409. This flipped
+        # deliberately in the 2026-08-24 behaviour-driven console pass:
+        # the old 204 left dependent workspaces unable to create a
+        # session (provider resolution 404s at provisioning), so the
+        # provider router now carries reference guards. Freeing the
+        # referrer first unblocks the delete, which this probe also
+        # pins. We probe via a SECOND, throwaway provider/template
         # pair so the live wp_id stays usable for the rest of the
         # unwind.
         probe_wp_id = f"sw-wp-probe-{unique_suffix}"
@@ -249,17 +250,22 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
             "backend": {"kind": "local"},
         })
         assert r.status_code == 201, r.text
-        # DELETE provider while a template references it — must succeed
-        # (200/204), proving no cascade-block exists today.
+        # DELETE provider while a template references it: 409, and the
+        # conflict names the referrer so the operator knows what to
+        # free.
         r = await client.delete(f"/v1/workspace_providers/{probe_wp_id}")
-        assert r.status_code in (200, 204), (
-            f"WorkspaceProvider DELETE returned {r.status_code} — "
-            f"a cascade-block was silently added. Spec needs updating "
-            f"before this test should accept the new behaviour. "
-            f"body={r.text!r}"
+        assert r.status_code == 409, (
+            f"WorkspaceProvider DELETE while referenced returned "
+            f"{r.status_code}, expected the reference-guard 409 "
+            f"(BDD pass 2026-08-24). body={r.text!r}"
         )
-        # Cleanup the orphan template (its provider ref is now stale).
+        body = r.json()
+        assert body["type"].endswith("/conflict"), body
+        assert probe_tpl_id in body.get("detail", ""), body
+        # Free the referrer, then the provider deletes cleanly.
         r = await client.delete(f"/v1/workspace_templates/{probe_tpl_id}")
+        assert r.status_code in (200, 204), r.text
+        r = await client.delete(f"/v1/workspace_providers/{probe_wp_id}")
         assert r.status_code in (200, 204), r.text
 
         # ===================================================================

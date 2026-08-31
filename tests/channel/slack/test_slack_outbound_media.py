@@ -1,4 +1,4 @@
-"""SlackChannelAdapter.post_chat_media uploads via files_upload_v2."""
+"""SlackChannelAdapter.post_thread_media uploads via files_upload_v2."""
 
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ def _adapter():
 
 
 @pytest.mark.asyncio
-async def test_post_chat_media_uploads_into_thread():
+async def test_post_thread_media_uploads_into_thread():
     a = _adapter()
-    res = await a.post_chat_media(
+    res = await a.post_thread_media(
         [ImagePart(data=b"PNG", mime_type="image/png", ),
          DocumentPart(data=b"PDF", mime_type="application/pdf", filename="r.pdf")],
         thread_ts="t-9")

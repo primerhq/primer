@@ -75,6 +75,11 @@ class _FakeRegistry:
 
 
 class _Provider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     """Storage provider over a single in-memory WorkspaceSession store."""
 
     def __init__(self) -> None:

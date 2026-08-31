@@ -76,6 +76,22 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -173,7 +189,13 @@ def _agent(agent_id: str) -> Agent:
 
 
 def _model() -> ResolvedModel:
-    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
+    return ResolvedModel(
+        profile_id="test-profile",
+        provider_id="test-provider",
+        model_name="m",
+        context_length=128_000,
+        config=ModelProfileConfig(),
+    )
 
 
 async def _build_executor(*, graph: Graph, llm: _FakeLLM):
@@ -304,11 +326,7 @@ async def test_per_instance_dispatch_builds_aggregator_list() -> None:
         # mutate next_ready bookkeeping.
         captured_nodes.append(
             {
-                k: (
-                    "list"
-                    if isinstance(v, list)
-                    else getattr(v, "text", repr(v))
-                )
+                k: ("list" if isinstance(v, list) else getattr(v, "text", repr(v)))
                 for k, v in context.nodes.items()
             }
         )

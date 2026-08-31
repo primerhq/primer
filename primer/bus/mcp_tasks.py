@@ -66,10 +66,12 @@ class McpTaskBridge(_BackgroundTask):
         scheduler,
         provider_registry,
         poll_seconds: float = DEFAULT_POLL_SECONDS,
+        storage_provider=None,
     ) -> None:
         super().__init__(name="yield-mcp-task-bridge")
         self._bus = bus
         self._scheduler = scheduler
+        self._sp = storage_provider
         self._registry = provider_registry
         self._poll = poll_seconds
 
@@ -85,6 +87,15 @@ class McpTaskBridge(_BackgroundTask):
                 await asyncio.sleep(self._poll)
             except asyncio.CancelledError:
                 break
+
+    async def _publish_wake(self, event_key: str, payload: dict) -> None:
+        """Dual delivery when wired: durable session.wake + legacy key."""
+        if self._sp is not None:
+            from primer.events.wake import emit_session_wake
+
+            await emit_session_wake(self._sp, self._bus, event_key, payload)
+        else:
+            await self._bus.publish(event_key, payload)
 
     async def _tick(self) -> None:
         """One iteration: find parked mcp_task sessions, poll, publish."""
@@ -129,7 +140,7 @@ class McpTaskBridge(_BackgroundTask):
             # result rather than a hang. The cancel-yielded-tool path
             # is the user-driven side; this branch is for server-side
             # cancels.
-            await self._bus.publish(
+            await self._publish_wake(
                 event_key,
                 {"result": {"isError": False, "content": [
                     {"type": "text",
@@ -139,7 +150,7 @@ class McpTaskBridge(_BackgroundTask):
             return
 
         if status == "failed":
-            await self._bus.publish(
+            await self._publish_wake(
                 event_key,
                 {"result": {"isError": True, "content": [
                     {"type": "text",
@@ -156,7 +167,7 @@ class McpTaskBridge(_BackgroundTask):
         result_for_bus = {
             k: v for k, v in payload_dict.items() if not k.startswith("_")
         }
-        await self._bus.publish(event_key, {"result": result_for_bus})
+        await self._publish_wake(event_key, {"result": result_for_bus})
 
 
 # ===========================================================================

@@ -91,6 +91,11 @@ class _GatedStorage:
 
 
 class _YieldingProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self, inner, wrapped_session_storage) -> None:
         self._inner = inner
         self._wrapped = wrapped_session_storage
@@ -128,8 +133,10 @@ async def test_cancel_in_flight_blocks_resume_then_converges_ended(
     sid = "sess-cancel-first"
     await _seed_created(inner, sid)
     deps = SessionCancelDeps(
-        storage_provider=provider, scheduler=scheduler,
-        claim_engine=engine, event_bus=_EventBus(),
+        storage_provider=provider,
+        scheduler=scheduler,
+        claim_engine=engine,
+        event_bus=_EventBus(),
     )
 
     cancel_task = asyncio.create_task(
@@ -139,8 +146,11 @@ async def test_cancel_in_flight_blocks_resume_then_converges_ended(
 
     resume_task = asyncio.create_task(
         resume_session(
-            workspace_id="ws-1", session_id=sid,
-            sessions=storage, scheduler=scheduler, engine=engine,
+            workspace_id="ws-1",
+            session_id=sid,
+            sessions=storage,
+            scheduler=scheduler,
+            engine=engine,
         )
     )
     await asyncio.sleep(0.02)  # let resume run (it should be blocked on the lock)
@@ -153,7 +163,9 @@ async def test_cancel_in_flight_blocks_resume_then_converges_ended(
 
     storage.release.set()
     _, resume_res = await asyncio.gather(
-        cancel_task, resume_task, return_exceptions=True,
+        cancel_task,
+        resume_task,
+        return_exceptions=True,
     )
 
     final = await inner.get(sid)
@@ -179,14 +191,19 @@ async def test_resume_in_flight_blocks_cancel_then_cancel_is_honored(
     sid = "sess-resume-first"
     await _seed_created(inner, sid)
     deps = SessionCancelDeps(
-        storage_provider=provider, scheduler=scheduler,
-        claim_engine=engine, event_bus=_EventBus(),
+        storage_provider=provider,
+        scheduler=scheduler,
+        claim_engine=engine,
+        event_bus=_EventBus(),
     )
 
     resume_task = asyncio.create_task(
         resume_session(
-            workspace_id="ws-1", session_id=sid,
-            sessions=storage, scheduler=scheduler, engine=engine,
+            workspace_id="ws-1",
+            session_id=sid,
+            sessions=storage,
+            scheduler=scheduler,
+            engine=engine,
         )
     )
     await storage.at_gate.wait()  # resume is inside its critical section

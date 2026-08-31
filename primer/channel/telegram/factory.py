@@ -36,7 +36,7 @@ async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> bool
     it to the adapter's event router. A best-effort path: any failure is logged
     and swallowed (returning ``False``) so it never breaks the chat-surface
     dispatch."""
-    router = adapter._event_router()
+    router = adapter._inbound_router()
     if router is None:
         return False
     try:
@@ -69,9 +69,11 @@ async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> bool
         event = await normalizer.normalize({"type": "message", "payload": payload})
         if event is None:
             return False
-        if not await router.has_matching_rule(event=event, channel=adapter._channel):
-            return False
-        await router.route_event(event=event, channel=adapter._channel)
+        media_parts = await adapter.collect_inbound_media(msg)
+        await router.route_event(
+            event=event, channel=adapter._channel,
+            media_parts=media_parts or None,
+        )
         return True
     except Exception:  # noqa: BLE001 -- never break chat-surface dispatch
         logger.exception("telegram: channel-event routing failed")
@@ -98,30 +100,6 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         if adapter is None:
             return
         data = cq.data or ""
-        if data.startswith("agentpage:") and getattr(adapter, "_sp", None) is not None:
-            try:
-                _, chat_id, page_s = data.split(":", 2)
-                kb = await adapter.build_agent_picker_keyboard(
-                    chat_id=chat_id, page=int(page_s))
-                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(b["text"], callback_data=b["callback_data"])
-                     for b in row] for row in kb])
-                await cq.edit_message_reply_markup(reply_markup=markup)
-            except Exception:
-                logger.exception("telegram: agent-page nav failed")
-            return
-        if data.startswith("pick_agent:") and getattr(adapter, "_sp", None) is not None:
-            notice = await adapter.apply_agent_pick(callback_data=data)
-            try:
-                await context.bot.send_message(chat_id=cq.message.chat.id, text=notice)
-            except Exception:
-                logger.exception("telegram: agent-pick notice send failed")
-            return
-        if (data.startswith("chat_ok:") or data.startswith("chat_no:")) and \
-                getattr(adapter, "_sp", None) is not None:
-            await adapter.apply_chat_decision_button(callback_data=data)
-            return
         if data.startswith("a:"):
             tag = data[2:]
             ids = await adapter._resolve_tag(tag)
@@ -172,20 +150,8 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             msg.photo, msg.document, msg.audio, msg.voice, msg.video,
         ))
         if not msg.reply_to_message and getattr(adapter, "_sp", None) is not None:
-            sender_name = msg.from_user.full_name if msg.from_user else "user"
-            # Rule path first: if a channel-trigger rule matches, it owns this
-            # message - skip the chat dispatch so it is not delivered twice
-            # (once as the rule action, once as a default chat message).
-            if await _route_channel_event(adapter, provider_id, msg):
-                return
-            if has_media:
-                notice = await adapter.handle_inbound_chat_media(
-                    sender_name=sender_name, msg=msg)
-            else:
-                notice = await adapter.handle_inbound_chat_text(
-                    sender_name=sender_name, text=msg.text or "")
-            if notice:
-                await context.bot.send_message(chat_id=msg.chat.id, text=notice)
+            # Every inbound message is a routed event (S6 section 5).
+            await _route_channel_event(adapter, provider_id, msg)
             return
         if not msg.reply_to_message:
             return
@@ -256,12 +222,15 @@ async def _telegram_factory(
     event_bus=None,
     claim_engine=None,
     artifact_registry=None,
+    workspace_registry=None,
+    scheduler=None,
     **_kw,
 ):
     adapter = TelegramChannelAdapter(
         provider=provider, channel=channel, inbox=inbox,
         storage_provider=storage_provider, event_bus=event_bus,
         claim_engine=claim_engine, artifact_registry=artifact_registry,
+        workspace_registry=workspace_registry, scheduler=scheduler,
     )
     await adapter.initialize()
     conn = TELEGRAM_CONNECTIONS.entry(provider.id)

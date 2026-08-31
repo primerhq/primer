@@ -27,8 +27,8 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
+    wait_completed,
     wait_for_status,
-    wait_terminal,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
@@ -117,15 +117,17 @@ async def _drive_web_search_agent(
     wid = await make_local_workspace(authed_client, suffix=suffix, root=tmp_path)
     sid = await start_agent_session(
         authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    final = await wait_terminal(authed_client, sid, timeout_s=120)
+    final = await wait_completed(authed_client, sid, timeout_s=120)
     return sid, final
 
 
 async def _assert_search_roundtripped(authed_client, sid: str, final: dict) -> None:
-    """A successful search round-trip: the session ended and the turn log shows
-    at least two turns (the second fired only because a real tool result was
-    surfaced to the scripted ``when_tool_result=True`` rule)."""
-    assert final.get("status") == "ended", final
+    """A successful search round-trip: the turn cleanly finished (a plain
+    agent session now rests parked, not ended - 01a0518a) and the turn
+    log shows at least two turns (the second fired only because a real
+    tool result was surfaced to the scripted ``when_tool_result=True``
+    rule)."""
+    assert final.get("session_state") == "parked", final
     tl = await authed_client.get(f"/v1/sessions/{sid}/turn_log")
     assert tl.status_code == 200, tl.text
     assert tl.json().get("total", 0) >= 2, tl.json()
@@ -399,8 +401,8 @@ async def test_web_search_required_approval_park_resume_real_ddg(
 
         await wait_for_resume(
             authed_client, sid, min_turn_no=initial_turn_no + 1, timeout_s=120.0)
-        final = await wait_terminal(authed_client, sid, timeout_s=120)
-        assert final.get("status") == "ended", final
+        final = await wait_completed(authed_client, sid, timeout_s=120)
+        assert final.get("session_state") == "parked", final
         # The post-approval continuation surfaced the live tool result to the
         # scripted when_tool_result=True rule, proving the real DuckDuckGo
         # search executed after approval.

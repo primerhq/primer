@@ -22,7 +22,6 @@ from primer.channel.slack.adapter import (
     REJECT_MODAL_CALLBACK_ID,
     SlackChannelAdapter,
 )
-from primer.channel.slack.blocks import AGENT_SWITCH_MODAL_CALLBACK_ID
 from primer.channel.slack.connection import SLACK_CONNECTIONS
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
@@ -49,7 +48,7 @@ async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> b
     normalizer envelope is just ``{"type": "message", "payload": event}``. Best
     effort: any failure is logged and swallowed (returning ``False``) so it
     never breaks the chat-surface dispatch."""
-    router = adapter._event_router()
+    router = adapter._inbound_router()
     if router is None:
         return False
     try:
@@ -61,11 +60,11 @@ async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> b
         )
         if normalized is None:
             return False
-        if not await router.has_matching_rule(
+        media_parts = await adapter.collect_inbound_media(event)
+        await router.route_event(
             event=normalized, channel=adapter._channel,
-        ):
-            return False
-        await router.route_event(event=normalized, channel=adapter._channel)
+            media_parts=media_parts or None,
+        )
         return True
     except Exception:  # noqa: BLE001 -- never break chat-surface dispatch
         logger.exception("slack: channel-event routing failed")
@@ -132,34 +131,6 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         except Exception:
             logger.exception("slack: views.open failed")
 
-    @app.action("pick_agent")
-    async def _on_pick_agent(ack, body, client):
-        await ack()
-        try:
-            value = body["actions"][0]["selected_option"]["value"]
-        except Exception:
-            logger.warning("slack: malformed pick_agent payload")
-            return
-        channel_id = body.get("channel", {}).get("id")
-        entry = SLACK_CONNECTIONS.entry(provider_id)
-        adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
-        if adapter is None or getattr(adapter, "_sp", None) is None:
-            return
-        from primer.channel.slack.blocks import parse_agent_selection
-        try:
-            notice = await parse_agent_selection(
-                storage_provider=adapter._sp, selected_value=value)
-        except Exception:
-            logger.exception("slack: pick_agent set_agent failed")
-            return
-        try:
-            thread_ts = body.get("message", {}).get("thread_ts")
-            await client.chat_postMessage(
-                channel=channel_id, text=notice,
-                **({"thread_ts": thread_ts} if thread_ts else {}),
-            )
-        except Exception:
-            logger.exception("slack: pick_agent post notice failed")
 
     @app.view(REJECT_MODAL_CALLBACK_ID)
     async def _on_modal_submit(ack, body, view, client):
@@ -211,123 +182,6 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             except Exception:
                 logger.exception("slack: chat.update after reject failed")
 
-    async def _run_slash(command, body, client) -> None:
-        """Shared body for the /new, /list, /agent slash commands.
-
-        Slack delivers slash commands at the channel level (no thread_ts in
-        the payload), so chat targeting falls back to the channel. Posts a
-        plain-text rendering of the CommandResult; a Block Kit picker can
-        replace the agent list once Task 20's blocks module exists.
-        """
-        from primer.channel.slack.commands import handle_slash_command
-        channel_id = body.get("channel_id")
-        entry = SLACK_CONNECTIONS.entry(provider_id)
-        adapter = (
-            entry.adapters_by_channel_id.get(channel_id) if entry else None
-        )
-        if adapter is None or getattr(adapter, "_sp", None) is None:
-            return
-        try:
-            res = await handle_slash_command(
-                storage_provider=adapter._sp,
-                command=command,
-                text=(body.get("text") or "").strip(),
-                channel_id=adapter._channel.id,
-                thread_ts=None,
-            )
-        except Exception:
-            logger.exception("slack: slash command %s failed", command)
-            return
-        if res.kind == "list":
-            if res.items:
-                lines = [
-                    f"- {it['title']} ({it['chat_id']}) -> {it['agent_id']}"
-                    for it in res.items
-                ]
-                text = "Chats on this channel:\n" + "\n".join(lines)
-            else:
-                text = "No chats yet on this channel."
-        else:
-            text = res.text or ""
-        if not text:
-            return
-        try:
-            await client.chat_postMessage(channel=channel_id, text=text)
-        except Exception:
-            logger.exception("slack: posting slash result for %s failed", command)
-
-    # No /new or /list on Slack: a new thread is a new chat, and the channel's
-    # threads are the chat list.
-    @app.command("/agent")
-    async def _on_agent(ack, body, client):
-        # Open a modal (pop-up) with a Chat + Agent select. Native slash
-        # commands carry no thread context, so the operator picks the chat
-        # explicitly; the modal closes on submit, leaving no channel clutter.
-        await ack()
-        channel_id = body.get("channel_id")
-        entry = SLACK_CONNECTIONS.entry(provider_id)
-        adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
-        if adapter is None or getattr(adapter, "_sp", None) is None:
-            return
-        from primer.channel.commands import CommandExecutor
-        from primer.channel.slack.blocks import build_agent_switch_modal
-        ex = CommandExecutor(storage_provider=adapter._sp)
-        if not await ex.agent_switch_allowed(adapter._channel.id):
-            try:
-                await client.chat_postEphemeral(
-                    channel=channel_id, user=body.get("user_id"),
-                    text="Agent switching is disabled on this channel.")
-            except Exception:
-                logger.exception("slack: ephemeral switch-disabled notice failed")
-            return
-        chats = (await ex.list_chats(channel_id=adapter._channel.id)).items
-        agents = (await ex.agent_picker(channel_id=adapter._channel.id)).items
-        try:
-            await client.views_open(
-                trigger_id=body["trigger_id"],
-                view=build_agent_switch_modal(
-                    chats, agents, channel_external_id=channel_id),
-            )
-        except Exception:
-            logger.exception("slack: views.open for /agent modal failed")
-
-    @app.view(AGENT_SWITCH_MODAL_CALLBACK_ID)
-    async def _on_agent_modal_submit(ack, body, view, client):
-        await ack()  # closes the modal
-        from primer.channel.slack.blocks import read_agent_switch_submission
-        sel = read_agent_switch_submission(view)
-        if sel is None:
-            return  # info-only modal (no chats/agents): nothing to apply
-        chat_id, agent_id = sel
-        channel_ext = view.get("private_metadata", "")
-        entry = SLACK_CONNECTIONS.entry(provider_id)
-        adapter = entry.adapters_by_channel_id.get(channel_ext) if entry else None
-        if adapter is None or getattr(adapter, "_sp", None) is None:
-            return
-        from primer.channel.commands import CommandExecutor
-        from primer.model.chats import Chat
-        try:
-            res = await CommandExecutor(storage_provider=adapter._sp).set_agent(
-                chat_id=chat_id, agent_id=agent_id, channel_id=adapter._channel.id)
-        except Exception:
-            logger.exception("slack: set_agent from modal failed")
-            return
-        # Confirm inside the target chat's thread (no lingering channel message).
-        try:
-            chat = await adapter._sp.get_storage(Chat).get(chat_id)
-            binding = chat.channel_binding if chat is not None else None
-            tts = binding.thread_external_id if binding is not None else None
-            if tts:
-                await client.chat_postMessage(
-                    channel=channel_ext, thread_ts=tts,
-                    text=res.text or "Agent switched.")
-        except Exception:
-            logger.exception("slack: posting agent-switch confirmation failed")
-
-    @app.command("/help")
-    async def _on_help(ack, body, client):
-        await ack()
-        await _run_slash("/help", body, client)
 
     @app.event("message")
     async def _on_message(event, client):
@@ -371,21 +225,12 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     except Exception:
                         pass
                     return
-        # Chat-surface dispatch: on a chat-enabled adapter, a top-level message
-        # opens a new thread-chat and an in-thread message routes to its chat.
+        # Every inbound message is a routed event (S6 section 5): the
+        # thread IS the session, so there is no chat dispatch to fall back
+        # to and no matcher pre-pass to gate on.
         if getattr(adapter, "_sp", None) is None:
             return
-        sender_name = event.get("user") or "user"
-        # Rule path first: if a channel-trigger rule matches, it owns this
-        # message - skip the chat dispatch so it is not delivered twice (once
-        # as the rule action, once as a default chat message).
-        if await _route_channel_event(adapter, provider_id, event):
-            return
-        await adapter.handle_inbound_chat_message(
-            thread_ts=thread_ts, message_ts=event.get("ts", ""),
-            sender_name=sender_name, text=event.get("text", ""),
-            files=event.get("files"),
-        )
+        await _route_channel_event(adapter, provider_id, event)
 
 
 async def _slack_factory(
@@ -397,12 +242,15 @@ async def _slack_factory(
     event_bus=None,
     claim_engine=None,
     artifact_registry=None,
+    workspace_registry=None,
+    scheduler=None,
     **_kw,
 ):
     adapter = SlackChannelAdapter(
         provider=provider, channel=channel, inbox=inbox,
         storage_provider=storage_provider, event_bus=event_bus,
         claim_engine=claim_engine, artifact_registry=artifact_registry,
+        workspace_registry=workspace_registry, scheduler=scheduler,
     )
     await adapter.initialize()
     # The connection is now acquired; install handlers on it once.

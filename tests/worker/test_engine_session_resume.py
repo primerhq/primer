@@ -24,6 +24,7 @@ register_resume_hook side-effect).
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -68,6 +69,18 @@ class _RecordingExecutor:
 
 class _NoopPersist:
     pass
+
+
+class _FakeWorkspaceIO:
+    """Records ``append_message_line`` calls (the modern-record write
+    path); ``_NoopPersist`` above deliberately lacks this method so tests
+    that use it exercise the best-effort swallow instead."""
+
+    def __init__(self):
+        self.lines: list[tuple[str, bytes]] = []
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        self.lines.append((session_id, line))
 
 
 def _build_engine(session_storage) -> InMemoryClaimEngine:
@@ -224,6 +237,86 @@ async def test_resume_agent_clears_park_injects_and_keeps_lease(monkeypatch):
     assert any(
         l.kind == ClaimKind.SESSION and l.entity_id == sid for l in leases
     ), "continuation lease must survive (drop_lease=False)"
+
+
+@pytest.mark.asyncio
+async def test_resume_agent_persists_modern_tool_result_record(monkeypatch):
+    """01a04e0a: inject_resume_messages only ever wrote the legacy
+    {role,parts} Message lines the executor reads for LLM context: the
+    modern SessionMessageRecord TOOL_RESULT counterpart the messages API
+    + live tap read was never written for a resumed tool call. The
+    resume branch must now ALSO append a TOOL_RESULT record (call_id /
+    output / error, matching the live-turn write shape) and bump the
+    row's last_seq to match, in addition to the pre-existing legacy
+    inject."""
+    sid = "sess-engine-resume-modern-record"
+    tool_call_id = "tc-ask-2"
+
+    assistant_msg = Message(
+        role="assistant",
+        parts=[
+            ToolCallPart(
+                id=tool_call_id,
+                name="_misc__ask_user",
+                arguments={"prompt": "What is your name?"},
+            ),
+        ],
+    )
+
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = _build_engine(session_storage)
+    pool = _build_pool(storage_provider, engine)
+
+    sess = _make_resumable_session(
+        sid,
+        tool_name="ask_user",
+        tool_call_id=tool_call_id,
+        resume_event_payload={"response": "Alice"},
+        llm_messages=[assistant_msg.model_dump(mode="json")],
+    )
+    sess.last_seq = 3
+    await session_storage.create(sess)
+
+    fake_executor = _RecordingExecutor()
+    fake_ws = _FakeWorkspaceIO()
+    monkeypatch.setattr(
+        pool, "_load_workspace_for_persist",
+        lambda _ws_id: _async_return(fake_ws),
+    )
+    monkeypatch.setattr(
+        pool, "_build_agent_executor",
+        lambda _s, _w: _async_return(fake_executor),
+    )
+
+    lease = await _claim_session(engine, sid)
+    await pool._run_engine_session(lease)
+
+    # The legacy inject still happened (unchanged behaviour).
+    injected = fake_executor.injected[0]
+    tool_part = next(
+        p for p in injected[-1].parts if isinstance(p, ToolResultPart)
+    )
+
+    # The modern TOOL_RESULT record was ALSO appended, shaped to match
+    # what primer.session.timeline actually keys its TOOL_CALL pairing
+    # off of (call_id - abandon_session_gate was fixed to the same
+    # shape in 01a05350).
+    assert len(fake_ws.lines) == 1
+    written_sid, blob = fake_ws.lines[0]
+    assert written_sid == sid
+    lines = [line for line in blob.decode().splitlines() if line.strip()]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["kind"] == "tool_result"
+    assert record["payload"]["call_id"] == tool_call_id
+    assert record["payload"]["output"] == tool_part.output
+    assert record["payload"]["error"] is False
+    assert record["seq"] == 4  # start_seq (3) + 1
+
+    row = await session_storage.get(sid)
+    assert row is not None
+    assert row.last_seq == 4
 
 
 @pytest.mark.asyncio

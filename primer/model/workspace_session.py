@@ -30,8 +30,9 @@ from datetime import datetime
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
+from primer.model.agent import _validate_response_format_schema
 from primer.model.common import Identifiable
 from primer.model.principal import PrincipalRef
 
@@ -48,7 +49,7 @@ if TYPE_CHECKING:
 class SessionStatus(str, Enum):
     """Lifecycle state of an :class:`AgentSession`.
 
-    :attr:`CREATED` is the pre-execution state — the session row exists
+    :attr:`CREATED` is the pre-execution state - the session row exists
     but no worker has been told to run it yet. ``POST .../resume`` (or
     ``auto_start=True`` on session create) signals the scheduler to
     transition into :attr:`RUNNING`.
@@ -205,6 +206,16 @@ class SessionInfo(BaseModel):
     session_id: str = Field(..., min_length=1)
     agent_id: str = Field(..., min_length=1)
     workspace_id: str = Field(..., min_length=1)
+    binding: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Current binding, served from the DB row: {kind, agent_id | "
+            "graph_id, profile_id, binding_epoch}. The on-disk session.json "
+            "projection is rewritten only at the next turn boundary, so "
+            "this field is what readers trust. agent_id above stays "
+            "populated but is display-legacy once a session has switched."
+        ),
+    )
     name: str | None = Field(
         default=None,
         description=(
@@ -304,7 +315,7 @@ class Instruction(BaseModel):
 class AgentSessionBinding(BaseModel):
     """Bind a persisted Session to a single Agent (discriminated-union member).
 
-    Distinct from the existing on-disk :class:`AgentBinding` snapshot —
+    Distinct from the existing on-disk :class:`AgentBinding` snapshot -
     this one identifies which Agent a scheduler-managed Session is
     bound to, with an optional frozen snapshot field for immutability
     against later edits to the Agent row.
@@ -344,6 +355,16 @@ class GraphSessionBinding(BaseModel):
         description="Discriminator tag for the SessionBinding union.",
     )
     graph_id: str = Field(..., min_length=1)
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override for this run, mirroring "
+            ":attr:`AgentSessionBinding.profile_id`. ``None`` leaves each "
+            "agent node to resolve its own profile. Both binding kinds "
+            "carry the override so a switch can change the model and the "
+            "target in one gesture."
+        ),
+    )
     graph_snapshot: "Graph | None" = Field(
         default=None,
         description=(
@@ -361,7 +382,7 @@ SessionBinding = Annotated[
 
 
 class WorkspaceSession(Identifiable):
-    """Persisted session row — scheduler's source of truth.
+    """Persisted session row - scheduler's source of truth.
 
     Distinct from :class:`SessionInfo`, which is the on-disk projection
     inside the workspace's ``.state/`` repo. The two are synchronised
@@ -372,6 +393,19 @@ class WorkspaceSession(Identifiable):
 
     workspace_id: str = Field(..., min_length=1)
     binding: SessionBinding
+    binding_epoch: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Monotonic counter bumped every time :attr:`binding` is "
+            "reapplied. A session is an agent-independent workstream, so "
+            "the binding is a mutable pointer; the epoch fences writes "
+            "against it. Terminal-turn and park-resume writes carry the "
+            "epoch they started under and are void when it no longer "
+            "matches the row, which is what keeps a switch from being "
+            "clobbered by work that began under the previous binding."
+        ),
+    )
     status: SessionStatus
     name: str | None = Field(
         default=None,
@@ -404,6 +438,10 @@ class WorkspaceSession(Identifiable):
             "system principal (PrincipalRef.system())."
         ),
     )
+    _validate_response_format = field_validator("response_format")(
+        _validate_response_format_schema
+    )
+
     created_at: datetime
     started_at: datetime | None = Field(default=None)
     last_turn_at: datetime | None = Field(default=None)
@@ -508,7 +546,7 @@ class WorkspaceSession(Identifiable):
     )
 
     # ------------------------------------------------------------------
-    # Streaming lifecycle fields (mirrors Chat model in primer.model.chats).
+    # Streaming lifecycle fields.
     # See docs/superpowers/specs/2026-05-27-workspace-session-streaming-design.md.
     # ------------------------------------------------------------------
     last_seq: int = Field(
@@ -521,6 +559,42 @@ class WorkspaceSession(Identifiable):
             "message writer (see primer.session.persistence)."
         ),
     )
+    pending_binding_switch: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "A binding switch requested while a turn was active. Shape: "
+            "{kind: 'agent'|'graph', agent_id?|graph_id?, profile_id?, "
+            "actor}. Applied and cleared at the next drain checkpoint, "
+            "BEFORE any queued steer is realized, so the follow-up runs "
+            "under the incoming binding rather than the one it was "
+            "waiting behind."
+        ),
+    )
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Persistent per-session structured-output JSON Schema. "
+            "Overrides the agent default for this session. An ephemeral "
+            "per-steer override rides "
+            "metadata['ephemeral_response_format'] and beats this for "
+            "exactly one turn. Mirrors Chat.response_format."
+        ),
+    )
+    next_unprocessed_seq: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Drain checkpoint cursor: the seq the next turn scan starts "
+            "from. Advanced only at fully-drained checkpoints, to the "
+            "row's own last_seq + 1 re-read fresh under the lifecycle "
+            "lock, and only ever forwards. Advancing it mid-turn let a "
+            "crash replay records the previous turn had already "
+            "consumed, which is what the chat drain got wrong. "
+            "count_turn_state's max_seen_seq is the separate tool for "
+            "callers that already hold the log lines, not for this "
+            "cursor."
+        ),
+    )
     turn_status: Literal["idle", "claimable", "running"] = Field(
         default="idle",
         description=(
@@ -529,9 +603,71 @@ class WorkspaceSession(Identifiable):
             "user instruction has landed (or a parked session just became "
             "resumable) and a worker should pick the session up. "
             "``running`` means a worker holds the claim and is actively "
-            "processing.  Orthogonal to :attr:`parked_status` — a claimed "
+            "processing.  Orthogonal to :attr:`parked_status` - a claimed "
             "session that parks on a yielding tool keeps ``turn_status`` "
             "where it is while ``parked_status`` flips."
+        ),
+    )
+    turn_started_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Wall-clock time the current turn set turn_status='running' "
+            "(dispatch.run_one_session_turn, just before build_executor). "
+            "Cleared back to None in the same write that returns "
+            "turn_status to 'idle'. Additive/optional so existing rows "
+            "with no value simply read None. Exists for crash-safety "
+            "staleness heuristics: a worker that dies mid-turn (hard "
+            "crash, OOM kill, pod eviction) never reaches the cleanup "
+            "write, so a row can be observed at turn_status='running' "
+            "with no live worker behind it - callers that need to detect "
+            "that should compare this timestamp's age against a "
+            "plausible turn-duration ceiling rather than trusting "
+            "turn_status alone."
+        ),
+    )
+    agent_phase: Literal[
+        "thinking", "responding", "executing", "waiting",
+    ] | None = Field(
+        default=None,
+        description=(
+            "Finer-grained sub-state of an in-flight turn, written by "
+            "dispatch.run_one_session_turn as it watches the executor's "
+            "StreamEvents (primer.session.persistence.translate_stream_event "
+            "already sees the same events at the same layer). 'thinking' "
+            "covers request-sent-through-reasoning-tokens (a request just "
+            "sent, or ReasoningDelta events - reasoning is rendered as its "
+            "own collapsible block, not the final answer, so it counts as "
+            "thinking); 'responding' starts at the first non-reasoning "
+            "TextDelta; 'executing' starts at ToolCallStart and reverts to "
+            "'thinking' once the tool result is appended (the agent is "
+            "about to re-request a completion); 'waiting' is the value "
+            "between turns / on park / on turn end - the same moments "
+            "turn_status returns to 'idle'. Additive/optional, no "
+            "migration: existing rows simply read None (equivalent to "
+            "'waiting'). None whenever turn_status is 'idle' - only "
+            "meaningful while a turn is genuinely running, mirroring "
+            "turn_started_at's own scope."
+        ),
+    )
+    agent_phase_turn_no: int | None = Field(
+        default=None,
+        description=(
+            "turn_no this agent_phase value belongs to - the fence a "
+            "reader compares against the row's own turn_no to detect a "
+            "stale write (e.g. a delayed phase update from a turn that "
+            "already ended, arriving after the NEXT turn already started; "
+            "readers should ignore agent_phase when this doesn't match "
+            "turn_no). Additive/optional, no migration."
+        ),
+    )
+    agent_phase_stamped_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Wall-clock time agent_phase was last written. Same "
+            "crash-safety role as turn_started_at (staleness heuristic "
+            "for a worker that died between phase transitions), scoped to "
+            "the finer-grained phase signal rather than the coarser "
+            "turn_status. Additive/optional, no migration."
         ),
     )
     cancel_requested_at: datetime | None = Field(
@@ -553,6 +689,83 @@ class WorkspaceSession(Identifiable):
         ),
     )
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def session_state(self) -> Literal["waiting", "running", "parked", "ended"]:
+        """One served truth, derived from the three stored axes.
+
+        The stored axes (``status``, ``parked_status``, ``turn_status``)
+        stay exactly as they are - three separate columns, unchanged
+        write paths - this is purely a read-time projection, computed
+        fresh on every serialisation, never stored, never accepted as
+        input (a bare ``@property`` under ``@computed_field`` has no
+        setter, so passing ``session_state=`` into the constructor raises
+        same as any other unknown kwarg). Because it lives on
+        WorkspaceSession itself rather than a response subclass, every
+        route that serialises a WorkspaceSession (or a subclass like
+        SessionDetail) gets it automatically - no per-route wiring, no
+        route that could forget to add it.
+
+        Precedence (checked in this order - see each branch for why):
+        1. ``status == ENDED`` -> "ended". Terminal; nothing else matters
+           once true.
+        2. ``parked_status in ("parked", "resumable")`` -> "parked".
+           Checked before turn_status because the park write and the
+           turn_status="idle" cleanup write are NOT atomic with each
+           other (dispatch.run_one_session_turn's YieldToWorker branch
+           writes the park columns; the streaming-phase `finally` clears
+           turn_status moments later) - a reader could observe
+           turn_status still "running" for a session that has already
+           parked. Parked is the more specific/accurate transient truth.
+        3. ``turn_status == "running"`` -> "running". The real signal
+           01a04d91-a7a0 introduced - see that field's own docstring for
+           why this used to always read "idle" here instead.
+        4. ``status in (WAITING, PAUSED) and turn_no > 0`` -> "parked"
+           (01a0518a). A completed-turn-rests-parked flip
+           (``_CLEAN_TURN_RESTS_PARKED`` in primer.session.dispatch)
+           means a clean stop now leaves the row at WAITING, not ENDED -
+           but WAITING is ALSO the value for two OTHER, older cases
+           (the executor's assistant-asked-a-question heuristic;
+           max_tokens/content_filter) that write the identical
+           (status=WAITING, ended_reason=None) shape, so there is no
+           stored field that distinguishes "just rested" from "blocked
+           on a specific answer" from "always been idle". Rather than
+           add a new column to encode a distinction the served
+           vocabulary was never that fine-grained about, ``turn_no > 0``
+           answers the question this vocabulary actually needs: "has
+           this session ever completed a turn?" - CREATED sessions
+           (never claimed, turn_no == 0) are genuinely fresh and stay
+           "waiting"; anything resting after at least one turn (WAITING
+           for any of the three reasons above, or an operator PAUSED
+           mid-flight) reads "parked" - resuming both looks the same to
+           a caller (send a new message; wake_session's existing
+           ``_RESUMABLE`` set already includes WAITING and PAUSED, see
+           that module) and the richer per-reason distinction (a real
+           question needing an answer vs. a turn just finished) is
+           exactly what the UI's own ``describeSessionState()``
+           (ui/components/session-state.jsx) already computes from
+           ``parked_event_keys``/``ended_reason`` for display - this
+           field was never meant to replace that, only to give it (and
+           every other consumer) one clean signal for "is a turn
+           genuinely in flight right now".
+        5. Otherwise -> "waiting". CREATED (turn_no == 0, never started)
+           and turn_status idle/claimable with turn_no == 0 - a session
+           alive but genuinely never having produced a turn to rest
+           after.
+        """
+        if self.status == SessionStatus.ENDED:
+            return "ended"
+        if self.parked_status is not None:
+            return "parked"
+        if self.turn_status == "running":
+            return "running"
+        if (
+            self.status in (SessionStatus.WAITING, SessionStatus.PAUSED)
+            and self.turn_no > 0
+        ):
+            return "parked"
+        return "waiting"
+
 
 # ===========================================================================
 # Session message record
@@ -562,15 +775,31 @@ class WorkspaceSession(Identifiable):
 class SessionMessageKind(StrEnum):
     """Wire-level message kinds emitted by the session executor.
 
-    Mirrors :data:`primer.model.chats.ChatMessageKind` for the workspace
+    The record vocabulary for the workspace
     session streaming surface.  Each record in the per-session message
     log carries the kind plus a kind-specific ``payload`` JSON blob.
     """
 
     USER_INPUT = "user_input"
     ASSISTANT_TOKEN = "assistant_token"
+    # Model reasoning / thinking text, streamed alongside the answer by
+    # providers that expose it. Persisted for DISPLAY only: it is skipped
+    # when rebuilding the prompt, because replaying a model's own
+    # reasoning back to it is either rejected outright or degrades the
+    # next turn.
+    REASONING = "reasoning"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    # Push-frame for an invoker-supplied (external) tool call, written
+    # when a turn soft-yields on one so a live client sees the call
+    # immediately and again on reconnect replay. Display/protocol only:
+    # the paired tool_call/tool_result rows carry the history.
+    EXTERNAL_TOOL_CALL = "external_tool_call"
+    # Attribution row appended when a session's binding switches, so a
+    # shared transcript stays readable across hand-offs. Payload:
+    # ``{"from_binding": {...}, "to_binding": {...}, "actor": str,
+    #    "binding_epoch": int}``. Display only, never sent to the model.
+    AGENT_MARKER = "agent_marker"
     YIELDED = "yielded"
     RESUMED = "resumed"
     DONE = "done"
@@ -599,12 +828,32 @@ class SessionMessageKind(StrEnum):
     # physically at/before the LAST marker into one synthetic assistant
     # summary; the event log and pre-compaction messages are NEVER deleted.
     COMPACTION_MARKER = "compaction_marker"
-
-
+    # Structural marker appended by a rewind. Payload: ``{"to_seq": int,
+    # "actor": str}``. The read-time replay walk drops every currently
+    # visible row with ``seq > to_seq``; nothing is ever deleted, so the
+    # append-only invariant above holds for rewinds too. Consumed by the
+    # replay rule only, never sent to the model.
+    REWIND_MARKER = "rewind_marker"
+    # Delivery frame for a NOTIFYING tool call (S3). Payload:
+    # ``{"call_id": str, "name": str, "arguments": dict}``. Display and
+    # protocol only: the paired tool_call/tool_result rows carry the
+    # history, and this record is never sent to the model. Attached
+    # clients execute it best-effort off the tap.
+    CLIENT_ACTION = "client_action"
+    # One record per model call at the shared agent-loop seam
+    # (primer/agent/loop.py). Payload: ``{"profile_id": str,
+    # "provider_id": str, "model": str, "input_tokens": int,
+    # "output_tokens": int, "duration_ms": int, "status": "ok"}``. Adds
+    # per-CALL resolution inside multi-call turns, which the turn log's
+    # per-TURN completed event cannot give. Display/derivation only:
+    # prompt rebuild never sees it (only role/parts Message lines are
+    # history), and transcript renderers hide it - it is Trace-tab
+    # material. Carries ``node_id`` when the call ran inside a graph node.
+    LLM_CALL = "llm_call"
 class SessionMessageRecord(BaseModel):
     """One row in the per-session append-only message log.
 
-    Mirrors :class:`primer.model.chats.ChatMessage` for the workspace
+    One durable record row for the workspace
     session streaming surface.  ``seq`` is monotonically increasing per
     session; the composite ``(session_id, seq)`` is the natural primary
     key (the storage layer composes an ``id`` from these two).
@@ -621,10 +870,35 @@ class SessionMessageRecord(BaseModel):
             "originates from a graph run (set by the session translator from "
             "the forwarded ``_GraphNodeEvent`` / graph lifecycle events). "
             "``None`` for plain agent sessions. Lets the tap attribute every "
-            "record — including per-node agent tokens/tool calls — to its "
+            "record - including per-node agent tokens/tool calls - to its "
             "originating node so the UI node inspector can stream live."
         ),
     )
+
+
+class PendingSessionMessage(Identifiable):
+    """A follow-up steer received while the session already had a turn.
+
+    Held as its OWN row rather than a list on the session so the enqueue
+    (an API process) and the drain (a worker) can never lose-update or
+    reorder each other on a last-writer-wins store.
+
+    The row deliberately carries NO seq. Allocating one at receipt is
+    what collided with the in-flight turn's assistant_token seqs; the
+    drain turns each pending row into a real seq'd ``user_input`` at the
+    drain-empty checkpoint, AFTER the active turn's terminal record, so
+    the follow-up stays ordered after the response it followed.
+
+    ``id`` shape: ``"{session_id}:pending:{enqueued_at}:{counter}"``. The
+    drain orders by ``(enqueued_at, id)``.
+    """
+
+    session_id: str = Field(..., min_length=1)
+    parts: list[dict[str, Any]] = Field(default_factory=list)
+    attribution: dict[str, Any] | None = Field(default=None)
+    client_msg_id: str | None = Field(default=None)
+    enqueued_at: datetime = Field(...)
+    created_at: datetime = Field(...)
 
 
 # ===========================================================================

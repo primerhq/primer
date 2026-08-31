@@ -110,9 +110,16 @@ class TestStart:
         msgs_path = tmp_path / ".state" / "sessions" / "sess-1" / "messages.jsonl"
         assert not msgs_path.exists()
 
-    async def test_constructor_rejects_mismatched_agent_id(
+    async def test_constructor_accepts_a_mismatched_agent_id(
         self, state_repo: StateRepo, truncation_store: TruncationStore
     ) -> None:
+        """Inverted by S1: bindings are mutable and the row is truth.
+
+        This used to raise. A session that switched agents legitimately
+        has a slot recording how it STARTED and a row saying what it
+        runs now, so rejecting the disagreement made a switched session
+        fail to rehydrate after a restart.
+        """
         from datetime import datetime, timezone
 
         from primer.model.workspace_session import SessionInfo
@@ -126,13 +133,13 @@ class TestStart:
             last_activity_at=datetime.now(timezone.utc),
         )
         binding = _make_binding(agent_id="agent-other")
-        with pytest.raises(ValueError, match="agent_id"):
-            AgentSession(
-                session_info=info,
-                agent_binding=binding,
-                state_repo=state_repo,
-                truncation_store=truncation_store,
-            )
+        session = AgentSession(
+            session_info=info,
+            agent_binding=binding,
+            state_repo=state_repo,
+            truncation_store=truncation_store,
+        )
+        assert session is not None
 
     async def test_workspace_tools_default_empty(
         self, state_repo: StateRepo, truncation_store: TruncationStore

@@ -347,8 +347,26 @@ class TestSessionMessageKind:
         expected = {
             "user_input",
             "assistant_token",
+            # Model reasoning text (S1 v2 transcript parity with chats).
+            # Display only: skipped when rebuilding the prompt, because
+            # replaying a model's own reasoning degrades the next turn.
+            "reasoning",
             "tool_call",
             "tool_result",
+            # Push-frame for an invoker-supplied external tool call, so a
+            # live client sees it immediately and on reconnect replay.
+            "external_tool_call",
+            # Binding hand-off attribution: a session's agent can change
+            # mid-workstream, and the shared transcript records who ran
+            # which turn.
+            "agent_marker",
+            # Structural rewind marker: the replay walk drops visible
+            # rows past its to_seq, keeping the log append-only.
+            "rewind_marker",
+            # Delivery frame for a notifying tool call (S3).
+            "client_action",
+            # One record per model call at the agent-loop seam (S7).
+            "llm_call",
             "yielded",
             "resumed",
             "done",
@@ -402,3 +420,116 @@ class TestWorkspaceSessionStreamingFields:
         assert sess.cancel_requested_at is None
         assert sess.pause_requested_at is None
         assert sess.last_seq == 0
+
+
+class TestSessionState:
+    """session_state (01a04d91-a7a0, PHASE 1 of the execution-lifecycle
+    revamp): one served truth derived from (status, parked_status,
+    turn_status), computed fresh on every serialisation - never stored,
+    never accepted as input."""
+
+    def _sess(self, **overrides):
+        base = dict(
+            id="s1", workspace_id="w1",
+            binding=AgentSessionBinding(agent_id="ag"),
+            status=SessionStatus.RUNNING,
+            created_at=datetime(2026, 5, 28, tzinfo=timezone.utc),
+        )
+        base.update(overrides)
+        return WorkspaceSession(**base)
+
+    def test_ended_takes_precedence_over_everything(self):
+        # Even a row that ALSO carries turn_status="running" (a stale/
+        # transient combination) must read "ended" once status is ENDED -
+        # terminal, nothing else matters once true.
+        sess = self._sess(
+            status=SessionStatus.ENDED, turn_status="running",
+            parked_status="parked",
+        )
+        assert sess.session_state == "ended"
+
+    def test_parked_takes_precedence_over_running(self):
+        # The park write and the turn_status="idle" cleanup write are not
+        # atomic with each other (dispatch.run_one_session_turn's
+        # YieldToWorker branch vs. the streaming-phase finally moments
+        # later) - a reader can observe turn_status still "running" for a
+        # session that has already parked. Parked wins.
+        sess = self._sess(turn_status="running", parked_status="parked")
+        assert sess.session_state == "parked"
+
+        sess2 = self._sess(turn_status="running", parked_status="resumable")
+        assert sess2.session_state == "parked"
+
+    def test_running_when_turn_status_running_and_not_parked(self):
+        sess = self._sess(turn_status="running")
+        assert sess.session_state == "running"
+
+    def test_waiting_is_the_default_fallthrough(self):
+        for status, turn_status in [
+            (SessionStatus.CREATED, "idle"),
+            (SessionStatus.RUNNING, "idle"),
+            (SessionStatus.RUNNING, "claimable"),
+            (SessionStatus.WAITING, "idle"),
+            (SessionStatus.PAUSED, "idle"),
+        ]:
+            sess = self._sess(status=status, turn_status=turn_status)
+            assert sess.session_state == "waiting", (status, turn_status)
+
+    def test_computed_field_appears_in_serialisation(self):
+        sess = self._sess(turn_status="running")
+        dumped = sess.model_dump(mode="json")
+        assert dumped["session_state"] == "running"
+
+    def test_computed_field_is_not_accepted_as_input(self):
+        # A round-trip through a previously-serialised dump (which now
+        # includes session_state) must not choke on the extra key, and
+        # must not let a client-supplied session_state override the
+        # derived truth.
+        sess = self._sess(turn_status="running")
+        dumped = sess.model_dump(mode="json")
+        dumped["session_state"] = "ended"  # a malicious/stale client value
+        reloaded = WorkspaceSession.model_validate(dumped)
+        assert reloaded.session_state == "running"
+
+    def test_resting_after_a_completed_turn_reads_parked(self):
+        # 01a0518a: _CLEAN_TURN_RESTS_PARKED leaves a clean stop at
+        # WAITING (not ENDED) with turn_no already bumped past 0 - this
+        # is the "parked" case the flip introduces. Covers all three
+        # WAITING-producing reasons (clean rest, assistant-asked-a-
+        # question, max_tokens/content_filter) since none of them leave
+        # a distinguishing field behind - turn_no > 0 is the only signal
+        # this vocabulary needs: "has this session ever produced a turn
+        # to rest after". PAUSED is folded in too (an operator pause
+        # after progress reads the same as a rest).
+        for status in (SessionStatus.WAITING, SessionStatus.PAUSED):
+            sess = self._sess(status=status, turn_status="idle", turn_no=1)
+            assert sess.session_state == "parked", status
+
+    def test_never_started_stays_waiting_even_at_waiting_status(self):
+        # The distinguisher is turn_no, not status: a WAITING/PAUSED row
+        # that has NEVER actually completed a turn (turn_no == 0 - not a
+        # real production shape today, but the boundary the property
+        # itself must get right) stays "waiting", not "parked".
+        for status in (SessionStatus.WAITING, SessionStatus.PAUSED):
+            sess = self._sess(status=status, turn_status="idle", turn_no=0)
+            assert sess.session_state == "waiting", status
+
+    def test_created_with_turn_no_zero_stays_waiting(self):
+        # A CREATED session (never claimed) is turn_no == 0 by
+        # definition - the "genuinely fresh" case the vocabulary reserves
+        # "waiting" for.
+        sess = self._sess(status=SessionStatus.CREATED, turn_status="idle", turn_no=0)
+        assert sess.session_state == "waiting"
+
+    def test_running_or_parked_status_still_win_over_turn_no(self):
+        # The turn_no>0 "parked" branch is checked AFTER running/
+        # parked_status - a session with turn_no>0 that is ACTIVELY
+        # running or on a real yielding-tool park must not be
+        # misclassified as merely "resting".
+        running = self._sess(turn_status="running", turn_no=3)
+        assert running.session_state == "running"
+
+        yielded = self._sess(
+            status=SessionStatus.WAITING, parked_status="parked", turn_no=3,
+        )
+        assert yielded.session_state == "parked"  # via parked_status, same value here

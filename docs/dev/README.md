@@ -36,7 +36,6 @@ flowchart TD
         sessions[Sessions]
         agents[Agents]
         graphs[Graphs]
-        chats[Chats]
         harness[Harness]
         triggers[Triggers]
         exttools[External Tools]
@@ -74,10 +73,6 @@ flowchart TD
     graphs --> claim
     graphs --> obs
     graphs --> rest
-
-    chats --> worker
-    chats --> claim
-    chats --> rest
 
     harness --> claim
     harness --> worker
@@ -126,7 +121,7 @@ flowchart TD
   `create_app` factory, middleware order, the RFC 7807 error envelope,
   `make_crud_router`, cookie-plus-bearer auth, and the lifespan wiring seam.
 - [claim-machine](architecture/claim-machine.md) - the one polymorphic lease engine
-  that decides which worker runs the next unit of work for a session, chat, harness,
+  that decides which worker runs the next unit of work for a session, harness,
   or trigger, and for how long.
 - [worker-system](architecture/worker-system.md) - how Primer runs agent and graph
   work off the request path: the three coordination ABCs and the worker pool that
@@ -155,9 +150,9 @@ flowchart TD
 - [graphs](subsystems/graphs.md) - the Pregel-style executor for declarative directed
   graphs of agent nodes, with templated inputs, conditional routing, map-reduce
   fan-out/fan-in, and a tool-approval checkpoint protocol.
-- [chats](subsystems/chats.md) - the WebSocket-driven conversational surface: a
-  long-lived `Chat` plus append-only message log whose turns are detached onto the
-  worker pool and reuse the yielding-tool park machinery.
+- [bootstrap-operator](subsystems/bootstrap-operator.md) - first-run setup and the
+  marker-independent ensure pass that seeds the default workspace, the operator and
+  builder agents, and the system collection at every startup.
 - [channels](subsystems/channels.md) - the event-to-action bridge for Slack, Telegram, and
   Discord: inbound provider events are normalized and matched against `channel`-trigger
   bindings to drive actions, while outbound session traffic (gates, lifecycle, final result)
@@ -188,14 +183,11 @@ flowchart TD
   turn parks, and the caller resumes it with the result through the same
   invocation API.
 - [ui-foundation](subsystems/ui-foundation.md) - the shared browser substrate every
-  console page builds on: the HTTP client, the polled-read and optimistic-write hooks,
-  hash routing, the chrome shell, and the shared primitives.
-- [ui-studio2](subsystems/ui-studio2.md) - the opt-in Studio2 trial shell at #/studio2:
-  one persistent frame with a command registry, document tabs, and a same-origin
-  iframe bridge to every un-migrated classic page.
-- [ui-pages](subsystems/ui-pages.md) - the per-page layer of the operator console: the
-  repeating list-and-detail page shapes, the loader and confirmation conventions, and a
-  page-by-page route index.
+  console surface builds on: the HTTP client, the polled-read and optimistic-write
+  hooks, the router shim over overlay state, and the shared primitives.
+- [ui-pages](subsystems/ui-pages.md) - the fresh shell: one workspace-scoped surface
+  whose navigation is a verb registry, whose documents are deep-linkable tabs, and
+  whose management surfaces are overlays re-hosting the page components.
 - [modularity](subsystems/modularity.md) - the modular-monolith contract: one wheel with
   a lean core, optional subsystems behind packaging extras, capability discovery, and the
   two boundary rules enforced by the core-install lane and the import-linter contracts.

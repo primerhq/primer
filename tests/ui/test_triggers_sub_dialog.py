@@ -15,9 +15,12 @@ def test_sub_dialog_defined():
 
 def test_sub_dialog_three_kinds():
     src = _src()
-    assert "chat_message" in src
     assert "agent_fresh_session" in src
     assert "graph_fresh_session" in src
+    # chat_message died with the chat surface (S6 P5); session_append is
+    # the kind that now means "put this text on that session".
+    assert "session_append" in src
+    assert "chat_message" not in src
 
 
 def test_sub_dialog_does_not_offer_parked_session_creation():

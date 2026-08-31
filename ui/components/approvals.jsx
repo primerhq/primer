@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, BottomSheet, relativeTime, fmtDate */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, BottomSheet, relativeTime, fmtDate, CapabilityBadges */
 
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with AP_ to avoid clashes with other components.
@@ -38,6 +38,10 @@ function ApprovalsPage({ pushToast, onNavigate }) {
   // Records sort controls. "time" | "status"; "desc" | "asc".
   const [sortBy, setSortBy] = React.useState("time");
   const [sortDir, setSortDir] = React.useState("desc");
+  // US-011a: the standalone Tools catalog page retired; configuring a
+  // gate opens AP_NewPolicyModal directly, with its own embedded
+  // AP_ToolPicker to find the tool - no page to navigate to anymore.
+  const [configuringPolicy, setConfiguringPolicy] = React.useState(false);
 
   // Parked sessions — sessions in parked_status="parked" state. Each row
   // may or may not be parked on tool_approval (could be ask_user, sleep,
@@ -50,14 +54,6 @@ function ApprovalsPage({ pushToast, onNavigate }) {
       { predicate: AP_PARKED_PREDICATE, page: { kind: "offset", offset: 0, length: 100 } },
       { signal },
     ),
-    { pollMs: 5000 },
-  );
-
-  // Chats: no /v1/chats/find route, no parked_status query param. Pull
-  // the full list (limit=200 — current scale) and filter client-side.
-  const parkedChats = useResource(
-    "approvals:parked-chats",
-    (signal) => apiFetch("GET", "/chats?limit=200", null, { signal }),
     { pollMs: 5000 },
   );
 
@@ -76,11 +72,10 @@ function ApprovalsPage({ pushToast, onNavigate }) {
   );
 
   const sessionRows = (parkedSessions.data?.items ?? []);
-  const chatRows = (parkedChats.data?.items ?? []).filter((c) => c.parked_status === "parked");
   const recordRows = (resolvedRecords.data?.items ?? []);
 
   // The records list combines two sources: (1) per-row tool_approval/pending
-  // fetches for live (still-parked) sessions/chats, which are "pending", and
+  // fetches for live (still-parked) sessions, which are "pending", and
   // (2) the durable resolved records from /tool_approval/records. Each pending
   // row renders an <AP_RecordRow> that does its own useResource and renders
   // nothing on 404; resolved records are normalised into the same shape and
@@ -88,7 +83,13 @@ function ApprovalsPage({ pushToast, onNavigate }) {
   // (tool-approval:session:${id}) - handy for invalidation.
   return (
     <div className="col" style={{ gap: 14 }}>
-      <AP_ConfigHint onNavigate={onNavigate} />
+      <AP_ConfigHint onConfigure={() => setConfiguringPolicy(true)} />
+      {configuringPolicy && (
+        <AP_NewPolicyModal
+          pushToast={pushToast}
+          onClose={() => setConfiguringPolicy(false)}
+        />
+      )}
       <div className="panel">
         <div
           style={{
@@ -126,12 +127,11 @@ function ApprovalsPage({ pushToast, onNavigate }) {
         <div style={{ padding: 0 }}>
           <AP_RecordsPanel
             sessions={sessionRows}
-            chats={chatRows}
             resolved={recordRows}
             sortBy={sortBy}
             sortDir={sortDir}
-            loading={(parkedSessions.loading && !parkedSessions.data) || (parkedChats.loading && !parkedChats.data) || (resolvedRecords.loading && !resolvedRecords.data)}
-            error={parkedSessions.error || parkedChats.error || resolvedRecords.error}
+            loading={(parkedSessions.loading && !parkedSessions.data) || (resolvedRecords.loading && !resolvedRecords.data)}
+            error={parkedSessions.error || resolvedRecords.error}
             onNavigate={onNavigate}
             pushToast={pushToast}
           />
@@ -142,22 +142,22 @@ function ApprovalsPage({ pushToast, onNavigate }) {
 }
 
 // =============================================================
-// Config hint - approval configuration is per-tool, on the Tools page
+// Config hint - approval configuration is per-tool, via AP_NewPolicyModal
 // =============================================================
 
-function AP_ConfigHint({ onNavigate }) {
+function AP_ConfigHint({ onConfigure }) {
   return (
     <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 10 }} data-testid="approvals-config-hint">
       <Icon name="settings" size={14} style={{ color: "var(--text-3)" }} />
       <span className="muted text-sm">
         Approval gates are configured <strong style={{ color: "var(--text)" }}>per tool</strong>.
-        Add or edit one from the{" "}
+        {" "}
         <a
           style={{ color: "var(--accent)", cursor: "pointer" }}
-          onClick={() => onNavigate && onNavigate("tools")}
+          onClick={() => onConfigure && onConfigure()}
           data-testid="approvals-config-link"
         >
-          Tools page
+          Add or edit one
         </a>
         .
       </span>
@@ -221,7 +221,7 @@ function AP_recordCompare(a, b, sortBy, sortDir) {
   return sortDir === "asc" ? -cmp : cmp;
 }
 
-function AP_RecordsPanel({ sessions, chats, resolved: resolvedRecords, sortBy, sortDir, loading, error, onNavigate, pushToast }) {
+function AP_RecordsPanel({ sessions, resolved: resolvedRecords, sortBy, sortDir, loading, error, onNavigate, pushToast }) {
   // Each source row resolves its own pending record asynchronously. We
   // collect them into a shared store so the panel can sort across all
   // rows. `onRecord(key, record|null)` reports a resolved record (or
@@ -259,23 +259,22 @@ function AP_RecordsPanel({ sessions, chats, resolved: resolvedRecords, sortBy, s
     );
   }
 
-  // Pending sources: each parked session/chat fetches its live pending
+  // Pending sources: each parked session fetches its live pending
   // record (404 = not parked on an approval -> skipped).
-  const sources = [
-    ...sessions.map((s) => ({ key: `session:${s.id}`, scope: "sessions", id: s.id })),
-    ...chats.map((c) => ({ key: `chats:${c.id}`, scope: "chats", id: c.id })),
-  ];
+  const sources = sessions.map((s) => ({ key: `session:${s.id}`, scope: "sessions", id: s.id }));
   const pendingResolved = sources
     .map((src) => ({ src, record: records[src.key] }))
     .filter((r) => r.record);
 
-  // Durable resolved records: normalised into the row shape and tagged with
-  // their originating session/chat for navigation. They are read-only.
-  const durableResolved = (resolvedRecords || []).map((rec) => ({
+  // Durable resolved records: normalised into the row shape and tagged
+  // with their originating session for navigation. They are read-only.
+  // Chat-scoped legacy records are dropped: the chat surface is gone, so
+  // their row would render a link that cannot resolve.
+  const durableResolved = (resolvedRecords || []).filter((rec) => !rec.chat_id).map((rec) => ({
     src: {
       key: `record:${rec.id}`,
-      scope: rec.chat_id ? "chats" : "sessions",
-      id: rec.chat_id || rec.session_id || rec.id,
+      scope: "sessions",
+      id: rec.session_id || rec.id,
     },
     record: AP_normResolved(rec),
   }));
@@ -298,7 +297,7 @@ function AP_RecordsPanel({ sessions, chats, resolved: resolvedRecords, sortBy, s
           <div className="sub">
             Pending records appear here when a tool call hits a gate; resolved
             (approved/rejected/timeout/cancelled) decisions are retained and
-            shown alongside. Polling every 5s across all sessions + chats.
+            shown alongside. Polling every 5s across all sessions.
           </div>
         </div>
       ) : (
@@ -322,7 +321,7 @@ function AP_RecordsPanel({ sessions, chats, resolved: resolvedRecords, sortBy, s
 // pure while each source still does its own poll/cache.
 function AP_RecordFetcher({ recordKey, scope, id, onRecord }) {
   const { useResource, apiFetch } = window.primerApi;
-  const cacheKey = `tool-approval:${scope === "sessions" ? "session" : "chat"}:${id}`;
+  const cacheKey = `tool-approval:session:${id}`;
   const pending = useResource(
     cacheKey,
     (signal) => apiFetch(
@@ -355,7 +354,7 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
 
   // Reuse the same cache key as the banner so a respond from either
   // surface refetches the other.
-  const cacheKey = `tool-approval:${scope === "sessions" ? "session" : "chat"}:${id}`;
+  const cacheKey = `tool-approval:session:${id}`;
 
   const respond = useMutation(
     (body) => apiFetch(
@@ -367,7 +366,6 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
       invalidates: [
         cacheKey,
         "approvals:parked-sessions",
-        "approvals:parked-chats",
       ],
       onSuccess: () => pushToast && pushToast({ kind: "success", title: "Decision sent" }),
       onError: AP_toastErr(pushToast, "Respond failed"),
@@ -392,7 +390,6 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
     // Mobile shortcut: open the inline rejection form inside the sheet.
     setRejecting(true);
   };
-  const navTarget = scope === "chats" ? "chat-detail" : "session-detail";
 
   if (isMobile) {
     const parkedSecLabel = parkedSec != null ? `parked ${relativeTime(parkedSec)}` : null;
@@ -405,7 +402,7 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
             renderCard={() => (
               <Card
                 title={a.tool_name}
-                subtitle={`${scope === "chats" ? "chat" : "session"} · ${id}`}
+                subtitle={`session · ${id}`}
                 pill={isPending ? <StatusPill status="paused" /> : <AP_StatusBadge status={a.status} />}
                 meta={parkedSecLabel}
                 onClick={() => setSheetOpen(true)}
@@ -512,9 +509,9 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
             <a
               className="mono"
               style={{ color: "var(--accent)", cursor: "pointer" }}
-              onClick={() => onNavigate && onNavigate(navTarget, id)}
+              onClick={() => onNavigate && onNavigate("session-detail", id)}
             >
-              {scope === "chats" ? "chat" : "session"} · {id}
+              session · {id}
             </a>
             {a.policy_id && <> · policy <span className="mono">{a.policy_id}</span></>}
           </div>
@@ -587,9 +584,108 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
 
 // =============================================================
 // Approval configuration modal - Required/Policy/LLM create + edit.
-// Surfaced per-tool from the Tools page (toolsets.jsx); the global
-// Approvals page no longer carries a "Policies" tab.
+// Opened directly from ApprovalsPage's AP_ConfigHint link (US-011a: the
+// standalone Tools catalog page retired; its own embedded AP_ToolPicker
+// below is the only way left to find a tool to gate).
 // =============================================================
+
+// Searchable tool catalogue browser for the policy form: picking a row
+// fills toolset + tool name AND shows that tool's y/w/r/n capability
+// badges, so an operator gating a call can see up front whether it
+// yields, needs a workspace, is role-gated, or is fire-and-forget --
+// context the old free-text-only fields never surfaced. Reuses
+// GET /tools (same endpoint TS_ToolsTab reads, batch-2 + the
+// GET /toolsets/{id}/tools follow-up both carry the 4 fields there
+// already). The free-text fields below stay -- this is a faster way to
+// fill them, not a replacement for typing a not-yet-indexed id.
+function AP_ToolPicker({ toolsetId, toolName, onPick }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const [q, setQ] = React.useState("");
+  const catalogue = useResource(
+    "approval-policy:tools-catalogue",
+    (signal) => apiFetch("GET", "/tools", null, { signal }),
+    { pollMs: null },
+  );
+  const groups = catalogue.data?.items ?? [];
+  const ql = q.trim().toLowerCase();
+  const rows = React.useMemo(() => {
+    const out = [];
+    for (const g of groups) {
+      if (!g.available) continue;
+      for (const t of g.tools || []) {
+        if (ql && !(
+          t.id.toLowerCase().includes(ql)
+          || g.id.toLowerCase().includes(ql)
+          || (t.description || "").toLowerCase().includes(ql)
+        )) continue;
+        out.push({ toolsetId: g.id, tool: t });
+      }
+    }
+    return out;
+  }, [groups, ql]);
+
+  return (
+    <div className="field">
+      <label className="field-label">
+        browse tool catalogue
+        <span className="hint">pick a tool to fill toolset + tool name below, with its y/w/r/n capabilities</span>
+      </label>
+      <div className="input-icon">
+        <Icon name="search" size={13} className="icon" />
+        <input
+          className="input"
+          placeholder="Filter by tool, toolset, or description…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          data-testid="approval-policy-tool-picker-filter"
+          style={{ width: "100%" }}
+        />
+      </div>
+      <div
+        style={{
+          maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)",
+          borderRadius: 6, marginTop: 6,
+        }}
+        data-testid="approval-policy-tool-picker-results"
+      >
+        {catalogue.loading && rows.length === 0 && (
+          <div className="muted text-sm" style={{ padding: 10 }}>Loading tool catalogue…</div>
+        )}
+        {!catalogue.loading && rows.length === 0 && (
+          <div className="muted text-sm" style={{ padding: 10 }}>No tools match.</div>
+        )}
+        {rows.map((r) => {
+          const rowKey = `${r.toolsetId}__${r.tool.id}`;
+          const selected = r.toolsetId === toolsetId && r.tool.id === toolName;
+          return (
+            <div
+              key={rowKey}
+              data-testid={`approval-policy-tool-picker-row-${rowKey}`}
+              onClick={() => onPick(r.toolsetId, r.tool.id)}
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "6px 10px", cursor: "pointer",
+                background: selected ? "var(--bg-2)" : "transparent",
+                borderBottom: "1px solid var(--bg-1)",
+              }}
+            >
+              <span
+                className="mono"
+                style={{
+                  fontSize: 12, minWidth: 0, flex: 1, overflow: "hidden",
+                  textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}
+              >
+                {r.toolsetId} · {r.tool.id}
+              </span>
+              <CapabilityBadges tool={r.tool} testid={`approval-policy-tool-picker-badges-${rowKey}`} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   // Same modal: create (no existing, or existing with empty id) and
@@ -612,6 +708,17 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   const [providerId, setProviderId] = React.useState(existing?.approval?.provider_id || "");
   const [model, setModel] = React.useState(existing?.approval?.model || "");
   const [prompt, setPrompt] = React.useState(existing?.approval?.prompt || "");
+  // Approver routing (P6): who may decide the calls this policy gates.
+  // anyone (default) | roles | users; the list is comma-separated in the
+  // form and an array on the wire. A policy/llm evaluation may still
+  // override this per call from its verdict.
+  const [apprKind, setApprKind] = React.useState(existing?.approvers?.kind || "anyone");
+  const [apprList, setApprList] = React.useState(() => {
+    const spec = existing?.approvers;
+    if (!spec) return "";
+    const arr = spec.kind === "roles" ? spec.roles : spec.users;
+    return (arr || []).join(", ");
+  });
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   // Provider dropdown source — keyed separately from the page-level
@@ -703,6 +810,15 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
       enabled: isEdit ? !!existing.enabled : true,
       approval,
       ...(timeoutSec ? { timeout_seconds: Number(timeoutSec) } : {}),
+      // PUT-replace semantics: omitting approvers on an "anyone" save
+      // clears any stored routing, which is exactly what the segment
+      // says it does.
+      ...(apprKind !== "anyone" ? {
+        approvers: {
+          kind: apprKind,
+          [apprKind]: apprList.split(",").map((s) => s.trim()).filter(Boolean),
+        },
+      } : {}),
     };
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
@@ -710,10 +826,14 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   const requiredOk = id.trim() && toolsetId.trim() && toolName.trim();
   const policyOk = requiredOk && policyRego.trim().length > 0;
   const llmOk = requiredOk && providerId && model && prompt.trim().length > 0;
-  const canSubmit =
+  // A roles/users routing with an empty list would route to nobody
+  // but admins; make the form say so instead of the server.
+  const approversOk = apprKind === "anyone"
+    || apprList.split(",").some((s) => s.trim());
+  const canSubmit = approversOk && (
     (type === "required" && requiredOk) ||
     (type === "policy" && policyOk) ||
-    (type === "llm" && llmOk);
+    (type === "llm" && llmOk));
 
   // Render the inline error for a field path if present.
   const fieldErr = (loc) => fieldErrors[loc] ? (
@@ -781,6 +901,15 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
         {fieldErr("body.id")}
       </div>
 
+      <AP_ToolPicker
+        toolsetId={toolsetId}
+        toolName={toolName}
+        onPick={(pickedToolsetId, pickedToolName) => {
+          setToolsetId(pickedToolsetId);
+          setToolName(pickedToolName);
+        }}
+      />
+
       <div className="field">
         <label className="field-label">toolset</label>
         <select
@@ -832,6 +961,42 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
         {fieldErr("body.timeout_seconds")}
       </div>
 
+      <div className="field">
+        <label className="field-label">
+          who may decide
+          <span className="hint">admins always may; a policy/LLM verdict can override per call</span>
+        </label>
+        <div className="chip-group">
+          {[
+            { v: "anyone", l: "Anyone", h: "Any non-restricted user" },
+            { v: "roles", l: "Roles", h: "Only the listed roles" },
+            { v: "users", l: "Users", h: "Only the listed usernames" },
+          ].map((o) => (
+            <span
+              key={o.v}
+              className={`chip ${apprKind === o.v ? "active" : ""}`}
+              onClick={() => setApprKind(o.v)}
+              title={o.h}
+              data-testid={`approval-policy-approvers-${o.v}`}
+            >
+              {o.l}
+            </span>
+          ))}
+        </div>
+        {apprKind !== "anyone" && (
+          <input
+            className="input mono"
+            style={{ width: "100%", marginTop: 6 }}
+            value={apprList}
+            onChange={(e) => setApprList(e.target.value)}
+            placeholder={apprKind === "roles" ? "user, admin" : "alice, bob"}
+            data-testid="approval-policy-approvers-list"
+          />
+        )}
+        {fieldErr("body.approvers")}
+        {fieldErr("body.approvers.kind")}
+      </div>
+
       {type === "policy" && (
         <div className="field">
           <label className="field-label">
@@ -858,7 +1023,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
               <div className="field-help muted">Loading providers…</div>
             ) : providerItems.length === 0 ? (
               <div className="field-help warn">
-                No LLM providers configured yet. Create one under <span className="mono">/providers/llm</span>.
+                No LLM providers configured yet. Create one under <span className="mono">/providers?class=llm</span>.
               </div>
             ) : (
               <select
@@ -914,7 +1079,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
 }
 
 // =============================================================
-// ApprovalBanner — embedded in session-detail.jsx + chats.jsx
+// ApprovalBanner - embedded in session-detail.jsx
 // =============================================================
 
 function ApprovalBanner({ data, scope, id, pushToast }) {
@@ -922,7 +1087,7 @@ function ApprovalBanner({ data, scope, id, pushToast }) {
   const [rejecting, setRejecting] = React.useState(false);
   const [reason, setReason] = React.useState("");
 
-  const cacheKey = `tool-approval:${scope === "sessions" ? "session" : "chat"}:${id}`;
+  const cacheKey = `tool-approval:session:${id}`;
   const respond = useMutation(
     (body) => apiFetch(
       "POST",
@@ -934,7 +1099,6 @@ function ApprovalBanner({ data, scope, id, pushToast }) {
         cacheKey,
         scope === "sessions" ? `session-detail:${id}` : null,
         "approvals:parked-sessions",
-        "approvals:parked-chats",
       ].filter(Boolean),
       onSuccess: () => pushToast && pushToast({ kind: "success", title: "Decision sent" }),
       onError: AP_toastErr(pushToast, "Respond failed"),

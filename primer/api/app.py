@@ -56,6 +56,7 @@ for _channel_factory_mod in (
 from primer.model.scheduler import RuntimeMode
 from primer.toolset.misc import build_misc_toolset
 from primer.toolset.system import build_system_toolset
+from primer.toolset.crud import build_crud_toolset
 from primer.toolset.workspace_ext import build_workspace_ext_toolset
 from primer.toolset.web import build_web_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
@@ -252,6 +253,26 @@ def create_test_app(
         )
         app.state.web_fetch_registry = _test_wf_registry
         app.state.web_fetch_service = _test_wf_service
+        from primer.api.registries.speech_registry import (
+            SpeechRegistry,
+            default_stt_factory,
+            default_tts_factory,
+        )
+        from primer.model.provider import (
+            SpeechToTextProvider as _STT,
+            TextToSpeechProvider as _TTS,
+        )
+
+        app.state.stt_registry = SpeechRegistry(
+            storage=storage_provider.get_storage(_STT),
+            factory=default_stt_factory,
+            label="stt",
+        )
+        app.state.tts_registry = SpeechRegistry(
+            storage=storage_provider.get_storage(_TTS),
+            factory=default_tts_factory,
+            label="tts",
+        )
         web_toolset = build_web_toolset(
             web_search_service=_test_ws_service,
             web_fetch_service=_test_wf_service,
@@ -261,6 +282,14 @@ def create_test_app(
     workspace_ext_toolset = build_workspace_ext_toolset(
         storage_provider=storage_provider,
     )
+    # Always-on crud toolset (platform construction). No claim engine or
+    # event bus in the test app, matching how build_workspaces_toolset
+    # degrades here.
+    crud_toolset = build_crud_toolset(
+        storage_provider=storage_provider,
+        claim_engine=None,
+        event_bus=None,
+    )
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
     provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
@@ -268,6 +297,7 @@ def create_test_app(
     provider_registry._workspace_ext_toolset_provider = (  # noqa: SLF001
         workspace_ext_toolset
     )
+    provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
     app.state.workspace_registry = workspace_registry
@@ -276,6 +306,7 @@ def create_test_app(
     app.state.misc_toolset = misc_toolset
     app.state.web_toolset = web_toolset
     app.state.workspace_ext_toolset = workspace_ext_toolset
+    app.state.crud_toolset = crud_toolset
     app.state.semantic_search_registry = _test_ssp_registry
     # Artifact storage registry + reserved default (parity with the lifespan).
     from primer.api.registries.artifact_storage_registry import (
@@ -298,7 +329,6 @@ def create_test_app(
     app.state.seed_artifact_default = _seed_artifact_default
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
-    app.state.search_toolset = None
     # Auth: tests get a fixed test secret so cookies are deterministic
     # across the suite. Real lifespan uses resolve_session_secret().
     from primer.api.config import AppConfig
@@ -317,41 +347,8 @@ def create_test_app(
     from primer.bus.in_memory import InMemoryEventBus
     _test_event_bus = InMemoryEventBus()
     app.state.event_bus = _test_event_bus
-
-    from primer.chat.tick_router import ChatTickRouter as _CTR, Tick as _Tick
-
-    _chat_tick_router = _CTR()
-    app.state.chat_tick_router = _chat_tick_router
-
-    async def _start_chat_tick_forwarder() -> asyncio.Task:
-        """Async helper for the test fixture — create_test_app
-        intentionally skips the lifespan, so the test must call this
-        from within an active event loop to spin the forwarder task."""
-        sub = app.state.event_bus.subscribe()
-
-        async def _loop() -> None:
-            try:
-                async for event in sub:
-                    key = event.event_key
-                    if not key.startswith("chat:") or not key.endswith(":tick"):
-                        continue
-                    cid = key[len("chat:"):-len(":tick")]
-                    if not cid:
-                        continue
-                    seq = event.payload.get("seq") if event.payload else None
-                    if isinstance(seq, int):
-                        _chat_tick_router.publish(cid, _Tick(seq=seq))
-            except asyncio.CancelledError:
-                pass
-            finally:
-                await sub.aclose()
-
-        return asyncio.create_task(_loop(), name="chat-tick-forwarder")
-
-    app.state.start_chat_tick_forwarder = _start_chat_tick_forwarder
-
-    # Optional worker pool for integration tests that need the chat
-    # claim loop (start_chat_worker=True).
+    # Optional worker pool for integration tests that need a live claim
+    # loop (start_chat_worker=True).
     if start_chat_worker:
         from primer.model.scheduler import WorkerConfig as _WorkerConfig
         from primer.worker.pool import WorkerPool as _WorkerPool
@@ -377,7 +374,6 @@ def create_test_app(
             provider_registry=provider_registry,
             semantic_search_registry=_test_ssp_registry,
             event_bus=_test_event_bus,
-            chat_tick_router=_chat_tick_router,
             artifact_storage_registry=app.state.artifact_storage_registry,
             engine=_claim_engine,
         )
@@ -421,7 +417,7 @@ def create_test_app(
     # MCP mount helpers. ASGITransport doesn't drive the lifespan, so
     # we expose explicit start/stop coroutines and let the test
     # fixture call them around the yield. Mirrors the
-    # start_chat_tick_forwarder pattern above.
+    # start_worker_pool pattern above.
     app.state.mcp_session_manager = None
     _mcp_teardown_holder: dict[str, object] = {"fn": None}
 
@@ -446,14 +442,11 @@ def create_test_app(
     app.state.stop_mcp_mount = _stop_mcp
 
     # When start_chat_worker=True, attach a lifespan so SyncTestClient
-    # (which drives the ASGI lifespan) starts the forwarder + worker pool
-    # in the same event loop as the app. This ensures the WS tick
-    # subscription and the worker pool share the same asyncio event loop,
-    # preventing cross-loop asyncio.Queue issues.
+    # (which drives the ASGI lifespan) starts the worker pool in the same
+    # event loop as the app, preventing cross-loop asyncio.Queue issues.
     if start_chat_worker:
         @asynccontextmanager
         async def _test_lifespan(_a: FastAPI) -> AsyncIterator[None]:
-            fwd_task = await _a.state.start_chat_tick_forwarder()
             await _a.state.start_worker_pool()
             try:
                 yield
@@ -461,11 +454,6 @@ def create_test_app(
                 try:
                     await _a.state.stop_worker_pool()
                 except Exception:
-                    pass
-                fwd_task.cancel()
-                try:
-                    await fwd_task
-                except asyncio.CancelledError:
                     pass
 
         app.router.lifespan_context = _test_lifespan  # type: ignore[assignment]

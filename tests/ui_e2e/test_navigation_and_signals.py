@@ -23,6 +23,7 @@ from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-01", status="partial")
 
 
@@ -128,10 +129,7 @@ def test_u0036_toolset_config_tab_deep_link_survives_reload(
         assert r.status_code == 201, f"seed toolset failed: {r.text}"
 
     try:
-        page.goto(
-            f"{console_url}#/toolsets/{toolset_id}?tab=config",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"toolsets/{toolset_id}", tab="config")
         page.locator("h1.page-title").get_by_text(
             toolset_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -154,8 +152,9 @@ def test_u0036_toolset_config_tab_deep_link_survives_reload(
             f"Config tab lost selected state after reload; "
             f"aria-selected={config_tab_after.get_attribute('aria-selected')!r}"
         )
-        assert "tab=config" in page.url, (
-            f"reload dropped ?tab=config query: {page.url}"
+        # The tab travels in the overlay target's section slot now.
+        assert f"overlay=toolsets:config:{toolset_id}" in page.url, (
+            f"reload dropped the config tab: {page.url}"
         )
     finally:
         _cleanup(base_url, [f"/v1/toolsets/{toolset_id}"])
@@ -198,7 +197,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
 ) -> None:
     """U0030 — Re-pointed to the Studio's ``ctrl-end``. This journey seeds
     an AGENT-bound session, which renders through ``SessionAgentPanel``
-    (studio-center.jsx) — the interactive control set is End/Restart
+    (the shell session document) — the interactive control set is End/Restart
     (``ctrl-end``/``ctrl-restart``); ``ctrl-cancel`` only exists on the
     GRAPH run view's ``SessionGraphPanel`` (autonomous sessions). Seed a
     CREATED agent session, open it in the Studio (agent panel), click the
@@ -209,7 +208,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
     * the panel-header status transitions to a terminal value
       (ended / cancelled / failed) within a polling interval,
     * the ``ctrl-end`` control becomes disabled once terminal (per
-      studio-center.jsx ``disabled={!wid || isEnded || endMut.loading}``).
+      the shell session document ``disabled={!wid || isEnded || endMut.loading}``).
 
     Note: the Studio's ctrl-end fires the cancel POST DIRECTLY (no
     confirmation modal — that surface was retired), so the old confirm
@@ -242,43 +241,42 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
             page, console_url, workspace_id, session_id, kind="agent",
         )
 
-        # The ctrl-end control fires the cancel POST directly.
-        cancel_btn = page.locator("[data-testid='ctrl-end']").first
-        cancel_btn.wait_for(state="visible", timeout=10_000)
-        cancel_btn.click()
+        # Re-pointed (flag day, then uiv2 R2): the console's End
+        # affordance is the session row's context-menu verb (POST
+        # .../cancel, fired directly - no confirm); the old panel's
+        # ctrl-end died. R2 moved the row into the workspace tree
+        # (collapsed by default) and the menu testid to the rail prefix.
+        page.get_by_test_id(f"nv-rail-ws:{workspace_id}").click()
+        row = page.locator(
+            f'[data-testid="nv-rail-ws-session:{session_id}"]'
+        ).first
+        row.wait_for(state="visible", timeout=10_000)
+        row.click(button="right")
+        menu = page.get_by_test_id(f"nv-rail-session-menu:{session_id}")
+        menu.wait_for(state="visible", timeout=10_000)
+        menu.get_by_text("End", exact=True).click()
 
-        # Toast appears.
-        page.get_by_text("Session ended", exact=False).first.wait_for(
-            state="visible", timeout=10_000,
+        # The doc reflects the terminal state: the transcript folds with
+        # "session ended [· reason]" within the polling cadence.
+        page.get_by_text("session ended", exact=False).first.wait_for(
+            state="visible", timeout=15_000,
         )
 
-        # Status transitions to a terminal value within one polling
-        # interval (2s) — budget 15s to absorb React batching + worker.
-        terminal_words = ("ended", "cancelled", "failed", "completed")
-        deadline = time.monotonic() + 15.0
-        terminal_seen = False
+        # Defence: a terminal session's context menu no longer offers
+        # the live-session verbs (Interrupt / Park / End).
+        deadline = time.monotonic() + 10.0
+        gone = False
         while time.monotonic() < deadline:
-            body_text = (page.locator("body").text_content() or "").lower()
-            if any(w in body_text for w in terminal_words):
-                terminal_seen = True
+            row.click(button="right")
+            menu = page.get_by_test_id(f"nv-rail-session-menu:{session_id}")
+            menu.wait_for(state="visible", timeout=5_000)
+            gone = menu.get_by_text("End", exact=True).count() == 0
+            page.keyboard.press("Escape")
+            if gone:
                 break
-            page.wait_for_timeout(500)
-        assert terminal_seen, (
-            "session status never transitioned to a terminal value "
-            "within 15s after cancel"
-        )
-
-        # Defence: the ctrl-end control is now disabled (isEnded=true).
-        cancel_btn_after = page.locator("[data-testid='ctrl-end']").first
-        deadline = time.monotonic() + 5.0
-        disabled = False
-        while time.monotonic() < deadline:
-            disabled = cancel_btn_after.is_disabled()
-            if disabled:
-                break
-            page.wait_for_timeout(250)
-        assert disabled, (
-            "ctrl-end did not become disabled after session "
+            page.wait_for_timeout(1_000)
+        assert gone, (
+            "the context menu still offers End after the session "
             "transitioned to terminal"
         )
     finally:

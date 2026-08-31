@@ -39,7 +39,7 @@ jobs:
       - name: Sync
         run: |
           uv sync --all-extras --dev --group docs
-          uv pip install --no-deps ./primectl ./runtime
+          uv pip install --no-deps ./runtime
       - name: Lint (ruff)
         run: uv run ruff check .
       - name: Docs hygiene
@@ -153,10 +153,9 @@ jobs:
         with:
           ref: ${{ needs.release.outputs.tag }}
       - uses: astral-sh/setup-uv@v7
-      - name: Build all three packages
+      - name: Build both packages
         run: |
           uv build --wheel --sdist -o dist_primer .
-          uv build --wheel --sdist -o dist_primectl --package primectl
           (cd runtime && uv build --wheel --sdist -o ../dist_runtime .)
       - name: Upload primer
         env:
@@ -168,11 +167,6 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: uv run --with twine twine upload --skip-existing dist_runtime/*
-      - name: Upload primectl
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: uv run --with twine twine upload --skip-existing dist_primectl/*
 
   publish-images:
     needs: release

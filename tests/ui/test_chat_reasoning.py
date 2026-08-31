@@ -12,8 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-TRANSCRIPT = ROOT / "ui" / "components" / "chat" / "transcript.jsx"
-HELPERS = ROOT / "ui" / "components" / "chat" / "use-transcript.js"
+TRANSCRIPT = ROOT / "ui" / "components" / "shared" / "transcript.jsx"
+HELPERS = ROOT / "ui" / "components" / "shared" / "use-transcript.js"
 
 
 class TestCoalescing:

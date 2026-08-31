@@ -25,6 +25,11 @@ class _FakeStorage:
 
 
 class _FakeSP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self, row):
         self._s = _FakeStorage(row)
 
@@ -58,12 +63,27 @@ class _FakeWorkspace:
         self.message_lines.append(line)
 
 
+class _FakeWorkspaceRow:
+    """Minimal stand-in for the persisted Workspace row's phase field."""
+
+    def __init__(self, phase):
+        self.phase = phase
+
+
 class _FakeRegistry:
-    def __init__(self, ws):
+    def __init__(self, ws, ws_row=None):
         self._ws = ws
+        # None mimics "workspace row no longer exists" - get_workspace_row
+        # raises NotFoundError, matching the real WorkspaceRegistry.
+        self._ws_row = ws_row
 
     async def get_workspace(self, wid):
         return self._ws
+
+    async def get_workspace_row(self, wid):
+        if self._ws_row is None:
+            raise NotFoundError(f"workspace {wid!r} does not exist")
+        return self._ws_row
 
 
 class _FakeScheduler:
@@ -93,7 +113,7 @@ def _row(status, autonomous=None):
     )
 
 
-def _deps(row):
+def _deps(row, ws_row=None):
     slot = _FakeSlot()
     sched = _FakeScheduler()
     eng = _FakeEngine()
@@ -101,7 +121,7 @@ def _deps(row):
         storage_provider=_FakeSP(row),
         scheduler=sched,
         claim_engine=eng,
-        workspace_registry=_FakeRegistry(_FakeWorkspace(slot)),
+        workspace_registry=_FakeRegistry(_FakeWorkspace(slot), ws_row=ws_row),
     )
     return deps, slot, sched, eng
 
@@ -111,8 +131,10 @@ async def test_created_session_is_invoked_and_claimable():
     row = _row(SessionStatus.CREATED)
     deps, slot, sched, eng = _deps(row)
     out = await wake_session(
-        workspace_id="ws-1", session_id="sess-1",
-        instruction="hello", deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="hello",
+        deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
     assert out.turn_status == "claimable"
@@ -126,8 +148,10 @@ async def test_running_session_is_steered_without_status_change():
     row = _row(SessionStatus.RUNNING)
     deps, slot, sched, eng = _deps(row)
     out = await wake_session(
-        workspace_id="ws-1", session_id="sess-1",
-        instruction="steer me", deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="steer me",
+        deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
     assert out.turn_status == "claimable"
@@ -141,8 +165,10 @@ async def test_paused_session_resumes_and_clears_pause():
     row.pause_requested = True
     deps, slot, sched, eng = _deps(row)
     out = await wake_session(
-        workspace_id="ws-1", session_id="sess-1",
-        instruction=None, deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction=None,
+        deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
     assert out.pause_requested is False
@@ -173,8 +199,10 @@ async def test_ended_restartable_session_reopens_and_runs():
     ws = deps.workspace_registry._ws
 
     out = await wake_session(
-        workspace_id="ws-1", session_id="sess-1",
-        instruction="again", deps=deps,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="again",
+        deps=deps,
     )
 
     assert out.status == SessionStatus.RUNNING
@@ -205,10 +233,34 @@ async def test_ended_non_restartable_raises_conflict():
     deps, slot, *_ = _deps(row)
     with pytest.raises(ConflictError):
         await wake_session(
-            workspace_id="ws-1", session_id="sess-1",
-            instruction="x", deps=deps,
+            workspace_id="ws-1",
+            session_id="sess-1",
+            instruction="x",
+            deps=deps,
         )
     assert slot.reopened is False
+
+
+@pytest.mark.asyncio
+async def test_ended_workspace_lost_reopens_once_workspace_healed():
+    """01a0533c (live SEV): unlike force_deleted, workspace_lost is a
+    probe-blip artifact, not a deliberate end - a new message reaches a
+    session that was killed by a transient rollout hiccup once the
+    workspace is running again, through wake_session's own public ENDED
+    branch (not just the lower-level _reopen_ended_locked/reset_session
+    covered in tests/session/test_reset.py)."""
+    row = _row(SessionStatus.ENDED)
+    row.ended_reason = "workspace_lost"
+    deps, slot, *_ = _deps(row, ws_row=_FakeWorkspaceRow(phase="running"))
+    out = await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="x",
+        deps=deps,
+    )
+    assert out.status == SessionStatus.RUNNING
+    assert out.ended_reason is None
+    assert slot.reopened is True
 
 
 @pytest.mark.asyncio
@@ -216,6 +268,8 @@ async def test_missing_session_raises_not_found():
     deps, *_ = _deps(None)
     with pytest.raises(NotFoundError):
         await wake_session(
-            workspace_id="ws-1", session_id="sess-1",
-            instruction="x", deps=deps,
+            workspace_id="ws-1",
+            session_id="sess-1",
+            instruction="x",
+            deps=deps,
         )

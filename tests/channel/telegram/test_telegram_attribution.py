@@ -65,8 +65,8 @@ async def test_no_attribution_when_fields_absent():
 
 
 @pytest.mark.asyncio
-async def test_post_chat_message_no_attribution():
+async def test_post_thread_message_no_attribution():
     a = _adapter()
-    await a.post_chat_message("hi")
+    await a.post_thread_message("hi")
     text = a._app.bot.send_calls[-1]["text"]
     assert "Workspace:" not in text

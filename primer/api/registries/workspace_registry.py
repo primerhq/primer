@@ -34,6 +34,7 @@ from primer.workspace.resolvers import (
     make_document_resolver,
     make_secret_resolver,
 )
+from primer.workspace.session_reconcile import reconcile_sessions_to_workspace_lost
 
 
 if TYPE_CHECKING:
@@ -194,7 +195,16 @@ class WorkspaceRegistry:
         )
 
     async def destroy(self, workspace_id: str) -> None:
-        """Destroy the live workspace AND drop the persisted row."""
+        """Destroy the live workspace AND drop the persisted row.
+
+        Reconciles open sessions to ENDED/``workspace_lost`` BEFORE the
+        row is deleted (real bug fixed here: the row used to be
+        hard-deleted first, but the probe's own ``workspace_lost``
+        reconciliation only runs as a side effect of observing a row
+        transition to ``phase == "failed"`` -- with the row already
+        gone, that transition can never be observed, so sessions in a
+        destroyed workspace were silently orphaned instead of ending).
+        """
         row = await self.get_workspace_row(workspace_id)
         backend = await self.get_backend(row.provider_id)
         try:
@@ -205,6 +215,7 @@ class WorkspaceRegistry:
             # collision.
             pass
 
+        await reconcile_sessions_to_workspace_lost(self._sp, workspace_id)
         await self._sp.get_storage(WorkspaceRow).delete(workspace_id)
 
 

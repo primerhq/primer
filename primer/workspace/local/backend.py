@@ -109,7 +109,11 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         # re-attach after cache eviction looks up the wrong id and 404s.
         workspace_id = workspace_id or _generate_workspace_id()
         ws_root = self._root / workspace_id
-        await asyncio.to_thread(ws_root.mkdir, parents=True, exist_ok=False)
+        # exist_ok: a directory left by an earlier install used to crash
+        # the seed on EVERY boot of a fresh database (FileExistsError out
+        # of ensure_default_workspace). The durable row is authoritative
+        # and the files are materialised below, so adopt the directory.
+        await asyncio.to_thread(ws_root.mkdir, parents=True, exist_ok=True)
 
         try:
             # Resolve every FileSource variant (inline/url/document/secret)

@@ -1,0 +1,7 @@
+{
+  "workers": [
+    {"worker_id": "worker-a1", "status": "busy", "tasks_running": 1, "turns_total": 412, "started_at": "2026-08-16T06:00:00+00:00"},
+    {"worker_id": "worker-b2", "status": "idle", "tasks_running": 0, "turns_total": 118, "started_at": "2026-08-16T06:00:00+00:00"}
+  ],
+  "sessions_active": 2
+}

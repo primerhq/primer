@@ -29,6 +29,14 @@ class ContentListEntry(BaseModel):
     size: int  # len(content) in characters; never loads the body
 
 
+class FulltextHit(BaseModel):
+    """One full-text match: where, a fragment of why, and how well."""
+
+    path: str
+    excerpt: str
+    score: float
+
+
 class DocumentContentStore(ABC):
     """Body store keyed by stable document id, addressed by (collection_id, path)."""
 
@@ -64,6 +72,18 @@ class DocumentContentStore(ABC):
     ) -> None:
         """Insert or replace the body for document_id. Raises ConflictError if
         (collection_id, path) is already taken by a DIFFERENT document_id."""
+
+    @abstractmethod
+    async def search_fulltext(
+        self, collection_id: str, query: str, *,
+        path_prefix: str | None = None, limit: int = 20,
+        conn: Any | None = None,
+    ) -> list[FulltextHit]:
+        """Ranked keyword search over the bodies in one collection.
+
+        ``query`` is natural language, never engine syntax: implementations
+        must neutralise operator characters so user text cannot raise.
+        Results are ordered best-first."""
 
     @abstractmethod
     async def delete(self, document_id: str, *, conn: Any | None = None) -> None:

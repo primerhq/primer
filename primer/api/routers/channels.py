@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Request
 
 from primer.api.deps import get_storage_provider
-from primer.api.routers._crud import make_crud_router
+from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.api.routers._references import ReferenceCheck
 from primer.model.channel import (
     Channel,
@@ -127,6 +127,7 @@ def make_channel_provider_router() -> APIRouter:
         storage_dep=_get_channel_provider_storage,
         plural="channel_providers",
         tag="channel_providers",
+        on_pre_update=preserve_masked_secrets_on_update,
         on_update=_invalidate_provider_channels,
         on_delete=_invalidate_provider_channels,
         references=[

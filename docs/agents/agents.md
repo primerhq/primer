@@ -1,8 +1,8 @@
 ---
 slug: agents
 title: Agents - definitions and runtime
-summary: How to define and invoke agents - the Agent entity, prompt structure, tool sets, response formats, auto-compaction, and the differences between chat-mode and session-mode execution.
-related: [graphs, chats, sessions, workspaces, tool-approval, yielding]
+summary: How to define and invoke agents - the Agent entity, prompt structure, tool sets, response formats, auto-compaction, and how a session or a graph node wraps the turn loop.
+related: [graphs, sessions, workspaces, tool-approval, yielding]
 mcp_tools:
   - system::list_agents
   - system::get_agent
@@ -22,20 +22,19 @@ agent is a stored row describing: a system prompt (one or more
 string segments), the LLM provider/model that runs it, the scoped
 tools it has access to, an optional sampling temperature, and a
 max-tool-turns cap. Agents don't
-run by themselves - they're invoked inside a context (a chat, a
-session, a graph node, a fresh-session subscription) and that
-context owns the LLM loop and history persistence.
+run by themselves - they're invoked inside a context (a session, a
+graph node, a fresh-session subscription) and that context owns the
+LLM loop and history persistence.
 
-There are two contexts in v1: chats (multi-turn human-in-the-loop)
-and sessions (long-running headless work). The underlying executor
-machinery is shared - both run the same `AgentExecutor` style turn
-loop with tool dispatch, auto-compaction, and stream fan-out - but
-the wrapping differs (chat persists every message as a row in
-ChatMessage; session commits LLM history to the workspace's `.state`
-repo as git commits).
+A session is the context. It covers both the human-in-the-loop case
+and long-running headless work, because those differ in whether
+anyone is watching rather than in machinery: the same `AgentExecutor`
+style turn loop with tool dispatch, auto-compaction and stream
+fan-out, committing LLM history to the workspace's `.state` repo as
+git commits.
 
-A turn is: the agent receives a user-ish input (a user_message in
-chat, an instruction in a session start, a graph context payload
+A turn is: the agent receives a user-ish input (a steer, an
+instruction in a session start, a graph context payload
 in a graph node), the LLM generates tokens, the executor parses
 tool calls out of the stream and dispatches them, tool results
 land back in the LLM history, the LLM continues until it stops
@@ -86,11 +85,10 @@ Structured output is configured on a **graph node** (its
 
 The executor responsibilities, per turn:
 
-1. Reconstruct the message history (chat: from rows + compaction
-   markers; session: from `.state` git commits).
+1. Reconstruct the message history from `.state` git commits,
+   folding compaction and rewind markers.
 2. Call the LLM with the history + tool definitions.
-3. Stream tokens; persist `assistant_token` rows (chat) or commit
-   to `.state` (session).
+3. Stream tokens; commit to `.state`.
 4. When a tool_use stop arrives: dispatch each tool. For each
    call: validate args, check tool approval, dispatch handler, get
    result. Persist `tool_call` + `tool_result` rows.
@@ -98,7 +96,7 @@ The executor responsibilities, per turn:
 6. When a non-tool stop arrives: persist the assistant message, end
    the turn.
 
-Auto-compaction (see [chats](chats.md) for chat-specific details):
+Auto-compaction:
 before each LLM call, the executor counts tokens. If over 90% of
 the model's context window, run a compaction strategy - typically
 summarise the head, keep the tail. The resulting summary replaces
@@ -115,7 +113,7 @@ replays the complete messages, not the tokens.
 
 An Agent row has no lifecycle of its own - it's a CRUD entity.
 **Agent invocations** have lifecycle, but that lifecycle is owned
-by the wrapping context (chat or session). See [chats](chats.md)
+by the wrapping session. See [sessions](sessions.md)
 and [sessions](sessions.md).
 
 What's worth knowing:
@@ -125,8 +123,8 @@ What's worth knowing:
   edit. This is sometimes the feature (hot-config) and sometimes
   the bug (tool disappeared).
 - Structured output is a graph-node feature: a graph node with an
-  `output_schema` populates `NodeOutput.parsed`; chat and session
-  contexts return only the text.
+  `output_schema` populates `NodeOutput.parsed`; a session returns
+  only the text.
 - Agents can call other agents. Either statically (a graph node
   invokes another agent) or dynamically via the system toolset
   if the operator allowlists it.
@@ -149,7 +147,7 @@ Agents are managed via standard CRUD plus the semantic search tool.
   verbatim. The id is immutable after creation.
 - `system::update_agent` - partial update. Editing a harness-
   managed agent (`harness_id` set) returns 409.
-- `system::delete_agent` - cascade-blocked if any chat references
+- `system::delete_agent` - cascade-blocked if any session is bound to
   the agent.
 - `system::find_agents` - predicate query.
 
@@ -245,8 +243,8 @@ agent depending on what's installed.
 
 Read the description + system_prompt to confirm fit.
 
-3. Use it - either spin up a session or fire a chat or instantiate
-   a graph that uses it as a node.
+3. Use it - either spin up a session or instantiate a graph that uses
+   it as a node.
 
 ## Gotchas
 
@@ -269,8 +267,8 @@ Read the description + system_prompt to confirm fit.
   `harness::harness__sync` after upstream changes, not
   `system::update_agent`.
 - **Structured output lives on graph nodes, not agents.** A graph
-  node's `output_schema` populates `NodeOutput.parsed`; chat and
-  session contexts return text only.
+  node's `output_schema` populates `NodeOutput.parsed`; a session
+  returns text only.
 - **`max_tool_turns` is a safety cap, not a quality control.** It
   caps tool-call rounds within a turn to stop runaways. Setting it
   too low causes legitimate multi-step work to fail; too high lets
@@ -285,7 +283,6 @@ Read the description + system_prompt to confirm fit.
 ## Related
 
 - [graphs](graphs.md) - graphs orchestrate multiple agents.
-- [chats](chats.md) - the multi-turn human-in-the-loop wrapper.
 - [sessions](sessions.md) - the headless wrapper.
 - [workspaces](workspaces.md) - what sessions run inside.
 - [tool-approval](tool-approval.md) - gating individual tool calls.

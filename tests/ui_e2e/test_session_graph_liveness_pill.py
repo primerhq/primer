@@ -132,11 +132,23 @@ def test_graph_session_liveness_pill_replaces_executor_missing_stub(
         # The hardcoded stub must be gone everywhere in the Studio.
         expect(page.get_by_text("executor missing")).to_have_count(0)
 
-        # The graph panel header shows the derived StatusPill; a CREATED
-        # session reads "created" (StatusPill labels — shared.jsx).
-        header = page.locator('[data-testid="panel-graph-header"]')
-        expect(header.locator(".pill").filter(has_text="created").first).to_be_visible(
-            timeout=10_000,
-        )
+        # REWRITE (uiv2 R2): the workspace tree row no longer carries a
+        # per-row status chip (nv-rail.jsx signals only attention/running
+        # via dots, by design - notes 2.1/2.2; legible lifecycle status
+        # moved to the session doc, same disposition as the BDD suite's
+        # "bands order by consequence" migration). The invariant this
+        # test exists for - the hardcoded stub is gone, and a graph
+        # session renders through the SAME uniform document an agent
+        # session does - is now pinned two ways: the tree row exists at
+        # all (proving nothing hides/stubs the session), and the doc's
+        # title + binding chip render (proving the uniform-document
+        # claim, not a graph-specific stub).
+        page.get_by_test_id(f"nv-rail-ws:{wid}").click()
+        row = page.get_by_test_id(f"nv-rail-ws-session:{sid}")
+        expect(row).to_be_visible(timeout=10_000)
+        expect(page.get_by_test_id("nv-session-title")).to_be_visible(
+            timeout=10_000)
+        expect(page.get_by_test_id("nv-binding-chip")).to_be_visible(
+            timeout=10_000)
     finally:
         _cleanup(base_url, cleanup)

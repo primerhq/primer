@@ -75,8 +75,8 @@ async def test_no_attribution_when_fields_absent():
 
 
 @pytest.mark.asyncio
-async def test_post_chat_message_no_attribution():
-    """Chat relay (post_chat_message) must not include attribution."""
+async def test_post_thread_message_no_attribution():
+    """Chat relay (post_thread_message) must not include attribution."""
     thread = _FakeThread()
     a = DiscordChannelAdapter(
         provider=SimpleNamespace(id="cp"),
@@ -91,6 +91,6 @@ async def test_post_chat_message_no_attribution():
 
     a._resolve_chat_thread = _resolve  # type: ignore[assignment]
 
-    await a.post_chat_message("hi")
+    await a.post_thread_message("hi")
     assert thread.sent == [{"content": "hi"}]
     assert "Workspace:" not in thread.sent[0]["content"]

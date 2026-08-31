@@ -9,14 +9,17 @@ specialist answering independently from the same KB.
 Recipe: primerhq.github.io/docs_source/cookbook/support-desk.md
 
 NOT automated here (human-driven, verified MANUALLY, not CI-automatable): the
-LIVE channel chat-inbound path -- a user posting in a Slack/Discord/Telegram
-thread, the channel opening a chat bound to the front-line agent, and the
-in-channel ``/new`` / ``/agent`` / ``/switch`` / ``/list`` commands + the
-``POST /v1/chats/{id}/agent`` handoff. Chats are channel-driven (there is no
-"post a message" REST endpoint), so the inbound turn cannot be synthesised in a
-hermetic test. The recipe's live Discord round-trip is the manual coverage for
-that surface. This module therefore exercises the KB-grounding and the
-independent-specialist behaviour that the chat surface sits on top of.
+LIVE channel-inbound path -- a user posting in a Slack/Discord/Telegram thread,
+the channel trigger mapping that thread to a session bound to the front-line
+agent, and the binding switch that hands the workstream to the specialist. That
+path needs a real platform thread, so the inbound turn cannot be synthesised in
+a hermetic test; the recipe's live Discord round-trip is the manual coverage for
+it. This module exercises the KB-grounding and the independent-specialist
+behaviour that the channel transport sits on top of.
+
+This module survived the removal of the chat surface unchanged in substance: it
+always drove SESSIONS, never chats, and only its prose described the transport
+that went away.
 
 Asserts (the recipe's verified outcome, minus the channel transport):
   * the front-line agent searches the KB and answers grounded on the
@@ -40,7 +43,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
@@ -173,8 +176,8 @@ async def _run_kb_agent(
         authed_client, workspace_id=wid, agent_id=agent["agent_id"],
         instructions=query,
     )
-    final = await wait_terminal(authed_client, run, timeout_s=120)
-    assert final.get("status") == "ended", final
+    final = await wait_completed(authed_client, run, timeout_s=120)
+    assert final.get("session_state") == "parked", final
     msgs_file = tmp_path / wid / ".state" / "sessions" / run / "messages.jsonl"
     assert msgs_file.exists(), f"session messages.jsonl missing at {msgs_file}"
     return msgs_file.read_text(encoding="utf-8")
@@ -190,10 +193,16 @@ async def _seed_kb(authed_client, sfx) -> tuple[str, str, str]:
     r = await authed_client.post("/v1/collections", json={
         "id": cid,
         "description": "Support knowledge base.",
-        "embedder": {"provider_id": eid, "model": cfg["model"]},
-        "search_provider_id": ssp_id,
     })
     assert r.status_code in (200, 201), r.text
+    # Search on BEFORE the docs land, so each one indexes as it is
+    # written. S2 moved this binding off the create body, where it was
+    # being dropped, leaving the KB grep-only.
+    r = await authed_client.put(f"/v1/collections/{cid}/search", json={
+        "embedder": {"provider_id": eid, "model": cfg["model"]},
+        "vector_store_provider_id": ssp_id,
+    })
+    assert r.status_code in (200, 201, 202), r.text
     for path, content in _DOCS.items():
         r = await authed_client.put(
             f"/v1/collections/{cid}/documents",
@@ -210,9 +219,9 @@ async def test_kb_qa_agent_answers_grounded(
 ):
     """Front-line support agent: search the KB, answer grounded, cite source.
 
-    This is the front-line leg the channel chat would drive in production. The
-    channel inbound transport itself (chat thread, /agent switching) is
-    human-verified and not automated here (see module docstring)."""
+    This is the front-line leg a channel trigger would drive in production.
+    The inbound transport itself (the platform thread and the binding switch)
+    is human-verified and not automated here (see module docstring)."""
     registry, base_url = mock_llm
     sfx = unique_suffix
     cleanup: list[str] = []
@@ -260,10 +269,10 @@ async def test_specialist_agent_answers_independently(
     """Escalation leg: a billing specialist independently searches the SAME KB
     and answers from the billing doc, citing it.
 
-    The recipe's handoff is "switch the chat's agent" -- the message history is
-    preserved and the new agent answers afresh. The chat-switch transport is
-    channel-driven (manual), but the specialist's KB-grounded answer (the
-    behaviour that makes the handoff useful) is exercised here over the same
+    The recipe's handoff is a binding switch: the session keeps its history
+    and the newly bound agent answers afresh. The switch itself is exercised
+    by the session-model suite; what matters here is the behaviour that makes
+    the handoff useful, the specialist's own KB-grounded answer over the same
     knowledge base."""
     registry, base_url = mock_llm
     sfx = unique_suffix

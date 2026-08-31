@@ -10,6 +10,7 @@ Covers:
 """
 
 from __future__ import annotations
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 def test_u0014_mcp_stdio_command_not_in_allowlist_surfaces_warning(
@@ -27,7 +28,7 @@ def test_u0014_mcp_stdio_command_not_in_allowlist_surfaces_warning(
     command is typed, deferring the actual rejection to first
     session-open. UI spec §5 documents this surface.
     """
-    page.goto(console_url + "#/toolsets", wait_until="domcontentloaded")
+    open_legacy_route(page, console_url, "toolsets")
     page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
 
     page.get_by_role("button", name="New toolset").first.click()

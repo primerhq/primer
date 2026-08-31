@@ -40,6 +40,42 @@ async def test_ssp_crud_round_trip_redacts_secrets(client):
 
 
 @pytest.mark.asyncio
+async def test_ssp_pgvectorscale_create_with_core_fields_only_round_trips(client):
+    """Platform wave P3 follow-up: a pgvectorscale create submitting
+    only the 5 core connection fields (exactly what GET /ssp/_types'
+    minimal form renders per platform wave P3) must succeed and come
+    back typed pgvectorscale, not silently coerced to pgvector by the
+    union's smart-resolution (which used to 422 this exact request)."""
+    body = {
+        "id": "ssp-pgvs-core",
+        "provider": "pgvectorscale",
+        "config": {
+            "hostname": "localhost",
+            "port": 5432,
+            "database": "primer",
+            "username": "primer",
+            "password": "primer",
+        },
+    }
+    r = await client.post("/v1/ssp", json=body)
+    assert r.status_code == 201, r.text
+    try:
+        created = r.json()
+        assert created["provider"] == "pgvectorscale"
+        # A pgvectorscale-only field, absent on PgVectorConfig - proof
+        # this round-tripped as the scale variant, not a lucky partial
+        # match.
+        assert created["config"]["enable_diskann"] is False
+
+        fetched = await client.get("/v1/ssp/ssp-pgvs-core")
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["provider"] == "pgvectorscale"
+        assert fetched.json()["config"]["enable_diskann"] is False
+    finally:
+        await client.delete("/v1/ssp/ssp-pgvs-core")
+
+
+@pytest.mark.asyncio
 async def test_ssp_list_envelope_shape(client):
     r = await client.get("/v1/ssp?length=5")
     assert r.status_code == 200, r.text

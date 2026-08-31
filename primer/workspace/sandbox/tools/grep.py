@@ -87,6 +87,8 @@ class SandboxGrep(WorkspaceTool):
             await self._collect_files(target_abs, args.glob, files)
 
         out_lines: list[str] = []
+        match_count = 0
+        file_count = 0
         for path_abs in files:
             body = await self._sandbox.read_file(path_abs)
             if b"\x00" in body[:_BINARY_SNIFF_BYTES]:
@@ -98,6 +100,8 @@ class SandboxGrep(WorkspaceTool):
                 matches = list(regex.finditer(text))
                 if not matches:
                     continue
+                match_count += len(matches)
+                file_count += 1
                 if args.output_mode == "files_with_matches":
                     out_lines.append(rel)
                 elif args.output_mode == "count":
@@ -114,6 +118,8 @@ class SandboxGrep(WorkspaceTool):
                     line_hits.append((lineno, line))
             if not line_hits:
                 continue
+            match_count += len(line_hits)
+            file_count += 1
             if args.output_mode == "files_with_matches":
                 out_lines.append(rel)
             elif args.output_mode == "count":
@@ -134,7 +140,19 @@ class SandboxGrep(WorkspaceTool):
         if args.head_limit is not None and len(out_lines) > args.head_limit:
             out_lines = out_lines[:args.head_limit]
             truncated = True
-        return ToolResult(output="\n".join(out_lines), truncated=truncated)
+        # UX reconcile wave 5: same match_count/file_count/truncated
+        # metadata as the local backend's grep.py, so a "searched N
+        # files" chip reads identically regardless of which workspace
+        # backend ran the call.
+        return ToolResult(
+            output="\n".join(out_lines),
+            truncated=truncated,
+            metadata={
+                "match_count": match_count,
+                "file_count": file_count,
+                "truncated": truncated,
+            },
+        )
 
     async def _collect_files(
         self,

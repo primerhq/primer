@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.model.trigger import (
-    ChatMessageSubConfig,
+    SessionAppendSubConfig,
     DelayedTriggerConfig,
     Subscription,
     Trigger,
@@ -50,12 +50,16 @@ async def test_fire_skips_disabled_trigger(
 async def test_fire_dispatches_each_enabled_subscription(
     fake_storage_provider, fake_claim_engine, fake_scheduler, seeded_agent,
 ):
-    """Happy path: enabled chat_message sub dispatches and stamps last_fired_at."""
-    from primer.model.chats import Chat
+    """Happy path: an enabled sub dispatches and stamps last_fired_at."""
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
 
     triggers = fake_storage_provider.get_storage(Trigger)
     subs = fake_storage_provider.get_storage(Subscription)
-    chats = fake_storage_provider.get_storage(Chat)
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
 
     t = Trigger(
         id="tr-1", slug="tr-x", name="x", description=None,
@@ -65,15 +69,16 @@ async def test_fire_dispatches_each_enabled_subscription(
         created_at=_now(),
     )
     await triggers.create(t)
-    chat = Chat(
-        id="cn-1", agent_id=seeded_agent.id, last_seq=0,
-        status="active", turn_status="idle",
+    session = WorkspaceSession(
+        id="cn-1", workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id=seeded_agent.id),
+        status=SessionStatus.RUNNING, turn_status="running",
         created_at=_now(),
     )
-    await chats.create(chat)
+    await sessions.create(session)
     sub = Subscription(
         id="sb-1", trigger_id="tr-1",
-        config=ChatMessageSubConfig(chat_id="cn-1"),
+        config=SessionAppendSubConfig(session_id="cn-1"),
         payload_template="hello {{ fired_at }}",
         enabled=True,
         created_at=_now(),
@@ -84,6 +89,9 @@ async def test_fire_dispatches_each_enabled_subscription(
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
+        # session_append refuses without one; the queue path (the session
+        # is mid-turn) never dereferences it.
+        workspace_registry=object(),
     )
     res = await fire_trigger(trigger_id="tr-1", scheduled_for=None, deps=deps)
     assert res.skipped is False
@@ -105,10 +113,10 @@ async def test_fire_isolates_per_sub_failures(
 ):
     """A failing sub records ok=False without blocking sibling subs.
 
-    The chat_message dispatcher returns ``ok=False,
-    error_code='chat_not_found'`` when the chat row is missing; we
-    assert the orchestrator surfaces that envelope and writes the
-    failure into ``last_fire_error``.
+    The session_append dispatcher returns ``ok=False,
+    error_code='dispatch_failed'`` when the fire path threaded no
+    workspace registry; we assert the orchestrator surfaces that
+    envelope and writes the failure into ``last_fire_error``.
     """
     triggers = fake_storage_provider.get_storage(Trigger)
     subs = fake_storage_provider.get_storage(Subscription)
@@ -123,7 +131,7 @@ async def test_fire_isolates_per_sub_failures(
     await triggers.create(t)
     sub_bad = Subscription(
         id="sb-bad", trigger_id="tr-1",
-        config=ChatMessageSubConfig(chat_id="cn-missing"),
+        config=SessionAppendSubConfig(session_id="cn-missing"),
         enabled=True,
         created_at=_now(),
     )
@@ -138,11 +146,11 @@ async def test_fire_isolates_per_sub_failures(
     assert res.skipped is False
     assert len(res.results) == 1
     assert res.results[0]["ok"] is False
-    assert res.results[0]["error_code"] == "chat_not_found"
+    assert res.results[0]["error_code"] == "dispatch_failed"
 
     # last_fire_error is a JSON blob carrying the first failure shape.
     updated = await triggers.get("tr-1")
     assert updated.last_fire_error is not None
     blob = json.loads(updated.last_fire_error)
-    assert blob["code"] == "chat_not_found"
+    assert blob["code"] == "dispatch_failed"
     assert blob["subscription_id"] == "sb-bad"

@@ -1,4 +1,4 @@
-"""Session REST surface — nested create + cancel + top-level routes."""
+"""Session REST surface - nested create + cancel + top-level routes."""
 
 from __future__ import annotations
 
@@ -27,17 +27,21 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.session.timeline import build_turn_timeline
 from primer.model.except_ import (
     ConflictError,
     NotFoundError,
 )
+from primer.session.default_binding import resolve_initial_binding
 from primer.model.workspace_session import (
+    PendingSessionMessage,
     WorkspaceSession,
     SessionBinding,
     SessionStatus,
 )
 from primer.model.storage import (
     FieldRef,
+    OffsetPage,
     Op,
     OrderBy,
     PageRequest,
@@ -62,7 +66,15 @@ class SessionCreateBody(BaseModel):
     the row to ``RUNNING`` and enqueues with the scheduler in one call.
     """
 
-    binding: SessionBinding
+    binding: SessionBinding | None = Field(
+        default=None,
+        description=(
+            "Agent or graph this session runs. Omit it to use the system "
+            "default agent, which is what lets a caller open a session "
+            "without choosing. With no default configured, omitting it "
+            "is an error rather than a guess."
+        ),
+    )
     name: str | None = Field(
         default=None,
         description=(
@@ -140,7 +152,7 @@ async def create_session(
        row and the workspace's ``.state/sessions/<sid>/`` directory
        share the same id (spec §11.4 step 5). Agent bindings get a
        slot keyed by the resolved agent. Graph bindings get a *holder*
-       slot whose synthetic agent_id is ``graph:<graph_id>`` — the
+       slot whose synthetic agent_id is ``graph:<graph_id>`` - the
        graph executor (primer/worker/pool.py) looks the holder up via
        :meth:`Workspace.get_session` and composes the workspace's
        tools into every per-node ``ToolExecutionManager``. Without the
@@ -172,9 +184,13 @@ async def create_session(
         if actor is not None
         else PrincipalRef.system()
     )
+    # Explicit wins; the default is a fallback, never an override.
+    binding = await resolve_initial_binding(
+        requested=body.binding, storage_provider=storage_provider,
+    )
     return await start_workspace_session(
         workspace_id=workspace_id,
-        binding=body.binding,
+        binding=binding,
         initial_instructions=body.initial_instructions,
         graph_input=body.graph_input,
         auto_start=body.auto_start,
@@ -189,7 +205,7 @@ async def create_session(
 
 
 # ===========================================================================
-# Task 20 — resume / pause / cancel + top-level list / find / get
+# Task 20 - resume / pause / cancel + top-level list / find / get
 # ===========================================================================
 
 
@@ -220,7 +236,7 @@ async def resume_session(
     # Serialize against a concurrent cancel/pause on the same session: the
     # status read-modify-write and the lease upsert must not interleave with
     # a cancel's ENDED write + delete_lease, or the row can land RUNNING with
-    # no lease — a stuck session no worker can claim (T0432). See
+    # no lease - a stuck session no worker can claim (T0432). See
     # primer.session.mutation_lock.
     async with session_lifecycle_lock().acquire(session_id):
         s = await sessions.get(session_id)
@@ -265,7 +281,7 @@ async def pause_session(
 
     * For sessions that no worker is holding a lease on (CREATED /
       WAITING) we transition directly to PAUSED.
-    * For RUNNING sessions we set ``pause_requested=True`` and return —
+    * For RUNNING sessions we set ``pause_requested=True`` and return -
       the worker will observe the flag at the next turn boundary and
       transition the row itself.
     * 409 when the session is already ENDED.
@@ -293,7 +309,7 @@ async def pause_session(
 @nested_session_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/cancel",
     response_model=WorkspaceSession,
-    summary="Hard cancel — transitions to ENDED/cancelled",
+    summary="Hard cancel - transitions to ENDED/cancelled",
     responses=common_responses(404, 409, 500),
 )
 async def cancel_session(
@@ -310,7 +326,7 @@ async def cancel_session(
     * For sessions no worker is leasing (CREATED / WAITING / PAUSED) we
       transition directly to ENDED with ``ended_reason='cancelled'``.
     * For RUNNING sessions we set the cancel flag and publish the
-      ``session:{sid}:cancel`` event bus key — the engine-path worker's
+      ``session:{sid}:cancel`` event bus key - the engine-path worker's
       ``_cancel_watcher`` (``primer/session/dispatch.py``) listens on
       that key and preempts the running turn. We also call the
       legacy ``scheduler.signal_cancel`` for backward compat with the
@@ -362,7 +378,7 @@ async def delete_session(
     force: bool = Query(
         False,
         description=(
-            "Force-delete a RUNNING session — bypass the 409 gate that "
+            "Force-delete a RUNNING session - bypass the 409 gate that "
             "normally protects against a worker writing back to a "
             "deleted row. Use only to evict orphaned / stuck rows where "
             "no worker is actually executing (e.g. after the previous "
@@ -375,6 +391,7 @@ async def delete_session(
     workspace_registry=Depends(get_workspace_registry),
     event_bus=Depends(get_event_bus),
     call_storage=Depends(get_external_tool_call_storage),
+    storage_provider=Depends(get_storage_provider),
 ) -> None:
     """Permanently remove a session row + best-effort cleanup of its
     on-disk slot under ``<workspace>/.state/sessions/<sid>/``.
@@ -382,7 +399,7 @@ async def delete_session(
     For CREATED/WAITING/PAUSED rows we transition to ENDED inline (no
     worker is holding the lease, so the cleanup is safe to do in this
     request). ENDED / FAILED / CANCELLED rows are removed as-is.
-    RUNNING rows return 409 — a worker holds the lease and would
+    RUNNING rows return 409 - a worker holds the lease and would
     write back to a deleted row; the caller must POST /cancel and
     wait for the worker to land in ENDED first. Pass ``?force=true``
     to override (e.g. when the worker is provably dead).
@@ -414,7 +431,7 @@ async def delete_session(
         )
     if s.status == SessionStatus.RUNNING and force:
         # Publish cancel so any worker actually holding the lease
-        # preempts cleanly before its complete_turn CAS. Best-effort —
+        # preempts cleanly before its complete_turn CAS. Best-effort -
         # if the bus publish fails we still proceed with the delete
         # (force semantics).
         if event_bus is not None:
@@ -438,7 +455,7 @@ async def delete_session(
 
     # CREATED / WAITING / PAUSED: nobody's holding a lease, so we can
     # transition to ENDED inline. Drop any stale lease and signal the
-    # scheduler — symmetric with cancel_session's CREATED/WAITING/PAUSED
+    # scheduler - symmetric with cancel_session's CREATED/WAITING/PAUSED
     # branch, then the row gets removed below.
     if s.status in {
         SessionStatus.CREATED,
@@ -488,6 +505,19 @@ async def delete_session(
                 # best-effort log into a 500 that skips the row delete below.
                 "error": str(exc),
             },
+        )
+
+    # Drop the thread mappings that pointed here. Best-effort: the row must
+    # still be deleted if the correlation table is unreachable, but a leaked
+    # mapping would steer a session that no longer exists (S6 section 9).
+    try:
+        from primer.channel.correlation import CorrelationStore
+
+        await CorrelationStore(storage_provider).clear_for_session(session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "delete_session: correlation cleanup failed (row still removed)",
+            extra={"session_id": session_id, "error": str(exc)},
         )
 
     await sessions.delete(session_id)
@@ -640,20 +670,176 @@ async def find_sessions(
     return await sessions.find(body.predicate, body.page, order_by=body.order_by)
 
 
+class SessionDetail(WorkspaceSession):
+    """A session row plus the follow-ups it has not run yet.
+
+    Subclasses rather than wraps, so every existing field stays a
+    literal sibling and no client reading WorkspaceSession today has to
+    change. Only ever constructed for a response, never stored.
+    """
+
+    pending_messages: list[PendingSessionMessage] = Field(
+        default_factory=list,
+        description=(
+            "Steers that arrived while a turn was running and have not "
+            "been realized yet, oldest first. Each carries parts rather "
+            "than a flattened string, matching what the drain joins back "
+            "out when it realizes one."
+        ),
+    )
+    usage: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Token totals folded from the visible DONE records (see "
+            "primer.session.usage.session_usage) - turns, "
+            "total_input_tokens, total_output_tokens, etc. Null when the "
+            "log could not be read."
+        ),
+    )
+    context_length: int | None = Field(
+        default=None,
+        description=(
+            "Context window size of the currently bound model, resolved "
+            "the same way compaction budgets it. Null for a graph-bound "
+            "session or one whose agent/model can no longer be resolved."
+        ),
+    )
+
+
+# A pathological queue must not make a detail read unbounded.
+_PENDING_PAGE = 100
+
+
+async def _session_usage_totals(
+    session: WorkspaceSession, workspace_registry,
+) -> dict[str, int] | None:
+    """Best-effort token totals for ``session``, or ``None`` if the log
+    is unreadable - mirrors build_usage_frame's own shape (tap.py), the
+    only other place session_usage() is assembled into a response."""
+    from primer.api.routers.tap import build_usage_frame
+
+    workspace = await workspace_registry.get_workspace(session.workspace_id)
+    if workspace is None:
+        return None
+    state_path = getattr(workspace, "state_path", ".state")
+    rel = f"{state_path}/sessions/{session.id}/messages.jsonl"
+    raw = await workspace.read_file(rel)
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    return build_usage_frame(text.splitlines())
+
+
+# Dogfood round 2: providers.py's discovery probes used to seed exactly
+# this value onto every model whose endpoint didn't report a real
+# window (removed there now - see _probe_openai_compatible_models /
+# _probe_ollama_models). A profile already carrying it from before that
+# fix is indistinguishable from "an operator genuinely typed 32000", so
+# this path treats it as "never learned" rather than serving it as fact
+# - it is the one number that shipped a real user a confident-looking
+# wrong meter denominator ("98k / 32k" against an actual 131k model).
+_LEGACY_SEEDED_CONTEXT_LENGTH = 32000
+
+
+async def _session_context_length(
+    session: WorkspaceSession, storage_provider,
+) -> int | None:
+    """Best-effort context window size for session's bound model, or
+    None when nothing resolvable/trustworthy is available (graph-bound,
+    unbound, a deleted agent/profile, or the legacy-seeded fake above) -
+    the caller treats None as "unknown", not an error.
+
+    Deliberately does NOT call primer.agent.compaction.lookup_context_length:
+    that helper's fallback chain (configured value wins, else the curated
+    table) stays exactly as-is for compaction's own budget math, where a
+    stale/fake number is low-stakes (a slightly early or late summarise).
+    Serving a number to the user's face is higher-stakes, so this applies
+    a stricter, different precedence: a curated known-model value always
+    wins (it is real by construction), then the stored value UNLESS it is
+    the exact legacy seed.
+    """
+    from primer.agent.compaction import MODEL_CONTEXT_FALLBACK
+    from primer.model.agent import Agent
+    from primer.model_profile import resolve_model
+
+    binding = session.binding
+    if getattr(binding, "kind", None) != "agent":
+        return None
+    agent = getattr(binding, "agent_snapshot", None)
+    if agent is None:
+        agent_id = getattr(binding, "agent_id", None)
+        if not agent_id:
+            return None
+        agent = await storage_provider.get_storage(Agent).get(agent_id)
+    if agent is None:
+        return None
+    llm_model = await resolve_model(
+        storage_provider,
+        default_profile_id=agent.model.profile_id,
+        override_profile_id=getattr(binding, "profile_id", None),
+    )
+    if llm_model.model_name in MODEL_CONTEXT_FALLBACK:
+        return MODEL_CONTEXT_FALLBACK[llm_model.model_name]
+    if llm_model.context_length == _LEGACY_SEEDED_CONTEXT_LENGTH:
+        return None
+    return llm_model.context_length
+
+
 @top_session_router.get(
     "/sessions/{session_id}",
-    response_model=WorkspaceSession,
+    response_model=SessionDetail,
     summary="Get session by id (no workspace context required)",
     responses=common_responses(404, 500),
 )
 async def get_session_by_id(
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
-) -> WorkspaceSession:
+    storage_provider=Depends(get_storage_provider),
+    workspace_registry=Depends(get_workspace_registry),
+) -> SessionDetail:
     s = await sessions.get(session_id)
     if s is None:
         raise NotFoundError(f"Session {session_id!r} does not exist")
-    return s
+
+    pending: list[PendingSessionMessage] = []
+    try:
+        page = await storage_provider.get_storage(PendingSessionMessage).find(
+            Predicate(
+                left=FieldRef(name="session_id"), op=Op.EQ,
+                right=Value(value=session_id),
+            ),
+            OffsetPage(offset=0, length=_PENDING_PAGE),
+            order_by=[
+                OrderBy(field="enqueued_at", direction="asc"),
+                OrderBy(field="id", direction="asc"),
+            ],
+        )
+        pending = list(page.items)
+    except Exception:  # noqa: BLE001 - the row is the answer; the queue is extra
+        logger.exception(
+            "session detail: reading pending messages failed for %s",
+            session_id,
+        )
+
+    usage: dict[str, int] | None = None
+    try:
+        usage = await _session_usage_totals(s, workspace_registry)
+    except Exception:  # noqa: BLE001 - the row is the answer; usage is extra
+        logger.exception(
+            "session detail: computing usage failed for %s", session_id,
+        )
+
+    context_length: int | None = None
+    try:
+        context_length = await _session_context_length(s, storage_provider)
+    except Exception:  # noqa: BLE001 - same as usage above
+        logger.exception(
+            "session detail: resolving context_length failed for %s",
+            session_id,
+        )
+
+    return SessionDetail(
+        **s.model_dump(), pending_messages=pending,
+        usage=usage, context_length=context_length,
+    )
 
 
 @top_session_router.get(
@@ -695,6 +881,113 @@ async def get_session_turn_log(
     )
 
 
+def _extract_legacy_text(obj: dict) -> str | None:
+    """Join every text part of a legacy ``{role,parts}`` Message dict.
+
+    Mirrors WorkspaceAgentExecutor._fetch_last_assistant_text's own
+    part-walk (primer/agent/workspace_executor.py), just over a raw
+    dict instead of a validated Message. Returns None when the line
+    carries no text part (nothing to reconcile).
+    """
+    texts: list[str] = []
+    for part in obj.get("parts") or []:
+        if isinstance(part, dict) and part.get("type") == "text":
+            t = part.get("text")
+            if t:
+                texts.append(t)
+    return "".join(texts) if texts else None
+
+
+def _dedupe_legacy_user_input(
+    items: list[dict], *, fallback_created_at: str | None,
+) -> list[dict]:
+    """Reconcile messages.jsonl's dual-write asymmetry (01a04dde-b331).
+
+    messages.jsonl deliberately interleaves two shapes for two different
+    consumers: legacy ``{role,parts}`` Message lines feed LLM context
+    reconstruction (WorkspaceAgentExecutor._read_messages_jsonl), and
+    modern seq/kind SessionMessageRecord lines feed this API + the live
+    tap. primer.session.enqueue.wake_session writes BOTH for every
+    steer; primer.workspace.session_factory.start_workspace_session now
+    does the same for a session's opening initial_instructions (the
+    01a04dde-b331 write-side fix) - but a session created BEFORE that
+    fix shipped has its opening instruction ONLY as a legacy line, and
+    nothing ever back-fills the missing modern counterpart for
+    already-persisted history. Dropping it would erase a real user
+    message from the transcript this route serves.
+
+    Scoped to role="user" legacy lines ONLY - every other legacy shape
+    (assistant text/tool_call, tool tool_result) is passed through
+    completely unchanged. A NORMAL (non-parked) turn already writes a
+    matching modern record for those during live streaming (confirmed:
+    ToolCallEnd's TOOL_CALL record lands before dispatch, the
+    ExtendedEvent(_ExecutorToolResult) that becomes TOOL_RESULT lands
+    right after), but a PARKED-then-resumed turn's rehydrated
+    tool-result does not - WorkspaceAgentExecutor.inject_resume_messages
+    -> _persist_turn writes only the legacy line for that content, and
+    nothing (not park time, not resume time) ever writes a matching
+    modern TOOL_RESULT record for it. That is a separate, not-yet-fixed
+    write-side gap (reported alongside this one); reconciling it here
+    without a real modern record to key off risks synthesizing the
+    wrong shape or, worse, silently deciding a line is "covered" when
+    it isn't and dropping real content the raw passthrough never lost.
+    Dev-Prime's UI-side legacy-line tolerance stays load-bearing for
+    that case.
+
+    For each role="user" legacy line: if a modern USER_INPUT record
+    ANYWHERE in this file already carries the exact same text, drop the
+    legacy line (redundant - the write-side fix means this is now the
+    common case for every NEW instruction). Otherwise synthesize a
+    USER_INPUT-shaped item so the message is never lost. Synthesized
+    items count DOWN from seq 0 (0, -1, -2, ...) in file order: never
+    collides with a real record (those start at seq 1), sorts before
+    all real content (correct - this is always older, backfilled
+    history), and is naturally excluded from any since_seq-filtered
+    poll (any since_seq >= 0 already excludes seq <= 0) - exactly the
+    "not new" status this content actually has.
+
+    Known simplification: matching is by exact text equality anywhere
+    in the file, not file-position proximity to a specific candidate
+    counterpart. Two genuinely distinct user messages that happen to
+    share identical text could dedupe against each other's counterpart
+    instead of their own - the failure mode is a duplicate line
+    rendering once instead of twice, never data loss of distinct
+    content, so the simpler global check was chosen over a
+    proximity-windowed one.
+    """
+    covered_texts = {
+        obj["payload"]["text"]
+        for obj in items
+        if obj.get("kind") == "user_input"
+        and isinstance(obj.get("payload"), dict)
+        and isinstance(obj["payload"].get("text"), str)
+    }
+    out: list[dict] = []
+    synthetic_seq = 0
+    for obj in items:
+        if "kind" in obj:
+            out.append(obj)
+            continue
+        if obj.get("role") != "user":
+            out.append(obj)  # non-user legacy line: pass through unchanged
+            continue
+        text = _extract_legacy_text(obj)
+        if text is None:
+            out.append(obj)  # no text part to reconcile; leave as-is
+            continue
+        if text in covered_texts:
+            continue  # redundant - a modern USER_INPUT already covers it
+        out.append({
+            "seq": synthetic_seq,
+            "kind": "user_input",
+            "payload": {"text": text},
+            "created_at": fallback_created_at,
+            "node_id": None,
+        })
+        synthetic_seq -= 1
+    return out
+
+
 async def _read_workspace_turn_log(
     *,
     workspace,
@@ -703,24 +996,43 @@ async def _read_workspace_turn_log(
     offset: int,
     since_seq: int | None,
     tail: bool = False,
+    visible: bool = False,
+    dedupe_legacy_user_input: bool = False,
+    fallback_created_at: str | None = None,
 ) -> dict:
     """JSONL-parse the file at ``relative_path`` inside ``workspace``.
 
     Missing file is treated as an empty log (a fresh session that's
-    written nothing yet). Bogus lines are skipped silently — the turn
+    written nothing yet). Bogus lines are skipped silently - the turn
     log is observability data, not a contract.
 
     ``tail`` flips the window to the *end* of the log: the console loads a
     session transcript newest-page-first (most-recent ``limit`` rows) and pages
     older rows on demand, instead of pulling the whole file at once (#3/#7).
-    With ``tail`` the ``offset`` counts rows from the tail — ``offset=0`` is the
-    most-recent ``limit`` rows, ``offset=limit`` the next-older page — so
+    With ``tail`` the ``offset`` counts rows from the tail - ``offset=0`` is the
+    most-recent ``limit`` rows, ``offset=limit`` the next-older page - so
     paging is anchored to the end of the log, not a shifting start. Rows are
     always returned in ascending ``seq`` order.
+
+    ``visible`` folds the log through the replay walk first, so the
+    caller sees what the conversation currently shows: rewound rows
+    disappear and a compacted span collapses to its marker. It defaults
+    off because the audit and trace views need the raw stream, and a
+    rewound span has to stay fetchable to render as a collapsed region.
+
+    ``dedupe_legacy_user_input`` (01a04dde-b331): reconciles the
+    messages.jsonl dual-write asymmetry (see :func:`_dedupe_legacy_user_input`)
+    before paging. Defaults off - this helper is SHARED with
+    turns.jsonl (get_session_turn_log) and other JSONL logs
+    (primer/api/routers/compute.py) that carry no such dual-shape
+    concept at all; only get_session_messages (the one reader of
+    messages.jsonl specifically) opts in. Folded BEFORE paging, same
+    reasoning as ``visible`` - offsets must describe the reconciled
+    conversation, not the raw file underneath it.
     """
     try:
         raw = await workspace.read_file(relative_path)
-    except Exception:  # noqa: BLE001 — NotFoundError / IO / decode
+    except Exception:  # noqa: BLE001 - NotFoundError / IO / decode
         raw = b""
     items: list[dict] = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
@@ -734,6 +1046,26 @@ async def _read_workspace_turn_log(
         if since_seq is not None and int(obj.get("seq", 0)) <= since_seq:
             continue
         items.append(obj)
+    if dedupe_legacy_user_input:
+        # Before the visible fold: visible_records/_parse (primer/
+        # session/replay.py) only keeps kind+seq shaped lines, so
+        # reconciling legacy lines into that shape FIRST means a
+        # visible=true request also correctly sees a synthesized
+        # backfilled instruction instead of silently losing it the
+        # same way the raw legacy line would have.
+        items = _dedupe_legacy_user_input(
+            items, fallback_created_at=fallback_created_at,
+        )
+    if visible:
+        # Folded BEFORE paging, so offsets describe the conversation the
+        # caller asked to see rather than the raw file underneath it.
+        from primer.session.replay import visible_records
+
+        visible_seqs = {
+            rec.get("seq")
+            for rec in visible_records([json.dumps(obj) for obj in items])
+        }
+        items = [obj for obj in items if obj.get("seq") in visible_seqs]
     total = len(items)
     if tail:
         end = max(0, total - offset)
@@ -759,6 +1091,16 @@ async def get_session_messages(
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     after_seq: int | None = Query(default=None, ge=0),
+    visible: bool = Query(
+        False,
+        description=(
+            "Fold the log through the replay walk before paging: rewound "
+            "rows disappear and a compacted span collapses to its marker. "
+            "Off by default, because the audit and trace views need the "
+            "raw stream and a rewound span must stay fetchable to render "
+            "as a collapsed region."
+        ),
+    ),
     tail: bool = Query(
         default=False,
         description=(
@@ -793,7 +1135,67 @@ async def get_session_messages(
         offset=offset,
         since_seq=after_seq,
         tail=tail,
+        visible=visible,
+        dedupe_legacy_user_input=True,
+        fallback_created_at=(
+            sess.created_at.isoformat() if sess.created_at else None
+        ),
     )
+
+
+@top_session_router.get(
+    "/sessions/{session_id}/turns/{turn_no}/timeline",
+    summary="Derive one turn's execution timeline",
+    responses=common_responses(404, 500),
+)
+async def get_session_turn_timeline(
+    session_id: str = Path(..., description="Session id"),
+    turn_no: int = Path(..., ge=0, description="Turn index (0-based)"),
+    sessions=Depends(get_session_storage),
+    workspace_registry=Depends(get_workspace_registry),
+) -> dict:
+    """Fold this turn's records into a tree: model calls, tool round-trips,
+    graph nodes, delegated subagent calls, and any wait segment.
+
+    Pure derivation (12-s7-design.md section 6): no trace system, no new
+    write path. ``turn_no`` is the window ordinal produced by terminal
+    counting over every record in messages.jsonl, and it selects the
+    turn-log envelope run at the same ordinal. Counting is deliberately
+    done on the UNFOLDED log so a compaction or a rewind cannot retarget
+    a turn_no already in circulation; the response echoes the window's
+    ``terminal_seq`` for callers that want to re-resolve it. Works on any
+    historical session.
+    """
+    sess = await sessions.get(session_id)
+    if sess is None:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    workspace = await workspace_registry.get_workspace(sess.workspace_id)
+    if workspace is None:
+        raise NotFoundError(
+            f"Workspace {sess.workspace_id!r} for session {session_id!r} "
+            "is unavailable"
+        )
+    state_path = getattr(workspace, "state_path", ".state")
+
+    async def _lines(name: str) -> list[str]:
+        try:
+            raw = await workspace.read_file(
+                f"{state_path}/sessions/{session_id}/{name}"
+            )
+        except Exception:  # noqa: BLE001 - NotFoundError / IO / decode
+            return []
+        return raw.decode("utf-8", errors="replace").splitlines()
+
+    timeline = build_turn_timeline(
+        message_lines=await _lines("messages.jsonl"),
+        turn_log_lines=await _lines("turns.jsonl"),
+        turn_no=turn_no,
+    )
+    if timeline is None:
+        raise NotFoundError(
+            f"Session {session_id!r} has no turn {turn_no}"
+        )
+    return {"session_id": session_id, **timeline}
 
 
 __all__ = [
@@ -803,6 +1205,7 @@ __all__ = [
     "delete_session",
     "find_sessions",
     "get_session_by_id",
+    "get_session_turn_timeline",
     "list_sessions",
     "nested_session_router",
     "pause_session",

@@ -12,13 +12,14 @@ from pydantic import BaseModel, Field
 
 from primer.api.deps import (
     get_approval_resolver,
-    get_chat_storage,
     get_claim_engine,
     get_event_bus,
     get_provider_registry,
     get_session_storage,
     get_storage_provider,
+    require_user,
 )
+from fastapi import HTTPException
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router
 from primer.int.claim import ClaimEngine
@@ -29,6 +30,7 @@ from primer.model.workspace_session import WorkspaceSession
 from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
 from primer.storage.q import Q
 from primer.model.tool_approval import (
+    ApproverSpec,
     LlmApprovalConfig,
     PolicyApprovalConfig,
     ToolApprovalPolicy,
@@ -179,6 +181,13 @@ class ToolApprovalPendingResponse(BaseModel):
     policy_id: str | None = None
     approval_type: str | None = None
     gate_reason: str | None = None
+    approvers: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Who may decide (P6 approver routing): the resolved "
+            "ApproverSpec stamped at park time. None means anyone."
+        ),
+    )
     parked_at: str
     timeout_at: str | None = None
     status: Literal["pending", "approved", "rejected"] = "pending"
@@ -190,6 +199,37 @@ class ToolApprovalRespondBody(BaseModel):
     tool_call_id: str
     decision: Literal["approved", "rejected"]
     reason: str | None = Field(default=None, max_length=1024)
+
+
+def _enforce_approvers(blob: dict, user: Any) -> None:
+    """403 ``approver_mismatch`` unless the caller may decide this park.
+
+    The spec was resolved and stamped at park time (policy row default,
+    or the evaluator's per-call override). No spec means anyone.
+    Admins always pass (see :class:`ApproverSpec.allows`); a malformed
+    stored spec fails OPEN to anyone rather than wedging the park.
+    """
+    if user is None:  # WS scope / auth-disabled synthetic admin absent
+        return
+    metadata: dict = (
+        (blob.get("yielded") or {}).get("resume_metadata") or {}
+    )
+    raw = metadata.get("approvers")
+    if not raw:
+        return
+    try:
+        spec = ApproverSpec.model_validate(raw)
+    except Exception:  # noqa: BLE001
+        logger.warning("malformed stored approvers %r; allowing anyone", raw)
+        return
+    if not spec.allows(
+        username=getattr(user, "username", ""),
+        role=getattr(user, "role", ""),
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "approver_mismatch"},
+        )
 
 
 def _approval_blob_or_404(sess: Any, id_str: str) -> dict:
@@ -231,50 +271,13 @@ def _build_pending_response(
         policy_id=metadata.get("policy_id"),
         approval_type=metadata.get("approval_type"),
         gate_reason=metadata.get("gate_reason"),
+        approvers=metadata.get("approvers"),
         parked_at=(
             sess.parked_at.isoformat()
             if sess.parked_at is not None
             else ""
         ),
         timeout_at=timeout_at_iso,
-    )
-
-
-def _chat_approval_pending_or_404(chat: Any, id_str: str) -> dict:
-    """Return the pending_tool_call dict when the chat has a pending approval.
-
-    Raises :class:`NotFoundError` if:
-    * the chat is None (doesn't exist),
-    * it has no pending_tool_call, or
-    * the pending_tool_call is not in approval mode.
-    """
-    if chat is None:
-        raise NotFoundError(f"{id_str!r} does not exist")
-    pending: dict | None = getattr(chat, "pending_tool_call", None)
-    if not pending or pending.get("mode") != "approval":
-        raise NotFoundError(f"{id_str!r} has no pending tool_approval")
-    return pending
-
-
-def _build_chat_pending_response(
-    pending: dict, chat: Any
-) -> ToolApprovalPendingResponse:
-    """Construct the pending-response envelope from a chat pending_tool_call."""
-    original: dict = pending.get("original_call") or {}
-    tool_call_id: str = pending.get("tool_call_id") or original.get("id") or ""
-    return ToolApprovalPendingResponse(
-        tool_call_id=tool_call_id,
-        tool_name=original.get("name", ""),
-        arguments=original.get("arguments") or {},
-        policy_id=pending.get("policy_id"),
-        approval_type=pending.get("approval_type"),
-        gate_reason=pending.get("gate_reason"),
-        parked_at=(
-            chat.created_at.isoformat()
-            if getattr(chat, "created_at", None) is not None
-            else ""
-        ),
-        timeout_at=None,
     )
 
 
@@ -286,6 +289,8 @@ async def _publish_decision(
     event_bus: EventBus,
     session_storage,
     engine: ClaimEngine | None,
+    storage_provider=None,
+    decided_by: str | None = None,
 ) -> bool:
     """Validate the decision, durably flip the row, then wake the bus.
 
@@ -314,7 +319,11 @@ async def _publish_decision(
     event_key: str | None = yielded.get("event_key")
     if not event_key:
         raise NotFoundError(f"{id_str!r} park is missing event_key")
-    payload = {"decision": body.decision, "reason": body.reason}
+    payload = {
+        "decision": body.decision,
+        "reason": body.reason,
+        "decided_by": decided_by,
+    }
     did = await durably_wake_session(
         sess,
         event_key=event_key,
@@ -322,6 +331,11 @@ async def _publish_decision(
         session_storage=session_storage,
         engine=engine,
     )
+    if storage_provider is not None:
+        from primer.events.wake import emit_session_wake
+
+        await emit_session_wake(storage_provider, event_bus, event_key, payload)
+        return did
     try:
         await event_bus.publish(event_key, payload)
     except Exception:  # noqa: BLE001
@@ -374,6 +388,20 @@ def make_tool_approval_router() -> APIRouter:
         approval_resolver.invalidate()
         return {"status": "accepted"}
 
+    return router
+
+
+def make_tool_approval_ops_router() -> APIRouter:
+    """Pending/respond/records: the OPERATOR surface (P6 gating split).
+
+    Deciding a gated call is ordinary operator work, so this router
+    mounts at the user tier; who may decide a SPECIFIC call is the
+    approver spec's business, enforced per park by
+    :func:`_enforce_approvers`. Policy CRUD (the factory above) stays
+    admin - configuring the gates is system policy.
+    """
+    router = APIRouter(tags=[_TAG])
+
     # -----------------------------------------------------------------------
     # Tool-approval pending/respond for sessions (§2 Task 8)
     # -----------------------------------------------------------------------
@@ -399,11 +427,18 @@ def make_tool_approval_router() -> APIRouter:
     async def post_session_tool_approval_respond(
         session_id: Annotated[str, Path()],
         body: Annotated[ToolApprovalRespondBody, Body()],
+        request: Request,
         session_storage=Depends(get_session_storage),
         event_bus: EventBus = Depends(get_event_bus),
         engine: ClaimEngine | None = Depends(get_claim_engine),
+        user=Depends(require_user),
     ) -> dict[str, str]:
         sess = await session_storage.get(session_id)
+        # Approver routing (P6): 403 approver_mismatch before any state
+        # moves; decided_by rides the wake payload into the durable
+        # record the resume coordinator writes.
+        blob = _approval_blob_or_404(sess, session_id)
+        _enforce_approvers(blob, user)
         await _publish_decision(
             sess=sess,
             id_str=session_id,
@@ -411,25 +446,22 @@ def make_tool_approval_router() -> APIRouter:
             event_bus=event_bus,
             session_storage=session_storage,
             engine=engine,
+            storage_provider=get_storage_provider(request),
+            decided_by=getattr(user, "username", None),
+        )
+        from primer.events.recorder import actor_of, recorder_for
+
+        sp = get_storage_provider(request)
+        await recorder_for(sp, event_bus).emit(
+            "approval.decided",
+            actor=actor_of(getattr(request.state, "actor", None)),
+            session_id=session_id,
+            payload={
+                "decision": body.decision,
+                "tool_call_id": body.tool_call_id,
+            },
         )
         return {"status": "accepted"}
-
-    # -----------------------------------------------------------------------
-    # Tool-approval pending for chats
-    # -----------------------------------------------------------------------
-
-    @router.get(
-        "/chats/{chat_id}/tool_approval/pending",
-        response_model=ToolApprovalPendingResponse,
-        responses=common_responses(404, 500),
-    )
-    async def get_chat_tool_approval_pending(
-        chat_id: Annotated[str, Path()],
-        chat_storage=Depends(get_chat_storage),
-    ) -> ToolApprovalPendingResponse:
-        chat = await chat_storage.get(chat_id)
-        pending = _chat_approval_pending_or_404(chat, chat_id)
-        return _build_chat_pending_response(pending, chat)
 
     # -----------------------------------------------------------------------
     # Resolved approval records (durable history)
@@ -469,4 +501,4 @@ def make_tool_approval_router() -> APIRouter:
     return router
 
 
-__all__ = ["make_tool_approval_router"]
+__all__ = ["make_tool_approval_ops_router", "make_tool_approval_router"]

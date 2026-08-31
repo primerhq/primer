@@ -238,6 +238,7 @@ async def start_workspace_session(
     # graph bindings use a synthetic agent_id (``graph:<graph_id>``)
     # so the graph executor in primer/worker/pool.py can compose the
     # workspace's tools into every per-node ToolExecutionManager.
+    live_workspace = None
     if isinstance(binding, AgentSessionBinding):
         assert resolved_agent is not None  # guarded above
         on_disk_binding = OnDiskAgentBinding(
@@ -279,10 +280,48 @@ async def start_workspace_session(
             name=name,
         )
 
+    # Write-side symmetry with primer.session.enqueue.wake_session's own
+    # steer path (01a04dde-b331, SEV-2 follow-up): live_workspace.
+    # start_session above wrote initial_instructions ONLY as a legacy
+    # {role,parts} Message line (AgentSession.append_instruction) -
+    # nothing ever wrote the modern SessionMessageRecord(kind=USER_INPUT)
+    # counterpart wake_session writes for every LATER steer. A session
+    # created via this path could sit RUNNING for the length of a real
+    # turn with GET /sessions/{id}/messages showing nothing but that
+    # legacy line (confirmed live) - the exact repro that motivated
+    # this fix. start_seq=0: this is a brand-new session, nothing has
+    # been written to the modern log yet regardless of the legacy
+    # line's presence (modern seqs and legacy lines are independent
+    # counters - see WorkspaceMessageWriter's own docstring). The
+    # resulting seq is threaded into create_session below so the
+    # PERSISTED row's last_seq matches the log from the moment the row
+    # exists - never a window where the row says last_seq=0 while the
+    # file already holds seq=1 (an auto_start=True create's worker claim
+    # could otherwise seed its own writer at the stale value and collide
+    # seqs with this record).
+    initial_last_seq = 0
+    if initial_instructions and live_workspace is not None:
+        from primer.model.workspace_session import (
+            SessionMessageKind,
+            SessionMessageRecord,
+        )
+        from primer.session.persistence import WorkspaceMessageWriter
+
+        writer = WorkspaceMessageWriter(
+            workspace_io=live_workspace, session_id=sid, start_seq=0,
+        )
+        initial_last_seq = await writer.append(SessionMessageRecord(
+            seq=1,  # overwritten by the writer's monotonic counter
+            kind=SessionMessageKind.USER_INPUT,
+            payload={"text": initial_instructions},
+            created_at=datetime.now(timezone.utc),
+        ))
+        await writer.flush()
+
     # Persist the row + (optionally) auto-start + always register a
     # forward-compat ClaimEngine upsert via the shared service helper.
     # workspace_registry=None because the slot is already allocated above.
-    return await create_session(
+    row = await create_session(
         workspace_id=workspace_id,
         binding=binding,
         initial_instructions=initial_instructions,
@@ -295,6 +334,7 @@ async def start_workspace_session(
         name=name,
         initiated_by=initiated_by,
         external_tools=external_tools,
+        initial_last_seq=initial_last_seq,
         deps=SessionFactoryDeps(
             storage_provider=deps.storage_provider,
             claim_engine=deps.claim_engine,
@@ -302,6 +342,18 @@ async def start_workspace_session(
             workspace_registry=None,
         ),
     )
+    from primer.events.recorder import actor_of, recorder_for
+    await recorder_for(deps.storage_provider).emit(
+        "session.invoked",
+        actor=actor_of(initiated_by),
+        workspace_id=workspace_id,
+        session_id=row.id,
+        payload={
+            "binding": binding.model_dump(mode="json"),
+            "auto_start": auto_start,
+        },
+    )
+    return row
 
 
 async def create_session(
@@ -319,6 +371,7 @@ async def create_session(
     name: str | None = None,
     initiated_by: PrincipalRef | None = None,
     external_tools: "list | None" = None,
+    initial_last_seq: int = 0,
 ) -> WorkspaceSession:
     """Persist a :class:`WorkspaceSession` row + optionally auto-start.
 
@@ -342,6 +395,20 @@ async def create_session(
     ``session_id`` lets the caller pre-generate the id so it can run
     its own setup (e.g., on-disk slot allocation) before the row lands
     in storage. When ``None``, a fresh ``sess-<hex>`` id is generated.
+
+    ``initial_last_seq`` (01a04dde-b331): when the caller already wrote
+    a modern USER_INPUT record for ``initial_instructions`` before this
+    call (``start_workspace_session`` does, immediately after on-disk
+    slot allocation), the row must be PERSISTED with ``last_seq`` set to
+    that record's seq from the moment it first exists - baked into the
+    initial ``WorkspaceSession(...)`` construction below, before
+    ``sessions_storage.create`` or any auto_start claim/enqueue call, so
+    there is no window where the row reads a stale ``last_seq=0`` while
+    the log already holds a real seq that a worker's own turn-start
+    writer could collide with. Defaults to 0 (today's implicit
+    behaviour) for every other caller of this shared factory function
+    (trigger subscribers, the workspaces MCP tool) that doesn't
+    pre-write anything.
     """
     # Config guard: an auto_start session that has no ClaimEngine to register
     # with flips to RUNNING but is NEVER claimed by any worker -- it hangs in
@@ -382,6 +449,7 @@ async def create_session(
         autonomous=autonomous,
         initiated_by=initiated_by,
         created_at=now,
+        last_seq=initial_last_seq,
         external_tools=(
             [d.model_dump(by_alias=True) for d in external_tools]
             if external_tools

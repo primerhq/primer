@@ -17,7 +17,7 @@ Asserts (the recipe's verified outcome):
     grounding on what it found.
 
 The PUT-by-path route mints an autogen ``document-<hex>`` id; the source PATH
-the recipe cites travels on the hit's ``meta.document_name`` (the document name
+the recipe cites travels on the hit's ``meta.path`` (the document path
 defaults to the path), so source assertions key on that, not ``document_id``.
 
 The embedding model is real and non-deterministic, so the assertion is on
@@ -40,7 +40,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
@@ -156,11 +156,19 @@ async def test_qa_agent_cites_source(
         r = await authed_client.post("/v1/collections", json={
             "id": cid,
             "description": "IT support knowledge base for question answering.",
-            "embedder": {"provider_id": eid, "model": cfg["model"]},
-            "search_provider_id": sid_ssp,
         })
         assert r.status_code in (200, 201), r.text
         cleanup.append(f"/v1/collections/{cid}")
+
+        # Search on BEFORE the docs land, so each one indexes as it is
+        # written. S2 moved this binding off the create body, where it
+        # was being dropped: the collection came out grep-only and the
+        # relevance assertions below had nothing to match against.
+        r = await authed_client.put(f"/v1/collections/{cid}/search", json={
+            "embedder": {"provider_id": eid, "model": cfg["model"]},
+            "vector_store_provider_id": sid_ssp,
+        })
+        assert r.status_code in (200, 201, 202), r.text
 
         # --- Ingest the docs path-addressed (the recipe's PUT?path= path) -
         for path, content in _DOCS.items():
@@ -173,10 +181,10 @@ async def test_qa_agent_cites_source(
 
         # --- Semantic relevance, asserted directly on the live search ----
         # "add a printer" -> printer.md on top, even without keyword overlap.
-        # The source path lives on the hit's meta.document_name (the autogen
+        # The source path lives on the hit's meta.path (the autogen
         # document_id is opaque), so rank assertions key on that.
         def _src(hit: dict) -> str:
-            return str(hit.get("meta", {}).get("document_name", ""))
+            return str(hit.get("meta", {}).get("path", ""))
 
         printer_hits = await _search_with_retry(authed_client, cid, _PRINTER_QUERY)
         assert printer_hits, "real semantic search returned no hits for the KB"
@@ -225,8 +233,8 @@ async def test_qa_agent_cites_source(
             authed_client, workspace_id=wid, agent_id=agent["agent_id"],
             instructions=_PRINTER_QUERY,
         )
-        final = await wait_terminal(authed_client, run, timeout_s=120)
-        assert final.get("status") == "ended", final
+        final = await wait_completed(authed_client, run, timeout_s=120)
+        assert final.get("session_state") == "parked", final
 
         # The session's on-disk message log is the source of truth for the
         # full turn record (the turn_log endpoint carries event metadata only,
@@ -247,7 +255,7 @@ async def test_qa_agent_cites_source(
             "agent did not call search_collection"
         )
         # The search hit surfaced the correct source path in its meta.
-        assert "document_name" in transcript and _PRINTER_PATH in transcript, (
+        assert "path" in transcript and _PRINTER_PATH in transcript, (
             f"search_collection did not surface {_PRINTER_PATH} to the agent: {transcript!r}"
         )
 
