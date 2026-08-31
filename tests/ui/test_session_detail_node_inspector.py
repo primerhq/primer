@@ -68,3 +68,24 @@ def test_bundle_transpiles_with_inspector() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body
     assert "SD_NodeInspector" in body.decode("utf-8")
+
+
+def test_inspector_matches_fanout_instance_ids_not_just_the_base_id() -> None:
+    """01a0518f: a fan-out node's live/history records carry the
+    synthesized instance id ("worker[0]") the node's own node_id never
+    equals ("worker") - an exact-equality match showed nothing for a
+    fan-out node (worse than the old merged-collided view). The inspector
+    must accept both the exact base id and any "<base>[" instance."""
+    src = DETAIL
+    assert "matchesNode" in src
+    assert 'id === nodeId' in src
+    assert 'startsWith(`${nodeId}[`)' in src
+    # Every place that used to compare directly against nodeId now routes
+    # through the matcher instead of a bare equality/inequality check.
+    assert "if (!matchesNode(fnode)) return;" in src
+    assert "matchesNode(it.node_id || p.node_id || it.end_node_id || p.end_node_id)" in src
+    # Regression guard: the old exact-only checks are gone, not just
+    # supplemented (a stray leftover would silently win via short-circuit
+    # if both existed).
+    assert "if (fnode !== nodeId) return;" not in src
+    assert "=== nodeId;" not in src
