@@ -25,7 +25,16 @@ CANCEL_REASON_SUPERSEDED = "superseded by new user message"
 
 def _pending_targets(session: Any) -> dict[str, str]:
     """Map tool_call_id -> event_key for every external call parked on
-    this session (single-agent park OR graph checkpoint entries)."""
+    this session (single-agent park OR graph checkpoint entries).
+
+    01a0518f: two concurrent fan-out siblings can share a raw provider
+    tool_call_id; this dict collapses to whichever entry is written last,
+    same as ``apply_tool_results``'s own ``rows``/``targets`` matching
+    below (the ``ExternalToolResultIn`` wire contract has no other field
+    to disambiguate - a full fix needs the delivered external id scoped
+    and mapped back to the raw id server-side, tracked as a follow-up).
+    Logged here so a real collision is visible instead of silent.
+    """
     out: dict[str, str] = {}
     if getattr(session, "parked_status", None) not in ("parked", "resumable"):
         return out
@@ -47,6 +56,12 @@ def _pending_targets(session: Any) -> dict[str, str]:
         tcid = entry.get("tool_call_id")
         if not tcid:
             continue
+        if tcid in out:
+            logger.warning(
+                "_pending_targets: tool_call_id=%r already pending on "
+                "session %s; a later entry overwrites the earlier one",
+                tcid, session.id,
+            )
         out[tcid] = entry.get("parked_event_key") or (
             f"external_tool:{session.id}:{tcid}"
         )
@@ -56,6 +71,12 @@ def _pending_targets(session: Any) -> dict[str, str]:
         tcid = entry.get("tool_call_id")
         if not tcid:
             continue
+        if tcid in out:
+            logger.warning(
+                "_pending_targets: tool_call_id=%r already pending on "
+                "session %s; a later entry overwrites the earlier one",
+                tcid, session.id,
+            )
         out[tcid] = entry.get("event_key") or (
             f"external_tool:{session.id}:{tcid}"
         )
@@ -74,7 +95,17 @@ async def _rows_by_tcid(
     if chat_id is not None:
         q = q.where("chat_id", chat_id)
     page = await call_storage.find(q.build(), OffsetPage(offset=0, length=200))
-    return {r.tool_call_id: r for r in page.items}
+    rows: dict[str, ExternalToolCall] = {}
+    for r in page.items:
+        if r.tool_call_id in rows:
+            # 01a0518f: same wire-contract limit as _pending_targets above.
+            logger.warning(
+                "_rows_by_tcid: tool_call_id=%r already resolved to row "
+                "%r; row %r overwrites it",
+                r.tool_call_id, rows[r.tool_call_id].id, r.id,
+            )
+        rows[r.tool_call_id] = r
+    return rows
 
 
 async def apply_tool_results(

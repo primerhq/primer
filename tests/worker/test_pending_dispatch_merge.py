@@ -82,3 +82,35 @@ def test_old_blob_with_agent_yields_in_dispatch_does_not_duplicate_after_dedup()
 
 def test_empty_checkpoint_yields_empty_list():
     assert merge_pending_dispatch({}) == []
+
+
+def test_derived_agent_yield_entries_carry_node_id():
+    """01a0518f: node_id must survive into the merged dispatch entry so
+    the channel dedup can key on (node_id, tool_call_id) instead of
+    tool_call_id alone - two fan-out siblings can share a raw id."""
+    checkpoint = {
+        "pending_agent_yields": [
+            {
+                "node_id": "worker[0]",
+                "tool_call_id": "call_0",
+                "event_key": "ask_user:s:call_0",
+                "tool_name": "ask_user",
+                "resume_metadata": {"prompt": "region 0?"},
+                "llm_messages": [],
+                "iteration": 0,
+            },
+            {
+                "node_id": "worker[1]",
+                "tool_call_id": "call_0",
+                "event_key": "ask_user:s:call_0",
+                "tool_name": "ask_user",
+                "resume_metadata": {"prompt": "region 1?"},
+                "llm_messages": [],
+                "iteration": 0,
+            },
+        ],
+    }
+    merged = merge_pending_dispatch(checkpoint)
+    assert {(p["node_id"], p["tool_call_id"]) for p in merged} == {
+        ("worker[0]", "call_0"), ("worker[1]", "call_0"),
+    }

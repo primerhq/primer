@@ -121,13 +121,24 @@ def _graph_ask_user_dispatch(
     checkpoint = blob.get("graph_checkpoint")
     if not checkpoint:
         return None
-    for entry in checkpoint.get("pending_dispatch") or []:
-        if entry.get("kind") != "ask_user":
-            continue
-        if tool_call_id is not None and entry.get("tool_call_id") != tool_call_id:
-            continue
-        return entry
-    return None
+    matches = [
+        entry
+        for entry in checkpoint.get("pending_dispatch") or []
+        if entry.get("kind") == "ask_user"
+        and (tool_call_id is None or entry.get("tool_call_id") == tool_call_id)
+    ]
+    if len(matches) > 1:
+        # 01a0518f: two concurrent fan-out siblings can share a raw
+        # provider tool_call_id; the REST wire contract has no other
+        # field to disambiguate. First-match is the same ambiguity this
+        # endpoint already had - logged so a real collision is visible
+        # rather than silently resolving an arbitrary sibling.
+        logger.warning(
+            "_graph_ask_user_dispatch: %d pending entries share "
+            "tool_call_id=%r; resolving the first",
+            len(matches), tool_call_id,
+        )
+    return matches[0] if matches else None
 
 
 async def _durable_wake(

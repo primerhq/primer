@@ -216,11 +216,13 @@ class _CheckpointMixin:
         if _is_value_yield_toolcall(p):
             return {
                 "kind": p.tool_name,
+                "node_id": p.node_id,
                 "tool_call_id": p.tool_call_id,
                 "resume_metadata": dict(p.resume_metadata or {}),
             }
         return {
             "kind": "_approval",
+            "node_id": p.node_id,
             "tool_call_id": p.tool_call_id,
             "resume_metadata": {
                 "original_call": {

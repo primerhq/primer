@@ -688,12 +688,17 @@ def merge_pending_dispatch(checkpoint: dict[str, Any]) -> list[dict[str, Any]]:
 
     Backward compatible: a pre-slim checkpoint that still carries agent-yield
     entries inside ``pending_dispatch`` produces a duplicate here, but the
-    channel dispatcher dedups by ``tool_call_id`` so the prompt is sent once.
+    channel dispatcher dedups by ``(node_id, tool_call_id)`` so the prompt is
+    sent once. Each entry carries ``node_id`` (01a0518f: two concurrent
+    fan-out siblings can legitimately share a raw provider tool_call_id -
+    deduping by tool_call_id alone silently dropped one sibling's channel
+    prompt entirely, not just risked cross-wired resume).
     """
     stored = list(checkpoint.get("pending_dispatch") or [])
     derived = [
         {
             "kind": ay.get("tool_name", ""),
+            "node_id": ay.get("node_id"),
             "tool_call_id": ay.get("tool_call_id"),
             "resume_metadata": dict(ay.get("resume_metadata") or {}),
         }
@@ -708,19 +713,30 @@ async def _dispatch_to_channels_multi(
     workspace_id: str,
     session_id: str,
     pending: list[dict[str, Any]],
-    already_sent: set[str],
+    already_sent: set[tuple[str | None, str]],
     workspace_name: str | None = None,
     session_label: str | None = None,
     session=None,
-) -> set[str]:
+) -> set[tuple[str | None, str]]:
     """Send one channel prompt per pending human-interaction node.
 
     For a multi-event graph park (several agent/tool_call nodes yielding
     in one superstep), each pending node gets its own message. ``pending``
-    items are ``{"kind": "ask_user"|"_approval", "tool_call_id",
+    items are ``{"kind": "ask_user"|"_approval", "node_id", "tool_call_id",
     "resume_metadata"}``. Returns the union of ``already_sent`` and the
-    tool_call_ids dispatched this call, so a re-park does not re-send a
-    message for a node already prompted. Never raises.
+    ``(node_id, tool_call_id)`` pairs dispatched this call, so a re-park
+    does not re-send a message for a node already prompted. Never raises.
+
+    Deduped by ``(node_id, tool_call_id)``, NOT ``tool_call_id`` alone
+    (01a0518f): two concurrent fan-out siblings can legitimately share a
+    raw provider tool_call_id, and a tool_call_id-only dedup silently
+    dropped one sibling's channel prompt entirely - a genuinely different
+    (and worse) failure than the cross-wired-resume bug this fix's
+    sibling changes address, since the operator never even sees a
+    request to respond to. ``node_id`` is ``None`` for entries built
+    before this fix (an in-flight checkpoint at deploy time); dedup then
+    degrades to the old tool_call_id-only behaviour for exactly those
+    entries, same as today.
     """
     import logging
     if dispatcher is None:
@@ -728,7 +744,10 @@ async def _dispatch_to_channels_multi(
     sent = set(already_sent)
     for p in pending:
         tcid = p.get("tool_call_id")
-        if not tcid or tcid in sent:
+        if not tcid:
+            continue
+        key = (p.get("node_id"), tcid)
+        if key in sent:
             continue
         envelope = _build_prompt_envelope(
             kind=p.get("kind", ""),
@@ -743,7 +762,7 @@ async def _dispatch_to_channels_multi(
             continue
         try:
             await dispatcher.dispatch_prompt(envelope=envelope, session=session)
-            sent.add(tcid)
+            sent.add(key)
         except Exception:
             logging.getLogger(__name__).exception(
                 "_dispatch_to_channels_multi failed for %s/%s",
