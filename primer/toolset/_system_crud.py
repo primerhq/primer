@@ -757,6 +757,14 @@ def _call_tool_tool(
                     provider_registry=registry,
                 )
                 if verdict.required:
+                    # Lazy import: avoids a circular import with
+                    # primer.graph (which imports primer.agent.tool_manager,
+                    # a sibling of this dispatch path, at package-init
+                    # time). See primer.graph._node_identity's docstring.
+                    from primer.graph._node_identity import (
+                        current_graph_node_id,
+                    )
+
                     session_or_chat = (
                         ctx.session_id or ctx.chat_id or "unknown"
                     )
@@ -767,13 +775,21 @@ def _call_tool_tool(
                     # own name (``call_tool``), and the worker resume path
                     # keys the approval re-dispatch on ``_approval``. This is
                     # exactly how the agent loop parks for approval.
+                    # 01a0518f: fold in the ambient graph node instance id
+                    # the same way tool_manager.py's approval gate does -
+                    # see that call site's comment for the full rationale.
+                    node_scope = current_graph_node_id()
+                    event_key = (
+                        f"tool_approval:{session_or_chat}:{node_scope}:"
+                        f"{ctx.tool_call_id}"
+                        if node_scope is not None
+                        else f"tool_approval:{session_or_chat}:"
+                        f"{ctx.tool_call_id}"
+                    )
                     raise YieldToWorker(
                         Yielded(
                             tool_name="_approval",
-                            event_key=(
-                                f"tool_approval:{session_or_chat}:"
-                                f"{ctx.tool_call_id}"
-                            ),
+                            event_key=event_key,
                             timeout=policy.timeout_seconds,
                             resume_metadata={
                                 "policy_id": policy.id,

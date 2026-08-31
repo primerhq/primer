@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from primer.agent.loop import run_agent_turn
 from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.graph._node_identity import current_graph_node_id
 from primer.graph._node_refs import _NodeDone, _PendingAgentYield
 from primer.graph.template import render_input_template
 from primer.model.chat import Message, StreamEvent, TextPart
@@ -181,8 +182,18 @@ class _AgentNodeMixin:
                 principal=self._principal,
                 messages_out=produced_messages,
             ):
+                # 01a0518f: current_graph_node_id() is the fan-out-
+                # instance-qualified id (_stream_node sets it before
+                # calling in), so concurrent siblings of this SAME agent
+                # node tag their streamed events distinctly instead of
+                # colliding on the shared base node.id - see
+                # primer.graph._node_identity. Falls back to node.id when
+                # unset (byte-identical to before that call path).
                 await queue.put(
-                    self._wrap_event(event, node.id, context.iteration)
+                    self._wrap_event(
+                        event, current_graph_node_id() or node.id,
+                        context.iteration,
+                    )
                 )
         except YieldToWorker as yld:
             # A yielding tool (ask_user) or an approval gate fired. The

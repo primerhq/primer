@@ -149,3 +149,103 @@ async def test_approval_event_key_is_session_scoped(
     expected = f"tool_approval:{sess.session_id}:c1"
     assert ek == expected, f"event key {ek!r} != {expected!r}"
     assert "unknown" not in ek  # regression guard: the old bug produced this
+
+
+def _tm_bound_to(sess, provider) -> ToolExecutionManager:
+    tm = ToolExecutionManager(
+        toolset_providers={"_test": provider},  # type: ignore[arg-type]
+        workspace_session=sess,  # type: ignore[arg-type]
+    )
+    tm._approval_resolver = _PoliciesOnlyResolver(
+        [
+            ToolApprovalPolicy(
+                id="p", toolset_id="_test", tool_name="echo",
+                approval=RequiredApprovalConfig(),
+            ),
+        ]
+    )
+    return tm
+
+
+@pytest.mark.asyncio
+async def test_approval_event_key_folds_in_the_ambient_graph_node_id(
+    tool_manager_with_test_tools,
+):
+    """01a0518f: when a graph node's turn is in flight (the ambient
+    contextvar set by _stream_node/base.py's resume loop), the approval
+    gate's event_key must include that node id - not just the session id
+    - so concurrent fan-out siblings of the SAME node don't share a key."""
+    from primer.graph._node_identity import (
+        reset_current_graph_node_id,
+        set_current_graph_node_id,
+    )
+    from primer.model.chat import ToolCallPart
+
+    sess = _FakeAgentSession()
+    provider = tool_manager_with_test_tools._toolsets["_test"]
+    tm = _tm_bound_to(sess, provider)
+
+    token = set_current_graph_node_id("worker[0]")
+    try:
+        with pytest.raises(YieldToWorker) as ei:
+            await tm.execute(
+                ToolCallPart(id="c1", name=_SCOPED_NAME, arguments={"x": 1}),
+            )
+    finally:
+        reset_current_graph_node_id(token)
+
+    ek = ei.value.yielded.event_key
+    expected = f"tool_approval:{sess.session_id}:worker[0]:c1"
+    assert ek == expected, f"event key {ek!r} != {expected!r}"
+    # The stored/round-tripped tool_call_id (fed back to the LLM on
+    # resume) must stay the RAW id, untouched by the node-scoping.
+    assert ei.value.tool_call_id == "c1"
+    assert ei.value.yielded.resume_metadata["original_call"]["id"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fanout_siblings_sharing_a_raw_id_get_distinct_event_keys(
+    tool_manager_with_test_tools,
+):
+    """01a0518f: THE regression this task exists for. Two concurrent
+    fan-out sibling node instances can legitimately mint the identical
+    raw provider tool_call_id ("call_0" restarts every LLM stream call -
+    see primer/session/persistence.py's own comment on this). Without
+    node-scoping, both siblings' approval gates would produce the exact
+    same event_key, so resolving either one's decision would ALSO
+    (mis-)resolve the other's pending park - the wrong-sibling-resolved
+    correctness bug flagged in the task filing. Simulates two concurrent
+    dispatches (sequential here, but each under its own ambient node id,
+    exactly as two real asyncio.create_task siblings would each see via
+    the contextvar's per-task copy-on-create semantics) and asserts the
+    resulting event_keys never collide."""
+    from primer.graph._node_identity import (
+        reset_current_graph_node_id,
+        set_current_graph_node_id,
+    )
+    from primer.model.chat import ToolCallPart
+
+    sess = _FakeAgentSession()
+    provider = tool_manager_with_test_tools._toolsets["_test"]
+
+    keys: dict[str, str] = {}
+    for node_id in ("worker[0]", "worker[1]"):
+        tm = _tm_bound_to(sess, provider)
+        token = set_current_graph_node_id(node_id)
+        try:
+            with pytest.raises(YieldToWorker) as ei:
+                await tm.execute(
+                    ToolCallPart(
+                        id="call_0", name=_SCOPED_NAME, arguments={"x": 1},
+                    ),
+                )
+        finally:
+            reset_current_graph_node_id(token)
+        keys[node_id] = ei.value.yielded.event_key
+
+    assert keys["worker[0]"] != keys["worker[1]"], (
+        f"fan-out siblings sharing raw tool_call_id 'call_0' produced the "
+        f"same event_key: {keys}"
+    )
+    assert keys["worker[0]"] == f"tool_approval:{sess.session_id}:worker[0]:call_0"
+    assert keys["worker[1]"] == f"tool_approval:{sess.session_id}:worker[1]:call_0"

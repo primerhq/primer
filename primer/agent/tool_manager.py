@@ -566,6 +566,15 @@ class ToolExecutionManager:
                 )
                 if verdict.required:
                     from primer.agent.approval import effective_approvers
+                    # Lazy import: primer.graph (this contextvar's home
+                    # package) imports primer.agent.tool_manager
+                    # transitively at package-init time (base.py ->
+                    # _agent_node.py -> here), so a module-level import
+                    # the other direction would be circular. See the
+                    # module docstring on primer.graph._node_identity.
+                    from primer.graph._node_identity import (
+                        current_graph_node_id,
+                    )
 
                     approvers = effective_approvers(policy, verdict)
                     session_or_chat = (
@@ -580,12 +589,25 @@ class ToolExecutionManager:
                                 "policy_id": policy.id,
                             },
                         )
+                    # 01a0518f: fold the ambient graph node instance id
+                    # (set only while a graph node's turn is in flight -
+                    # see primer.graph._node_identity) into the event_key
+                    # so concurrent fan-out siblings of the SAME node
+                    # stop sharing one key when their raw provider
+                    # tool_call_id collides. None (every non-graph path,
+                    # e.g. a plain agent session or chat) keeps the
+                    # existing shape byte-identical.
+                    node_scope = current_graph_node_id()
+                    event_key = (
+                        f"tool_approval:{session_or_chat}:{node_scope}:"
+                        f"{call.id}"
+                        if node_scope is not None
+                        else f"tool_approval:{session_or_chat}:{call.id}"
+                    )
                     raise YieldToWorker(
                         Yielded(
                             tool_name="_approval",
-                            event_key=(
-                                f"tool_approval:{session_or_chat}:{call.id}"
-                            ),
+                            event_key=event_key,
                             timeout=policy.timeout_seconds,
                             resume_metadata={
                                 "policy_id": policy.id,
