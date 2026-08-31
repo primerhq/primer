@@ -242,6 +242,12 @@ async def wait_completed(
     """Poll until an interactive agent session's turn cleanly finishes,
     however it now surfaces.
 
+    Never wait on ``status=="waiting"`` alone for this: the rest is TWO
+    writes (dispatch stamps status=WAITING, then on_release bumps
+    turn_no in a later update), so a status-only poll can stop inside
+    the gap and read a stale session_state (01a0590e, a CI-only flake
+    that hit three times before being traced).
+
     01a0518a: a clean stop on a plain interactive (non-autonomous) agent
     session rests it WAITING (session_state="parked") instead of ending
     it; a genuine failure/internal error still reaches ENDED as before
