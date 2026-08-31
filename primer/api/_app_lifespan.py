@@ -169,6 +169,10 @@ def _make_lifespan(config: AppConfig):
 
         channel_inbox = ChannelInbox(
             event_bus=getattr(app.state, "event_bus", None),
+            # 01a0518f: lets handle_response look up a park's OWN stored
+            # event_key instead of reconstructing it - required now that
+            # a graph park's key can be node-qualified.
+            storage_provider=storage_provider,
         )
         channel_registry = ChannelRegistry(
             channel_storage=storage_provider.get_storage(Channel),
