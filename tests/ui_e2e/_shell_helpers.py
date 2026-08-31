@@ -206,13 +206,23 @@ def wait_for_overlay_url(page: Page, route: str, *,
 
 def open_legacy_route(page: Page, console_url: str, route: str,
                       *, tab: str | None = None, wid: str | None = None,
-                      timeout: int = 20_000):
+                      timeout: int = 45_000):
     """Open the overlay that succeeded a legacy console route.
 
     ``wid`` is optional because these surfaces are platform-wide, not
     workspace-scoped: with none given the console resolves the first
     workspace itself and the overlay still opens, since the URL grammar
-    parses the overlay independently of the workspace.
+    parses the overlay independently of the workspace. Every real
+    caller in this suite omits it, which means every call here is a
+    CHAIN exactly like open_doc's own (boot on whichever workspace the
+    console lands in first, then resolve the overlay) - so it gets the
+    same 45s budget open_doc's own comment already earned for that
+    reason, not a fresh guess. The overlay-flake hunt's cold-boot
+    specimens (test_knowledge_collection_journey and friends, GHA runs
+    33426311517 and earlier) all failed here specifically, at this
+    default's old 20s, with a fully-booted shell showing the wrong
+    (default Studio) view - the resolve-then-chain still in flight, not
+    a dead page.
     """
     target = overlay_target(route)
     if tab:

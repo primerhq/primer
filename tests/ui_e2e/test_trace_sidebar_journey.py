@@ -67,13 +67,28 @@ def _seed(base_url: str, mock_base_url: str, suffix: str, tmp_path: Path) -> dic
 
 
 def _wait_for_turn_to_settle(client: httpx.Client, sid: str, timeout_s: float = 20.0) -> dict:
+    """Wait for the auto-started turn to finish, not just for a poll to
+    observe "not running" - those are the SAME reading before the
+    worker has dispatched the turn at all (poll_interval_seconds=1.0,
+    scripts/e2e/bringup.sh's config) and after it has finished, and a
+    check-too-early race here (returning on the pre-dispatch reading)
+    is invisible on an idle box - dispatch beats the first 100ms poll -
+    but real on a contended CI runner, where this returned before the
+    tool call even started and let the test open a still-mid-stream
+    session (the overlay-flake hunt's specimen on this file: two CI
+    failures, GHA run 33426311517, screenshot showed "forming a tool
+    call... STREAMING 10s" under an already-opened trace overlay).
+    """
     deadline = time.monotonic() + timeout_s
     last: dict = {}
+    seen_running = False
     while time.monotonic() < deadline:
         r = client.get(f"/v1/sessions/{sid}")
         assert r.status_code == 200, r.text
         last = r.json()
-        if last.get("session_state") != "running":
+        if last.get("session_state") == "running":
+            seen_running = True
+        elif seen_running:
             return last
         time.sleep(0.1)
     raise AssertionError(f"turn never settled, last observed: {last}")

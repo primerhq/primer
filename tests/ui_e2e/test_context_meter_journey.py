@@ -74,14 +74,25 @@ def _seed(base_url: str, mock_base_url: str, suffix: str, tmp_path: Path, *, con
 def _wait_for_turn_to_settle(client: httpx.Client, sid: str, timeout_s: float = 20.0) -> dict:
     """Poll until the turn is no longer running - a simple completed
     turn resolves almost immediately server-side (no chunk delays in
-    the scripted rule), but the row still needs a moment to reflect it."""
+    the scripted rule), but the row still needs a moment to reflect it.
+
+    Overlay-flake hunt hardening: "not running" alone is ALSO true
+    before the worker has dispatched the turn at all
+    (poll_interval_seconds=1.0, scripts/e2e/bringup.sh's config) - a
+    check-too-early race that's invisible on an idle box (dispatch
+    beats the first 100ms poll) but real on a contended CI runner.
+    Require "running" to have been observed at least once first.
+    """
     deadline = time.monotonic() + timeout_s
     last: dict = {}
+    seen_running = False
     while time.monotonic() < deadline:
         r = client.get(f"/v1/sessions/{sid}")
         assert r.status_code == 200, r.text
         last = r.json()
-        if last.get("session_state") != "running":
+        if last.get("session_state") == "running":
+            seen_running = True
+        elif seen_running:
             return last
         time.sleep(0.1)
     raise AssertionError(f"turn never settled, last observed: {last}")
