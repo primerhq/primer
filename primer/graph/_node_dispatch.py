@@ -30,6 +30,11 @@ import asyncio
 import json
 from typing import Any
 
+from primer.graph._node_identity import (
+    current_graph_node_id,
+    reset_current_graph_node_id,
+    set_current_graph_node_id,
+)
 from primer.graph._node_refs import (
     _FanoutDrainState,
     _FanoutInstance,
@@ -388,13 +393,33 @@ class _NodeDispatchMixin:
                         graph_input=gi, initial_messages=[]
                     )
             elif isinstance(node, _GraphNodeRef):
-                output = await self._stream_subgraph_node(
-                    node, context, queue, extra_scope=extra_scope
-                )
+                # 01a0518f: publish the fan-out-instance-qualified id
+                # (this function's own node_id - "worker[0]" etc., already
+                # resolved above) for the duration of this node's turn, so
+                # _wrap_event tags forwarded sub-events with it instead of
+                # the shared base node.id (which concurrent siblings would
+                # otherwise collide on) - see primer.graph._node_identity.
+                token = set_current_graph_node_id(node_id)
+                try:
+                    output = await self._stream_subgraph_node(
+                        node, context, queue, extra_scope=extra_scope
+                    )
+                finally:
+                    reset_current_graph_node_id(token)
             elif isinstance(node, _AgentNodeRef):
-                output = await self._stream_agent_node(
-                    node, context, queue, extra_scope=extra_scope
-                )
+                # Same as above: the approval gate's event_key
+                # (primer.agent.tool_manager) and _wrap_event's tagging
+                # both read this so concurrent fan-out siblings of THIS
+                # node stop colliding on the shared base node.id / a
+                # provider-synthesized tool_call_id that legitimately
+                # repeats across them.
+                token = set_current_graph_node_id(node_id)
+                try:
+                    output = await self._stream_agent_node(
+                        node, context, queue, extra_scope=extra_scope
+                    )
+                finally:
+                    reset_current_graph_node_id(token)
             else:  # pragma: no cover -- discriminated union exhausted
                 raise ConfigError(
                     f"unknown node kind: {type(node).__name__}"
@@ -518,8 +543,18 @@ class _NodeDispatchMixin:
                 # under the child's node ids.
                 await queue.put(sub_event)  # type: ignore[arg-type]
                 continue
+            # 01a0518f: current_graph_node_id() is the fan-out-instance-
+            # qualified id (_stream_node sets it before calling in), so
+            # concurrent siblings of this SAME subgraph node forward
+            # their sub-events under distinct tags instead of colliding
+            # on the shared base node.id. Falls back to node.id when
+            # unset (a direct/non-fan-out call, or a call path that
+            # predates this contextvar - byte-identical to before).
             await queue.put(
-                self._wrap_event(sub_event, node.id, context.iteration)
+                self._wrap_event(
+                    sub_event, current_graph_node_id() or node.id,
+                    context.iteration,
+                )
             )
             ev_type = getattr(sub_event, "type", None)
             if ev_type == "text-delta":

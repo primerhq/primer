@@ -136,6 +136,10 @@ from primer.graph._node_refs import (  # noqa: E402
 )
 from primer.graph._checkpoint import _CheckpointMixin  # noqa: E402
 from primer.graph._agent_node import _AgentNodeMixin  # noqa: E402
+from primer.graph._node_identity import (  # noqa: E402
+    reset_current_graph_node_id,
+    set_current_graph_node_id,
+)
 from primer.graph._routing import _RoutingMixin  # noqa: E402
 # ``_SubgraphFailed`` is raised by ``_NodeDispatchMixin._stream_subgraph_node``;
 # it lives alongside that mixin and is re-exported here so existing references
@@ -646,51 +650,61 @@ class _BaseGraphExecutor(
         # Resume the selected agent-node yields: continue each node's turn
         # with the human's answer / decision injected as the tool result.
         for ay in ay_pending:
+            # 01a0518f: publish ay.node_id (already fan-out-instance-
+            # qualified, e.g. "worker[0]") for the duration of this
+            # node's resume - a resumed turn's own tool calls can hit
+            # the approval gate again, and its event_key needs the same
+            # disambiguation a fresh dispatch gets. See
+            # primer.graph._node_identity.
+            token = set_current_graph_node_id(ay.node_id)
             try:
-                out = await self._resume_agent_node(
-                    ay, agent_tool_result if agent_tool_result is not None
-                    else Message(role="tool", parts=[
-                        ToolResultPart(id=ay.tool_call_id, output="")]),
-                )
-            except Exception as exc:  # noqa: BLE001 -- map to node failure
-                fail_out = NodeOutput(
-                    text="", parsed=None, history=[],
-                    iteration=context.iteration, error=str(exc),
-                    ended_detail="tool_execution_failed",
-                )
-                context.nodes[ay.node_id] = fail_out
+                try:
+                    out = await self._resume_agent_node(
+                        ay, agent_tool_result if agent_tool_result is not None
+                        else Message(role="tool", parts=[
+                            ToolResultPart(id=ay.tool_call_id, output="")]),
+                    )
+                except Exception as exc:  # noqa: BLE001 -- map to node failure
+                    fail_out = NodeOutput(
+                        text="", parsed=None, history=[],
+                        iteration=context.iteration, error=str(exc),
+                        ended_detail="tool_execution_failed",
+                    )
+                    context.nodes[ay.node_id] = fail_out
+                    node_states[ay.node_id] = NodeRuntimeState(
+                        status=NodeRuntimeStatus.FAILED,
+                        last_run_iteration=context.iteration,
+                        last_run_at=datetime.now(timezone.utc),
+                        error=str(exc),
+                    )
+                    yield _GraphErrorEvent(  # type: ignore[misc]
+                        code="tool_execution_failed", message=str(exc),
+                        node_id=ay.node_id,
+                    )
+                    # Balanced exit for this resumed agent-yield node (parked →
+                    # resumed → failed). The superstep loop deferred this node's
+                    # exit on park; emit it here with status="failed".
+                    yield _GraphTransitionEvent(  # type: ignore[misc]
+                        node_id=ay.node_id,
+                        node_kind=self._node_kind_for(ay.node_id),
+                        phase="exit",
+                        status="failed",
+                    )
+                    await self._save_state(
+                        iteration=context.iteration, node_states=node_states,
+                        status=SessionStatus.ENDED, ended_reason="failed",
+                        ended_detail="tool_execution_failed",
+                    )
+                    return
+                context.nodes[ay.node_id] = out
                 node_states[ay.node_id] = NodeRuntimeState(
-                    status=NodeRuntimeStatus.FAILED,
+                    status=NodeRuntimeStatus.ENDED,
                     last_run_iteration=context.iteration,
                     last_run_at=datetime.now(timezone.utc),
-                    error=str(exc),
                 )
-                yield _GraphErrorEvent(  # type: ignore[misc]
-                    code="tool_execution_failed", message=str(exc),
-                    node_id=ay.node_id,
-                )
-                # Balanced exit for this resumed agent-yield node (parked →
-                # resumed → failed). The superstep loop deferred this node's
-                # exit on park; emit it here with status="failed".
-                yield _GraphTransitionEvent(  # type: ignore[misc]
-                    node_id=ay.node_id,
-                    node_kind=self._node_kind_for(ay.node_id),
-                    phase="exit",
-                    status="failed",
-                )
-                await self._save_state(
-                    iteration=context.iteration, node_states=node_states,
-                    status=SessionStatus.ENDED, ended_reason="failed",
-                    ended_detail="tool_execution_failed",
-                )
-                return
-            context.nodes[ay.node_id] = out
-            node_states[ay.node_id] = NodeRuntimeState(
-                status=NodeRuntimeStatus.ENDED,
-                last_run_iteration=context.iteration,
-                last_run_at=datetime.now(timezone.utc),
-            )
-            completed_ids.append(ay.node_id)
+                completed_ids.append(ay.node_id)
+            finally:
+                reset_current_graph_node_id(token)
 
         # graph_transition EXIT for each resumed node that finished this
         # cycle. The superstep loop SKIPS the exit emit when a node parks

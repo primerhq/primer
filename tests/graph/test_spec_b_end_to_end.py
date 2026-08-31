@@ -301,17 +301,23 @@ async def test_spec_b_end_to_end_graph_runs_to_completion() -> None:
             if inner_node_id is not None:
                 graph_node_event_ids.append(inner_node_id)
 
-    # Worker events are tagged with the synthesized instance id
-    # (``worker[i]``) OR the base target id (``worker``) depending on
-    # the executor's stamping path; tolerate both. Pin that we saw at
-    # least one worker-tagged event per instance.
-    worker_event_count = sum(
-        1
-        for nid in graph_node_event_ids
+    # 01a0518f: worker events are now ALWAYS tagged with the synthesized,
+    # fan-out-instance-qualified id ("worker[i]") - _wrap_event no longer
+    # collapses concurrent siblings onto the shared base target id
+    # ("worker"), which used to make their streamed text/reasoning/
+    # tool_names collide into the same primer.session.persistence
+    # _CoalesceState bucket (a real data-loss bug, not just cosmetic
+    # attribution - two siblings' text could interleave/clobber each
+    # other in the persisted transcript). Assert each of the 3 fan-out
+    # instances gets its OWN distinct tag, proving isolation rather than
+    # merely "some worker-ish tag exists at least 3 times".
+    worker_event_ids = {
+        nid for nid in graph_node_event_ids
         if nid == "worker" or nid.startswith("worker[")
-    )
-    assert worker_event_count >= 3, (
-        f"expected at least 3 worker-tagged events, got {graph_node_event_ids!r}"
+    }
+    assert worker_event_ids == {"worker[0]", "worker[1]", "worker[2]"}, (
+        f"expected each fan-out instance tagged distinctly, got "
+        f"{sorted(worker_event_ids)} from {graph_node_event_ids!r}"
     )
 
     # ToolCall nodes don't emit a wrapped child stream-event in this
