@@ -266,11 +266,18 @@ def test_translate_tool_call_carries_name_from_start() -> None:
     )
     assert isinstance(rec, SessionMessageRecord)
     assert rec.kind == SessionMessageKind.TOOL_CALL
-    assert rec.payload.get("id") == "tc9"
+    # 01a0518f: the durable id is the SCOPED id minted at ToolCallStart,
+    # not the raw provider id verbatim - it restarts at the same value
+    # every llm.stream() call, so bare "tc9" can legitimately collide
+    # across tool-rounds and concurrent fan-out siblings.
+    assert rec.payload.get("id") == "x:tool:0:1"
     assert rec.payload.get("name") == "fs__write"
     assert rec.payload.get("arguments") == {"path": "x"}
     # Consumed on End — the map doesn't accumulate dead keys.
     assert (None, "tc9") not in state.tool_names
+    # The scoped-id mapping itself is NOT consumed on End - the later
+    # _ExecutorToolResult event for this same call still needs it.
+    assert state.scoped_call_ids[(None, "tc9")] == "x:tool:0:1"
 
 
 def test_translate_tool_call_end_without_start_has_null_name() -> None:
@@ -286,6 +293,133 @@ def test_translate_tool_call_end_without_start_has_null_name() -> None:
     assert isinstance(rec, SessionMessageRecord)
     assert rec.kind == SessionMessageKind.TOOL_CALL
     assert rec.payload.get("name") is None
+
+
+class _FakeDeltaSink:
+    def __init__(self):
+        self.deltas: list[tuple[str, str, str]] = []
+        self.closed: list[str] = []
+
+    def on_delta(self, pid, kind, delta):
+        self.deltas.append((pid, kind, delta))
+
+    def close(self, pid):
+        self.closed.append(pid)
+
+
+def test_tool_call_round_trip_shares_one_scoped_id_across_call_delta_and_result() -> None:
+    """01a0518f: ToolCallStart mints the scoped id; ToolCallDelta's live
+    delta_sink calls, the durable TOOL_CALL record, and the LATER
+    TOOL_RESULT record must all carry that SAME scoped id - not the raw
+    provider id verbatim - so live-argument reconciliation and the
+    TOOL_CALL/TOOL_RESULT pairing both still work with the new id shape."""
+    from primer.model.chat import (
+        ExtendedEvent,
+        ToolCallDelta,
+        ToolCallEnd,
+        ToolCallStart,
+        _ExecutorToolResult,
+    )
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    sink = _FakeDeltaSink()
+
+    assert translate_stream_event(
+        ToolCallStart(id="call_0", name="fs__write", index=0), state,
+        delta_sink=sink,
+    ) is None
+    assert translate_stream_event(
+        ToolCallDelta(id="call_0", arguments_delta='{"path"', index=0), state,
+        delta_sink=sink,
+    ) is None
+
+    call_rec = translate_stream_event(
+        ToolCallEnd(id="call_0", arguments={"path": "x"}, index=0), state,
+        delta_sink=sink,
+    )
+    scoped_id = call_rec.payload["id"]
+    assert scoped_id != "call_0"  # not the raw id verbatim
+
+    result_rec = translate_stream_event(
+        ExtendedEvent(extended=_ExecutorToolResult(
+            call_id="call_0", output="done", error=False,
+        )),
+        state,
+    )
+    assert result_rec.payload["call_id"] == scoped_id, (
+        "TOOL_CALL and TOOL_RESULT must carry the identical scoped id"
+    )
+    # Live delta_sink calls used the scoped id throughout, not the raw one.
+    assert sink.deltas == [(scoped_id, "tool", '{"path"')]
+    assert scoped_id in sink.closed
+    # The mapping is popped once the result consumes it - not left dangling.
+    assert (None, "call_0") not in state.scoped_call_ids
+
+
+def test_two_tool_rounds_on_the_same_node_get_distinct_scoped_ids_for_the_same_raw_id() -> None:
+    """01a0518f: THE bug this fix exists for. The LLM adapter's id
+    counter restarts on every llm.stream() call (persistence.py's own
+    module comment), so a SECOND tool-calling round on the SAME graph
+    node can legitimately reuse "call_0" for an entirely different tool
+    call. The two TOOL_CALL records must not collide."""
+    from primer.model.chat import ToolCallEnd, ToolCallStart
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    node = "worker"
+
+    translate_stream_event(
+        ToolCallStart(id="call_0", name="fs__read", index=0), state,
+        node_id=node,
+    )
+    round1 = translate_stream_event(
+        ToolCallEnd(id="call_0", arguments={"path": "a"}, index=0), state,
+        node_id=node,
+    )
+
+    translate_stream_event(
+        ToolCallStart(id="call_0", name="fs__write", index=0), state,
+        node_id=node,
+    )
+    round2 = translate_stream_event(
+        ToolCallEnd(id="call_0", arguments={"path": "b"}, index=0), state,
+        node_id=node,
+    )
+
+    assert round1.payload["id"] != round2.payload["id"], (
+        f"two distinct tool-rounds sharing raw id 'call_0' collided: "
+        f"{round1.payload['id']!r}"
+    )
+
+
+def test_concurrent_fanout_siblings_get_distinct_scoped_ids_for_the_same_raw_id() -> None:
+    """01a0518f: two concurrent fan-out sibling nodes each restart their
+    OWN LLM stream call's id counter independently, so they can also
+    legitimately share a raw id within the SAME turn/round."""
+    from primer.model.chat import ToolCallEnd, ToolCallStart
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+
+    translate_stream_event(
+        ToolCallStart(id="call_0", name="fs__read", index=0), state,
+        node_id="worker[0]",
+    )
+    sibling0 = translate_stream_event(
+        ToolCallEnd(id="call_0", arguments={}, index=0), state,
+        node_id="worker[0]",
+    )
+    translate_stream_event(
+        ToolCallStart(id="call_0", name="fs__read", index=0), state,
+        node_id="worker[1]",
+    )
+    sibling1 = translate_stream_event(
+        ToolCallEnd(id="call_0", arguments={}, index=0), state,
+        node_id="worker[1]",
+    )
+
+    assert sibling0.payload["id"] != sibling1.payload["id"]
 
 
 def test_translate_executor_tool_result() -> None:
