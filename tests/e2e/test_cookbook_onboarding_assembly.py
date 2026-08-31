@@ -53,7 +53,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_for_status,
+    wait_completed,
     wait_terminal,
 )
 from tests._support.smk import smk
@@ -291,10 +291,43 @@ async def test_onboarding_assembly_composes_subgraphs(
         # instead of ENDING it - wait_terminal (status in {"ended"}) would
         # poll its full timeout_s and never see that value, which is
         # exactly the ~3min hang this test was filed for. Wait for the new
-        # terminal-like shape instead.
-        final = await wait_for_status(authed_client, sid, "waiting", timeout_s=180)
-        assert final.get("status") == "waiting", final
-        assert final.get("session_state") == "parked", final
+        # terminal-like shape instead - via wait_completed, NOT a raw
+        # wait_for_status(..., "waiting") poll (01a0590e, 3rd CI flake): the
+        # status=WAITING write (dispatch.py's _transition_session_status)
+        # and the turn_no bump that makes session_state read "parked"
+        # (claim/adapters/sessions.py on_release's separate, LATER
+        # self._storage.update()) are two distinct DB writes for the same
+        # logical "turn completed" event, so there is a real, if usually
+        # sub-millisecond, window where a poll can observe status="waiting"
+        # with turn_no still stale (session_state falls through to
+        # "waiting" instead of "parked" - see WorkspaceSession.session_state).
+        # A bare wait_for_status(..., "waiting") stops polling the INSTANT
+        # status flips, so it can return a snapshot from inside that window;
+        # under CI's more contended scheduling the window is wide enough to
+        # occasionally get polled (never seen locally, where both writes
+        # land back-to-back). wait_completed's own stop condition already
+        # requires session_state=="parked" (see tests/_support/runs.py), so
+        # it polls straight through this race instead of stopping short of it.
+        final = await wait_completed(authed_client, sid, timeout_s=180)
+
+        def _diag(row: dict) -> str:
+            return (
+                f"status={row.get('status')!r} "
+                f"session_state={row.get('session_state')!r} "
+                f"turn_no={row.get('turn_no')!r} "
+                f"parked_status={row.get('parked_status')!r}"
+            )
+
+        assert final.get("status") == "waiting", (
+            "coordinator session never rested after the assembly turn "
+            f"(composition may still be running, or ended some other way): "
+            f"{_diag(final)}"
+        )
+        assert final.get("session_state") == "parked", (
+            "session reached status=waiting but session_state never "
+            "converged to 'parked' within the timeout - see the turn_no-lag "
+            f"race noted above: {_diag(final)}"
+        )
 
         transcript = _session_transcript(tmp_path, wid, sid)
 
