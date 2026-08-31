@@ -620,12 +620,22 @@ function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast, hide
     if (!wid || !rid || !nodeId) return undefined;
     let alive = true;
     let es;
+    // 01a0518f: a fan-out node's live records carry the synthesized
+    // instance id ("worker[0]"), never the shared base id ("worker")
+    // node.node_id resolves to - so an exact-equality selector/filter
+    // matched nothing for a fan-out node (worse than the OLD merged-
+    // collided view, which at least showed something). Match either the
+    // exact base id (a non-fan-out node) or any "<base>[" instance.
+    const matchesNode = (id) => id === nodeId || (typeof id === "string" && id.startsWith(`${nodeId}[`));
     const openTap = () => {
       if (!alive) return;
-      // Build a selector: sessions:id==rid AND events:node_id==nodeId.
+      // Build a selector: sessions:id==rid. Node attribution is filtered
+      // client-side (matchesNode, below) rather than server-side here -
+      // the tap selector's "=" operator can't express "this id OR any of
+      // its fan-out instances" - so this panel trades a slightly wider
+      // server-side stream for correct fan-out attribution.
       const selector = {
         sessions: { kind: "predicate", left: { kind: "field", name: "id" }, op: "=", right: { kind: "value", value: rid } },
-        events: { kind: "predicate", left: { kind: "field", name: "node_id" }, op: "=", right: { kind: "value", value: nodeId } },
       };
       const highWater = _niCursorRef.current || 0;
       const cursorToken = highWater > 0 ? _slsEncodeCursor(rid, highWater) : null;
@@ -640,10 +650,11 @@ function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast, hide
         if (!tev || typeof tev !== "object" || typeof tev.seq !== "number") return;
         const payload = tev.payload && typeof tev.payload === "object" ? tev.payload : {};
         const frame = { ...payload, kind: tev.class, seq: tev.seq, payload, ts: tev.ts };
-        // Defensive node filter: the server-side selector already gates this
-        // but we double-check so a selector mismatch can't pollute frames.
+        // Node filter: the server-side selector no longer gates by node_id
+        // (see openTap's comment), so this is the sole node attribution
+        // check for live frames now, not just a defensive double-check.
         const fnode = frame.node_id || frame.end_node_id;
-        if (fnode !== nodeId) return;
+        if (!matchesNode(fnode)) return;
         setFrames((prev) => prev.some((p) => p.seq === frame.seq) ? prev : [...prev, frame].sort((a, b) => (a.seq || 0) - (b.seq || 0)));
       };
     };
@@ -660,10 +671,11 @@ function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast, hide
           let maxSeq = 0;
           for (const it of items) { if (typeof it.seq === "number" && it.seq > maxSeq) maxSeq = it.seq; }
           _niCursorRef.current = maxSeq;
-          // Keep only frames attributed to this node for display.
+          // Keep only frames attributed to this node (or one of its
+          // fan-out instances) for display.
           const nodeItems = items.filter((it) => {
             const p = it.payload && typeof it.payload === "object" ? it.payload : {};
-            return (it.node_id || p.node_id || it.end_node_id || p.end_node_id) === nodeId;
+            return matchesNode(it.node_id || p.node_id || it.end_node_id || p.end_node_id);
           });
           if (nodeItems.length) {
             setFrames((prev) => {
