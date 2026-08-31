@@ -116,9 +116,9 @@ async def test_dispatch_multi_event_sends_one_message_per_pending_node():
 
     d = _Disp()
     pending = [
-        {"kind": "ask_user", "tool_call_id": "tc1",
+        {"kind": "ask_user", "node_id": "n1", "tool_call_id": "tc1",
          "resume_metadata": {"prompt": "color?"}},
-        {"kind": "_approval", "tool_call_id": "tc2",
+        {"kind": "_approval", "node_id": "n2", "tool_call_id": "tc2",
          "resume_metadata": {"original_call": {"id": "tc2", "name": "workspace__write",
                                                "arguments": {"path": "a.txt"}}}},
     ]
@@ -130,7 +130,37 @@ async def test_dispatch_multi_event_sends_one_message_per_pending_node():
     appr = next(e for e in d.calls if e.kind == "tool_approval")
     assert appr.tool_name == "workspace__write"
     assert appr.tool_args == {"path": "a.txt"}
-    assert sent == {"tc1", "tc2"}
+    assert sent == {("n1", "tc1"), ("n2", "tc2")}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_multi_event_sends_both_fanout_siblings_sharing_a_raw_id():
+    """01a0518f: two concurrent fan-out siblings can legitimately share a
+    raw provider tool_call_id. Deduping by tool_call_id alone silently
+    dropped one sibling's channel prompt entirely - dedup must be keyed
+    by (node_id, tool_call_id), not tool_call_id alone."""
+    from primer.worker.yield_runtime import _dispatch_to_channels_multi
+
+    class _Disp:
+        def __init__(self): self.calls = []
+        async def dispatch_prompt(self, *, envelope, session=None):
+            self.calls.append(envelope); return [{"ok": True}]
+
+    d = _Disp()
+    pending = [
+        {"kind": "ask_user", "node_id": "worker[0]", "tool_call_id": "call_0",
+         "resume_metadata": {"prompt": "region 0?"}},
+        {"kind": "ask_user", "node_id": "worker[1]", "tool_call_id": "call_0",
+         "resume_metadata": {"prompt": "region 1?"}},
+    ]
+    sent = await _dispatch_to_channels_multi(
+        dispatcher=d, workspace_id="w1", session_id="s1",
+        pending=pending, already_sent=set())
+    assert len(d.calls) == 2, (
+        "both fan-out siblings must get their own channel prompt even "
+        "though they share the raw tool_call_id"
+    )
+    assert sent == {("worker[0]", "call_0"), ("worker[1]", "call_0")}
 
 
 @pytest.mark.asyncio
@@ -143,9 +173,10 @@ async def test_dispatch_multi_event_skips_already_sent():
             self.calls.append(envelope); return [{"ok": True}]
 
     d = _Disp()
-    pending = [{"kind": "ask_user", "tool_call_id": "tc1", "resume_metadata": {"prompt": "q"}}]
+    pending = [{"kind": "ask_user", "node_id": "n1", "tool_call_id": "tc1",
+                "resume_metadata": {"prompt": "q"}}]
     sent = await _dispatch_to_channels_multi(
         dispatcher=d, workspace_id="w1", session_id="s1",
-        pending=pending, already_sent={"tc1"})
+        pending=pending, already_sent={("n1", "tc1")})
     assert d.calls == []  # already sent -> no re-send
-    assert sent == {"tc1"}
+    assert sent == {("n1", "tc1")}
