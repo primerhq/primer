@@ -37,6 +37,17 @@ RESERVED_LANCE_SSP: str = "lance"
 RESERVED_HUGGINGFACE_CROSS_ENCODER: str = "huggingface-ce"
 RESERVED_LOCAL_WORKSPACE_TEMPLATE: str = "local-default"
 
+# S5 seeded-world reserved ids. Deliberately NOT part of ALL_RESERVED_IDS:
+# that set is consumed by the provider router guards (POST -> 409,
+# DELETE -> 403) and these are not provider rows. They are ensure-seeded
+# by primer.bootstrap.seed and remain user-editable and deletable.
+RESERVED_OPERATOR_AGENT: str = "operator"
+RESERVED_BUILDER_AGENT: str = "builder"
+RESERVED_PLANNER_AGENT: str = "planner"
+RESERVED_EXPLORER_AGENT: str = "explorer"
+RESERVED_TOOL_RUNNER_AGENT: str = "tool-runner"
+RESERVED_DEFAULT_WORKSPACE: str = "primer"
+
 # Convenience set of all reserved ids — for quick membership tests in
 # router guards (Task 3) and BootstrapRunner (Task 4).
 ALL_RESERVED_IDS: frozenset[str] = frozenset({
@@ -160,6 +171,12 @@ RESERVED_WORKSPACE_TEMPLATES: dict[str, dict] = {
 
 
 __all__ = [
+    "RESERVED_OPERATOR_AGENT",
+    "RESERVED_BUILDER_AGENT",
+    "RESERVED_PLANNER_AGENT",
+    "RESERVED_EXPLORER_AGENT",
+    "RESERVED_TOOL_RUNNER_AGENT",
+    "RESERVED_DEFAULT_WORKSPACE",
     "ALL_RESERVED_IDS",
     "RESERVED_CROSS_ENCODERS",
     "RESERVED_EMBEDDERS",

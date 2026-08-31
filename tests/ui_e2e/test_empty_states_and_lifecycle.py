@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import httpx
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 def _cleanup(base_url: str, urls: list[str]) -> None:
@@ -64,10 +65,7 @@ def test_u0045_toolset_tools_tab_deep_link_survives_reload(
         assert r.status_code == 201, f"seed toolset failed: {r.text}"
 
     try:
-        page.goto(
-            f"{console_url}#/toolsets/{toolset_id}?tab=tools",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"toolsets/{toolset_id}", tab="tools")
         page.locator("h1.page-title").get_by_text(
             toolset_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -90,8 +88,9 @@ def test_u0045_toolset_tools_tab_deep_link_survives_reload(
             f"Tools tab lost selected state after reload; "
             f"aria-selected={tools_tab_after.get_attribute('aria-selected')!r}"
         )
-        assert "tab=tools" in page.url, (
-            f"reload dropped ?tab=tools query: {page.url}"
+        # The tab travels in the overlay target's section slot now.
+        assert f"overlay=toolsets:tools:{toolset_id}" in page.url, (
+            f"reload dropped the tools tab: {page.url}"
         )
 
         # Defence: the page didn't blank out — either tools table or
@@ -136,75 +135,51 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
     """
     provider_id = f"llm-u0047-{unique_suffix}"
     try:
-        page.goto(
-            f"{console_url}#/providers/llm",
-            wait_until="domcontentloaded",
-        )
-        page.locator("h1.page-title").first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        # RETARGET (IA restructure 01a04d6a): "Register provider" now
+        # names the TYPE ("llm") up front rather than the kind directly -
+        # the form's own kind dropdown is STILL re-picked below to
+        # Anthropic regardless of which kind the type pick defaulted the
+        # form to. The round trip out to a detail page and back is still
+        # gone, and the list still has to show the new row in place, just
+        # now behind Register -> type -> (re-pick kind) -> Save.
+        open_legacy_route(page, console_url, "providers/llm")
+        page.get_by_test_id("provider-register-all-toggle").click()
+        page.get_by_test_id("provider-register-type-llm").click()
+        form = page.get_by_test_id("provider-form-llm_providers")
+        form.wait_for(state="visible", timeout=15_000)
 
-        # Open the New LLM provider modal.
-        page.get_by_role("button", name="New llm provider").first.click()
-        modal = page.locator(".modal").first
-        modal.wait_for(state="visible", timeout=5_000)
-
-        # Set the id so we can predict + assert + clean up.
-        # Selector strategy: scope inputs to the modal to avoid
-        # matching anything outside.
-        id_input = modal.get_by_placeholder("auto-generated", exact=False).first
-        id_input.fill(provider_id)
-
-        # Select the Anthropic provider via the dropdown.
-        modal.locator("select.select").first.select_option(label="Anthropic")
-
-        # Anthropic config is a single api_key field. Fill it.
-        modal.get_by_placeholder("", exact=False)  # noqa: silently no-op
-        api_key_input = modal.locator("input[type=password]").first
-        api_key_input.fill("sk-test-placeholder")
+        form.locator("input").first.fill(provider_id)
+        form.locator("select").first.select_option(label="Anthropic")
+        api_key_input = form.locator("input[type=password]").first
+        if api_key_input.count():
+            api_key_input.fill("sk-test-placeholder")
 
         # No model step: an LLM provider has no models[] to declare, so
-        # Create must already be enabled. This is the regression guard --
+        # Save must already be enabled. This is the regression guard --
         # the old form gated submit on models.length > 0, which made LLM
         # providers uncreatable once the field was removed.
         from playwright.sync_api import expect
 
-        expect(
-            modal.get_by_role("button", name="Create", exact=True),
-        ).to_be_enabled()
+        save_btn = form.get_by_test_id("provider-form-save")
+        expect(save_btn).to_be_enabled()
+        save_btn.click()
 
-        # Submit.
-        modal.get_by_role("button", name="Create").first.click()
-
-        # Wait for navigation to the detail page.
-        page.wait_for_url(
-            lambda url: f"#/providers/llm/{provider_id}" in url,
-            timeout=10_000,
+        # The row appears in the instance list beside the form, with no
+        # reload and no navigation. The list paginates at 25 with no
+        # search field (provider-catalog.jsx's PC_InstanceList) and the
+        # shared stack legitimately accumulates fixture residue across
+        # rounds (by design), which can push the new row past page 1 -
+        # page forward within the SAME already-open list (no reload, no
+        # route change) rather than assuming page 1.
+        row = page.get_by_test_id("provider-instances-llm").get_by_text(
+            provider_id, exact=True,
         )
-        page.locator("h1.page-title").get_by_text(
-            provider_id, exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
-
-        # Click the "Back" button to return to the list — same
-        # pattern as U0039. Scope to the page header to avoid
-        # matching other Back-labelled controls.
-        header_actions = page.locator(".page-header .page-actions").first
-        header_actions.wait_for(state="visible", timeout=5_000)
-        header_actions.get_by_role("button", name="Back").first.click()
-
-        # On the list page now; the new row must be visible WITHOUT
-        # a manual reload — the list.refetch() in onCreate
-        # invalidated the cache, and re-mount of the list page
-        # consumed the fresh data.
-        page.wait_for_url(
-            lambda url: url.rstrip("/").endswith("#/providers/llm"),
-            timeout=10_000,
-        )
-        page.locator("h1.page-title").get_by_text(
-            "LLM providers", exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
-        page.locator(f"tr:has-text('{provider_id}')").first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        next_btn = page.get_by_test_id("pager-next")
+        for _ in range(50):
+            if row.count() > 0 or next_btn.is_disabled():
+                break
+            next_btn.click()
+            page.wait_for_timeout(300)
+        expect(row).to_be_visible(timeout=15_000)
     finally:
         _cleanup(base_url, [f"/v1/llm_providers/{provider_id}"])

@@ -271,6 +271,24 @@ class SemanticSearchProviderType(str, Enum):
     LANCE = "lance"
 
 
+# Shared by both validators below: which config class a given provider
+# kind requires. PgVectorScaleConfig extends PgVectorConfig's own base
+# (_PgVectorBaseConfig) purely by ADDING optional fields, so a config
+# dict carrying only the core connection fields (hostname/port/
+# username/password/database - exactly what GET /ssp/_types' minimal
+# form submits) validates equally well as either class. Without this
+# mapping, Pydantic's smart-union resolution on the bare
+# ``PgVectorConfig | PgVectorScaleConfig | LanceConfig`` field picks
+# PgVectorConfig regardless of ``provider``, and a pgvectorscale create
+# with only the core fields then 422s against _validate_config_matches
+# below (platform wave P3 follow-up).
+_SSP_CONFIG_CLASS_BY_PROVIDER: dict["SemanticSearchProviderType", type[BaseModel]] = {
+    SemanticSearchProviderType.PGVECTOR: PgVectorConfig,
+    SemanticSearchProviderType.PGVECTORSCALE: PgVectorScaleConfig,
+    SemanticSearchProviderType.LANCE: LanceConfig,
+}
+
+
 class SemanticSearchProvider(Identifiable):
     """Operator-managed semantic-search backend backing collections
     and the internal collections subsystem.
@@ -292,13 +310,40 @@ class SemanticSearchProvider(Identifiable):
         description="Backend-specific connection settings; must match ``provider``.",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_config_to_provider(cls, data: object) -> object:
+        """Pre-validate: when ``config`` arrives as a dict, parse it with
+        the concrete config class matching ``provider`` rather than
+        letting the union's smart-resolution pick the wrong subclass.
+
+        Mirrors LLMProvider._coerce_config_to_provider
+        (primer/model/providers/llm.py) - same shape-ambiguity bug,
+        same fix: resolve the class from the sibling ``provider`` field
+        BEFORE the union ever has to guess.
+        """
+        if not isinstance(data, dict):
+            return data
+        provider = data.get("provider")
+        config = data.get("config")
+        if not isinstance(config, dict):
+            return data
+        try:
+            provider_enum = (
+                provider
+                if isinstance(provider, SemanticSearchProviderType)
+                else SemanticSearchProviderType(provider)
+            )
+        except ValueError:
+            return data
+        config_cls = _SSP_CONFIG_CLASS_BY_PROVIDER.get(provider_enum)
+        if config_cls is None:
+            return data
+        return {**data, "config": config_cls.model_validate(config)}
+
     @model_validator(mode="after")
     def _validate_config_matches(self) -> "SemanticSearchProvider":
-        expected = {
-            SemanticSearchProviderType.PGVECTOR: PgVectorConfig,
-            SemanticSearchProviderType.PGVECTORSCALE: PgVectorScaleConfig,
-            SemanticSearchProviderType.LANCE: LanceConfig,
-        }[self.provider]
+        expected = _SSP_CONFIG_CLASS_BY_PROVIDER[self.provider]
         if not isinstance(self.config, expected):
             raise ValueError(
                 f"provider={self.provider.value!r} requires a "

@@ -42,7 +42,7 @@ class DiscordChannelAdapter(ChannelAdapter):
     def __init__(
         self, *, provider: ChannelProvider, channel: Channel, inbox,
         storage_provider=None, event_bus=None, claim_engine=None,
-        artifact_registry=None,
+        artifact_registry=None, workspace_registry=None, scheduler=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
@@ -54,6 +54,9 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._bus = event_bus
         self._claim_engine = claim_engine
         self._artifacts = artifact_registry
+        # S6 section 5: the inbound path creates and steers sessions.
+        self._workspace_registry = workspace_registry
+        self._scheduler = scheduler
         self._client: Any | None = None
         # session_id → discord Thread id (one conversation thread per session).
         # Bounded so a long-lived bot does not grow this map without limit; an
@@ -110,7 +113,10 @@ class DiscordChannelAdapter(ChannelAdapter):
             raise ProviderError(
                 f"discord channel {self._channel.external_id!r} not reachable"
             )
-        thread = await self._session_thread(channel, envelope.session_id)
+        thread = await self._session_thread(
+            channel, envelope.session_id,
+            getattr(envelope, "thread_anchor", None),
+        )
         await self._post_thread_media(thread, envelope)
         header = attribution_header(envelope)
         if envelope.kind == "tool_approval":
@@ -148,13 +154,28 @@ class DiscordChannelAdapter(ChannelAdapter):
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
 
-    async def _session_thread(self, channel: Any, session_id: str) -> Any:
+    async def _session_thread(
+        self, channel: Any, session_id: str, anchor: str | None = None,
+    ) -> Any:
         """Get-or-create the one conversation thread for this session.
 
         The first prompt posts a small anchor message and opens a named thread
         off it; every later prompt for the same session (ask or approval) is
         sent into that thread.
+
+        A thread-mapped session (S6 section 5) supplies its thread id as
+        ``anchor``; resolve it instead of opening a new thread.
         """
+        if anchor:
+            thread = self._client.get_channel(int(anchor))
+            if thread is None:
+                try:
+                    thread = await self._client.fetch_channel(int(anchor))
+                except Exception:  # noqa: BLE001 - fall back to the cache
+                    thread = None
+            if thread is not None:
+                self._session_threads[session_id] = thread.id
+                return thread
         tid = self._session_threads.get(session_id)
         if tid is not None:
             thread = self._client.get_channel(tid)
@@ -173,59 +194,43 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._session_threads[session_id] = thread.id
         return thread
 
-    async def _chat_thread_name(self, thread_ts: str) -> str:
-        """Build a friendly thread name: "{agent label}: {first words}".
 
-        Resolves the Chat bound to (this channel, thread_ts), its agent's
-        ``description`` (falling back to the agent id), and the first ~6 words
-        of the chat's first user_message. Returns "chat" if anything is
-        missing; the caller wraps this in try/except for a hard fallback.
-        """
-        from primer.model.agent import Agent
-        from primer.model.chats import Chat, ChatMessage
-        from primer.model.storage import OffsetPage, OrderBy
-        from primer.storage.q import Q
 
-        chats = self._sp.get_storage(Chat)
-        chat = None
-        offset = 0
-        while True:
-            page = await chats.find(None, OffsetPage(offset=offset, length=200))
-            for c in page.items:
-                b = c.channel_binding
-                if (
-                    b is not None
-                    and b.channel_id == self._channel.id
-                    and b.thread_external_id == thread_ts
-                ):
-                    chat = c
-                    break
-            if chat is not None or len(page.items) < 200:
-                break
-            offset += 200
-        if chat is None:
-            return "chat"
-        agent = await self._sp.get_storage(Agent).get(chat.agent_id)
-        label = (agent.description if agent is not None else None) or chat.agent_id
-        # First user_message's content -> first ~6 words.
-        snippet = ""
-        msgs = self._sp.get_storage(ChatMessage)
-        mpage = await msgs.find(
-            Q(ChatMessage).where("chat_id", chat.id).build(),
-            OffsetPage(offset=0, length=50),
-            order_by=[OrderBy(field="seq", direction="asc")],
-        )
-        for m in mpage.items:
-            if m.kind == "user_message":
-                content = (m.payload or {}).get("content") or ""
-                content = content.strip()
-                # Strip a leading "[sender] " attribution prefix if present.
-                if content.startswith("[") and "] " in content:
-                    content = content.split("] ", 1)[1]
-                snippet = " ".join(content.split()[:6])
-                break
-        name = f"{label}: {snippet}" if snippet else str(label)
-        return name[:100] or "chat"
+    async def post_thread_message(
+        self, text: str, *, thread_ts: str | None = None
+    ) -> dict[str, Any]:
+        """Full-payload outbound relay into the session's thread."""
+        target = await self._resolve_chat_thread(thread_ts)
+        await target.send(content=text)
+        return {"thread_id": thread_ts}
+
+    async def _post_thread_media(self, thread: Any, envelope: PromptEnvelope) -> None:
+        """Upload any media attached to an ask_user/inform prompt (workspace
+        files) into the session thread before the prompt text."""
+        media = getattr(envelope, "media", None)
+        if not media or self._artifacts is None:
+            return
+        from primer.channel.media import hydrate_media_dicts
+        parts = await hydrate_media_dicts(self._artifacts, media)
+        await self._send_media_parts(thread, parts)
+
+    async def _send_media_part(self, target: Any, part: Any) -> None:
+        import io
+
+        import discord
+        data = getattr(part, "data", None)
+        filename = getattr(part, "filename", None) or "file"
+        await target.send(file=discord.File(io.BytesIO(data), filename=filename))
+
+    async def post_thread_media(
+        self, parts: list, *, thread_ts: str | None = None,
+    ) -> dict[str, Any]:
+        """Outbound media relay: upload each hydrated media part as a file into
+        the session's thread."""
+        target = await self._resolve_chat_thread(thread_ts)
+        sent = await self._send_media_parts(target, parts)
+        return {"sent": sent, "thread_id": thread_ts}
+
 
     async def _resolve_chat_thread(self, thread_ts: str | None) -> Any:
         """Resolve (or create) the discord.py thread for a chat's anchor id.
@@ -267,10 +272,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             anchor = await channel.fetch_message(tid)
         except Exception:
             return channel  # anchor gone / unreachable: degrade to the channel
-        try:
-            name = await self._chat_thread_name(thread_ts)
-        except Exception:
-            name = f"chat {tid}"
+        name = f"thread {tid}"
         try:
             return await anchor.create_thread(
                 name=name[:100], auto_archive_duration=60,
@@ -285,40 +287,11 @@ class DiscordChannelAdapter(ChannelAdapter):
                     thread = None
             return thread if thread is not None else channel
 
-    async def post_chat_message(
-        self, text: str, *, thread_ts: str | None = None
-    ) -> dict[str, Any]:
-        """Full-payload outbound relay into the chat's thread."""
-        target = await self._resolve_chat_thread(thread_ts)
-        await target.send(content=text)
-        return {"thread_id": thread_ts}
-
-    async def _post_thread_media(self, thread: Any, envelope: PromptEnvelope) -> None:
-        """Upload any media attached to an ask_user/inform prompt (workspace
-        files) into the session thread before the prompt text."""
-        media = getattr(envelope, "media", None)
-        if not media or self._artifacts is None:
-            return
-        from primer.channel.media import hydrate_media_dicts
-        parts = await hydrate_media_dicts(self._artifacts, media)
-        await self._send_media_parts(thread, parts)
-
-    async def _send_media_part(self, target: Any, part: Any) -> None:
-        import io
-
-        import discord
-        data = getattr(part, "data", None)
-        filename = getattr(part, "filename", None) or "file"
-        await target.send(file=discord.File(io.BytesIO(data), filename=filename))
-
-    async def post_chat_media(
-        self, parts: list, *, thread_ts: str | None = None,
-    ) -> dict[str, Any]:
-        """Outbound media relay: upload each hydrated media part as a file into
-        the chat's thread."""
-        target = await self._resolve_chat_thread(thread_ts)
-        sent = await self._send_media_parts(target, parts)
-        return {"sent": sent, "thread_id": thread_ts}
+    async def collect_inbound_media(self, raw: Any) -> list:
+        parts, _text = await self._build_media_parts(
+            list(getattr(raw, "attachments", None) or []), "",
+        )
+        return parts
 
     async def _build_media_parts(
         self, attachments: list, text: str,
@@ -358,35 +331,6 @@ class DiscordChannelAdapter(ChannelAdapter):
             parts.append(part)
         return parts, text
 
-    async def handle_inbound_chat_message(
-        self, *, thread_id: str | None, message_id: str,
-        sender_name: str, text: str, attachments: list | None = None,
-    ):
-        """Multi-type inbound: a top-level message opens a new thread-chat; an
-        in-thread message routes to that thread's chat. The thread id is the
-        message id on a top-level message (the new thread anchors on it).
-
-        ``attachments`` is the raw ``discord.Message.attachments`` list (each
-        with ``.read()``, ``.content_type``, ``.filename``); each is stored as
-        an artifact-backed media Part and routed alongside the caption text."""
-        media_parts, text = await self._build_media_parts(
-            attachments or [], text)
-        router = self._inbound_router()
-        if router is None:
-            return None
-        # Top-level (thread_id None) opens a new thread-chat keyed on
-        # message_id; an in-thread message routes to thread_id's chat.
-        await router.route(
-            channel=self._channel,
-            anchor=thread_id,
-            reply_to=message_id,
-            is_thread_channel=True,
-            sender=sender_name,
-            text=text,
-            media_parts=media_parts or None,
-        )
-        thread_external_id = thread_id or message_id
-        return await self._resolve_thread_chat(thread_external_id)
 
 
 __all__ = ["DiscordChannelAdapter"]

@@ -4,9 +4,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SSO = ROOT / "ui" / "components" / "sso_admin.jsx"
-CHROME = ROOT / "ui" / "components" / "chrome.jsx"
+ADMIN = ROOT / "ui" / "components" / "console" / "nv-system.jsx"
 APP = ROOT / "ui" / "app.jsx"
-ROUTER = ROOT / "ui" / "foundation" / "router.js"
 INDEX = ROOT / "ui" / "index.html"
 
 
@@ -94,22 +93,15 @@ def test_registered_in_bundle_order() -> None:
     assert order.index("components/sso_admin.jsx") < order.index("app.jsx")
 
 
-def test_router_has_sso_providers_route() -> None:
-    src = ROUTER.read_text()
-    assert "SsoProvidersPage" in src
-    assert "/admin/sso-providers" in src
+def test_the_admin_overlay_renders_the_sso_page() -> None:
+    """The console has no route table: the overlay host IS the wiring."""
+    assert "SSO_ProvidersPage" in ADMIN.read_text()
 
 
-def test_app_wires_sso_providers_page() -> None:
-    src = APP.read_text()
-    assert "admin-sso-providers" in src
-    assert "SSO_ProvidersPage" in src
-
-
-def test_chrome_nav_has_sso_providers_entry() -> None:
-    src = CHROME.read_text()
-    assert "admin-sso-providers" in src
-    assert "SSO Providers" in src
+def test_admin_overlay_has_sso_section() -> None:
+    src = ADMIN.read_text()
+    assert '"sso"' in src
+    assert "SSO" in src
 
 
 def test_index_has_script_tag() -> None:

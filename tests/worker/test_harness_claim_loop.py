@@ -76,7 +76,6 @@ async def test_claim_loop_picks_up_pending_harness(
         workspace_registry=None,
         provider_registry=fake_provider_registry,
         event_bus=bus,
-        chat_tick_router=None,
         engine=engine,
     )
     try:

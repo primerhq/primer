@@ -97,25 +97,13 @@ def test_channel_config_mismatch_rejected():
 def test_chat_config_defaults():
     cfg = ChatConfig()
     assert cfg.enabled is False
-    assert cfg.default_agent is None
-    assert cfg.allowed_agents == []
     assert cfg.relay_mode == "final"
 
 
-def test_chat_config_enabled_requires_default_agent():
-    with pytest.raises(ValidationError):
-        ChatConfig(enabled=True)
 
 
-def test_chat_config_allowed_agents_must_include_default():
-    with pytest.raises(ValidationError):
-        ChatConfig(enabled=True, default_agent="agent-a", allowed_agents=["agent-b"])
 
 
-def test_chat_config_valid_with_default_in_allowed():
-    cfg = ChatConfig(enabled=True, default_agent="agent-a", allowed_agents=["agent-a", "agent-b"])
-    assert cfg.enabled is True
-    assert cfg.default_agent == "agent-a"
 
 
 def test_channel_config_chats_enabled_roundtrip():
@@ -125,11 +113,10 @@ def test_channel_config_chats_enabled_roundtrip():
         provider=ChannelProviderType.SLACK,
         external_id="C-cfg",
         config=SlackChannelConfig(
-            chats=ChatConfig(enabled=True, default_agent="agent-x")
+            chats=ChatConfig(enabled=True)
         ),
     )
     assert ch.config.chats.enabled is True
-    assert ch.config.chats.default_agent == "agent-x"
 
 
 def test_slack_config_requires_xapp_prefix():

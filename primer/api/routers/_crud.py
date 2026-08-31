@@ -30,7 +30,7 @@ from primer.api.errors import common_responses
 from primer.api.routers import _managed as _managed_mod
 from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
-from primer.model.common import Identifiable
+from primer.model.common import Identifiable, preserve_masked_secrets
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import (
     CursorPageResponse,
@@ -133,6 +133,33 @@ _OnPreDeleteHook = Callable[[Any, Request], Awaitable[None]] | None
 _OnPreDeleteIdHook = Callable[[str, Request], Awaitable[None]] | None
 
 
+async def preserve_masked_secrets_on_update(entity: Any, existing: Any, request: Request) -> None:
+    """Ready-made ``on_pre_update`` hook for any provider-shaped entity
+    carrying ``SecretStr`` fields (directly or nested in a ``config``
+    union) - GET serves them masked and PUT here is a full replace, so
+    without this a client that never touched a secret field would
+    persist the literal mask placeholder (or an empty string) over the
+    real credential. See :func:`primer.model.common.preserve_masked_secrets`
+    for the mask-recognition rule. A model that already needs its own
+    ``on_pre_update`` for other checks should call
+    ``preserve_masked_secrets(entity, existing)`` directly instead of
+    wiring this adapter, and compose it with the rest of that hook.
+    """
+    preserve_masked_secrets(entity, existing)
+
+# List-enrich hook signature: ``(page_response, request) -> page_response``.
+# Called AFTER storage.list()/storage.find() on the unscoped GET
+# /<plural> route, with the freshly-fetched page. Returns a (possibly
+# new) page response - e.g. with each item swapped for a response-only
+# subclass carrying a computed field. Runs once per request against the
+# CURRENT PAGE ONLY; a hook that needs a cross-entity aggregate (a
+# reference count from a different Storage[T]) must build it with its
+# own bounded number of full-table passes, not a per-item lookup, to
+# stay N+1-free (see model_profiles.py's reference-count enrichment for
+# the pattern).
+_OnListEnrichHook = Callable[[Any, Request], Awaitable[Any]] | None
+
+
 def make_crud_router(
     *,
     model_cls: type[_ModelT],
@@ -153,6 +180,7 @@ def make_crud_router(
     references: Sequence[ReferenceCheck] = (),
     cdc_kind: str | None = None,
     search_fields: list[str] | None = None,
+    enrich_list: _OnListEnrichHook = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -225,15 +253,12 @@ def make_crud_router(
         auto-generated reference hook runs **before** any user-supplied
         ``on_pre_delete`` hook.
     cdc_kind
-        When set, the factory:
-
-        * Calls ``register_cdc_kind(cdc_kind, model_cls)`` immediately
-          (at factory call time / module import) so the kind appears in
-          :func:`~primer.api.routers._cdc_hooks.known_cdc_kinds`.
-        * Auto-wires the three CDC hooks from
-          :func:`~primer.api.routers._cdc_hooks.make_cdc_hooks` into
-          ``on_create`` / ``on_update`` / ``on_delete``.  The CDC hooks
-          run *before* any user-supplied post-mutate hooks.
+        When set, the factory calls ``register_cdc_kind(cdc_kind,
+        model_cls)`` immediately (at factory call time / module import)
+        so the kind appears in
+        :func:`~primer.api.routers._cdc_hooks.known_cdc_kinds` and the
+        storage layer emits its CRUD events; the seeded ``system-cdc``
+        event subscription converges the system collection from those.
     search_fields
         When set, the unscoped ``GET /<plural>`` list route accepts an
         optional ``?q=`` query param and, when it is non-empty, filters
@@ -241,6 +266,14 @@ def make_crud_router(
         these fields via ``storage.find``.  The response keeps the same
         ``{items, total}`` offset-paged shape as the unfiltered list.
         ``None`` (the default) leaves the list route unchanged.
+    enrich_list
+        Optional async callable ``async def(page_response, request) ->
+        page_response`` invoked on the unscoped ``GET /<plural>`` route
+        after ``storage.list()``/``storage.find()`` returns (before the
+        response is sent). Use to attach a computed, response-only
+        field to each item (e.g. a reference count from another
+        entity's storage) without a per-id endpoint. ``None`` (the
+        default) leaves the list route unchanged.
     """
 
     # Validate scope params: both must be set together or not at all.
@@ -302,23 +335,18 @@ def make_crud_router(
 
         on_pre_delete = _pre_delete_with_refs
 
-    # Auto-wire CDC hooks. Register the kind in the global registry at
-    # factory call time (i.e. when the router module is imported), then
-    # compose the three CDC hooks ahead of any user-supplied post-mutate
-    # hooks so CDC events always fire.
+    # Register the kind in the global event registry at factory call
+    # time (i.e. when the router module is imported). The storage layer
+    # emits <kind>.created/updated/deleted for registered kinds and the
+    # seeded 'system-cdc' event subscription converges the system
+    # collection - the imperative per-router CDC hooks this used to
+    # wire are gone (spec: 2026-08-22-event-bus-design.md).
     if cdc_kind is not None:
         from primer.api.routers._cdc_hooks import (  # noqa: PLC0415
-            make_cdc_hooks,
             register_cdc_kind,
         )
 
         register_cdc_kind(cdc_kind, model_cls)
-        cdc_create_hook, cdc_update_hook, cdc_delete_hook = make_cdc_hooks(
-            cdc_kind, model_cls  # type: ignore[arg-type]
-        )
-        on_create = _compose(cdc_create_hook, on_create)
-        on_update = _compose(cdc_update_hook, on_update)
-        on_delete = _compose(cdc_delete_hook, on_delete)
 
     router = APIRouter(tags=[tag])
 
@@ -623,6 +651,7 @@ def make_crud_router(
             responses=common_responses(400, 422, 500),
         )
         async def _list(
+            request: Request,
             page: PageRequest = Depends(parse_page),
             order_by: list[OrderBy] | None = Depends(parse_order_by),
             q: str | None = Query(
@@ -640,8 +669,12 @@ def make_crud_router(
             # OffsetPageResponse {items, total} shape as the plain list.
             if q and q.strip() and search_fields:
                 predicate = _build_search_predicate(search_fields, q)
-                return await storage.find(predicate, page, order_by=order_by)
-            return await storage.list(page, order_by=order_by)
+                resp = await storage.find(predicate, page, order_by=order_by)
+            else:
+                resp = await storage.list(page, order_by=order_by)
+            if enrich_list is not None:
+                resp = await enrich_list(resp, request)
+            return resp
 
         # ---- POST /<plural>/find  (find with predicate) ------------------
         @router.post(
@@ -660,4 +693,4 @@ def make_crud_router(
     return router
 
 
-__all__ = ["make_crud_router"]
+__all__ = ["make_crud_router", "preserve_masked_secrets_on_update"]

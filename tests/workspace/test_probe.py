@@ -7,6 +7,7 @@ Phase 7 background task pings every ``running`` / ``failed`` workspace at
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -300,3 +301,65 @@ async def test_stop_breaks_loop() -> None:
     )
     task.stop()
     await task.start()  # must return promptly
+
+
+@pytest.mark.asyncio
+async def test_start_delay_defaults_to_interval() -> None:
+    """Omitting start_delay_seconds falls back to interval_seconds."""
+    sp, _storage = _storage_provider([])
+    registry = MagicMock()
+
+    task = WorkspaceProbeTask(
+        storage_provider=sp, registry=registry, interval_seconds=5.0
+    )
+    assert task._start_delay == 5.0  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_start_delay_defers_first_tick() -> None:
+    """01a0533c: a freshly-booted probe must not tick until the configured
+    start delay elapses — a rolling-deploy replacement pod's probe would
+    otherwise start counting its own boot-time settling as real misses."""
+    sp, _storage = _storage_provider([])
+    registry = MagicMock()
+
+    task = WorkspaceProbeTask(
+        storage_provider=sp,
+        registry=registry,
+        interval_seconds=0.05,
+        start_delay_seconds=0.05,
+    )
+    task.tick = AsyncMock()  # type: ignore[method-assign]
+
+    runner = asyncio.create_task(task.start())
+    await asyncio.sleep(0.02)
+    assert task.tick.await_count == 0, "ticked before the start delay elapsed"
+
+    await asyncio.sleep(0.06)
+    assert task.tick.await_count >= 1, "never ticked after the start delay"
+
+    task.stop()
+    await asyncio.wait_for(runner, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_stop_during_start_delay_exits_promptly() -> None:
+    """stop() called mid-delay must cut the wait short — no waiting out
+    the full delay just to discover the loop should never have ticked."""
+    sp, _storage = _storage_provider([])
+    registry = MagicMock()
+
+    task = WorkspaceProbeTask(
+        storage_provider=sp,
+        registry=registry,
+        interval_seconds=10.0,
+        start_delay_seconds=10.0,
+    )
+    task.tick = AsyncMock()  # type: ignore[method-assign]
+
+    runner = asyncio.create_task(task.start())
+    await asyncio.sleep(0.02)
+    task.stop()
+    await asyncio.wait_for(runner, timeout=1.0)  # must not wait out the 10s delay
+
+    task.tick.assert_not_awaited()

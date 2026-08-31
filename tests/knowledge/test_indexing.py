@@ -7,63 +7,62 @@ from unittest.mock import AsyncMock
 import pytest
 
 from primer.knowledge.indexing import (
-    backfill_missing_document_vectors,
-    chunk_text,
     index_document,
 )
-from primer.model.collection import Collection, CollectionEmbedder, Document
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+    Document,
+)
 from primer.model.except_ import ConflictError, DimensionMismatchError, PrimerError
 from primer.model.storage import OffsetPage, OffsetPageResponse
 
 
-def _collection(system: bool = False) -> Collection:
+def _collection(system: bool = False, chunking=None) -> Collection:
+    search = CollectionSearchConfig(
+        embedder=CollectionEmbedder(provider_id="emb", model="m"),
+        vector_store_provider_id="ssp",
+        **({"chunking": chunking} if chunking is not None else {}),
+    )
     return Collection(
         id="kb-1",
         description="test",
-        embedder=CollectionEmbedder(provider_id="emb", model="m"),
-        search_provider_id="ssp",
+        search=search,
         system=system,
     )
 
 
 def _document(text: str | None = None, content: str | None = None) -> Document:
-    meta = {}
-    if text is not None:
-        meta["text"] = text
-    if content is not None:
-        meta["content"] = content
-    return Document(id="doc-1", collection_id="kb-1", name="d", path="doc-1.md", meta=meta)
+    # text/content are retained as call-site sugar; the body itself is
+    # served by _ContentStore now, not by meta.
+    return Document(
+        id="doc-1", collection_id="kb-1", slug="doc-1.md", path="doc-1.md", meta={}
+    )
 
 
-class TestChunkText:
-    def test_empty_returns_no_chunks(self):
-        assert chunk_text("") == []
-        assert chunk_text("   ") == []
-
-    def test_short_text_is_one_chunk(self):
-        assert chunk_text("hello world") == ["hello world"]
-
-    def test_paragraphs_pack_greedily(self):
-        text = "\n\n".join(["a" * 800, "b" * 800, "c" * 800])
-        chunks = chunk_text(text)
-        # 800 + 2 + 800 = 1602 > 1500, so each 800-char paragraph is its
-        # own chunk.
-        assert len(chunks) == 3
-
-    def test_overlong_paragraph_is_hard_split(self):
-        text = "x" * 5000
-        chunks = chunk_text(text)
-        assert len(chunks) >= 2
-        assert all(len(c) <= 1500 for c in chunks)
+def _body_store(text: str | None = None, content: str | None = None):
+    body = text if text is not None else content
+    return _NullContentStore() if body is None else _ContentStore(body)
 
 
 class _NullContentStore:
-    """Content store with no rows: every ``get`` returns None so the indexer
-    falls back to the legacy ``meta`` body. Lets these meta-driven tests keep
-    exercising the chunk/embed pipeline unchanged."""
+    """Content store with no rows: every ``get`` returns None, so the
+    document has no body at all (S2: the content store is the only body
+    location)."""
 
     async def get(self, document_id, *, conn=None):
         return None
+
+
+class _ContentStore:
+    """Content store serving one body for every document id."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    async def get(self, document_id, *, conn=None):
+        return self._text
 
 
 class _Emb:
@@ -91,6 +90,14 @@ class _Store:
 
     async def delete(self, cid, did):
         self.deleted.append((cid, did))
+        # Actually drop them. A fake that records the call but keeps the
+        # rows cannot show a re-index leaving stale chunks behind, which
+        # is one of the things this module is supposed to prevent.
+        self.puts = [
+            r
+            for r in self.puts
+            if not (r.collection_id == cid and r.document_id == did)
+        ]
 
     async def create_collection(self, cid, *, dimensions, distance="cosine"):
         self.created = (cid, dimensions)
@@ -99,9 +106,14 @@ class _Store:
     async def put(self, record):
         self.puts.append(record)
 
-    async def search_by_meta(self, cid, *, meta):
-        # Mirror the real store: an unregistered collection raises rather
-        # than returning an empty list.
+    async def search_by_meta(self, cid, meta=None):
+        # ``meta`` is positional-or-keyword on the real interface; forcing
+        # it keyword-only here made a positional call raise TypeError,
+        # which callers that treat store errors as "nothing indexed"
+        # silently read as an empty index.
+        #
+        # Mirror the real store otherwise: an unregistered collection
+        # raises rather than returning an empty list.
         if cid not in self._registered:
             raise PrimerError(f"collection {cid!r} is not registered")
         return [r for r in self.puts if r.collection_id == cid]
@@ -123,7 +135,7 @@ class TestIndexDocument:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800])),
         )
         assert n == 2
         assert store.created == ("kb-1", 4)
@@ -136,15 +148,42 @@ class TestIndexDocument:
         assert ("kb-1", "doc-1") in store.deleted
 
     @pytest.mark.asyncio
-    async def test_system_collection_skipped(self):
+    async def test_system_collection_is_indexed_when_search_is_on(self):
+        """The system collection is the one bootstrap vectorises.
+
+        Skipping it on the ``system`` flag made
+        /v1/internal_collections/bootstrap a no-op that still reported
+        success: it enables search on that collection and then indexes
+        every document, so a skip left state "ready" with nothing
+        indexed and no collection registered in the vector store.
+        """
+        store = _Store()
         reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=_Emb())
         ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
         n = await index_document(
             document=_document(text="anything"),
             collection=_collection(system=True),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="anything"),
+        )
+        assert n > 0
+        assert store.puts
+
+    @pytest.mark.asyncio
+    async def test_collection_without_search_config_skipped(self):
+        """Search being unset is what makes indexing a no-op now."""
+        reg = AsyncMock()
+        ssr = AsyncMock()
+        collection = _collection()
+        n = await index_document(
+            document=_document(text="anything"),
+            collection=collection.model_copy(update={"search": None}),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_body_store(text="anything"),
         )
         assert n == 0
         ssr.get_store.assert_not_called()
@@ -162,7 +201,7 @@ class TestIndexDocument:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(content="from content key"),
         )
         assert n == 1
         assert store.puts[0].text == "from content key"
@@ -180,7 +219,7 @@ class TestIndexDocument:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text=""),
         )
         assert n == 0
         # The dim-mismatch probe registers the collection (dim=3) even for
@@ -235,7 +274,7 @@ class TestBatchEmbedEquivalence:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="\n\n".join(chunks)),
         )
         assert n == 3
         # chunk_id is the positional index, text is the chunk, and the vector's
@@ -259,17 +298,24 @@ class TestBatchEmbedEquivalence:
         ssr.get_store = AsyncMock(return_value=store)
 
         # Build 70 distinct chunks (> 2 * 32) by hard-splitting one long
-        # paragraph (chunk_text splits on _CHUNK_TARGET_CHARS boundaries).
-        from primer.knowledge.indexing import _CHUNK_TARGET_CHARS
+        # paragraph. The collection's chunking config drives the split, and
+        # overlap=0 keeps the chunk count exactly predictable.
+        from primer.model.collection import ChunkingConfig
 
+        max_chars = 1500
         n_chunks = 70
-        text = "x" * (_CHUNK_TARGET_CHARS * n_chunks)
+        text = "x" * (max_chars * n_chunks)
         n = await index_document(
             document=_document(text=text),
-            collection=_collection(),
+            collection=_collection(
+                chunking=ChunkingConfig(
+                    max_chars=max_chars,
+                    overlap=0,
+                )
+            ),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text=text),
         )
         assert n == n_chunks
         assert len(store.puts) == n_chunks
@@ -306,6 +352,9 @@ class _StatefulStore:
     async def get(self, cid, did):
         return [r for k, r in sorted(self._rows.items()) if k[0] == cid and k[1] == did]
 
+    async def search_by_meta(self, cid, *, meta):
+        return [r for k, r in sorted(self._rows.items()) if k[0] == cid]
+
 
 class _RaisingEmb:
     """Embedder that raises, simulating a transient embedder/network error."""
@@ -329,7 +378,7 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=ok_reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800])),
         )
         before = await store.get("kb-1", "doc-1")
         assert len(before) == 2
@@ -343,7 +392,7 @@ class TestReindexFailureKeepsOldChunks:
                 collection=_collection(),
                 provider_registry=bad_reg,
                 semantic_search_registry=ssr,
-                content_store=_NullContentStore(),
+                content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800])),
             )
 
         # The old chunks must still be present/searchable.
@@ -364,7 +413,9 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(
+                text="\n\n".join(["a" * 800, "b" * 800, "c" * 800])
+            ),
         )
         assert len(await store.get("kb-1", "doc-1")) == 3
 
@@ -374,7 +425,7 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="just one short chunk"),
         )
         final = await store.get("kb-1", "doc-1")
         assert len(final) == 1
@@ -392,9 +443,12 @@ class _DocStore:
 
     async def list(self, page, *, order_by=None):
         items = list(self._docs.values())
-        sliced = items[page.offset:page.offset + page.length]
+        sliced = items[page.offset : page.offset + page.length]
         return OffsetPageResponse(
-            offset=page.offset, length=len(sliced), total=len(items), items=sliced,
+            offset=page.offset,
+            length=len(sliced),
+            total=len(items),
+            items=sliced,
         )
 
 
@@ -406,10 +460,30 @@ class _CollStore:
         return self._c.get(id)
 
 
+class _PerDocContentStore:
+    """Serves each document's body by id, the way the real content store
+    does. Bodies are declared alongside the docs these tests build."""
+
+    def __init__(self, bodies: dict[str, str]) -> None:
+        self._bodies = bodies
+
+    async def get(self, document_id, *, conn=None):
+        return self._bodies.get(document_id)
+
+
 class _StorageProvider:
-    def __init__(self, docs, collections):
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
+    def __init__(self, docs, collections, bodies=None):
         self._doc_store = _DocStore(docs)
         self._coll_store = _CollStore(collections)
+        # Default: every doc has a body, so backfill has something to index.
+        self._bodies = (
+            bodies if bodies is not None else {d.id: f"body of {d.id}" for d in docs}
+        )
 
     def get_storage(self, model_cls):
         if model_cls is Document:
@@ -419,118 +493,7 @@ class _StorageProvider:
         raise AssertionError(f"unexpected model {model_cls!r}")
 
     def get_content_store(self):
-        # No content rows in these meta-driven backfill tests; the indexer
-        # falls back to the legacy meta body.
-        return _NullContentStore()
-
-
-class TestBackfill:
-    @pytest.mark.asyncio
-    async def test_indexes_only_unindexed_documents(self):
-        store = _Store()
-        # doc-a is already indexed; doc-b is not.
-        store._registered.add("kb-1")
-        from primer.model.vector import EmbeddingRecord
-
-        store.puts.append(
-            EmbeddingRecord(
-                collection_id="kb-1", document_id="doc-a", chunk_id="0",
-                text="x", vector=[0.1, 0.2, 0.3], meta={},
-            )
-        )
-        doc_a = Document(id="doc-a", collection_id="kb-1", name="a", path="doc-a.md",
-                         meta={"text": "already indexed"})
-        doc_b = Document(id="doc-b", collection_id="kb-1", name="b", path="doc-b.md",
-                         meta={"text": "needs indexing"})
-        reg = AsyncMock()
-        reg.get_embedder = AsyncMock(return_value=_Emb())
-        ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=store)
-        sp = _StorageProvider([doc_a, doc_b], [_collection()])
-
-        n = await backfill_missing_document_vectors(
-            storage_provider=sp,
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-        )
-        assert n == 1
-        # Only doc-b got embedded (its chunk was put after the pre-seeded one).
-        new_puts = [p for p in store.puts if p.document_id == "doc-b"]
-        assert len(new_puts) == 1
-
-    @pytest.mark.asyncio
-    async def test_unregistered_collection_indexes_all(self):
-        store = _Store()  # nothing registered -> search_by_meta raises
-        doc = Document(id="doc-1", collection_id="kb-1", name="d", path="doc-1.md",
-                       meta={"text": "hello"})
-        reg = AsyncMock()
-        reg.get_embedder = AsyncMock(return_value=_Emb())
-        ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=store)
-        sp = _StorageProvider([doc], [_collection()])
-
-        n = await backfill_missing_document_vectors(
-            storage_provider=sp,
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-        )
-        assert n == 1
-        assert store.created == ("kb-1", 3)
-
-    @pytest.mark.asyncio
-    async def test_system_collection_skipped(self):
-        doc = Document(id="doc-1", collection_id="sys", name="d", path="doc-1.md",
-                       meta={"text": "hello"})
-        sys_coll = Collection(
-            id="sys", description="t",
-            embedder=CollectionEmbedder(provider_id="emb", model="m"),
-            search_provider_id="ssp", system=True,
-        )
-        reg = AsyncMock()
-        ssr = AsyncMock()
-        sp = _StorageProvider([doc], [sys_coll])
-
-        n = await backfill_missing_document_vectors(
-            storage_provider=sp,
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-        )
-        assert n == 0
-        ssr.get_store.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_one_bad_document_does_not_abort_others(self):
-        store = _Store()
-        doc_ok = Document(id="ok", collection_id="kb-1", name="ok", path="ok.md",
-                          meta={"text": "fine"})
-        doc_bad = Document(id="bad", collection_id="kb-1", name="bad", path="bad.md",
-                           meta={"text": "boom"})
-
-        class _FlakyEmb:
-            async def embed(self, *, model, inputs):
-                if any("boom" in p.text for p in inputs):
-                    raise PrimerError("embedder exploded")
-                class _R:
-                    embeddings = [
-                        type("V", (), {"vector": [0.1, 0.2, 0.3]})()
-                        for _ in inputs
-                    ]
-                return _R()
-
-        reg = AsyncMock()
-        reg.get_embedder = AsyncMock(return_value=_FlakyEmb())
-        ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=store)
-        sp = _StorageProvider([doc_bad, doc_ok], [_collection()])
-
-        # Should not raise; the good doc still gets indexed.
-        n = await backfill_missing_document_vectors(
-            storage_provider=sp,
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-        )
-        assert n == 1
-        assert any(p.document_id == "ok" for p in store.puts)
+        return _PerDocContentStore(self._bodies)
 
 
 class _MismatchStore(_Store):
@@ -570,9 +533,11 @@ class TestDimensionMismatchDetection:
             async def embed(self, *, model, inputs):
                 nonlocal embed_call_count
                 embed_call_count += 1
+
                 # Return 384-dim vectors (mismatch vs stored 768).
                 class _R:
                     embeddings = [type("V", (), {"vector": [0.1] * 384})()]
+
                 return _R()
 
         reg = AsyncMock()
@@ -586,7 +551,7 @@ class TestDimensionMismatchDetection:
                 collection=_collection(),
                 provider_registry=reg,
                 semantic_search_registry=ssr,
-                content_store=_NullContentStore(),
+                content_store=_body_store(text="some text to index"),
             )
 
         err = exc_info.value
@@ -612,7 +577,7 @@ class TestDimensionMismatchDetection:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="short text"),
         )
         assert n == 1
         assert len(store.puts) == 1
@@ -626,6 +591,7 @@ class TestDimensionMismatchDetection:
             async def embed(self, *, model, inputs):
                 class _R:
                     embeddings = [type("V", (), {"vector": [0.1] * 384})()]
+
                 return _R()
 
         reg = AsyncMock()
@@ -639,9 +605,265 @@ class TestDimensionMismatchDetection:
                 collection=_collection(),
                 provider_registry=reg,
                 semantic_search_registry=ssr,
-                content_store=_NullContentStore(),
+                content_store=_body_store(text="text"),
             )
 
         assert exc_info.value.status_code == 422
-        assert "re-ingest" in exc_info.value.message.lower() or \
-               "re-index" in exc_info.value.message.lower()
+        assert (
+            "re-ingest" in exc_info.value.message.lower()
+            or "re-index" in exc_info.value.message.lower()
+        )
+
+
+async def test_index_document_noop_when_search_off():
+    coll = Collection(id="c-off", description="grep only")  # search=None
+    doc = Document(collection_id="c-off", slug="a", path="a")
+    n = await index_document(
+        document=doc,
+        collection=coll,
+        provider_registry=None,
+        semantic_search_registry=None,
+        content_store=_NullContentStore(),
+    )
+    assert n == 0
+
+
+class _OneDocContentStore:
+    def __init__(self, document_id: str, text: str) -> None:
+        self._id, self._text = document_id, text
+
+    async def get(self, document_id, *, conn=None):
+        return self._text if document_id == self._id else None
+
+
+async def test_chunking_config_drives_split():
+    from primer.model.collection import ChunkingConfig
+
+    store = _Store()
+    reg = AsyncMock()
+    reg.get_embedder = AsyncMock(return_value=_Emb(dim=3))
+    ssr = AsyncMock()
+    ssr.get_store = AsyncMock(return_value=store)
+    coll = Collection(
+        id="c-chunk",
+        description="d",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="e", model="m"),
+            vector_store_provider_id="s",
+            chunking=ChunkingConfig(max_chars=300, overlap=0),
+        ),
+    )
+    doc = Document(collection_id="c-chunk", slug="big", path="big")
+    n = await index_document(
+        document=doc,
+        collection=coll,
+        provider_registry=reg,
+        semantic_search_registry=ssr,
+        content_store=_OneDocContentStore(doc.id, "## A\n\n" + "x" * 900),
+    )
+    assert n >= 3  # 900 chars at max_chars=300 hard-split into >= 3 chunks
+
+
+class _MetaStore:
+    def __init__(self, records):
+        self.records = list(records)
+        self.puts = []
+
+    async def get(self, cid, did):
+        return sorted(
+            (r for r in self.records if r.document_id == did),
+            key=lambda r: r.chunk_id,
+        )
+
+    async def put(self, record):
+        self.puts.append(record)
+
+
+async def test_move_rewrites_path_meta_without_reembedding():
+    from primer.knowledge.indexing import rewrite_document_path_meta
+    from primer.model.vector import EmbeddingRecord
+
+    rec = EmbeddingRecord(
+        collection_id="c1",
+        document_id="d1",
+        chunk_id="0",
+        text="body",
+        vector=[0.1, 0.2],
+        meta={"path": "old/leaf"},
+    )
+    store = _MetaStore([rec])
+    ssr = AsyncMock()
+    ssr.get_store = AsyncMock(return_value=store)
+    coll = Collection(
+        id="c1",
+        description="d",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="e", model="m"),
+            vector_store_provider_id="s",
+        ),
+    )
+    await rewrite_document_path_meta(
+        document_id="d1",
+        collection=coll,
+        semantic_search_registry=ssr,
+        new_path="dst/leaf",
+    )
+    assert store.puts[0].meta["path"] == "dst/leaf"
+    assert store.puts[0].vector == rec.vector  # metadata only, no re-embed
+
+
+class _CountingEmb(_Emb):
+    """Embedder that records how many calls it fielded."""
+
+    def __init__(self, dim: int = 3):
+        super().__init__(dim)
+        self.calls = 0
+        self.batch_sizes: list[int] = []
+
+    async def embed(self, *, model, inputs):
+        self.calls += 1
+        self.batch_sizes.append(len(inputs))
+        return await super().embed(model=model, inputs=inputs)
+
+
+class TestIndexDocuments:
+    """The batched backfill: calls track chunks, not documents."""
+
+    @pytest.mark.asyncio
+    async def test_one_pass_regardless_of_document_count(self):
+        from primer.knowledge.indexing import index_documents
+
+        store = _Store()
+        emb = _CountingEmb()
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=emb)
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        docs = [
+            Document(
+                id=f"doc-{i}",
+                collection_id="kb-1",
+                slug=f"doc-{i}",
+                path=f"doc-{i}",
+            )
+            for i in range(20)
+        ]
+        bodies = {d.id: f"body number {i}" for i, d in enumerate(docs)}
+
+        class _Bodies:
+            async def get(self, doc_id):
+                return bodies[doc_id]
+
+        n = await index_documents(
+            documents=docs,
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_Bodies(),
+        )
+
+        assert n == 20
+        assert len(store.puts) == 20, store.puts
+        # One probe plus one batch: twenty documents of one chunk each fit
+        # inside a single embed call. The per-document form made twenty
+        # probes and twenty embeds, which is what put a bootstrap of the
+        # system collection past the e2e per-test ceiling.
+        assert emb.calls == 2, emb.batch_sizes
+        assert emb.batch_sizes == [1, 20], emb.batch_sizes
+
+    @pytest.mark.asyncio
+    async def test_a_second_pass_over_unchanged_content_embeds_nothing(self):
+        """Re-running a backfill must not re-embed what is already there.
+
+        Bootstrap re-enables search on the system collection, which is
+        roughly 900 chunks. Re-indexing all of it per call is what put
+        the five-cycle e2e test past its 180 s ceiling, and it is wasted
+        work in production too.
+        """
+        from primer.knowledge.indexing import index_documents
+
+        store = _Store()
+        emb = _CountingEmb()
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=emb)
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        docs = [
+            Document(
+                id=f"doc-{i}",
+                collection_id="kb-1",
+                slug=f"doc-{i}",
+                path=f"doc-{i}",
+            )
+            for i in range(5)
+        ]
+        bodies = {d.id: f"body number {i}" for i, d in enumerate(docs)}
+
+        class _Bodies:
+            async def get(self, doc_id):
+                return bodies[doc_id]
+
+        kwargs = dict(
+            documents=docs,
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_Bodies(),
+        )
+        assert await index_documents(**kwargs) == 5
+        first_calls = emb.calls
+        assert first_calls > 0
+
+        # Second pass: same documents, same bodies, no work.
+        assert await index_documents(**kwargs) == 0
+        assert emb.calls == first_calls, emb.batch_sizes
+
+        # Change one body and only that document is re-embedded.
+        bodies["doc-2"] = "an entirely different body"
+        assert await index_documents(**kwargs) == 1
+        assert emb.calls == first_calls + 2, emb.batch_sizes  # probe + batch
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_written_when_embedding_fails(self):
+        """A failure part-way must leave the prior index intact."""
+        from primer.knowledge.indexing import index_documents
+
+        store = _Store()
+        reg = AsyncMock()
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        class _Boom(_Emb):
+            """Answers the probe, then dies on the real chunk batch."""
+
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            async def embed(self, *, model, inputs):
+                self.calls += 1
+                if self.calls > 1:
+                    raise RuntimeError("embedder down")
+                return await super().embed(model=model, inputs=inputs)
+
+        reg.get_embedder = AsyncMock(return_value=_Boom())
+        docs = [
+            Document(id="doc-a", collection_id="kb-1", slug="doc-a", path="doc-a"),
+        ]
+
+        class _Bodies:
+            async def get(self, doc_id):
+                return "some body text"
+
+        with pytest.raises(RuntimeError):
+            await index_documents(
+                documents=docs,
+                collection=_collection(),
+                provider_registry=reg,
+                semantic_search_registry=ssr,
+                content_store=_Bodies(),
+            )
+        assert store.puts == []
+        assert store.deleted == []

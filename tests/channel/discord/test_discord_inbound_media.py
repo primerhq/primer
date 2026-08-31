@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import SecretStr
@@ -16,7 +17,6 @@ from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     DiscordChannelConfig, DiscordChannelProviderConfig,
 )
-from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import SqliteConfig
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
@@ -88,8 +88,7 @@ async def _setup(tmp_path, *, with_artifacts=True):
     ch = Channel(
         id="ch-1", provider_id="cp-1", provider=ChannelProviderType.DISCORD,
         external_id="9001",
-        config=DiscordChannelConfig(chats={
-            "enabled": True, "default_agent": "agent-x"}))
+        config=DiscordChannelConfig(chats={"enabled": True}))
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
     store = _MemArtifacts()
@@ -113,16 +112,11 @@ async def test_image_attachment_persists_image_part(tmp_path: Path):
     p, adapter, store = await _setup(tmp_path)
     att = _FakeAttachment(
         data=_png_bytes(64, 64), content_type="image/png", filename="pic.png")
-    chat = await adapter.handle_inbound_chat_message(
-        thread_id=None, message_id="m-1", sender_name="Cara",
-        text="look at this", attachments=[att])
-    parts = await _user_parts(p, chat.id)
-    text_parts = [pp for pp in parts if pp["type"] == "text"]
-    image_parts = [pp for pp in parts if pp["type"] == "image"]
-    assert text_parts[0]["text"] == "[Cara] look at this"
+    parts = await adapter.collect_inbound_media(
+        SimpleNamespace(attachments=[att]))
+    image_parts = [pp for pp in parts if pp.type == "image"]
     assert len(image_parts) == 1
-    aid = image_parts[0]["artifact_id"]
-    assert aid in store.blobs
+    assert image_parts[0].artifact_id in store.blobs
 
 
 @pytest.mark.asyncio
@@ -131,14 +125,12 @@ async def test_document_attachment_persists_document_part(tmp_path: Path):
     att = _FakeAttachment(
         data=b"%PDF-1.4 hello", content_type="application/pdf",
         filename="report.pdf")
-    chat = await adapter.handle_inbound_chat_message(
-        thread_id=None, message_id="m-2", sender_name="Cara",
-        text="the doc", attachments=[att])
-    parts = await _user_parts(p, chat.id)
-    doc_parts = [pp for pp in parts if pp["type"] == "document"]
+    parts = await adapter.collect_inbound_media(
+        SimpleNamespace(attachments=[att]))
+    doc_parts = [pp for pp in parts if pp.type == "document"]
     assert len(doc_parts) == 1
-    assert doc_parts[0]["filename"] == "report.pdf"
-    assert doc_parts[0]["artifact_id"] in store.blobs
+    assert doc_parts[0].filename == "report.pdf"
+    assert doc_parts[0].artifact_id in store.blobs
 
 
 @pytest.mark.asyncio
@@ -147,15 +139,10 @@ async def test_oversized_attachment_skipped_text_still_lands(tmp_path: Path):
     big = b"a" * (21 * 1024 * 1024)  # over the 20 MiB default cap
     att = _FakeAttachment(
         data=big, content_type="application/pdf", filename="huge.pdf")
-    chat = await adapter.handle_inbound_chat_message(
-        thread_id=None, message_id="m-3", sender_name="Cara",
-        text="too big", attachments=[att])
-    parts = await _user_parts(p, chat.id)
-    media_parts = [pp for pp in parts if pp["type"] in ("image", "document")]
-    text_parts = [pp for pp in parts if pp["type"] == "text"]
-    assert media_parts == []
-    assert text_parts[0]["text"].startswith("[Cara] too big")
-    assert "skipped" in text_parts[0]["text"]
+    parts = await adapter.collect_inbound_media(
+        SimpleNamespace(attachments=[att]))
+    # Over the cap: skipped, so the turn lands as text only.
+    assert parts == []
     assert store.blobs == {}
 
 
@@ -164,11 +151,7 @@ async def test_no_artifact_registry_skips_media(tmp_path: Path):
     p, adapter, _store = await _setup(tmp_path, with_artifacts=False)
     att = _FakeAttachment(
         data=_png_bytes(32, 32), content_type="image/png", filename="pic.png")
-    chat = await adapter.handle_inbound_chat_message(
-        thread_id=None, message_id="m-4", sender_name="Cara",
-        text="hi", attachments=[att])
-    parts = await _user_parts(p, chat.id)
-    media_parts = [pp for pp in parts if pp["type"] in ("image", "document")]
-    text_parts = [pp for pp in parts if pp["type"] == "text"]
-    assert media_parts == []
-    assert text_parts[0]["text"] == "[Cara] hi"
+    parts = await adapter.collect_inbound_media(
+        SimpleNamespace(attachments=[att]))
+    # No artifact registry: nothing can be stored, so the turn is text only.
+    assert parts == []

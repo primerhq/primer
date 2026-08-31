@@ -2,7 +2,7 @@
 # Measure the installed size of primer-ai core and each extra.
 # Usage: scripts/measure_install.sh [extra ...]   (default: core only)
 # Each target builds a throwaway venv and prints the site-packages size.
-# Heavy extras (huggingface, docling) download multi-GB wheels; pass them
+# Heavy extras (huggingface) download multi-GB wheels; pass them
 # explicitly only when you mean it.
 set -euo pipefail
 cd "$(dirname "$0")/.."

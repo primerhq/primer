@@ -7,8 +7,8 @@ from primer.int.claim import (
 
 def test_claim_kind_values():
     assert ClaimKind.SESSION.value == "session"
-    assert ClaimKind.CHAT.value == "chat"
     assert ClaimKind.HARNESS.value == "harness"
+    assert ClaimKind.TRIGGER.value == "trigger"
 
 
 def test_lease_dataclass_fields():

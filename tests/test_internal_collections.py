@@ -62,6 +62,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -86,6 +102,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -102,9 +123,7 @@ class _FakeVectorStore:
         self.deletes: list[tuple[str, str]] = []
         self.searches: list[tuple[str, list[float], int]] = []
 
-    async def create_collection(
-        self, collection_id, *, dimensions, distance="cosine"
-    ):
+    async def create_collection(self, collection_id, *, dimensions, distance="cosine"):
         self.collections[collection_id] = {
             "dimensions": dimensions,
             "distance": distance,
@@ -287,8 +306,6 @@ def _collection(id="kb-1") -> Collection:
     return Collection(
         id=id,
         description="knowledge base of articles",
-        embedder=CollectionEmbedder(provider_id="hf-1", model="m"),
-        search_provider_id="ssp-test",
     )
 
 
@@ -367,9 +384,7 @@ class TestBootstrap:
         await subsystem.aclose()
 
     @pytest.mark.asyncio
-    async def test_bootstrap_ingests_collections(
-        self, subsystem, store, sp
-    ) -> None:
+    async def test_bootstrap_ingests_collections(self, subsystem, store, sp) -> None:
         await sp.get_storage(Collection).create(_collection("kb-1"))
         result = await subsystem.bootstrap()
         assert result["counts"]["collections"] >= 1
@@ -473,7 +488,9 @@ class TestBootstrap:
         class _MismatchStore(_FakeVectorStore):
             """Store where every internal collection was already created at dim=9999."""
 
-            async def create_collection(self, collection_id, *, dimensions, distance="cosine"):
+            async def create_collection(
+                self, collection_id, *, dimensions, distance="cosine"
+            ):
                 # Simulate the store already holding this collection at a
                 # different dimension by raising ConflictError (same message
                 # format as the pgvector backend).
@@ -512,9 +529,7 @@ class TestBootstrap:
 
 class TestCDCWorker:
     @pytest.mark.asyncio
-    async def test_enqueue_then_worker_applies_upsert(
-        self, subsystem, store
-    ) -> None:
+    async def test_enqueue_then_worker_applies_upsert(self, subsystem, store) -> None:
         await subsystem.bootstrap()
         subsystem.start_worker()
         subsystem.enqueue(
@@ -541,9 +556,7 @@ class TestCDCWorker:
         await subsystem.aclose()
 
     @pytest.mark.asyncio
-    async def test_enqueue_then_worker_applies_delete(
-        self, subsystem, store
-    ) -> None:
+    async def test_enqueue_then_worker_applies_delete(self, subsystem, store) -> None:
         await subsystem.bootstrap()
         subsystem.start_worker()
         subsystem.enqueue(
@@ -662,268 +675,6 @@ def test_internal_collections_config_with_search_provider_id_constructs():
 # ===========================================================================
 
 
-def _ingester_factory_for_test():
-    """Build a DocumentIngester that uses the recursive splitter and a fake
-    text loader — avoids the Docling import path (slow + heavyweight) in
-    unit tests. Lives as a fixture-shaped helper so the IC subsystem's
-    ``_ingest_ai_docs`` can be unit-tested without pulling in Docling.
-    """
-    from pathlib import Path
-
-    from primer.ingest.ingester import DocumentIngester
-    from primer.ingest.loader import DocumentLoader
-    from primer.ingest.splitters.recursive import RecursiveSplitter
-    from primer.model.ingest import LoadedDocument
-
-    class _PathTextLoader(DocumentLoader):
-        async def load(self, source):
-            path = source if isinstance(source, Path) else Path(source)
-            text = path.read_text(encoding="utf-8")
-            return LoadedDocument(text=text, meta={"bytes_loaded": len(text)})
-
-    def factory(*, collection, embedder, vector_store):
-        return DocumentIngester(
-            collection=collection,
-            embedder=embedder,
-            vector_store=vector_store,
-            loader=_PathTextLoader(),
-            splitter=RecursiveSplitter(chunk_size=512, chunk_overlap=32),
-        )
-
-    return factory
-
-
-class TestAiDocsBootstrap:
-    @pytest.mark.asyncio
-    async def test_materialise_creates_ai_docs_collection_row(
-        self, subsystem, store, sp
-    ) -> None:
-        from primer.internal_collections import AI_DOCS_COLLECTION_ID
-
-        await subsystem.bootstrap()
-        coll_storage = sp.get_storage(Collection)
-        ai_docs = await coll_storage.get(AI_DOCS_COLLECTION_ID)
-        assert ai_docs is not None
-        assert ai_docs.system is True
-        assert AI_DOCS_COLLECTION_ID in store.collections
-        await subsystem.aclose()
-
-    @pytest.mark.asyncio
-    async def test_ingest_walks_markdown_files_and_creates_documents(
-        self, subsystem, sp, tmp_path
-    ) -> None:
-        from primer.internal_collections import AI_DOCS_COLLECTION_ID
-        from primer.model.collection import Document
-
-        await subsystem._materialise_collection_rows()
-
-        (tmp_path / "agents.md").write_text(
-            "---\ntitle: Agents\nsummary: Agent runtime.\n---\n# Agents\n\nbody A\n"
-        )
-        (tmp_path / "chats.md").write_text(
-            "---\ntitle: Chats\nsummary: Chat turns.\n---\n# Chats\n\nbody B\n"
-        )
-        # Underscore-prefix files should be skipped.
-        (tmp_path / "_README.md").write_text("internal note; do not ingest")
-        # Non-markdown files should be skipped.
-        (tmp_path / "ignore.txt").write_text("not a doc")
-
-        async def _emit(*args, **kwargs):
-            return None
-
-        counts: dict[str, int] = {"docs": 0}
-        result = await subsystem._ingest_ai_docs(
-            _emit,
-            counts,
-            ai_docs_path=tmp_path,
-            ingester_factory=_ingester_factory_for_test(),
-        )
-        assert result == 2  # agents.md + chats.md (not _README.md / ignore.txt)
-        assert counts["docs"] == 2
-
-        # Both Documents were created with the right meta.
-        doc_storage = sp.get_storage(Document)
-        agents_doc = await doc_storage.get("agents")
-        chats_doc = await doc_storage.get("chats")
-        assert agents_doc is not None
-        assert agents_doc.collection_id == AI_DOCS_COLLECTION_ID
-        assert agents_doc.name == "Agents"
-        assert agents_doc.meta["title"] == "Agents"
-        assert agents_doc.meta["summary"] == "Agent runtime."
-        assert agents_doc.meta["slug"] == "agents"
-        assert "content_hash" in agents_doc.meta
-        assert chats_doc is not None
-        assert chats_doc.name == "Chats"
-
-    @pytest.mark.asyncio
-    async def test_content_hash_skips_unchanged_files(
-        self, subsystem, store, sp, tmp_path
-    ) -> None:
-        from primer.model.collection import Document
-
-        await subsystem._materialise_collection_rows()
-        (tmp_path / "agents.md").write_text(
-            "---\ntitle: Agents\n---\n# Agents\n\nbody one\n"
-        )
-
-        async def _emit(*args, **kwargs):
-            return None
-
-        counts: dict[str, int] = {"docs": 0}
-        factory = _ingester_factory_for_test()
-        # First pass — embeds + writes records.
-        await subsystem._ingest_ai_docs(
-            _emit, counts, ai_docs_path=tmp_path, ingester_factory=factory,
-        )
-        first_record_count = len(store.records)
-        assert first_record_count > 0
-
-        # Second pass with identical content — should hit the skip path.
-        # No new vector store writes; no embedder call increase.
-        embedder_calls_before = len(subsystem._pr._embedder.calls)
-        await subsystem._ingest_ai_docs(
-            _emit, counts, ai_docs_path=tmp_path, ingester_factory=factory,
-        )
-        # Skip means the content_hash matched; no chunks re-embedded.
-        # The embedder may still be touched once for the search query
-        # path or other unrelated calls; check NEW ingest calls didn't
-        # happen by comparing record count.
-        assert len(store.records) == first_record_count
-
-    @pytest.mark.asyncio
-    async def test_content_hash_reingests_changed_files(
-        self, subsystem, store, sp, tmp_path
-    ) -> None:
-        from primer.model.collection import Document
-
-        await subsystem._materialise_collection_rows()
-        path = tmp_path / "agents.md"
-        path.write_text("---\ntitle: Agents\n---\nv1 body\n")
-
-        async def _emit(*args, **kwargs):
-            return None
-
-        counts: dict[str, int] = {"docs": 0}
-        factory = _ingester_factory_for_test()
-        await subsystem._ingest_ai_docs(
-            _emit, counts, ai_docs_path=tmp_path, ingester_factory=factory,
-        )
-        first_hash = (await sp.get_storage(Document).get("agents")).meta["content_hash"]
-
-        # Edit the file — same id, new content.
-        path.write_text("---\ntitle: Agents\n---\nv2 body — completely different\n")
-        await subsystem._ingest_ai_docs(
-            _emit, counts, ai_docs_path=tmp_path, ingester_factory=factory,
-        )
-        second_hash = (await sp.get_storage(Document).get("agents")).meta["content_hash"]
-        assert second_hash != first_hash
-
-    @pytest.mark.asyncio
-    async def test_missing_directory_is_a_no_op(
-        self, subsystem, sp, tmp_path
-    ) -> None:
-        async def _emit(*args, **kwargs):
-            return None
-
-        # Pass a path that doesn't exist — _ingest_ai_docs should log
-        # + skip rather than raise.
-        missing = tmp_path / "does-not-exist"
-        counts: dict[str, int] = {"docs": 0}
-        result = await subsystem._ingest_ai_docs(
-            _emit,
-            counts,
-            ai_docs_path=missing,
-            ingester_factory=_ingester_factory_for_test(),
-        )
-        assert result == 0
-        assert counts["docs"] == 0
-
-    @pytest.mark.asyncio
-    async def test_search_ai_docs_returns_subsystem_inactive_when_not_bootstrapped(
-        self, subsystem
-    ) -> None:
-        with pytest.raises(ConfigError):
-            await subsystem.search_ai_docs(query="hello", top_k=5)
-
-    @pytest.mark.asyncio
-    async def test_search_ai_docs_after_bootstrap_hits_vector_store(
-        self, subsystem, store, sp, tmp_path
-    ) -> None:
-        from primer.internal_collections import AI_DOCS_COLLECTION_ID
-
-        (tmp_path / "agents.md").write_text(
-            "---\ntitle: Agents\n---\n# Agents\n\nbody\n"
-        )
-
-        async def _emit(*args, **kwargs):
-            return None
-
-        await subsystem.bootstrap()  # materialise + activate
-
-        counts: dict[str, int] = {"docs": 0}
-        await subsystem._ingest_ai_docs(
-            _emit,
-            counts,
-            ai_docs_path=tmp_path,
-            ingester_factory=_ingester_factory_for_test(),
-        )
-
-        hits = await subsystem.search_ai_docs(query="agents", top_k=5)
-        assert isinstance(hits, list)
-        # Fake search returns every record in the collection.
-        ai_docs_hits = [h for h in hits if h.record.collection_id == AI_DOCS_COLLECTION_ID]
-        assert len(ai_docs_hits) >= 1
-        await subsystem.aclose()
-
-    @pytest.mark.asyncio
-    async def test_ingest_recurses_subdirs_with_relative_path_slug(
-        self, subsystem, sp, tmp_path
-    ) -> None:
-        from primer.model.collection import Document
-
-        await subsystem._materialise_collection_rows()
-        (tmp_path / "agents.md").write_text(
-            "---\ntitle: Agents\nsummary: A.\n---\n# Agents\n\nbody\n"
-        )
-        (tmp_path / "cookbook").mkdir()
-        (tmp_path / "cookbook" / "pr-reviewer.md").write_text(
-            "---\ntitle: PR reviewer\nsummary: R.\n---\n# PR\n\nbody\n"
-        )
-
-        async def _emit(*a, **k):
-            return None
-
-        counts: dict[str, int] = {"docs": 0}
-        result = await subsystem._ingest_ai_docs(
-            _emit, counts, ai_docs_path=tmp_path,
-            ingester_factory=_ingester_factory_for_test(),
-        )
-        assert result == 2
-        docs = sp.get_storage(Document)
-        assert await docs.get("agents") is not None
-        sub = await docs.get("cookbook/pr-reviewer")
-        assert sub is not None
-        assert sub.meta["slug"] == "cookbook/pr-reviewer"
-
-    @pytest.mark.asyncio
-    async def test_ingest_from_real_docs_agents_dir(self, subsystem, sp) -> None:
-        from primer.ai_docs_path import resolve_ai_docs_dir
-        from primer.model.collection import Document
-
-        root = resolve_ai_docs_dir()
-        assert root.name == "agents" and root.is_dir(), f"unexpected: {root}"
-
-        await subsystem._materialise_collection_rows()
-
-        async def _emit(*a, **k):
-            return None
-
-        counts: dict[str, int] = {"docs": 0}
-        n = await subsystem._ingest_ai_docs(
-            _emit, counts, ingester_factory=_ingester_factory_for_test()
-        )
-        assert n >= 14  # 14 feature docs (cookbook recipes add more later)
-        docs = sp.get_storage(Document)
-        assert await docs.get("agents") is not None
-        assert await docs.get("sessions") is not None
-        assert await docs.get("cookbook/create-and-run-a-session") is not None
+# The ai-docs ingest class went with primer/ingest: the shipped docs are
+# written into the system collection as tree documents now, covered by
+# tests/knowledge/test_system_collection.py.

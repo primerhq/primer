@@ -1,0 +1,9 @@
+{
+  "extras": {
+    "huggingface": {"installed": false},
+    "lance": {"installed": true},
+    "docker": {"installed": true},
+    "kubernetes": {"installed": false}
+  },
+  "speech": {"stt_configured": true, "tts_configured": true}
+}

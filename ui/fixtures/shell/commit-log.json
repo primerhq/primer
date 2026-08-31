@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "sha": "9c1f2ab",
+      "subject": "sess-4f1a2b3c: add webhook handler",
+      "committed_at": "2026-08-16T09:40:40+00:00",
+      "files": [{"path": "src/api.ts", "additions": 12, "deletions": 2, "binary": false}]
+    },
+    {
+      "sha": "3ba77e0",
+      "subject": "sess-4f1a2b3c: add retry test",
+      "committed_at": "2026-08-16T09:41:30+00:00",
+      "files": [{"path": "tests/test_webhook.ts", "additions": 20, "deletions": 0, "binary": false}]
+    }
+  ]
+}

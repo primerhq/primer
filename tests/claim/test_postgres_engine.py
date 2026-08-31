@@ -20,7 +20,7 @@ import pytest
 import pytest_asyncio
 
 from primer.int.claim import ClaimKind, ReleaseOutcome
-from primer.claim.adapters.chats import ChatClaimAdapter
+from primer.claim.adapters.harnesses import HarnessClaimAdapter
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.postgres import PostgresClaimEngine
 from primer.claim.sql import build_claim_query
@@ -96,7 +96,7 @@ async def pg_engine(pg_storage: PostgresStorageProvider) -> PostgresClaimEngine:
     """PostgresClaimEngine with real adapters (storage=None for unit scope)."""
     adapters = {
         ClaimKind.SESSION: SessionClaimAdapter(session_storage=None),
-        ClaimKind.CHAT: ChatClaimAdapter(chat_storage=None),
+        ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
     }
     return PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
 
@@ -109,12 +109,12 @@ async def pg_engine(pg_storage: PostgresStorageProvider) -> PostgresClaimEngine:
 @_needs_pg
 @pytest.mark.asyncio
 async def test_postgres_upsert_creates_row(pg_engine, pg_storage):
-    await pg_engine.upsert(ClaimKind.CHAT, "c-1", priority=100)
+    await pg_engine.upsert(ClaimKind.HARNESS, "c-1", priority=100)
 
     async with pg_storage.pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT * FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'c-1'"
+            f"WHERE kind = 'harness' AND entity_id = 'c-1'"
         )
 
     assert row is not None
@@ -125,13 +125,13 @@ async def test_postgres_upsert_creates_row(pg_engine, pg_storage):
 @_needs_pg
 @pytest.mark.asyncio
 async def test_postgres_upsert_updates_priority(pg_engine, pg_storage):
-    await pg_engine.upsert(ClaimKind.CHAT, "c-1", priority=100)
-    await pg_engine.upsert(ClaimKind.CHAT, "c-1", priority=50)
+    await pg_engine.upsert(ClaimKind.HARNESS, "c-1", priority=100)
+    await pg_engine.upsert(ClaimKind.HARNESS, "c-1", priority=50)
 
     async with pg_storage.pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT priority_score FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'c-1'"
+            f"WHERE kind = 'harness' AND entity_id = 'c-1'"
         )
 
     assert row["priority_score"] == 50
@@ -169,13 +169,13 @@ async def test_postgres_upsert_preserves_next_attempt_when_null(pg_engine, pg_st
 @_needs_pg
 @pytest.mark.asyncio
 async def test_postgres_delete_lease_removes_row(pg_engine, pg_storage):
-    await pg_engine.upsert(ClaimKind.CHAT, "c-del", priority=100)
-    await pg_engine.delete_lease(ClaimKind.CHAT, "c-del")
+    await pg_engine.upsert(ClaimKind.HARNESS, "c-del", priority=100)
+    await pg_engine.delete_lease(ClaimKind.HARNESS, "c-del")
 
     async with pg_storage.pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT 1 FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'c-del'"
+            f"WHERE kind = 'harness' AND entity_id = 'c-del'"
         )
 
     assert row is None
@@ -185,7 +185,7 @@ async def test_postgres_delete_lease_removes_row(pg_engine, pg_storage):
 @pytest.mark.asyncio
 async def test_postgres_delete_lease_noop_on_missing(pg_engine):
     # Must not raise.
-    await pg_engine.delete_lease(ClaimKind.CHAT, "not-there")
+    await pg_engine.delete_lease(ClaimKind.HARNESS, "not-there")
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ async def test_postgres_claim_due_claims_unclaimed(pg_engine, pg_storage):
         storage_provider=pg_storage,
         adapters={},
     )
-    await bare_engine.upsert(ClaimKind.CHAT, "c-bare")
+    await bare_engine.upsert(ClaimKind.HARNESS, "c-bare")
     leases = await bare_engine.claim_due("worker-A", max_count=5)
     # No adapters → no CTEs → no rows claimed.
     assert leases == []
@@ -219,7 +219,7 @@ async def test_postgres_claim_due_respects_max_count(pg_storage):
     from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
-        kind = ClaimKind.CHAT
+        kind = ClaimKind.HARNESS
         entity_table = "chats"
 
         def eligibility_sql(self) -> str:
@@ -228,11 +228,11 @@ async def test_postgres_claim_due_respects_max_count(pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.CHAT: _NoJoinAdapter()}
+    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
     engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
 
     for i in range(5):
-        await engine.upsert(ClaimKind.CHAT, f"c-{i}")
+        await engine.upsert(ClaimKind.HARNESS, f"c-{i}")
 
     leases = await engine.claim_due("worker-A", max_count=3)
     assert len(leases) == 3
@@ -278,28 +278,28 @@ def test_build_claim_query_empty_adapters():
     assert "WITH" in sql
     assert "UPDATE" in sql
     # No adapter CTEs.
-    assert "chat_cand" not in sql
+    assert "harness_cand" not in sql
     assert "session_cand" not in sql
 
 
 def test_build_claim_query_single_adapter():
-    adapters = {ClaimKind.CHAT: ChatClaimAdapter(chat_storage=None)}
+    adapters = {ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None)}
     sql = build_claim_query(adapters, '"test"."leases"')
 
-    assert "chat_cand" in sql
-    assert "chat" in sql
+    assert "harness_cand" in sql
+    assert "harness" in sql
     # Only one CTE — no union needed.
     assert "UNION ALL" not in sql
 
 
 def test_build_claim_query_multiple_adapters():
     adapters = {
-        ClaimKind.CHAT: ChatClaimAdapter(chat_storage=None),
+        ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
         ClaimKind.SESSION: SessionClaimAdapter(session_storage=None),
     }
     sql = build_claim_query(adapters, '"test"."leases"')
 
-    assert "chat_cand" in sql
+    assert "harness_cand" in sql
     assert "session_cand" in sql
     assert "UNION ALL" in sql
     assert "RETURNING" in sql
@@ -307,10 +307,10 @@ def test_build_claim_query_multiple_adapters():
 
 def test_build_claim_query_schema_qualifies_entity_tables():
     """When schema is provided, entity table JOINs use schema-qualified names."""
-    adapters = {ClaimKind.CHAT: ChatClaimAdapter(chat_storage=None)}
+    adapters = {ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None)}
     sql = build_claim_query(adapters, '"myschema"."leases"', schema="myschema")
 
-    assert '"myschema"."chat"' in sql
+    assert '"myschema"."harness"' in sql
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +328,7 @@ async def test_postgres_heartbeat_refreshes_expiry(pg_engine, pg_storage):
     from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
-        kind = ClaimKind.CHAT
+        kind = ClaimKind.HARNESS
         entity_table = "chats"
 
         def eligibility_sql(self) -> str:
@@ -336,28 +336,28 @@ async def test_postgres_heartbeat_refreshes_expiry(pg_engine, pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.CHAT: _NoJoinAdapter()}
+    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
     engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
 
-    await engine.upsert(ClaimKind.CHAT, "hb-1")
+    await engine.upsert(ClaimKind.HARNESS, "hb-1")
     [lease] = await engine.claim_due("worker-A", max_count=1)
 
     # Record the expires_at BEFORE heartbeat.
     async with pg_storage.pool.acquire() as conn:
         before_row = await conn.fetchrow(
             f"SELECT expires_at FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'hb-1'"
+            f"WHERE kind = 'harness' AND entity_id = 'hb-1'"
         )
     import asyncio
     await asyncio.sleep(0.05)
 
-    confirmed = await engine.heartbeat("worker-A", [(ClaimKind.CHAT, "hb-1")])
-    assert confirmed == [(ClaimKind.CHAT, "hb-1")]
+    confirmed = await engine.heartbeat("worker-A", [(ClaimKind.HARNESS, "hb-1")])
+    assert confirmed == [(ClaimKind.HARNESS, "hb-1")]
 
     async with pg_storage.pool.acquire() as conn:
         after_row = await conn.fetchrow(
             f"SELECT expires_at FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'hb-1'"
+            f"WHERE kind = 'harness' AND entity_id = 'hb-1'"
         )
     assert after_row["expires_at"] >= before_row["expires_at"]
 
@@ -407,7 +407,7 @@ async def test_postgres_release_drop_lease_deletes_row(pg_storage):
     from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
-        kind = ClaimKind.CHAT
+        kind = ClaimKind.HARNESS
         entity_table = "chats"
 
         def eligibility_sql(self) -> str:
@@ -415,17 +415,17 @@ async def test_postgres_release_drop_lease_deletes_row(pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.CHAT: _NoJoinAdapter()}
+    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
     engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
 
-    await engine.upsert(ClaimKind.CHAT, "rel-drop")
+    await engine.upsert(ClaimKind.HARNESS, "rel-drop")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
 
     async with pg_storage.pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT 1 FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'rel-drop'"
+            f"WHERE kind = 'harness' AND entity_id = 'rel-drop'"
         )
     assert row is None
 
@@ -437,7 +437,7 @@ async def test_postgres_release_without_drop_clears_claim_fields(pg_storage):
     from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
-        kind = ClaimKind.CHAT
+        kind = ClaimKind.HARNESS
         entity_table = "chats"
 
         def eligibility_sql(self) -> str:
@@ -445,17 +445,17 @@ async def test_postgres_release_without_drop_clears_claim_fields(pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.CHAT: _NoJoinAdapter()}
+    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
     engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
 
-    await engine.upsert(ClaimKind.CHAT, "rel-clear")
+    await engine.upsert(ClaimKind.HARNESS, "rel-clear")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=False))
 
     async with pg_storage.pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT claimed_by, attempt_count FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'rel-clear'"
+            f"WHERE kind = 'harness' AND entity_id = 'rel-clear'"
         )
     assert row is not None
     assert row["claimed_by"] is None
@@ -470,7 +470,7 @@ async def test_postgres_release_failure_bumps_attempt_count(pg_storage):
     from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
-        kind = ClaimKind.CHAT
+        kind = ClaimKind.HARNESS
         entity_table = "chats"
 
         def eligibility_sql(self) -> str:
@@ -478,10 +478,10 @@ async def test_postgres_release_failure_bumps_attempt_count(pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.CHAT: _NoJoinAdapter()}
+    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
     engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
 
-    await engine.upsert(ClaimKind.CHAT, "rel-fail")
+    await engine.upsert(ClaimKind.HARNESS, "rel-fail")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     await engine.release(
         lease,
@@ -495,7 +495,7 @@ async def test_postgres_release_failure_bumps_attempt_count(pg_storage):
     async with pg_storage.pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT attempt_count, last_error, next_attempt_at FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'rel-fail'"
+            f"WHERE kind = 'harness' AND entity_id = 'rel-fail'"
         )
     from datetime import datetime, UTC
     assert row is not None
@@ -515,42 +515,42 @@ async def test_postgres_release_failure_bumps_attempt_count(pg_storage):
 async def test_postgres_release_on_release_runs_in_transaction(pg_storage):
     """release calls adapter.on_release inside the same transaction.
 
-    Scenario: create a Chat entity with turn_status='claimable', upsert +
+    Scenario: create a Harness entity with a pending operation, upsert +
     claim its lease, release with drop_lease=True, then verify the lease
-    row is gone AND the chat's turn_status became 'idle'.
+    row is gone AND on_release cleared ``pending_operation``.
     """
     from datetime import datetime, UTC
-    from primer.model.chats import Chat
+    from primer.model.harness import Harness, HarnessOperation, HarnessStatus
     from primer.storage.postgres import PostgresStorage
 
-    # Prepare a real chat storage backed by the test provider.
     from primer.int.storage import Storage
-    chat_storage: Storage[Chat] = pg_storage.get_storage(Chat)
+    harness_storage: Storage[Harness] = pg_storage.get_storage(Harness)
 
-    # Create a chat row with turn_status='claimable'.
-    chat = Chat(
-        id="txn-chat-1",
-        agent_id="agent-x",
+    harness = Harness(
+        id="txn-harness-1",
+        slug="txn-harness",
+        name="txn harness",
         created_at=datetime.now(UTC),
-        status="active",
-        turn_status="claimable",
+        status=HarnessStatus.DRAFT,
+        pending_operation=HarnessOperation.INSTALL,
     )
-    await chat_storage.create(chat)
+    await harness_storage.create(harness)
+    chat = harness
+    chat_storage = harness_storage
 
     try:
-        # Wire up the real ChatClaimAdapter with actual storage.
-        adapter = ChatClaimAdapter(chat_storage=chat_storage)
+        adapter = HarnessClaimAdapter(harness_storage=harness_storage)
 
         class _EligibleAdapter(type(adapter)):
             """Override eligibility so no extra entity state is required."""
             def eligibility_sql(self) -> str:
                 return "l.kind IS NOT NULL"
 
-        real_adapter = _EligibleAdapter(chat_storage=chat_storage)
-        adapters = {ClaimKind.CHAT: real_adapter}
+        real_adapter = _EligibleAdapter(harness_storage=harness_storage)
+        adapters = {ClaimKind.HARNESS: real_adapter}
         engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
 
-        await engine.upsert(ClaimKind.CHAT, chat.id)
+        await engine.upsert(ClaimKind.HARNESS, chat.id)
         [lease] = await engine.claim_due("worker-txn", max_count=1)
 
         # Release with drop_lease=True + success=True -> on_release should set turn_status='idle'.
@@ -563,20 +563,20 @@ async def test_postgres_release_on_release_runs_in_transaction(pg_storage):
         async with pg_storage.pool.acquire() as conn:
             lease_row = await conn.fetchrow(
                 f"SELECT 1 FROM {pg_storage.leases_table} "
-                f"WHERE kind = 'chat' AND entity_id = $1",
+                f"WHERE kind = 'harness' AND entity_id = $1",
                 chat.id,
             )
         assert lease_row is None, "Lease row should have been deleted"
 
-        # Verify chat.turn_status is now 'idle'.
-        updated_chat = await chat_storage.get(chat.id)
-        assert updated_chat is not None
-        assert updated_chat.turn_status == "idle", (
-            f"Expected turn_status='idle', got {updated_chat.turn_status!r}"
+        # Verify on_release cleared the pending operation.
+        updated = await harness_storage.get(harness.id)
+        assert updated is not None
+        assert updated.pending_operation is None, (
+            f"Expected pending_operation cleared, got {updated.pending_operation!r}"
         )
 
     finally:
-        # Clean up the chat entity row.
+        # Clean up the entity row.
         try:
             await chat_storage.delete(chat.id)
         except Exception:
@@ -605,31 +605,34 @@ async def test_postgres_release_fenced_when_reclaimed_by_other_worker(
     import logging
     from datetime import datetime, UTC
     from primer.int.storage import Storage
-    from primer.model.chats import Chat
+    from primer.model.harness import Harness, HarnessOperation, HarnessStatus
 
-    chat_storage: Storage[Chat] = pg_storage.get_storage(Chat)
-    chat = Chat(
-        id="fenced-chat-1",
-        agent_id="agent-x",
+    harness_storage: Storage[Harness] = pg_storage.get_storage(Harness)
+    harness = Harness(
+        id="fenced-harness-1",
+        slug="fenced-harness",
+        name="fenced harness",
         created_at=datetime.now(UTC),
-        status="active",
-        turn_status="claimable",
+        status=HarnessStatus.DRAFT,
+        pending_operation=HarnessOperation.INSTALL,
     )
-    await chat_storage.create(chat)
+    await harness_storage.create(harness)
+    chat = harness
+    chat_storage = harness_storage
 
     try:
-        adapter = ChatClaimAdapter(chat_storage=chat_storage)
+        adapter = HarnessClaimAdapter(harness_storage=harness_storage)
 
         class _EligibleAdapter(type(adapter)):
             """Override eligibility so no extra entity state is required."""
             def eligibility_sql(self) -> str:
                 return "l.kind IS NOT NULL"
 
-        real_adapter = _EligibleAdapter(chat_storage=chat_storage)
-        adapters = {ClaimKind.CHAT: real_adapter}
+        real_adapter = _EligibleAdapter(harness_storage=harness_storage)
+        adapters = {ClaimKind.HARNESS: real_adapter}
         engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
 
-        await engine.upsert(ClaimKind.CHAT, chat.id)
+        await engine.upsert(ClaimKind.HARNESS, chat.id)
         [lease_a] = await engine.claim_due("worker-A", max_count=1)
         assert lease_a.claimed_by == "worker-A"
 
@@ -640,13 +643,13 @@ async def test_postgres_release_fenced_when_reclaimed_by_other_worker(
             await conn.execute(
                 f"UPDATE {pg_storage.leases_table} "
                 f"   SET claimed_by = 'worker-B' "
-                f" WHERE kind = 'chat' AND entity_id = $1",
+                f" WHERE kind = 'harness' AND entity_id = $1",
                 chat.id,
             )
 
         # A's release must no-op (fence mismatch). Use drop_lease=True +
         # success=True so, absent the fence, it would delete the lease row
-        # AND on_release would flip turn_status to 'idle'.
+        # AND on_release would clear pending_operation.
         with caplog.at_level(logging.WARNING, logger="primer.claim.postgres"):
             await engine.release(
                 lease_a,
@@ -657,17 +660,17 @@ async def test_postgres_release_fenced_when_reclaimed_by_other_worker(
         async with pg_storage.pool.acquire() as conn:
             lease_row = await conn.fetchrow(
                 f"SELECT claimed_by FROM {pg_storage.leases_table} "
-                f"WHERE kind = 'chat' AND entity_id = $1",
+                f"WHERE kind = 'harness' AND entity_id = $1",
                 chat.id,
             )
         assert lease_row is not None, "A's release should not delete B's lease"
         assert lease_row["claimed_by"] == "worker-B"
 
-        # Entity row is UNCHANGED: on_release was skipped, so turn_status
-        # is still 'claimable' (not 'idle').
-        unchanged_chat = await chat_storage.get(chat.id)
-        assert unchanged_chat is not None
-        assert unchanged_chat.turn_status == "claimable"
+        # Entity row is UNCHANGED: on_release was skipped, so the pending
+        # operation is still set.
+        unchanged = await harness_storage.get(harness.id)
+        assert unchanged is not None
+        assert unchanged.pending_operation is HarnessOperation.INSTALL
 
         # A warning was logged about the skipped (fenced) release.
         assert any(
@@ -691,12 +694,12 @@ async def test_postgres_release_fenced_when_reclaimed_by_other_worker(
 @pytest.mark.asyncio
 async def test_postgres_mark_resumable_inserts_with_priority(pg_engine, pg_storage):
     """mark_resumable inserts a new row with the given priority."""
-    await pg_engine.mark_resumable(ClaimKind.CHAT, "mr-new", priority=30)
+    await pg_engine.mark_resumable(ClaimKind.HARNESS, "mr-new", priority=30)
 
     async with pg_storage.pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT priority_score, claimed_by FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'mr-new'"
+            f"WHERE kind = 'harness' AND entity_id = 'mr-new'"
         )
     assert row is not None
     assert row["priority_score"] == 30
@@ -710,15 +713,15 @@ async def test_postgres_mark_resumable_updates_existing_priority(pg_engine, pg_s
     from datetime import datetime, UTC, timedelta
 
     future = datetime.now(UTC) + timedelta(hours=1)
-    await pg_engine.upsert(ClaimKind.CHAT, "mr-exist", priority=100, next_attempt_at=future)
+    await pg_engine.upsert(ClaimKind.HARNESS, "mr-exist", priority=100, next_attempt_at=future)
 
     # mark_resumable should bump it to priority=25 and reset next_attempt_at to now.
-    await pg_engine.mark_resumable(ClaimKind.CHAT, "mr-exist", priority=25)
+    await pg_engine.mark_resumable(ClaimKind.HARNESS, "mr-exist", priority=25)
 
     async with pg_storage.pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT priority_score, next_attempt_at FROM {pg_storage.leases_table} "
-            f"WHERE kind = 'chat' AND entity_id = 'mr-exist'"
+            f"WHERE kind = 'harness' AND entity_id = 'mr-exist'"
         )
     assert row is not None
     assert row["priority_score"] == 25
@@ -768,9 +771,9 @@ async def test_postgres_watch_ready_yields_on_mark_resumable(pg_engine):
     task = asyncio.create_task(consume_one())
     await asyncio.sleep(0.05)
 
-    await pg_engine.mark_resumable(ClaimKind.CHAT, "wr-mr-1", priority=40)
+    await pg_engine.mark_resumable(ClaimKind.HARNESS, "wr-mr-1", priority=40)
     result = await asyncio.wait_for(task, timeout=5.0)
-    assert result == (ClaimKind.CHAT, "wr-mr-1")
+    assert result == (ClaimKind.HARNESS, "wr-mr-1")
 
     await gen.aclose()
 
@@ -792,12 +795,11 @@ async def test_claim_due_on_fresh_schema_ensures_entity_tables(pg_storage):
     schema = pg_storage.schema
     # Simulate a fresh DB: drop the per-kind entity tables.
     async with pg_storage.pool.acquire() as conn:
-        for t in ("chat", "harness", "trigger", "sessions"):
+        for t in ("harness", "trigger", "sessions"):
             await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{t}" CASCADE')
 
     adapters = {
         ClaimKind.SESSION: SessionClaimAdapter(session_storage=None),
-        ClaimKind.CHAT: ChatClaimAdapter(chat_storage=None),
         ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
         ClaimKind.TRIGGER: TriggerClaimAdapter(storage=None),
     }
@@ -809,7 +811,7 @@ async def test_claim_due_on_fresh_schema_ensures_entity_tables(pg_storage):
 
     # The engine created each entity table with the storage-convention name.
     async with pg_storage.pool.acquire() as conn:
-        for t in ("chat", "harness", "trigger", "sessions"):
+        for t in ("harness", "trigger", "sessions"):
             reg = await conn.fetchval("SELECT to_regclass($1)", f"{schema}.{t}")
             assert reg is not None, f"entity table {t!r} was not ensured"
 
@@ -877,7 +879,7 @@ async def test_heartbeat_binds_configured_lease_ttl():
     engine = PostgresClaimEngine(
         storage_provider=_RecordingSP(conn), adapters={}, lease_ttl_seconds=15,
     )
-    await engine.heartbeat("worker-A", [(ClaimKind.CHAT, "c1")])
+    await engine.heartbeat("worker-A", [(ClaimKind.HARNESS, "c1")])
     assert conn.fetch_calls, "heartbeat did not run a fetch"
     query, args = conn.fetch_calls[-1]
     # TTL threaded as the last ($4) param; no hardcoded 60s literal remains.

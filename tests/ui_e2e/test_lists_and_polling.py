@@ -10,7 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import time
 
 import httpx
 
@@ -22,6 +21,7 @@ import httpx
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-01", status="partial")
 
 
@@ -63,104 +63,6 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_u0024_workspaces_sidebar_count_polls_after_api_create(
-    page,
-    base_url: str,
-    console_url: str,
-    unique_suffix: str,
-    tmp_path,
-) -> None:
-    """U0024 — Seed a workspace_provider + workspace_template; open
-    the dashboard; capture the baseline Workspaces sidebar count;
-    POST a workspace via API; assert the sidebar count catches up
-    to baseline+1 within one polling interval (~5s real cadence;
-    we budget 15s for first-render + react batching).
-
-    Priority 4 — polling cadence. Sister of U0002 (sessions) but
-    on the Workspaces nav row. The /workspaces poll fires every
-    5000 ms (chrome.jsx:111). The total comes from the response's
-    ``total`` field — so the sidebar count reflects the global
-    workspace count, not per-status sub-counts.
-    """
-    wp_id = f"wp-u0024-{unique_suffix}"
-    tpl_id = f"wt-u0024-{unique_suffix}"
-    created_ws_id: str | None = None
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/workspace_providers", json={
-            "id": wp_id,
-            "provider": "local",
-            "config": {"kind": "local", "root_path": str(tmp_path)},
-        })
-        assert r.status_code == 201, f"seed provider failed: {r.text}"
-        r = c.post("/v1/workspace_templates", json={
-            "id": tpl_id,
-            "description": "u0024 template",
-            "provider_id": wp_id,
-            "backend": {"kind": "local"},
-        })
-        assert r.status_code == 201, f"seed template failed: {r.text}"
-
-    try:
-        page.goto(f"{console_url}#/", wait_until="domcontentloaded")
-        workspaces_nav = page.locator(
-            ".nav-item:has(.label:text('Workspaces'))"
-        ).first
-        workspaces_nav.wait_for(state="visible", timeout=10_000)
-
-        def _read_count() -> int | None:
-            count_el = workspaces_nav.locator(".count").first
-            if count_el.count() == 0:
-                return None
-            txt = (count_el.text_content() or "").strip()
-            try:
-                return int(txt)
-            except ValueError:
-                return None
-
-        # Capture baseline (could be 0 — that's fine).
-        baseline: int | None = None
-        deadline = time.monotonic() + 12.0
-        while time.monotonic() < deadline:
-            baseline = _read_count()
-            if baseline is not None:
-                break
-            page.wait_for_timeout(250)
-        assert baseline is not None, (
-            "Workspaces sidebar count never rendered within 12s — "
-            "polls aren't loading at all on the freshly opened page"
-        )
-
-        # POST the workspace via API.
-        with httpx.Client(base_url=base_url, timeout=30.0) as c:
-            r = c.post("/v1/workspaces", json={"template_id": tpl_id})
-            assert r.status_code == 201, f"seed workspace failed: {r.text}"
-            created_ws_id = r.json()["id"]
-
-        # Wait for the sidebar count to catch up to baseline+1.
-        target = baseline + 1
-        deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline:
-            now = _read_count()
-            if now is not None and now >= target:
-                break
-            page.wait_for_timeout(250)
-        final = _read_count()
-        assert final is not None and final >= target, (
-            f"Workspaces sidebar count did not catch up to API state "
-            f"within 15s: baseline={baseline} expected≥{target} "
-            f"final={final}"
-        )
-    finally:
-        cleanup = []
-        if created_ws_id:
-            cleanup.append(f"/v1/workspaces/{created_ws_id}")
-        cleanup.extend([
-            f"/v1/workspace_templates/{tpl_id}",
-            f"/v1/workspace_providers/{wp_id}",
-        ])
-        _cleanup(base_url, cleanup)
-
-
 # ---------------------------------------------------------------------------
 # U0034 — Agent Metadata tab deep-link survives reload
 # ---------------------------------------------------------------------------
@@ -189,10 +91,7 @@ def test_u0034_agent_metadata_tab_deep_link_survives_reload(
     _seed_agent(base_url, agent_id, provider_id)
 
     try:
-        page.goto(
-            f"{console_url}#/agents/{agent_id}?tab=metadata",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"agents/{agent_id}", tab="metadata")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
@@ -216,9 +115,12 @@ def test_u0034_agent_metadata_tab_deep_link_survives_reload(
             f"aria-selected={metadata_tab_after.get_attribute('aria-selected')!r}"
         )
 
-        # Defence: URL still has ?tab=metadata.
-        assert "tab=metadata" in page.url, (
-            f"reload dropped ?tab=metadata query: {page.url}"
+        # Defence: the URL still carries the tab. The shell states it
+        # in the overlay target's section slot rather than as a ?tab=
+        # query, which is the same deep link in the one grammar the URL
+        # now has.
+        assert f"overlay=agents:metadata:{agent_id}" in page.url, (
+            f"reload dropped the metadata tab: {page.url}"
         )
     finally:
         _cleanup(base_url, [
@@ -262,7 +164,7 @@ def test_u0037_agents_list_filter_narrows_table_to_matching_ids(
     _seed_agent(base_url, agent_c, provider_id)
 
     try:
-        page.goto(f"{console_url}#/agents", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "agents")
         page.locator("h1.page-title").get_by_text(
             "Agents", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)

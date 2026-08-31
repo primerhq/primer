@@ -4,10 +4,7 @@ Public surface:
 
 * :class:`CollectionSearcher` -- ties together :class:`Embedder`,
   :class:`VectorStore`, and optionally :class:`CrossEncoder` to run
-  the per-collection :attr:`Collection.search` config (MMR + CER).
-
-See ``docs/superpowers/specs/2026-05-05-mmr-cross-encoder-reranking-design.md``
-for the surrounding design.
+  the per-collection :attr:`Collection.search` config.
 """
 
 from primer.search.searcher import CollectionSearcher

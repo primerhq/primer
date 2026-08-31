@@ -127,9 +127,11 @@ async def _drive_approval_park(
             last = r.json()
             if last.get("parked_status") == "parked":
                 return sid, last, pol
-            if last.get("status") == "ended":
+            if last.get("status") == "ended" or last.get("session_state") == "parked":
+                # The latter is the post-01a0518a shape: the turn
+                # finished cleanly without ever parking on the gate.
                 raise AssertionError(
-                    f"session {sid} ended before parking on _approval: "
+                    f"session {sid} finished before parking on _approval: "
                     f"reason={last.get('ended_reason')!r} body={last!r}"
                 )
         await asyncio.sleep(0.25)

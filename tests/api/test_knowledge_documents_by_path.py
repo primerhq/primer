@@ -22,7 +22,11 @@ from httpx import ASGITransport
 
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
-from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+)
 from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
@@ -94,12 +98,26 @@ async def collection_id(client) -> str:
     body = Collection(
         id="kb-1",
         description="test collection",
-        embedder=CollectionEmbedder(provider_id="hf-1", model="all-MiniLM-L6-v2"),
-        search_provider_id="ssp-test",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(
+                provider_id="hf-1", model="all-MiniLM-L6-v2"
+            ),
+            vector_store_provider_id="ssp-test",
+        ),
     ).model_dump(mode="json")
     created = await client.post("/v1/collections", json=body)
     assert created.status_code == 201, created.text
     return "kb-1"
+
+
+@pytest_asyncio.fixture
+async def system_collection_id(client) -> str:
+    body = Collection(
+        id="sys-1", description="system test collection", system=True,
+    ).model_dump(mode="json")
+    created = await client.post("/v1/collections", json=body)
+    assert created.status_code == 201, created.text
+    return "sys-1"
 
 
 def _docs_url(cid: str) -> str:
@@ -220,3 +238,61 @@ async def test_put_indexes_when_search_on(app, client, collection_id):
     assert all(p.collection_id == collection_id for p in store.puts)
     recombined = "\n\n".join(p.text for p in store.puts)
     assert recombined == "alpha beta gamma"
+
+
+class TestSystemCollectionWriteGuardOnFlatPaths:
+    """The `system` collection's write-protection covers the flat
+    path-addressed document surface too (PUT/DELETE/move), matching the
+    guard already enforced on the tree endpoints. Regression coverage for
+    the bug where ``PUT /v1/collections/system/documents?path=...`` could
+    succeed against a collection the model promises is read-only through
+    every path."""
+
+    @pytest.mark.asyncio
+    async def test_put_into_system_collection_is_403(
+        self, client, system_collection_id
+    ):
+        r = await client.put(
+            _docs_url(system_collection_id),
+            params={"path": "a.md"},
+            json={"content": "hello"},
+        )
+        assert r.status_code == 403, r.text
+        assert r.headers["content-type"].startswith("application/problem+json")
+        assert "system-owned and read-only" in r.json().get("detail", "")
+
+    @pytest.mark.asyncio
+    async def test_delete_from_system_collection_is_403(
+        self, client, system_collection_id
+    ):
+        r = await client.delete(
+            _docs_url(system_collection_id), params={"path": "a.md"},
+        )
+        assert r.status_code == 403, r.text
+        assert r.headers["content-type"].startswith("application/problem+json")
+        assert "system-owned and read-only" in r.json().get("detail", "")
+
+    @pytest.mark.asyncio
+    async def test_move_within_system_collection_is_403(
+        self, client, system_collection_id
+    ):
+        r = await client.post(
+            f"/v1/collections/{system_collection_id}/documents/move",
+            json={"from": "a.md", "to": "b.md"},
+        )
+        assert r.status_code == 403, r.text
+        assert r.headers["content-type"].startswith("application/problem+json")
+        assert "system-owned and read-only" in r.json().get("detail", "")
+
+    @pytest.mark.asyncio
+    async def test_put_into_user_collection_still_allowed(
+        self, client, collection_id
+    ):
+        """Non-regression: the guard must not clamp down on normal
+        collections while fixing the system-collection bypass."""
+        r = await client.put(
+            _docs_url(collection_id),
+            params={"path": "a.md"},
+            json={"content": "hello"},
+        )
+        assert r.status_code in (200, 201), r.text

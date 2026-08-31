@@ -85,6 +85,22 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -173,7 +189,13 @@ def _agent(agent_id: str) -> Agent:
 
 
 def _model() -> ResolvedModel:
-    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
+    return ResolvedModel(
+        profile_id="test-profile",
+        provider_id="test-provider",
+        model_name="m",
+        context_length=128_000,
+        config=ModelProfileConfig(),
+    )
 
 
 async def _build_executor(*, graph: Graph, llm: _EchoLLM, registry: RouterRegistry):
@@ -423,6 +445,4 @@ async def test_fanin_not_deadlocked_by_inactive_router_source() -> None:
     )
     end_events = [ev for ev in events if isinstance(ev, _GraphEndOutputEvent)]
     assert end_events, "expected an End output event"
-    assert end_events[-1].text == "A", (
-        f"unexpected aggregate: {end_events[-1].text!r}"
-    )
+    assert end_events[-1].text == "A", f"unexpected aggregate: {end_events[-1].text!r}"

@@ -1,13 +1,10 @@
-"""Migration 1: move legacy document bodies into the content store.
+"""Migration 1: retired.
 
-Wraps :func:`primer.knowledge.migration.migrate_document_content`, which
-already ran ad-hoc from the API lifespan before the migration runner
-existed. Because ``SystemState.schema_version`` defaults to ``1``, every
-install that predates the runner is treated as having this migration
-applied, which is accurate: the ad-hoc call was unconditional on every
-boot. The wrapper exists so the chain starts at 1 and so a future
-install that somehow sits below 1 still gets it; the underlying function
-is idempotent either way.
+Originally moved legacy document bodies into the content store. S2 made
+the content store the single body location by clean break rather than by
+migration, so there is nothing left to move. The class and its version
+slot are retained so the chain still starts at 1 and existing installs
+keep their ``SystemState.schema_version`` accounting.
 """
 
 from __future__ import annotations
@@ -16,19 +13,15 @@ from primer.int.storage_provider import StorageProvider
 
 
 class M001DocumentContent:
-    """Backfill document paths and copy legacy bodies into the content store."""
+    """Retired no-op; the version slot is kept for chain numbering."""
 
     version = 1
-    description = "migrate legacy document bodies into the content store"
+    description = "retired: legacy document body migration removed in S2"
 
     async def apply(self, sp: StorageProvider) -> None:
-        # Lazy: storage is core and knowledge is a subsystem, so importing
-        # it at module scope would make every core-only install pull the
-        # knowledge stack just to register the migration chain. A core-only
-        # install never runs this against documents anyway.
-        from primer.knowledge.migration import migrate_document_content
-
-        await migrate_document_content(sp)
+        """Clean break (S2): legacy meta-body migration removed; slot
+        retained for version numbering."""
+        return None
 
 
 __all__ = ["M001DocumentContent"]

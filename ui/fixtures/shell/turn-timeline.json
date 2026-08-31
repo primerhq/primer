@@ -1,0 +1,44 @@
+{
+  "session_id": "sess-4f1a2b3c",
+  "turn_no": 7,
+  "from_seq": 41,
+  "to_seq": 45,
+  "nodes": [
+    {
+      "id": "llm-1",
+      "kind": "llm_call",
+      "label": "gpt-4o-default",
+      "started_at": "2026-08-16T09:40:01+00:00",
+      "duration_ms": 1840,
+      "tokens": {"prompt": 3120, "completion": 210},
+      "children": []
+    },
+    {
+      "id": "tc-1",
+      "kind": "tool_call",
+      "label": "workspace__grep",
+      "started_at": "2026-08-16T09:40:03+00:00",
+      "duration_ms": 96,
+      "children": []
+    },
+    {
+      "id": "tc-3",
+      "kind": "tool_call",
+      "label": "system__invoke_agent",
+      "started_at": "2026-08-16T09:40:10+00:00",
+      "duration_ms": 8200,
+      "children": [
+        {
+          "id": "llm-2",
+          "kind": "llm_call",
+          "label": "gpt-4o-default",
+          "started_at": "2026-08-16T09:40:11+00:00",
+          "duration_ms": 7100,
+          "tokens": {"prompt": 900, "completion": 640},
+          "delegate_tool_call_id": "tc-3",
+          "children": []
+        }
+      ]
+    }
+  ]
+}

@@ -58,10 +58,17 @@ def test_no_caller_passes_open_to_modal() -> None:
     )
 
 
-def test_model_profiles_delete_confirm_is_gated() -> None:
-    """The dialog that regressed, pinned directly."""
+def test_model_profile_delete_confirm_is_gated() -> None:
+    """The dialog that regressed, pinned where the profile list lives now.
+
+    RETARGET (platform wave P4): the list moved from a bare <ul> in
+    provider-catalog.jsx to MP_ProfileCard (model-profiles.jsx), which
+    replaced the id-comparison gate (`confirmProfile === row.id`) with a
+    plain per-card boolean - there is no id to compare against at all
+    now, so the original `confirmProfile?.id` bug class (a non-null but
+    empty/undefined id rendering the dialog unconditionally) cannot
+    recur by construction.
+    """
     src = (UI / "components" / "model-profiles.jsx").read_text(encoding="utf-8")
-    assert "{confirmDelete && (" in src
-    # Inside the guard the row is present, so no optional chaining is needed;
-    # `confirmDelete?.id` was what rendered the tell-tale blank "Delete ?".
-    assert "confirmDelete?.id" not in src
+    assert "const [confirmDelete, setConfirmDelete] = React.useState(false);" in src
+    assert "confirmProfile?.id" not in src

@@ -3,7 +3,7 @@
 Structurally mirrors primer/model/web_search.py: a CRUD provider row with a
 discriminated config union, plus a singleton active-config row discriminated by
 ``mode`` into single / aggregated. The reserved built-in is the keyless LOCAL
-adapter (httpx + trafilatura + docling).
+adapter (httpx + trafilatura).
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ class WebFetchProviderType(str, Enum):
 
 
 class LocalFetchConfig(BaseModel):
-    """In-process fetch + extract (httpx + trafilatura + docling). No key."""
+    """In-process fetch + extract (httpx + trafilatura). No key."""
 
     type: Literal[WebFetchProviderType.LOCAL] = Field(default=WebFetchProviderType.LOCAL)
 

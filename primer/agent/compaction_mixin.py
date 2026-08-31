@@ -1,7 +1,7 @@
 """Shared compaction primitives consumed by both runners.
 
 Free async functions used by :class:`_BaseAgentExecutor` (workspace
-+ thread executor) and :class:`primer.chat.executor.ChatTurnRunner`.
++ thread executor).
 Both runners gain identical auto-compact behaviour by delegating to
 this module.
 

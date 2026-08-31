@@ -28,6 +28,12 @@ in every response body. This router:
   :func:`_count_protected_admins`) on PATCH and DELETE: refuses any
   mutation that would leave the platform with zero *enabled admins
   that still hold a password*. Returns 403 ``last_admin_protected``.
+* Supports ``generate_password`` on create/PATCH as an alternative to a
+  caller-supplied ``password``: the server mints a random temp
+  password, hashes it, sets ``must_change_password``, and returns the
+  plaintext exactly once as ``generated_password`` on the response.
+  Powers both "temp password shown once" at provisioning and a
+  one-click "force rotation" quick action on an existing row.
 * Rejects duplicate usernames on create with 409
   ``user_already_exists``, mirroring the register route's uniqueness
   check.
@@ -44,6 +50,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -92,9 +99,19 @@ class AdminUserOut(BaseModel):
     must_change_password: bool
     created_at: datetime
     last_login_at: datetime | None = None
+    generated_password: str | None = Field(
+        default=None,
+        description=(
+            "Set only on the response to a create/PATCH call made with "
+            "generate_password=true — the plaintext temp password, shown "
+            "exactly once. Never persisted and never returned again."
+        ),
+    )
 
     @classmethod
-    def from_user(cls, user: User) -> "AdminUserOut":
+    def from_user(
+        cls, user: User, *, generated_password: str | None = None,
+    ) -> "AdminUserOut":
         return cls(
             id=user.id,
             username=user.username,
@@ -104,6 +121,7 @@ class AdminUserOut(BaseModel):
             must_change_password=user.must_change_password,
             created_at=user.created_at,
             last_login_at=user.last_login_at,
+            generated_password=generated_password,
         )
 
 
@@ -117,8 +135,17 @@ class AdminUserCreateBody(BaseModel):
         default=None,
         min_length=_MIN_PASSWORD_LEN,
         description=(
-            "Plaintext, hashed server-side. Omit to provision a "
-            "password-less account (e.g. SSO-only, not yet activated)."
+            "Plaintext, hashed server-side. Omit (and leave "
+            "generate_password false) to provision a password-less "
+            "account (e.g. SSO-only, not yet activated)."
+        ),
+    )
+    generate_password: bool = Field(
+        default=False,
+        description=(
+            "Server mints a random temp password instead of the caller "
+            "supplying one; returned once as generated_password on the "
+            "response. Mutually exclusive with password."
         ),
     )
     email: str | None = None
@@ -136,6 +163,14 @@ class AdminUserUpdateBody(BaseModel):
     role: Literal["admin", "user", "restricted"] | None = None
     disabled: bool | None = None
     password: str | None = Field(default=None, min_length=_MIN_PASSWORD_LEN)
+    generate_password: bool = Field(
+        default=False,
+        description=(
+            "Force-rotation quick action: server mints a random temp "
+            "password, sets must_change_password, and returns it once as "
+            "generated_password. Mutually exclusive with password."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +268,26 @@ def _raise_duplicate_username(username: str) -> None:
     )
 
 
+def _reject_conflicting_password_fields(
+    *, password: str | None, generate_password: bool,
+) -> None:
+    if password and generate_password:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "conflicting_password_fields",
+                "message": "supply either password or generate_password, not both",
+            },
+        )
+
+
+def _generate_password() -> str:
+    """A server-minted temp password, shown once in the response and
+    never persisted in plaintext. token_urlsafe(15) yields a ~20-char
+    base64url string, comfortably past _MIN_PASSWORD_LEN."""
+    return secrets.token_urlsafe(15)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -250,11 +305,16 @@ async def create_admin_user(
 ) -> AdminUserOut:
     username = _normalise_username(body.username)
     _validate_username(username)
+    _reject_conflicting_password_fields(
+        password=body.password, generate_password=body.generate_password,
+    )
 
     if await _find_user_by_username(storage, username) is not None:
         _raise_duplicate_username(username)
 
-    pw_hash = await hash_password(body.password) if body.password else None
+    plaintext = _generate_password() if body.generate_password else None
+    pw_plain = body.password or plaintext
+    pw_hash = await hash_password(pw_plain) if pw_plain else None
     user = User(
         id=f"user-{uuid.uuid4().hex[:12]}",
         username=username,
@@ -263,16 +323,17 @@ async def create_admin_user(
         email=body.email,
         role=body.role,
         disabled=body.disabled,
-        # A password supplied at provisioning time forces a rotation on
-        # first login — the operator picked it, not the end user.
-        must_change_password=bool(body.password),
+        # A password supplied (typed or generated) at provisioning time
+        # forces a rotation on first login — the operator picked it, not
+        # the end user.
+        must_change_password=bool(pw_plain),
     )
     created = await storage.create(user)
     logger.info(
         "admin_users.create id=%s username=%s role=%s",
         created.id, created.username, created.role,
     )
-    return AdminUserOut.from_user(created)
+    return AdminUserOut.from_user(created, generated_password=plaintext)
 
 
 @admin_users_router.get(
@@ -320,6 +381,9 @@ async def update_admin_user(
 ) -> AdminUserOut:
     existing = await _get_or_404(storage, user_id)
     provided = body.model_fields_set
+    _reject_conflicting_password_fields(
+        password=body.password, generate_password=body.generate_password,
+    )
     updated = existing.model_copy()
 
     if "email" in provided:
@@ -328,7 +392,13 @@ async def update_admin_user(
         updated.role = body.role
     if "disabled" in provided and body.disabled is not None:
         updated.disabled = body.disabled
-    if "password" in provided and body.password:
+
+    plaintext = None
+    if "generate_password" in provided and body.generate_password:
+        plaintext = _generate_password()
+        updated.password_hash = await hash_password(plaintext)
+        updated.must_change_password = True
+    elif "password" in provided and body.password:
         updated.password_hash = await hash_password(body.password)
         updated.must_change_password = True
 
@@ -342,7 +412,7 @@ async def update_admin_user(
 
     saved = await storage.update(updated)
     logger.info("admin_users.update id=%s", saved.id)
-    return AdminUserOut.from_user(saved)
+    return AdminUserOut.from_user(saved, generated_password=plaintext)
 
 
 @admin_users_router.delete(

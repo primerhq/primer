@@ -55,19 +55,47 @@ async def _reopen_ended_locked(
 
     Assumes the caller verified ``row.status == SessionStatus.ENDED``.
     Enforces the ``_RESTARTABLE`` ended_reason guard here (raising
-    ConflictError for ``workspace_lost``/``force_deleted``), reopens the
+    ConflictError for ``force_deleted`` always, and for ``workspace_lost``
+    UNLESS the workspace has since healed — see below), reopens the
     on-disk slot, writes the ``INVOCATION_DIVIDER`` record, bumps the
     invocation counter, clears terminal + park bookkeeping, and transitions
     the scheduler row ENDED -> CREATED (turn_status idle). Returns
     ``(reopened_row, invocation_number)``; does NOT publish events (the
     caller owns ticks). The divider is written BEFORE the caller appends any
     USER_INPUT so the invocation divider precedes the message.
+
+    Recovery-aware ``workspace_lost`` (01a0533c, live SEV): a transient
+    probe blip during a rollout can force-END every session in a workspace
+    via :func:`primer.workspace.session_reconcile.reconcile_sessions_to_workspace_lost`
+    well before the workspace actually stops serving, and the probe
+    routinely recovers a few ticks later (``_HITS_BEFORE_RUNNING``) once
+    the replacement pod is ready - at which point the sessions it just
+    killed were never really lost, only unlucky. Blanket-treating
+    ``workspace_lost`` as permanent (the pre-01a0533c behaviour) turns a
+    30-90s infra blip into a PERMANENT dead end for the user: no message,
+    steer, or reset can ever reach that session again, even though the
+    workspace is healthy again by the time they try. So when
+    ``ended_reason == "workspace_lost"``, re-check the CURRENT workspace
+    row: if it still exists and reads ``phase == "running"``, the loss was
+    transient and this reopen is allowed exactly like a normal
+    completed/failed/cancelled restart. If the workspace is missing
+    entirely or still ``phase != "running"``, the 409 stands - nothing to
+    reopen into. ``force_deleted`` is a DIFFERENT, deliberate operator
+    action (not a probe artifact) and stays permanent unconditionally.
     """
     if row.ended_reason not in _RESTARTABLE:
-        raise ConflictError(
-            f"Session {session_id!r} ended as {row.ended_reason!r} and "
-            "cannot be re-opened."
-        )
+        recoverable = False
+        if row.ended_reason == "workspace_lost":
+            try:
+                ws_row = await workspace_registry.get_workspace_row(workspace_id)
+            except NotFoundError:
+                ws_row = None
+            recoverable = ws_row is not None and ws_row.phase == "running"
+        if not recoverable:
+            raise ConflictError(
+                f"Session {session_id!r} ended as {row.ended_reason!r} and "
+                "cannot be re-opened."
+            )
 
     invocation = int(row.metadata.get("invocation", 1)) + 1
 
@@ -110,6 +138,7 @@ async def _reopen_ended_locked(
         "parked_at": None,
         "parked_state": None,
         "turn_status": "idle",
+        "turn_started_at": None,
         "last_seq": new_seq,
         "metadata": md,
     })

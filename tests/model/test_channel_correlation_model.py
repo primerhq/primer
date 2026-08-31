@@ -8,6 +8,12 @@ def test_session_correlation():
     assert c.kind == "session"
 
 
-def test_chat_correlation():
-    c = ChannelCorrelation(channel_id="ch-1", anchor="thread-2", kind="chat", chat_id="chat-1")
-    assert c.chat_id == "chat-1"
+def test_thread_mapping_correlation():
+    """kind="session" with no tool_call_id is a plain thread mapping."""
+    c = ChannelCorrelation(
+        channel_id="ch-1", anchor="thread-2",
+        workspace_id="ws-1", session_id="sess-1",
+    )
+    assert c.kind == "session"
+    assert c.session_id == "sess-1"
+    assert c.tool_call_id is None

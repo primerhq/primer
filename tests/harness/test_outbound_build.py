@@ -73,7 +73,7 @@ async def test_build_exports_document_content_inline(fake_storage_provider) -> N
         Document(
             id="doc-1",
             collection_id="kb",
-            name="python",
+            slug="python.md",
             path="python.md",
             title="python",
         )

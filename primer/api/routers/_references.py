@@ -74,11 +74,14 @@ def build_reference_block_hook(
     For each check the hook calls ``storage.find(predicate, page)`` where
     *predicate* matches ``child_field == entity.id`` and *page* requests at
     most one result.  If any check finds a matching child record the hook
-    raises :class:`fastapi.HTTPException` with status 409 and a JSON body::
+    raises :class:`~primer.model.except_.ConflictError`, which the RFC7807
+    error handler (:mod:`primer.api.errors`) turns into a 409 problem
+    response whose ``detail`` is the message below (``error_code`` is the
+    message's lead, not a separate JSON key)::
 
-        {"error": "in_use_by", "child_kind": "<kind>", "count": <n>}
+        "in_use_by: 1 <child_kind>(s) reference '<parent id>' (first: '<child id>')"
 
-    The ``count`` reflects only the items returned in the single-item page
+    The item count reflects only the items returned in the single-item page
     (0 or 1); callers should treat it as "at least one child exists".
 
     Parameters

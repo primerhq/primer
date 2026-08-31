@@ -17,6 +17,11 @@ from primer.int.claim import ClaimKind
 
 
 class _FakeStorageProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     """Minimal storage-provider stub for factory tests."""
 
     def get_storage(self, model_class):
@@ -36,6 +41,7 @@ class _FakeStorageProvider:
 
 class _FakePostgresEventBus:
     """Non-InMemory bus — factory should choose PostgresClaimEngine."""
+
     pass
 
 
@@ -67,7 +73,7 @@ def test_factory_in_memory_engine_has_all_three_adapters():
     )
     assert isinstance(engine, InMemoryClaimEngine)
     assert ClaimKind.SESSION in engine._adapters
-    assert ClaimKind.CHAT in engine._adapters
+    assert ClaimKind.HARNESS in engine._adapters
     assert ClaimKind.HARNESS in engine._adapters
 
 
@@ -78,5 +84,5 @@ def test_factory_postgres_engine_has_all_three_adapters():
     )
     assert isinstance(engine, PostgresClaimEngine)
     assert ClaimKind.SESSION in engine._adapters
-    assert ClaimKind.CHAT in engine._adapters
+    assert ClaimKind.HARNESS in engine._adapters
     assert ClaimKind.HARNESS in engine._adapters

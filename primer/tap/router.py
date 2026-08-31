@@ -52,6 +52,7 @@ _QUEUE_MAXSIZE = 1024
 
 _TICK_PREFIX = "session:"
 _TICK_SUFFIX = ":tick"
+_DELTA_SUFFIX = ":delta"
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,7 @@ class WorkspaceTapRouter:
         self._sessions = session_storage
         # workspace_id -> set of subscriber queues
         self._subs: dict[str, set[asyncio.Queue[WorkspaceTick]]] = {}
+        self._delta_subs: dict[str, set[asyncio.Queue]] = {}
         # sid -> wid resolution cache (refresh-on-miss from storage). Bounded
         # LRU: one entry per session id ever ticked would otherwise leak in a
         # long-lived process. sid/wid are tiny strings, so the cap is generous.
@@ -164,6 +166,27 @@ class WorkspaceTapRouter:
 
         return _Subscription(queue, _deregister)
 
+    def subscribe_delta(self, workspace_id: str) -> AsyncIterator:
+        """Async iterator of ephemeral delta frames for ``workspace_id``.
+
+        Mirrors :meth:`subscribe` but on the ``_delta_subs`` queue (the live
+        content path), so a tap route can receive deltas independently of the
+        durable tick pointer. Caller must ``aclose()`` the returned
+        subscription (e.g. on SSE disconnect) so its queue is deregistered.
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
+        self._delta_subs.setdefault(workspace_id, set()).add(queue)
+
+        def _deregister_delta(q: asyncio.Queue) -> None:
+            subs = self._delta_subs.get(workspace_id)
+            if subs is None:
+                return
+            subs.discard(q)
+            if not subs:
+                self._delta_subs.pop(workspace_id, None)
+
+        return _Subscription(queue, _deregister_delta)
+
     # ------------------------------------------------------------------
     # Consume loop
     # ------------------------------------------------------------------
@@ -186,19 +209,31 @@ class WorkspaceTapRouter:
 
     async def _handle(self, event) -> None:
         key = event.event_key
-        if not key.startswith(_TICK_PREFIX) or not key.endswith(_TICK_SUFFIX):
+        if not key.startswith(_TICK_PREFIX):
             return
-        sid = key[len(_TICK_PREFIX):-len(_TICK_SUFFIX)]
-        if not sid:
+        if key.endswith(_TICK_SUFFIX):
+            sid = key[len(_TICK_PREFIX):-len(_TICK_SUFFIX)]
+            if not sid:
+                return
+            seq = event.payload.get("seq") if event.payload else None
+            if not isinstance(seq, int):
+                return
+            wid = await self._resolve_wid(sid)
+            if wid is None:
+                return
+            self._publish(wid, WorkspaceTick(session_id=sid, seq=seq))
             return
-        seq = event.payload.get("seq") if event.payload else None
-        if not isinstance(seq, int):
-            return
-
-        wid = await self._resolve_wid(sid)
-        if wid is None:
-            return
-        self._publish(wid, WorkspaceTick(session_id=sid, seq=seq))
+        if key.endswith(_DELTA_SUFFIX):
+            sid = key[len(_TICK_PREFIX):-len(_DELTA_SUFFIX)]
+            if not sid:
+                return
+            frame = event.payload
+            if not isinstance(frame, dict):
+                return
+            wid = await self._resolve_wid(sid)
+            if wid is None:
+                return
+            self._publish_delta(wid, frame)
 
     async def _resolve_wid(self, sid: str) -> str | None:
         """Resolve ``sid -> workspace_id``, caching the result.
@@ -250,6 +285,24 @@ class WorkspaceTapRouter:
                 except asyncio.QueueFull:
                     # Lost a race with the consumer; safe to drop — the
                     # reader catches up via its cursor.
+                    pass
+
+
+    def _publish_delta(self, workspace_id: str, frame: dict) -> None:
+        subs = self._delta_subs.get(workspace_id)
+        if not subs:
+            return
+        for q in list(subs):
+            try:
+                q.put_nowait(frame)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    q.put_nowait(frame)
+                except asyncio.QueueFull:
                     pass
 
 

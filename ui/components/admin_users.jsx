@@ -32,17 +32,24 @@ const ADM_ROLE_OPTIONS = [
 // Helpers
 // ============================================================================
 
-// {code, message} out of an ApiError envelope. The server wraps 4xx as
-// {detail: {error, message}} (anti-lockout / validation). Mirrors
-// AT_extractError in api_tokens.jsx.
+// {code, message} out of an ApiError envelope. The server wraps a raw
+// HTTPException({error, message}) dict detail (anti-lockout / duplicate
+// username / not-found) as RFC7807's own string `detail` PLUS the full
+// dict verbatim under `extensions` (primer/api/errors.py's
+// _http_exception_handler + _detail_from_mapping) - `envelope.detail` is
+// therefore always a STRING here, never the {error, message} object this
+// used to check `typeof ... === "object"` against, so `code` was
+// silently always null (R5 fix: the message still rendered correctly
+// via the string fallback below, so this was invisible in the UI - only
+// the "(code)" suffix on the banner title was ever missing).
 function ADM_extractError(err) {
   const env = err && err.envelope;
-  const envDetail = env && env.detail;
+  const ext = env && env.extensions;
   let code = null;
   let msg = null;
-  if (envDetail && typeof envDetail === "object") {
-    code = envDetail.error || envDetail.code || null;
-    msg = envDetail.message || null;
+  if (ext && typeof ext === "object") {
+    code = ext.error || ext.code || null;
+    msg = ext.message || null;
   }
   if (!msg && typeof err.detail === "string") msg = err.detail;
   if (!msg) msg = (err && (err.title || err.message)) || "Request failed";
@@ -135,6 +142,7 @@ function ADM_AdminUsersPage() {
                   onEdit={() => setEditUser(u)}
                   onDelete={() => setDeleteUser(u)}
                   onKeys={() => setKeysUser(u)}
+                  onChanged={list.refetch}
                 />
               ))}
             </tbody>
@@ -176,58 +184,240 @@ function ADM_AdminUsersPage() {
 // ADM_UserRow — one row of the table.
 // ============================================================================
 
-function ADM_UserRow({ user, onEdit, onDelete, onKeys }) {
+// notes section 4 wants Force-rotation + Disable per row, not buried in
+// the Edit modal. Both are one-click PATCH quick actions
+// (primer/api/routers/admin_users.py's AdminUserUpdateBody): Disable
+// flips the plain `disabled` field; Force rotation sends
+// `generate_password: true`, which server-mints a random temp password,
+// hashes it, sets must_change_password, and returns the plaintext once
+// as `generated_password` (BACKEND-GAP #11 closed - was previously the
+// only way to set must_change_password without silently locking the
+// account out with an unrecoverable client-generated password).
+// Reset-with-a-typed-password stays in the Edit dialog, unchanged.
+function ADM_UserRow({ user, onEdit, onDelete, onKeys, onChanged }) {
+  const { apiFetch } = window.primerApi;
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [rotated, setRotated] = React.useState(null); // plaintext password | null
+
+  const toggleDisabled = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(
+        "PATCH", "/admin/users/" + encodeURIComponent(user.id),
+        { disabled: !user.disabled },
+      );
+      onChanged && onChanged();
+    } catch (err) {
+      // Anti-lockout can refuse THIS action too (disabling the last
+      // enabled admin) - surfaced inline, not silently dropped.
+      setError(ADM_extractError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const forceRotation = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await apiFetch(
+        "PATCH", "/admin/users/" + encodeURIComponent(user.id),
+        { generate_password: true },
+      );
+      onChanged && onChanged();
+      if (resp && resp.generated_password) setRotated(resp.generated_password);
+    } catch (err) {
+      setError(ADM_extractError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <tr data-testid={`admin-user-row-${user.id}`}>
-      <td className="mono">{user.username}</td>
-      <td>
-        {user.email ? user.email : <span className="muted">—</span>}
-      </td>
-      <td>
-        <span className={`pill ${ADM_roleClass(user.role)}`}>
-          {user.role}
-        </span>
-      </td>
-      <td>
-        {user.disabled
-          ? <span className="pill pill-failed">disabled</span>
-          : <span className="pill pill-claimed">enabled</span>}
-        {user.must_change_password && (
-          <span className="pill pill-paused" style={{ marginLeft: 4 }}>must change pw</span>
+    <React.Fragment>
+      <tr data-testid={`admin-user-row-${user.id}`}>
+        <td className="mono">{user.username}</td>
+        <td>
+          {user.email ? user.email : <span className="muted">—</span>}
+        </td>
+        <td>
+          <span className={`pill ${ADM_roleClass(user.role)}`}>
+            {user.role}
+          </span>
+        </td>
+        <td>
+          {user.disabled
+            ? <span className="pill pill-failed">disabled</span>
+            : <span className="pill pill-claimed">enabled</span>}
+          {user.must_change_password && (
+            <span className="pill pill-paused" style={{ marginLeft: 4 }}>must change pw</span>
+          )}
+        </td>
+        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon={user.disabled ? "check" : "x-circle"}
+            onClick={toggleDisabled}
+            disabled={busy}
+            data-testid={`toggle-disabled-btn-${user.id}`}
+            title={user.disabled ? "Enable this account" : "Disable this account (blocks sign-in)"}
+          >
+            {busy ? "…" : (user.disabled ? "Enable" : "Disable")}
+          </Btn>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="refresh"
+            onClick={forceRotation}
+            disabled={busy}
+            data-testid={`force-rotation-btn-${user.id}`}
+            title="Mint a new temp password and require the user to change it at next sign-in"
+            style={{ marginLeft: 6 }}
+          >
+            {busy ? "…" : "Force rotation"}
+          </Btn>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="edit"
+            onClick={onEdit}
+            data-testid={`edit-user-btn-${user.id}`}
+            style={{ marginLeft: 6 }}
+          >
+            Edit
+          </Btn>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="key"
+            onClick={onKeys}
+            data-testid={`keys-user-btn-${user.id}`}
+            style={{ marginLeft: 6 }}
+          >
+            Keys
+          </Btn>
+          <Btn
+            size="sm"
+            kind="danger"
+            icon="trash"
+            onClick={onDelete}
+            data-testid={`delete-user-btn-${user.id}`}
+            style={{ marginLeft: 6 }}
+          >
+            Delete
+          </Btn>
+        </td>
+      </tr>
+      {error && (
+        <tr>
+          <td colSpan={5} style={{ padding: "0 12px 8px" }}>
+            <Banner
+              kind="error"
+              title={error.code ? `Action refused (${error.code})` : "Action failed"}
+              detail={error.message || ""}
+            />
+          </td>
+        </tr>
+      )}
+      {rotated && (
+        <ADM_PasswordOneTimeDialog
+          username={user.username}
+          password={rotated}
+          onClose={() => setRotated(null)}
+        />
+      )}
+    </React.Fragment>
+  );
+}
+
+// ============================================================================
+// ADM_PasswordOneTimeDialog — the only place a server-generated temp
+// password is visible. Shared by the create flow and the per-row
+// Force-rotation action. Mirrors api_tokens.jsx's AT_PlaintextOneTimeDialog
+// (copy button + dire warning + separate close button).
+// ============================================================================
+
+function ADM_PasswordOneTimeDialog({ username, password, onClose }) {
+  const [copied, setCopied] = React.useState(false);
+  const [copyError, setCopyError] = React.useState(null);
+
+  const copy = async () => {
+    setCopyError(null);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(password || "");
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = password || "";
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      setCopyError(e && e.message ? e.message : "Copy failed");
+    }
+  };
+
+  return (
+    <Modal
+      title="Temp password — copy it now"
+      danger
+      onClose={onClose}
+      footer={
+        <>
+          <Btn
+            kind="primary"
+            icon={copied ? "check" : "copy"}
+            onClick={copy}
+            data-testid="copy-password-btn"
+          >
+            {copied ? "Copied!" : "Copy password"}
+          </Btn>
+          <Btn
+            kind="default"
+            onClick={onClose}
+            data-testid="close-plaintext-btn"
+          >
+            I have saved it — close
+          </Btn>
+        </>
+      }
+    >
+      <div data-testid="adm-plaintext-dialog">
+        <Banner
+          kind="warning"
+          title="This is the only time you'll see this password."
+          detail={`Copy it now and hand it to ${username} out of band - it cannot be retrieved later. They must change it at next sign-in.`}
+        />
+        <div className="field" style={{ marginTop: 12 }}>
+          <label className="field-label">Password</label>
+          <pre
+            data-testid="plaintext-display"
+            className="mono"
+            style={{
+              padding: "10px 12px",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+            }}
+          >
+            {password}
+          </pre>
+        </div>
+        {copyError && (
+          <Banner kind="error" title="Copy failed" detail={copyError} />
         )}
-      </td>
-      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-        <Btn
-          size="sm"
-          kind="ghost"
-          icon="edit"
-          onClick={onEdit}
-          data-testid={`edit-user-btn-${user.id}`}
-        >
-          Edit
-        </Btn>
-        <Btn
-          size="sm"
-          kind="ghost"
-          icon="key"
-          onClick={onKeys}
-          data-testid={`keys-user-btn-${user.id}`}
-          style={{ marginLeft: 6 }}
-        >
-          Keys
-        </Btn>
-        <Btn
-          size="sm"
-          kind="danger"
-          icon="trash"
-          onClick={onDelete}
-          data-testid={`delete-user-btn-${user.id}`}
-          style={{ marginLeft: 6 }}
-        >
-          Delete
-        </Btn>
-      </td>
-    </tr>
+      </div>
+    </Modal>
   );
 }
 
@@ -240,9 +430,11 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
   const [username, setUsername] = React.useState("");
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [generatePassword, setGeneratePassword] = React.useState(false);
   const [role, setRole] = React.useState("user");
   const [busy, setBusy] = React.useState(false);
   const [submitError, setSubmitError] = React.useState(null);
+  const [created, setCreated] = React.useState(null); // {username, generated_password} | null
 
   const mountedRef = React.useRef(true);
   React.useEffect(() => {
@@ -251,8 +443,10 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
   }, []);
 
   // Password min length mirrors RegisterBody (Task 2/§6): >= 8 chars. The
-  // server flags must_change_password=true when a password is given.
-  const canSubmit = !busy && !!username.trim() && password.length >= 8;
+  // server flags must_change_password=true when a password is given
+  // (typed or generated).
+  const canSubmit = !busy && !!username.trim()
+    && (generatePassword || password.length >= 8);
 
   const submit = async () => {
     setSubmitError(null);
@@ -261,13 +455,21 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
       const body = {
         username: username.trim(),
         email: email.trim() || null,
-        password,
         role,
         disabled: false,
       };
-      await apiFetch("POST", "/admin/users", body);
+      if (generatePassword) {
+        body.generate_password = true;
+      } else {
+        body.password = password;
+      }
+      const resp = await apiFetch("POST", "/admin/users", body);
       if (!mountedRef.current) return;
-      onCreated && onCreated();
+      if (resp && resp.generated_password) {
+        setCreated(resp);
+      } else {
+        onCreated && onCreated();
+      }
     } catch (err) {
       if (!mountedRef.current) return;
       setSubmitError(ADM_extractError(err));
@@ -275,6 +477,18 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
       if (mountedRef.current) setBusy(false);
     }
   };
+
+  // Server-generated: show the one-time plaintext instead of the form.
+  // Closing that dialog is what actually finishes the create flow.
+  if (created) {
+    return (
+      <ADM_PasswordOneTimeDialog
+        username={created.username}
+        password={created.generated_password}
+        onClose={() => onCreated && onCreated()}
+      />
+    );
+  }
 
   return (
     <Modal
@@ -330,7 +544,20 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
             onChange={(e) => setPassword(e.target.value)}
             placeholder="at least 8 characters"
             style={{ width: "100%" }}
+            disabled={generatePassword}
           />
+          <label
+            className="row"
+            style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 8 }}
+          >
+            <input
+              type="checkbox"
+              data-testid="adm-generate-password"
+              checked={generatePassword}
+              onChange={(e) => setGeneratePassword(e.target.checked)}
+            />
+            <span>Generate a temp password <span className="muted text-sm">— shown once, copy it before closing.</span></span>
+          </label>
           <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
             The user must change this on first sign-in.
           </div>
@@ -757,6 +984,7 @@ function ADM_UserKeyRow({ user, token, onRevoked, onConfirmStart, onConfirmEnd }
 
 window.ADM_AdminUsersPage = ADM_AdminUsersPage;
 window.ADM_UserRow = ADM_UserRow;
+window.ADM_PasswordOneTimeDialog = ADM_PasswordOneTimeDialog;
 window.ADM_CreateUserDialog = ADM_CreateUserDialog;
 window.ADM_EditUserDialog = ADM_EditUserDialog;
 window.ADM_DeleteUserDialog = ADM_DeleteUserDialog;

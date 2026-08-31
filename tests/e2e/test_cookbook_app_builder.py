@@ -51,7 +51,12 @@ from pathlib import Path
 import pytest
 
 from tests._support.mock_llm import Rule
-from tests._support.runs import make_local_workspace, make_scripted_agent, wait_terminal
+from tests._support.runs import (
+    make_local_workspace,
+    make_scripted_agent,
+    wait_completed,
+    wait_terminal,
+)
 from tests._support.smk import smk
 from tests._support.testconfig import requires
 from tests._support.model_profiles import agent_model, seed_llm_provider
@@ -230,9 +235,10 @@ async def test_app_builder_provisions_and_runs_mini_app(
                 }},
                 emit_tool_call_id="c3",
             ),
-            # after create_collection (result has "embedder") -> seed a doc
+            # after create_collection (its result echoes the entity, and
+            # the description is unique to it) -> seed a doc
             Rule(
-                when_last_tool_result_contains='"embedder"',
+                when_last_tool_result_contains="News digest knowledge base",
                 emit_tool="system__put_document",
                 emit_args={
                     "collection_id": coll_id, "path": _DOC_PATH,
@@ -247,8 +253,6 @@ async def test_app_builder_provisions_and_runs_mini_app(
                 emit_args={"entity": {
                     "id": coll_id,
                     "description": "News digest knowledge base",
-                    "embedder": {"provider_id": emb_id, "model": _EMBED_MODEL},
-                    "search_provider_id": ssp_id,
                 }},
                 emit_tool_call_id="c1",
             ),
@@ -289,9 +293,12 @@ async def test_app_builder_provisions_and_runs_mini_app(
         )
         assert r.status_code in (200, 201), r.text
         build_sid = r.json()["id"]
-        build_final = await wait_terminal(authed_client, build_sid, timeout_s=120)
-        assert build_final.get("status") == "ended", build_final
-        assert build_final.get("ended_reason") == "completed", (
+        # 01a0518a: a plain interactive agent session (binding.kind="agent",
+        # no autonomous override) now rests parked on a clean stop instead
+        # of ending - unlike run_sid below, which is a trigger-fired GRAPH
+        # session and stays autonomous/ends as before.
+        build_final = await wait_completed(authed_client, build_sid, timeout_s=120)
+        assert build_final.get("session_state") == "parked", (
             f"the builder agent did not finish provisioning the app: {build_final}"
         )
 
@@ -332,6 +339,19 @@ async def test_app_builder_provisions_and_runs_mini_app(
         assert gt.status_code == 200, gt.text
 
         # --- (2) The seeded document is SEARCHABLE (real embedder + pgvector). ---
+        # The agent has no tool for binding a vector space, so search is
+        # turned on here, after the run. Enabling it indexes what is
+        # already in the collection, which is exactly the document the
+        # agent seeded. The create tool used to be handed the embedder
+        # and store inline; those keys are not on the entity any more and
+        # were being dropped, so the collection came out grep-only and
+        # this assertion had nothing to find.
+        r = await authed_client.put(f"/v1/collections/{coll_id}/search", json={
+            "embedder": {"provider_id": emb_id, "model": _EMBED_MODEL},
+            "vector_store_provider_id": ssp_id,
+        })
+        assert r.status_code in (200, 201, 202), r.text
+
         srch = await authed_client.post(
             f"/v1/collections/{coll_id}/search",
             json={"query": "channel media pipeline", "top_k": 5},

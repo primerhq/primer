@@ -14,6 +14,7 @@ import re
 from collections.abc import Iterable
 
 from tests._support.smk import smk
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 pytestmark = smk("SMK-UI-CR-01")
 
@@ -26,18 +27,27 @@ def test_channel_rules_route_renders_with_zero_console_errors(
 ) -> None:
     """Navigate to the channel-rules route, wait for the page-title,
     assert text + no unexpected console errors / fetch failures."""
-    page.goto(console_url + "#/channels/rules", wait_until="domcontentloaded")
+    open_legacy_route(page, console_url, "channels/rules")
     title_locator = page.locator("h1.page-title").first
     title_locator.wait_for(state="visible", timeout=10_000)
     assert "Channel rules" in title_locator.inner_text()
     # Let any post-load fetches (provider/trigger lists) settle so a
     # render-time explosion would have surfaced by now.
-    page.wait_for_load_state("networkidle", timeout=10_000)
+    # NOT networkidle: the shell holds live polling (sessions,
+    # attention, files) for as long as it is mounted, so the network
+    # is never idle and that wait can only time out. A fixed settle is
+    # enough here, since what follows only reads what has already
+    # loaded.
+    page.wait_for_timeout(1_500)
 
     # By-design 404s: the sidebar polls the IC subsystem config and a
-    # 404 there is the documented "subsystem OFF" signal.
+    # 404 there is the documented "subsystem OFF" signal; the workspace
+    # TAP likewise 404s until the workspace has a live on-disk slot
+    # (the studio stays mounted under every overlay since the
+    # three-view flag day).
     by_design_404_patterns = [
         r"/v1/internal_collections/config",
+        r"/v1/workspaces/[^/]+/tap$",
     ]
     real_failures = [
         r for r in failed_requests

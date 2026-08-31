@@ -28,6 +28,11 @@ from primer.toolset.workspace_ext import build_workspace_ext_toolset
 
 
 class _NoopStorageProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def get_storage(self, _cls):  # pragma: no cover — never called
         raise NotImplementedError
 
@@ -43,7 +48,8 @@ def workspaces_toolset():
 @pytest.mark.asyncio
 class TestWatchFilesHandler:
     async def test_returns_yielded_with_watch_event_key(
-        self, workspaces_toolset,
+        self,
+        workspaces_toolset,
     ):
         ctx = ToolContext(
             tool_call_id="tc-w",
@@ -82,7 +88,8 @@ class TestWatchFilesHandler:
         assert exc_info.value.yielded.timeout == 120.0
 
     async def test_handler_honours_custom_batch_window(
-        self, workspaces_toolset,
+        self,
+        workspaces_toolset,
     ):
         ctx = ToolContext(
             tool_call_id="tc-b",
@@ -204,7 +211,9 @@ class TestWatchFilesResumeHook:
         from primer.toolset.workspaces import watch_files_resume
 
         meta = {"paths": ["a"], "batch_window_ms": 250}
-        result = watch_files_resume(meta, YieldTimeout(elapsed_seconds=60.0), _RESUME_CTX)
+        result = watch_files_resume(
+            meta, YieldTimeout(elapsed_seconds=60.0), _RESUME_CTX
+        )
         body = json.loads(result.output)
         assert body["timed_out"] is True
         assert body["changes"] == []

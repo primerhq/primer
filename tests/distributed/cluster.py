@@ -430,7 +430,7 @@ class TestCluster:
 
         Example::
 
-            async with cluster.ws(0, "/v1/chats/abc/ws") as ws:
+            async with cluster.ws(0, "/v1/workspaces/w1/sessions/s1/ws") as ws:
                 msg = await ws.recv()
         """
         import websockets  # type: ignore[import-untyped]  # noqa: PLC0415

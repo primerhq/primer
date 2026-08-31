@@ -15,7 +15,7 @@
 
 (function () {
   const DEFAULT_DEFAULTS = {
-    theme: "dark",
+    theme: null,  // null = follow the OS scheme (dark-first identity)
     accent: "Primer green",
     density: "default",
     demoState: "happy",
@@ -88,6 +88,18 @@
     }
   } catch (_e) { /* defensive: no document yet, etc. */ }
 
+  // Follow OS scheme changes live, but only while the operator has no
+  // explicit choice persisted (light-first revamp, spec section 9).
+  try {
+    window.matchMedia("(prefers-color-scheme: dark)")
+      .addEventListener("change", (e) => {
+        if (!_readPersisted().theme) {
+          document.documentElement.setAttribute(
+            "data-theme", e.matches ? "dark" : "light");
+        }
+      });
+  } catch (_e) { /* older engines: the static resolve stands */ }
+
   function setTweak(keyOrEdits, val) {
     const edits = typeof keyOrEdits === "object" && keyOrEdits !== null
       ? keyOrEdits
@@ -131,6 +143,7 @@
 
   const ns = (window.primerApi = window.primerApi || {});
   ns.useTweaks = useTweaks;
+  ns.setTweak = setTweak;  // non-hook callers (verb runs, imperative code)
   ns._tweaks = { state, setTweak };  // test seam
   // Bridge so legacy global references (app.jsx /* global useTweaks */ and
   // tweaks-panel.jsx's Object.assign(window, ...)) keep working.

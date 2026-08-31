@@ -36,6 +36,11 @@ class _FakeStorage:
 
 
 class _FakeStorageProvider:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _FakeStorage] = {}
 
@@ -48,17 +53,21 @@ async def test_resolves_aggregated_runtime_and_virtual_model():
     sp = _FakeStorageProvider()
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
-            id="member-1", provider=LLMProviderType.ANTHROPIC,
+            id="member-1",
+            provider=LLMProviderType.ANTHROPIC,
             config=AnthropicConfig(api_key=SecretStr("sk-x")),
             limits=Limits(max_concurrency=4),
         )
     )
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
-            id="agg-1", provider=LLMProviderType.AGGREGATED,
-            config=AggregatedLLMConfig(members=[
-                AggregatedMember(provider_id="member-1", model_name="claude-x"),
-            ]),
+            id="agg-1",
+            provider=LLMProviderType.AGGREGATED,
+            config=AggregatedLLMConfig(
+                members=[
+                    AggregatedMember(provider_id="member-1", model_name="claude-x"),
+                ]
+            ),
             limits=Limits(max_concurrency=4),
         )
     )
@@ -68,14 +77,17 @@ async def test_resolves_aggregated_runtime_and_virtual_model():
     await seed_model_profile(sp, "agg-1--virtual-1")
     await sp.get_storage(Agent).create(
         Agent(
-            id="ag-1", description="test agent",
+            id="ag-1",
+            description="test agent",
             model=AgentModel(profile_id="agg-1--virtual-1"),
         )
     )
     registry = ProviderRegistry(sp)
 
     agent, llm, llm_model = await _resolve_agent_runtime(
-        "ag-1", storage_provider=sp, provider_registry=registry,
+        "ag-1",
+        storage_provider=sp,
+        provider_registry=registry,
     )
     assert isinstance(llm, AggregatedLLM)
     assert llm_model.model_name == "virtual-1"  # virtual name, from the profile

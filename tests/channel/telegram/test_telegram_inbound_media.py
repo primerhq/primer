@@ -1,10 +1,13 @@
 """Telegram inbound media: photo/document/oversized/no-artifacts paths.
 
 A media message carries its user text in ``msg.caption`` (``msg.text`` is
-None). The adapter downloads each attachment's bytes via the bot file API,
-stores them through ``store_inbound_media`` (artifact-backed), and routes the
-turn through the chat router so the persisted ``user_message`` parts include
-the media part plus the caption as the leading text part.
+None). The adapter downloads each attachment's bytes via the bot file API and
+stores them through ``store_inbound_media`` (artifact-backed).
+
+Driven through the S6 ``collect_inbound_media(raw)`` hook, which is what the
+factory hands to ``route_event(media_parts=...)``: the chat surface it used to
+route through is gone (S6 section 5), the per-attachment download under it is
+unchanged.
 """
 
 from __future__ import annotations
@@ -24,7 +27,6 @@ from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     TelegramChannelConfig, TelegramChannelProviderConfig,
 )
-from primer.model.chats import Chat, ChatMessage
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
 from primer.storage.sqlite import SqliteStorageProvider
@@ -140,8 +142,7 @@ async def _setup(tmp_path, *, with_artifacts=True, files=None):
     ch = Channel(
         id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
         external_id="555",
-        config=TelegramChannelConfig(chats={
-            "enabled": True, "default_agent": "agent-x"}))
+        config=TelegramChannelConfig(chats={"enabled": True}))
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
 
@@ -175,15 +176,11 @@ async def test_photo_message_persists_image_part_with_artifact(tmp_path: Path):
         caption="look at this",
         photo=[_FakePhotoSize("photo-lo"), _FakePhotoSize("photo-hi")])
     # only the highest-res file is registered, proving the LAST is taken.
-    await adapter.handle_inbound_chat_media(sender_name="Alice", msg=msg)
+    parts = await adapter.collect_inbound_media(msg)
 
-    chats = (await p.get_storage(Chat).list(OffsetPage(offset=0, length=10))).items
-    parts = await _user_message_parts(p, chats[0].id)
-    text_parts = [pt for pt in parts if pt["type"] == "text"]
-    image_parts = [pt for pt in parts if pt["type"] == "image"]
-    assert text_parts and text_parts[0]["text"] == "[Alice] look at this"
+    image_parts = [pt for pt in parts if pt.type == "image"]
     assert len(image_parts) == 1
-    assert image_parts[0]["artifact_id"] in store.blobs
+    assert image_parts[0].artifact_id in store.blobs
 
 
 @pytest.mark.asyncio
@@ -193,14 +190,12 @@ async def test_document_message_preserves_filename(tmp_path: Path):
     msg = _FakeMessage(
         caption=None,
         document=_FakeDocument("doc-1", "application/pdf", "report.pdf"))
-    await adapter.handle_inbound_chat_media(sender_name="Bob", msg=msg)
+    parts = await adapter.collect_inbound_media(msg)
 
-    chats = (await p.get_storage(Chat).list(OffsetPage(offset=0, length=10))).items
-    parts = await _user_message_parts(p, chats[0].id)
-    doc_parts = [pt for pt in parts if pt["type"] == "document"]
+    doc_parts = [pt for pt in parts if pt.type == "document"]
     assert len(doc_parts) == 1
-    assert doc_parts[0]["artifact_id"] in store.blobs
-    assert doc_parts[0]["filename"] == "report.pdf"
+    assert doc_parts[0].artifact_id in store.blobs
+    assert doc_parts[0].filename == "report.pdf"
 
 
 @pytest.mark.asyncio
@@ -212,15 +207,11 @@ async def test_oversized_attachment_skipped_turn_lands_as_text(tmp_path: Path):
     msg = _FakeMessage(
         caption="too big",
         photo=[_FakePhotoSize("big")])
-    await adapter.handle_inbound_chat_media(sender_name="Carol", msg=msg)
+    parts = await adapter.collect_inbound_media(msg)
 
-    chats = (await p.get_storage(Chat).list(OffsetPage(offset=0, length=10))).items
-    parts = await _user_message_parts(p, chats[0].id)
-    assert not [pt for pt in parts if pt["type"] == "image"]
-    text_parts = [pt for pt in parts if pt["type"] == "text"]
-    assert text_parts
-    assert "too big" in text_parts[0]["text"]
-    assert "skipped" in text_parts[0]["text"].lower()
+    # Over the cap: nothing is stored and no part is produced, so the turn
+    # lands as text only.
+    assert not parts
     assert not store.blobs
 
 
@@ -231,10 +222,8 @@ async def test_no_artifact_registry_skips_media_text_only(tmp_path: Path):
     msg = _FakeMessage(
         caption="hi there",
         photo=[_FakePhotoSize("photo-hi")])
-    await adapter.handle_inbound_chat_media(sender_name="Dan", msg=msg)
+    parts = await adapter.collect_inbound_media(msg)
 
-    chats = (await p.get_storage(Chat).list(OffsetPage(offset=0, length=10))).items
-    parts = await _user_message_parts(p, chats[0].id)
-    assert not [pt for pt in parts if pt["type"] == "image"]
-    text_parts = [pt for pt in parts if pt["type"] == "text"]
-    assert text_parts and text_parts[0]["text"] == "[Dan] hi there"
+    # No artifact registry: nothing can be stored, so the turn is text only.
+    assert not parts
+    assert not store.blobs

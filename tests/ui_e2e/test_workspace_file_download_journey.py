@@ -35,6 +35,8 @@ reach the workspace provider's path — we use container-internal
 
 from __future__ import annotations
 
+import re
+
 import httpx
 import pytest
 from playwright.sync_api import expect
@@ -43,6 +45,7 @@ from tests.ui_e2e._studio_helpers import files_list, open_studio
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -122,7 +125,7 @@ def test_u0106_workspace_file_inspect_and_download_journey(
          host bind-mount path).
       3. Navigate /workspaces list — assert seeded row visible.
       4. Click row → /workspaces/{wid} (the Studio).
-      5. Wait for the Studio sidebar ``file-row`` for the seeded file.
+      5. Wait for the rail's ``nv-file:<path>`` entry for the seeded file.
       6. Click it → the center ``panel-file`` opens with the file's
          breadcrumb + the text preview showing the seeded content.
       7. Also verify the download endpoint delivers the exact bytes
@@ -136,7 +139,7 @@ def test_u0106_workspace_file_inspect_and_download_journey(
     ``/files/download`` endpoint the panel's download href targets, keeping
     the "content is downloadable + matches" half of the contract.
 
-    Pins the Studio file panel (studio-center.jsx ``FilePanel`` /
+    Pins the Studio file panel (the shell session document ``FilePanel`` /
     ``ST_FilePreview``) render path for text files.
     """
     file_name = f"u0106-{unique_suffix}.txt"
@@ -159,33 +162,43 @@ def test_u0106_workspace_file_inspect_and_download_journey(
             assert r.status_code in (200, 201, 204), r.text
 
         # ----- 1. /workspaces list ----------------------------------
-        page.goto(f"{console_url}#/workspaces", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "workspaces")
         expect(page.locator("h1.page-title")).to_have_text(
             "Workspaces", timeout=20_000,
         )
-        ws_row = page.locator("tbody tr", has_text=wid)
-        expect(ws_row).to_be_visible(timeout=20_000)
+        # RETARGET (platform wave P1b item 7): the table/tr list was
+        # replaced by a .pc-card-grid of cards; unlike the old row, the
+        # card itself carries no click-to-enter handler (only its Open
+        # button does), so target that testid directly.
+        ws_open_btn = page.get_by_test_id(f"workspace-card-open-{wid}")
+        expect(ws_open_btn).to_be_visible(timeout=20_000)
 
-        # ----- 2. Click row → the Studio for that workspace ---------
-        ws_row.first.click()
-        page.wait_for_url(f"**/console/#/workspaces/{wid}**", timeout=15_000)
+        # ----- 2. Click Open: enter that workspace -------------------
+        # This ENTERS the workspace rather than addressing its record,
+        # which is what the shell spells "#/w/<wid>". The overlay-url
+        # helper is for a surface hung off a workspace, which this is
+        # not.
+        ws_open_btn.click()
+        expect(page).to_have_url(re.compile(rf"#/w/{re.escape(wid)}\b"))
         open_studio(page, console_url, wid)
 
         # v1 kept the tree always on screen; the revamp's rail defaults to
         # Runs, so ask for Files first (no-op on v1) before the seeded file
-        # surfaces as a file-row within its lazy tree fetch.
+        # surfaces as a rail entry within its lazy tree fetch.
         files_list(page)
+        # The rail stamps each entry with its path: nv-file:<path>.
+        # The Studio's flat file-row is gone with the Studio.
         file_row = page.locator(
-            '[data-testid="file-row"]', has_text=file_name,
+            '[data-testid^="nv-file:"]', has_text=file_name,
         ).first
         expect(file_row).to_be_visible(timeout=20_000)
 
-        # ----- 3. Click file-row → panel-file preview shows content -
+        # ----- 3. Click the rail entry: the file doc shows content
         file_row.click()
-        panel = page.locator('[data-testid="panel-file"]')
+        panel = page.locator('[data-testid^="nv-file-doc:"]')
         expect(panel).to_be_visible(timeout=15_000)
         expect(
-            page.locator('[data-testid="file-breadcrumb"]')
+            page.locator(".nv-filedoc-path")
         ).to_contain_text(file_name, timeout=10_000)
         # The text preview shows a distinctive marker from the content.
         marker = f"suffix={unique_suffix}"

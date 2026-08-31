@@ -1,4 +1,4 @@
-"""TelegramChannelAdapter.post_chat_media dispatches by MIME."""
+"""TelegramChannelAdapter.post_thread_media dispatches by MIME."""
 
 from __future__ import annotations
 
@@ -33,9 +33,9 @@ def _adapter():
 
 
 @pytest.mark.asyncio
-async def test_post_chat_media_dispatches_by_mime():
+async def test_post_thread_media_dispatches_by_mime():
     a = _adapter()
-    res = await a.post_chat_media([
+    res = await a.post_thread_media([
         ImagePart(data=b"PNG", mime_type="image/png"),
         AudioPart(data=b"OGG", mime_type="audio/ogg"),
         DocumentPart(data=b"PDF", mime_type="application/pdf", filename="r.pdf"),
@@ -46,9 +46,9 @@ async def test_post_chat_media_dispatches_by_mime():
 
 
 @pytest.mark.asyncio
-async def test_post_chat_media_skips_parts_without_data():
+async def test_post_thread_media_skips_parts_without_data():
     a = _adapter()
-    res = await a.post_chat_media([
+    res = await a.post_thread_media([
         ImagePart(artifact_id="artifact-x", mime_type="image/png")])
     assert res["sent"] == 0
     assert a._app.bot.calls == []

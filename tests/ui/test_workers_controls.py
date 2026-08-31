@@ -74,10 +74,14 @@ def test_fake_sessions_annotation_removed() -> None:
     assert "session{onWorker" not in src
 
 
-def test_app_no_longer_passes_fake_sessions_prop() -> None:
-    app = APP.read_text(encoding="utf-8")
-    assert "<WorkersPage pushToast={pushToast} />" in app
-    assert "<WorkersPage sessions=" not in app
+def test_the_host_no_longer_passes_a_fake_sessions_prop() -> None:
+    """The page reads workers from the API; a seeded sessions prop was
+    design-canvas mock data leaking into production state."""
+    host = (UI / "components" / "console" / "nv-overlays.jsx").read_text(
+        encoding="utf-8"
+    )
+    assert "window.WorkersPage" in host
+    assert "<window.WorkersPage sessions=" not in host
 
 
 # ---- Dead-worker cleanup affordances (bug #17) -------------------------

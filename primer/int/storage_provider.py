@@ -37,6 +37,7 @@ from primer.model.system_state import SystemState
 
 if TYPE_CHECKING:
     from primer.int.document_content import DocumentContentStore
+    from primer.int.event_store import EventStore
 
 
 ModelT = TypeVar("ModelT", bound=Identifiable)
@@ -89,11 +90,25 @@ class StorageProvider(ABC):
         backend connection/pool. Holds document bodies in the primary DB."""
 
     @abstractmethod
+    def get_event_store(self) -> "EventStore":
+        """Return the platform event-log store, sharing this provider's
+        backend connection/pool. Holds the durable event log and the
+        per-subscription cursors that consume it."""
+
+    @abstractmethod
     async def get_system_state(self) -> SystemState:
         """Return the singleton ``system_state`` row.
 
         Guaranteed to return a row (the ``singleton`` row is inserted
         during :meth:`initialize`).  Never raises :class:`NotFoundError`.
+        """
+
+    @abstractmethod
+    async def set_default_agent_id(self, agent_id: str | None) -> None:
+        """Set the agent a binding-less session create resolves to.
+
+        ``None`` clears it, which leaves such a create with nothing to
+        resolve and therefore rejected rather than guessing.
         """
 
     @abstractmethod

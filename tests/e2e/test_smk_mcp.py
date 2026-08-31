@@ -31,7 +31,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
@@ -250,8 +250,8 @@ async def test_call_mounted_mcp_tool_end_to_end(
     )
     wid = await make_local_workspace(authed_client, suffix=unique_suffix, root=tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    final = await wait_terminal(authed_client, sid)
-    assert final.get("status") == "ended", final
+    final = await wait_completed(authed_client, sid)
+    assert final.get("session_state") == "parked", final
     # the external MCP server actually received the call: its marker file exists
     import os
     assert os.path.exists(marker), "MCP bump tool did not run"
@@ -370,8 +370,8 @@ async def _drive_search_through_real_mcp(
     wid = await make_local_workspace(authed_client, suffix=suffix, root=tmp_path)
     sid = await start_agent_session(
         authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    final = await wait_terminal(authed_client, sid, timeout_s=120)
-    assert final.get("status") == "ended", final
+    final = await wait_completed(authed_client, sid, timeout_s=120)
+    assert final.get("session_state") == "parked", final
     # The second turn proves the tool call round-tripped through the real server:
     # the `when_tool_result=True` rule only matches once a tool result is present.
     tl = await authed_client.get(f"/v1/sessions/{sid}/turn_log")

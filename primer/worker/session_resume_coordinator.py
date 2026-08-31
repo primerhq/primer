@@ -74,6 +74,11 @@ async def write_approval_record_for_session(
         agent_id=getattr(session.binding, "agent_id", None),
         session_id=session.id,
         requested_at=session.parked_at,
+        # Stamped by the respond route (P6); synthesized verdicts
+        # (timeout/cancel) carry none.
+        decided_by=(
+            payload.get("decided_by") if isinstance(payload, dict) else None
+        ),
     )
     storage = (
         pool._storage.get_storage(ToolApprovalRecord)
@@ -107,6 +112,35 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
             sid,
         )
         return await pool._end_session(session, reason="failed")
+
+    # A switch applied while this session waited replaced the binding the
+    # park belongs to. Continuing would run the outgoing agent's
+    # half-finished turn under whoever holds the session now, so the
+    # resume is voided instead. The switch already moved the row, and the
+    # next turn starts cleanly under the current binding.
+    if (
+        parked.binding_epoch is not None
+        and parked.binding_epoch != session.binding_epoch
+    ):
+        logger.info(
+            "resume: voiding session %s parked at epoch %s (row is at "
+            "epoch %s); the binding was switched while it waited",
+            sid, parked.binding_epoch, session.binding_epoch,
+        )
+        return await pool._end_session(session, reason="cancelled")
+
+    from primer.events.recorder import recorder_for
+
+    await recorder_for(pool._storage, pool._event_bus).emit(
+        "session.resumed",
+        workspace_id=session.workspace_id,
+        session_id=sid,
+        payload={
+            "event_key": getattr(
+                getattr(parked, "yielded", None), "event_key", None,
+            ),
+        },
+    )
 
     if session.binding.kind == "graph":
         if parked.graph_checkpoint is None:
@@ -283,9 +317,72 @@ async def inject_resume_and_continue(
         )
         return await pool._end_session(session, reason="failed")
 
+    await _persist_resume_tool_result_record(pool, session, tool_result_part)
+
     # Continuation: clear park (on_release) + keep the lease so the next
     # claim runs the continuation LLM turn.
     return ReleaseOutcome(success=True, drop_lease=False)
+
+
+async def _persist_resume_tool_result_record(
+    pool: "WorkerPool", session, tool_result_part,
+) -> None:
+    """Write the modern TOOL_RESULT counterpart for a resumed tool call.
+
+    ``inject_resume_messages`` (above) only appends the legacy
+    ``{role,parts}`` Message lines that feed LLM context reconstruction;
+    the paired TOOL_CALL record was already written live before the park
+    (``primer.session.persistence``'s ``ToolCallEnd`` handler), but
+    nothing at park or resume time ever wrote the modern
+    ``SessionMessageRecord`` TOOL_RESULT counterpart that the messages
+    API + live tap read (01a04e0a). Payload shape mirrors the live-turn
+    write (``call_id``/``output``/``error`` - see
+    ``primer.session.persistence``'s ``_ExecutorToolResult`` handler),
+    the same shape ``abandon_session_gate`` was fixed to use (01a05350)
+    after ``primer.session.timeline`` was found unable to pair its old
+    ``id``/``name``/``result`` shape back to a TOOL_CALL (it keys the
+    lookup by ``call_id``).
+
+    Best-effort and best-effort ONLY: this is a secondary, display-side
+    record. The turn's continuation already stands on the legacy write
+    above having succeeded: a write failure here must not undo that or
+    end an otherwise-healthy session (the transcript stays served by
+    the UI's legacy-line tolerance in that case - see
+    ``_dedupe_legacy_user_input``).
+    """
+    if pool._storage is None:
+        return
+    from primer.model.workspace_session import (
+        SessionMessageKind,
+        SessionMessageRecord,
+        WorkspaceSession,
+    )
+    from primer.session.persistence import WorkspaceMessageWriter
+
+    try:
+        ws = await pool._load_workspace_for_persist(session.workspace_id)
+        writer = WorkspaceMessageWriter(
+            workspace_io=ws, session_id=session.id, start_seq=session.last_seq,
+        )
+        new_seq = await writer.append(SessionMessageRecord(
+            seq=1,  # overwritten by the writer's monotonic counter
+            kind=SessionMessageKind.TOOL_RESULT,
+            payload={
+                "call_id": tool_result_part.id,
+                "output": tool_result_part.output,
+                "error": tool_result_part.error,
+            },
+            created_at=datetime.now(timezone.utc),
+        ))
+        await writer.flush()
+        storage = pool._storage.get_storage(WorkspaceSession)
+        await storage.update(session.model_copy(update={"last_seq": new_seq}))
+    except Exception:  # noqa: BLE001 - best-effort, see docstring
+        logger.exception(
+            "resume: failed to persist modern TOOL_RESULT record for "
+            "session %s",
+            session.id,
+        )
 
 
 def build_invocation_services(pool: "WorkerPool", session, workspace, executor, tool_manager):

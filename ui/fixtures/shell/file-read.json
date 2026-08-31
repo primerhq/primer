@@ -1,0 +1,6 @@
+{
+  "path": "src/api.ts",
+  "content": "export function handleWebhook(req: Request): Response {\n  const sig = req.headers.get(\"stripe-signature\");\n  if (!sig) return new Response(\"missing signature\", { status: 400 });\n  return new Response(\"ok\");\n}\n",
+  "size": 4120,
+  "modified_at": "2026-08-16T09:39:00+00:00"
+}

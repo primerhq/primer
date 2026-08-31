@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 # Re-export for clarity at the agent-side import site. The actual
 # class lives in primer.model.chat to keep ExtendedStreamContent
 # self-contained (no chat -> agent import cycle).
-from primer.model.chat import _ExecutorToolResult  # noqa: F401
+from primer.model.chat import _ClientAction, _ExecutorToolResult  # noqa: F401
 
 
 if TYPE_CHECKING:
@@ -73,5 +73,6 @@ class Subscription(BaseModel):
 __all__ = [
     "AgentEventSubscriber",
     "Subscription",
+    "_ClientAction",
     "_ExecutorToolResult",
 ]

@@ -22,6 +22,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-10", status="partial")
 
 
@@ -95,10 +96,7 @@ def test_u0053_open_websearch_toolset_detail_renders_catalog(
 
     try:
         # Navigate to toolset detail with Tools tab selected.
-        page.goto(
-            f"{console_url}#/toolsets/{toolset_id}?tab=tools",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"toolsets/{toolset_id}", tab="tools")
         # Wait for the page to render the toolset id in the title.
         page.locator("h1.page-title").get_by_text(toolset_id).first.wait_for(
             state="visible", timeout=10_000,

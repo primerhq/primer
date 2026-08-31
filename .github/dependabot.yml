@@ -2,13 +2,10 @@
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates
 #
 # Python dependencies are managed with uv (lockfiles: ./uv.lock and
-# ./runtime/uv.lock). primectl is a member of the root uv workspace
-# ([tool.uv.workspace] in pyproject.toml), so its dependencies resolve into
-# the root uv.lock; it gets its own entry to keep its pyproject.toml
-# constraints fresh.
+# ./runtime/uv.lock). Each lockfile gets its own entry.
 version: 2
 updates:
-  # Root project (also resolves the primectl workspace member into uv.lock).
+  # Root project.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
@@ -36,18 +33,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-    labels:
-      - "dependencies"
-      - "python"
-    commit-message:
-      prefix: "chore(deps)"
-
-  # primectl CLI manifest (workspace member of the root project).
-  - package-ecosystem: "uv"
-    directory: "/primectl"
-    schedule:
-      interval: "monthly"
-    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "python"

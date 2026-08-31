@@ -71,3 +71,57 @@ def test_recommend_safe_defaults_button() -> None:
         or "recommend" in src
         or "default" in src
     )
+
+
+def test_extract_error_reads_extensions_not_detail() -> None:
+    """R5 fix (same bug class as ADM_extractError/AT_extractError):
+    envelope.detail is always a STRING (primer/api/errors.py's
+    _http_exception_handler), the {code, message} dict this used to
+    check `typeof ... === "object"` against lives under
+    envelope.extensions - code was always null."""
+    src = _src()
+    start = src.index("function MC_extractError(")
+    end = src.index("\n}", start)
+    body = src[start:end]
+    assert "env.extensions" in body
+    assert "env.detail" not in body
+
+
+def test_search_filter_present() -> None:
+    """notes section 4: MCP allowlist wants a search box over the catalogue."""
+    src = _src()
+    assert "mcp-tool-search" in src
+    assert "setSearch" in src
+
+
+def test_allowed_only_filter_shows_live_count() -> None:
+    """notes section 4: "allowed · N" - the Allowed-only filter surfaces
+    the live count, not just a bare checkbox."""
+    src = _src()
+    assert "mcp-allowed-only-filter" in src
+    assert "draft.size" in src
+
+
+def test_pager_present() -> None:
+    """notes section 4: the allowlist table wants a pager. Client-side
+    (the catalogue endpoint has no server offset/limit and select-all /
+    draft / search all need the full array in memory anyway), built
+    over the shared Pager component rather than hand-rolled controls."""
+    src = _src()
+    assert "window.primerApi" in src
+    assert "Pager" in src
+    assert "pager={pager}" in src
+
+
+def test_checkboxes_gated_on_master_toggle() -> None:
+    """notes section 4: "Checkboxes disabled while the master toggle is
+    off" - both the per-row checkbox and the toggle handler itself must
+    refuse while the endpoint is disabled, not just the input's visual
+    disabled state (a stale/reused draft edit could otherwise still
+    flip a value with the input hidden behind a race)."""
+    src = _src()
+    assert "masterEnabled" in src
+    start = src.index("const toggleScoped = ")
+    end = src.index("\n  };", start)
+    body = src[start:end]
+    assert "if (!masterEnabled) return;" in body

@@ -59,8 +59,6 @@ def _build_collection(harness_id: str | None = "h-test") -> Collection:
     return Collection(
         id="managed-coll-1",
         description="a managed collection",
-        embedder=CollectionEmbedder(provider_id="emb-1", model="text-embed-3"),
-        search_provider_id="ssp-1",
         harness_id=harness_id,
     )
 
@@ -69,7 +67,7 @@ def _build_document(harness_id: str | None = "h-test") -> Document:
     return Document(
         id="managed-doc-1",
         collection_id="coll-1",
-        name="managed doc",
+        slug="managed-doc-1.md",
         path="managed-doc-1.md",
         harness_id=harness_id,
     )

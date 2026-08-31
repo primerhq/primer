@@ -1147,7 +1147,7 @@ async def test_t0213_cursor_pagination_with_order_by_jsonb_key(
                 json={
                     "id": r["id"],
                     "path": f'{r["id"]}.md',
-                    "name": r["tag"],
+                    "slug": f'{r["id"]}.md',
                     "collection_id": collection_id,
                     "meta": {"tag": r["tag"]},
                 },
@@ -2185,7 +2185,7 @@ async def test_t0330_cursor_walk_composite_order_by_two_keys(
                 json={
                     "id": r["id"],
                     "path": f'{r["id"]}.md',
-                    "name": r["tag"],
+                    "slug": f'{r["id"]}.md',
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": r["tag"]},
                 },
@@ -5091,7 +5091,6 @@ async def test_t0415_cursor_walk_with_mid_walk_put_visits_each_once(
                 "op": "=",
                 "left": {
                     "kind": "field",
-                    "name": "config.meta.absent.deeply.buried",
                 },
                 "right": {"kind": "value", "value": "x"},
             },

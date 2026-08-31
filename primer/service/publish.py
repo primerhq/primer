@@ -3,8 +3,8 @@
 The router validates (via :func:`primer.service.bundle.validate_bundle`
 plus storage-dependent checks like toolset grants); this module persists:
 artifact rows for every file, the version row, the active pointer, and
-retention pruning. Kept separate from the router so the system tool and
-primectl paths (phase 4) reuse it verbatim.
+retention pruning. Kept separate from the router so the
+publish_service tool reuses it verbatim.
 """
 
 from __future__ import annotations

@@ -26,8 +26,7 @@ import pytest
 def _document_body(*, doc_id: str, collection_id: str) -> dict:
     return {
         "id": doc_id,
-        "path": f"{doc_id}.md",
-        "name": "test doc",
+        "slug": "x.md", "path": f"{doc_id}.md",
         "collection_id": collection_id,
         "text": "hello world",
         "meta": {},
@@ -88,8 +87,7 @@ async def test_t0129_orphan_document_collection_documents_clean(
         "/v1/documents",
         json={
             "id": doc_id,
-            "path": f"{doc_id}.md",
-            "name": "orphan",
+            "slug": "x.md", "path": f"{doc_id}.md",
             "collection_id": orphan_cid,
             "meta": {},
         },
@@ -139,8 +137,7 @@ async def test_t0108_document_put_replaces_name_and_metadata(
     doc_id = f"doc-t0108-{unique_suffix}"
     initial = {
         "id": doc_id,
-        "path": f"{doc_id}.md",
-        "name": "initial",
+        "slug": "x.md", "path": f"{doc_id}.md",
         "collection_id": f"unenforced-{unique_suffix}",
         "meta": {"version": 1, "tag": "old"},
     }
@@ -149,8 +146,8 @@ async def test_t0108_document_put_replaces_name_and_metadata(
     try:
         replacement = {
             "id": doc_id,
-            "path": f"{doc_id}.md",
-            "name": "replaced",
+            "slug": "x.md", "path": f"{doc_id}.md",
+            "title": "replaced",
             "collection_id": f"unenforced-{unique_suffix}",
             "meta": {"version": 2, "tag": "new"},
         }
@@ -161,7 +158,7 @@ async def test_t0108_document_put_replaces_name_and_metadata(
         assert got.status_code == 200, got.text
         body = got.json()
         assert body["id"] == doc_id  # id unchanged
-        assert body["name"] == "replaced", body
+        assert body["title"] == "replaced", body
         assert body["meta"] == {"version": 2, "tag": "new"}, body
     finally:
         await client.delete(f"/v1/documents/{doc_id}")
@@ -176,21 +173,27 @@ async def test_t0087_multi_key_order_by_breaks_ties(
     and reversing the secondary's direction flips just the tied pair.
     """
     prefix = f"doc-t0087-{unique_suffix}"
-    # Two docs share name "alpha" (the tie); a third has "bravo"
+    # Two docs share title "alpha" (the tie); a third has "bravo"
     rows = [
-        {"id": f"{prefix}-1", "name": "alpha"},
-        {"id": f"{prefix}-2", "name": "alpha"},
-        {"id": f"{prefix}-3", "name": "bravo"},
+        {"id": f"{prefix}-1", "title": "alpha",
+         "slug": f"{prefix}-1.md", "path": f"{prefix}-1.md"},
+        {"id": f"{prefix}-2", "title": "alpha",
+         "slug": f"{prefix}-2.md", "path": f"{prefix}-2.md"},
+        {"id": f"{prefix}-3", "title": "bravo",
+         "slug": f"{prefix}-3.md", "path": f"{prefix}-3.md"},
     ]
     created: list[str] = []
     try:
         for r in rows:
             body = {
                 "id": r["id"],
+                # The titles are the whole point: without them every row
+                # sorts as one tie and the secondary key is doing all the
+                # work, which is what this test exists to disprove.
+                "title": r["title"],
                 "path": f'{r["id"]}.md',
-                "name": r["name"],
+                "slug": f'{r["id"]}.md',
                 "collection_id": f"unenforced-{unique_suffix}",
-                "text": "x",
                 "meta": {},
             }
             resp = await client.post("/v1/documents", json=body)
@@ -207,11 +210,11 @@ async def test_t0087_multi_key_order_by_breaks_ties(
             "page": {"kind": "offset", "offset": 0, "length": 50},
         }
 
-        # Primary asc by name; secondary desc by id
+        # Primary asc by title; secondary desc by id
         body_a = {
             **find_body_template,
             "order_by": [
-                {"field": "name", "direction": "asc"},
+                {"field": "title", "direction": "asc"},
                 {"field": "id", "direction": "desc"},
             ],
         }
@@ -222,13 +225,13 @@ async def test_t0087_multi_key_order_by_breaks_ties(
         # Then the "bravo" row → -3
         assert ids_a == [
             f"{prefix}-2", f"{prefix}-1", f"{prefix}-3",
-        ], f"unexpected order with [name asc, id desc]: {ids_a!r}"
+        ], f"unexpected order with [title asc, id desc]: {ids_a!r}"
 
         # Now flip secondary to id asc: only the tied pair flips
         body_b = {
             **find_body_template,
             "order_by": [
-                {"field": "name", "direction": "asc"},
+                {"field": "title", "direction": "asc"},
                 {"field": "id", "direction": "asc"},
             ],
         }
@@ -269,7 +272,7 @@ async def test_t0088_order_by_jsonb_null_path_is_stable(
             body = {
                 "id": r["id"],
                 "path": f'{r["id"]}.md',
-                "name": "x",
+                "slug": f'{r["id"]}.md',
                 "collection_id": f"unenforced-{unique_suffix}",
                 "text": "x",
                 "meta": r["meta"],
@@ -337,7 +340,7 @@ async def test_t0074_order_by_jsonb_nested_path_sorts_deterministically(
             body = {
                 "id": d["id"],
                 "path": f'{d["id"]}.md',
-                "name": f"doc {d['tag']}",
+                "slug": f'{d["id"]}.md',
                 "collection_id": f"unenforced-{unique_suffix}",
                 "text": "ignored",
                 "meta": {"tag": d["tag"]},
@@ -390,26 +393,37 @@ async def test_t0177_collection_with_missing_embedder_provider_orphan_tolerated(
     """
     coll_id = f"coll-t0177-{unique_suffix}"
     missing_embedder = f"never-existed-emb-{unique_suffix}"
-    body = {
-        "id": coll_id,
-        "description": "orphan-embedder probe",
-        "embedder": {
-            "provider_id": missing_embedder,
-            "model": "sentence-transformers/all-MiniLM-L6-v2",
-        },
-    }
 
-    resp = await client.post("/v1/collections", json=body)
+    created = await client.post(
+        "/v1/collections",
+        json={"id": coll_id, "description": "orphan-embedder probe"},
+    )
+    assert created.status_code in (200, 201), created.text
+
+    # S2 moved the embedder into the per-collection search config, so the
+    # orphan reference is made there.
+    resp = await client.put(
+        f"/v1/collections/{coll_id}/search",
+        json={
+            "embedder": {
+                "provider_id": missing_embedder,
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+            "vector_store_provider_id": f"never-existed-ssp-{unique_suffix}",
+        },
+    )
     assert resp.status_code != 500, resp.text
     assert resp.status_code < 500, resp.text
 
-    if resp.status_code in (200, 201):
+    if resp.status_code in (200, 201, 202):
         # Permissive: orphan accepted
         try:
             # GET the row back
             got = await client.get(f"/v1/collections/{coll_id}")
             assert got.status_code == 200, got.text
-            assert got.json()["embedder"]["provider_id"] == missing_embedder
+            assert got.json()["search"]["embedder"]["provider_id"] == (
+                missing_embedder
+            )
 
             # Document list under the orphan collection must respond
             # cleanly (empty list OR a clean 4xx)
@@ -421,9 +435,12 @@ async def test_t0177_collection_with_missing_embedder_provider_orphan_tolerated(
         finally:
             await client.delete(f"/v1/collections/{coll_id}")
     else:
-        envelope = resp.json()
-        assert envelope["type"].startswith("/errors/"), envelope
-        assert envelope["type"] != "/errors/internal", envelope
+        try:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+        finally:
+            await client.delete(f"/v1/collections/{coll_id}")
 
 
 # ============================================================================
@@ -451,53 +468,35 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
     Pinned in this test by creating the collection first.
     """
     collection_id = f"coll-t0204-{unique_suffix}"
-    ssp_id = f"ssp-t0204-{unique_suffix}"
     doc_ids = [f"doc-t0204-{unique_suffix}-{i:02d}" for i in range(5)]
     coll_created = False
-    ssp_created = False
     created_docs: list[str] = []
     try:
-        # Create a lance SSP so search_provider_id can be supplied
-        ssp = await client.post(
-            "/v1/ssp",
-            json={
-                "id": ssp_id,
-                "provider": "lance",
-                "config": {"path": f"/tmp/lance-t0204-{unique_suffix}"},
-            },
-        )
-        assert ssp.status_code in (200, 201), ssp.text
-        ssp_created = True
-
-        # Create the collection first (search_provider_id now required)
         coll = await client.post(
             "/v1/collections",
             json={
                 "id": collection_id,
                 "description": "T0204 pagination probe",
-                "embedder": {
-                    "provider_id": f"unused-emb-{unique_suffix}",
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
         coll_created = True
 
+        # S2: a document is a node with a body, created under a parent.
+        # The flat /v1/documents route makes an entity row with no
+        # content, which never appears in a PATH listing.
         for did in doc_ids:
             r = await client.post(
-                "/v1/documents",
+                f"/v1/collections/{collection_id}/docs",
                 json={
-                    "id": did,
-                    "path": f"{did}.md",
-                    "name": f"doc-{did}",
-                    "collection_id": collection_id,
-                    "meta": {"seq": int(did.split("-")[-1])},
+                    "parent": "",
+                    "slug": did,
+                    "title": did,
+                    "body": f"body for {did}",
                 },
             )
             assert r.status_code in (200, 201), r.text
-            created_docs.append(did)
+            created_docs.append(r.json()["document"]["id"])
 
         # Whole-collection listing in one response (no pagination).
         page = await client.get(
@@ -505,12 +504,15 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
         )
         assert page.status_code == 200, page.text
         documents = page.json()["documents"]
-        seen = [d["document_id"] for d in documents]
+        seen = [d["path"] for d in documents]
+        # Paths are the slug chain; the strict slug charset the tree
+        # route enforces has no room for an extension.
+        expected = sorted(doc_ids)
 
-        # Every seeded id appears exactly once
-        assert sorted(seen) == sorted(doc_ids), (
+        # Every seeded path appears exactly once
+        assert sorted(seen) == expected, (
             f"listing missed or duplicated docs. "
-            f"seeded={sorted(doc_ids)!r}, seen={sorted(seen)!r}"
+            f"seeded={expected!r}, seen={sorted(seen)!r}"
         )
         assert len(seen) == len(set(seen)), (
             f"duplicates in listing: {seen!r}"
@@ -520,8 +522,6 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
             await client.delete(f"/v1/documents/{did}")
         if coll_created:
             await client.delete(f"/v1/collections/{collection_id}")
-        if ssp_created:
-            await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -551,7 +551,7 @@ async def test_t0236_predicate_gt_on_jsonb_nested_numeric(
                 json={
                     "id": r["id"],
                     "path": f'{r["id"]}.md',
-                    "name": str(r["score"]),
+                    "slug": f'{r["id"]}.md',
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": r["score"]},
                 },
@@ -645,7 +645,7 @@ async def test_t0249_order_by_two_jsonb_keys_composite(
                 json={
                     "id": r["id"],
                     "path": f'{r["id"]}.md',
-                    "name": r["tag"],
+                    "slug": f'{r["id"]}.md',
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": r["tag"], "score": r["score"]},
                 },
@@ -715,33 +715,15 @@ async def test_t0253_collection_documents_items_carry_collection_id(
     present, the unrelated doc (different collection) absent.
     """
     coll_id = f"coll-t0253-{unique_suffix}"
-    ssp_id = f"ssp-t0253-{unique_suffix}"
     doc_ids = [f"doc-t0253-{unique_suffix}-{i}" for i in range(3)]
     coll_created = False
-    ssp_created = False
     docs_created: list[str] = []
     try:
-        ssp = await client.post(
-            "/v1/ssp",
-            json={
-                "id": ssp_id,
-                "provider": "lance",
-                "config": {"path": f"/tmp/lance-t0253-{unique_suffix}"},
-            },
-        )
-        assert ssp.status_code in (200, 201), ssp.text
-        ssp_created = True
-
         coll = await client.post(
             "/v1/collections",
             json={
                 "id": coll_id,
                 "description": "T0253",
-                "embedder": {
-                    "provider_id": f"unused-emb-{unique_suffix}",
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
@@ -749,41 +731,35 @@ async def test_t0253_collection_documents_items_carry_collection_id(
 
         for did in doc_ids:
             r = await client.post(
-                "/v1/documents",
-                json={
-                    "id": did,
-                    "path": f"{did}.md",
-                    "name": did,
-                    "collection_id": coll_id,
-                    "meta": {},
-                },
+                f"/v1/collections/{coll_id}/docs",
+                json={"parent": "", "slug": did, "body": "x"},
             )
             assert r.status_code in (200, 201), r.text
-            docs_created.append(did)
+            docs_created.append(r.json()["document"]["id"])
 
         # Also seed an unrelated document under a different collection
         # (which is orphan-tolerated per T0068) — must NOT appear in
         # the listing for coll_id
         unrelated = f"doc-unrelated-{unique_suffix}"
+        other_coll = f"other-{unique_suffix}"
         await client.post(
-            "/v1/documents",
-            json={
-                "id": unrelated,
-                "path": f"{unrelated}.md",
-                "name": unrelated,
-                "collection_id": f"other-{unique_suffix}",
-                "meta": {},
-            },
+            "/v1/collections",
+            json={"id": other_coll, "description": "foreign collection"},
         )
-        docs_created.append(unrelated)
+        other = await client.post(
+            f"/v1/collections/{other_coll}/docs",
+            json={"parent": "", "slug": unrelated, "body": "x"},
+        )
+        if other.status_code in (200, 201):
+            docs_created.append(other.json()["document"]["id"])
 
         page = await client.get(
             f"/v1/collections/{coll_id}/documents",
         )
         assert page.status_code == 200, page.text
         documents = page.json()["documents"]
-        returned_ids = {d["document_id"] for d in documents}
-        # The unrelated document (different collection_id) must NOT appear.
+        returned_ids = {d["path"] for d in documents}
+        # The unrelated document (different collection) must NOT appear.
         assert unrelated not in returned_ids, (
             f"unrelated doc {unrelated!r} (different collection_id) "
             f"surfaced in {coll_id!r} listing: {returned_ids!r}"
@@ -796,10 +772,9 @@ async def test_t0253_collection_documents_items_carry_collection_id(
     finally:
         for did in docs_created:
             await client.delete(f"/v1/documents/{did}")
+        await client.delete(f"/v1/collections/other-{unique_suffix}")
         if coll_created:
             await client.delete(f"/v1/collections/{coll_id}")
-        if ssp_created:
-            await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -849,18 +824,23 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
     try:
         coll = await client.post(
             "/v1/collections",
+            json={"id": coll_id, "description": "T0264 referencing-collection"},
+        )
+        assert coll.status_code in (200, 201), coll.text
+        coll_created = True
+        # S2: the embedder lives in the per-collection search config, which
+        # is what makes it a reference that can be orphaned.
+        enable = await client.put(
+            f"/v1/collections/{coll_id}/search",
             json={
-                "id": coll_id,
-                "description": "T0264 referencing-collection",
                 "embedder": {
                     "provider_id": embedder_id,
                     "model": "sentence-transformers/all-MiniLM-L6-v2",
                 },
-                "search_provider_id": ssp_id,
+                "vector_store_provider_id": ssp_id,
             },
         )
-        assert coll.status_code in (200, 201), coll.text
-        coll_created = True
+        assert enable.status_code in (200, 201, 202), enable.text
 
         # DELETE the embedder while the collection still references it
         rm = await client.delete(f"/v1/embedding_providers/{embedder_id}")
@@ -869,7 +849,7 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
         # Collection row remains readable
         got = await client.get(f"/v1/collections/{coll_id}")
         assert got.status_code == 200, got.text
-        assert got.json()["embedder"]["provider_id"] == embedder_id, (
+        assert got.json()["search"]["embedder"]["provider_id"] == embedder_id, (
             got.json()
         )
 
@@ -882,7 +862,7 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
         if coll_created:
             await client.delete(f"/v1/collections/{coll_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
-        # Provider already deleted
+        # Embedding provider already deleted by the test body
 
 
 # ============================================================================
@@ -912,27 +892,49 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
     )
     assert ssp_r.status_code in (200, 201), ssp_r.text
 
-    body_a = {
-        "id": coll_id,
-        "description": "first incarnation",
+    # Both embedders have to exist: binding one through the search route
+    # validates the reference, where the old create body took it on
+    # trust. They are never called, so an unreachable url is fine.
+    emb_a = f"emb-a-{unique_suffix}"
+    emb_b = f"emb-b-{unique_suffix}"
+    for eid in (emb_a, emb_b):
+        er = await client.post("/v1/embedding_providers", json={
+            "id": eid,
+            "provider": "openai",
+            "models": [
+                {"name": "sentence-transformers/all-MiniLM-L6-v2"},
+                {"name": "sentence-transformers/all-mpnet-base-v2"},
+            ],
+            "config": {
+                "url": "http://127.0.0.1:1",
+                "api_key": "sk-not-used",
+                "flavor": "other",
+            },
+            "limits": {"max_concurrency": 1},
+        })
+        assert er.status_code in (200, 201), er.text
+
+    body_a = {"id": coll_id, "description": "first incarnation"}
+    body_b = {"id": coll_id, "description": "second incarnation"}
+    search_a = {
         "embedder": {
-            "provider_id": f"emb-a-{unique_suffix}",
+            "provider_id": emb_a,
             "model": "sentence-transformers/all-MiniLM-L6-v2",
         },
-        "search_provider_id": ssp_id,
+        "vector_store_provider_id": ssp_id,
     }
-    body_b = {
-        "id": coll_id,
-        "description": "second incarnation",
+    search_b = {
         "embedder": {
-            "provider_id": f"emb-b-{unique_suffix}",
+            "provider_id": emb_b,
             "model": "sentence-transformers/all-mpnet-base-v2",
         },
-        "search_provider_id": ssp_id,
+        "vector_store_provider_id": ssp_id,
     }
 
     create_a = await client.post("/v1/collections", json=body_a)
     assert create_a.status_code in (200, 201), create_a.text
+    enable_a = await client.put(f"/v1/collections/{coll_id}/search", json=search_a)
+    assert enable_a.status_code in (200, 201, 202), enable_a.text
 
     rm = await client.delete(f"/v1/collections/{coll_id}")
     assert rm.status_code == 204, rm.text
@@ -942,19 +944,21 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
         f"re-POST after DELETE with different body should succeed; "
         f"got {create_b.status_code}: {create_b.text}"
     )
+    enable_b = await client.put(f"/v1/collections/{coll_id}/search", json=search_b)
+    assert enable_b.status_code in (200, 201, 202), enable_b.text
     try:
         got = await client.get(f"/v1/collections/{coll_id}")
         assert got.status_code == 200, got.text
         row = got.json()
         assert row["description"] == "second incarnation", row
-        assert row["embedder"]["provider_id"] == f"emb-b-{unique_suffix}", (
-            row
-        )
-        assert row["embedder"]["model"] == (
+        assert row["search"]["embedder"]["provider_id"] == emb_b, row
+        assert row["search"]["embedder"]["model"] == (
             "sentence-transformers/all-mpnet-base-v2"
         ), row
     finally:
         await client.delete(f"/v1/collections/{coll_id}")
+        await client.delete(f"/v1/embedding_providers/{emb_a}")
+        await client.delete(f"/v1/embedding_providers/{emb_b}")
         await client.delete(f"/v1/ssp/{ssp_id}")
 
 
@@ -974,8 +978,7 @@ async def test_t0335_document_get_after_delete_returns_404(
     doc_id = f"doc-t0335-{unique_suffix}"
     body = {
         "id": doc_id,
-        "path": f"{doc_id}.md",
-        "name": "T0335",
+        "slug": "x.md", "path": f"{doc_id}.md",
         "collection_id": f"unenforced-{unique_suffix}",
         "meta": {},
     }
@@ -1013,29 +1016,13 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
     responds cleanly (404 per T0204 pattern).
     """
     coll_id = f"coll-t0336-{unique_suffix}"
-    ssp_id = f"ssp-t0336-{unique_suffix}"
     doc_id = f"doc-t0336-{unique_suffix}"
-
-    ssp_r = await client.post(
-        "/v1/ssp",
-        json={
-            "id": ssp_id,
-            "provider": "lance",
-            "config": {"path": f"/tmp/lance-t0336-{unique_suffix}"},
-        },
-    )
-    assert ssp_r.status_code in (200, 201), ssp_r.text
 
     coll = await client.post(
         "/v1/collections",
         json={
             "id": coll_id,
             "description": "T0336",
-            "embedder": {
-                "provider_id": f"unused-emb-{unique_suffix}",
-                "model": "sentence-transformers/all-MiniLM-L6-v2",
-            },
-            "search_provider_id": ssp_id,
         },
     )
     assert coll.status_code in (200, 201), coll.text
@@ -1044,8 +1031,7 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
         "/v1/documents",
         json={
             "id": doc_id,
-            "path": f"{doc_id}.md",
-            "name": "T0336",
+            "slug": "x.md", "path": f"{doc_id}.md",
             "collection_id": coll_id,
             "meta": {},
         },
@@ -1070,7 +1056,6 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
         assert envelope.get("type") != "/errors/internal", listing.text
     finally:
         await client.delete(f"/v1/documents/{doc_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -1098,8 +1083,7 @@ async def test_t0347_documents_find_predicate_by_collection_id(
                 "/v1/documents",
                 json={
                     "id": did,
-                    "path": f"{did}.md",
-                    "name": did,
+                    "slug": "x.md", "path": f"{did}.md",
                     "collection_id": collection,
                     "meta": {},
                 },
@@ -1151,32 +1135,16 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
     their parent exists.
     """
     coll_id = f"coll-t0348-{unique_suffix}"
-    ssp_id = f"ssp-t0348-{unique_suffix}"
     prefix = f"doc-t0348-{unique_suffix}"
     real_docs = [f"{prefix}-real-{i}" for i in range(2)]
     orphan_docs = [f"{prefix}-orphan-{i}" for i in range(3)]
     all_docs = real_docs + orphan_docs
-
-    ssp_r = await client.post(
-        "/v1/ssp",
-        json={
-            "id": ssp_id,
-            "provider": "lance",
-            "config": {"path": f"/tmp/lance-t0348-{unique_suffix}"},
-        },
-    )
-    assert ssp_r.status_code in (200, 201), ssp_r.text
 
     coll = await client.post(
         "/v1/collections",
         json={
             "id": coll_id,
             "description": "T0348",
-            "embedder": {
-                "provider_id": f"unused-{unique_suffix}",
-                "model": "sentence-transformers/all-MiniLM-L6-v2",
-            },
-            "search_provider_id": ssp_id,
         },
     )
     assert coll.status_code in (200, 201), coll.text
@@ -1189,8 +1157,7 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
                 "/v1/documents",
                 json={
                     "id": did,
-                    "path": f"{did}.md",
-                    "name": did,
+                    "slug": "x.md", "path": f"{did}.md",
                     "collection_id": coll_id, "meta": {},
                 },
             )
@@ -1202,8 +1169,7 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
                 "/v1/documents",
                 json={
                     "id": did,
-                    "path": f"{did}.md",
-                    "name": did,
+                    "slug": "x.md", "path": f"{did}.md",
                     "collection_id": f"missing-coll-{unique_suffix}",
                     "meta": {},
                 },
@@ -1248,7 +1214,6 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
         for did in created:
             await client.delete(f"/v1/documents/{did}")
         await client.delete(f"/v1/collections/{coll_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -1275,8 +1240,7 @@ async def test_t0595_predicate_lt_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1348,8 +1312,7 @@ async def test_t0596_predicate_lte_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1422,8 +1385,7 @@ async def test_t0597_predicate_eq_int_against_jsonb_string_field(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
-                    "path": f"{prefix}-{i}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{i}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
                 },
@@ -1502,8 +1464,7 @@ async def test_t0632_predicate_like_on_jsonb_nested_string_field(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
-                    "path": f"{prefix}-{i}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{i}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
                 },
@@ -1574,8 +1535,7 @@ async def test_t0633_predicate_in_on_jsonb_nested_numeric_int_list(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1657,8 +1617,7 @@ async def test_t0635_order_by_jsonb_mixed_type_values_clean_envelope(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{tag}",
-                    "path": f"{prefix}-{tag}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{tag}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1745,8 +1704,7 @@ async def test_t0652_predicate_gte_float_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1839,8 +1797,7 @@ async def test_t0668_predicate_like_on_jsonb_nested_numeric_clean_envelope(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1914,8 +1871,7 @@ async def test_t0669_predicate_in_on_jsonb_nested_numeric_float_list(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1987,8 +1943,7 @@ async def test_t0670_predicate_eq_bool_against_jsonb_string_clean_envelope(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
-                    "path": f"{prefix}-{i}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{i}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
                 },
@@ -2063,8 +2018,7 @@ async def test_t0653_predicate_in_on_jsonb_nested_string_with_string_list(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
-                    "path": f"{prefix}-{i}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{i}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
                 },
@@ -2137,8 +2091,7 @@ async def test_t0700_cursor_walk_with_jsonb_predicate_and_order_by(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score:02d}",
-                    "path": f"{prefix}-{score:02d}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score:02d}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },

@@ -5,6 +5,8 @@ Lives in the API process, ticks every ~30s, pings each ``running`` /
 misses (``running`` -> ``failed``) or three-strike hits while failed
 (``failed`` -> ``running``). Writes results back to the persisted
 :class:`primer.model.workspace.Workspace` row via the storage provider.
+Waits one interval before its first tick (see ``start_delay_seconds``) so a
+freshly-started process doesn't count its own boot-time settling as misses.
 
 Owned by the API lifespan; uses the :class:`WorkspaceRegistry` to resolve
 live workspace handles. The registry stays a pure cache — the probe
@@ -20,9 +22,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.model.storage import OffsetPage
 from primer.model.workspace import Workspace as WorkspaceRow
-from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.workspace.session_reconcile import reconcile_sessions_to_workspace_lost
 
 
 if TYPE_CHECKING:
@@ -55,16 +57,41 @@ class WorkspaceProbeTask:
         storage_provider: "StorageProvider",
         registry: "WorkspaceRegistry",
         interval_seconds: float = 30.0,
+        start_delay_seconds: float | None = None,
     ) -> None:
         self._sp = storage_provider
         self._registry = registry
         self._interval = interval_seconds
+        # A freshly-started process (e.g. the replacement pod in a rolling
+        # deploy) begins every workspace at a clean 0-miss streak (the
+        # counters below are in-process, not persisted) and would otherwise
+        # start ticking immediately — racing ahead of the app's own startup
+        # (session recovery, registries settling) and the workspace
+        # runtime's own readiness. A boot-time grace delay before the first
+        # tick keeps that race from being counted as real misses (01a0533c,
+        # live SEV: a rollout's booting pod struck out its own healthy
+        # workspace before the app had finished settling). Defaults to one
+        # full interval.
+        self._start_delay = (
+            interval_seconds if start_delay_seconds is None else start_delay_seconds
+        )
         self._miss_counts: dict[str, int] = defaultdict(int)
         self._hit_counts: dict[str, int] = defaultdict(int)
         self._stop_event = asyncio.Event()
 
     async def start(self) -> None:
-        """Run the probe loop until :meth:`stop` is called."""
+        """Run the probe loop until :meth:`stop` is called.
+
+        Waits ``start_delay_seconds`` before the first tick — see the
+        docstring on ``__init__`` for why.
+        """
+        if self._start_delay > 0:
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=self._start_delay
+                )
+            except TimeoutError:
+                pass
         while not self._stop_event.is_set():
             try:
                 await self.tick()
@@ -163,64 +190,7 @@ class WorkspaceProbeTask:
         # orphaned forever (worker can never re-attach to the runtime,
         # so the row never reaches ENDED on its own).
         if updates.get("phase") == "failed":
-            await self._reconcile_sessions_for_failed_workspace(ws.id)
-
-    async def _reconcile_sessions_for_failed_workspace(
-        self, workspace_id: str
-    ) -> None:
-        """Mark every non-ENDED session on a failed workspace as
-        ENDED/`workspace_lost` so the UI doesn't surface immortal rows."""
-        try:
-            session_storage = self._sp.get_storage(WorkspaceSession)
-        except Exception:  # noqa: BLE001 -- storage layer unavailable
-            logger.warning(
-                "workspace probe: session storage unavailable, "
-                "cannot reconcile %s", workspace_id,
-            )
-            return
-
-        try:
-            page = await session_storage.find(
-                Predicate(
-                    left=FieldRef(name="workspace_id"),
-                    op=Op.EQ,
-                    right=Value(value=workspace_id),
-                ),
-                OffsetPage(offset=0, length=_LIST_PAGE_SIZE),
-            )
-        except Exception:  # noqa: BLE001 -- find unavailable
-            logger.exception(
-                "workspace probe: failed to query sessions on %s",
-                workspace_id,
-            )
-            return
-
-        now = datetime.now(timezone.utc)
-        reconciled = 0
-        for sess in page.items:
-            if sess.status == SessionStatus.ENDED:
-                continue
-            updated_sess = sess.model_copy(update={
-                "status": SessionStatus.ENDED,
-                "ended_reason": "workspace_lost",
-                "ended_at": now,
-            })
-            try:
-                await session_storage.update(updated_sess)
-            except Exception:  # noqa: BLE001 -- log + continue
-                logger.exception(
-                    "workspace probe: failed to reconcile session %s on %s",
-                    sess.id, workspace_id,
-                )
-                continue
-            reconciled += 1
-
-        if reconciled:
-            logger.info(
-                "workspace probe: reconciled %d session(s) on failed "
-                "workspace %s as ENDED/workspace_lost",
-                reconciled, workspace_id,
-            )
+            await reconcile_sessions_to_workspace_lost(self._sp, ws.id)
 
 
 __all__ = ["WorkspaceProbeTask"]

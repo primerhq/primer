@@ -93,6 +93,23 @@ The instrumentation plumbing lives in `primer/observability/`:
   rebinds the registry and re-creates every metric so tests start zeroed. The named
   metrics are imported directly and called via the prometheus_client API, for
   example `llm_tokens_total.labels(provider="anthropic", direction="in").inc(500)`.
+  Call sites bind the module (`import primer.observability.metrics as _metrics`)
+  rather than the names, because `reset_for_test` REBINDS the globals and a
+  `from`-import would keep writing to the dead registry after any reset.
+- `metrics.ALLOWED_LABEL_NAMES` plus `metrics.registered_label_names()` are the
+  cardinality guard. Every label on every instrument must be a reviewed name, and
+  `session_id` is in neither set: a per-session dimension would grow the series
+  count without bound, so session-scoped detail comes from the derived timeline
+  below, never from a metric label.
+- `primer/session/timeline.py` derives a turn's execution tree from the session's
+  own on-disk record. No trace system backs it: `messages.jsonl` supplies the
+  children and `turns.jsonl` the envelope, so it works on any historical session
+  and adds no write path.
+- `primer/worker/identity.py` exposes `stable_worker_label(config)`: hostname plus
+  `WorkerConfig.worker_index` (or an explicit `worker_label`), bounded and stable
+  across restarts. It is a SECOND identity, used only as a metric label; the
+  lease-ownership `worker_id` stays a per-start uuid, because two pools on one host
+  must hold distinct leases.
 - `logging_integration.install_log_correlation()`
   (`primer/observability/logging_integration.py`) installs
   `LoggingInstrumentor(set_logging_format=False)` with a `log_hook` that attaches
@@ -127,6 +144,19 @@ discriminated union over eight subclasses discriminated on `kind`, with
 the storage entity carrying `run_id`, nullable `node_id`, per-`(run_id, node_id)`
 `seq`, `kind`, `iteration`, `superstep_id`, a flattened `payload` dict, and
 `created_at`.
+
+Two read endpoints expose derived detail the scrape format cannot carry:
+
+- `GET /v1/sessions/{session_id}/turns/{turn_no}/timeline` returns one turn's tree
+  (`{turn_no, terminal_seq, status, started_at, ended_at, duration_ms, waits,
+  children}`), built by `primer/session/timeline.py`. `turn_no` is the window
+  ordinal counted over the UNFOLDED record stream, so a compaction or a rewind
+  folds what a turn renders without renumbering the turns or retargeting a URL
+  already in circulation.
+- `GET /v1/workers/stats` returns the per-lane task counters as JSON
+  (`{worker, kind, status, tasks, duration_sum_seconds, duration_count}`), for the
+  console's workers page. The Prometheus text format is a scrape target, not a UI
+  API, which is why the console reads this instead.
 
 ## 4. How to add a new implementation
 
@@ -188,18 +218,46 @@ Tracing plus metrics are wired at these call sites:
   `claim_due` in `tracer.start_as_current_span("claim.due")`, set `claim.count`, add
   a `claim_assigned` span event per lease, and observe
   `claim_enqueue_latency_seconds{kind}`.
-- The chat and session WS routers (`primer/api/routers/chats.py`,
-  `primer/api/routers/sessions.py`) wrap their handler bodies in `ws.chat` / `ws.session`
-  spans, increment `ws_connections_active{kind}` on entry and decrement in `finally`,
+- The session WS router (`primer/api/routers/sessions.py`) wraps its
+  handler body in a `ws.session` span, increment `ws_connections_active{kind}` on entry and decrement in `finally`,
   observe `ws_session_duration_seconds{kind}`, set `ws.frames_sent`, and bump
   `ws_frames_sent_total{kind}` per frame.
 
 The declared metric families (`primer/observability/metrics.py`) are LLM
 (`llm_tokens_total`, `llm_duration_seconds`, `llm_failure_total`,
 `llm_retry_total`), tools (`tool_calls_total`, `tool_duration_seconds`), claims
-(`claim_enqueue_latency_seconds`, `claim_queue_depth`, `claim_active_count`), and
+(`claim_enqueue_latency_seconds`, `claim_queue_depth`, `claim_active_count`),
 WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
-`ws_session_duration_seconds`, `ws_replay_backlog_seconds`).
+`ws_session_duration_seconds`, `ws_replay_backlog_seconds`), and the worker / turn
+/ session families:
+
+- `worker_tasks_total{worker,kind,status}` and
+  `worker_task_duration_seconds{worker,kind,status}` are written by
+  `WorkerPool._run_engine` (`primer/worker/pool.py`). Lease acquire to release IS
+  the task boundary, so one wrapper brackets every claim lane; `status` is `ok`,
+  `error` or `cancelled`.
+- `turns_total{binding_ref,status}` and
+  `turn_duration_seconds{binding_ref,status}` are written by `_observe_turn` at all
+  four exits of `run_one_session_turn` (`primer/session/dispatch.py`): parked,
+  failed, cancelled, completed. `binding_ref` is the bound agent or graph id,
+  bounded by the number of definitions rather than by session volume.
+- `sessions_active{workspace_id}` is inc/dec'd around the turn body in the same
+  function. Six writers mutate `SessionStatus` outside the lifecycle lock, so a
+  transition-delta gauge would drift; the streaming `try`/`finally` is the one
+  exact chokepoint every exit passes through.
+- `llm_calls_total{provider_id,profile_id,status}` and
+  `llm_profile_tokens_total{profile_id,direction}` are written by
+  `_observe_llm_call` in `primer/agent/loop.py`. That loop is the one model-call
+  seam every executor shares, so instrumenting there counts every call exactly
+  once. The pre-existing `llm_duration_seconds{provider}` keeps the per-provider
+  view; the gap these close is the per-PROFILE dimension.
+
+Per-CALL resolution inside a multi-call turn is a RECORD, not a metric: the agent
+loop emits one `llm_call` event per model call, `translate_stream_event` persists
+it as an `llm_call` record (`SessionMessageKind.LLM_CALL`), and the timeline folds
+those into the turn tree. Both transcript renderers hide the kind, since it is
+Trace material rather than conversation; the paged `/messages` read still returns
+it.
 
 Four declared metrics are not yet written by any call site and scrapers will see
 them as never-incremented zeros: `llm_retry_total` (no adapter increments it),
@@ -310,6 +368,10 @@ tests so accumulation across the suite does not corrupt assertions. Tracing is
 verified through the no-op fallback in `get_tracer`: a test that does not boot the
 full app gets the OTEL proxy tracer, so span call sites run without a configured
 provider.
+
+The label allowlist is enforced by `tests/observability/test_label_allowlist.py`,
+which walks the whole registry rather than a list of known instruments, so a new
+metric with an unreviewed label fails the suite at declaration time.
 
 Observability tests live under `tests/observability/` plus an end-to-end suite at
 `tests/e2e/test_observability.py`: `test_config`, `test_tracing`, `test_metrics`,

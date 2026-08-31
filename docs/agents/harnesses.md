@@ -38,7 +38,7 @@ recognised as managed), and the harness exposes per-deployment
 overrides for the things that legitimately vary (e.g. the LLM
 provider id, the channel id, an API base URL).
 
-Harnesses are a worker-claimed entity, like sessions and chats -
+Harnesses are a worker-claimed entity, like sessions -
 the fetch, install, sync, and uninstall operations are run by the
 worker pool, not synchronously inside the request. The MCP tools
 are async: they return 202 + a status field; the agent polls

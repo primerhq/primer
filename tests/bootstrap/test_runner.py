@@ -410,3 +410,56 @@ async def test_run_skips_lance_ssp_when_lancedb_missing(
         RESERVED_LANCE_SSP) is None
     # sentence-transformers present → huggingface defaults still created.
     assert RESERVED_HUGGINGFACE_EMBEDDER in result.created
+
+
+@pytest.mark.asyncio
+async def test_run_stamps_the_marker_when_another_pod_wins_a_create(
+    storage_provider: SqliteStorageProvider,
+    root_dir: Path,
+) -> None:
+    """A fresh install boots the API and every worker at once.
+
+    They all bootstrap, so for all but one of them each reserved id is
+    created underneath them between the miss and their own create. Counting
+    that as an error left the marker unstamped, and an unstamped marker
+    reads as a fresh install forever: every later boot baselines the schema
+    version instead of running the migrations it skipped.
+    """
+    from primer.model.except_ import ConflictError
+    from primer.model.provider import EmbeddingProvider
+
+    real = storage_provider.get_storage(EmbeddingProvider)
+
+    class LosesTheRace:
+        """Stands in for the pod that got there first."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.raced = False
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def get(self, *a, **kw):
+            return await self._inner.get(*a, **kw)
+
+        async def create(self, entity, *a, **kw):
+            if not self.raced:
+                self.raced = True
+                await self._inner.create(entity, *a, **kw)
+                raise ConflictError(
+                    f"EmbeddingProvider with id {entity.id!r} already exists"
+                )
+            return await self._inner.create(entity, *a, **kw)
+
+    racer = LosesTheRace(real)
+    runner = _make_runner(storage_provider, root_dir, embedder_storage=racer)
+    result = await runner.run()
+
+    assert racer.raced, "the racing create never fired"
+    assert result.errors == [], f"a lost race was recorded as failure: {result.errors}"
+    assert RESERVED_HUGGINGFACE_EMBEDDER in result.skipped
+
+    # The marker is the point: without it every later boot looks fresh.
+    state = await storage_provider.get_system_state()
+    assert state.bootstrap_completed_at is not None

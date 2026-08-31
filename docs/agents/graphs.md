@@ -50,7 +50,7 @@ that each need a human do not serialise. The answer arrives over a
 resume endpoints (see Workflow 7 below). A graph is therefore good both
 for deterministic multi-step work (extract -> analyse -> write report)
 AND for workflows that pause for a human between steps. Reach for a
-[chat](chats.md) instead when the whole interaction is a back-and-forth
+[session](sessions.md) instead when the whole interaction is a back-and-forth
 conversation rather than a mostly-automated pipeline with a few human
 checkpoints.
 
@@ -592,7 +592,7 @@ room; the operator's reply there resumes the graph. See
 [channels](channels.md).
 
 Over REST: read the pending prompt and post the answer. These are the
-same parked-session resume endpoints sessions and chats use:
+same parked-session resume endpoints sessions use:
 
 ```text
 GET  /v1/sessions/{session_id}/ask_user/pending

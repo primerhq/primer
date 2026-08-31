@@ -1529,6 +1529,21 @@ class _BaseGraphExecutor(
         # is safe to do here rather than in __aexit__-style cleanup.
         await self._close_turn_logs()
 
+    @property
+    def last_done_reason(self) -> str | None:
+        """Terminal sentinel for the session dispatch, or None mid-run.
+
+        The dispatch path consumes the streaming invoke() directly (the
+        _GraphTurnDriver shim is unwrapped there), so the outcome has to
+        be readable off the executor itself. Reporting nothing here is
+        how a failed graph ended its session 'completed': dispatch's
+        default for an executor with no last_done_reason is a clean stop.
+        """
+        outcome = getattr(self, "_last_ended_reason", None)
+        if outcome is None:
+            return None
+        return "graph_ended" if outcome == "completed" else "graph_failed"
+
     async def _close_turn_logs(self) -> None:
         """Close every node + graph-level turn-log writer. Idempotent."""
         for w in list(self._node_turn_logs.values()):

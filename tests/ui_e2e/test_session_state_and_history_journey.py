@@ -89,14 +89,15 @@ def test_cancelled_session_shows_outcome_banner(
 
     Re-pointed: the retired session-detail rendered a ``session-outcome``
     panel + a ``SessionLiveStream``-driven "Session ended" notice. The
-    rebuilt ``SessionAgentPanel`` (studio-center.jsx) has no such banner —
+    rebuilt ``SessionAgentPanel`` (the shell session document) has no such banner —
     it drives the session adapter + ``window.Transcript`` directly and
     exposes the terminal outcome via TWO real, always-rendered signals
-    gated on the panel's own ``isEnded = status === "ended"``: the
-    ``panel-agent-header`` StatusPill reads the terminal status, and the
-    End/Restart control pair flips — ``ctrl-end`` disables and
-    ``ctrl-restart`` appears. That is the closest real Studio surface for
-    the "session's terminal outcome is legible" intent.
+    The composer's status line reads the terminal status. The old
+    End/Restart control pair is not part of the shell: its session verbs
+    are interrupt, steer, rewind, compact, switch-binding and
+    jump-latest, with no restart among them, so the pair's flip has
+    nothing to assert against and the status line carries the whole
+    "terminal outcome is legible" intent on its own.
     """
     _seed_llm_provider(base_url, "sl-prov")
     _seed_agent(base_url, "sl-agent", "sl-prov")
@@ -105,18 +106,23 @@ def test_cancelled_session_shows_outcome_banner(
     _cancel_session(base_url, wid, sid)
 
     open_session_in_studio(page, console_url, wid, sid, kind="agent")
-    # The panel header StatusPill reads a terminal status (ended).
-    header = page.locator('[data-testid="panel-agent-header"]')
-    expect(header.locator(".pill").filter(has_text="ended").first).to_be_visible(
-        timeout=20_000,
-    )
-    # And the End/Restart pair reflects isEnded=true: End disables, Restart
-    # appears — the rebuilt panel's terminal-outcome control state.
-    expect(header.locator("[data-testid='ctrl-end']")).to_be_disabled(
-        timeout=10_000,
-    )
-    expect(header.locator("[data-testid='ctrl-restart']")).to_be_visible(
-        timeout=10_000,
+    # RETARGET (uiv2 R2): the workspace tree row no longer carries a
+    # per-row status chip (nv-rail.jsx signals only attention/running via
+    # dots, by design - notes 2.1/2.2); legible terminal status moved to
+    # the session doc, already open here. NOT the composer's status
+    # line, which describes what the session is DOING and is empty once
+    # nothing is running -- so an ended session says nothing there, by
+    # design.
+    page.get_by_test_id(f"nv-rail-ws:{wid}").click()
+    expect(page.get_by_test_id(f"nv-rail-ws-session:{sid}")).to_be_visible(
+        timeout=10_000)
+    expect(
+        page.get_by_text("session ended", exact=False).first
+    ).to_be_visible(timeout=20_000)
+    # Interrupting an ended session is meaningless, so the shell stops
+    # offering it: the verb is gone from the document once terminal.
+    expect(page.locator('[data-verb="session.interrupt"]')).to_have_count(
+        0, timeout=10_000,
     )
 
 
@@ -147,11 +153,18 @@ def test_cancelled_session_shows_cancelled_chip_in_list(
     _cancel_session(base_url, wid, sid)
 
     open_studio(page, console_url, wid)
-    # The cancelled session is listed as a sidebar row (located by its
-    # data-session-id stamp — the row shows the title, not the raw sid).
-    row = session_row(page, sid).first
+    # The cancelled session is listed as a workspace-tree row (located by
+    # its data-session-id stamp — the row shows the title, not the raw
+    # sid). RETARGET (uiv2 R2): the tree row no longer carries a per-row
+    # status chip (nv-rail.jsx signals only attention/running via dots,
+    # by design), so the terminal-status assertion moves to the session
+    # doc, the surviving legible-status surface (same disposition as the
+    # BDD suite's "bands order by consequence" migration).
+    row = session_row(page, sid, wid).first
     expect(row).to_be_visible(timeout=20_000)
-    # The row carries its status dot (terminal / gray tone for cancelled).
-    expect(row.locator('[data-testid="session-status-dot"]')).to_be_visible(
-        timeout=10_000,
-    )
+    row.click()
+    expect(page.get_by_test_id(f"nv-session-doc:{sid}")).to_be_visible(
+        timeout=15_000)
+    expect(
+        page.get_by_text("session ended", exact=False).first
+    ).to_be_visible(timeout=15_000)

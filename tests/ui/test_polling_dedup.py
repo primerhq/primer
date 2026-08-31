@@ -1,53 +1,48 @@
-"""Static checks for FC4 — de-duplicated background polling.
+"""Static checks for FC4 -- de-duplicated background polling.
 
 Two endpoints were being polled twice under different useResource cacheKeys,
-so the app made two identical requests per cycle. Each pair must now share a
-single cacheKey so useResource collapses them into one poll.
+so the app made two identical requests per cycle. The fix was to give each
+endpoint ONE canonical key that every consumer shares.
 
-  (a) GET /v1/internal_collections/config — app.jsx (sidebar/dashboard) and
-      chrome.jsx (topbar bell) must both use the canonical "ic:config" key
-      (the same key the Internal Collections page already uses).
-  (b) GET /v1/workers — app.jsx (topbar count) and workers.jsx (page list)
-      must both use the "workers:list" key.
+Stated repo-wide rather than against a fixed pair of files: consumers come
+and go as surfaces move (the topbar bell became a shell surface), but the
+invariant is the same wherever the poll lives -- one endpoint, one key.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 UI = Path(__file__).resolve().parents[2] / "ui"
-APP = UI / "app.jsx"
-CHROME = UI / "components" / "chrome.jsx"
-WORKERS = UI / "components" / "workers.jsx"
+
+# endpoint -> (canonical cacheKey, the split keys it replaced)
+CANONICAL = {
+    "/v1/internal_collections/config": ("ic:config", ("app:ic-config", "chrome:ic-config")),
+    "/v1/workers": ("workers:list", ("topbar:workers",)),
+}
 
 
-def _read(p: Path) -> str:
-    return p.read_text(encoding="utf-8")
+def _sources() -> list[Path]:
+    return sorted(p for p in UI.rglob("*.js*") if p.is_file())
 
 
-# --- (a) internal_collections/config -----------------------------------
-
-def test_ic_config_shares_one_cache_key() -> None:
-    app, chrome = _read(APP), _read(CHROME)
-    assert '"ic:config"' in app, "app.jsx IC probe must use the shared 'ic:config' key"
-    assert '"ic:config"' in chrome, "chrome.jsx IC bell must use the shared 'ic:config' key"
-
-
-def test_ic_config_old_split_keys_removed() -> None:
-    app, chrome = _read(APP), _read(CHROME)
-    assert '"app:ic-config"' not in app, "the split 'app:ic-config' key must be gone"
-    assert '"chrome:ic-config"' not in chrome, "the split 'chrome:ic-config' key must be gone"
-
-
-# --- (b) /v1/workers ---------------------------------------------------
-
-def test_workers_share_one_cache_key() -> None:
-    app, workers = _read(APP), _read(WORKERS)
-    assert '"workers:list"' in app, "app.jsx topbar must read the shared 'workers:list' key"
-    assert '"workers:list"' in workers, "workers.jsx must keep the 'workers:list' key"
+def test_no_split_cache_keys_survive() -> None:
+    for endpoint, (canonical, retired) in CANONICAL.items():
+        for dead in retired:
+            hits = [
+                str(p.relative_to(UI)) for p in _sources()
+                if f'"{dead}"' in p.read_text(encoding="utf-8")
+            ]
+            assert hits == [], (
+                f"{endpoint} must poll under the single {canonical!r} key; "
+                f"the split {dead!r} key is still read by: {hits}"
+            )
 
 
-def test_workers_old_topbar_key_removed() -> None:
-    assert '"topbar:workers"' not in _read(APP), (
-        "the separate 'topbar:workers' key must be gone so the two /v1/workers "
-        "polls dedupe to one"
-    )
+def test_canonical_keys_are_still_in_use() -> None:
+    """A key nothing reads is a dedup that quietly stopped applying."""
+    for endpoint, (canonical, _retired) in CANONICAL.items():
+        hits = [
+            str(p.relative_to(UI)) for p in _sources()
+            if f'"{canonical}"' in p.read_text(encoding="utf-8")
+        ]
+        assert hits, f"no consumer reads {endpoint} under {canonical!r}"

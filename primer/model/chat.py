@@ -327,6 +327,18 @@ class ToolResultPart(BaseModel):
             "media; ignored by LLM adapters (they read ``output``)."
         ),
     )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Per-tool extras a workspace tool computed but did not put in "
+            "``output`` (e.g. grep's match_count/file_count - an exact "
+            "count the model does not need repeated in its own context, "
+            "but a UI chip does). Carried verbatim from WorkspaceTool's "
+            "own ToolResult.metadata (primer/workspace/tool.py); ignored "
+            "by LLM adapters, same as ``media``. Absent on records "
+            "persisted before this field existed - always optional."
+        ),
+    )
 
 
 class ToolCallResult(BaseModel):
@@ -672,6 +684,19 @@ class Tool(Describeable):
             "serialization."
         ),
     )
+    tool_class: Literal["standard", "notifying"] = Field(
+        default="standard",
+        validation_alias="class",
+        exclude=True,
+        description=(
+            "Tool class. 'standard' tools return a result the model reads. "
+            "'notifying' tools are declared no-response: the runner answers "
+            "them itself with a successful synthetic tool_result and "
+            "continues the turn, and their delivery to any responder is "
+            "best-effort. Wire alias is 'class'. In-memory metadata only; "
+            "excluded from serialization."
+        ),
+    )
     required_role: str | None = Field(
         default=None,
         exclude=True,
@@ -682,6 +707,33 @@ class Tool(Describeable):
             "In-memory metadata only; excluded from serialization."
         ),
     )
+
+
+def tool_catalogue_flags(tool: Any) -> dict[str, Any]:
+    """The four ``exclude=True`` picker flags on a :class:`Tool`, by wire name.
+
+    Every "list tools for a picker" route re-adds these on top of the
+    default ``model_dump()`` (which omits them) so the UI can render
+    per-tool badges - one seam for the flag set itself, so a fifth flag
+    added later needs one edit here instead of N call sites staying in
+    sync by hand.
+
+    A module-level function reading via ``getattr``, not a ``Tool``
+    method calling ``self.x`` directly: several routers' tests pass a
+    bare ``unittest.mock.MagicMock`` standing in for a ``Tool`` with
+    only the four flag attributes explicitly configured. A bound method
+    call (``tool.catalogue_flags()``) would hit the mock's own
+    auto-attribute machinery instead of this implementation; ``getattr``
+    reads the mock's configured attributes exactly like the plain
+    ``Tool`` case, so both are handled identically without duplicating
+    this function's body as a second "test-only" variant.
+    """
+    return {
+        "yields": bool(getattr(tool, "yields", False)),
+        "requires_workspace": bool(getattr(tool, "requires_workspace", False)),
+        "tool_class": getattr(tool, "tool_class", "standard"),
+        "required_role": getattr(tool, "required_role", None),
+    }
 
 
 ToolChoice = Literal["auto", "required", "none"] | str
@@ -1243,6 +1295,14 @@ class SafetyRatings(BaseModel):
     )
 
 
+NOTIFYING_TOOL_RESULT = '{"delivered": true}'
+"""Canonical synthetic tool_result body for a notifying-class tool call.
+
+Delivered semantics, not rendered: it says the runner handed the action
+off, never that a client acted on it.
+"""
+
+
 class _ExecutorToolResult(BaseModel):
     """Synthetic event: an agent executor fed a tool result back to the LLM.
 
@@ -1276,6 +1336,15 @@ class _ExecutorToolResult(BaseModel):
     error: bool = Field(
         default=False,
         description="True if the tool reported an execution failure or denial.",
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Carried verbatim from the originating ToolResultPart.metadata "
+            "(see that field's own docstring) - not fed to the LLM, only "
+            "along for the ride so a tap subscriber (a UI chip) sees it "
+            "on the same round-trip event, not a second fetch."
+        ),
     )
 
 
@@ -1324,6 +1393,97 @@ class _GraphNodeEvent(BaseModel):
     )
 
 
+class _ClientAction(BaseModel):
+    """Synthetic event: the runner delivered a NOTIFYING tool call.
+
+    Reachable only through :class:`ExtendedEvent`. The agent loop emits
+    one per notifying call, just before the call's synthetic tool_result.
+    The session persistence translator turns it into a ``client_action``
+    record, which flows the existing workspace tap to every attached
+    client; the browser executes it best-effort. Not produced by any LLM
+    adapter.
+
+    Lives in this module for the same reason as
+    :class:`_ExecutorToolResult`: keeping the
+    :data:`ExtendedStreamContent` union self-contained.
+    """
+
+    type: Literal["client_action"] = Field(
+        default="client_action",
+        description="Discriminator tag identifying this as a client-action delivery event.",
+    )
+    call_id: str = Field(
+        ...,
+        min_length=1,
+        description="Identifier of the ToolCallPart this delivery belongs to.",
+    )
+    name: str = Field(
+        ...,
+        min_length=1,
+        description="Scoped tool id of the notifying call (toolset_id__bare_name).",
+    )
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The call's arguments, passed through verbatim to the client.",
+    )
+
+
+class _LlmCall(BaseModel):
+    """Synthetic event: one completed model call at the agent-loop seam.
+
+    Reachable only through :class:`ExtendedEvent`. Emitted by
+    :func:`primer.agent.loop.run_agent_turn` once per ``llm.stream`` call
+    (so once per tool round), immediately BEFORE that round's
+    :class:`Done` so the record it becomes lands inside the turn's seq
+    window. Not produced by any LLM adapter.
+
+    Lives in this module for the same reason as
+    :class:`_ExecutorToolResult`: keeping the
+    :data:`ExtendedStreamContent` union self-contained.
+    """
+
+    type: Literal["llm_call"] = Field(
+        default="llm_call",
+        description="Discriminator tag identifying this as a model-call event.",
+    )
+    profile_id: str = Field(
+        ...,
+        description="ModelProfile the call resolved under.",
+    )
+    provider_id: str = Field(
+        ...,
+        description="Provider row id the profile resolved to.",
+    )
+    model: str = Field(
+        ...,
+        description="Concrete model name sent to the provider.",
+    )
+    input_tokens: int | None = Field(
+        default=None,
+        description="Prompt tokens reported by the stream's Usage event, if any.",
+    )
+    output_tokens: int | None = Field(
+        default=None,
+        description="Completion tokens reported by the stream's Usage event, if any.",
+    )
+    duration_ms: int = Field(
+        default=0,
+        ge=0,
+        description="Wall-clock duration of the model call in milliseconds.",
+    )
+    status: Literal["ok", "error"] = Field(
+        default="ok",
+        description=(
+            "'ok' for a clean stream. 'error' when the adapter emitted "
+            "an in-band terminal Error event: the stream ends without "
+            "raising, and the telemetry envelope still lands (BEFORE "
+            "the terminal, so it stays inside the turn's seq window - "
+            "primer/agent/loop.py). A stream that RAISES produces no "
+            "record at all; the dispatch error path writes the ERROR "
+            "record and the failure is still counted on llm_calls_total."
+        ),
+    )
+
 ExtendedStreamContent = Annotated[
     RawReasoningDelta
     | RefusalDelta
@@ -1334,6 +1494,8 @@ ExtendedStreamContent = Annotated[
     | Logprobs
     | SafetyRatings
     | _ExecutorToolResult
+    | _ClientAction
+    | _LlmCall
     | _GraphNodeEvent,
     Field(discriminator="type"),
 ]

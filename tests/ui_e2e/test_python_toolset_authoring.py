@@ -7,6 +7,7 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.ui_e2e._python_helpers import set_python_source
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 GREET = (
     "@primer_tool()\n"
@@ -43,14 +44,14 @@ def test_the_editor_shows_derived_tools_and_the_isolation_level(
     tid = f"toolset-ui-{unique_suffix}"
     _seed(base_url, tid)
     try:
-        page.goto(f"{console_url}#/toolsets/{tid}", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, f"toolsets/{tid}")
 
         editor = page.locator('[data-testid="python-editor"]')
         expect(editor).to_be_visible(timeout=20_000)
 
         # The derived list comes from the server, so this asserts the source
         # actually registered rather than that the textarea has text in it.
-        rows = page.locator('[data-testid="python-tool-row"]')
+        rows = page.locator('[data-testid^="python-tool-row:"]')
         expect(rows.first).to_be_visible(timeout=15_000)
         expect(rows.first).to_contain_text("greet")
         expect(rows.first).to_contain_text("name")
@@ -72,7 +73,7 @@ def test_a_broken_docstring_reports_inline_with_its_line(
     tid = f"toolset-ui-bad-{unique_suffix}"
     _seed(base_url, tid)
     try:
-        page.goto(f"{console_url}#/toolsets/{tid}", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, f"toolsets/{tid}")
         expect(page.locator('[data-testid="python-source"]')).to_be_visible(
             timeout=20_000,
         )

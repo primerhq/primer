@@ -82,6 +82,18 @@ async def app(
     from primer.api.app import _bootstrap_web_fetch
     await _bootstrap_web_fetch(fake_storage_provider)
 
+    # Run the S5 ensure pass (parity with the lifespan). Supersedes the
+    # standalone system-collection regeneration: the pass ends with it.
+    from primer.bootstrap.seed import run_ensure_pass
+    await run_ensure_pass(
+        fake_storage_provider,
+        workspace_registry=_app.state.workspace_registry,
+        toolset_providers={
+            "system": _app.state.system_toolset,
+            "crud": _app.state.crud_toolset,
+        },
+    )
+
     # Construct the web-fetch registry + service from the bootstrapped rows.
     from primer.api.registries.web_fetch_registry import (
         WebFetchRegistry,
@@ -105,8 +117,26 @@ async def app(
     )
     _app.state.web_fetch_registry = wf_registry
     _app.state.web_fetch_service = wf_service
+    from primer.api.registries.speech_registry import (
+        SpeechRegistry,
+        default_stt_factory,
+        default_tts_factory,
+    )
+    from primer.model.provider import (
+        SpeechToTextProvider as _STT,
+        TextToSpeechProvider as _TTS,
+    )
 
-    forwarder = await _app.state.start_chat_tick_forwarder()
+    _app.state.stt_registry = SpeechRegistry(
+        storage=fake_storage_provider.get_storage(_STT),
+        factory=default_stt_factory,
+        label="stt",
+    )
+    _app.state.tts_registry = SpeechRegistry(
+        storage=fake_storage_provider.get_storage(_TTS),
+        factory=default_tts_factory,
+        label="tts",
+    )
 
     # Start the worker pool if the app was built with one.
     if getattr(_app.state, "start_worker_pool", None) is not None:
@@ -127,17 +157,11 @@ async def app(
                 await _app.state.stop_mcp_mount()
             except Exception:
                 pass
-        # Stop the worker pool before cancelling the forwarder.
         if getattr(_app.state, "stop_worker_pool", None) is not None:
             try:
                 await _app.state.stop_worker_pool()
             except Exception:
                 pass
-        forwarder.cancel()
-        try:
-            await forwarder
-        except asyncio.CancelledError:
-            pass
 
 
 @pytest.fixture

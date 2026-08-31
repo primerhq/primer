@@ -1,0 +1,127 @@
+{
+  "surfaces": [
+    {
+      "id": "session-detail",
+      "file": "session-detail.json",
+      "describes": "Session doc: the flat session row plus binding, park state and queued steers"
+    },
+    {
+      "id": "session-list",
+      "file": "session-list.json",
+      "describes": "Rail sessions list: live, waiting (parked), ended"
+    },
+    {
+      "id": "tap-frames",
+      "file": "tap-frames.json",
+      "describes": "Workspace tap frames driving live turn rendering"
+    },
+    {
+      "id": "files-tree",
+      "file": "files-tree.json",
+      "describes": "Rail files list and the file picker"
+    },
+    {
+      "id": "file-read",
+      "file": "file-read.json",
+      "describes": "File doc: viewer/editor content"
+    },
+    {
+      "id": "commit-log",
+      "file": "commit-log.json",
+      "describes": "Changes list feeding diff docs"
+    },
+    {
+      "id": "commit-diff",
+      "file": "commit-diff.json",
+      "describes": "Diff doc: per-file patches"
+    },
+    {
+      "id": "wiki-document",
+      "file": "wiki-document.json",
+      "describes": "Wiki doc: a collection document with children"
+    },
+    {
+      "id": "pending-yields",
+      "file": "pending-yields.json",
+      "describes": "Attention: parked gates and questions"
+    },
+    {
+      "id": "approval-records",
+      "file": "approval-records.json",
+      "describes": "Approvals overlay: resolved history"
+    },
+    {
+      "id": "workers-stats",
+      "file": "workers-stats.json",
+      "describes": "Workers overlay counters"
+    },
+    {
+      "id": "turn-timeline",
+      "file": "turn-timeline.json",
+      "describes": "Trace tab: one turn's tree incl. a nested subagent"
+    },
+    {
+      "id": "capabilities",
+      "file": "capabilities.json",
+      "describes": "Capability and voice gating"
+    },
+    {
+      "id": "auth-status",
+      "file": "auth-status.json",
+      "describes": "Boot probe: login, password, wizard, shell"
+    }
+  ],
+  "doc_kinds": [
+    "session",
+    "file",
+    "diff",
+    "wiki"
+  ],
+  "overlays": [
+    "providers",
+    "collections",
+    "agents",
+    "graphs",
+    "triggers",
+    "toolsets",
+    "workers",
+    "approvals",
+    "harnesses",
+    "services",
+    "channels",
+    "workspaces",
+    "new-session",
+    "new-workspace",
+    "internal-collections",
+    "activity"
+  ],
+  "views": {
+    "platform": [
+      "providers",
+      "profiles",
+      "toolsets",
+      "tools",
+      "collections",
+      "workspaces",
+      "templates",
+      "agents",
+      "graphs",
+      "triggers",
+      "channels",
+      "harnesses",
+      "services",
+      "approvals"
+    ],
+    "system": [
+      "dashboard",
+      "users",
+      "apikeys",
+      "sso",
+      "mcp",
+      "internal",
+      "activity",
+      "setup",
+      "profile"
+    ]
+  }
+}

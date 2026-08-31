@@ -60,6 +60,22 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -71,10 +87,12 @@ class _InMemoryStorage(Generic[_T]):
     async def find(self, predicate, page, *, order_by=None):
         items = list(self._data.values())
         if isinstance(page, OffsetPage):
-            sliced = items[page.offset:page.offset + page.length]
+            sliced = items[page.offset : page.offset + page.length]
             return OffsetPageResponse(
-                offset=page.offset, length=len(sliced),
-                total=len(items), items=sliced,
+                offset=page.offset,
+                length=len(sliced),
+                total=len(items),
+                items=sliced,
             )
         return CursorPageResponse(next_cursor=None, items=items)
 
@@ -106,11 +124,20 @@ def _agent(agent_id: str) -> Agent:
 
 
 def _model() -> ResolvedModel:
-    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
+    return ResolvedModel(
+        profile_id="test-profile",
+        provider_id="test-provider",
+        model_name="m",
+        context_length=128_000,
+        config=ModelProfileConfig(),
+    )
 
 
 async def _build(
-    *, graph: Graph, llm, agents,
+    *,
+    graph: Graph,
+    llm,
+    agents,
     turn_log_storage,
 ):
     async def agent_resolver(aid):
@@ -159,15 +186,21 @@ async def test_per_node_started_completed_lands_as_storage_rows():
             _StaticEdge(from_node="A", to_node="exit"),
         ],
     )
-    llm = _FakeLLM(scripts=[[
-        TextDelta(text="hi", index=0),
-        Done(stop_reason="stop", raw_reason="stop"),
-    ]])
+    llm = _FakeLLM(
+        scripts=[
+            [
+                TextDelta(text="hi", index=0),
+                Done(stop_reason="stop", raw_reason="stop"),
+            ]
+        ]
+    )
     turn_log_storage: _InMemoryStorage[TurnLogRecord] = _InMemoryStorage(
         TurnLogRecord,
     )
     executor, thread = await _build(
-        graph=graph, llm=llm, agents={"x": _agent("x")},
+        graph=graph,
+        llm=llm,
+        agents={"x": _agent("x")},
         turn_log_storage=turn_log_storage,
     )
     await _drain(executor.invoke([]))
@@ -221,7 +254,8 @@ async def test_node_failed_persists_problem_details_payload():
         TurnLogRecord,
     )
     executor, thread = await _build(
-        graph=graph, llm=_BrokenLLM(),
+        graph=graph,
+        llm=_BrokenLLM(),
         agents={"x": _agent("x")},
         turn_log_storage=turn_log_storage,
     )
@@ -249,7 +283,8 @@ async def test_turn_log_storage_propagates_to_subgraph_child():
     in the same TurnLogRecord table (under the child run_id).
     Without propagation, subgraphs run silent."""
     graph = Graph(
-        id="g-parent", description="A -> exit",
+        id="g-parent",
+        description="A -> exit",
         nodes=[
             _BeginNode(id="begin"),
             _AgentNodeRef(id="A", agent_id="x"),
@@ -260,22 +295,29 @@ async def test_turn_log_storage_propagates_to_subgraph_child():
             _StaticEdge(from_node="A", to_node="exit"),
         ],
     )
-    llm = _FakeLLM(scripts=[[
-        TextDelta(text="hi", index=0),
-        Done(stop_reason="stop", raw_reason="stop"),
-    ]])
+    llm = _FakeLLM(
+        scripts=[
+            [
+                TextDelta(text="hi", index=0),
+                Done(stop_reason="stop", raw_reason="stop"),
+            ]
+        ]
+    )
     turn_log_storage: _InMemoryStorage[TurnLogRecord] = _InMemoryStorage(
         TurnLogRecord,
     )
     executor, _ = await _build(
-        graph=graph, llm=llm, agents={"x": _agent("x")},
+        graph=graph,
+        llm=llm,
+        agents={"x": _agent("x")},
         turn_log_storage=turn_log_storage,
     )
 
     # Build a child executor by calling the protected hook directly
     # with a tiny sub-graph; assert it carries the same storage.
     sub_graph = Graph(
-        id="g-sub", description="b -> exit",
+        id="g-sub",
+        description="b -> exit",
         nodes=[_BeginNode(id="begin"), _EndNode(id="exit")],
         edges=[_StaticEdge(from_node="begin", to_node="exit")],
     )
@@ -304,12 +346,18 @@ async def test_no_turn_log_storage_keeps_executor_silent():
             _StaticEdge(from_node="A", to_node="exit"),
         ],
     )
-    llm = _FakeLLM(scripts=[[
-        TextDelta(text="hi", index=0),
-        Done(stop_reason="stop", raw_reason="stop"),
-    ]])
+    llm = _FakeLLM(
+        scripts=[
+            [
+                TextDelta(text="hi", index=0),
+                Done(stop_reason="stop", raw_reason="stop"),
+            ]
+        ]
+    )
     executor, _ = await _build(
-        graph=graph, llm=llm, agents={"x": _agent("x")},
+        graph=graph,
+        llm=llm,
+        agents={"x": _agent("x")},
         turn_log_storage=None,
     )
     # Doesn't raise; trivially runs.

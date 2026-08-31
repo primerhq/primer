@@ -61,6 +61,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -76,7 +92,9 @@ class _Storage:
                 total=len(items),
                 items=sliced,
             )
-        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+        return OffsetPageResponse(
+            offset=0, length=len(items), total=len(items), items=items
+        )
 
     async def find(self, predicate, page, *, order_by=None):
         """Evaluate the predicate tree in-memory against every stored entity."""
@@ -115,10 +133,7 @@ class _Storage:
                 return True
             return True
 
-        matched = [
-            item for item in self._data.values()
-            if _eval(predicate, item)
-        ]
+        matched = [item for item in self._data.values() if _eval(predicate, item)]
         if isinstance(page, OffsetPage):
             sliced = matched[page.offset : page.offset + page.length]
             return OffsetPageResponse(
@@ -133,6 +148,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -300,10 +320,17 @@ async def client(app):
 # ===========================================================================
 
 
-async def _create_workspace(client) -> str:
-    await client.post("/v1/workspace_providers", json=_provider().model_dump(mode="json"))
-    await client.post("/v1/workspace_templates", json=_template().model_dump(mode="json"))
-    resp = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+async def _create_workspace(client, *, name: str | None = None) -> str:
+    await client.post(
+        "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+    )
+    await client.post(
+        "/v1/workspace_templates", json=_template().model_dump(mode="json")
+    )
+    body: dict[str, Any] = {"template_id": "tpl-1"}
+    if name is not None:
+        body["name"] = name
+    resp = await client.post("/v1/workspaces", json=body)
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 
@@ -378,6 +405,67 @@ class TestListPendingYields:
         assert item["parked_at"] == parked_at.isoformat()
 
     @pytest.mark.asyncio
+    async def test_ask_user_response_schema_is_returned(self, client, sp) -> None:
+        """UX reconcile wave 5: response_schema (a real, jsonschema-
+        enforced _AskUserArgs field, already returned by the dedicated
+        GET .../ask_user/pending route) used to be dropped by this
+        aggregate route's own hand-built resume_metadata dict, so a
+        card built from it could never offer discrete answer options."""
+        wid = await _create_workspace(client)
+        sess = _make_session(
+            "sess-ask-schema",
+            wid,
+            parked_status="parked",
+            parked_state={
+                "tool_call_id": "tcid-ask-2",
+                "yielded": {
+                    "tool_name": "ask_user",
+                    "event_key": "ask_user:sess-ask-schema:tcid-ask-2",
+                    "resume_metadata": {
+                        "prompt": "Which currency?",
+                        "response_schema": {
+                            "enum": ["Original charge currency", "Always USD"],
+                        },
+                    },
+                },
+            },
+        )
+        await sp.get_storage(WorkspaceSession).create(sess)
+
+        resp = await client.get(f"/v1/workspaces/{wid}/yields/pending")
+        assert resp.status_code == 200, resp.text
+        item = resp.json()["items"][0]
+        assert item["resume_metadata"]["response_schema"] == {
+            "enum": ["Original charge currency", "Always USD"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_response_schema_is_null_when_absent(self, client, sp) -> None:
+        """The common case (a free-text ask_user, or any other park kind)
+        - present as an explicit null, not an absent key, so the
+        frontend's own defensive read never has to distinguish "missing
+        key" from "no schema"."""
+        wid = await _create_workspace(client)
+        sess = _make_session(
+            "sess-ask-nosc",
+            wid,
+            parked_status="parked",
+            parked_state={
+                "tool_call_id": "tcid-ask-3",
+                "yielded": {
+                    "tool_name": "ask_user",
+                    "event_key": "ask_user:sess-ask-nosc:tcid-ask-3",
+                    "resume_metadata": {"prompt": "Free text ok?"},
+                },
+            },
+        )
+        await sp.get_storage(WorkspaceSession).create(sess)
+
+        resp = await client.get(f"/v1/workspaces/{wid}/yields/pending")
+        item = resp.json()["items"][0]
+        assert item["resume_metadata"]["response_schema"] is None
+
+    @pytest.mark.asyncio
     async def test_watch_files_park_is_returned(self, client, sp) -> None:
         wid = await _create_workspace(client)
         sess = _make_session(
@@ -409,7 +497,9 @@ class TestListPendingYields:
         assert item["tool_call_id"] == "tcid-watch-1"
 
     @pytest.mark.asyncio
-    async def test_approval_park_is_returned_with_kind_approval(self, client, sp) -> None:
+    async def test_approval_park_is_returned_with_kind_approval(
+        self, client, sp
+    ) -> None:
         wid = await _create_workspace(client)
         sess = _make_session(
             "sess-approval",
@@ -613,3 +703,275 @@ class TestListPendingYields:
         assert resp.status_code == 200
         item = resp.json()["items"][0]
         assert item["tool_call_id"] == "old-tcid"
+
+
+class TestDismissPendingMessage:
+    """DELETE .../sessions/{sid}/pending_messages/{pid} (BDD round 2).
+
+    The console's queued-steer chip has offered a dismiss since the
+    flag day; this route is what makes it real. Scope guards mirror
+    the other session sub-resources: the pending row must belong to
+    the addressed session.
+    """
+
+    @staticmethod
+    def _pending(sid: str) -> "PendingSessionMessage":
+        from primer.model.workspace_session import PendingSessionMessage
+
+        now = datetime.now(timezone.utc)
+        return PendingSessionMessage(
+            id=f"{sid}:pending:{now.isoformat()}:1",
+            session_id=sid,
+            parts=[{"type": "text", "text": "queued follow-up"}],
+            enqueued_at=now,
+            created_at=now,
+        )
+
+    @pytest.mark.asyncio
+    async def test_dismiss_deletes_the_row(self, client, sp) -> None:
+        from primer.model.workspace_session import PendingSessionMessage
+
+        wid = await _create_workspace(client)
+        await sp.get_storage(WorkspaceSession).create(_make_session("sess-dm1", wid))
+        pend = self._pending("sess-dm1")
+        await sp.get_storage(PendingSessionMessage).create(pend)
+
+        resp = await client.delete(
+            f"/v1/workspaces/{wid}/sessions/sess-dm1/pending_messages/{pend.id}"
+        )
+        assert resp.status_code == 204, resp.text
+        left = await sp.get_storage(PendingSessionMessage).get(pend.id)
+        assert left is None
+
+    @pytest.mark.asyncio
+    async def test_dismiss_unknown_pending_404s(self, client, sp) -> None:
+        wid = await _create_workspace(client)
+        await sp.get_storage(WorkspaceSession).create(_make_session("sess-dm2", wid))
+        resp = await client.delete(
+            f"/v1/workspaces/{wid}/sessions/sess-dm2/pending_messages/nope"
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_dismiss_cross_session_404s(self, client, sp) -> None:
+        from primer.model.workspace_session import PendingSessionMessage
+
+        wid = await _create_workspace(client)
+        await sp.get_storage(WorkspaceSession).create(_make_session("sess-dm3", wid))
+        await sp.get_storage(WorkspaceSession).create(_make_session("sess-dm4", wid))
+        pend = self._pending("sess-dm4")
+        await sp.get_storage(PendingSessionMessage).create(pend)
+
+        resp = await client.delete(
+            f"/v1/workspaces/{wid}/sessions/sess-dm3/pending_messages/{pend.id}"
+        )
+        assert resp.status_code == 404
+        kept = await sp.get_storage(PendingSessionMessage).get(pend.id)
+        assert kept is not None
+
+
+class TestListPendingAttention:
+    """GET /v1/yields/pending — cross-workspace attention aggregate (Inbox).
+
+    Covers: aggregation across workspaces, kind collapsed to
+    approval|ask|parked, workspace_id filter, newest-first ordering,
+    limit cap vs. total count, running/ended exclusion, parked_at ->
+    created_at fallback.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_sessions_returns_empty(self, client, sp) -> None:
+        resp = await client.get("/v1/yields/pending")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"items": [], "total": 0}
+
+    @pytest.mark.asyncio
+    async def test_aggregates_across_workspaces_with_kind_mapping(
+        self, client, sp
+    ) -> None:
+        wid1 = await _create_workspace(client, name="Alpha")
+        wid2 = await _create_workspace(client, name="Beta")
+
+        approval = _make_session(
+            "sess-attn-approval",
+            wid1,
+            parked_status="parked",
+            parked_at=datetime(2026, 7, 1, 9, 0, 0, tzinfo=timezone.utc),
+            parked_state={
+                "tool_call_id": "tcid-attn-appr",
+                "yielded": {
+                    "tool_name": "_approval",
+                    "event_key": "tool_approval:sess-attn-approval:tcid-attn-appr",
+                    "resume_metadata": {
+                        "original_call": {
+                            "id": "tcid-attn-appr",
+                            "name": "bash",
+                            "arguments": {},
+                        },
+                    },
+                },
+            },
+        )
+        ask = _make_session(
+            "sess-attn-ask",
+            wid1,
+            parked_status="parked",
+            parked_at=datetime(2026, 7, 1, 10, 0, 0, tzinfo=timezone.utc),
+            parked_state={
+                "tool_call_id": "tcid-attn-ask",
+                "yielded": {
+                    "tool_name": "ask_user",
+                    "event_key": "ask_user:sess-attn-ask:tcid-attn-ask",
+                    "resume_metadata": {"prompt": "Continue?"},
+                },
+            },
+        )
+        watch = _make_session(
+            "sess-attn-watch",
+            wid2,
+            parked_status="parked",
+            parked_at=datetime(2026, 7, 1, 11, 0, 0, tzinfo=timezone.utc),
+            parked_state={
+                "tool_call_id": "tcid-attn-watch",
+                "yielded": {
+                    "tool_name": "watch_files",
+                    "event_key": "watch:sess-attn-watch:tcid-attn-watch",
+                    "resume_metadata": {"paths": ["README.md"]},
+                },
+            },
+        )
+        for sess in (approval, ask, watch):
+            await sp.get_storage(WorkspaceSession).create(sess)
+
+        resp = await client.get("/v1/yields/pending")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["total"] == 3
+        items = data["items"]
+        assert len(items) == 3
+
+        # Newest first: watch@11:00, ask@10:00, approval@9:00.
+        assert [i["session_id"] for i in items] == [
+            "sess-attn-watch",
+            "sess-attn-ask",
+            "sess-attn-approval",
+        ]
+
+        by_id = {i["session_id"]: i for i in items}
+        assert by_id["sess-attn-approval"]["kind"] == "approval"
+        assert by_id["sess-attn-ask"]["kind"] == "ask"
+        assert by_id["sess-attn-watch"]["kind"] == "parked"
+
+        assert by_id["sess-attn-approval"]["workspace_id"] == wid1
+        assert by_id["sess-attn-approval"]["workspace_name"] == "Alpha"
+        assert by_id["sess-attn-watch"]["workspace_id"] == wid2
+        assert by_id["sess-attn-watch"]["workspace_name"] == "Beta"
+
+        assert by_id["sess-attn-approval"]["agent_binding"]["agent_id"] == "agt-1"
+        assert by_id["sess-attn-approval"]["agent_binding"]["kind"] == "agent"
+        assert by_id["sess-attn-approval"]["created_at"] == "2026-07-01T09:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_workspace_id_filter_restricts_results(self, client, sp) -> None:
+        wid1 = await _create_workspace(client, name="Filter-A")
+        wid2 = await _create_workspace(client, name="Filter-B")
+        sess1 = _make_session(
+            "sess-filter-1",
+            wid1,
+            parked_status="parked",
+            parked_state={
+                "tool_call_id": "t1",
+                "yielded": {
+                    "tool_name": "ask_user",
+                    "event_key": "k1",
+                    "resume_metadata": {"prompt": "?"},
+                },
+            },
+        )
+        sess2 = _make_session(
+            "sess-filter-2",
+            wid2,
+            parked_status="parked",
+            parked_state={
+                "tool_call_id": "t2",
+                "yielded": {
+                    "tool_name": "ask_user",
+                    "event_key": "k2",
+                    "resume_metadata": {"prompt": "?"},
+                },
+            },
+        )
+        await sp.get_storage(WorkspaceSession).create(sess1)
+        await sp.get_storage(WorkspaceSession).create(sess2)
+
+        resp = await client.get("/v1/yields/pending", params={"workspace_id": wid1})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["total"] == 1
+        assert [i["session_id"] for i in data["items"]] == ["sess-filter-1"]
+
+    @pytest.mark.asyncio
+    async def test_running_and_ended_sessions_excluded(self, client, sp) -> None:
+        wid = await _create_workspace(client)
+        running = _make_session("sess-attn-running", wid, status=SessionStatus.RUNNING)
+        ended = _make_session("sess-attn-ended", wid, status=SessionStatus.ENDED)
+        await sp.get_storage(WorkspaceSession).create(running)
+        await sp.get_storage(WorkspaceSession).create(ended)
+
+        resp = await client.get("/v1/yields/pending")
+        assert resp.status_code == 200
+        assert resp.json() == {"items": [], "total": 0}
+
+    @pytest.mark.asyncio
+    async def test_limit_caps_items_but_total_reports_full_count(
+        self, client, sp
+    ) -> None:
+        wid = await _create_workspace(client)
+        for n in range(3):
+            sess = _make_session(
+                f"sess-attn-cap-{n}",
+                wid,
+                parked_status="parked",
+                parked_at=datetime(2026, 7, 1, 8 + n, 0, 0, tzinfo=timezone.utc),
+                parked_state={
+                    "tool_call_id": f"tcid-cap-{n}",
+                    "yielded": {
+                        "tool_name": "ask_user",
+                        "event_key": f"ask_user:sess-attn-cap-{n}:tcid-cap-{n}",
+                        "resume_metadata": {"prompt": "?"},
+                    },
+                },
+            )
+            await sp.get_storage(WorkspaceSession).create(sess)
+
+        resp = await client.get("/v1/yields/pending", params={"limit": 1})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["total"] == 3
+        assert len(data["items"]) == 1
+        # Newest is 8+2 = 10:00.
+        assert data["items"][0]["session_id"] == "sess-attn-cap-2"
+
+    @pytest.mark.asyncio
+    async def test_parked_at_none_falls_back_to_created_at(self, client, sp) -> None:
+        wid = await _create_workspace(client)
+        sess = _make_session(
+            "sess-attn-no-parked-at",
+            wid,
+            parked_status="parked",
+            parked_at=None,
+            parked_state={
+                "tool_call_id": "tcid-no-parked-at",
+                "yielded": {
+                    "tool_name": "ask_user",
+                    "event_key": ("ask_user:sess-attn-no-parked-at:tcid-no-parked-at"),
+                    "resume_metadata": {"prompt": "?"},
+                },
+            },
+        )
+        await sp.get_storage(WorkspaceSession).create(sess)
+
+        resp = await client.get("/v1/yields/pending")
+        assert resp.status_code == 200, resp.text
+        item = resp.json()["items"][0]
+        assert item["created_at"] == sess.created_at.isoformat()

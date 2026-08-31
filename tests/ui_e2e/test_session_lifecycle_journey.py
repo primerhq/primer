@@ -178,56 +178,38 @@ def test_u0103_sessions_full_lifecycle_journey(
     try:
         # --- 1. Enter the Studio; the seeded session is a sidebar row -------
         # The row shows the session TITLE, not the raw sid — locate by the
-        # data-session-id stamp (studio-sidebar.jsx).
+        # data-session-id stamp (the shell rail).
         open_studio(page, console_url, wid)
-        row_locator = session_row(page, sid)
+        row_locator = session_row(page, sid, wid)
         expect(row_locator.first).to_be_visible(timeout=20_000)
 
         # --- 2. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="nv-tg-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="nv-session-doc:"]')).to_be_visible(
             timeout=15_000,
         )
 
-        # Sanity: the ctrl-end control is enabled (session non-terminal).
-        # Re-pointed: the agent panel's cancel affordance is now ``ctrl-end``
-        # (SessionAgentPanel's End button, POST .../cancel via
-        # SA_useSessionConversation's end()) — ``ctrl-cancel`` no longer
-        # exists on the agent panel (Task 13 moved it to the graph panel).
-        end_btn = page.locator('[data-testid="ctrl-end"]').first
-        expect(end_btn).to_be_enabled(timeout=10_000)
+        # --- 3. End the session from its row's context menu -----------------
+        # Re-pointed (flag day): the console's End affordance is the
+        # session verbs on the row's right-click menu (POST .../cancel);
+        # the old panel's ctrl-end button died with it.
+        row_locator.first.click(button="right")
+        menu = page.get_by_test_id(f"nv-rail-session-menu:{sid}")
+        expect(menu).to_be_visible(timeout=10_000)
+        menu.get_by_text("End", exact=True).click()
 
-        # --- 3. Click ctrl-end (fires directly, no confirm modal) -----------
-        end_btn.click()
-        # Toast from SessionAgentPanel's endMut has title "Session ended".
-        expect(page.get_by_text("Session ended")).to_be_visible(
-            timeout=10_000,
+        # --- 4. The doc reflects the terminal state --------------------------
+        # The transcript folds with "session ended" and the composer's
+        # placeholder flips to the reopen copy.
+        expect(page.get_by_text("session ended", exact=False).first).to_be_visible(
+            timeout=30_000,
         )
-
-        # --- 4. Panel-header status polls off CREATED -----------------------
-        # ST_SessionPanel polls /sessions/{id} every 2s while non-terminal;
-        # the header StatusPill catches up to cancelled/ended. Pin "left
-        # CREATED" (30s budget).
-        header = page.locator('[data-testid="panel-agent-header"]')
-        status_pill = header.locator(".pill").first
-        deadline = time.time() + 30.0
-        last_seen = None
-        while time.time() < deadline:
-            txt = status_pill.text_content(timeout=2_000) or ""
-            last_seen = txt.strip().lower()
-            if last_seen and "created" not in last_seen:
-                break
-            page.wait_for_timeout(500)
-        else:
-            raise AssertionError(
-                f"status pill never left CREATED within 30s; last seen: {last_seen!r}"
-            )
 
         # --- 5. The session is still listed in the Studio sidebar -----------
-        row_after = session_row(page, sid)
+        row_after = session_row(page, sid, wid)
         expect(row_after.first).to_be_visible(timeout=15_000)
     finally:
         _cleanup(base_url, ids)
@@ -309,19 +291,18 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
         # --- 1. Enter the Studio for the workspace --------------------------
         # Re-pointed: the workspace-detail Sessions tab is retired; sessions
         # live in the Studio left-sidebar Sessions section, which polls
-        # /workspaces/{wid}/sessions every 3s (studio-sidebar.jsx).
+        # /workspaces/{wid}/sessions every 3s (the shell rail).
         open_studio(page, console_url, wid)
 
-        # --- 2. Sessions section shows the empty state ----------------------
-        # SessionsSection renders "No sessions yet." before any is seeded.
+        # --- 2. The rail's session list is up -------------------------------
+        # NOT the empty state: landing on a workspace with no sessions
+        # lazily creates one (S1 spec section 8), so an empty workspace
+        # does not stay empty long enough to assert that here. What this
+        # test is about is the rail reflecting a session seeded through
+        # the API, which step 4 checks.
         expect(sessions_list(page)).to_be_visible(
             timeout=15_000,
         )
-        expect(
-            sessions_list(page).get_by_text(
-                "No sessions yet", exact=False,
-            )
-        ).to_be_visible(timeout=15_000)
 
         # --- 3. Seed the session in the background --------------------------
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -338,15 +319,15 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
 
         # --- 4. Wait for the sidebar row to surface within the 3s poll ------
         # Locate by data-session-id (the row shows the title, not the sid).
-        row_locator = session_row(page, sid)
+        row_locator = session_row(page, sid, wid)
         expect(row_locator.first).to_be_visible(timeout=20_000)
 
         # --- 5. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="nv-tg-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="nv-session-doc:"]')).to_be_visible(
             timeout=15_000,
         )
     finally:

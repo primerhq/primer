@@ -2,7 +2,7 @@
 
 httpx GET (following redirects) -> content-type routing:
   text/html  -> trafilatura markdown (sets is_thin when extraction is short)
-  application/pdf -> docling markdown
+  application/pdf -> unsupported (binary conversion removed in v2)
   application/json -> pretty-printed + fenced
   text/*     -> returned as-is
   other      -> WebFetchProviderError (use http-request for raw bytes)
@@ -39,12 +39,15 @@ DEFAULT_USER_AGENT = (
 
 
 async def _extract_pdf(data: bytes) -> str:
-    """Convert PDF bytes to markdown via docling. Module-level so tests can
-    monkeypatch it (docling is heavy and downloads models on first use)."""
-    from primer.ingest.loaders.docling import DoclingLoader
+    """PDF extraction was removed in v2 along with the ingest package.
 
-    loaded = await DoclingLoader().load(data)
-    return loaded.text
+    Kept as the single seam the adapter calls so the failure is one clear
+    message rather than an import error deep in a fetch.
+    """
+    raise UnsupportedContentError(
+        "PDF extraction is not supported; fetch a text or HTML URL, or "
+        "convert the document before fetching it."
+    )
 
 
 class LocalAdapter(WebFetchAdapter):

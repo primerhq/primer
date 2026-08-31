@@ -3,7 +3,7 @@
 from pathlib import Path
 
 TOKENS = Path(__file__).resolve().parents[2] / "ui" / "components" / "api_tokens.jsx"
-CHROME = Path(__file__).resolve().parents[2] / "ui" / "components" / "chrome.jsx"
+ADMIN = Path(__file__).resolve().parents[2] / "ui" / "components" / "console" / "nv-system.jsx"
 APP = Path(__file__).resolve().parents[2] / "ui" / "app.jsx"
 
 
@@ -45,11 +45,26 @@ def test_table_uses_shared_tbl_class():
     assert '"8px 12px"' not in src
 
 
-def test_sidebar_has_tokens_entry():
-    src = CHROME.read_text()
-    assert "tokens" in src.lower() or "API tokens" in src or "api_tokens" in src.lower()
+def test_admin_overlay_has_tokens_section():
+    src = ADMIN.read_text()
+    assert '"apikeys"' in src
 
 
-def test_app_routes_tokens():
-    src = APP.read_text()
-    assert "api-tokens" in src.lower() or "tokens" in src.lower()
+def test_the_admin_overlay_renders_the_tokens_page():
+    """The console has no route table: the overlay host IS the wiring."""
+    src = (Path(__file__).resolve().parents[2] / "ui" / "components"
+           / "console" / "nv-system.jsx").read_text()
+    assert "AT_ApiTokensPage" in src
+
+
+def test_extract_error_reads_extensions_not_detail():
+    """R5 fix (mirrors admin_users.jsx's ADM_extractError): envelope.detail
+    is always a STRING (primer/api/errors.py's _http_exception_handler),
+    never the {code, message} dict this used to check `typeof ... ===
+    "object"` against - code was always null."""
+    src = _src()
+    start = src.index("function AT_extractError(")
+    end = src.index("\n}", start)
+    body = src[start:end]
+    assert "env.extensions" in body
+    assert "env.detail" not in body

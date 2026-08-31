@@ -33,6 +33,10 @@ class PromptEnvelope:
     # Optional attribution context surfaced in channel gate posts.
     workspace_name: str | None = None
     session_label: str | None = None
+    # Platform thread this envelope must post into (S6 section 5). Set from
+    # the session's reply binding when the session is thread-mapped; None
+    # lets the adapter open or reuse its own per-session thread.
+    thread_anchor: str | None = None
 
 
 @dataclass
@@ -49,4 +53,13 @@ class ResponseEnvelope:
     platform_metadata: dict[str, Any] = field(default_factory=dict)
 
 
-__all__ = ["PromptEnvelope", "ResponseEnvelope"]
+RELAY_EVERY_TURN_KEY = "relay_every_turn"
+"""``WorkspaceSession.metadata`` flag: relay after EVERY drained turn.
+
+Set by the channel thread mapper when the source trigger is interactive
+(S6 section 4). Lives in core model so the worker turn loop reads it
+without importing the optional ``primer.channel`` package.
+"""
+
+
+__all__ = ["RELAY_EVERY_TURN_KEY", "PromptEnvelope", "ResponseEnvelope"]

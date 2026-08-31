@@ -118,7 +118,7 @@ The entities:
   registry the `web` toolset is built on).
 - `primer/api/app.py`: `_bootstrap_web_search` plus the lifespan wiring that
   constructs the registry, service, and toolset.
-- `ui/components/web_search.jsx`, `ui/app.jsx`: the `/web-search` console page.
+- `ui/components/provider-catalog.jsx`: the `web_search` class on the unified provider catalog's rail, reached at `#/providers?class=web_search`.
 
 ## 5. Data model
 
@@ -248,10 +248,11 @@ Agent-facing tools: the `web` internal toolset (`build_web_toolset`,
 that returns `{status, headers, body, truncated}` with the body capped at 1 MB by
 default).
 
-Console: a dedicated `/web-search` page (`ui/components/web_search.jsx`, routed in
-`ui/app.jsx`) renders the active-config card plus the providers CRUD table with
-built-in badge / Edit / Test / Delete affordances; the page detail lives in the
-UI-pages docs.
+Console: the `web_search` class on the unified provider catalog
+(`ui/components/provider-catalog.jsx`, reached at
+`#/providers?class=web_search`) renders the active-config panel plus the
+providers list, with the shared form's Test affordance and the catalog's
+delete action; the page detail lives in the UI-pages docs.
 
 Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
 `primer/web_search/__init__.py`), `WebSearchService`, and `WebSearchRegistry`.

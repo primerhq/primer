@@ -28,6 +28,7 @@ import pytest
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-03")
 
 
@@ -111,9 +112,7 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
     with _seeded_llm_provider(base_url, unique_suffix) as provider_id:
         agent_id = f"ag-{unique_suffix}"
         try:
-            page.goto(
-                console_url + "#/agents", wait_until="domcontentloaded",
-            )
+            open_legacy_route(page, console_url, "agents")
             page.locator("h1.page-title").first.wait_for(
                 state="visible", timeout=10_000,
             )
@@ -128,7 +127,9 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             #
             # Selector strategy: use the htmlFor/id pairs added to
             # NewAgentModal (na-id, na-description, na-model-profile,
-            # na-system-prompt, na-temperature). These are
+            # na-temperature - system prompt became a repeatable part
+            # list, platform wave P1b item 8, and dropped its single id
+            # in favor of per-index data-testids). These are
             # semantic IDs tied to the JSX, more stable than
             # get_by_label substring matches (which hit strict-mode
             # violations when labels share words). When the JSX
@@ -160,7 +161,7 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             # the agent id. We wait for both as separate observations
             # so a future spec change that decouples nav-and-title
             # gives a clearer failure.
-            page.wait_for_url(f"**/console/#/agents/{agent_id}", timeout=10_000)
+            wait_for_overlay_url(page, f"agents/{agent_id}", timeout=10_000)
             page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
                 state="visible", timeout=10_000,
             )
@@ -173,6 +174,12 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
 # ---------------------------------------------------------------------------
 
 
+# The known overlay-mount flake (original handoff known-issue #1) fired here
+# on 2026-08-29 CI (single victim, overlay never mounts, non-deterministic,
+# passes in isolation) - the same family test_mobile_modal_is_sheet.py marks
+# on its mobile params. The victim set moves between runs; extend this mark
+# to the next victim rather than blanket-marking the suite.
+@pytest.mark.flaky(reruns=2, reruns_delay=1)
 def test_u0007_new_agent_create_422_renders_inline_field_errors(
     page,
     base_url: str,
@@ -200,7 +207,7 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
     """
     with _seeded_llm_provider(base_url, unique_suffix) as provider_id:
         agent_id = f"ag-u0007-{unique_suffix}"
-        page.goto(console_url + "#/agents", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "agents")
         page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
 
         page.get_by_role("button", name="New agent").first.click()
@@ -223,22 +230,26 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
 
         modal.get_by_role("button", name="Create").click()
 
-        # Modal should STAY OPEN on 422 (a success would close it).
-        # Give the mutation a moment to settle before asserting.
-        page.wait_for_load_state("networkidle", timeout=10_000)
+        # An inline field-help error must appear somewhere in the modal
+        # body. The exact loc-key the server emits depends on which
+        # validator fires; we look for ANY field-help-red marker. The
+        # pattern in NewAgentModal is
+        # `<div className="field-help" style="color: var(--red)">`.
+        #
+        # Waited on FIRST, and with no networkidle before it: the shell
+        # polls for as long as it is mounted, so the network is never
+        # idle and that wait could only time out. This one settles on the
+        # thing the 422 actually produces, which also makes the
+        # still-open check below non-racy.
+        red_helps = modal.locator('.field-help[style*="--red"]')
+        red_helps.first.wait_for(state="visible", timeout=10_000)
+
+        # Modal STAYS OPEN on 422 (a success would close it).
         assert modal.is_visible(), (
             "modal should stay open on 422 so the operator can correct "
             "the field; closing means the contract collapsed into a "
             "happy-path or error-toast flow"
         )
-
-        # An inline field-help error must appear somewhere in the
-        # modal body. The exact loc-key the server emits depends on
-        # which validator fires; we look for ANY field-help-red marker
-        # that wasn't present before submit. The CSS pattern in
-        # NewAgentModal is `<div className="field-help" style="color: var(--red)">`.
-        red_helps = modal.locator('.field-help[style*="--red"]')
-        red_helps.first.wait_for(state="visible", timeout=5_000)
 
         # No error toast - 422 should NOT surface as a toast per spec §3.
         # Use a short wait_for absence; if a toast slipped through, this
@@ -301,10 +312,7 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
 
         try:
             # Land directly on the agent's detail page.
-            page.goto(
-                f"{console_url}#/agents/{agent_id}",
-                wait_until="domcontentloaded",
-            )
+            open_legacy_route(page, console_url, f"agents/{agent_id}")
             page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
                 state="visible", timeout=10_000,
             )
@@ -333,7 +341,7 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
             confirm.wait_for(state="hidden", timeout=10_000)
 
             # Navigates back to /agents (the UI's success path).
-            page.wait_for_url("**/console/#/agents", timeout=10_000)
+            wait_for_overlay_url(page, "agents", timeout=10_000)
             page.locator("h1.page-title").get_by_text("Agents").first.wait_for(
                 state="visible", timeout=5_000,
             )

@@ -113,8 +113,6 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
         create_body={
             "id": "kb-1",
             "description": "Knowledge base",
-            "embedder": {"provider_id": "hf-1", "model": "all-MiniLM-L6-v2"},
-            "search_provider_id": "ssp-1",
         },
     ),
     "model_profile": _EntityHint(
@@ -194,17 +192,8 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
         create_body={
             "id": "doc-1",
             "collection_id": "kb-1",
-            "name": "Onboarding guide",
+            "slug": "doc-1.md",
             "path": "doc-1.md",
-        },
-    ),
-    "agent_thread": _EntityHint(
-        sample_id="thread-1",
-        create_body={
-            "id": "thread-1",
-            "agent_id": "code-reviewer",
-            "created_at": "2026-01-01T00:00:00Z",
-            "last_activity_at": "2026-01-01T00:00:00Z",
         },
     ),
     "graph_thread": _EntityHint(
@@ -1037,23 +1026,29 @@ def _collection_extras(
         # Mirror POST /v1/collections/{id}/search (the console / SSP path):
         # vectorise the query with the collection's OWN embedder so query
         # and index vectors share dimensionality + metric, then run the
-        # similarity search against the collection's vector store, resolved
-        # via the collection's search_provider_id.
+        # similarity search against the collection's vector store.
         from primer.model.chat import TextPart
         from primer.model.except_ import BadRequestError
         from primer.search.run import run_collection_search
 
+        if coll.search is None:
+            return _err(
+                "semantic search is not enabled on this collection; grep "
+                "and the document tree remain available",
+                error_type="conflict",
+            )
+
         try:
             embedder = await provider_registry.get_embedder(
-                coll.embedder.provider_id
+                coll.search.embedder.provider_id
             )
             response = await embedder.embed(
-                model=coll.embedder.model,
+                model=coll.search.embedder.model,
                 inputs=[TextPart(text=args.query)],
             )
             vector = list(response.embeddings[0].vector)
             store = await semantic_search_registry.get_store(
-                coll.search_provider_id
+                coll.search.vector_store_provider_id
             )
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
@@ -1272,7 +1267,7 @@ def _document_service_factory(
     does not touch ``get_content_store`` / ``transaction`` until a document
     tool is actually invoked.
 
-    Mirrors :func:`primer.api.deps.get_document_service`: when a
+    Mirrors :func:`primer.api.deps.get_document_tree_service`: when a
     SemanticSearchRegistry is wired (search on) the service gets a
     best-effort indexer that re-embeds the body AFTER the atomic entity +
     content write commits, so a ``put_document`` into a search-on collection

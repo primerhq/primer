@@ -54,6 +54,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def update_unless(
+        self,
+        e,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(e.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {e.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[e.id] = e
+        return e
+
     async def delete(self, id):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
@@ -77,6 +93,11 @@ class _Storage:
 
 
 class _SP:
+    async def get_system_state(self):
+        from primer.model.system_state import SystemState
+
+        return SystemState()
+
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
 
@@ -120,7 +141,7 @@ class _FakeWorkspace:
         for p, content in self._files.items():
             if not p.startswith(prefix):
                 continue
-            tail = p[len(prefix):]
+            tail = p[len(prefix) :]
             if not recursive and "/" in tail:
                 continue
             out.append(
@@ -134,12 +155,10 @@ class _FakeWorkspace:
         for d in self._dirs:
             if not d.startswith(prefix) or d == path:
                 continue
-            tail = d[len(prefix):]
+            tail = d[len(prefix) :]
             if not tail or (not recursive and "/" in tail):
                 continue
-            out.append(
-                FileEntry(path=d, kind="dir", size_bytes=0, modified_at=now)
-            )
+            out.append(FileEntry(path=d, kind="dir", size_bytes=0, modified_at=now))
         return sorted(out, key=lambda fe: fe.path)
 
     async def file_info(self, path):
@@ -196,24 +215,20 @@ class _FakeWorkspace:
         if dst in self._files or dst in self._dirs:
             raise ConflictError(f"{dst!r} already exists")
         if is_dir and (dst == src or dst.startswith(src + "/")):
-            raise BadRequestError(
-                "cannot move a directory into itself or a descendant"
-            )
+            raise BadRequestError("cannot move a directory into itself or a descendant")
         if is_file:
             self._files[dst] = self._files.pop(src)
-            self._mtimes[dst] = self._mtimes.pop(
-                src, datetime.now(timezone.utc)
-            )
+            self._mtimes[dst] = self._mtimes.pop(src, datetime.now(timezone.utc))
             return
         # Directory: remap the dir entry and everything nested under it.
         for coll in (self._files, self._mtimes):
             for key in list(coll.keys()):
                 if key == src or key.startswith(src + "/"):
-                    coll[dst + key[len(src):]] = coll.pop(key)
+                    coll[dst + key[len(src) :]] = coll.pop(key)
         for d in list(self._dirs):
             if d == src or d.startswith(src + "/"):
                 self._dirs.discard(d)
-                self._dirs.add(dst + d[len(src):])
+                self._dirs.add(dst + d[len(src) :])
 
     async def aclose(self):
         return
@@ -501,9 +516,7 @@ class TestWritePrecondition:
         assert resp.status_code == 204
 
     @pytest.mark.asyncio
-    async def test_write_new_file_with_precondition_succeeds(
-        self, client, wsr
-    ) -> None:
+    async def test_write_new_file_with_precondition_succeeds(self, client, wsr) -> None:
         """Writing a brand-new file with If-Unmodified-Since must succeed (no conflict)."""
         wid, _ = await _setup(client, wsr)
         resp = await client.put(
@@ -555,12 +568,13 @@ class TestWritePrecondition:
         assert resp.status_code == 412
         body = resp.json()
         assert body["status"] == 412
-        assert "precondition" in body["type"].lower() or "precondition" in body["title"].lower()
+        assert (
+            "precondition" in body["type"].lower()
+            or "precondition" in body["title"].lower()
+        )
 
     @pytest.mark.asyncio
-    async def test_write_if_unmodified_since_future_succeeds(
-        self, client, wsr
-    ) -> None:
+    async def test_write_if_unmodified_since_future_succeeds(self, client, wsr) -> None:
         """If-Unmodified-Since with a far-future date → file mtime is older → no conflict."""
         wid, _ = await _setup(client, wsr)
         await client.put(
@@ -577,9 +591,7 @@ class TestWritePrecondition:
         assert resp.status_code == 204
 
     @pytest.mark.asyncio
-    async def test_write_if_unmodified_since_past_412(
-        self, client, wsr
-    ) -> None:
+    async def test_write_if_unmodified_since_past_412(self, client, wsr) -> None:
         """If-Unmodified-Since with a past date → file mtime is newer → 412."""
         wid, _ = await _setup(client, wsr)
         await client.put(
@@ -615,9 +627,7 @@ class TestWritePrecondition:
         assert resp.status_code == 204
 
     @pytest.mark.asyncio
-    async def test_write_etag_takes_precedence_over_header(
-        self, client, wsr
-    ) -> None:
+    async def test_write_etag_takes_precedence_over_header(self, client, wsr) -> None:
         """When both etag and If-Unmodified-Since are supplied, etag wins."""
         wid, _ = await _setup(client, wsr)
         await client.put(
@@ -706,9 +716,7 @@ class TestWatchWakeOnWrite:
     @pytest.mark.asyncio
     async def test_matching_write_wakes_park(self, client, wsr, app) -> None:
         wid, _ = await _setup(client, wsr)
-        _park_watch_session(
-            app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1"
-        )
+        _park_watch_session(app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1")
         published: list = []
         orig = app.state.event_bus.publish
 
@@ -732,9 +740,7 @@ class TestWatchWakeOnWrite:
     @pytest.mark.asyncio
     async def test_non_matching_write_no_wake(self, client, wsr, app) -> None:
         wid, _ = await _setup(client, wsr)
-        _park_watch_session(
-            app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1"
-        )
+        _park_watch_session(app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1")
         published: list = []
         orig = app.state.event_bus.publish
 
@@ -753,14 +759,10 @@ class TestWatchWakeOnWrite:
         assert [p for p in published if p[0] == "watch:s1:tc1"] == []
 
     @pytest.mark.asyncio
-    async def test_write_succeeds_when_wake_raises(
-        self, client, wsr, app
-    ) -> None:
+    async def test_write_succeeds_when_wake_raises(self, client, wsr, app) -> None:
         """The wake is best-effort: a publish error must not fail the write."""
         wid, _ = await _setup(client, wsr)
-        _park_watch_session(
-            app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1"
-        )
+        _park_watch_session(app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1")
 
         async def _boom(event_key, payload=None):
             raise RuntimeError("bus exploded")
@@ -858,9 +860,7 @@ class TestFileMove:
         assert resp.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_move_renames_directory_with_children(
-        self, client, wsr
-    ) -> None:
+    async def test_move_renames_directory_with_children(self, client, wsr) -> None:
         wid, ws = await _setup(client, wsr)
         ws._dirs.add("old")
         ws._files["old/a.txt"] = b"a"

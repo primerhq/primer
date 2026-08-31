@@ -21,15 +21,14 @@ from primer.trigger.payload import PayloadTemplateError, render_payload
 from primer.trigger.sources import get_source
 from primer.trigger.subscribers import DispatchDeps, get_dispatcher
 
-# Import the four dispatcher modules so their register() calls run at
+# Import the dispatcher modules so their register() calls run at
 # import time. Without these imports, ``get_dispatcher`` raises KeyError
 # for every kind because nothing else in this module's import chain
 # pulls the dispatcher implementations.
-from primer.trigger.subscribers import chat_message as _cm  # noqa: F401
 from primer.trigger.subscribers import agent_fresh_session as _afs  # noqa: F401
 from primer.trigger.subscribers import graph_fresh_session as _gfs  # noqa: F401
 from primer.trigger.subscribers import parked_session as _ps  # noqa: F401
-from primer.trigger.subscribers import start_chat as _sc  # noqa: F401
+from primer.trigger.subscribers import session_append as _sa  # noqa: F401
 
 
 logger = logging.getLogger(__name__)
@@ -104,6 +103,22 @@ async def fire_trigger(
             trigger.id, fire_id,
         )
         return FireResult(skipped=True, fire_id=fire_id)
+
+    from primer.events.recorder import recorder_for
+
+    await recorder_for(deps.storage_provider).emit(
+        "trigger.fired",
+        actor=f"trigger:{trigger.id}",
+        entity_kind="trigger",
+        entity_id=trigger.id,
+        payload={
+            "fire_id": fire_id,
+            "kind": str(trigger.config.kind),
+            "scheduled_for": (
+                scheduled_for.isoformat() if scheduled_for else None
+            ),
+        },
+    )
 
     subs_storage = deps.storage_provider.get_storage(Subscription)
     q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger.id)

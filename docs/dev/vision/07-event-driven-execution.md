@@ -84,9 +84,9 @@ answers, the resume hook receives `{"response": {"decision": "ship"}}`; on timeo
 receives `{"timed_out": true, ...}`, and on cancel `{"cancelled": true, ...}`. Because the
 wait is an event rather than a held connection, the answer can arrive through whatever
 channel the human is actually on. The outbound and inbound bridging to Slack, Telegram,
-and Discord is in [channels](../subsystems/channels.md), and the chat surface itself
-reuses the very same park-and-resume machinery rather than being a special case, in
-[chats](../subsystems/chats.md).
+and Discord is in [channels](../subsystems/channels.md), where a platform thread IS a
+session and so reuses the very same park-and-resume machinery rather than being a
+special case.
 
 ## Triggers: waiting on a schedule or an event
 

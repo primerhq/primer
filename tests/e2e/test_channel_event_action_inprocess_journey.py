@@ -93,11 +93,26 @@ class _FakeScheduler:
 
 class _NoopWorkspace:
     """Live-workspace stub: start_session is a no-op (the channel flow only
-    needs the on-disk slot allocation call to succeed, not to persist)."""
+    needs the on-disk slot allocation call to succeed, not to persist).
+
+    Also satisfies primer.session.persistence.WorkspaceIO (5e4f8c39):
+    start_workspace_session now writes the initial USER_INPUT record via
+    a WorkspaceMessageWriter against this same live_workspace object at
+    session-CREATE time (not just first-turn time), so append_message_line
+    must exist too - a no-op, matching start_session's own "not to
+    persist" contract."""
 
     async def start_session(
         self, binding: Any, *, id: str,
         instructions: Any = None, parent_session_id: Any = None, name: Any = None,
+    ) -> None:
+        return None
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        return None
+
+    async def append_state_line(
+        self, workspace_id: str, relative_path: str, line: bytes,
     ) -> None:
         return None
 
@@ -151,7 +166,7 @@ async def _seed_channel(p) -> Channel:
         provider=ChannelProviderType.TELEGRAM,
         external_id="555",
         config=TelegramChannelConfig(
-            chats={"enabled": False, "default_agent": None},
+            chats={"enabled": False},
         ),
     )
     await p.get_storage(Channel).create(ch)

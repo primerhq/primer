@@ -59,15 +59,7 @@ async def app(
         storage_provider=storage,  # type: ignore[arg-type]
         provider_registry=registry,
     )
-    forwarder = await _app.state.start_chat_tick_forwarder()
-    try:
-        yield _app
-    finally:
-        forwarder.cancel()
-        try:
-            await forwarder
-        except asyncio.CancelledError:
-            pass
+    yield _app
 
 
 @pytest_asyncio.fixture

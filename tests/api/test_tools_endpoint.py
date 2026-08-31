@@ -31,6 +31,37 @@ async def test_list_tools_returns_flat_list(client) -> None:
         assert "description" in item
         assert "input_schema" in item
         assert isinstance(item["input_schema"], dict)
+        # y/w/r/n capability badges (primer.model.chat.Tool.yields /
+        # .requires_workspace / .tool_class / .required_role) -- excluded
+        # from Tool's own wire serialisation but re-added explicitly here.
+        assert isinstance(item["yields"], bool)
+        assert isinstance(item["requires_workspace"], bool)
+        assert item["tool_class"] in ("standard", "notifying")
+        assert item["required_role"] is None or isinstance(
+            item["required_role"], str
+        )
+
+
+@pytest.mark.asyncio
+async def test_catalogue_badges_reflect_tool_metadata(client) -> None:
+    """The badges are not just present -- they carry each tool's real
+    metadata, matching what ``make_tool`` declared at the call site."""
+    resp = await client.get("/v1/tools/catalogue")
+    assert resp.status_code == 200, resp.text
+    by_id = {item["id"]: item for item in resp.json()["items"]}
+
+    # ask_user: yielding, ordinary (no workspace requirement).
+    ask_user = by_id["system__ask_user"]
+    assert ask_user["yields"] is True
+    assert ask_user["requires_workspace"] is False
+
+    # wait_for_event: yielding AND workspace-only.
+    wait_for_event = by_id["system__wait_for_event"]
+    assert wait_for_event["yields"] is True
+    assert wait_for_event["requires_workspace"] is True
+
+    # Not every tool yields -- the flag must vary, not be hardcoded True.
+    assert any(not item["yields"] for item in by_id.values())
 
 
 @pytest.mark.asyncio

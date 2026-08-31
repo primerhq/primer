@@ -77,7 +77,7 @@ def test_workspace_channels_tab_shows_reply_binding_label(
     association").
 
     Re-pointed to the Studio: the old ``?tab=channels`` workspace-detail
-    tab moved into the Settings modal (studio-settings.jsx →
+    tab moved into the workspace's own tabs (the workspaces overlay →
     ``workspace-settings-nav:channels``), which renders the SAME
     WS_ChannelsTab, so the label/absence assertions are unchanged.
     """

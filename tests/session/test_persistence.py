@@ -198,7 +198,7 @@ def test_translate_text_delta_coalesces() -> None:
     assert isinstance(rec3, list)
     assert len(rec3) == 2
     assert rec3[0].kind == SessionMessageKind.ASSISTANT_TOKEN
-    assert rec3[0].payload == {"text": "hello world"}
+    assert rec3[0].payload == {"text": "hello world", "part_id": "x:text:0"}
     assert rec3[1].kind == SessionMessageKind.DONE
 
 
@@ -301,6 +301,40 @@ def test_translate_executor_tool_result() -> None:
     assert isinstance(rec, SessionMessageRecord)
     assert rec.kind == SessionMessageKind.TOOL_RESULT
     assert rec.payload.get("call_id") == "tc1"
+
+
+def test_translate_executor_tool_result_carries_metadata() -> None:
+    """UX reconcile wave 5: the last of three drop points on this path
+    (ToolResultPart -> _ExecutorToolResult -> here) - a workspace tool's
+    own extra data (grep's match_count/file_count, ...) now survives
+    into the persisted record instead of being silently dropped."""
+    from primer.model.chat import ExtendedEvent, _ExecutorToolResult
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    event = ExtendedEvent(
+        extended=_ExecutorToolResult(
+            call_id="tc1", output="a.py\nb.py", error=False,
+            metadata={"match_count": 3, "file_count": 2},
+        )
+    )
+    rec = translate_stream_event(event, state)
+    assert rec.payload.get("metadata") == {"match_count": 3, "file_count": 2}
+
+
+def test_translate_executor_tool_result_metadata_defaults_to_none() -> None:
+    """Additive and defensive: the overwhelming majority of tool
+    results never set metadata, so this must not turn into a payload
+    full of empty {} noise."""
+    from primer.model.chat import ExtendedEvent, _ExecutorToolResult
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    event = ExtendedEvent(
+        extended=_ExecutorToolResult(call_id="tc1", output="result text", error=False)
+    )
+    rec = translate_stream_event(event, state)
+    assert rec.payload.get("metadata") is None
 
 
 def test_translate_error() -> None:
@@ -440,7 +474,7 @@ def test_translate_wrapped_node_text_then_done_carries_node_id() -> None:
     assert isinstance(r3, list)
     assert len(r3) == 2
     assert r3[0].kind == SessionMessageKind.ASSISTANT_TOKEN
-    assert r3[0].payload == {"text": "hi there"}
+    assert r3[0].payload == {"text": "hi there", "part_id": "n1:text:0"}
     assert r3[0].node_id == "n1"
     assert r3[1].kind == SessionMessageKind.DONE
     assert r3[1].node_id == "n1"
@@ -603,10 +637,46 @@ def test_agent_only_path_unchanged_node_id_none() -> None:
     result = translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state)
     assert isinstance(result, list)
     assert result[0].kind == SessionMessageKind.ASSISTANT_TOKEN
-    assert result[0].payload == {"text": "hello world"}
+    assert result[0].payload == {"text": "hello world", "part_id": "x:text:0"}
     assert result[0].node_id is None
     assert result[1].kind == SessionMessageKind.DONE
     assert result[1].node_id is None
+
+
+def test_part_id_is_scoped_by_turn_so_a_second_turn_never_collides_with_the_first() -> None:
+    """01a04e02: two SEPARATE turns (fresh _CoalesceState each, mirroring
+    dispatch.run_one_session_turn's per-turn coalesce state - the two
+    turns never share state, only the SAME session/node/kind) must
+    produce DIFFERENT part_id values for their text part on the same
+    node. Before this fix, part_id(node_id, kind) had no turn_no at all,
+    so turn 2's assistant_token record would carry the EXACT same
+    part_id as turn 1's - harmless on the backend (session-store.js is
+    the one component that keeps a part alive across turns, see its own
+    test), but a footgun waiting for the next consumer to trip over."""
+    from primer.model.chat import Done, TextDelta
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    turn1_state = _CoalesceState()
+    translate_stream_event(TextDelta(text="first turn", index=0), turn1_state, turn_no=1)
+    turn1_result = translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), turn1_state, turn_no=1,
+    )
+    turn1_token = next(
+        r for r in turn1_result if r.kind == SessionMessageKind.ASSISTANT_TOKEN
+    )
+
+    turn2_state = _CoalesceState()
+    translate_stream_event(TextDelta(text="second turn", index=0), turn2_state, turn_no=2)
+    turn2_result = translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), turn2_state, turn_no=2,
+    )
+    turn2_token = next(
+        r for r in turn2_result if r.kind == SessionMessageKind.ASSISTANT_TOKEN
+    )
+
+    assert turn1_token.payload["part_id"] == "x:text:1"
+    assert turn2_token.payload["part_id"] == "x:text:2"
+    assert turn1_token.payload["part_id"] != turn2_token.payload["part_id"]
 
 
 def test_wrapped_node_unreconstructable_inner_is_dropped() -> None:
@@ -673,3 +743,52 @@ def test_graph_end_output_record_carries_node_id() -> None:
     assert rec.kind == SessionMessageKind.ASSISTANT_TOKEN
     assert rec.node_id == "end1"
     assert rec.payload["end_node_id"] == "end1"
+
+
+def test_translate_reasoning_delta_coalesces_and_flushes_before_text() -> None:
+    """ReasoningDeltas coalesce; Done flushes thought BEFORE the answer.
+
+    Until 2026-08-25 ReasoningDelta was silently dropped, so thinking
+    never reached the transcript at all.
+    """
+    from primer.model.chat import Done, ReasoningDelta, TextDelta
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    assert translate_stream_event(
+        ReasoningDelta(text="let me ", index=0), state) is None
+    assert translate_stream_event(
+        ReasoningDelta(text="think", index=0), state) is None
+    assert translate_stream_event(
+        TextDelta(text="the answer", index=0), state) is None
+    result = translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), state)
+
+    assert isinstance(result, list)
+    assert [r.kind for r in result] == [
+        SessionMessageKind.REASONING,
+        SessionMessageKind.ASSISTANT_TOKEN,
+        SessionMessageKind.DONE,
+    ]
+    assert result[0].payload == {"text": "let me think", "part_id": "x:reasoning:0"}
+    assert result[1].payload == {"text": "the answer", "part_id": "x:text:0"}
+    # Done cleared the buffer: a stray second Done replays nothing.
+    assert state.reasoning_buffers == {}
+
+
+def test_translate_tool_call_end_flushes_reasoning_first() -> None:
+    """ToolCallEnd orders thought -> buffered text -> the tool call."""
+    from primer.model.chat import ReasoningDelta, ToolCallEnd
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(ReasoningDelta(text="need a file", index=0), state)
+    result = translate_stream_event(
+        ToolCallEnd(id="call_0", arguments={"path": "x"}, index=0), state)
+
+    assert isinstance(result, list)
+    assert [r.kind for r in result] == [
+        SessionMessageKind.REASONING,
+        SessionMessageKind.TOOL_CALL,
+    ]
+    assert result[0].payload == {"text": "need a file", "part_id": "x:reasoning:0"}

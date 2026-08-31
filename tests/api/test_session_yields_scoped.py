@@ -114,6 +114,39 @@ async def test_session_scoped_pending_yields_empty_when_running(running_session_
     assert resp.json()["items"] == []
 
 
+async def test_session_scoped_response_schema_is_returned(client, app, fake_storage_provider):
+    """UX reconcile wave 5: same response_schema passthrough as the
+    aggregate route (test_workspace_yields_pending.py) - this scoped
+    variant hand-built its own resume_metadata dict independently and
+    had the identical gap."""
+    from primer.model.workspace_session import SessionStatus
+
+    wid, sid = "ws-yields-scoped-schema", "s-parked-schema"
+    await _seed_session(
+        fake_storage_provider,
+        sid=sid,
+        wid=wid,
+        status=SessionStatus.WAITING,
+        parked_status="parked",
+        parked_at=_now(),
+        parked_state={
+            "tool_call_id": "tcid-ask-2",
+            "yielded": {
+                "tool_name": "ask_user",
+                "event_key": f"ask_user:{sid}:tcid-ask-2",
+                "resume_metadata": {
+                    "prompt": "Which currency?",
+                    "response_schema": {"enum": ["USD", "EUR"]},
+                },
+            },
+        },
+    )
+    resp = await client.get(f"/v1/workspaces/{wid}/sessions/{sid}/yields/pending")
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["items"][0]
+    assert item["resume_metadata"]["response_schema"] == {"enum": ["USD", "EUR"]}
+
+
 async def test_session_scoped_pending_yields_404_for_wrong_workspace(parked_session_client):
     """A session id that exists but belongs to a different workspace 404s."""
     client, ctx = parked_session_client

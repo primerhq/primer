@@ -1,16 +1,22 @@
-"""Unit tests for the Collection / CollectionSearch / MmrConfig / CollectionCrossEncoder models."""
+"""Unit tests for Collection / CollectionSearchConfig and the surviving
+retrieval knob, CollectionCrossEncoder.
+
+S2 removed CollectionSearch and MmrConfig outright. The classes that
+covered them went with them; what is left is the Collection fields that
+still exist plus the cross-encoder config.
+"""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from primer.model.collection import Collection, CollectionEmbedder
-from primer.model.search import (
-    CollectionCrossEncoder,
-    CollectionSearch,
-    MmrConfig,
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
 )
+from primer.model.search import CollectionCrossEncoder
 
 
 # ===========================================================================
@@ -20,125 +26,35 @@ from primer.model.search import (
 
 class TestCollectionSearchField:
     def test_search_defaults_to_none(self) -> None:
-        c = Collection(
-            id="c1",
-            description="t",
-            embedder=CollectionEmbedder(provider_id="p", model="m"),
-            search_provider_id="ssp-test",
-        )
+        c = Collection(id="c1", description="t")
         assert c.search is None
 
     def test_round_trip_with_search_none(self) -> None:
-        original = Collection(
-            id="c1",
-            description="t",
-            embedder=CollectionEmbedder(provider_id="p", model="m"),
-            search_provider_id="ssp-test",
-        )
+        original = Collection(id="c1", description="t")
         data = original.model_dump()
         assert data["search"] is None
-        rehydrated = Collection.model_validate(data)
-        assert rehydrated.search is None
+        assert Collection.model_validate(data).search is None
 
-    def test_round_trip_with_mmr(self) -> None:
+    def test_round_trip_with_a_search_block(self) -> None:
         original = Collection(
             id="c1",
             description="t",
-            embedder=CollectionEmbedder(provider_id="p", model="m"),
-            search_provider_id="ssp-test",
-            search=CollectionSearch(mmr=MmrConfig(lambda_mult=0.7, fetch_k=40)),
-        )
-        rehydrated = Collection.model_validate(original.model_dump())
-        assert rehydrated.search is not None
-        assert rehydrated.search.mmr is not None
-        assert rehydrated.search.mmr.lambda_mult == 0.7
-        assert rehydrated.search.mmr.fetch_k == 40
-        assert rehydrated.search.cer is None
-
-    def test_round_trip_with_cer(self) -> None:
-        original = Collection(
-            id="c1",
-            description="t",
-            embedder=CollectionEmbedder(provider_id="p", model="m"),
-            search_provider_id="ssp-test",
-            search=CollectionSearch(
-                cer=CollectionCrossEncoder(
-                    provider_id="ce",
-                    model="BAAI/bge-reranker-v2-m3",
-                    top_n=50,
-                    batch_size=16,
-                ),
+            search=CollectionSearchConfig(
+                embedder=CollectionEmbedder(provider_id="p", model="m"),
+                vector_store_provider_id="ssp-test",
             ),
         )
         rehydrated = Collection.model_validate(original.model_dump())
         assert rehydrated.search is not None
-        assert rehydrated.search.cer is not None
-        assert rehydrated.search.cer.provider_id == "ce"
-        assert rehydrated.search.cer.top_n == 50
-        assert rehydrated.search.cer.batch_size == 16
-        assert rehydrated.search.mmr is None
-
-    def test_round_trip_with_both(self) -> None:
-        original = Collection(
-            id="c1",
-            description="t",
-            embedder=CollectionEmbedder(provider_id="p", model="m"),
-            search_provider_id="ssp-test",
-            search=CollectionSearch(
-                mmr=MmrConfig(),
-                cer=CollectionCrossEncoder(provider_id="ce", model="m"),
-            ),
-        )
-        rehydrated = Collection.model_validate(original.model_dump())
-        assert rehydrated.search is not None
-        assert rehydrated.search.mmr is not None
-        assert rehydrated.search.cer is not None
+        assert rehydrated.search.vector_store_provider_id == "ssp-test"
+        assert rehydrated.search.state == "indexing"
 
     def test_legacy_collection_json_without_search_field_loads(self) -> None:
-        """Backwards compatibility: existing JSON that predates the field
-        deserialises cleanly because the field defaults to None."""
-        legacy = {
-            "id": "c1",
-            "description": "t",
-            "embedder": {"provider_id": "p", "model": "m"},
-            "search_provider_id": "ssp-test",
-            # NB: no "search" key.
-        }
+        """Backwards compatibility: JSON predating the field deserialises
+        cleanly because the field defaults to None."""
+        legacy = {"id": "c1", "description": "t"}
         c = Collection.model_validate(legacy)
         assert c.search is None
-
-
-# ===========================================================================
-# MmrConfig defaults + validation
-# ===========================================================================
-
-
-class TestMmrConfig:
-    def test_defaults(self) -> None:
-        cfg = MmrConfig()
-        assert cfg.lambda_mult == 0.5
-        assert cfg.fetch_k is None
-
-    def test_lambda_mult_lower_bound(self) -> None:
-        with pytest.raises(ValidationError):
-            MmrConfig(lambda_mult=-0.1)
-
-    def test_lambda_mult_upper_bound(self) -> None:
-        with pytest.raises(ValidationError):
-            MmrConfig(lambda_mult=1.1)
-
-    def test_lambda_mult_zero_and_one_allowed(self) -> None:
-        # Boundaries are inclusive (ge=0, le=1).
-        assert MmrConfig(lambda_mult=0.0).lambda_mult == 0.0
-        assert MmrConfig(lambda_mult=1.0).lambda_mult == 1.0
-
-    def test_fetch_k_must_be_positive_when_set(self) -> None:
-        with pytest.raises(ValidationError):
-            MmrConfig(fetch_k=0)
-        with pytest.raises(ValidationError):
-            MmrConfig(fetch_k=-3)
-
-
 # ===========================================================================
 # CollectionCrossEncoder defaults + validation
 # ===========================================================================
@@ -168,39 +84,20 @@ class TestCollectionCrossEncoder:
 
 
 # ===========================================================================
-# CollectionSearch defaults
-# ===========================================================================
-
-
-class TestCollectionSearch:
-    def test_both_optional(self) -> None:
-        s = CollectionSearch()
-        assert s.mmr is None
-        assert s.cer is None
-
-
-# ===========================================================================
 # Collection.system flag
 # ===========================================================================
 
 
 class TestCollectionSystemFlag:
     def test_system_defaults_to_false(self) -> None:
-        c = Collection(
-            id="c1",
-            description="t",
-            embedder=CollectionEmbedder(provider_id="p", model="m"),
-            search_provider_id="ssp-1",
-        )
+        c = Collection(id="c1", description="t")
         assert c.system is False
 
     def test_system_true_round_trips(self) -> None:
         original = Collection(
             id="_catalog_agents",
             description="System collection",
-            embedder=CollectionEmbedder(provider_id="p", model="m"),
             system=True,
-            search_provider_id="ssp-1",
         )
         rehydrated = Collection.model_validate(original.model_dump())
         assert rehydrated.system is True
@@ -208,52 +105,7 @@ class TestCollectionSystemFlag:
     def test_legacy_json_without_system_field_loads_as_user(self) -> None:
         # Backwards compatibility: JSON predating the field deserialises
         # cleanly with system=False (treated as a normal user collection).
-        legacy = {
-            "id": "c1",
-            "description": "t",
-            "embedder": {"provider_id": "p", "model": "m"},
-            "search_provider_id": "ssp-test",
-            # NB: no "system" key, no "search" key.
-        }
+        legacy = {"id": "c1", "description": "t"}  # no system/search keys
         c = Collection.model_validate(legacy)
         assert c.system is False
         assert c.search is None
-
-
-# ===========================================================================
-# Collection.search_provider_id (required, immutable)
-# ===========================================================================
-
-
-class TestCollectionSearchProviderId:
-    def test_collection_requires_search_provider_id(self) -> None:
-        """Missing search_provider_id must raise ValidationError."""
-        with pytest.raises(ValidationError):
-            Collection(
-                id="c1",
-                description="missing ssp",
-                embedder=CollectionEmbedder(
-                    provider_id="emb-1", model="text-embedding-3",
-                ),
-                # NO search_provider_id
-            )
-
-    def test_collection_with_search_provider_id_constructs(self) -> None:
-        """Collection with search_provider_id must construct successfully."""
-        c = Collection(
-            id="c1",
-            description="ok",
-            embedder=CollectionEmbedder(provider_id="emb-1", model="text-embedding-3"),
-            search_provider_id="ssp-1",
-        )
-        assert c.search_provider_id == "ssp-1"
-
-    def test_collection_search_provider_id_min_length_one(self) -> None:
-        """Empty search_provider_id must raise ValidationError."""
-        with pytest.raises(ValidationError):
-            Collection(
-                id="c1",
-                description="empty ssp id",
-                embedder=CollectionEmbedder(provider_id="emb-1", model="text-embedding-3"),
-                search_provider_id="",
-            )

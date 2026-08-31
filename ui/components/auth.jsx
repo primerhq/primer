@@ -21,7 +21,7 @@ function AuthGate({ children }) {
         const r = await window.primerApi.apiFetch("GET", "/auth/status", null, {});
         if (!cancelled) setStatus(r);
       } catch {
-        if (!cancelled) setStatus({ has_user: false, authenticated: false });
+        if (!cancelled) setStatus({ has_user: false, authenticated: false, setup_complete: false, setup_missing: [] });
       }
     })();
     return () => { cancelled = true; };
@@ -43,6 +43,15 @@ function AuthGate({ children }) {
     // Restricted users are authenticated but have no console access yet.
     if (status.role === "restricted") {
       return <ADM_PendingAccessScreen username={status.username} />;
+    }
+    // Bootstrap wizard: this install is not configured yet. Admins get the
+    // wizard, everyone else waits. Keyed on the setup fact, never on users,
+    // so auth-disabled mode (synthetic admin) works unchanged.
+    if (status.setup_complete === false) {
+      if (status.role === "admin") {
+        return <window.SetupWizardGate onDone={() => window.location.reload()} />;
+      }
+      return <window.SetupWaitingScreen username={status.username} />;
     }
     return children;
   }

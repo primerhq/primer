@@ -353,7 +353,7 @@ TOOL_CREATE_SUB = make_tool(
     when=(
         "Use when attaching a delivery to a trigger. ``config`` is the "
         "subscription-kind discriminated union "
-        "(chat_message / agent_fresh_session / graph_fresh_session). Subs "
+        "(agent_fresh_session / graph_fresh_session / session_append). Subs "
         "of kind ``parked_session`` are rejected with "
         "``type=parked_session_only_from_yield`` (only the "
         "``subscribe_to_trigger`` yielding tool may create those)."

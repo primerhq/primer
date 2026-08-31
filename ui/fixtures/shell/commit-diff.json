@@ -1,0 +1,14 @@
+{
+  "sha": "9c1f2ab",
+  "subject": "sess-4f1a2b3c: add webhook handler",
+  "committed_at": "2026-08-16T09:40:40+00:00",
+  "files": [
+    {
+      "path": "src/api.ts",
+      "additions": 12,
+      "deletions": 2,
+      "binary": false,
+      "patch": "@@ -1,4 +1,14 @@\n-export function handleWebhook() {\n+export function handleWebhook(req: Request): Response {\n+  const sig = req.headers.get(\"stripe-signature\");\n+  if (!sig) return new Response(\"missing signature\", { status: 400 });\n+  return new Response(\"ok\");\n }\n"
+    }
+  ]
+}

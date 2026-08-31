@@ -93,6 +93,14 @@ from primer.model.providers.secret import (  # noqa: F401
     SecretProviderConfig,
     SecretProviderType,
 )
+from primer.model.providers.speech import (  # noqa: F401
+    SpeechToTextConfig,
+    SpeechToTextProvider,
+    SpeechToTextProviderType,
+    TextToSpeechConfig,
+    TextToSpeechProvider,
+    TextToSpeechProviderType,
+)
 from primer.model.providers.storage import (  # noqa: F401
     PoolConfig,
     PostgresConfig,
@@ -169,10 +177,16 @@ __all__ = [
     "SecretProviderType",
     "SemanticSearchProvider",
     "SemanticSearchProviderType",
+    "SpeechToTextConfig",
+    "SpeechToTextProvider",
+    "SpeechToTextProviderType",
     "SqliteConfig",
     "StdioConfig",
     "StorageProviderConfig",
     "StorageProviderType",
+    "TextToSpeechConfig",
+    "TextToSpeechProvider",
+    "TextToSpeechProviderType",
     "Toolset",
     "ToolsetProviderType",
     "TransportType",

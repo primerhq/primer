@@ -56,7 +56,9 @@ def test_selected_filter_chip_rendered_next_to_the_search_input() -> None:
     assert 'data-testid="agent-tool-filter"' in modal
     search_idx = modal.index('data-testid="agent-tool-filter"')
     chip_idx = modal.index('data-testid="agent-tool-filter-selected"')
-    counter_idx = modal.index("{selectedCount} of {totalAvailable} selected")
+    # RETARGET (platform wave P1b item 4): "N of M selected" restyled as
+    # a "selected · N of M" counter chip per the reference.
+    counter_idx = modal.index("selected · {selectedCount} of {totalAvailable}")
     # Chip sits between the search box and the "N of M selected" counter.
     assert search_idx < chip_idx < counter_idx
     assert "onClick={() => setShowSelectedOnly((v) => !v)}" in modal

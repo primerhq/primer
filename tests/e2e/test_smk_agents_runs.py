@@ -14,7 +14,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 
@@ -34,8 +34,8 @@ async def test_single_turn_run_on_workspace(authed_client, mock_llm, unique_suff
         authed_client, workspace_id=wid, agent_id=agent["agent_id"],
         instructions="say the magic words",
     )
-    final = await wait_terminal(authed_client, sid)
-    assert final.get("status") == "ended", final
+    final = await wait_completed(authed_client, sid)
+    assert final.get("session_state") == "parked", final
     # the turn ran to completion via the scripted LLM
     tl = await authed_client.get(f"/v1/sessions/{sid}/turn_log")
     assert tl.status_code == 200, tl.text
@@ -67,8 +67,8 @@ async def test_tool_dispatch_within_a_turn(authed_client, mock_llm, unique_suffi
         authed_client, workspace_id=wid, agent_id=agent["agent_id"],
         instructions="use the tool",
     )
-    final = await wait_terminal(authed_client, sid)
-    assert final.get("status") == "ended", final
+    final = await wait_completed(authed_client, sid)
+    assert final.get("session_state") == "parked", final
     reqs = [r for r in registry.requests if r.get("model") == scenario]
     offered = {t["function"]["name"] for r in reqs for t in r.get("tools", [])}
     assert "misc__uuid_v4" in offered  # the tool was wired into the turn
@@ -83,7 +83,7 @@ async def test_session_turn_log_endpoint(authed_client, mock_llm, unique_suffix,
     )
     wid = await make_local_workspace(authed_client, suffix=unique_suffix, root=tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    await wait_terminal(authed_client, sid)
+    await wait_completed(authed_client, sid)
     tl = await authed_client.get(f"/v1/sessions/{sid}/turn_log")
     assert tl.status_code == 200, tl.text
     body = tl.json()
@@ -104,7 +104,7 @@ async def test_structured_output_response_format(authed_client, mock_llm, unique
     )
     wid = await make_local_workspace(authed_client, suffix=unique_suffix, root=tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    final = await wait_terminal(authed_client, sid)
-    assert final.get("status") == "ended", final
+    final = await wait_completed(authed_client, sid)
+    assert final.get("session_state") == "parked", final
     tl = await authed_client.get(f"/v1/sessions/{sid}/turn_log")
     assert any(i.get("finish_reason") == "stop" for i in tl.json()["items"])

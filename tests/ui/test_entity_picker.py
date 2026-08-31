@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 PICKER = UI / "components" / "shared" / "entity-picker.jsx"
 NEW_SESSION = UI / "components" / "new-session-form.jsx"
-CHATS = UI / "components" / "chats.jsx"
 INDEX = UI / "index.html"
 
 
@@ -28,10 +27,6 @@ def _picker_src() -> str:
 
 def _new_session_src() -> str:
     return NEW_SESSION.read_text(encoding="utf-8")
-
-
-def _chats_src() -> str:
-    return CHATS.read_text(encoding="utf-8")
 
 
 # ---- The component exists + is defined -------------------------------------
@@ -105,7 +100,7 @@ def test_loads_after_pager_before_consumers() -> None:
     picker_at = order.index("components/shared/entity-picker.jsx")
     assert picker_at > order.index("components/shared.jsx")
     assert picker_at > order.index("components/shared/pager.jsx")
-    for consumer in ("components/new-session-form.jsx", "components/chats.jsx"):
+    for consumer in ("components/new-session-form.jsx",):
         assert order.index(consumer) > picker_at, f"{consumer} loads before entity-picker.jsx"
 
 
@@ -141,19 +136,6 @@ def test_new_session_form_still_resolves_selected_graph_for_begin_schema() -> No
     assert "input_schema" in src and "graph_input" in src
 
 
-# ---- chats.jsx "New chat" creator wires the same picker --------------------
-
-
-def test_new_chat_modal_uses_entity_picker() -> None:
-    src = _chats_src()
-    start = src.index("function CT_NewChatModal(")
-    end = src.index("\nfunction ", start + 1)
-    block = src[start:end]
-    assert "<EntityPicker" in block
-    assert 'path="/agents"' in block
-    assert "<select" not in block, "New chat agent binding should use EntityPicker, not a bare <select>"
-
-
 # ---- Transpile checks -------------------------------------------------------
 
 
@@ -170,14 +152,6 @@ def test_new_session_form_jsx_transpiles() -> None:
 
     b = JSXBundler(ui_dir=UI, babel_source=(UI / "vendor" / "babel.min.js").read_text())
     code = b._transform(_new_session_src(), "components/new-session-form.jsx")
-    assert code and "EntityPicker" in code
-
-
-def test_chats_jsx_transpiles() -> None:
-    from primer.api._jsx_bundle import JSXBundler
-
-    b = JSXBundler(ui_dir=UI, babel_source=(UI / "vendor" / "babel.min.js").read_text())
-    code = b._transform(_chats_src(), "components/chats.jsx")
     assert code and "EntityPicker" in code
 
 

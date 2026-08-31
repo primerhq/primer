@@ -55,10 +55,28 @@ class _ItemStorage:
         self._data[entity.id] = entity
         return entity
 
+    async def update_unless(
+        self,
+        entity,
+        *,
+        field,
+        forbidden,
+        conn=None,
+    ):
+        current = self._data.get(entity.id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {entity.id!r}")
+        if getattr(current, field, None) == forbidden:
+            return None
+        self._data[entity.id] = entity
+        return entity
+
     async def delete(self, id: str) -> None:
         del self._data[id]
 
-    async def list(self, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_Item]:
+    async def list(
+        self, page: Any, *, order_by: Any = None
+    ) -> OffsetPageResponse[_Item]:
         items = list(self._data.values())
         if isinstance(page, OffsetPage):
             sliced = items[page.offset : page.offset + page.length]
@@ -68,9 +86,13 @@ class _ItemStorage:
                 total=len(items),
                 items=sliced,
             )
-        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+        return OffsetPageResponse(
+            offset=0, length=len(items), total=len(items), items=items
+        )
 
-    async def find(self, predicate: Any, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_Item]:
+    async def find(
+        self, predicate: Any, page: Any, *, order_by: Any = None
+    ) -> OffsetPageResponse[_Item]:
         return await self.list(page, order_by=order_by)
 
 
@@ -128,16 +150,22 @@ async def managed_client() -> AsyncIterator[httpx.AsyncClient]:
 
 
 @pytest.mark.asyncio
-async def test_create_with_managed_field_in_body_rejected(managed_client: httpx.AsyncClient) -> None:
+async def test_create_with_managed_field_in_body_rejected(
+    managed_client: httpx.AsyncClient,
+) -> None:
     """Creating an entity with harness_id set in the body should return 422."""
     resp = await managed_client.post("/v1/items", json={"id": "x", "harness_id": "h1"})
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_create_without_managed_field_succeeds(managed_client: httpx.AsyncClient) -> None:
+async def test_create_without_managed_field_succeeds(
+    managed_client: httpx.AsyncClient,
+) -> None:
     """Creating an entity without harness_id set in the body should succeed."""
-    resp = await managed_client.post("/v1/items", json={"id": "new-item", "name": "fresh"})
+    resp = await managed_client.post(
+        "/v1/items", json={"id": "new-item", "name": "fresh"}
+    )
     assert resp.status_code == 201
     assert resp.json()["id"] == "new-item"
     assert resp.json()["harness_id"] is None
@@ -161,7 +189,9 @@ async def test_delete_managed_row_rejected(managed_client: httpx.AsyncClient) ->
 
 
 @pytest.mark.asyncio
-async def test_unmanaged_row_update_works_normally(managed_client: httpx.AsyncClient) -> None:
+async def test_unmanaged_row_update_works_normally(
+    managed_client: httpx.AsyncClient,
+) -> None:
     """PUT on a row without harness_id should succeed."""
     resp = await managed_client.put(
         "/v1/items/free-item",
@@ -172,14 +202,18 @@ async def test_unmanaged_row_update_works_normally(managed_client: httpx.AsyncCl
 
 
 @pytest.mark.asyncio
-async def test_unmanaged_row_delete_works_normally(managed_client: httpx.AsyncClient) -> None:
+async def test_unmanaged_row_delete_works_normally(
+    managed_client: httpx.AsyncClient,
+) -> None:
     """DELETE on a row without harness_id should succeed."""
     resp = await managed_client.delete("/v1/items/free-item")
     assert resp.status_code == 204
 
 
 @pytest.mark.asyncio
-async def test_create_managed_field_none_is_allowed(managed_client: httpx.AsyncClient) -> None:
+async def test_create_managed_field_none_is_allowed(
+    managed_client: httpx.AsyncClient,
+) -> None:
     """Creating an entity with harness_id explicitly null is fine."""
     resp = await managed_client.post("/v1/items", json={"id": "y", "harness_id": None})
     assert resp.status_code == 201

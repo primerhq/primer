@@ -1,0 +1,9 @@
+{
+  "has_user": true,
+  "authenticated": true,
+  "username": "usman",
+  "role": "admin",
+  "must_change_password": false,
+  "setup_complete": true,
+  "setup_missing": []
+}

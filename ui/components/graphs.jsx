@@ -236,7 +236,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
 // GraphsPage — list, wired to /graphs?limit=200
 // ============================================================================
 
-function GraphsPage({ onOpen, pushToast }) {
+function GraphsPage({ onOpen, pushToast, startCreate }) {
   const { useViewport, usePagedList, Pager } = window.primerApi;
   const apiFetch = window.primerApi.apiFetch;
   const { isMobile } = useViewport();
@@ -274,6 +274,10 @@ function GraphsPage({ onOpen, pushToast }) {
   }, [list.data]);
 
   const [createOpen, setCreateOpen] = React.useState(false);
+  // "New graph" from the platform page opens the form DIRECTLY.
+  React.useEffect(() => {
+    if (startCreate) setCreateOpen(true);
+  }, [startCreate]);
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -695,7 +699,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   // canvas), which means an x/y-only relayout is otherwise invisible.
   const [layoutNonce, setLayoutNonce] = React.useState(0);
   // Raw-spec import escape hatch (GAP-6): paste a full graph spec (the
-  // same JSON shape `PUT /graphs/{id}` / `primectl create graph -f`
+  // same JSON shape as `PUT /graphs/{id}`
   // takes) and load it into the editor as an alternate to clicking the
   // whole graph node-by-node. null = closed.
   const [importOpen, setImportOpen] = React.useState(false);
@@ -1266,7 +1270,7 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
     >
       <div className="field">
         <label className="field-label">
-          Graph spec JSON <span className="hint">same shape as PUT /graphs/{"{id}"} / primectl create graph -f</span>
+          Graph spec JSON <span className="hint">same shape as PUT /graphs/{"{id}"}</span>
         </label>
         <textarea
           className="textarea mono"

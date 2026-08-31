@@ -375,3 +375,138 @@ async def test_default_writer_is_noop_when_factory_not_supplied(
     )
     outcome = await run_one_session_turn(_make_lease(sess.id), deps)
     assert outcome.success
+
+
+# ---------------------------------------------------------------------------
+# agent_phase (01a04d91-a7a0, PHASE 1 of the execution-lifecycle revamp)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_phase_sequence_thinking_responding_waiting(
+    fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    """A plain text-only turn (no tool call) must record the phase
+    sequence thinking -> responding -> waiting - "thinking" is written at
+    turn start (before any StreamEvent arrives), "responding" the instant
+    the first TextDelta arrives, "waiting" on Done."""
+    sess = await _seed_session(fake_storage_provider)
+    executor = _FakeExecutor([
+        TextDelta(text="hi", index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+    writer = _CapturingTurnLogWriter()
+    deps = _build_deps(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        executor, turn_log_writer=writer,
+    )
+    outcome = await run_one_session_turn(_make_lease(sess.id), deps)
+    assert outcome.success
+
+    phases = [e.phase for e in writer.events if e.kind == TurnLogKind.PHASE]
+    assert phases == ["thinking", "responding", "waiting"]
+    # Every phase entry is fenced to this turn.
+    assert all(
+        e.turn_no == sess.turn_no
+        for e in writer.events if e.kind == TurnLogKind.PHASE
+    )
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(sess.id)
+    # The row is cleared back to None by the same finally that clears
+    # turn_status to idle - agent_phase is scoped to "while running".
+    assert row.agent_phase is None
+    assert row.agent_phase_turn_no is None
+    assert row.agent_phase_stamped_at is None
+
+
+@pytest.mark.asyncio
+async def test_phase_sequence_with_tool_call_visits_executing(
+    fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    """A tool-calling turn must visit "executing" for the tool call and
+    return to "thinking" once it ends (about to re-request a completion
+    with the tool result), before the eventual "responding" + "waiting"
+    of the final answer."""
+    from primer.model.chat import ReasoningDelta, ToolCallEnd, ToolCallStart
+
+    sess = await _seed_session(fake_storage_provider)
+    executor = _FakeExecutor([
+        ReasoningDelta(text="let me check", index=0),
+        ToolCallStart(id="tc1", name="misc__uuid_v4", index=0),
+        ToolCallEnd(id="tc1", arguments={}, index=0),
+        TextDelta(text="done", index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+    writer = _CapturingTurnLogWriter()
+    deps = _build_deps(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        executor, turn_log_writer=writer,
+    )
+    outcome = await run_one_session_turn(_make_lease(sess.id), deps)
+    assert outcome.success
+
+    phases = [e.phase for e in writer.events if e.kind == TurnLogKind.PHASE]
+    # "thinking" at start is not re-emitted for the ReasoningDelta (no
+    # change from the initial value) - only genuine transitions land.
+    assert phases == ["thinking", "executing", "thinking", "responding", "waiting"]
+
+
+@pytest.mark.asyncio
+async def test_phase_visible_on_the_row_mid_stream(
+    fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    """A client polling the row mid-turn (not just the tap/audit trail)
+    must see the CURRENT phase - this is the field a refresh can recover
+    from without any live-frame dependency."""
+    gate = asyncio.Event()
+
+    class _BlockedExecutor:
+        async def invoke(self, messages, **kwargs):
+            yield TextDelta(text="starting", index=0)
+            await gate.wait()
+            yield Done(stop_reason="stop", raw_reason="stop")
+
+    sess = await _seed_session(fake_storage_provider)
+    writer = _CapturingTurnLogWriter()
+    deps = _build_deps(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        _BlockedExecutor(), turn_log_writer=writer,
+    )
+    turn_task = asyncio.create_task(run_one_session_turn(_make_lease(sess.id), deps))
+    await asyncio.sleep(0.05)
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    mid_row = await storage.get(sess.id)
+    assert mid_row.agent_phase == "responding"
+    assert mid_row.agent_phase_turn_no == sess.turn_no
+    assert mid_row.agent_phase_stamped_at is not None
+
+    gate.set()
+    outcome = await asyncio.wait_for(turn_task, timeout=2.0)
+    assert outcome.success
+
+
+@pytest.mark.asyncio
+async def test_phase_transitions_to_waiting_on_park(
+    fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    """YieldToWorker is a Python exception, never a StreamEvent, so
+    infer_agent_phase never sees it directly - the park branch must emit
+    its own explicit "waiting" transition rather than silently leaving
+    whatever phase was active (e.g. "executing") to just vanish into the
+    finally block's reset-to-None with no audit trail of why."""
+    yielded = Yielded(tool_name="ask_user", event_key="ask_user:s1:tc1")
+    park = YieldToWorker(yielded, tool_call_id="tc1")
+    sess = await _seed_session(fake_storage_provider)
+    executor = _FakeExecutor([TextDelta(text="hi", index=0), park])
+    writer = _CapturingTurnLogWriter()
+    deps = _build_deps(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        executor, turn_log_writer=writer,
+    )
+    outcome = await run_one_session_turn(_make_lease(sess.id), deps)
+    assert outcome.success
+
+    phases = [e.phase for e in writer.events if e.kind == TurnLogKind.PHASE]
+    assert phases == ["thinking", "responding", "waiting"]

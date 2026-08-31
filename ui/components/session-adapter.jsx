@@ -5,45 +5,89 @@
 // reused chat UI without a second parallel renderer.
 //
 // SA_ = Session Adapter. No-build scope rule: top-level `var`/`function`
-// declarations (mirrors ui/components/chat/transcript.jsx's own top-level
+// declarations (mirrors ui/components/shared/transcript.jsx's own top-level
 // style, not the IIFE-wrapped helper style of use-transcript.js) with
 // every exported symbol assigned to `window.X` at file end.
 //
-// Transport rule (locked, studio-agents-interact Global Constraints): NO
-// session WebSocket. History is `GET /v1/sessions/{sid}/messages`; live
-// updates are the workspace tap SSE `GET /v1/workspaces/{wid}/tap`,
-// scoped to this session via the same `window.WTP_buildSelector` helper
-// components/workspace-tap.jsx already exports (session-scoped selector +
-// TapCursor resume so the history<->live seam has no gap and no replay —
-// same pattern as SessionLiveStream in components/session-detail.jsx).
+// Transport note: the live data hook (REST history seed + tap SSE +
+// catch-up) moved to ui/foundation/session-store.js and
+// ui/foundation/use-workspace-tap.js in Phase 2. This module now holds
+// only the pure record->transcript mapping (SA_toTranscript + the kind
+// tables) so a consumer can render the store's records through the
+// reused chat UI without a second parallel renderer.
 //
 // Two symbols are produced:
 //   - SA_toTranscript(records, session): pure mapping, SessionMessageKind
 //     (or the tap's mirrored TapEventClass, once normalised to the same
 //     {seq, kind, payload, created_at, node_id} shape) -> the transcript
 //     row shape.
-//   - SA_useSessionConversation({ sid, wid }): the data hook. Its
-//     `messages` field is the normalised/merged *record* stream (history
-//     + live tap, deduped+sorted by seq) — callers apply SA_toTranscript
-//     themselves once they also have the `session` row in hand (Task 12's
-//     SessionAgentPanel renders `<Transcript>` "fed by SA_toTranscript").
-//     Also returns `wsState` ("connecting"/"open"/"closed", the tap SSE's
-//     connection legibility — feeds <Transcript> the same way a chat's
-//     WebSocket wsState does) and `restart()` (POST .../restart — a Task 12
-//     addition; Task 11's original interface only needed sendMessage/
-//     stop/end).
+//   - SA_visibleRecords(records): the progressive rewind-fold walk
+//     SA_toTranscript runs first, ported from primer/session/replay.py's
+//     visible_records (exported separately so nested-rewind composition
+//     can be tested against the raw record set, not just the mapped
+//     transcript rows).
 
 // ---------------------------------------------------------------------------
 // Pure mapping: SessionMessageKind -> transcript row kind
 // ---------------------------------------------------------------------------
 
+// Kinds that are structural instructions rather than content, and so
+// never reach the reader. ONE table by design: S3 adds client_action
+// and S7 adds llm_call HERE rather than each introducing its own
+// registry at this same insertion point (cross-plan findings F26/F36).
+// S8 HAND-OFF: SH_TurnList replaces this renderer at the flag day, and
+// the S8 plan names none of the four kinds P1 added. Carry these three
+// decisions across or they regress: reasoning collapses muted,
+// agent_marker is a binding row, external_tool_call folds into the tool
+// rendering.
+//
+// US-008 R3 item 4: rewind_marker moved OUT of this table and into
+// SA_KIND_TO_TRANSCRIPT as a divider (below) - now that the console
+// actually wires Rewind, skipping it left the reader looking at a
+// transcript a rewind visibly did nothing to (the /messages read is
+// visible=false by design - see primer/api/routers/sessions.py's own
+// comment - so the raw discarded rows were never hidden either).
+// SA_toTranscript's fold pass now does what the replay walk does
+// server-side: hide the span the marker discarded and label where it
+// cut, same principle already applied to compaction_marker below.
+var SA_SKIP_IN_TRANSCRIPT = {
+  // Delivery frame for a notifying tool call (S3): display and protocol
+  // only. The paired tool_call/tool_result rows carry the history, so
+  // rendering this too would show the same action twice.
+  client_action: true,
+  // Per-model-call trace data (S7): the Trace panel reads it from the
+  // timeline endpoint, and the paged /messages read still returns it.
+  // Only this renderer skips it, so it cannot fall through to the
+  // generic "lifecycle" bubble the mapper gives every unmapped kind.
+  llm_call: true,
+};
+
 var SA_KIND_TO_TRANSCRIPT = {
   user_input: "user_message",
   assistant_token: "assistant_message",
+  // Model thinking, shown collapsed and muted. Never an assistant
+  // message: replaying reasoning back as an answer misreads what it is.
+  reasoning: "reasoning",
   tool_call: "tool_call",
   tool_result: "tool_result",
+  // An invoker-supplied tool call renders as a tool call. It differs in
+  // WHO executes it, which the reader does not care about, so a third
+  // row shape would be noise.
+  external_tool_call: "tool_call",
+  // Binding hand-off: which agent took over, and at which epoch.
+  agent_marker: "binding_change",
   graph_transition: "divider",
+  // The reader SHOULD see that their history was folded: after a
+  // compaction the marker is the only visible row (replay.visible_records
+  // replaces the set with it), so hiding it would leave a transcript that
+  // silently begins mid-conversation.
+  compaction_marker: "divider",
   invocation_divider: "divider",
+  // Unlike compaction (annotates, keeps the raw span visible for
+  // audit), a rewind's whole point is to discard - SA_toTranscript's
+  // fold pass below hides the span it names before this label ever
+  // renders.
+  rewind_marker: "divider",
   // Lifecycle rows map to the SAME-named kinds <Transcript>'s Message()
   // already renders with dedicated styling: yielded/resumed/done as a muted
   // "· kind" dot, cancelled as a red "■ cancelled" marker, error as an error
@@ -57,12 +101,114 @@ var SA_KIND_TO_TRANSCRIPT = {
   error: "error",
 };
 
-// Divider label for the two kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
+// UX reconcile wave 3 (audit A item 6): the live/done "editing {file}
+// +N -N" chip's line-delta data for an edit result. workspace__edit_file's
+// own tool result is a unified diff already (primer/workspace/local/
+// tools/edit.py's difflib.unified_diff, returned verbatim as
+// ToolResult.output) - this counts the +/- content lines, skipping the
+// "+++"/"---" filename header pair a unified diff always opens with
+// (those are not content changes). Generic over any unified-diff text,
+// not edit-specific, so it is equally usable against a git patch string
+// elsewhere. Internal to this file - a caller wanting the diff stat for
+// an arbitrary tool_result row should use SA_diffStatOfResult below,
+// which also covers write.
+function SA_diffStatOf(text) {
+  var lines = String(text || "").split("\n");
+  var additions = 0;
+  var deletions = 0;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (line.indexOf("+++") === 0 || line.indexOf("---") === 0) continue;
+    if (line.charAt(0) === "+") additions += 1;
+    else if (line.charAt(0) === "-") deletions += 1;
+  }
+  if (!additions && !deletions) return null;
+  return { additions: additions, deletions: deletions };
+}
+
+// UX reconcile wave 5 (audit A item 6, write half): the ONE seam a
+// caller should use for a tool_result row's diff stat, regardless of
+// which tool produced it. write's own metadata (server-computed via
+// difflib.SequenceMatcher against the old file content, captured just
+// before it was overwritten - primer/workspace/local/tools/write.py) is
+// authoritative when present; otherwise falls back to parsing edit's
+// unified-diff output text via SA_diffStatOf above. A row with neither
+// (a tool that produces no diff, or a pre-wave-5 record with no
+// metadata key at all) returns null - the same "no chip" contract
+// SA_diffStatOf already has.
+function SA_diffStatOfResult(rec) {
+  var payload = (rec && rec.payload) || {};
+  var meta = payload.metadata || null;
+  if (
+    meta
+    && (typeof meta.additions === "number" || typeof meta.deletions === "number")
+  ) {
+    return { additions: meta.additions || 0, deletions: meta.deletions || 0 };
+  }
+  return SA_diffStatOf(payload.output);
+}
+
+// UX reconcile wave 5 (audit A item 4): the "searched N files" result-
+// count label for a grep tool_result row, read from its own exact
+// metadata (primer/workspace/local/tools/grep.py's match_count/
+// file_count/truncated, restored server-side in wave 5) rather than a
+// client-side parse of the (possibly head_limit-capped) output text -
+// the wave 3 report's own argument against that parse still applies: a
+// capped output list of "4" lines must never be presented as if it
+// were the total when the true count is "250+". Copy choice (mine, not
+// a reference mock - noted per the brief): "searched N file(s)", with a
+// trailing "+" on the count when metadata.truncated is true. Returns
+// null when metadata is absent (a mid-flight tool_result before the
+// executor attaches it, or a pre-wave-5 persisted record) - the
+// caller's existing chip keeps showing its input-arg form (e.g. the
+// raw pattern) in that case, exactly as it does today.
+function SA_resultCountLabel(rec) {
+  var payload = (rec && rec.payload) || {};
+  var meta = payload.metadata || null;
+  if (!meta || typeof meta.file_count !== "number") return null;
+  var count = String(meta.file_count) + (meta.truncated ? "+" : "");
+  var noun = meta.file_count === 1 && !meta.truncated ? "file" : "files";
+  return "searched " + count + " " + noun;
+}
+
+// The text a row shows. Messages keep theirs at payload.text; a record
+// with none (a tool call, a lifecycle marker) has nothing to say here and
+// the renderer draws its own chip for it.
+function SA_rowText(rec) {
+  var payload = rec.payload || {};
+  if (typeof payload.text === "string" && payload.text) return payload.text;
+  // Pending steers are stored as parts, so a realized one may arrive in
+  // that shape too. Join the text parts, as the queue chip does.
+  if (Array.isArray(payload.parts)) {
+    var out = [];
+    for (var i = 0; i < payload.parts.length; i++) {
+      var part = payload.parts[i];
+      if (part && part.type === "text" && part.text) out.push(part.text);
+    }
+    if (out.length) return out.join("\n");
+  }
+  return undefined;
+}
+
+
+// Divider label for the four kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
 // invocation_divider (written by reset_session on ENDED->CREATED re-open,
 // payload: {invocation: N}) renders "— invocation N —"; graph_transition
 // (node ENTER/EXIT, payload: {node_id, node_kind, phase, status}) renders
 // "<node_id> · <phase>".
 function SA_dividerLabel(rec) {
+  if (rec.kind === "compaction_marker") {
+    var p = rec.payload || {};
+    var from = p.replaced_from_seq;
+    return from == null
+      ? "— history compacted —"
+      : "— history compacted from #" + from + " —";
+  }
+  if (rec.kind === "rewind_marker") {
+    var rp = rec.payload || {};
+    return "— rewound, later turns discarded (kept up to #"
+      + rp.to_seq + ") —";
+  }
   if (rec.kind === "invocation_divider") {
     var n = (rec.payload && rec.payload.invocation) || 1;
     return "— invocation " + n + " —";
@@ -71,21 +217,77 @@ function SA_dividerLabel(rec) {
   return (p.node_id || "node") + " · " + (p.phase || "");
 }
 
+// The read path is visible=false (primer/api/routers/sessions.py's own
+// comment: the console needs the raw stream for audit/trace), so a
+// rewind's discarded rows arrive here same as anything else - nothing
+// upstream hides them. This ports primer/session/replay.py's
+// visible_records walk faithfully for the REWIND rule (its own
+// docstring: "Rewind, continue, rewind again nests correctly" - acting
+// on the running VISIBLE set rather than raw file order is what makes
+// nested rewinds compose). `records` is seq-ascending
+// (session-store.js's recordsBySeq contract), matching the walk's
+// append-order assumption.
+//
+// Diverges from the backend in ONE place, by design: there, a
+// rewind_marker is a pure instruction and is never returned (`continue`,
+// never appended) - here it stays in the visible set, because the
+// console needs to SHOW the reader a rewind happened (US-008 R3 item 4),
+// not just silently honor it; SA_KIND_TO_TRANSCRIPT renders it as a
+// divider below. compaction_marker is deliberately NOT ported the same
+// way - the backend replaces the whole visible set with the marker
+// (folds it into a summary); item 4's accepted design keeps the raw
+// pre-compaction span visible for audit and only annotates, so it is
+// still just appended here, never hides anything.
+function SA_visibleRecords(records) {
+  var visible = [];
+  for (var i = 0; i < records.length; i++) {
+    var rec = records[i];
+    if (rec.kind === "rewind_marker") {
+      var toSeq = (rec.payload || {}).to_seq;
+      if (typeof toSeq === "number") {
+        visible = visible.filter(function (r) { return r.seq <= toSeq; });
+      }
+      visible.push(rec);
+      continue;
+    }
+    visible.push(rec);
+  }
+  return visible;
+}
+
 // records: SessionMessageRecord-shaped rows — {seq, kind, payload,
 // created_at, node_id}, whether loaded from the REST history endpoint or
-// normalised from a live TapEvent (see SA_useSessionConversation below).
+// normalised from a live TapEvent by the tap hub (Phase 2).
 // session: the WorkspaceSession row (reserved for session-aware rendering
 // decisions a future task may need — not read here yet).
 function SA_toTranscript(records, session) {
+  var visible = SA_visibleRecords(records);
   var out = [];
-  for (var i = 0; i < records.length; i++) {
-    var rec = records[i];
+  for (var i = 0; i < visible.length; i++) {
+    var rec = visible[i];
+    if (SA_SKIP_IN_TRANSCRIPT[rec.kind]) continue;
+    // A DONE carrying stop_reason="tool_use" ends one MODEL CALL, not
+    // the turn: the loop runs the tools and calls the model again
+    // (primer/session/timeline.py closes_turn makes the same cut).
+    // Rendering them peppered the transcript with "done" markers
+    // between every tool round and made the fold split one turn into
+    // many (live finding 2026-08-26).
+    if (rec.kind === "done"
+        && ((rec.payload || {}).stop_reason === "tool_use")) continue;
     var kind = SA_KIND_TO_TRANSCRIPT[rec.kind] || "lifecycle";
     out.push({
       seq: rec.seq,
       kind: kind,
       nodeId: rec.node_id || null,
-      label: kind === "divider" ? SA_dividerLabel(rec) : undefined,
+      // What the row actually SAYS. Only dividers got a label, so every
+      // message row rendered an empty body: a transcript of identity
+      // chips with nothing beside them, for the operator's own messages
+      // and the agent's answers alike. user_input and assistant_token
+      // both carry their text at payload.text (primer/session/enqueue.py
+      // and persistence.py), which is the one place it lives.
+      label: kind === "divider"
+        ? SA_dividerLabel(rec)
+        : SA_rowText(rec),
       payload: rec.payload || {},
       createdAt: rec.created_at,
     });
@@ -93,326 +295,10 @@ function SA_toTranscript(records, session) {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Cursor encode — scopes the tap's resume cursor to this one session so the
-// live tail picks up exactly where the REST history left off. Same shape as
-// components/session-detail.jsx's private _slsEncodeCursor (TapCursor's
-// {known_as_of, seqs: {sid: seq}} wire form); duplicated locally (SA_-
-// prefixed) since that one isn't exported to `window`.
-// ---------------------------------------------------------------------------
-
-function SA_encodeCursor(sid, seq) {
-  var payload = { known_as_of: "1970-01-01T00:00:00+00:00", seqs: {} };
-  payload.seqs[sid] = seq;
-  var json = JSON.stringify(payload);
-  var b64;
-  try {
-    b64 = btoa(unescape(encodeURIComponent(json)));
-  } catch (_e) {
-    return null;
-  }
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-// ---------------------------------------------------------------------------
-// SA_useSessionConversation — data hook backing a Session's live view.
-// ---------------------------------------------------------------------------
-
-function SA_useSessionConversation(opts) {
-  var sid = opts && opts.sid;
-  var wid = opts && opts.wid;
-  var primerApi = window.primerApi || {};
-  var apiFetch = primerApi.apiFetch;
-  var useResource = primerApi.useResource;
-
-  // Session row (status + turn_status) — light poll; the tap effect below
-  // stops opening new connections once it reports ENDED.
-  var detail = useResource(
-    "session-adapter:row:" + sid,
-    function (signal) {
-      return apiFetch("GET", "/sessions/" + encodeURIComponent(sid), null, { signal: signal });
-    },
-    { pollMs: 3000, deps: [sid] }
-  );
-  var sessionRow = detail.data;
-  var status = sessionRow ? sessionRow.status : null;
-  var turnStatus = sessionRow ? sessionRow.turn_status : "idle";
-  // Polled high-water seq (the row's authoritative last_seq) — compared
-  // below against the adapter's own max known record seq to detect when
-  // the live tap missed persisted events (e.g. a fresh/slow-starting
-  // workspace where events land just before the tap subscribes) so the
-  // gap can be closed with a catch-up re-fetch instead of a page refresh.
-  var polledLastSeq = sessionRow && typeof sessionRow.last_seq === "number" ? sessionRow.last_seq : null;
-
-  // Pending yield(s) for this session — inline interaction affordances
-  // (studio-agents-interact §5.4 / §4.5's session-scoped read).
-  var pendingRes = useResource(
-    "session-adapter:pending:" + sid,
-    function (signal) {
-      if (!wid) return Promise.resolve({ items: [] });
-      return apiFetch(
-        "GET",
-        "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/yields/pending",
-        null,
-        { signal: signal }
-      );
-    },
-    { pollMs: 4000, deps: [sid, wid] }
-  );
-  var pending = (pendingRes.data && pendingRes.data.items) || [];
-
-  // Raw normalised message-log records — REST history seed + live tap,
-  // merged/deduped/sorted by seq. SA_toTranscript is applied by callers
-  // (they also hold the `session` row for the mapping's second argument).
-  var recordsState = React.useState([]);
-  var records = recordsState[0];
-  var setRecords = recordsState[1];
-  var historyLoadedState = React.useState(false);
-  var historyLoaded = historyLoadedState[0];
-  var setHistoryLoaded = historyLoadedState[1];
-  var historyCursorRef = React.useRef(0);
-  // Connection legibility for the live tail (Task 12 addition — Task 11's
-  // original interface didn't need it, since nothing consumed it yet).
-  // Mirrors <Conversation>'s wsState ("connecting"/"open"/"closed") so a
-  // caller can feed it straight into <Transcript>'s CT_ConnectionStatus
-  // pill, even though the transport here is the tap SSE (EventSource), not
-  // a WebSocket.
-  var wsStateState = React.useState("connecting");
-  var wsState = wsStateState[0];
-  var setWsState = wsStateState[1];
-
-  // Guards the catch-up re-fetch below from overlapping itself — the poll
-  // tick and a tap (re)connect can fire close together, and this keeps
-  // either trigger from double-fetching or thrashing the endpoint.
-  var catchUpInFlightRef = React.useRef(false);
-
-  // Catch-up re-fetch — re-reads GET /messages for rows after the
-  // adapter's current max known seq (historyCursorRef, which both the
-  // history seed below and every tap-delivered record keep advanced) and
-  // merges in anything the live tap missed. Triggered when the polled
-  // session row's last_seq outruns historyCursorRef (effect further down)
-  // and on every tap (re)connect (es.onopen below), since a tap that
-  // attaches even a moment late — the common case on a freshly-created or
-  // still-spinning-up k8s workspace — would otherwise never backfill the
-  // gap short of a full page refresh.
-  var catchUp = React.useCallback(function () {
-    if (!sid || catchUpInFlightRef.current) return;
-    catchUpInFlightRef.current = true;
-    var afterSeq = historyCursorRef.current || 0;
-    apiFetch(
-      "GET",
-      "/sessions/" + encodeURIComponent(sid) + "/messages?after_seq=" + afterSeq + "&limit=1000"
-    )
-      .then(function (res) {
-        var items = (res && res.items) || [];
-        if (items.length === 0) return;
-        setRecords(function (prev) {
-          var seen = {};
-          for (var j = 0; j < prev.length; j++) seen[prev[j].seq] = true;
-          var fresh = items.filter(function (it) { return !seen[it.seq]; });
-          if (fresh.length === 0) return prev;
-          var merged = prev.concat(fresh);
-          merged.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
-          var maxSeq = merged.length > 0 ? merged[merged.length - 1].seq : 0;
-          if (maxSeq > historyCursorRef.current) historyCursorRef.current = maxSeq;
-          return merged;
-        });
-      })
-      .catch(function () { /* best-effort; next poll tick or tap reconnect retries */ })
-      .then(function () { catchUpInFlightRef.current = false; });
-  }, [apiFetch, sid]);
-
-  // History load — GET /sessions/{sid}/messages (paginated; the server
-  // caps a single page at 1000, comfortably above one session's log in
-  // the common case). Best-effort: a failed history fetch still lets the
-  // live tap populate the stream from here on.
-  React.useEffect(function () {
-    var alive = true;
-    setRecords([]);
-    setHistoryLoaded(false);
-    historyCursorRef.current = 0;
-    if (!sid) return undefined;
-    (function () {
-      return apiFetch("GET", "/sessions/" + encodeURIComponent(sid) + "/messages?limit=1000")
-        .then(function (res) {
-          if (!alive) return;
-          var items = (res && res.items) || [];
-          var maxSeq = 0;
-          for (var i = 0; i < items.length; i++) {
-            if (typeof items[i].seq === "number" && items[i].seq > maxSeq) maxSeq = items[i].seq;
-          }
-          historyCursorRef.current = maxSeq;
-          if (items.length > 0) {
-            setRecords(function (prev) {
-              var seen = {};
-              for (var j = 0; j < prev.length; j++) seen[prev[j].seq] = true;
-              var merged = prev.concat(items.filter(function (it) { return !seen[it.seq]; }));
-              merged.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
-              return merged;
-            });
-          }
-        })
-        .catch(function () { /* history is best-effort; the live tap still tails */ })
-        .then(function () { if (alive) setHistoryLoaded(true); });
-    })();
-    return function () { alive = false; };
-  }, [sid]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Live tail — the session-scoped workspace tap (no session WebSocket).
-  // Opens only once history has loaded so the resume cursor carries
-  // history's high-water seq (no gap, no replay at the seam); skipped
-  // once the session is ENDED (a terminal session has nothing left to
-  // tail — the REST history above is already the full transcript).
-  React.useEffect(function () {
-    if (!wid || !sid || !historyLoaded) return undefined;
-    if (status === "ended") {
-      // Nothing left to tail on a terminal session — reflect that instead
-      // of leaving a stale "connecting" pill from before it ended.
-      setWsState("closed");
-      return undefined;
-    }
-
-    var selector = window.WTP_buildSelector ? window.WTP_buildSelector(null, sid) : null;
-    var highWater = historyCursorRef.current || 0;
-    var cursorToken = highWater > 0 ? SA_encodeCursor(sid, highWater) : null;
-
-    var url = "/v1/workspaces/" + encodeURIComponent(wid) + "/tap";
-    var params = [];
-    if (selector) params.push("selector=" + encodeURIComponent(JSON.stringify(selector)));
-    if (cursorToken) params.push("cursor=" + encodeURIComponent(cursorToken));
-    if (params.length > 0) url += "?" + params.join("&");
-
-    var es;
-    try {
-      es = new EventSource(url, { withCredentials: true });
-    } catch (_e) {
-      setWsState("closed");
-      return undefined;
-    }
-
-    es.onopen = function () {
-      setWsState("open");
-      // Re-sync on every (re)connect: a tap that attaches even a moment
-      // late — or reconnects after a drop — can otherwise miss events that
-      // were already persisted, leaving the transcript stuck until a page
-      // refresh. This costs one extra no-op request when already caught up.
-      catchUp();
-    };
-
-    es.onmessage = function (ev) {
-      var tev;
-      try { tev = JSON.parse(ev.data); } catch (_e) { return; }
-      if (!tev || typeof tev.seq !== "number") return;
-      // Normalise the TapEvent (class/ts) onto the SessionMessageRecord
-      // shape (kind/created_at) records already carry from REST history.
-      var rec = {
-        seq: tev.seq,
-        kind: tev.class,
-        payload: (tev.payload && typeof tev.payload === "object") ? tev.payload : {},
-        created_at: tev.ts,
-        node_id: tev.node_id != null ? tev.node_id : null,
-      };
-      if (rec.seq > historyCursorRef.current) historyCursorRef.current = rec.seq;
-      setRecords(function (prev) {
-        for (var i = 0; i < prev.length; i++) {
-          if (prev[i].seq === rec.seq) return prev;
-        }
-        var next = prev.concat([rec]);
-        next.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
-        return next;
-      });
-    };
-
-    es.onerror = function () {
-      // EventSource reconnects natively via Last-Event-ID; while it is
-      // retrying the browser holds readyState at CONNECTING, so mirror that
-      // rather than parking on a stale "open" pill. But once it gives up for
-      // good (readyState === 2 / CLOSED) no reconnect is coming — surface a
-      // terminal "closed" state so <Transcript>'s pill shows a non-transient
-      // failure ("offline") instead of an indefinite "connecting".
-      setWsState(es.readyState === 2 ? "closed" : "connecting");
-    };
-
-    return function () { try { es.close(); } catch (_e) { /* no-op */ } };
-  }, [wid, sid, historyLoaded, status, catchUp]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Poll-triggered catch-up — the session row above is light-polled every
-  // 3s and carries the authoritative high-water last_seq. If it has moved
-  // past the adapter's own max known record seq (historyCursorRef), the
-  // persisted log has rows the live tap never delivered — the "stuck
-  // waiting for events" symptom on a session whose tap subscribed a beat
-  // late (e.g. a freshly-created/slow k8s workspace). Re-fetch and merge
-  // them in. Gated on actually being behind, so once caught up this never
-  // issues an extra request on the 3s cadence.
-  React.useEffect(function () {
-    if (!sid || !historyLoaded) return undefined;
-    if (typeof polledLastSeq !== "number") return undefined;
-    if (polledLastSeq > (historyCursorRef.current || 0)) {
-      catchUp();
-    }
-    return undefined;
-  }, [sid, historyLoaded, polledLastSeq, catchUp]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // sendMessage/stop/end/restart — one input, four behaviours (§5.1): a
-  // message to a CREATED session invokes it, to RUNNING/WAITING it steers,
-  // to PAUSED it resumes, and to an ENDED session it restarts it in place
-  // (reopen + invocation divider, then run) — all the SAME idempotent
-  // POST .../steer call, all auto-wake, server-side (primer/session/
-  // enqueue.py's wake_session). Every clean turn now ends the session, so
-  // sending a follow-up to an ENDED session is the common case, not an
-  // edge case — this is why the Composer must stay enabled when ended
-  // (studio-center.jsx). Stop preempts the turn but keeps the session
-  // alive; End hard-cancels it. The explicit Restart control (Task 12
-  // addition — not part of Task 11's original interface) is a separate,
-  // no-message re-open+invoke via POST .../restart (studio-agents-interact
-  // §5.3).
-  var sendMessage = React.useCallback(function (text) {
-    if (!wid || !sid) return Promise.reject(new Error("sendMessage: wid and sid are required"));
-    return apiFetch(
-      "POST",
-      "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/steer",
-      { instruction: text }
-    );
-  }, [apiFetch, wid, sid]);
-
-  var stop = React.useCallback(function () {
-    if (!wid || !sid) return Promise.resolve();
-    return apiFetch(
-      "POST",
-      "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/interrupt"
-    );
-  }, [apiFetch, wid, sid]);
-
-  var end = React.useCallback(function () {
-    if (!wid || !sid) return Promise.resolve();
-    return apiFetch(
-      "POST",
-      "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/cancel"
-    );
-  }, [apiFetch, wid, sid]);
-
-  var restart = React.useCallback(function () {
-    if (!wid || !sid) return Promise.resolve();
-    return apiFetch(
-      "POST",
-      "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/restart",
-      {}
-    );
-  }, [apiFetch, wid, sid]);
-
-  return {
-    messages: records,
-    status: status,
-    turnStatus: turnStatus,
-    wsState: wsState,
-    sendMessage: sendMessage,
-    stop: stop,
-    end: end,
-    restart: restart,
-    pending: pending,
-  };
-}
-
+window.SA_diffStatOf = SA_diffStatOf;
+window.SA_diffStatOfResult = SA_diffStatOfResult;
+window.SA_resultCountLabel = SA_resultCountLabel;
+window.SA_SKIP_IN_TRANSCRIPT = SA_SKIP_IN_TRANSCRIPT;
 window.SA_toTranscript = SA_toTranscript;
 window.SA_KIND_TO_TRANSCRIPT = SA_KIND_TO_TRANSCRIPT;
-window.SA_useSessionConversation = SA_useSessionConversation;
+window.SA_visibleRecords = SA_visibleRecords;

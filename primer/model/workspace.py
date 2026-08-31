@@ -1128,6 +1128,35 @@ class WorkspaceChannelLink(BaseModel):
     )
 
 
+class WorkspaceEventsConfig(BaseModel):
+    """Opt-in workspace lifecycle events on the platform event log.
+
+    When ``enabled``, the WorkspaceEventBridge holds one runtime
+    EVENTS_SUBSCRIBE stream for this workspace and emits
+    ``workspace.file_changed`` / ``workspace.exec_started`` /
+    ``workspace.exec_exited`` scoped to it. Default None on the row =
+    no stream, no events (a busy build tree floods nothing unasked).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    kinds: list[Literal[
+        "file_changed", "exec_started", "exec_exited",
+    ]] = Field(
+        default_factory=lambda: [
+            "file_changed", "exec_started", "exec_exited",
+        ],
+    )
+    path_prefixes: list[str] | None = Field(
+        default=None,
+        description=(
+            "Workspace-relative prefixes file events are limited to; "
+            "None watches the whole workspace root."
+        ),
+    )
+
+
 class Workspace(Identifiable):
     """Persisted record of a materialised workspace.
 
@@ -1203,6 +1232,23 @@ class Workspace(Identifiable):
             "Channel this workspace's session traffic (gates / inform / "
             "lifecycle / final result) replies to. The standing form of the "
             "unified reply binding. Mutable post-create."
+        ),
+    )
+    events: WorkspaceEventsConfig | None = Field(
+        default=None,
+        description=(
+            "Opt-in workspace lifecycle event streaming; None = off."
+        ),
+    )
+    terminal_user_access: bool = Field(
+        default=False,
+        description=(
+            "Non-admin access to the workspace's integrated terminal "
+            "(``WS /workspaces/{id}/terminal``). The terminal is admin-only "
+            "by default; flipping this on admits callers holding at least "
+            "the ``user`` role too (``restricted`` never gets a shell). Set "
+            "via ``PUT /workspaces/{id}/terminal_access``. Backward-"
+            "compatible default for existing rows."
         ),
     )
 

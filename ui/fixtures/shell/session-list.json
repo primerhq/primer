@@ -1,0 +1,43 @@
+{
+  "items": [
+    {
+      "session_id": "sess-4f1a2b3c",
+      "agent_id": "operator",
+      "workspace_id": "ws-3f8a9bc1d4e2",
+      "name": "Wire the payments webhook",
+      "status": "running",
+      "ended_reason": null,
+      "parent_session_id": null,
+      "started_at": "2026-08-16T09:12:04+00:00",
+      "last_activity_at": "2026-08-16T09:41:55+00:00",
+      "ended_at": null,
+      "initial_instructions": "Wire the payments webhook and add a test"
+    },
+    {
+      "session_id": "sess-77de01aa",
+      "agent_id": "builder",
+      "workspace_id": "ws-3f8a9bc1d4e2",
+      "name": "Build the refund agent",
+      "status": "waiting",
+      "ended_reason": null,
+      "parent_session_id": "sess-4f1a2b3c",
+      "started_at": "2026-08-16T08:02:11+00:00",
+      "last_activity_at": "2026-08-16T09:30:00+00:00",
+      "ended_at": null,
+      "initial_instructions": "Build an agent that issues partial refunds"
+    },
+    {
+      "session_id": "sess-0ab99312",
+      "agent_id": "operator",
+      "workspace_id": "ws-3f8a9bc1d4e2",
+      "name": "Read the release notes",
+      "status": "ended",
+      "ended_reason": "completed",
+      "parent_session_id": null,
+      "started_at": "2026-08-15T17:40:00+00:00",
+      "last_activity_at": "2026-08-15T17:52:31+00:00",
+      "ended_at": "2026-08-15T17:52:31+00:00",
+      "initial_instructions": "Summarise the release notes"
+    }
+  ]
+}

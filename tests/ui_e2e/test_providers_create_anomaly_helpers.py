@@ -17,6 +17,7 @@ from __future__ import annotations
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-02")
 
 
@@ -38,27 +39,37 @@ def test_u0010_embedding_provider_modal_shows_t0025_static_models_helper(
     phrasing and the (T0025) tag are present so a future copy-edit can't
     silently drop the anomaly reference.
     """
-    page.goto(console_url + "#/providers/embedding", wait_until="domcontentloaded")
-    page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
+    # RETARGET (IA restructure 01a04d6a): "Register provider" now names
+    # the TYPE ("embedding"), not the kind directly - the kind ("openai")
+    # is re-picked inside the form, same mechanic every retargeted test
+    # in this file uses.
+    open_legacy_route(page, console_url, "providers/embedding")
+    page.get_by_test_id("provider-register-all-toggle").click()
+    page.get_by_test_id("provider-register-type-embedding").click()
+    form = page.get_by_test_id("provider-form-embedding_providers")
+    form.wait_for(state="visible", timeout=15_000)
+    form.locator("#pf-provider").select_option(value="openai")
+    # The form root renders before /\_types resolves, so wait for the
+    # field the helper hangs off before reading the text: a bare
+    # inner_text() here reads an empty shell and reports the copy as
+    # missing.
+    form.locator('[data-field="models"]').wait_for(
+        state="visible", timeout=15_000,
+    )
 
-    new_btn = page.get_by_role("button", name="New embedding provider").first
-    new_btn.wait_for(state="visible", timeout=5_000)
-    new_btn.click()
-
-    modal = page.locator(".modal").first
-    modal.wait_for(state="visible", timeout=5_000)
-
-    # The helper text lives in the modal body. Use a substring match so a
-    # punctuation tweak doesn't break the test, but pin the key phrase.
-    modal_text = modal.inner_text()
+    # The helper is field help on the models list, which the API supplies
+    # with the rest of the form shape. Substring matches so a punctuation
+    # tweak does not break this, but the key phrase is pinned.
+    modal_text = form.inner_text()
     assert "Model list comes from the provider row" in modal_text, (
-        "Expected T0025 helper text inside the New embedding provider modal; "
-        "modal body did not contain the documented phrasing.\n"
-        f"Modal text was:\n{modal_text}"
+        "Expected the T0025 helper on the embedding provider form; the "
+        "form did not contain the documented phrasing.\n"
+        f"Form text was:\n{modal_text}"
     )
     assert "T0025" in modal_text, (
-        "T0025 anomaly tag missing from the modal body — copy edit "
-        "dropped the anomaly reference?\nModal text was:\n" + modal_text
+        "T0025 anomaly tag missing from the form. Documented anomalies "
+        "are surfaced in place, not hidden (docs/dev/subsystems/"
+        "ui-pages.md).\nForm text was:\n" + modal_text
     )
 
 
@@ -79,14 +90,20 @@ def test_u0011_llm_provider_modal_shows_t0379_cross_validation_warning(
     Defence: if a future copy-edit drops the T0379 reference, this
     test catches it before the anomaly drift propagates to operators.
     """
-    page.goto(console_url + "#/providers/llm", wait_until="domcontentloaded")
-    page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
+    # RETARGET (IA restructure 01a04d6a): same mechanic as U0010 above -
+    # Register provider names the TYPE, the kind is picked inside the
+    # form. The T0379 copy itself is unconditional create-mode text
+    # (provider-form.jsx's PC_ProviderForm), untouched by the restructure
+    # beyond moving alongside a new editing-mode variant - this assertion
+    # still targets the same string.
+    open_legacy_route(page, console_url, "providers/llm")
+    page.get_by_test_id("provider-register-all-toggle").click()
+    page.get_by_test_id("provider-register-type-llm").click()
+    form = page.get_by_test_id("provider-form-llm_providers")
+    form.wait_for(state="visible", timeout=15_000)
+    form.locator("#pf-provider").select_option(value="anthropic")
 
-    page.get_by_role("button", name="New llm provider").first.click()
-    modal = page.locator(".modal").first
-    modal.wait_for(state="visible", timeout=5_000)
-
-    modal_text = modal.inner_text()
+    modal_text = form.inner_text()
     assert "Provider" in modal_text and "config" in modal_text, (
         "Expected T0379 cross-validation warning copy mentioning "
         "'Provider ↔ config' alignment in the New LLM provider modal.\n"
@@ -117,34 +134,40 @@ def test_provider_create_disabled_until_model_name_filled(
     ``body.models.0.name: Field required``. The fix requires every
     non-optional model field to be non-empty before enabling Create.
 
-    Uses the embedding provider modal (single ``name`` model field, no
-    backend precondition): fill the required Base URL, add an empty model
-    row, assert Create is disabled, then type a model name and assert it
-    becomes enabled.
+    RETARGET (IA restructure 01a04d6a): "Register provider" now names
+    the TYPE ("embedding") up front instead of the kind directly - the
+    kind ("openai") is re-picked inside the form (same testids, same
+    gate logic once it renders).
     """
     from playwright.sync_api import expect
 
-    page.goto(
-        console_url + "#/providers/embedding", wait_until="domcontentloaded"
-    )
-    page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
+    open_legacy_route(page, console_url, "providers/embedding")
+    page.get_by_test_id("provider-register-all-toggle").click()
+    page.get_by_test_id("provider-register-type-embedding").click()
+    form = page.get_by_test_id("provider-form-embedding_providers")
+    form.wait_for(state="visible", timeout=15_000)
+    form.locator("#pf-provider").select_option(value="openai")
 
-    page.get_by_role("button", name="New embedding provider").first.click()
-    modal = page.locator(".modal").first
-    modal.wait_for(state="visible", timeout=5_000)
+    save_btn = form.get_by_test_id("provider-form-save")
+    model_list = form.get_by_test_id("provider-form-model-list")
 
-    create_btn = modal.get_by_role("button", name="Create", exact=True)
+    # The subject here is the MODEL-ROW gate, so satisfy the row-level
+    # one first: an id is required on every provider, and Save is now
+    # withheld until every required field is filled rather than letting
+    # the create come back 422.
+    form.locator('[data-field="id"] input').fill("emb-gate-probe")
+    # Base URL is required on this class too. Filling every OTHER
+    # required field is what isolates the model-row gate: whatever
+    # Save's state is after this line, only the blank model row explains
+    # it.
+    form.locator('[data-field="url"] input').fill("https://api.openai.com/v1")
 
-    # Fill the required Base URL so only the empty model row gates submit.
-    modal.get_by_placeholder("https://api.openai.com/v1").fill(
-        "http://localhost:1234/v1"
-    )
+    # Add a model row but leave its name blank: the regression case.
+    form.get_by_test_id("provider-form-add-model").click()
+    row_input = model_list.locator("input.mono").last
+    expect(row_input).to_be_visible()
+    expect(save_btn).to_be_disabled()
 
-    # Add a model row but leave its name blank — the regression case.
-    modal.get_by_role("button", name="Add", exact=True).click()
-    expect(modal.get_by_placeholder("Model name")).to_be_visible()
-    expect(create_btn).to_be_disabled()
-
-    # Typing a model name unblocks Create.
-    modal.get_by_placeholder("Model name").fill("text-embedding-test")
-    expect(create_btn).to_be_enabled()
+    # Typing a model name unblocks Save.
+    row_input.fill("text-embedding-test")
+    expect(save_btn).to_be_enabled()

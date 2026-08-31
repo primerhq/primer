@@ -1,14 +1,30 @@
 <!doctype html>
 <!-- styles.css only defines design tokens under :root[data-theme="dark"]
-     / :root[data-theme="light"], so an unset attribute leaves --bg /
-     --text / --accent undefined and the page paints with browser
-     defaults (white background, no card, no green button). Pin the
-     initial theme to "dark" so the auth screen and any other pre-App
-     render shows correctly; App.jsx still overrides this from the
-     persisted tweaks once it mounts. -->
-<html lang="en" data-theme="dark">
+     / :root[data-theme="light"], so the attribute must be set before
+     first paint. The inline script below resolves it: the operator's
+     persisted choice wins, else the OS preference (light-first revamp,
+     spec 2026-08-23 section 9). -->
+<html lang="en">
 <head>
 <meta charset="utf-8" />
+<script>
+  // Resolve the theme before first paint: operator choice, else OS.
+  (function () {
+    var theme = null;
+    try {
+      var saved = JSON.parse(localStorage.getItem("primer.tweaks") || "{}");
+      if (saved.theme === "dark" || saved.theme === "light") theme = saved.theme;
+    } catch (e) { /* private mode etc. */ }
+    if (!theme) {
+      // Dark-first (designer identity): dark unless the OS explicitly
+      // prefers light.
+      theme = window.matchMedia &&
+        window.matchMedia("(prefers-color-scheme: light)").matches
+        ? "light" : "dark";
+    }
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Primer · Console</title>
 <link rel="icon" type="image/svg+xml" href="brand/logo-light.svg" />
@@ -70,11 +86,37 @@
 <script type="text/babel" src="foundation/use-resource.js"></script>
 <script type="text/babel" src="foundation/use-mutation.js"></script>
 <script type="text/babel" src="foundation/capabilities.js"></script>
+<!-- Phase 2: the per-session conversation store (the tap routes frames here). -->
+<script type="text/babel" src="foundation/session-store.js"></script>
 <script type="text/babel" src="foundation/use-workspace-tap.js"></script>
-<script type="text/babel" src="foundation/router.js"></script>
 <script type="text/babel" src="foundation/tweaks.js"></script>
 <script type="text/babel" src="foundation/idle.js"></script>
 <script type="text/babel" src="foundation/viewport.js"></script>
+<!-- Fresh shell: URL grammar. Pure string work, no Web APIs. -->
+<script type="text/babel" src="foundation/shell-url.js"></script>
+<!-- Fresh shell: the verb registry. The palette is the router. -->
+<script type="text/babel" src="foundation/shell-verbs.js"></script>
+<!-- Fresh shell: the tab model (VS Code semantics). -->
+<script type="text/babel" src="foundation/shell-docs.js"></script>
+<!-- Fresh shell: useRouter, re-implemented on overlay state. -->
+<script type="text/babel" src="foundation/shell-router-shim.js"></script>
+<!-- Fresh shell: status verb + scroll anchoring. -->
+<script type="text/babel" src="foundation/shell-status.js"></script>
+<!-- Phase 3: the auto-pin-to-bottom engine (pure core + thin binding).
+     Replaces the P0 interim distance ref + follow boolean in nv-session-doc.
+     Registered after shell-status so it can read window.SH_FOLLOW_PX. -->
+<!-- US-007 R2 phase 1: the pure multi-group tab-host state machine.
+     Standalone until nv-tab-groups.jsx (phase 1, next deliverable) and the
+     nv-shell.jsx integration (phase 2, after the R1 owner releases it). -->
+<script type="text/babel" src="foundation/tab-group-model.js"></script>
+<!-- Fresh shell: turn collapse, tool chips, subagent nesting. -->
+<script type="text/babel" src="foundation/shell-turns.js"></script>
+<!-- Fresh shell: attention items and tiers. No S6 vocabulary. -->
+<script type="text/babel" src="foundation/shell-attention.js"></script>
+<!-- Fresh shell: the first-run checklist, as verb ids. -->
+<script type="text/babel" src="foundation/shell-walkthrough.js"></script>
+<script type="text/babel" src="foundation/audio.js"></script>
+<script type="text/babel" src="foundation/client-tools.js"></script>
 
 <!-- Vendor helpers -->
 <script type="text/babel" src="vendor/highlight-python.js"></script>
@@ -83,17 +125,20 @@
 <script type="text/babel" src="vendor/sparkline.js"></script>
 <script type="text/babel" src="vendor/auto-layout.js"></script>
 <script type="text/babel" src="vendor/markdown.jsx"></script>
+<script type="text/babel" src="vendor/parse-partial-json.js"></script>
 
 <!-- Shared components first (Icon/Btn/Modal etc.) + mock data + unused helper -->
 <script type="text/babel" src="components/shared.jsx"></script>
 <script type="text/babel" src="components/shared/pager.jsx"></script>
 <script type="text/babel" src="components/shared/entity-picker.jsx"></script>
+<script type="text/babel" src="components/shared/capability-badges.jsx"></script>
 <script type="text/babel" src="components/session-state.jsx"></script>
 <script type="text/babel" src="components/shared/token-meter.jsx"></script>
 <script type="text/babel" src="components/shared/card-list.jsx"></script>
 <script type="text/babel" src="components/shared/bottom-sheet.jsx"></script>
 <script type="text/babel" src="components/shared/mobile-tabs.jsx"></script>
 <script type="text/babel" src="components/shared/floating-action.jsx"></script>
+<script type="text/babel" src="components/shared/session-trace.jsx"></script>
 <script type="text/babel" src="components/graph-canvas.jsx"></script>
 <script type="text/babel" src="components/graph-builder/gb-model.jsx"></script>
 <script type="text/babel" src="components/graph-builder/gb-api.jsx"></script>
@@ -115,8 +160,7 @@
 
 <!-- Chrome + page components -->
 <script type="text/babel" src="components/auth.jsx"></script>
-<script type="text/babel" src="components/chrome.jsx"></script>
-<script type="text/babel" src="components/dashboard.jsx"></script>
+<script type="text/babel" src="components/setup-wizard.jsx"></script>
 <script type="text/babel" src="components/workers.jsx"></script>
 <script type="text/babel" src="components/health.jsx"></script>
 <script type="text/babel" src="components/external-tools.jsx"></script>
@@ -130,30 +174,7 @@
 <script type="text/babel" src="components/session-adapter.jsx"></script>
 <script type="text/babel" src="components/use-session-controls.jsx"></script>
 <script type="text/babel" src="components/new-session-form.jsx"></script>
-<script type="text/babel" src="components/studio/st-status.jsx"></script>
-<script type="text/babel" src="components/studio/st-api.jsx"></script>
-<script type="text/babel" src="components/studio/st-attention.jsx"></script>
-<script type="text/babel" src="components/studio/st-dock.jsx"></script>
-<script type="text/babel" src="components/studio-sidebar.jsx"></script>
-<!-- The rail reuses studio-sidebar.jsx's FilesTree / NewSessionForm / dialogs
-     rather than copying them, so it is registered after that file. -->
-<script type="text/babel" src="components/studio/st-runs-rail.jsx"></script>
-<script type="text/babel" src="components/studio/st-files-rail.jsx"></script>
-<script type="text/babel" src="components/studio/st-rail.jsx"></script>
-<script type="text/babel" src="components/studio-center.jsx"></script>
-<!-- PaneHost mounts two StudioCenter bodies, so it loads after that file. -->
-<script type="text/babel" src="components/studio/st-panes.jsx"></script>
-<script type="text/babel" src="components/studio/st-diff.jsx"></script>
-<!-- ChangesView renders DiffView, so it loads after it. -->
-<script type="text/babel" src="components/studio/st-changes.jsx"></script>
-<script type="text/babel" src="components/studio/st-graph-run.jsx"></script>
-<script type="text/babel" src="components/studio/st-mobile.jsx"></script>
-<script type="text/babel" src="components/studio-activity.jsx"></script>
-<script type="text/babel" src="components/studio-palette.jsx"></script>
-<script type="text/babel" src="components/studio-terminal.jsx"></script>
-<script type="text/babel" src="components/studio.jsx"></script>
 <script type="text/babel" src="components/workspaces.jsx"></script>
-<script type="text/babel" src="components/studio-settings.jsx"></script>
 <script type="text/babel" src="components/agents.jsx"></script>
 <script type="text/babel" src="components/graphs.jsx"></script>
 <script type="text/babel" src="components/knowledge.jsx"></script>
@@ -162,33 +183,25 @@
 <script type="text/babel" src="components/toolsets/python-editor.jsx"></script>
 <script type="text/babel" src="components/toolsets.jsx"></script>
 <script type="text/babel" src="components/model-profiles.jsx"></script>
-    <script type="text/babel" src="components/providers.jsx"></script>
-<script type="text/babel" src="components/semantic-search.jsx"></script>
-<script type="text/babel" src="components/web_search.jsx"></script>
+<script type="text/babel" src="components/provider-aggregated-editor.jsx"></script>
+<script type="text/babel" src="components/provider-form.jsx"></script>
+<script type="text/babel" src="components/provider-catalog.jsx"></script>
+    <script type="text/babel" src="components/semantic-search.jsx"></script>
 <script type="text/babel" src="components/internal-collections.jsx"></script>
 <script type="text/babel" src="components/approvals.jsx"></script>
 <script type="text/babel" src="components/channels.jsx"></script>
 <script type="text/babel" src="components/channel_rules.jsx"></script>
-<script type="text/babel" src="components/chat/use-transcript.js"></script>
-<script type="text/babel" src="components/chat/transcript.jsx"></script>
-<script type="text/babel" src="components/chat/composer.jsx"></script>
-<script type="text/babel" src="components/chat/schema-panel.jsx"></script>
-<script type="text/babel" src="components/chat/conversation.jsx"></script>
-<script type="text/babel" src="components/chats.jsx"></script>
+<script type="text/babel" src="components/shared/use-transcript.js"></script>
+<script type="text/babel" src="components/shared/transcript.jsx"></script>
+<script type="text/babel" src="components/shared/composer.jsx"></script>
+<script type="text/babel" src="components/shared/schema-panel.jsx"></script>
+<script type="text/babel" src="components/shared/session-controls.jsx"></script>
+<script type="text/babel" src="components/shared/session-history-controls.jsx"></script>
 <script type="text/babel" src="components/harness_form.jsx"></script>
 <script type="text/babel" src="components/harness_outbound_builder.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-commands.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-ctx.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-docs.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-legacy.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-doc-session.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-doc-agent.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-right.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-rail.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-nav.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-tabbar.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-palette.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-shell.jsx"></script>
+<!-- Fresh shell (S8). sh-api.jsx is the only file naming a URL. -->
+<script type="text/babel" src="components/shell/sh-api.jsx"></script>
+<script type="text/babel" src="components/shell/sh-activity.jsx"></script>
 <script type="text/babel" src="components/harnesses.jsx"></script>
 <script type="text/babel" src="components/services.jsx"></script>
 <script type="text/babel" src="components/triggers.jsx"></script>
@@ -197,6 +210,30 @@
 <script type="text/babel" src="components/admin_users.jsx"></script>
 <script type="text/babel" src="components/sso_admin.jsx"></script>
 <script type="text/babel" src="components/linked_accounts.jsx"></script>
+
+<!-- The three-view console (nv-*, wiring plan; behind the consoleNext
+     tweak until flag day) -->
+<script type="text/babel" src="components/console/nv-chrome.jsx"></script>
+<script type="text/babel" src="components/console/nv-palette.jsx"></script>
+<script type="text/babel" src="components/console/nv-studio.jsx"></script>
+<!-- uiv2 R2 cutover (US-011a): nv-sessions-sidebar.jsx (flat rail) and
+     nv-doc-host.jsx (single-group doc host) retired - NV_Rail below and
+     nv-tab-groups.jsx are the only shell for Studio now. -->
+<script type="text/babel" src="components/console/nv-rail.jsx"></script>
+<script type="text/babel" src="components/console/nv-files-sidebar.jsx"></script>
+<script type="text/babel" src="components/console/nv-session-doc.jsx"></script>
+<script type="text/babel" src="components/console/nv-file-docs.jsx"></script>
+<script type="text/babel" src="components/console/nv-tab-groups.jsx"></script>
+<script type="text/babel" src="components/console/nv-terminal.jsx"></script>
+<script type="text/babel" src="components/console/nv-client-tools.jsx"></script>
+<script type="text/babel" src="components/console/nv-overlays.jsx"></script>
+<script type="text/babel" src="components/console/nv-platform.jsx"></script>
+<script type="text/babel" src="components/console/nv-system.jsx"></script>
+<!-- US-014 M1: the mobile shell nv-shell.jsx swaps to on a phone
+     viewport (primerApi.useViewport().isMobile) - reuses the shared
+     mobile primitives below, so it must load after them. -->
+<script type="text/babel" src="components/console/nv-mobile-shell.jsx"></script>
+<script type="text/babel" src="components/console/nv-shell.jsx"></script>
 
 <!-- Tweaks panel + app -->
 <script type="text/babel" src="tweaks-panel.jsx"></script>

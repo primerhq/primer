@@ -22,7 +22,6 @@ gated on an embedder + pgvector, so the subsystem is bootstrapped first
 """
 from __future__ import annotations
 
-import asyncio
 
 import httpx
 import pytest
@@ -32,7 +31,7 @@ from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
-    wait_terminal,
+    wait_completed,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
@@ -57,22 +56,23 @@ _EMBED = {
 }
 
 
-async def _wait_bootstrap(client: httpx.AsyncClient, *, timeout_s: float = 180.0) -> None:
-    deadline = asyncio.get_event_loop().time() + timeout_s
-    last = "unknown"
-    while asyncio.get_event_loop().time() < deadline:
-        r = await client.get(
-            "/v1/internal_collections/bootstrap/status",
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        assert r.status_code == 200, r.text
-        last = r.json().get("status")
-        if last == "succeeded":
-            return
-        if last == "failed":
-            pytest.skip(f"internal-collections bootstrap failed: {r.json().get('error')!r}")
-        await asyncio.sleep(0.5)
-    pytest.skip(f"bootstrap did not complete in {timeout_s}s (last={last!r})")
+async def _read_bootstrap(client: httpx.AsyncClient) -> None:
+    """Read the terminal bootstrap status row back.
+
+    S2 deleted the asynchronous pipeline: POST /bootstrap runs inline and
+    returns its outcome, so there is nothing left to poll for once it has
+    answered. Skipping on a failed run is what the old loop was really
+    for (the embedder model is often unavailable on the runner).
+    """
+    r = await client.get(
+        "/v1/internal_collections/bootstrap/status",
+        timeout=httpx.Timeout(30.0, connect=10.0),
+    )
+    assert r.status_code == 200, r.text
+    row = r.json()
+    if row.get("status") == "failed":
+        pytest.skip(f"internal-collections bootstrap failed: {row.get('error')!r}")
+    assert row.get("status") == "succeeded", row
 
 
 @smk("SMK-COOKBOOK-03")
@@ -107,10 +107,12 @@ async def test_meta_agent_builds_from_use_case(
         config_active = True
         boot = await authed_client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            # Synchronous, and it carries a real embedding pass now.
+            # Under the lane's --timeout=180 per-test ceiling on purpose.
+            timeout=httpx.Timeout(120.0, connect=10.0),
         )
-        assert boot.status_code == 202, boot.text
-        await _wait_bootstrap(authed_client)
+        assert boot.status_code == 200, boot.text
+        await _read_bootstrap(authed_client)
 
         # --- The scripted meta-agent ------------------------------------
         # Rule 1: discover tools. Rule 2 (after the search hits): create the
@@ -143,8 +145,10 @@ async def test_meta_agent_builds_from_use_case(
             authed_client, workspace_id=wid, agent_id=meta["agent_id"],
             instructions="Use case: build an agent that returns the current date and time.",
         )
-        final = await wait_terminal(authed_client, sid, timeout_s=60)
-        assert final.get("status") == "ended", final
+        # 01a0518a: a plain agent session's clean stop now rests it
+        # parked, not ended.
+        final = await wait_completed(authed_client, sid, timeout_s=60)
+        assert final.get("session_state") == "parked", final
 
         # search_tools was dispatched AND returned real hits including the
         # datetime tool (proves the discovery step ran against the catalogue).
@@ -175,8 +179,8 @@ async def test_meta_agent_builds_from_use_case(
             authed_client, workspace_id=wid, agent_id=built_id,
             instructions="what time is it",
         )
-        run_final = await wait_terminal(authed_client, run, timeout_s=60)
-        assert run_final.get("status") == "ended", run_final
+        run_final = await wait_completed(authed_client, run, timeout_s=60)
+        assert run_final.get("session_state") == "parked", run_final
     finally:
         await authed_client.delete(f"/v1/agents/{built_id}")
         if config_active:

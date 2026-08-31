@@ -8,13 +8,16 @@ SQLite, Postgres, MongoDB, etc.). One backend instance, one model type:
 applications that store multiple model kinds wire up one
 :class:`Storage` per kind.
 
-The interface exposes six operations:
+The interface exposes seven operations:
 
 * :meth:`Storage.get` -- fetch by id, returns ``None`` if missing.
 * :meth:`Storage.create` -- insert a new entity, raise
   :class:`primer.model.except_.ConflictError` on duplicate id.
 * :meth:`Storage.update` -- replace an existing entity, raise
   :class:`primer.model.except_.NotFoundError` if missing.
+* :meth:`Storage.update_unless` -- like ``update``, but atomically
+  skipped if the row's CURRENT value of a given field already equals a
+  forbidden value -- for callers that must not act on a stale snapshot.
 * :meth:`Storage.delete` -- remove by id, raise
   :class:`primer.model.except_.NotFoundError` if missing.
 * :meth:`Storage.list` -- paginated enumeration, optionally ordered.
@@ -115,6 +118,47 @@ class Storage(ABC, Generic[ModelT]):
             the write atomically with other work on the same
             transaction. Pool-less backends (SQLite, in-memory) ignore
             it.
+
+        Raises
+        ------
+        primer.model.except_.NotFoundError
+            No entity with this id exists.
+        """
+
+    @abstractmethod
+    async def update_unless(
+        self, entity: ModelT, *, field: str, forbidden: Any,
+        conn: Any | None = None,
+    ) -> ModelT | None:
+        """Like :meth:`update`, but atomically skipped if the ROW'S OWN
+        current ``field`` value equals ``forbidden`` at write time.
+
+        Closes a fetch-then-write race that a caller-side "is this row
+        still eligible" check on its own snapshot cannot: the guard is
+        evaluated by the backend against the CURRENT stored row in the
+        same statement as the write, not against whatever the caller
+        read earlier. Use this instead of ``get``/``find`` + ``update``
+        whenever the write must not silently resurrect or corrupt a row
+        that transitioned out of eligibility in the gap between the
+        caller's read and this call.
+
+        Parameters
+        ----------
+        field
+            A top-level field name on ``ModelT`` (dotted paths are not
+            supported - the common case is a flat status-like field).
+        forbidden
+            The value that, if currently stored in ``field``, rejects
+            the write.
+        conn
+            See :meth:`update`.
+
+        Returns
+        -------
+        ModelT | None
+            The stored entity post-update, or ``None`` when the row's
+            current ``field`` already equals ``forbidden`` (the write
+            was skipped; the row is unchanged).
 
         Raises
         ------

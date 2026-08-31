@@ -2,7 +2,7 @@
 slug: sessions
 title: Sessions - long-running workspace agent runs
 summary: Headless agent execution inside a workspace, with file I/O, pause/resume control, and waiting.json state surfaces.
-related: [workspaces, agents, yielding, chats, tool-approval, graphs]
+related: [workspaces, agents, yielding, tool-approval, graphs]
 mcp_tools:
   - workspaces::create_workspace_session
   - workspaces::get_workspace_session
@@ -20,10 +20,9 @@ mcp_tools:
 A **Session** is a headless agent run, started with
 `workspaces::create_workspace_session` and polled with
 `workspaces::get_workspace_session`.
-Unlike a chat (which expects a
-human in the loop), a session is started with an initial instruction
-(or input) and runs to completion or pause without requiring user
-interaction. Sessions live inside a **Workspace** - they share the
+A session is started with an initial instruction (or input) and runs
+to completion or pause without requiring user interaction; a person can
+steer it while it runs, but nothing waits on one unless the agent asks. Sessions live inside a **Workspace** - they share the
 workspace's filesystem and git state with other sessions on the same
 workspace. The workspace is what gives them a sense of place; the
 session is the agent invocation inside it.
@@ -35,7 +34,7 @@ agent can run an agent or graph headlessly end to end.
 
 Use a session when the work runs headless to completion with no
 human in the loop; not when you need a back-and-forth conversation
-with a person (use a [chat](chats.md), driven over REST, not MCP).
+with a person (steer the session over REST, not MCP).
 
 Sessions are the right primitive when the work is "do this thing,
 take as long as you need, here are the tools, tell me when you're
@@ -60,7 +59,7 @@ A `Session` row carries:
   High-level lifecycle position.
 - `claimed_by` - worker id when running.
 - `parked_status`, `parked_event_key`, `parked_until` - yield state
-  (same fields as chats).
+  (see yielding for what sets them).
 - `instruction` (optional) - the initial user-message-equivalent.
 
 Per-session state lives at workspace-relative path
@@ -334,5 +333,4 @@ graph session parked mid-run on an `ask_user` node (see
   own `tool_approval/pending` + `tool_approval/respond` endpoints.
 - [graphs](graphs.md) - a graph session can park mid-run on an
   `ask_user` node and resume over the same endpoints.
-- [chats](chats.md) - the human-in-the-loop sibling of sessions;
   same yield mechanics, different lifecycle.

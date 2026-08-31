@@ -2,7 +2,7 @@
 
 An inbound user message re-arms a session's scheduler claim so the worker
 runs a fresh turn, regardless of the session's current lifecycle state.
-Mirrors ``primer/chat/enqueue.py`` + ``send_chat_message``'s persist+wake
+Mirrors the deleted chat surface's persist+wake
 tail: the session's on-disk ``messages.jsonl`` IS the FIFO queue
 (``AgentSession.append_instruction``); the scheduler-visible
 ``WorkspaceSession`` row carries the claim state (``turn_status`` +
@@ -39,6 +39,7 @@ from primer.model.workspace_session import (
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import WorkspaceMessageWriter
 from primer.session.reset import _reopen_ended_locked
+from primer.session.title import derive_title_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -133,19 +134,38 @@ async def wake_session(
         user_input_seq: int | None = None
         if instruction:
             ws = await deps.workspace_registry.get_workspace(workspace_id)
-            slot = await ws.get_session(session_id)
-            if slot is not None:
-                await slot.append_instruction(instruction)
-            writer = WorkspaceMessageWriter(
-                workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
-            )
-            user_input_seq = await writer.append(SessionMessageRecord(
-                seq=1,  # overwritten by the writer's monotonic counter
-                kind=SessionMessageKind.USER_INPUT,
-                payload={"text": instruction},
-                created_at=datetime.now(timezone.utc),
-            ))
-            await writer.flush()
+            # get_workspace() itself is already defended against a
+            # concurrently-destroyed workspace (WorkspaceRegistry.get_workspace
+            # / the local backend's _reattach both degrade a gone/mid-teardown
+            # workspace to a clean NotFoundError). But once a live `ws` handle
+            # is in hand, a workspace DELETE racing this same wake_session can
+            # still tear down the on-disk root out from under the writes below
+            # (WorkspaceRegistry.destroy: pop-from-cache -> aclose -> rmtree,
+            # not serialised against a caller already holding `ws`) - a plain
+            # filesystem OSError (e.g. FileNotFoundError mid-rmtree) from
+            # either write is exactly that race, not a real internal error,
+            # so map it to the same NotFoundError this function already
+            # raises for "workspace not found" rather than letting it surface
+            # as an unhandled 500 (01a0518a/5e4f8c39 follow-up: T0716).
+            try:
+                slot = await ws.get_session(session_id)
+                if slot is not None:
+                    await slot.append_instruction(instruction)
+                writer = WorkspaceMessageWriter(
+                    workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
+                )
+                user_input_seq = await writer.append(SessionMessageRecord(
+                    seq=1,  # overwritten by the writer's monotonic counter
+                    kind=SessionMessageKind.USER_INPUT,
+                    payload={"text": instruction},
+                    created_at=datetime.now(timezone.utc),
+                ))
+                await writer.flush()
+            except OSError as exc:
+                raise NotFoundError(
+                    f"workspace {workspace_id!r} was removed while writing "
+                    f"session {session_id!r}'s instruction"
+                ) from exc
 
         # Replace the active external tool set for the turn this wake
         # triggers (None = leave the set unchanged; [] = clear it). Dumped
@@ -162,6 +182,13 @@ async def wake_session(
         row.pause_requested_at = None
         if user_input_seq is not None:
             row.last_seq = user_input_seq
+        # Name the session from its opening instruction, once. Sessions
+        # are the only conversational surface now, so the session list
+        # needs the same readable titles the chat list had; a later
+        # rename by the user must never be overwritten, hence the
+        # None check rather than a blanket restamp.
+        if instruction and row.name is None:
+            row.name = derive_title_from_text(instruction)
         if row.status in _RESUMABLE:
             row.status = SessionStatus.RUNNING
             if row.started_at is None:

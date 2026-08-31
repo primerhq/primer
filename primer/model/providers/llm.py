@@ -7,6 +7,7 @@ Gemini connection shape) and is also reused by the embedding family.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum, StrEnum
 from typing import ClassVar
 
@@ -16,13 +17,12 @@ from pydantic import (
     Field,
     HttpUrl,
     PositiveInt,
-    SecretStr,
     field_validator,
     model_validator,
 )
 
 from primer.model.common import Identifiable
-from primer.model.providers._shared import Limits, _HttpApiKeyConfig
+from primer.model.providers._shared import ApiKeySecret, Limits, _HttpApiKeyConfig
 
 
 class LLMProviderType(str, Enum):
@@ -134,7 +134,7 @@ class GoogleConfig(BaseModel):
     Gemini API surface 401 at call time.
     """
 
-    api_key: SecretStr | None = Field(
+    api_key: ApiKeySecret | None = Field(
         default=None,
         description=(
             "Gemini API key from Google AI Studio. Optional — leave "
@@ -154,7 +154,7 @@ class AnthropicConfig(BaseModel):
     proxy that injects auth elsewhere; without one, calls to the real
     Anthropic API surface 401 at call time.
     """
-    api_key: SecretStr | None = Field(
+    api_key: ApiKeySecret | None = Field(
         default=None,
         description=(
             "Anthropic API key. Optional — leave unset only when the "
@@ -174,7 +174,7 @@ class OllamaConfig(BaseModel):
         ...,
         description="Base URL of the Ollama HTTP endpoint (e.g. http://localhost:11434).",
     )
-    api_key: SecretStr | None = Field(
+    api_key: ApiKeySecret | None = Field(
         default=None,
         description=(
             "Optional bearer token forwarded as the Authorization header. "
@@ -213,7 +213,7 @@ class OpenRouterConfig(BaseModel):
     # against mismatched-shape config dicts.
     model_config = ConfigDict(extra="forbid")
 
-    api_key: SecretStr = Field(
+    api_key: ApiKeySecret = Field(
         ...,
         description=(
             "OpenRouter API key. Required (the OpenRouter base URL is "
@@ -337,6 +337,35 @@ class LLMProvider(Identifiable):
     limits: Limits = Field(
         ...,
         description="Rate-limit settings enforced when calling this provider.",
+    )
+    last_probe_at: datetime | None = Field(
+        default=None,
+        description=(
+            "UTC instant of the most recent real connectivity probe "
+            "(discover_saved_llm_models success or failure). None means "
+            "never probed - the console shows no probe badge at all "
+            "rather than a stale/misleading one, and this is also what "
+            "a row persisted before this field existed reads back as "
+            "(platform wave P2, #4/#5)."
+        ),
+    )
+    last_probe_ok: bool = Field(
+        default=False,
+        description=(
+            "Whether last_probe_at's probe succeeded. Meaningless while "
+            "last_probe_at is None (never probed); mirrors "
+            "Workspace.last_probe_ok's same default-False-until-probed "
+            "convention."
+        ),
+    )
+    last_error: str | None = Field(
+        default=None,
+        description=(
+            "The probe failure message from the most recent FAILED "
+            "probe. Cleared (set back to None) on the next successful "
+            "probe; left stale (not cleared) by a probe that hasn't run "
+            "again yet, same as last_probe_ok/last_probe_at."
+        ),
     )
 
     @model_validator(mode="before")

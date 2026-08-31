@@ -86,6 +86,16 @@ class _FakeWorkspaceForSessions:
         self.id = workspace_id
         self.started_sessions: dict[str, dict] = {}
         self._handles: dict[str, _FakeAgentSessionForSessions] = {}
+        self.message_lines: dict[str, bytes] = {}
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        """01a04dde-b331: start_workspace_session now also writes the
+        modern USER_INPUT SessionMessageRecord via WorkspaceMessageWriter
+        right after start_session's legacy write, so this fake must
+        satisfy the WorkspaceIO surface too."""
+        self.message_lines[session_id] = (
+            self.message_lines.get(session_id, b"") + line
+        )
 
     async def start_session(
         self,

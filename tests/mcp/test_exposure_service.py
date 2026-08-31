@@ -144,12 +144,59 @@ async def test_list_available_tools_shape(
     expected_keys = {
         "scoped_id", "toolset_id", "description",
         "exposable", "reason", "currently_allowed",
+        # Platform wave P2 (#28): the y/w/r/n capability badges every
+        # other "list tools" route already re-adds via
+        # Tool.catalogue_flags() -- this was the one catalogue consumer
+        # that omitted them.
+        "yields", "requires_workspace", "tool_class", "required_role",
     }
     for r in rows:
         assert set(r.keys()) == expected_keys
         assert r["toolset_id"] == "misc"
         assert r["exposable"] is True
         assert r["reason"] is None
+        # fake_misc_tools declares neither tool with any non-default
+        # flag, so both should read back the four Tool() defaults.
+        assert r["yields"] is False
+        assert r["requires_workspace"] is False
+        assert r["tool_class"] == "standard"
+        assert r["required_role"] is None
 
     assert by_id["misc__uuid_v4"]["currently_allowed"] is True
     assert by_id["misc__now"]["currently_allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_available_tools_surfaces_non_default_flags(
+    fake_storage_provider,
+) -> None:
+    """A yielding, workspace-scoped, notifying, role-gated tool reads
+    back its real flags here too - the badges are per-tool, not just
+    always-default placeholders that happen to satisfy the shape test
+    above."""
+    from primer.model.chat import Tool
+
+    tool = Tool(
+        id="danger",
+        toolset_id="misc",
+        description="Does a dangerous thing.",
+        args_schema={"type": "object", "properties": {}},
+        yields=True,
+        requires_workspace=True,
+        tool_class="notifying",
+        required_role="admin",
+    )
+    from tests.mcp.conftest import FakeProviderRegistry, FakeToolsetProvider
+
+    provider = FakeToolsetProvider("misc", [tool])
+    registry = FakeProviderRegistry({"misc": provider})
+    deps = _deps(fake_storage_provider, registry)
+
+    rows = await list_available_tools(deps)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["yields"] is True
+    assert row["requires_workspace"] is True
+    assert row["tool_class"] == "notifying"
+    assert row["required_role"] == "admin"

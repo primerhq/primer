@@ -28,11 +28,12 @@ Models" button. They build a transient adapter, call its
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.llm.anthropic import _discover_anthropic_models
@@ -50,6 +51,7 @@ from primer.api.deps import (
     get_toolset_storage,
 )
 from primer.api.errors import common_responses
+from primer.model.chat import tool_catalogue_flags
 from primer.model.except_ import (
     BadRequestError,
     NetworkError,
@@ -63,13 +65,20 @@ from primer.api.registries.provider_registry import (
     RESERVED_LLM_IDS,
 )
 from primer.api.routers._cdc_hooks import register_cdc_kind
-from primer.api.routers._crud import make_crud_router
+from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.model.common import preserve_masked_secrets
 from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderProvider,
+    CrossEncoderProviderType,
     EmbeddingProvider,
+    EmbeddingProviderType,
     GoogleConfig,
     LLMProvider,
+    LLMProviderType,
+    OpenAIEmbeddingFlavor,
+    OpenChatFlavor,
+    OpenResponsesFlavor,
     OpenRouterConfig,
     Toolset,
     ToolsetProviderType,
@@ -130,12 +139,6 @@ def _make_reserved_delete_guard(reserved_ids: frozenset[str], kind: str):
             )
     _guard.__name__ = f"_reject_reserved_{kind}_delete"
     return _guard
-
-
-# Default seeded when a discovery probe cannot reveal a model's true
-# context window (the OpenAI /v1/models and Ollama /api/tags endpoints
-# do not include it). The form lets operators override per-model.
-_DEFAULT_LLM_CONTEXT_LENGTH = 32000
 
 
 # ---- Discovery body shapes -------------------------------------------------
@@ -205,6 +208,308 @@ _invalidate_toolset = _make_invalidator("invalidate_toolset")
 
 # ---- LLMProvider router ----------------------------------------------------
 
+# ---------- _types: form metadata for the console's provider form ---------
+#
+# The console used to carry this table itself (ui/components/providers.jsx
+# PROVIDER_KINDS_FIELDS: "single source of truth mirroring the backend's
+# provider enums + per-provider Config models ... Keep these in sync when
+# the backend grows a new provider type"). Keeping them in sync by hand
+# failed: the table offered openresponses flavors ["openai", "lmstudio",
+# "other"] while OpenResponsesFlavor has carried VLLM all along. The enums
+# live here, so the field shape is served from here.
+#
+# Shape follows the web-search helper (routers/web_search.py:209-222):
+#   {provider_type: {label, config_fields, row_fields, discoverable}}
+# The field lists carry descriptor dicts rather than bare names; the
+# console normalises a bare string to {"key": <name>}, so the older
+# string-list helpers stay valid unchanged.
+#
+# These routers MUST be mounted before their CRUD siblings in
+# _app_routes.py, or GET /{provider_id} swallows "_types".
+
+
+def _form_field(
+    key: str,
+    label: str,
+    type_: str,
+    *,
+    required: bool = False,
+    help_: str = "",
+    options: list[str] | None = None,
+    placeholder: str = "",
+) -> dict[str, Any]:
+    """One form-field descriptor for the console's parameterized form."""
+    field: dict[str, Any] = {
+        "key": key,
+        "label": label,
+        "type": type_,
+        "required": required,
+    }
+    if help_:
+        field["help"] = help_
+    if options is not None:
+        field["options"] = options
+    if placeholder:
+        field["placeholder"] = placeholder
+    return field
+
+
+def _base_url_field() -> dict[str, Any]:
+    return _form_field(
+        "url",
+        "Base URL",
+        "url",
+        required=True,
+        placeholder="https://api.openai.com/v1",
+    )
+
+
+def _optional_api_key_field() -> dict[str, Any]:
+    return _form_field(
+        "api_key",
+        "API key (optional)",
+        "password",
+        help_=(
+            "Leave blank for unauthenticated endpoints (LM Studio, "
+            "self-hosted vLLM); the upstream returns 401 at call time if "
+            "it does require auth."
+        ),
+    )
+
+
+def _vendor_api_key_field(vendor: str) -> dict[str, Any]:
+    return _form_field(
+        "api_key",
+        "API key (optional)",
+        "password",
+        help_=(
+            f"Required for the real {vendor} API; leave blank only when an "
+            "upstream proxy supplies auth."
+        ),
+    )
+
+
+def _models_row_field(example: str) -> dict[str, Any]:
+    return _form_field(
+        "models",
+        "Models",
+        "model_list",
+        required=True,
+        help_=(
+            f"At least one model name (for example {example}); the row is "
+            "rejected without one. Model list comes from the provider row, "
+            "not a live introspection of the upstream (T0025): adding a "
+            "model here does not check that the provider serves it."
+        ),
+    )
+
+
+def _with_limits(types: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Mark every type as carrying a Limits block.
+
+    ``limits`` is required on every model-family provider row and
+    ``max_concurrency`` inside it has no default
+    (primer/model/providers/_shared.py:44-49), so a form that omits it
+    can only ever produce a 422. Flagged once here rather than repeated
+    on every entry.
+    """
+    for meta in types.values():
+        meta["limits"] = True
+    return types
+
+
+llm_provider_types_router = APIRouter(tags=["providers"])
+embedding_provider_types_router = APIRouter(tags=["providers"])
+cross_encoder_provider_types_router = APIRouter(tags=["providers"])
+
+
+@llm_provider_types_router.get(
+    "/llm_providers/_types",
+    summary=(
+        "Provider-type metadata for the console form: the field shape an "
+        "operator fills in per LLM provider type."
+    ),
+)
+async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
+    return _with_limits({
+        LLMProviderType.OPENRESPONSES.value: {
+            "label": "OpenAI Responses API (openresponses)",
+            "config_fields": [
+                _base_url_field(),
+                _optional_api_key_field(),
+                _form_field(
+                    "flavor",
+                    "Flavor",
+                    "enum",
+                    options=[f.value for f in OpenResponsesFlavor],
+                ),
+            ],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.OPENCHAT.value: {
+            "label": "OpenAI-compatible Chat Completions (openchat)",
+            "config_fields": [
+                _base_url_field(),
+                _optional_api_key_field(),
+                _form_field(
+                    "flavor",
+                    "Flavor",
+                    "enum",
+                    options=[f.value for f in OpenChatFlavor],
+                ),
+            ],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.GEMINI.value: {
+            "label": "Google Gemini",
+            "config_fields": [_vendor_api_key_field("Gemini")],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.ANTHROPIC.value: {
+            "label": "Anthropic",
+            "config_fields": [_vendor_api_key_field("Anthropic")],
+            "row_fields": [],
+            # Platform wave P2 addendum (A): _probe_llm_models' anthropic
+            # branch calls the real _discover_anthropic_models live probe
+            # (proven by TestDiscoverAnthropic's live-discovery tests
+            # below) - this was the stale side of the inconsistency, not
+            # the probe's own docstring, which already listed anthropic
+            # among the six discoverable kinds.
+            "discoverable": True,
+        },
+        LLMProviderType.OLLAMA.value: {
+            "label": "Ollama",
+            "config_fields": [
+                _form_field(
+                    "url",
+                    "Base URL",
+                    "url",
+                    required=True,
+                    placeholder="http://localhost:11434",
+                ),
+                _optional_api_key_field(),
+            ],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.OPENROUTER.value: {
+            "label": "OpenRouter",
+            "config_fields": [
+                _form_field(
+                    "api_key",
+                    "API key",
+                    "password",
+                    required=True,
+                    help_=(
+                        "Required: the OpenRouter upstream is always remote "
+                        "and always authenticated."
+                    ),
+                ),
+                _form_field(
+                    "app_name",
+                    "App name (optional)",
+                    "text",
+                    placeholder="primer-staging",
+                    help_="Sent as X-Title for OpenRouter app attribution.",
+                ),
+                _form_field(
+                    "app_url",
+                    "App URL (optional)",
+                    "url",
+                    placeholder="https://primer.example",
+                    help_="Sent as HTTP-Referer for OpenRouter attribution.",
+                ),
+            ],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.AGGREGATED.value: {
+            "label": "Aggregated",
+            # An ordered member list with routing and failover switches is
+            # not a flat field set; the console mounts its own editor.
+            "variant": "aggregated",
+            "config_fields": [],
+            "row_fields": [],
+            "discoverable": False,
+        },
+    })
+
+
+@embedding_provider_types_router.get(
+    "/embedding_providers/_types",
+    summary="Provider-type metadata for the embedding provider form.",
+)
+async def list_embedding_provider_types() -> dict[str, dict[str, Any]]:
+    return _with_limits({
+        EmbeddingProviderType.OPENAI.value: {
+            "label": "OpenAI / OpenAI-compatible",
+            "config_fields": [
+                _base_url_field(),
+                _optional_api_key_field(),
+                _form_field(
+                    "flavor",
+                    "Flavor",
+                    "enum",
+                    options=[f.value for f in OpenAIEmbeddingFlavor],
+                ),
+            ],
+            "row_fields": [_models_row_field("text-embedding-3-small")],
+            "discoverable": True,
+        },
+        EmbeddingProviderType.HUGGINGFACE.value: {
+            "label": "HuggingFace (local sentence-transformers)",
+            "config_fields": [
+                _form_field(
+                    "token",
+                    "HF token",
+                    "password",
+                    required=True,
+                    help_=(
+                        "Required to pull the transformer model, even for "
+                        "public models."
+                    ),
+                ),
+            ],
+            "row_fields": [_models_row_field("BAAI/bge-base-en-v1.5")],
+            "discoverable": False,
+        },
+        EmbeddingProviderType.GEMINI.value: {
+            "label": "Google Gemini",
+            "config_fields": [_vendor_api_key_field("Gemini")],
+            "row_fields": [_models_row_field("gemini-embedding-001")],
+            "discoverable": False,
+        },
+    })
+
+
+@cross_encoder_provider_types_router.get(
+    "/cross_encoder_providers/_types",
+    summary="Provider-type metadata for the cross-encoder provider form.",
+)
+async def list_cross_encoder_provider_types() -> dict[str, dict[str, Any]]:
+    return _with_limits({
+        CrossEncoderProviderType.HUGGINGFACE.value: {
+            "label": "HuggingFace (local sentence-transformers)",
+            "config_fields": [
+                _form_field(
+                    "token",
+                    "HF token (optional for public repos)",
+                    "password",
+                    help_=(
+                        "Needed only for gated repositories; BAAI and "
+                        "cross-encoder/* rerankers are public."
+                    ),
+                ),
+            ],
+            "row_fields": [_models_row_field("BAAI/bge-reranker-v2-m3")],
+            "discoverable": False,
+        },
+    })
+
+
 llm_provider_router = make_crud_router(
     model_cls=LLMProvider,
     storage_dep=get_llm_provider_storage,
@@ -213,6 +518,7 @@ llm_provider_router = make_crud_router(
     on_update=_invalidate_llm,
     on_delete=_invalidate_llm,
     on_pre_create=_make_reserved_create_guard(RESERVED_LLM_IDS, "llm_provider"),
+    on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_LLM_IDS, "llm_provider"),
 )
 
@@ -327,6 +633,12 @@ async def discover_saved_llm_models(
     Returns the same ``{"models": [...]}`` shape, which the console turns
     into :class:`ModelProfile` rows -- discovery lists what the upstream
     offers; a profile is what this deployment chooses to register.
+
+    Platform wave P2 (#4/#5): this is the one place a REAL, stored
+    provider is actually probed (the draft-config sibling above has no
+    persisted row to stamp), so success/failure here is stamped onto
+    ``last_probe_at``/``last_probe_ok``/``last_error`` before the
+    original outcome (result or re-raise) proceeds.
     """
     from primer.model.except_ import NotFoundError
 
@@ -337,7 +649,20 @@ async def discover_saved_llm_models(
     # value this endpoint exists to avoid sending upstream. Dump in python
     # mode and unwrap explicitly.
     config = _unwrap_secrets(row.config.model_dump(mode="python"))
-    return await _probe_llm_models(str(getattr(row.provider, "value", row.provider)), config)
+    now = datetime.now(UTC)
+    try:
+        result = await _probe_llm_models(
+            str(getattr(row.provider, "value", row.provider)), config,
+        )
+    except BadRequestError as exc:
+        await providers.update(row.model_copy(update={
+            "last_probe_at": now, "last_probe_ok": False, "last_error": str(exc),
+        }))
+        raise
+    await providers.update(row.model_copy(update={
+        "last_probe_at": now, "last_probe_ok": True, "last_error": None,
+    }))
+    return result
 
 
 def _unwrap_secrets(value: Any) -> Any:
@@ -457,16 +782,19 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
             f"{provider!r}; populate the models list manually or "
             f"use the UI's 'Suggest models' fallback.",
         )
-    # Neither Ollama's /api/tags, OpenAI's /v1/models, nor Anthropic's
-    # /v1/models exposes a per-model context window. LLMModel requires
-    # context_length, so seed a sane default the operator can override
-    # in the form. OpenRouter's catalogue carries context_length
-    # verbatim, so skip the default for that branch. Gemini reports
-    # inputTokenLimit for most models but not all, so seed the default
-    # only where the helper omitted it.
-    if provider in ("ollama", "openresponses", "openchat", "anthropic", "gemini"):
-        for m in result.get("models", []):
-            m.setdefault("context_length", _DEFAULT_LLM_CONTEXT_LENGTH)
+    # Dogfood round 2: a seeded fake (formerly a blanket 32000 here) is
+    # worse than an honest gap - it silently became the served
+    # context_length for a real deployment (a user's llm-openchat model
+    # profile carried it verbatim). Each probe helper above now reports
+    # a real per-model context_length when its upstream exposes one
+    # (_probe_openai_compatible_models' context_length/max_model_len/
+    # max_context_length check, _probe_ollama_models' per-model
+    # /api/show, _discover_gemini_models' inputTokenLimit,
+    # _discover_openrouter_models' verbatim catalogue value) and simply
+    # omits the key otherwise - Anthropic's /v1/models never exposes one
+    # at all. The operator fills an unknown value in on the profile
+    # form; a required field left blank is an honest prompt, not a
+    # confident-looking lie.
     return result
 
 
@@ -480,6 +808,7 @@ embedding_provider_router = make_crud_router(
     on_update=_invalidate_embedder,
     on_delete=_invalidate_embedder,
     on_pre_create=_make_reserved_create_guard(RESERVED_EMBEDDER_IDS, "embedding_provider"),
+    on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_EMBEDDER_IDS, "embedding_provider"),
 )
 
@@ -552,7 +881,13 @@ async def _probe_ollama_models(config: dict[str, Any]) -> dict:
     api_key = config.get("api_key")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    client = ollama.AsyncClient(host=config["url"], headers=headers or None)
+    # config["url"] may arrive as a pydantic HttpUrl (not a plain str)
+    # when the caller built it from a validated config model rather
+    # than a raw request-body dict; the ollama SDK calls str-only
+    # methods on `host` internally and raises AttributeError on an
+    # HttpUrl. str() here is defensive regardless of which shape the
+    # caller passes.
+    client = ollama.AsyncClient(host=str(config["url"]), headers=headers or None)
     try:
         resp = await client.list()
     except Exception as exc:  # pragma: no cover — network paths
@@ -563,17 +898,43 @@ async def _probe_ollama_models(config: dict[str, Any]) -> dict:
         # ollama.AsyncClient does not expose aclose() in all versions;
         # rely on httpx's GC for cleanup.
         pass
-    # ollama.list() returns a ListResponse with .models[].model (the name).
-    # context_length is not exposed on the list endpoint; would need a
-    # per-model `client.show(name)` call. Skip — operators edit it in
-    # the form.
+    # ollama.list() returns a ListResponse with .models[].model (the
+    # name); context_length is not on that endpoint but IS on the
+    # per-model `/api/show` response (modelinfo's key naming is
+    # per-architecture - "llama.context_length", "qwen2.context_length",
+    # etc. - so the real one is found by suffix, not a fixed name). One
+    # extra call per model, but this only runs from the operator-
+    # initiated Fetch/Discover action, not a hot path.
     models = getattr(resp, "models", None) or resp.get("models", [])
     out: list[dict[str, Any]] = []
     for m in models:
         name = getattr(m, "model", None) or (m.get("model") if isinstance(m, dict) else None)
-        if name:
-            out.append({"name": name})
+        if not name:
+            continue
+        entry: dict[str, Any] = {"name": name}
+        context_length = await _ollama_model_context_length(client, name)
+        if context_length is not None:
+            entry["context_length"] = context_length
+        out.append(entry)
     return {"models": out}
+
+
+async def _ollama_model_context_length(client: Any, name: str) -> int | None:
+    """Best-effort real context window for one Ollama model, or None.
+
+    A single model's /api/show failing (unpulled, a transient error) must
+    not fail the whole discovery probe - it just means that one model's
+    context_length stays unknown, same as any other provider gap.
+    """
+    try:
+        info = await client.show(name)
+    except Exception:  # noqa: BLE001 — network/SDK paths, one model at a time
+        return None
+    model_info = getattr(info, "modelinfo", None) or {}
+    for key, value in model_info.items():
+        if key.endswith(".context_length") and isinstance(value, int) and value > 0:
+            return value
+    return None
 
 
 async def _probe_openai_compatible_models(config: dict[str, Any]) -> dict:
@@ -593,11 +954,25 @@ async def _probe_openai_compatible_models(config: dict[str, Any]) -> dict:
             f"openai-compatible probe failed: {type(exc).__name__}: {exc}",
         ) from exc
     items = data.get("data") or []
-    # OpenAI returns {data: [{id, ...}, ...]}. context_length isn't in
-    # the list response (it's model-specific; the chat-completions API
-    # returns it on a per-request error path). The UI seeds a default
-    # context_length and the operator can edit it.
-    return {"models": [{"name": m["id"]} for m in items if "id" in m]}
+    # Real OpenAI itself never exposes context_length on /v1/models (it
+    # is model-specific and only surfaces via the chat-completions
+    # error path), but the OpenAI-compatible SERVERS this probe usually
+    # actually talks to (vLLM, llama.cpp server, LM Studio, text-
+    # generation-webui) commonly report the model's real window
+    # directly on each list entry, just under different field names -
+    # use it when present rather than seeding a guess when it isn't.
+    out: list[dict[str, Any]] = []
+    for m in items:
+        if "id" not in m:
+            continue
+        entry: dict[str, Any] = {"name": m["id"]}
+        for key in ("context_length", "max_model_len", "max_context_length"):
+            value = m.get(key)
+            if isinstance(value, int) and value > 0:
+                entry["context_length"] = value
+                break
+        out.append(entry)
+    return {"models": out}
 
 
 # ---- CrossEncoderProvider router -------------------------------------------
@@ -610,6 +985,7 @@ cross_encoder_provider_router = make_crud_router(
     on_update=_invalidate_cross_encoder,
     on_delete=_invalidate_cross_encoder,
     on_pre_create=_make_reserved_create_guard(RESERVED_CROSS_ENCODER_IDS, "cross_encoder_provider"),
+    on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_CROSS_ENCODER_IDS, "cross_encoder_provider"),
 )
 
@@ -734,18 +1110,78 @@ async def _catalogue_tools(
     """
     import asyncio
 
-    tools: list[dict] = []
-    try:
-        async with asyncio.timeout(_CATALOGUE_PROBE_TIMEOUT_S):
-            provider = await registry.get_toolset(tid)
-            async for tool in provider.list_tools(principal=principal):
-                tools.append({
+    async def _drain() -> list[dict]:
+        drained: list[dict] = []
+        provider = await registry.get_toolset(tid)
+        agen = provider.list_tools(principal=principal)
+        try:
+            async for tool in agen:
+                drained.append({
                     "id": tool.id,
                     "scoped_id": f"{tid}__{tool.id}",
                     "description": tool.description or "",
                     "input_schema": tool.args_schema or {},
+                    # y/w/r/n capability badges -- excluded from Tool's own
+                    # wire serialisation (chat.py) since they must never
+                    # reach the LLM-facing tool schema;
+                    # tool_catalogue_flags() is the one seam every "list
+                    # tools" route re-adds them from.
+                    **tool_catalogue_flags(tool),
                 })
-    except Exception as exc:  # noqa: BLE001
+        finally:
+            # Finalize the generator HERE, in the probe task, never via
+            # the event loop's deferred asyncgen finalizer. A failing
+            # STDIO MCP provider leaves the generator holding the mcp
+            # client's cancel scope; garbage finalization runs the
+            # athrow in a FRESH task, anyio then detects "cancel scope
+            # exited in a different task" and its wreckage cancels the
+            # route task at some later await - the whole catalogue
+            # answered 500 for one broken toolset.
+            try:
+                await agen.aclose()
+            except BaseException:  # noqa: BLE001 - teardown wreckage
+                pass
+        return drained
+
+    # The probe runs in its OWN task (asyncio.wait_for wraps the coro),
+    # and that isolation is load-bearing, not style: anyio cancel scopes
+    # are task-local, and a broken STDIO MCP server dies during the mcp
+    # client's task-group teardown in ways that poison the entering
+    # task - a leaked cancellation, or a cancel-scope RuntimeError at
+    # the NEXT await. Probing inline let that kill the route task after
+    # our except had already run, so the whole catalogue answered 500
+    # ("No response returned") the moment ONE stdio toolset was
+    # misconfigured. In a dedicated task the wreckage dies with the
+    # probe and arrives here as an ordinary awaited exception.
+    try:
+        tools = await asyncio.wait_for(_drain(), _CATALOGUE_PROBE_TIMEOUT_S)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except asyncio.CancelledError:
+        # The broken-stdio teardown does not merely fail - the mcp
+        # client's anyio scope CANCELS THE CALLING TASK (observed:
+        # "Cancelled via cancel scope ..." raised right here), and the
+        # leaked pending-cancel re-fires at every later await, so even
+        # a swallowed CancelledError still killed the route ("No
+        # response returned" 500). Absorb it: uncancel down to zero and
+        # report the toolset as unavailable.
+        #
+        # The trade: a GENUINE outer cancellation (client gone,
+        # shutdown) caught mid-probe is absorbed too and the request
+        # runs to its (bounded) end before the response is discarded.
+        # That costs at most the remaining probe bounds; the
+        # alternative was a whole catalogue that 500s whenever one
+        # stdio toolset is misconfigured.
+        current = asyncio.current_task()
+        if current is not None:
+            while current.cancelling() > 0:
+                current.uncancel()
+        return [], "cancelled during probe (broken toolset teardown)"
+    except BaseException as exc:  # noqa: BLE001
+        # BaseException on purpose, not Exception: the teardown wreck
+        # includes BaseExceptionGroup whose leaves are GeneratorExit
+        # (a BaseException).
+        #
         # HTTP MCP runs in anyio task groups, so the useful error is a leaf of
         # a BaseExceptionGroup; reporting the group renders an unreadable
         # "unhandled errors in a TaskGroup (1 sub-exception)" in the console.
@@ -923,13 +1359,20 @@ def _validate_python_toolset(entity: Toolset) -> None:
 async def _toolset_on_pre_update(
     entity: Toolset, existing: Toolset, request: Request
 ) -> None:
-    """Validate python source and own ``source_version`` server-side.
+    """Preserve unrotated secrets, then validate python source and own
+    ``source_version`` server-side.
+
+    01a05198: a full-replace PUT that never touched client_secret / env
+    / headers would otherwise persist the served mask placeholder (or
+    an empty value) over the real credential - see
+    :func:`primer.model.common.preserve_masked_secrets`.
 
     The client's version is advisory. If two operators edit concurrently they
     both send the version they read, and a parked resume could not tell which
     code it was about to run. The server bumps instead, so the number always
     moves when the source does.
     """
+    preserve_masked_secrets(entity, existing)
     if entity.provider != ToolsetProviderType.PYTHON:
         return
     _validate_python_toolset(entity)
@@ -997,7 +1440,13 @@ async def list_toolset_tools(
     tools = []
     try:
         async for tool in provider.list_tools(principal=principal):
-            tools.append(tool.model_dump(mode="json"))
+            entry = tool.model_dump(mode="json")
+            # y/w/r/n capability badges -- excluded from Tool's own wire
+            # serialisation (chat.py) since they must never reach the
+            # LLM-facing tool schema; tool_catalogue_flags() is the one
+            # seam every "list tools" route re-adds them from.
+            entry.update(tool_catalogue_flags(tool))
+            tools.append(entry)
     except BaseExceptionGroup as group:
         # HTTP/SSE MCP transports run inside anyio task groups, which
         # wrap any sub-exception in BaseExceptionGroup. Unwrap to find
@@ -1030,6 +1479,75 @@ async def list_toolset_tools(
             f"{type(exc).__name__}: {exc}"
         ) from exc
     return {"tools": tools}
+
+
+async def _complete_mcp_oauth(
+    toolset_id: str, code: str, state: str, registry: ProviderRegistry,
+) -> dict:
+    """Shared body for the GET and POST OAuth callback routes below."""
+    from primer.model.except_ import BadRequestError
+    from primer.toolset.mcp import McpToolsetProvider
+
+    provider = await registry.get_toolset(toolset_id)
+    if not isinstance(provider, McpToolsetProvider):
+        raise BadRequestError(
+            f"toolset {toolset_id!r} is not an MCP toolset; the OAuth "
+            "callback does not apply"
+        )
+    await provider.complete_oauth(code=code, state=state)
+    return {"ok": True}
+
+
+@toolset_router.get(
+    "/toolsets/{toolset_id}/oauth/callback",
+    summary="MCP OAuth consent callback (exchanges code+state for a token)",
+    responses=common_responses(400, 404, 500),
+)
+async def mcp_oauth_callback_get(
+    toolset_id: str = Path(..., description="Toolset id"),
+    code: str = Query(..., description="Authorization code from the OAuth provider"),
+    state: str = Query(
+        ..., description="Opaque state id minted when the consent flow started"
+    ),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    """Finish an MCP toolset's OAuth consent flow.
+
+    The third-party OAuth provider redirects the operator's browser back
+    here with ``code``/``state`` once they consent to a flow started by
+    an earlier ``AuthRequiredError`` (surfaced as 401 + ``auth_url`` from
+    e.g. ``GET /toolsets/{id}/tools``). Exchanges the code for a token via
+    the toolset's ``McpToolsetProvider.complete_oauth`` and persists it,
+    so the next call to this toolset succeeds without another round-trip.
+
+    ``state`` is a single opaque token from the toolset's own OAuth state
+    store; it carries no toolset id, so the id in the URL path is what
+    routes this callback to the right provider. The operator's
+    ``OAuthConfig.redirect_uri`` must be registered with the third-party
+    provider as this exact path. An unknown/expired/already-consumed
+    ``state`` 400s (surfaced by the state store); an unknown ``toolset_id``
+    404s; a ``toolset_id`` that resolves but isn't an MCP toolset 400s.
+    """
+    return await _complete_mcp_oauth(toolset_id, code, state, registry)
+
+
+@toolset_router.post(
+    "/toolsets/{toolset_id}/oauth/callback",
+    summary="MCP OAuth consent callback (exchanges code+state for a token)",
+    responses=common_responses(400, 404, 500),
+)
+async def mcp_oauth_callback_post(
+    toolset_id: str = Path(..., description="Toolset id"),
+    code: str = Query(..., description="Authorization code from the OAuth provider"),
+    state: str = Query(
+        ..., description="Opaque state id minted when the consent flow started"
+    ),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    """POST counterpart of ``GET .../oauth/callback`` -- some OAuth
+    providers deliver the callback as a form POST rather than a redirect
+    with query params. Same contract; see the GET handler's docstring."""
+    return await _complete_mcp_oauth(toolset_id, code, state, registry)
 
 
 # ---------- Built-in toolsets registry --------------------------------------
@@ -1338,14 +1856,22 @@ async def validate_python_source(
     HTTP error. ``ok`` distinguishes them. (The PUT path still 422s -- there,
     invalid source is a rejected write.)
 
-    Safe by construction: :func:`register_module` walks the AST and never
-    imports or executes the module, which is the same property that lets the
-    save path validate untrusted source.
+    Safe by construction: :func:`register_module_report` walks the AST and
+    never imports or executes the module, which is the same property that
+    lets the save path validate untrusted source.
+
+    Per-tool, not first-failure: a module with 2 bad functions and 3 good
+    ones reports all 5 verdicts. Top-level ``error`` is reserved for
+    MODULE-level problems (bad syntax, a dangling ``@resumes`` reference)
+    that abort before any function-level analysis is possible; a
+    per-function failure instead shows up as ``ok: false`` on that one
+    entry in ``tools``, alongside the others.
     """
     from primer.model.providers.toolset import PythonConfig
     from primer.toolset.python_runner.registration import (
+        RegisteredTool,
         RegistrationError,
-        register_module,
+        register_module_report,
     )
 
     # The per-tool default only affects reported timeouts, so a missing or
@@ -1357,7 +1883,9 @@ async def validate_python_source(
         default_timeout = row.config.default_timeout_seconds
 
     try:
-        registered = register_module(body.source, toolset_id, default_timeout)
+        registered = register_module_report(
+            body.source, toolset_id, default_timeout,
+        )
     except RegistrationError as exc:
         return {
             "ok": False,
@@ -1369,14 +1897,20 @@ async def validate_python_source(
             },
         }
 
-    return {
-        "ok": True,
-        "error": None,
-        "tools": [
-            {
+    tools: list[dict] = []
+    all_ok = True
+    for reg in registered:
+        if isinstance(reg, RegisteredTool):
+            tools.append({
                 "id": reg.tool.id,
                 "fn_name": reg.fn_name,
-                "yields": reg.tool.yields,
+                "ok": True,
+                # y/w/r/n capability badges -- tool_catalogue_flags() is
+                # the one seam every "list tools" route re-adds them
+                # from (R4 review finding: this route and .../runtime
+                # had drifted, only re-adding "yields", before that seam
+                # existed).
+                **tool_catalogue_flags(reg.tool),
                 "timeout_seconds": reg.timeout_seconds,
                 "description": reg.tool.description or "",
                 "args": sorted(
@@ -1384,9 +1918,25 @@ async def validate_python_source(
                 ),
                 # Where the function sits, so the outline can jump to it.
                 "lineno": reg.lineno,
-            }
-            for reg in registered
-        ],
+            })
+        else:
+            all_ok = False
+            tools.append({
+                "id": reg.fn_name,
+                "fn_name": reg.fn_name,
+                "ok": False,
+                "lineno": reg.lineno,
+                "error": {
+                    "message": reg.message,
+                    "field": reg.field,
+                    "lineno": reg.lineno,
+                },
+            })
+
+    return {
+        "ok": all_ok,
+        "error": None,
+        "tools": tools,
     }
 
 
@@ -1407,14 +1957,15 @@ async def toolset_runtime(
     than a generic "sandboxed" badge.
     """
     provider = await registry.get_toolset(toolset_id)
-    # `yields` is not part of Tool's serialisation, but it is the single most
-    # important thing to know about a python tool at a glance: a yielding tool
-    # parks the run rather than returning. The console renders a badge from it,
-    # so add it explicitly rather than leaving the badge unreachable.
+    # y/w/r/n capability badges are not part of Tool's own serialisation
+    # (chat.py excludes them so they never reach the LLM-facing schema);
+    # tool_catalogue_flags() is the one seam every "list tools" route
+    # re-adds them from (R4 review finding: this route and .../validate
+    # had drifted, only re-adding "yields", before that seam existed).
     tools = []
     async for t in provider.list_tools():
         entry = t.model_dump(mode="json")
-        entry["yields"] = bool(getattr(t, "yields", False))
+        entry.update(tool_catalogue_flags(t))
         tools.append(entry)
     error = getattr(provider, "registration_error", None)
     return {

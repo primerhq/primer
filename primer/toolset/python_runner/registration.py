@@ -155,21 +155,15 @@ def _lenient_docstring(
         )
 
 
-def register_module(
-    source: str,
-    toolset_id: str,
-    default_timeout: float,
-    *,
-    require_docstrings: bool = True,
-    allow_yielding: bool = True,
-) -> list[RegisteredTool]:
-    """Parse ``source`` and return one RegisteredTool per decorated function.
+def _parse_and_collect(
+    source: str, *, allow_yielding: bool,
+) -> tuple[list[tuple[_FunctionNode, ast.expr]], dict[str, str]]:
+    """Module-level parse + validation shared by both entry points below.
 
-    ``require_docstrings=False`` drops the docstring-anatomy bar (used by
-    service bundles, whose descriptions never reach a model);
-    ``allow_yielding=False`` rejects ``@resumes`` companions outright
-    (used by callers with no park/resume path, e.g. the synchronous
-    service gateway). Defaults preserve the original strict behavior.
+    Raises :class:`RegistrationError` for problems that are not
+    attributable to one function -- bad syntax, a dangling ``@resumes``
+    reference, or disallowed yielding -- so both the raise-on-first-error
+    and collect-every-verdict callers fail the same way here.
     """
     try:
         tree = ast.parse(source)
@@ -198,51 +192,153 @@ def register_module(
             f"@{RESUME_DECORATOR} companion"
         )
 
-    out: list[RegisteredTool] = []
+    return tool_nodes, resume_for
+
+
+def _register_one(
+    node: _FunctionNode,
+    dec: ast.expr,
+    *,
+    resume_for: dict[str, str],
+    toolset_id: str,
+    default_timeout: float,
+    require_docstrings: bool,
+) -> RegisteredTool:
+    """Register one decorated function. Raises ``RegistrationError`` on
+    any failure specific to this function (bad docstring, bad schema, a
+    docstring example that disagrees with the signature, a bad
+    ``timeout_seconds``)."""
+    try:
+        if require_docstrings:
+            doc = parse_docstring(ast.get_docstring(node) or "")
+        else:
+            doc = _lenient_docstring(node)
+        schema = build_args_schema(
+            node, doc, require_arg_docs=require_docstrings
+        )
+    except (DocstringError, SchemaError) as exc:
+        raise RegistrationError(
+            f"{node.name}: {exc}", field=exc.field, lineno=node.lineno
+        ) from exc
+
+    timeout = _timeout_from(dec, default_timeout, node.name)
+    resume_name = resume_for.get(node.name)
+    try:
+        tool = make_tool(
+            id=node.name,
+            toolset_id=toolset_id,
+            purpose=doc.purpose,
+            when=doc.when,
+            args_schema=schema,
+            examples=[ToolExample(args=a) for a in doc.examples],
+            yields=resume_name is not None,
+        )
+    except ValidationError as exc:
+        # make_tool validates every example against the schema. A docstring
+        # example that disagrees with the signature is a registration
+        # failure, not something to ship to a model.
+        raise RegistrationError(
+            f"{node.name}: a docstring example does not match the "
+            f"argument schema: {exc.message}",
+            field="examples",
+            lineno=node.lineno,
+        ) from exc
+
+    return RegisteredTool(
+        tool=tool,
+        fn_name=node.name,
+        resume_fn_name=resume_name,
+        timeout_seconds=timeout,
+        lineno=node.lineno,
+    )
+
+
+def register_module(
+    source: str,
+    toolset_id: str,
+    default_timeout: float,
+    *,
+    require_docstrings: bool = True,
+    allow_yielding: bool = True,
+) -> list[RegisteredTool]:
+    """Parse ``source`` and return one RegisteredTool per decorated function.
+
+    ``require_docstrings=False`` drops the docstring-anatomy bar (used by
+    service bundles, whose descriptions never reach a model);
+    ``allow_yielding=False`` rejects ``@resumes`` companions outright
+    (used by callers with no park/resume path, e.g. the synchronous
+    service gateway). Defaults preserve the original strict behavior.
+
+    Raises ``RegistrationError`` on the FIRST bad function -- callers that
+    persist a toolset (or otherwise need an all-or-nothing result) want
+    exactly that. For a full per-function report instead, see
+    :func:`register_module_report`.
+    """
+    tool_nodes, resume_for = _parse_and_collect(
+        source, allow_yielding=allow_yielding,
+    )
+    return [
+        _register_one(
+            node, dec,
+            resume_for=resume_for,
+            toolset_id=toolset_id,
+            default_timeout=default_timeout,
+            require_docstrings=require_docstrings,
+        )
+        for node, dec in tool_nodes
+    ]
+
+
+@dataclass
+class ToolRegistrationFailure:
+    """One decorated function that failed to register, captured instead of
+    raised. Returned alongside successful :class:`RegisteredTool` entries
+    by :func:`register_module_report`."""
+
+    fn_name: str
+    message: str
+    field: str | None
+    lineno: int
+
+
+def register_module_report(
+    source: str,
+    toolset_id: str,
+    default_timeout: float,
+    *,
+    require_docstrings: bool = True,
+    allow_yielding: bool = True,
+) -> list[RegisteredTool | ToolRegistrationFailure]:
+    """Like :func:`register_module`, but a bad function does not abort the
+    rest of the module: every ``@primer_tool`` function gets its own
+    verdict, in source order. Module-level problems (bad syntax, a
+    dangling ``@resumes`` reference, disallowed yielding) still raise
+    ``RegistrationError``, since those aren't attributable to one
+    function.
+
+    Used by the dry-run validate endpoint, whose contract is a per-tool
+    array -- a module with 2 bad tools and 3 good ones should report all
+    5 verdicts, not abort after the first bad one.
+    """
+    tool_nodes, resume_for = _parse_and_collect(
+        source, allow_yielding=allow_yielding,
+    )
+
+    out: list[RegisteredTool | ToolRegistrationFailure] = []
     for node, dec in tool_nodes:
         try:
-            if require_docstrings:
-                doc = parse_docstring(ast.get_docstring(node) or "")
-            else:
-                doc = _lenient_docstring(node)
-            schema = build_args_schema(
-                node, doc, require_arg_docs=require_docstrings
-            )
-        except (DocstringError, SchemaError) as exc:
-            raise RegistrationError(
-                f"{node.name}: {exc}", field=exc.field, lineno=node.lineno
-            ) from exc
-
-        timeout = _timeout_from(dec, default_timeout, node.name)
-        resume_name = resume_for.get(node.name)
-        try:
-            tool = make_tool(
-                id=node.name,
+            out.append(_register_one(
+                node, dec,
+                resume_for=resume_for,
                 toolset_id=toolset_id,
-                purpose=doc.purpose,
-                when=doc.when,
-                args_schema=schema,
-                examples=[ToolExample(args=a) for a in doc.examples],
-                yields=resume_name is not None,
-            )
-        except ValidationError as exc:
-            # make_tool validates every example against the schema. A docstring
-            # example that disagrees with the signature is a registration
-            # failure, not something to ship to a model.
-            raise RegistrationError(
-                f"{node.name}: a docstring example does not match the "
-                f"argument schema: {exc.message}",
-                field="examples",
-                lineno=node.lineno,
-            ) from exc
-
-        out.append(
-            RegisteredTool(
-                tool=tool,
+                default_timeout=default_timeout,
+                require_docstrings=require_docstrings,
+            ))
+        except RegistrationError as exc:
+            out.append(ToolRegistrationFailure(
                 fn_name=node.name,
-                resume_fn_name=resume_name,
-                timeout_seconds=timeout,
-                lineno=node.lineno,
-            )
-        )
+                message=str(exc),
+                field=exc.field,
+                lineno=exc.lineno if exc.lineno is not None else node.lineno,
+            ))
     return out

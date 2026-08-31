@@ -9,7 +9,6 @@ from typing import Any
 
 class ClaimKind(StrEnum):
     SESSION = "session"
-    CHAT = "chat"
     HARNESS = "harness"
     TRIGGER = "trigger"
 

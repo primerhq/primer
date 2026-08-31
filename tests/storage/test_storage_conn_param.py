@@ -41,9 +41,20 @@ class _FakeProvider:
     def __init__(self) -> None:
         self.pool = _ExplodingPool()
 
+    async def _ensure_events_schema(self) -> None:
+        # Registered kinds (Agent is one whenever the routers were
+        # imported in this process) emit CRUD events on the caller's
+        # conn; the schema ensure is a no-op here.
+        return
+
 
 class _FakeConn:
-    """Caller-supplied connection: records SQL + returns a canned row."""
+    """Caller-supplied connection: records SQL + returns a canned row.
+
+    Carries an asyncpg-shaped ``transaction()`` because registered
+    kinds wrap the entity write + event append in one; ``execute``
+    records the event INSERT the seam issues on the same conn.
+    """
 
     def __init__(self, row: object | None) -> None:
         self._row = row
@@ -52,6 +63,19 @@ class _FakeConn:
     async def fetchrow(self, sql: str, *args: object) -> object | None:
         self.calls.append((sql, args))
         return self._row
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.calls.append((sql, args))
+        return "INSERT 0 1"
+
+    def transaction(self):
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def _txn():
+            yield
+
+        return _txn()
 
 
 def _make_storage() -> PostgresStorage[Agent]:
@@ -110,9 +134,14 @@ async def test_update_uses_provided_conn_without_acquiring() -> None:
 
     assert got is not None
     assert got.id == "a1"
-    assert len(conn.calls) == 1
-    # UPDATE binds (id, data_json) in that order.
+    # First statement is the UPDATE, binding (id, data_json) in that
+    # order. When the Agent kind is registered (routers imported in
+    # this process) the emission seam adds one event INSERT on the
+    # SAME caller-supplied conn - never a pooled one.
     assert conn.calls[0][1][0] == "a1"
+    assert len(conn.calls) in (1, 2)
+    if len(conn.calls) == 2:
+        assert "events" in conn.calls[1][0]
 
 
 @pytest.mark.asyncio

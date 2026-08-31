@@ -39,6 +39,25 @@ UNDOCUMENTED_ARG = (
     "    return a + b\n"
 )
 
+# One good tool + two independently-broken tools -- pins that the dry run
+# reports every function's verdict instead of aborting after the first bad
+# one.
+TWO_BAD_ONE_GOOD = GOOD + (
+    "\n\n@primer_tool()\n"
+    "def add(a: int, b: int) -> int:\n"
+    '    """Add two numbers.\n\n'
+    "    Use when you must add.\n\n"
+    "    Args:\n        a: The first.\n"
+    '    """\n'
+    "    return a + b\n"
+    "\n\n@primer_tool()\n"
+    "def subtract(a: int, b: int) -> int:\n"
+    '    """Subtract two numbers.\n\n'
+    "    Use when you must subtract.\n"
+    '    """\n'
+    "    return a - b\n"
+)
+
 YIELDING = GOOD + (
     "\n\n@primer_tool()\n"
     "async def ask(question: str, ctx) -> str:\n"
@@ -90,9 +109,41 @@ async def test_a_broken_docstring_is_200_not_4xx(client) -> None:
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is False
-    assert body["tools"] == []
-    assert body["error"]["field"] == "b"
-    assert body["error"]["lineno"]
+    # A per-function failure is NOT a module-level error: it shows up as
+    # ok=false on its own entry in ``tools``, not the top-level ``error``.
+    assert body["error"] is None
+    assert len(body["tools"]) == 1
+    entry = body["tools"][0]
+    assert entry["id"] == "add"
+    assert entry["ok"] is False
+    assert entry["error"]["field"] == "b"
+    assert entry["error"]["lineno"]
+
+
+@pytest.mark.asyncio
+async def test_two_bad_tools_both_report_instead_of_first_wins(client) -> None:
+    """Regression: validation used to stop at the first bad tool and lose
+    every other verdict (including the good ones). A module with 1 good
+    + 2 independently-broken tools must report all 3."""
+    await _seed(client, "val-two-bad")
+    r = await client.post(
+        "/v1/toolsets/val-two-bad/validate", json={"source": TWO_BAD_ONE_GOOD},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert body["error"] is None
+    by_id = {t["id"]: t for t in body["tools"]}
+    assert set(by_id) == {"greet", "add", "subtract"}
+
+    assert by_id["greet"]["ok"] is True
+    assert by_id["greet"]["args"] == ["name"]
+
+    assert by_id["add"]["ok"] is False
+    assert by_id["add"]["error"]["field"] == "b"
+
+    assert by_id["subtract"]["ok"] is False
+    assert by_id["subtract"]["error"]["message"]
 
 
 @pytest.mark.asyncio

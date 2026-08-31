@@ -42,7 +42,6 @@ The extra to marker-module map, mirroring `EXTRA_MODULES` in
 | Extra | Enables | Marker modules |
 |---|---|---|
 | `huggingface` | local embedder, local cross-encoder, exact Ollama token counts | `sentence_transformers` |
-| `docling` | PDF/DOCX/PPTX document loading and structure-aware splitting | `docling` |
 | `lance` | the embedded LanceDB vector store | `lancedb` |
 | `kubernetes` | the Kubernetes workspace backend | `kubernetes_asyncio` |
 | `docker` | the container workspace backend | `aiodocker` |
@@ -84,7 +83,6 @@ operator running Slack alone sees that rather than a bare "no".
 | `primer/common/optional.py` | `EXTRA_MODULES`, `CHANNEL_PLATFORM_MODULES`, `has_extra`, `channel_platforms`, `install_hint`, `require_extra`, and the `_find_spec` test seam |
 | `primer/api/routers/capabilities.py` | `GET /v1/capabilities` |
 | `ui/foundation/capabilities.js` | `useCapabilities`, `capabilityHint`, `extraInstalled`, `CapabilityGate`, `EXTRA_FOR_PROVIDER_TYPE` |
-| `primectl/primectl/commands/meta.py` | the `capabilities` command |
 | `scripts/measure_install.sh` | installed-size measurement per target |
 | `pyproject.toml` | the extras themselves plus the `[tool.importlinter]` contracts |
 | `.github/workflows/ci.yml` | the `core-install` lane and the `lint-imports` step |
@@ -137,9 +135,7 @@ SDKs to run them are absent.
 ## 8. Public surfaces
 
 - `GET /v1/capabilities` returns the version and the per-extra status.
-- `primectl capabilities` renders the same data as a table, with the
-  installed channel platforms in the detail column.
-- The console annotates unavailable provider types "(not installed)" and
+- The workspace shell annotates unavailable provider types "(not installed)" and
   explains underneath, across the LLM/embedding/cross-encoder provider
   forms, the workspace provider form, semantic search, and knowledge
   ingestion; channels gets a banner instead of a gate.

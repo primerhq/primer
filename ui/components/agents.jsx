@@ -45,7 +45,7 @@ function _agToastErr(pushToast, fallbackTitle) {
 // Agents list page
 // ============================================================================
 
-function AgentsPage({ onOpen, pushToast }) {
+function AgentsPage({ onOpen, pushToast, startCreate }) {
   const { useResource, useRouter, useViewport, apiFetch, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
@@ -53,6 +53,11 @@ function AgentsPage({ onOpen, pushToast }) {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [textFilter, setTextFilter] = React.useState("");
   const filterFocused = React.useRef(false);
+  // "New agent" from the platform page opens the form DIRECTLY -
+  // landing on this list with a second button was a two-step detour.
+  React.useEffect(() => {
+    if (startCreate) setCreateOpen(true);
+  }, [startCreate]);
 
   // Server-side offset pagination (bug #19). The text filter is applied
   // client-side over the current page, so typing snaps back to page 0.
@@ -71,6 +76,12 @@ function AgentsPage({ onOpen, pushToast }) {
   // is what carries the provider, the wire model name, and the API-level
   // config, so the list resolves it to show the vendor dot and the
   // underlying model -- two agents on different profiles may share a model.
+  const caps = window.primerApi.useCapabilities();
+  const voices = window.primerApi.useResource(
+    "agent-voices",
+    (signal) => window.primerApi.apiFetch("GET", "/audio/voices", null, { signal }),
+    { pollMs: 0 },
+  );
   const profiles = useResource(
     "agents:model-profiles",
     (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
@@ -384,24 +395,46 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
     (signal) => apiFetch("GET", "/tools", null, { signal }),
     { pollMs: null }
   );
+  // The Advanced tab gates a tts_voice picker on the speech capability
+  // and fills it from the voice list. Both were read here while only
+  // AgentsPage fetched them, so opening this modal and reaching that
+  // tab threw ReferenceError: caps is not defined, and the whole tab
+  // rendered nothing -- taking the rest of its fields down with it.
+  const caps = window.primerApi.useCapabilities();
+  const voices = useResource(
+    "agents:voices",
+    (signal) => apiFetch("GET", "/audio/voices", null, { signal }),
+    { pollMs: 0 },
+  );
 
   // Initial values come from the existing agent in edit mode, else
-  // blanks. system_prompt and compaction_prompt are stored as arrays
-  // server-side; the form only handles a single line, so we collapse
-  // ["a", "b"] → "a\n\nb" on read and emit one entry on save.
+  // blanks. compaction_prompt is stored as an array server-side but the
+  // form only handles a single line there (unchanged this wave), so it
+  // still collapses ["a", "b"] → "a\n\nb" on read and emits one entry on
+  // save.
   const _joinPrompt = (p) => Array.isArray(p) ? p.join("\n\n") : (p || "");
   const _initialTools = () => {
     const t = existing?.tools;
     return new Set(Array.isArray(t) ? t : []);
   };
+  // Platform wave P1b item 8: system_prompt is ALREADY list[str] server-
+  // side (primer/model/agent.py:143, joined with "\n\n" at prompt-render
+  // time) - the only gap was this form flattening it to one textarea. A
+  // saved agent with N parts loads as N textareas; a legacy/absent value
+  // defaults to one empty part so the editor always has at least one row.
+  const _initialSystemPromptParts = () => {
+    const p = existing?.system_prompt;
+    return Array.isArray(p) && p.length ? p : [""];
+  };
 
   const [id, setId] = React.useState(existing?.id || "");
   const [description, setDescription] = React.useState(existing?.description || "");
   const [profileId, setProfileId] = React.useState(existing?.model?.profile_id || "");
-  const [systemPrompt, setSystemPrompt] = React.useState(_joinPrompt(existing?.system_prompt));
+  const [systemPromptParts, setSystemPromptParts] = React.useState(_initialSystemPromptParts);
   const [compactionPrompt, setCompactionPrompt] = React.useState(_joinPrompt(existing?.compaction_prompt));
   const [compactionToolAccess, setCompactionToolAccess] = React.useState(existing?.compaction_tool_access ?? false);
   const [allowExternalTools, setAllowExternalTools] = React.useState(existing?.allow_external_tools ?? false);
+  const [ttsVoice, setTtsVoice] = React.useState(existing?.tts_voice ?? null);
   // selectedScopedIds is a Set so toggles are O(1); persisted as a
   // sorted list at submit time for stable JSON.
   const [selectedScopedIds, setSelectedScopedIds] = React.useState(_initialTools);
@@ -582,10 +615,13 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
       description: description || "(no description)",
       model: { profile_id: profileId },
       tools,
-      system_prompt: systemPrompt ? [systemPrompt] : [],
+      // Empty parts dropped on save - an add-then-leave-blank part must
+      // not send a hole in the array.
+      system_prompt: systemPromptParts.map((p) => p.trim()).filter(Boolean),
       compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
       compaction_tool_access: compactionToolAccess,
       allow_external_tools: allowExternalTools,
+      tts_voice: ttsVoice,
     };
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
@@ -603,7 +639,19 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
 
   return (
     <Modal
-      title={isEdit ? `Edit agent · ${existing.id}` : "New agent"}
+      title={
+        <>
+          {isEdit ? `Edit agent · ${existing.id}` : "Agent"}
+          {/* Platform wave P1b item 4: verb chip, reusing P1a's
+              .pc-modal-chip (providers surface) for visual consistency
+              across every create/edit modal rather than a new class. */}
+          <span className="pc-modal-chip mono text-sm muted"
+            data-testid="agent-modal-verb-chip"
+            style={{ marginLeft: 10, marginBottom: 0, verticalAlign: "middle" }}>
+            verb: {isEdit ? "Edit" : "Create"} Agent
+          </span>
+        </>
+      }
       onClose={onClose}
       footer={
         <>
@@ -701,12 +749,12 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             {profileMissing && (
               <div className="field-help" style={{ color: "var(--red)" }}>
                 This agent names a profile that no longer exists. Pick another
-                one, or recreate it at <span className="mono">/model-profiles</span>.
+                one, or recreate it at <span className="mono">/providers?class=llm</span>.
               </div>
             )}
             {profileOptions.length === 0 && !profiles.loading && (
               <div className="field-help" style={{ color: "var(--amber)" }}>
-                No model profiles configured. Create one at <span className="mono">/model-profiles</span> first.
+                No model profiles configured. Create one at <span className="mono">/providers?class=llm</span> first.
               </div>
             )}
             {fieldErrors["body.model.profile_id"] && (
@@ -741,8 +789,16 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             >
               Selected
             </button>
-            <span className="muted text-sm" style={{ whiteSpace: "nowrap" }}>
-              {selectedCount} of {totalAvailable} selected
+            {/* Platform wave P1b item 4: "selected · N" counter chip per
+                the reference, reusing the small bordered-pill look P1a
+                established for the providers surface (no new CSS class -
+                this file's own convention is inline styles throughout). */}
+            <span className="mono text-sm" data-testid="agent-tools-selected-count" style={{
+              whiteSpace: "nowrap", padding: "2px 8px", borderRadius: 999,
+              border: "1px solid var(--border)", background: "var(--bg-1)",
+              color: "var(--text-2)",
+            }}>
+              selected · {selectedCount} of {totalAvailable}
             </span>
           </div>
           {toolsCatalogue.loading && toolsetEntries.length === 0 && (
@@ -842,13 +898,16 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
                         onChange={() => toggleScopedId(t.scoped_id)}
                         style={{ marginTop: 3 }}
                       />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="mono" style={{ fontSize: 12 }}>{t.id}</div>
-                        {t.description && (
-                          <div className="muted text-sm" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.4 }}>
-                            {t.description}
-                          </div>
-                        )}
+                      <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "flex-start", gap: 8 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="mono" style={{ fontSize: 12 }}>{t.id}</div>
+                          {t.description && (
+                            <div className="muted text-sm" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.4 }}>
+                              {t.description}
+                            </div>
+                          )}
+                        </div>
+                        <window.primerApi.CapabilityBadges tool={t} testid={`agent-tool-badges-${t.scoped_id}`} />
                       </div>
                     </label>
                   );
@@ -898,22 +957,60 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             toolset header ticks every tool in that toolset (across pages); the toolset itself is not
             implicitly registered.
           </div>
+          {/* Platform wave P1b item 4: verbatim reference footnote. The
+              y/w/r/n flag chips it describes are NOT a P2 gap here - they
+              are already live on every row above via the shared
+              CapabilityBadges component (batch-2 catalogue-badges work) -
+              see this task's report for that correction. */}
+          <div className="field-help" data-testid="agent-tools-footnote" style={{ marginTop: 8 }}>
+            One picker everywhere: agent bindings, graph tool nodes, approval
+            policies, service grants, the MCP allowlist. Flags: y yields · w
+            workspace · r role · n notifying.
+          </div>
         </div>
       )}
 
       {activeTab === "advanced" && (
         <>
           <div className="field">
-            <label className="field-label" htmlFor="na-system-prompt">
-              System prompt <span className="hint">optional · stored as a single-segment list</span>
+            <label className="field-label">
+              System prompt <span className="hint">optional · parts</span>
             </label>
-            <textarea
-              id="na-system-prompt"
-              className="textarea"
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              rows={4}
-            />
+            {/* Platform wave P1b item 8: repeatable textarea list - one
+                array element per part, no delimiter tricks. Agent.
+                system_prompt is already list[str] (primer/model/agent.py:
+                143), joined with "\n\n" at prompt-render time; this is FE
+                work on the existing field, not a new one. */}
+            {systemPromptParts.map((part, i) => (
+              <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-start", marginBottom: 6 }}>
+                <textarea
+                  data-testid={`agent-system-prompt-part-${i}`}
+                  className="textarea"
+                  style={{ flex: 1 }}
+                  value={part}
+                  onChange={(e) => {
+                    const next = systemPromptParts.slice();
+                    next[i] = e.target.value;
+                    setSystemPromptParts(next);
+                  }}
+                  rows={4}
+                />
+                <Btn kind="ghost" size="sm" icon="x"
+                  data-testid={`agent-system-prompt-remove-${i}`}
+                  disabled={systemPromptParts.length === 1}
+                  title={systemPromptParts.length === 1
+                    ? "at least one part stays in the editor"
+                    : "remove this part"}
+                  onClick={() => setSystemPromptParts(
+                    systemPromptParts.filter((_, j) => j !== i))}
+                />
+              </div>
+            ))}
+            <Btn kind="ghost" size="sm" icon="plus"
+              data-testid="agent-system-prompt-add"
+              onClick={() => setSystemPromptParts(systemPromptParts.concat([""]))}>
+              Add part
+            </Btn>
           </div>
           <div className="field">
             <label className="field-label" htmlFor="na-compaction-prompt">
@@ -937,6 +1034,50 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             </p>
           </div>
           <div className="field">
+            {/* Platform wave P1b item 4: the reference shows an
+                "Autonomous" inherit/on/off segment, but autonomous
+                (workspace_session.py:421) lives on the SESSION binding,
+                not the Agent definition - Agent has no such field, and
+                neither /agents create nor update accepts one (confirmed
+                against primer/model/agent.py). Rendering a segment that
+                silently no-ops would lie about what Save does, so it is
+                disabled with an explanatory note instead of a fake write -
+                see this task's report for the gap. */}
+            <span>Autonomous</span>
+            <div className="chip-group" data-testid="agent-autonomous-segment"
+              style={{ opacity: 0.55, pointerEvents: "none", width: "fit-content" }}
+              aria-disabled="true">
+              {["inherit", "on", "off"].map((v) => (
+                <span key={v} className={"chip" + (v === "inherit" ? " active" : "")}>{v}</span>
+              ))}
+            </div>
+            <div className="field-help" data-testid="agent-autonomous-note">
+              Autonomous is a per-session control (set at session create or
+              binding switch), not part of the agent definition itself -
+              there is nothing here for Save to write yet.
+            </div>
+          </div>
+          <div className="field">
+        {!!(caps.data && caps.data.speech && caps.data.speech.tts_configured) && (
+          <label className="field">
+            <span>tts_voice</span>
+            <select
+              data-testid="agent-tts-voice"
+              value={ttsVoice || ""}
+              onChange={(e) => setTtsVoice(e.target.value || null)}
+            >
+              <option value="">(use the global default)</option>
+              {((voices.data && voices.data.voices) || []).map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            {ttsVoice ? (
+              <div className="field-help" data-testid="agent-voice-pairing-note">
+                {ttsVoice} · pairs with the identity chip
+              </div>
+            ) : null}
+          </label>
+        )}
             <AG_Toggle
               checked={compactionToolAccess}
               onChange={setCompactionToolAccess}
@@ -1067,20 +1208,22 @@ function AgentDetail({ agentId, pushToast }) {
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
 
-  // New "Chat" button: skip the workspace-session ceremony and just
-  // open an interactive chat with this agent — POST /chats then
-  // navigate to /chats/{id}. The chat detail page handles initial
-  // message + streaming.
+  // "Chat" button: open an interactive session bound to this agent.
+  // No auto_start - the session detail view takes the first message,
+  // the same way the old chat detail page did.
   const startChatMut = useMutation(
-    () => apiFetch("POST", "/chats", { agent_id: id }),
+    () => apiFetch("POST", "/sessions", {
+      binding: { kind: "agent", agent_id: id },
+      auto_start: false,
+    }),
     {
-      invalidates: ["chats:list"],
-      onSuccess: (row) => navigate("/chats/" + row.id),
+      invalidates: ["sessions:list"],
+      onSuccess: (row) => navigate("/sessions/" + row.id),
       onError: (err) => {
         if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
-            title: err?.title || "Couldn't start chat",
+            title: err?.title || "Couldn't start session",
             detail: err?.detail || err?.message,
             requestId: err?.requestId,
           });
@@ -1374,7 +1517,7 @@ function AG_ReferencesPanel({ agent }) {
           <span className="label">Model profile</span>
           <span className="val">
             <a
-              onClick={() => profileId && navigate("/model-profiles")}
+              onClick={() => profileId && navigate("/providers", { class: "llm" })}
               style={{ cursor: profileId ? "pointer" : "default" }}
             >{profileId || "—"}</a>
             {profile.data ? (
@@ -1394,7 +1537,7 @@ function AG_ReferencesPanel({ agent }) {
           <span className="label">LLM provider</span>
           <span className="val">
             <a
-              onClick={() => providerId && navigate("/providers/llm/" + providerId)}
+              onClick={() => providerId && navigate("/providers", { class: "llm", id: providerId })}
               style={{ cursor: providerId ? "pointer" : "default" }}
             >{providerId || "—"}</a>
           </span>

@@ -56,7 +56,9 @@ class AgentFreshSessionDispatcher:
         deps: DispatchDeps,
     ) -> SubscriptionDispatchResult:
         if sub.parallelism == "skip":
-            skip = await check_subscription_busy(sub, deps)
+            skip = await check_subscription_busy(
+                sub, deps, fire_context=fire_context,
+            )
             if skip is not None:
                 return skip
 
@@ -118,6 +120,10 @@ class AgentFreshSessionDispatcher:
                 deps=factory_deps,
             )
         except Exception as exc:  # noqa: BLE001 — defensive perimeter
+            logger.exception(
+                "agent_fresh_session: start_workspace_session failed for "
+                "sub %s", sub.id,
+            )
             return SubscriptionDispatchResult(
                 ok=False,
                 error_code="dispatch_failed",

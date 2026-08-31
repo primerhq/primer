@@ -1,6 +1,6 @@
 """Task D1 of docs/superpowers/plans/2026-07-05-chat-refactor.md — R2: fold
 the attach control into the chatbox. <Composer>
-(ui/components/chat/composer.jsx) used to render a standalone paperclip
+(ui/components/shared/composer.jsx) used to render a standalone paperclip
 button as the leftmost item in the input row (a separate bottom-left
 control). This task drops that and renders the attach icon **at the right
 end of the input box itself** — anchored inside the textarea's own wrapper,
@@ -21,7 +21,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
-COMPOSER = CHAT_DIR / "composer.jsx"
+SHARED_DIR = UI / "components" / "shared"
+COMPOSER = SHARED_DIR / "composer.jsx"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
 
 
@@ -67,16 +68,6 @@ def test_paste_and_drop_onto_the_textarea_trigger_attach() -> None:
     assert "onAttach" in src
 
 
-def test_the_8mib_cap_constant_survives_the_refactor() -> None:
-    # This task only modifies composer.jsx (Files: composer.jsx per the
-    # plan) — handleFilesPicked + MAX_ATTACHMENT_BYTES stay in
-    # conversation.jsx and are passed down as the `onAttach` prop, so the
-    # size cap must still be intact there.
-    src = _src(CONVERSATION)
-    assert "MAX_ATTACHMENT_BYTES" in src
-    assert "8 * 1024 * 1024" in src
-
-
 def test_attachment_chips_are_still_reused() -> None:
     src = _src(COMPOSER)
     assert "CT_AttachmentChip" in src
@@ -94,4 +85,4 @@ def test_bundle_transpiles_with_composer_attach_changes() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/chat/composer.jsx === */" in text
+    assert "/* === components/shared/composer.jsx === */" in text

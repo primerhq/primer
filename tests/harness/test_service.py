@@ -442,15 +442,17 @@ async def test_apply_install_orders_kinds(fake_storage_provider):
         template_source_hash="h", rendered_hash="h2",
         rendered_payload={
             "description": "col",
-            "embedder": {"provider_id": "ep", "model": "text-emb"},
-            "search_provider_id": "ssp",
+            "search": {
+                "embedder": {"provider_id": "ep", "model": "text-emb"},
+                "vector_store_provider_id": "ssp",
+            },
         },
     )
     doc_entry = RenderedEntry(
         kind="document", template_name="doc",
         resolved_id="acme__doc",
         template_source_hash="h", rendered_hash="h3",
-        rendered_payload={"collection_id": "acme__col", "name": "Doc", "meta": {}},
+        rendered_payload={"collection_id": "acme__col", "slug": "doc.md", "path": "doc.md", "meta": {}},
     )
     agent_entry = RenderedEntry(
         kind="agent", template_name="asst",
@@ -606,8 +608,10 @@ async def test_apply_install_indexes_documents(fake_storage_provider):
         template_source_hash="h", rendered_hash="h1",
         rendered_payload={
             "description": "col",
-            "embedder": {"provider_id": "ep", "model": "text-emb"},
-            "search_provider_id": "ssp",
+            "search": {
+                "embedder": {"provider_id": "ep", "model": "text-emb"},
+                "vector_store_provider_id": "ssp",
+            },
         },
     )
     doc_entry = RenderedEntry(
@@ -615,8 +619,9 @@ async def test_apply_install_indexes_documents(fake_storage_provider):
         template_source_hash="h", rendered_hash="h2",
         rendered_payload={
             "collection_id": "acme__col",
-            "name": "Doc",
-            "meta": {"text": "hello searchable world"},
+            "slug": "doc.md",
+            "path": "doc.md",
+            "title": "Doc",
         },
     )
 
@@ -626,11 +631,23 @@ async def test_apply_install_indexes_documents(fake_storage_provider):
     ssr = MagicMock()
     ssr.get_store = AsyncMock(return_value=store)
 
+    # S2: the body travels on the rendered file, not in meta, because the
+    # content store is the single body location.
+    doc_file = RenderedFile(
+        template_path="doc.yaml",
+        template_name="doc",
+        kind="document",
+        source_bytes=b"",
+        rendered_text="",
+        rendered={},
+        content="hello searchable world",
+    )
+
     error = await apply_install(
         storage_provider=fake_storage_provider,
         harness=harness,
         entries=[collection_entry, doc_entry],
-        rendered_files_by_name={},
+        rendered_files_by_name={"doc": doc_file},
         bundle_hash="bh1",
         overrides_hash="oh1",
         schema_hash=None,
@@ -658,15 +675,18 @@ async def test_apply_install_indexing_failure_does_not_fail_install(
         template_source_hash="h", rendered_hash="h1",
         rendered_payload={
             "description": "col",
-            "embedder": {"provider_id": "ep", "model": "text-emb"},
-            "search_provider_id": "ssp",
+            "search": {
+                "embedder": {"provider_id": "ep", "model": "text-emb"},
+                "vector_store_provider_id": "ssp",
+            },
         },
     )
     doc_entry = RenderedEntry(
         kind="document", template_name="doc", resolved_id="acme__doc",
         template_source_hash="h", rendered_hash="h2",
         rendered_payload={
-            "collection_id": "acme__col", "name": "Doc",
+            "collection_id": "acme__col", "slug": "doc.md",
+            "path": "doc.md",
             "meta": {"text": "body"},
         },
     )
@@ -703,8 +723,10 @@ async def test_apply_install_writes_body_to_content_store(fake_storage_provider)
         template_source_hash="h", rendered_hash="h1",
         rendered_payload={
             "description": "col",
-            "embedder": {"provider_id": "ep", "model": "text-emb"},
-            "search_provider_id": "ssp",
+            "search": {
+                "embedder": {"provider_id": "ep", "model": "text-emb"},
+                "vector_store_provider_id": "ssp",
+            },
         },
     )
     doc_entry = RenderedEntry(
@@ -712,7 +734,7 @@ async def test_apply_install_writes_body_to_content_store(fake_storage_provider)
         template_source_hash="h", rendered_hash="h2",
         rendered_payload={
             "collection_id": "acme__col",
-            "name": "Doc",
+            "slug": "intro.md",
             "path": "guides/intro.md",
             "meta": {},
         },
@@ -753,8 +775,10 @@ def _doc_install_entries() -> tuple[RenderedEntry, RenderedEntry, RenderedFile]:
         template_source_hash="h", rendered_hash="h1",
         rendered_payload={
             "description": "col",
-            "embedder": {"provider_id": "ep", "model": "text-emb"},
-            "search_provider_id": "ssp",
+            "search": {
+                "embedder": {"provider_id": "ep", "model": "text-emb"},
+                "vector_store_provider_id": "ssp",
+            },
         },
     )
     doc_entry = RenderedEntry(
@@ -762,7 +786,7 @@ def _doc_install_entries() -> tuple[RenderedEntry, RenderedEntry, RenderedFile]:
         template_source_hash="h", rendered_hash="h2",
         rendered_payload={
             "collection_id": "acme__col",
-            "name": "Doc",
+            "slug": "intro.md",
             "path": "guides/intro.md",
             "meta": {},
         },
@@ -982,13 +1006,11 @@ async def test_apply_uninstall_deletes_in_reverse_order(fake_storage_provider):
     await fake_storage_provider.get_storage(Collection).create(
         Collection(
             id="acme__col", description="col",
-            embedder=CollectionEmbedder(provider_id="ep", model="m"),
-            search_provider_id="ssp",
             harness_id=harness.id,
         )
     )
     await fake_storage_provider.get_storage(Document).create(
-        Document(id="acme__doc", collection_id="acme__col", name="doc", path="acme__doc.md", meta={}, harness_id=harness.id)
+        Document(id="acme__doc", collection_id="acme__col", slug="acme__doc.md", path="acme__doc.md", meta={}, harness_id=harness.id)
     )
     await fake_storage_provider.get_storage(Agent).create(
         Agent(
