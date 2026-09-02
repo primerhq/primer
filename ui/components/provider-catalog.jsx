@@ -1059,8 +1059,19 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
         {/* Designer reconciliation: a type is always selected now, so
             Register lists that type's KINDS (PC_RegisterDropdown) - the
             type-listing PC_RegisterAll stays reachable for the "All"
-            path if that view is ever restored (isAll above). */}
-        {klass ? (
+            path if that view is ever restored (isAll above).
+            BUGFIX: a panel class (ssp/workspace/channel) has no generic
+            form to open - openCreateWithKind unconditionally opened
+            PC_ProviderForm regardless of class.form, which for these
+            three opened the WRONG modal on top of their own native
+            create affordance (test_ssp_lance_create_journey caught
+            this live: picking pgvector from the header dropdown opened
+            the generic provider form instead of routing to SSP's own
+            semantic-search.jsx modal). Same guard openCreate() already
+            has for PC_RegisterAll - the panel's own body is the only
+            register affordance for these three, so the header renders
+            nothing rather than a dropdown that opens the wrong thing. */}
+        {klass && klass.form === "panel" ? null : klass ? (
           <PC_RegisterDropdown klass={klass} onPick={(kind) => openCreateWithKind(klass, kind)} />
         ) : (
           <PC_RegisterAll onPick={openCreate} />
