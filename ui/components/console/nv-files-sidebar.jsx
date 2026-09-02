@@ -219,7 +219,8 @@ function NV_FilesSidebar() {
   return (
     <div className="nv-files-panel" data-testid="nv-files-panel">
       <div className="nv-rail-section-head">
-        <span>Files - {(ws && (ws.name || ws.id)) || con.wid}</span>
+        <span>Files</span>
+        <span className="nv-rail-section-ws mono">{(ws && (ws.name || ws.id)) || con.wid}</span>
         <div style={{ flex: 1 }} />
         <button type="button" className="nv-rail-iconbtn" title="New file"
           data-testid="nv-file-new"

@@ -114,28 +114,31 @@ def test_studio_mounts_rail_and_tab_groups_unconditionally() -> None:
 
 
 def test_rail_props_are_wired_to_console_verbs() -> None:
-    m = re.search(r"<window\.NV_Rail[\s\S]{0,2000}?\n {8}/>", STUDIO)
+    m = re.search(r"<window\.NV_Rail[\s\S]{0,2500}?\n {8}/>", STUDIO)
     assert m
     body = m.group(0)
     for prop in (
         "selectedWorkspaceId={con.wid}",
         "onSelectWorkspace=",
         "onOpenSession=",
-        # F2 follow-up (2026-08-29 UI review): the plain onCreateSession
-        # prop retired with US-012b item 4's Inbox "+" - the workspace
-        # context menu's "New session" is the only caller left, and it
-        # needs a target wid, so nv-studio.jsx wires the combined
-        # switch-and-open (con.createSessionInWorkspace) instead.
+        # onCreateSessionInWorkspace: the workspace context menu's own
+        # "New session" (targeted, not-necessarily-selected wid) - a
+        # combined switch-and-open (F2 follow-up, 2026-08-29 UI review),
+        # so it calls con.createSessionInWorkspace directly rather than
+        # the plain registry verb.
         "onCreateSessionInWorkspace=",
+        # onCreateSession: the Inbox header "+" (uiv2 Wave 1, 01a06431)
+        # un-retires US-012b item 4 per the ratified mockup - runs the
+        # plain session.create verb against the currently selected
+        # workspace, coexisting with the context-menu's targeted case
+        # above rather than replacing it.
+        "onCreateSession=",
         "onCreateWorkspace=",
     ):
         assert prop in body, prop
     assert 'con.registry.get("workspace.switch")' in body
-    # session.create no longer runs through the registry from here - the
-    # workspace context menu needs a combined switch-and-open (F2 follow-
-    # up), so onCreateSessionInWorkspace calls con.createSessionInWorkspace
-    # directly instead.
     assert "con.createSessionInWorkspace" in body
+    assert 'con.registry.get("session.create")' in body
     assert 'con.registry.get("workspace.create")' in body
 
 

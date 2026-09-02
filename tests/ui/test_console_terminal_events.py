@@ -99,9 +99,15 @@ def test_resize_clamps_both_bounds():
 # ---------------------------------------------------------------------------
 
 
-def test_header_resolves_the_workspace_name_not_the_raw_wid():
+def test_header_resolves_the_workspace_short_id_not_the_raw_wid():
+    """uiv2 Wave 1: retargeted from name-preferred (ws.name || ws.id) to
+    the workspace id alone - the mockup's own literal example
+    ("TERMINAL ws-3f8a9bc . pty", implementer-notes 2.6) names the short
+    id specifically, unlike the Files/Inbox headers which prefer the
+    human name. con.workspaces is still consulted (not the raw prop wid)
+    so a resolvable ws still wins over the bare con.wid fallback."""
     assert "con.workspaces" in TERM
-    assert "ws.name || ws.id" in TERM
+    assert "(ws && ws.id) || con.wid" in TERM
     assert "· pty" in TERM
     # The old bare "terminal · {con.wid}" header text must be gone.
     assert "terminal · {con.wid}" not in TERM

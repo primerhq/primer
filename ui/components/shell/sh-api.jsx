@@ -52,6 +52,21 @@ var SH_api = {
     });
   },
 
+  // uiv2 Wave 1 (studio-command-palette): the approved recents endpoint
+  // (Dev-Backend, concurrent with this wave, may land after it) - rows
+  // carry {session_id, name, workspace_id, workspace_name, agent
+  // qualifier, status, session_state, last_activity_at}, ordered
+  // last_activity_at desc, live-workspaces only. Callers must treat a
+  // 404 as "not deployed yet" and fall back to deriving the same
+  // qualifiers from allSessions()/con.workspaces client-side (nv-palette
+  // .jsx's sessionRow) rather than erroring - this endpoint not
+  // existing yet must not block the rest of the wave.
+  recentSessions: function (signal, limit) {
+    return window.primerApi.apiFetch(
+      "GET", "/sessions/recent?limit=" + encodeURIComponent(limit || 20),
+      null, { signal: signal });
+  },
+
   // response_model=WorkspaceSession (primer/api/routers/sessions.py:643-656):
   // a FLAT row. binding, binding_epoch, turn_status and parked_status are
   // top-level siblings, there is no `session` sub-object, and the bound

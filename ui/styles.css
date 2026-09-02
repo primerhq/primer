@@ -3069,12 +3069,84 @@ input, textarea, select { font: inherit; color: inherit; }
   position: relative;
   z-index: 60;
 }
-/* Shared dropdown panel (session-doc menus, profile menu). US-012b
-   (2026-08-29 dogfood, item 3) retired the topbar workspace dropdown -
-   its own .nv-ws-wrap/.nv-ws-btn and the workspace-list-only
-   .nv-menu-scroll/[data-current]/.nv-menu-id/.nv-menu-new went with it;
-   .nv-menu/.nv-menu-row/.nv-menu-sep stay, still rendered by
-   nv-session-doc.jsx and nv-chrome.jsx's profile menu. */
+/* uiv2 Wave 1 (01a06431): the topbar workspace chip un-retires US-012b
+   (2026-08-29, item 3) - the mockup shows the chip and the rail tree
+   coexisting (chip = always-visible entry point, rail = detailed
+   browse), so this is a deliberate un-revert, not a redundant rebuild.
+   Fresh classnames (.nv-ws-chip/.nv-ws-menu), not the old removed
+   .nv-ws-btn/.nv-menu-scroll ones - the row/footer shape here differs
+   (dim mono id per row, green "+ New workspace…" footer row). */
+.nv-ws-wrap { position: relative; flex-shrink: 0; }
+.nv-ws-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-8);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.nv-ws-chip:hover { border-color: var(--accent-border); color: var(--text); }
+.nv-ws-chip-name {
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nv-ws-menu {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  width: 240px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-8);
+  box-shadow: var(--shadow);
+  padding: 5px;
+  z-index: 60;
+  animation: nv-pop-in 0.14s ease-out;
+}
+.nv-ws-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.nv-ws-menu-row:hover { background: var(--bg-hover); }
+.nv-ws-menu-row[data-current="true"] { background: var(--accent-dim); color: var(--accent); }
+.nv-ws-menu-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nv-ws-menu-id { font-size: 10.5px; color: var(--text-4); flex-shrink: 0; }
+.nv-ws-menu-new {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.nv-ws-menu-new:hover { background: var(--accent-dim); }
+/* Shared dropdown panel (session-doc menus, profile menu, workspace
+   menu). .nv-menu/.nv-menu-row/.nv-menu-sep are reused as the divider
+   above; nv-session-doc.jsx and nv-chrome.jsx's profile menu also
+   render against them. */
 .nv-menu {
   position: absolute;
   top: 40px;
@@ -3216,6 +3288,14 @@ input, textarea, select { font: inherit; color: inherit; }
   align-items: flex-start;
   padding-top: 12vh;
 }
+/* uiv2 Wave 1: the palette's own scrim dims heavier than the shared
+   .nv-scrim other overlays use (mockup - the app behind it barely
+   reads) - .nv-scrim itself is reused by nv-overlays.jsx below with a
+   DIFFERENT layout (grid/place-items, defined later in this file, so
+   its shared `background` declaration would otherwise win the cascade
+   for every .nv-scrim including this one). The testid attribute
+   selector scopes the override to the palette's own instance only. */
+[data-testid="nv-palette-scrim"] { background: oklch(0 0 0 / 0.72); }
 .nv-palette {
   width: min(580px, 90vw);
   max-height: 62vh;
@@ -3273,7 +3353,29 @@ input, textarea, select { font: inherit; color: inherit; }
   text-align: left;
 }
 .nv-palette-row:hover, .nv-palette-row[data-active="true"] { background: var(--bg-hover); }
-.nv-palette-label { font-size: 13px; }
+/* uiv2 Wave 1: leading row icon (mockup - every verb/file row starts
+   with a small dim dot; session rows use their own colored agent glyph
+   svg instead, sized to match). */
+.nv-palette-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-4);
+  flex-shrink: 0;
+}
+.nv-palette-main { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.nv-palette-label { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The "agent @ workspace" disambiguator for otherwise-identical session
+   rows (the triplicate-"main" live bug) - dim so it stays secondary to
+   the label on rows that are already unambiguous by name alone. */
+.nv-palette-sub {
+  font-size: 10.5px;
+  color: var(--text-4);
+  font-family: var(--font-mono, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .nv-palette-tag {
   font-family: var(--font-mono);
   font-size: 8.5px;
@@ -3368,6 +3470,11 @@ input, textarea, select { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--border);
 }
 .nv-rail-count { font-family: var(--font-mono, monospace); color: var(--attention); }
+/* uiv2 Wave 1 (01a06431): the Files header's workspace name escapes the
+   section head's inherited uppercase transform - "FILES payments-revamp",
+   not "FILES PAYMENTS-REVAMP" - and reads dim/accent-tinted per the
+   mockup rather than the plain label color. */
+.nv-rail-section-ws { text-transform: none; color: var(--accent); font-size: 10px; opacity: 0.85; }
 .nv-rail-inbox-row {
   display: flex;
   align-items: flex-start;
@@ -4343,6 +4450,13 @@ button.nv-trace-line { cursor: pointer; }
 }
 .nv-terminal-resize-handle:hover { background: var(--accent); opacity: 0.4; }
 .nv-terminal-host { flex: 1; min-height: 0; padding: 6px 10px; }
+/* uiv2 Wave 1: xterm.min.css hardcodes .xterm-viewport background-color:
+   #000 (its own vendored default) - that pure-black rectangle against
+   this panel's --bg-1 read as an inset box with a visible border in the
+   mockup comparison. Scoped to this panel only (not a global .xterm-
+   viewport override, in case xterm mounts anywhere else later) so the
+   canvas reads flush on the console theme instead. */
+.nv-terminal-host .xterm-viewport { background-color: transparent; }
 .nv-term-exit { font-family: var(--font-mono); font-size: 10px; color: var(--red); text-transform: none; letter-spacing: 0; }
 .nv-events {
   width: 300px;

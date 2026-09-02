@@ -30,11 +30,14 @@
 //                         menu "New session" (bound to THAT row's wid,
 //                         not necessarily the selected one - a single
 //                         combined switch-and-open, F2 follow-up 2026-
-//                         08-29 UI review). The Inbox header's own "+"
-//                         retired in US-012b item 4 - this is the only
-//                         pointer affordance left for session.create now
-//                         (the dual-render guard still requires one; see
-//                         NV_Rail_WorkspaceContextMenu's data-verb).
+//                         08-29 UI review).
+//   onCreateSession() - the Inbox header "+" (uiv2 Wave 1, 01a06431):
+//                         un-retires US-012b item 4 per the mockup,
+//                         bound to the currently selected workspace
+//                         (same session.create verb Alt+n/palette run,
+//                         which already opens against con.wid) - the
+//                         context-menu row above stays for the
+//                         targeted, not-necessarily-selected case.
 //   onCreateWorkspace() - the workspace-tree header "+".
 //   onOpenWorkspaceSettings(wid) - the workspace row's context-menu
 //                         "Settings" entry (US-012b item 5a); replaces the
@@ -193,11 +196,12 @@ function NV_Rail_WorkspaceContextMenu(props) {
     return { slug: slug, label: label, fn: fn, danger: !!danger, verb: verb || null };
   }
   var rows = [
-    // data-verb="session.create" here is load-bearing, not decorative:
-    // item 4 (2026-08-29 dogfood) retired the Inbox header "+", the
-    // verb's only other rendered pointer affordance - the dual-render
-    // guard (test_shell_dual_render_guard.py) requires every registered
-    // verb with a non-palette surface to render data-verb SOMEWHERE.
+    // data-verb="session.create" here is one of two rendered pointer
+    // affordances now - the Inbox header "+" (nv-rail.jsx's own inbox
+    // section head) un-retired item 4's 2026-08-29 removal in uiv2 Wave
+    // 1 (01a06431); this row stays as the targeted, workspace-specific
+    // entry point. The dual-render guard (test_shell_dual_render_guard.py)
+    // only requires at least one - either satisfies it on its own.
     act("new-session", "New session", function () {
       if (typeof props.onCreateSessionInWorkspace === "function") {
         props.onCreateSessionInWorkspace(w.id);
@@ -376,9 +380,15 @@ function NV_Rail(props) {
     <div className="nv-rail-sections" data-testid="nv-rail-sections">
       <div className="nv-rail-inbox" data-testid="nv-rail-inbox">
         <div className="nv-rail-section-head">
-          <span>Inbox - needs you</span>
+          <span>Inbox — needs you</span>
           <span className="nv-rail-count">{inboxItems.length}</span>
           <div style={{ flex: 1 }} />
+          <button type="button" className="nv-rail-iconbtn" title="Create session"
+            data-verb="session.create"
+            data-testid="nv-rail-create-session"
+            onClick={function () {
+              if (typeof props.onCreateSession === "function") props.onCreateSession();
+            }}>+</button>
         </div>
         {!inboxItems.length ? (
           <div className="nv-rail-empty">Nothing needs you right now.</div>
