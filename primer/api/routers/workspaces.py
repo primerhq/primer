@@ -1985,6 +1985,9 @@ async def file_tree(
     return {"path": path, "items": items}
 
 
+_MAX_RECURSIVE_WALK_ENTRIES = 10_000
+
+
 @files_router.get(
     "/workspaces/{workspace_id}/files",
     summary="List files at a workspace path",
@@ -2001,7 +2004,28 @@ async def list_files(
     ws = await registry.get_workspace(workspace_id)
     # No origin decoration: with collection mounting retired, every
     # entry is workspace-native and nothing is collection-backed.
-    entries = await ws.list_files(path, recursive=recursive)
+    #
+    # 01a0644b: recursive=True used to walk the ENTIRE subtree before
+    # this route got a chance to slice it - expensive on a large
+    # workspace (e.g. a vendored node_modules) regardless of how small
+    # a page the caller actually asked for. max_entries bounds the walk
+    # itself to just enough to satisfy this page (capped so a huge
+    # offset can't still trigger an unbounded walk). This makes the
+    # already-supported recursive=True finally safe to use for what it
+    # was added for (e.g. the palette's cross-directory recent-files
+    # group), no new endpoint or query param needed.
+    #
+    # Trade-off: when a tree has more entries than the walk cap, the
+    # page is a bounded sample in filesystem traversal order (then
+    # sorted among itself), not a mathematically exact slice of the
+    # tree's true global alphabetical ordering - unavoidable without
+    # walking (and therefore paying for) the whole tree regardless of
+    # page size. Fine for "browse/recent", not a fit for bulk export
+    # (download_archive already exists for that).
+    max_entries = (
+        min(offset + limit, _MAX_RECURSIVE_WALK_ENTRIES) if recursive else None
+    )
+    entries = await ws.list_files(path, recursive=recursive, max_entries=max_entries)
     sliced = entries[offset : offset + limit]
     return {
         "items": [e.model_dump(mode="json") for e in sliced],

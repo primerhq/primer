@@ -179,7 +179,7 @@ class _LiveWorkspace:
         path = f"sessions/{session_id}/messages.jsonl"
         self._files[path] = self._files.get(path, b"") + line
 
-    async def list_files(self, path=".", *, recursive=False):
+    async def list_files(self, path=".", *, recursive=False, max_entries=None):
         from datetime import datetime, timezone
         from primer.model.workspace import FileEntry
 

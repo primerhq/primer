@@ -380,6 +380,7 @@ class SandboxWorkspace(Workspace):
 
     async def list_files(
         self, path: str = ".", *, recursive: bool = False,
+        max_entries: int | None = None,
     ) -> list[FileEntry]:
         target = self._resolve_path(path)
         info = await self._sandbox.stat(target)
@@ -390,7 +391,7 @@ class SandboxWorkspace(Workspace):
 
         out: list[FileEntry] = []
         if recursive:
-            await self._walk(target, out)
+            await self._walk(target, out, max_entries=max_entries)
             out.sort(key=lambda fe: fe.path)
             return out
         for fs in await self._sandbox.list_dir(target):
@@ -404,13 +405,22 @@ class SandboxWorkspace(Workspace):
             out.append(self._file_entry_from_stat(fs, child))
         return out
 
-    async def _walk(self, dir_abs: str, out: list[FileEntry]) -> None:
+    async def _walk(
+        self, dir_abs: str, out: list[FileEntry], *, max_entries: int | None = None,
+    ) -> None:
+        # Naive unbounded recursion otherwise -- max_entries stops both
+        # appending AND descending into further subdirectories the
+        # moment the cap is hit, same "bound the walk's own cost, not
+        # just a post-hoc slice" intent as the local backend's
+        # itertools.islice-over-rglob equivalent.
         for fs in await self._sandbox.list_dir(dir_abs):
+            if max_entries is not None and len(out) >= max_entries:
+                return
             name = fs.path.rsplit("/", 1)[-1]
             child = f"{dir_abs}/{name}"
             out.append(self._file_entry_from_stat(fs, child))
             if fs.kind == "dir":
-                await self._walk(child, out)
+                await self._walk(child, out, max_entries=max_entries)
 
     async def read_file(self, path: str) -> bytes:
         target = self._resolve_path(path)

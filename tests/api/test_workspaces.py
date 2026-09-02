@@ -209,7 +209,7 @@ class _FakeWorkspace:
     def runtime_meta(self) -> WorkspaceRuntimeMeta:
         return self._runtime_meta
 
-    async def list_files(self, path=".", *, recursive=False):
+    async def list_files(self, path=".", *, recursive=False, max_entries=None):
         out: list[FileEntry] = []
         prefix = "" if path in (".", "") else path.rstrip("/") + "/"
         now = datetime.now(timezone.utc)

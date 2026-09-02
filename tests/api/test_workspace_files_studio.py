@@ -131,7 +131,7 @@ class _FakeWorkspace:
     def runtime_meta(self) -> WorkspaceRuntimeMeta:
         return self._runtime_meta
 
-    async def list_files(self, path=".", *, recursive=False):
+    async def list_files(self, path=".", *, recursive=False, max_entries=None):
         # Validate path to simulate BadRequestError for traversal
         if ".." in path.split("/") or path.startswith("/"):
             raise BadRequestError(f"invalid path: {path!r}")

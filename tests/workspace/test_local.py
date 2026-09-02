@@ -565,6 +565,45 @@ class TestWorkspaceFiles:
         rels = {e.path for e in entries}
         assert "src/main.py" in rels
 
+    async def test_list_files_recursive_max_entries_bounds_the_walk(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """01a0644b: recursive=True used to materialise the whole subtree
+        before any caller got to page/slice it - expensive on a large
+        tree regardless of how few entries were actually wanted.
+        max_entries caps the walk itself, not just a post-hoc slice."""
+        tpl = _template(
+            files=[
+                FileMount(
+                    path=f"d/f{i}.txt", source={"kind": "inline", "content": "x"},
+                )
+                for i in range(10)
+            ]
+        )
+        ws = await provider.create(tpl)
+        entries = await ws.list_files(".", recursive=True, max_entries=3)
+        assert len(entries) == 3
+
+    async def test_list_files_recursive_max_entries_none_is_unbounded(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """max_entries=None (the default) preserves the pre-existing
+        unbounded behaviour exactly - every direct caller of list_files
+        that doesn't pass it (there are several outside the HTTP route)
+        must see no change."""
+        tpl = _template(
+            files=[
+                FileMount(
+                    path=f"d/f{i}.txt", source={"kind": "inline", "content": "x"},
+                )
+                for i in range(10)
+            ]
+        )
+        ws = await provider.create(tpl)
+        entries = await ws.list_files(".", recursive=True)
+        rels = {e.path for e in entries}
+        assert len(rels) >= 10  # 10 files + the "d" directory entry itself
+
     async def test_list_files_missing(
         self, provider: LocalWorkspaceBackend
     ) -> None:

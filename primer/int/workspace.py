@@ -227,6 +227,7 @@ class Workspace(ABC):
         path: str = ".",
         *,
         recursive: bool = False,
+        max_entries: int | None = None,
     ) -> list[FileEntry]:
         """List files in the workspace (user-facing, NOT a tool).
 
@@ -234,6 +235,14 @@ class Workspace(ABC):
         by the user via the workspace handle, not by an agent. Returns
         :class:`FileEntry` records (path, kind, size, modified_at)
         suitable for rendering in a UI / CLI.
+
+        ``max_entries`` bounds a ``recursive=True`` walk's own cost --
+        the walk stops as soon as it has collected this many entries,
+        rather than materialising the whole subtree before the caller
+        gets to page/slice it. ``None`` (the default) is unbounded,
+        preserving the exact pre-existing behaviour for any caller that
+        doesn't pass it. Ignored when ``recursive=False`` (a one-level
+        ``iterdir`` is already bounded by the directory's own size).
         """
 
     @abstractmethod
