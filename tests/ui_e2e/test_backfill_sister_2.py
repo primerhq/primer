@@ -22,6 +22,7 @@ from __future__ import annotations
 import httpx
 from playwright.sync_api import expect
 from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -113,11 +114,18 @@ def test_u0098_embedding_provider_invalidate_toasts_and_preserves_row(
     page, base_url, console_url, unique_suffix,
 ) -> None:
     """U0098 — Sister of U0091 (LLM provider Invalidate). Seed an
-    embedding provider; navigate to ``#/providers/embedding/<id>``;
-    click "Invalidate" → POST /v1/embedding_providers/{id}/invalidate
-    fires → ``kind=info`` toast "Cache dropped" appears per
-    providers.jsx:593; the row remains GET-able via API
-    (invalidate drops the cached adapter, not the row).
+    embedding provider, open its card's edit overlay, click
+    "Invalidate model cache" → POST /v1/embedding_providers/{id}/invalidate
+    fires → ``kind=success`` toast "Cache dropped" appears per
+    PC_InvalidateAction (provider-form.jsx); the row remains GET-able
+    via API (invalidate drops the cached adapter, not the row).
+
+    RETARGET (01a063ab, designer reconciliation): same relocation as
+    U0091 - Invalidate moved off the card footer into the edit overlay
+    (PC_InvalidateAction), so this reaches it via the card's Open
+    button rather than a direct instance-id route (which only ever set
+    instanceId for the model-profiles panel, not an auto-opened edit
+    form, on this class either before or after this change).
     """
     pid = f"emb-u98-{unique_suffix}"
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -136,16 +144,14 @@ def test_u0098_embedding_provider_invalidate_toasts_and_preserves_row(
         assert r.status_code == 201, r.text
     cleanup_urls = [f"/v1/embedding_providers/{pid}"]
     try:
-        open_legacy_route(page, console_url, f"providers/embedding/{pid}")
+        open_provider_catalog(page, console_url, cls="embedding")
+        page.click(f'[data-testid="provider-card-open-{pid}"]')
+        form = page.get_by_test_id("provider-form-embedding_providers")
+        form.wait_for(state="visible", timeout=15_000)
 
-        inv = page.get_by_role(
-            "button", name="Invalidate", exact=True,
-        ).first
-        # Embedding provider detail page can take a while to fully
-        # render (detail + models fetches must both settle before the
-        # Header switches from loading-branch to success-branch with
-        # the Invalidate button). Bump the wait vs U0091's LLM
-        # variant.
+        inv = form.get_by_test_id("provider-form-invalidate-action")
+        # Bumped wait vs U0091's LLM variant, same margin as before this
+        # retarget, to give the form's own fetches a beat to settle.
         inv.wait_for(state="visible", timeout=20_000)
         inv.click()
 

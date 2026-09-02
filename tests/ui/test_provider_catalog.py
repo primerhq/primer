@@ -30,25 +30,28 @@ def test_the_catalog_exports_itself_on_window() -> None:
 def test_every_spec_class_is_on_the_rail() -> None:
     """M11b: eleven classes, Web Fetch and Artifact Storage included.
 
-    RETARGET (platform wave P1a item 5): the "Vector Stores" label became
-    "Semantic Search" - the vision doc's own reference screenshots 4/6
-    name this family chip "Semantic search", and unifying it onto the
-    Providers page (rather than a standalone route) is exactly what this
-    wave's item 5 asks for.
+    RETARGET (01a063ab, ratified uiv2 designer mockup): chip labels and
+    order were reconciled to the mockup's exact wording - compact
+    lowercase-style labels without the old title-case/hyphenation
+    ("Cross-Encoder" -> "Cross encoding", "Semantic Search" ->
+    "Semantic search", "Speech-to-Text" -> "ASR", "Text-to-Speech" ->
+    "TTS", "Web Search"/"Web Fetch"/"Artifact Storage" -> lowercase
+    "search"/"fetch"/"storage", "Workspaces" -> singular "Workspace").
+    "Channels" and "LLM"/"Embedding" were already an exact match.
     """
     src = _read("components/provider-catalog.jsx")
     for label in (
         "LLM",
         "Embedding",
-        "Cross-Encoder",
-        "Semantic Search",
-        "Speech-to-Text",
-        "Text-to-Speech",
-        "Web Search",
-        "Web Fetch",
-        "Artifact Storage",
-        "Workspaces",
+        "TTS",
+        "ASR",
+        "Semantic search",
+        "Cross encoding",
+        "Workspace",
+        "Web search",
+        "Web fetch",
         "Channels",
+        "Artifact storage",
     ):
         assert f'label: "{label}"' in src, f"family chips missing {label}"
 

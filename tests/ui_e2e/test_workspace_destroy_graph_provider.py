@@ -23,6 +23,7 @@ from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import (
     files_list,
+    open_provider_catalog,
     open_studio,
     open_workspace_settings,
     sessions_list,
@@ -36,7 +37,6 @@ from tests.ui_e2e._studio_helpers import (
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
-from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -246,22 +246,34 @@ def test_u0078_workspace_destroy_modal_cancel_does_not_delete(
 def test_u0091_llm_provider_invalidate_toasts_and_preserves_row(
     page, base_url, console_url, unique_suffix,
 ) -> None:
-    """U0091 — On LLM provider detail page, the Invalidate button
-    triggers POST /v1/llm_providers/{id}/invalidate. Success path
-    shows a toast (per providers.jsx: kind="info", title="Cache
-    dropped") and the row is still GET-able afterward (invalidate
-    drops the cached adapter, not the row).
+    """U0091 — Invalidate triggers POST /v1/llm_providers/{id}/invalidate.
+    Success path shows a toast (kind="info", title="Cache dropped") and
+    the row is still GET-able afterward (invalidate drops the cached
+    adapter, not the row).
+
+    RETARGET (01a063ab, designer reconciliation): Invalidate moved off
+    the card footer (mockup-pure Open/Delete only) into the edit
+    overlay, adjacent to the Live-model-probe panel
+    (PC_InvalidateAction, provider-form.jsx) - a deliberate
+    capability-preserving addition beyond the mockup, per the lead's
+    ruling. The direct ``providers/llm/{id}`` route only ever set
+    instanceId (used for the model-profiles panel on a crud class, not
+    an auto-opened edit form - confirmed unchanged on origin/main, a
+    pre-existing gap from the 01a04d6a IA restructure, not something
+    this task introduced), so it never actually reached an Invalidate
+    surface either before or after this change. Reaching it via the
+    card's own Open button is both the fix and the more realistic path.
     """
     pid = f"llm-91-{unique_suffix}"
     _seed_llm_provider(base_url, pid)
     cleanup_urls = [f"/v1/llm_providers/{pid}"]
     try:
-        open_legacy_route(page, console_url, f"providers/llm/{pid}")
+        open_provider_catalog(page, console_url, cls="llm")
+        page.click(f'[data-testid="provider-card-open-{pid}"]')
+        form = page.get_by_test_id("provider-form-llm_providers")
+        form.wait_for(state="visible", timeout=15_000)
 
-        # Wait for the Invalidate button.
-        inv = page.get_by_role(
-            "button", name="Invalidate", exact=True,
-        ).first
+        inv = form.get_by_test_id("provider-form-invalidate-action")
         inv.wait_for(state="visible", timeout=10_000)
         inv.click()
 

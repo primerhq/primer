@@ -5413,28 +5413,29 @@ button.nv-rail-ws-session {
   line-height: 1.5;
   max-width: 560px;
 }
-.nv-legacy-host .limits {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-8);
-  padding: 12px 14px;
-  max-width: 560px;
-}
-
 /* ---------------------------------------------------------------------
    Platform wave P1a: providers surface reconciliation.
    Family chips replaced the rail (item 1); the register dropdown, card
    grid and probe panel are new (items 2/3/4).
    ------------------------------------------------------------------ */
-/* Item 1: the family selector reuses .chip-group/.chip (the app's own
-   proven segmented-control pattern) - .pc-chips only adds the reference's
-   accent-colored active state, since the generic .chip.active (background
-   highlight only) is shared with surfaces that should not always turn
-   green just because this one wants to. */
-.pc-chips { flex-wrap: wrap; height: auto; }
-.pc-chips .chip.active { background: var(--accent-dim); color: var(--accent); }
+/* Designer reconciliation (uiv2 mockup): compact rounded PILLS, each
+   individually outlined and gapped, rather than .chip-group's shared-
+   border segmented-control look - overrides .chip-group's own
+   container chrome entirely (background/border/padding/gap) rather
+   than layering on top of it, since the two are now visually distinct
+   families, not variations on one. */
+.pc-chips.chip-group {
+  background: transparent; border: none; padding: 0; gap: 8px;
+  flex-wrap: wrap; height: auto;
+}
+.pc-chips .chip {
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 5px 14px; color: var(--text-3); background: transparent;
+}
+.pc-chips .chip:hover { border-color: var(--border-strong); color: var(--text); }
+.pc-chips .chip.active {
+  border-color: var(--green); background: var(--green-dim); color: var(--green);
+}
 
 /* Item 2/3: "Register provider" dropdown. */
 .pc-register { position: relative; }
@@ -5474,23 +5475,69 @@ button.nv-rail-ws-session {
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 12px;
 }
+/* Designer reconciliation: tighter padding/gap per the mockup's denser
+   card. */
 .pc-card {
   border: 1px solid var(--border); border-radius: var(--r-6);
-  background: var(--bg-1); padding: 12px 14px;
-  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  background: var(--bg-1); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
 }
 .pc-card-head { display: flex; align-items: center; gap: 8px; }
 .pc-card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pc-card-subtitle { color: var(--text-2); font-size: 12px; }
-.pc-card-facts { display: flex; flex-direction: column; gap: 3px; }
-.pc-card-fact { display: flex; gap: 6px; font-size: 12px; }
-.pc-card-footer { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+/* Designer reconciliation: status moves from a pill (background + dot)
+   to plain colored text, top-right of the card head. */
+.pc-card-status { font-size: 11px; font-weight: 500; white-space: nowrap; }
+.pc-card-status.ok { color: var(--green); }
+.pc-card-status.down { color: var(--red); }
+/* Designer reconciliation: two-column ALIGNED key-value rows - the
+   parent is the grid (auto label column, value column takes the rest),
+   each .pc-card-fact is `display: contents` so its own two spans become
+   direct grid items positioned by the PARENT, not a wrapper the grid
+   can only place as ONE cell - this is what makes every row's value
+   start at the same x regardless of label length. */
+.pc-card-facts {
+  display: grid; grid-template-columns: auto 1fr;
+  column-gap: 10px; row-gap: 3px; font-size: 12px;
+}
+.pc-card-fact { display: contents; }
+.pc-card-fact > .muted { white-space: nowrap; }
+.pc-card-fact > :last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Designer reconciliation: Open is a green TEXT LINK bottom-left (not a
+   filled button); Delete is muted text bottom-right. Invalidate no
+   longer lives on the card at all (moved to the edit overlay - see
+   PC_InvalidateAction in provider-form.jsx). */
+.pc-card-footer { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+.pc-card-open, .pc-card-delete, .pc-card-delete-confirm {
+  border: none; background: transparent; padding: 0; cursor: pointer;
+  font-size: 12.5px; font-family: inherit;
+}
+.pc-card-open { color: var(--green); }
+.pc-card-open:hover { text-decoration: underline; }
+.pc-card-delete { color: var(--text-3); }
+.pc-card-delete:hover { color: var(--text); text-decoration: underline; }
+.pc-card-delete-confirm { color: var(--red); font-weight: 600; }
+.pc-card-delete-confirm:hover { text-decoration: underline; }
+.pc-card-delete-confirm:disabled { opacity: 0.6; cursor: default; }
 
 /* Item 4: the create modal's schema-driven chip + two-column form + the
    live probe panel's own small result list. */
+/* Designer reconciliation: the schema badge moved from its own line
+   inside the form body to INLINE beside the modal title (see the
+   `title` fragment ProviderCatalog now passes to Modal) - .pc-modal-chip
+   itself is dead (nothing renders it any more) but left defined in case
+   a future non-inline usage wants the original standalone-line look;
+   the active style is the -inline variant below. */
 .pc-modal-chip {
   border: 1px solid var(--border); border-radius: var(--r-4);
   padding: 2px 8px; display: inline-block; margin-bottom: 10px;
+}
+.pc-modal-chip-inline {
+  border: 1px solid var(--border); border-radius: var(--r-4);
+  padding: 1px 7px; margin-left: 10px; font-weight: 400;
+  vertical-align: middle;
 }
 .pc-form-right {
   border-left: 1px solid var(--border); padding-left: 16px;
@@ -5499,9 +5546,52 @@ button.nv-rail-ws-session {
   border: 1px solid var(--border); border-radius: var(--r-6);
   padding: 10px; display: flex; flex-direction: column; gap: 8px;
 }
+/* Designer reconciliation: heading + Test connect on one row. */
+.pc-probe-head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .pc-probe-head { font-weight: 600; font-size: 12.5px; }
+/* Test connect: kind="ghost" (transparent + border) tinted green, since
+   Btn has no dedicated "outline" kind and spreading a className prop
+   onto Btn would clobber its own base classes (see Btn's props order in
+   shared.jsx) - a scoped selector is the non-invasive way to reach it. */
+.pc-probe [data-testid="provider-probe-test"] {
+  border-color: var(--green); color: var(--green);
+}
+.pc-probe [data-testid="provider-probe-test"]:hover { background: var(--green-dim); }
 .pc-probe-count { font-size: 12px; color: var(--text-2); }
-.pc-probe-models { margin: 0; padding-left: 18px; font-size: 12px; }
+/* Designer reconciliation: each probed model is its own bordered row,
+   not a bare <li> in a <ul>. */
+.pc-probe-models { display: flex; flex-direction: column; gap: 4px; }
+.pc-probe-model-row {
+  border: 1px solid var(--border); border-radius: var(--r-4);
+  padding: 5px 8px; font-size: 12px;
+}
+
+/* Designer reconciliation: humanized field labels - bold main label +
+   a distinctly muted inline annotation for secret fields (was one
+   plain-weight concatenated string), full-width single-column rhythm. */
+.pc-field-label { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pc-field-label-main { font-weight: 600; }
+.pc-field-label-annotation { font-size: 11px; }
+
+/* Designer reconciliation: the boxed Limits <fieldset> dissolves into
+   normally-styled fields with a subtle group heading, not a bordered
+   box - same field rhythm as everything above it. */
+.pc-limits-group { display: flex; flex-direction: column; gap: 12px; }
+.pc-field-group-heading {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  margin-top: 4px;
+}
+
+/* Lead ruling: Invalidate moves from the card footer into the edit
+   overlay, adjacent to the Live-model-probe panel - muted, unobtrusive,
+   a deliberate capability-preserving addition beyond the mockup. */
+.pc-invalidate { padding-top: 2px; }
+.pc-invalidate-link {
+  border: none; background: transparent; padding: 0; cursor: pointer;
+  font-size: 11.5px; font-family: inherit; color: var(--text-3);
+}
+.pc-invalidate-link:hover { color: var(--text); text-decoration: underline; }
+.pc-invalidate-link:disabled { opacity: 0.6; cursor: default; }
 
 /* Workspace events: a row EXPANDS to its full envelope - actor,
    entity, correlation and the raw payload - a one-line type + id was

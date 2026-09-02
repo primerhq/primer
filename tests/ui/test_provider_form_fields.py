@@ -73,7 +73,8 @@ def test_no_provider_field_table_survives_in_the_console() -> None:
         )
 
 
-def test_the_type_picker_shows_the_served_label() -> None:
-    src = _src()
-    assert "shapeOf(" in src or "typeMap[k]" in src
-    assert ".label" in src
+## test_the_type_picker_shows_the_served_label retired (01a063ab): the
+## in-form kind picker is gone - kind always arrives preselected from
+## PC_RegisterDropdown now. The served-label behavior it pinned moved
+## with it; see test_register_dropdown_shows_the_served_kind_label in
+## test_provider_catalog_ia_restructure.py.

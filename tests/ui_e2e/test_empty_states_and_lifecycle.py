@@ -135,21 +135,20 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
     """
     provider_id = f"llm-u0047-{unique_suffix}"
     try:
-        # RETARGET (IA restructure 01a04d6a): "Register provider" now
-        # names the TYPE ("llm") up front rather than the kind directly -
-        # the form's own kind dropdown is STILL re-picked below to
-        # Anthropic regardless of which kind the type pick defaulted the
-        # form to. The round trip out to a detail page and back is still
-        # gone, and the list still has to show the new row in place, just
-        # now behind Register -> type -> (re-pick kind) -> Save.
+        # RETARGET (01a063ab, designer reconciliation): Register now
+        # lists the active class's KINDS directly (PC_RegisterDropdown) -
+        # picking "anthropic" there opens the form with kind already
+        # preselected, no in-form re-pick left to do. The round trip out
+        # to a detail page and back is still gone, and the list still has
+        # to show the new row in place, just now behind Register -> kind
+        # -> Save.
         open_legacy_route(page, console_url, "providers/llm")
-        page.get_by_test_id("provider-register-all-toggle").click()
-        page.get_by_test_id("provider-register-type-llm").click()
+        page.get_by_test_id("provider-register-toggle").click()
+        page.get_by_test_id("provider-register-kind-anthropic").click()
         form = page.get_by_test_id("provider-form-llm_providers")
         form.wait_for(state="visible", timeout=15_000)
 
-        form.locator("input").first.fill(provider_id)
-        form.locator("select").first.select_option(label="Anthropic")
+        form.locator('[data-field="id"] input').fill(provider_id)
         api_key_input = form.locator("input[type=password]").first
         if api_key_input.count():
             api_key_input.fill("sk-test-placeholder")

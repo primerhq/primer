@@ -81,8 +81,12 @@ def test_discoverable_prop_is_fully_removed_not_left_dangling() -> None:
     always undefined at PC_InstanceCard regardless. Confirm it's gone
     everywhere rather than left as a red herring."""
     src = _src()
-    assert "PC_InstanceCard({ klass, row, onOpen, onChanged })" in src
-    assert "PC_InstanceGrid({ klass, onSelect, onRegisterRefetch })" in src
+    # 01a063ab added profileCount/filterQuery/onCountChange for the
+    # designer reconciliation (default-for-N-profiles fact, card filter) -
+    # additive real props, not a reintroduction of the dead `discoverable`
+    # prop this test guards against.
+    assert "PC_InstanceCard({ klass, row, onOpen, onChanged, profileCount })" in src
+    assert "PC_InstanceGrid({ klass, onSelect, onRegisterRefetch, filterQuery, onCountChange })" in src
     assert "discoverable={discoverable}" not in src
 
 
