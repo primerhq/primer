@@ -1189,6 +1189,50 @@ class TestWorkspaceRouter:
             assert "runtime_meta" in item
             assert item["phase"] == "running"
 
+    @pytest.mark.asyncio
+    async def test_workspace_list_includes_session_count(self, client, sp) -> None:
+        """01a06431 c-7: GET /v1/workspaces reports each row's live
+        session_count (a Platform card fact the mockup expects) - a
+        bounded scan + in-memory tally over WorkspaceSession storage,
+        mirroring ModelProfileWithUsage's agent_count/graph_node_count
+        pattern, not a stored/denormalized field."""
+        from primer.model.workspace_session import (
+            AgentSessionBinding,
+            WorkspaceSession,
+        )
+
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        busy = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        idle = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        busy_wid = busy.json()["id"]
+        idle_wid = idle.json()["id"]
+
+        sess_storage = sp.get_storage(WorkspaceSession)
+        for i, status in enumerate(
+            (SessionStatus.RUNNING, SessionStatus.WAITING, SessionStatus.ENDED)
+        ):
+            await sess_storage.create(WorkspaceSession(
+                id=f"sess-count-{i}",
+                workspace_id=busy_wid,
+                binding=AgentSessionBinding(agent_id="agt-1"),
+                status=status,
+                created_at=datetime.now(timezone.utc),
+            ))
+
+        resp = await client.get("/v1/workspaces")
+        assert resp.status_code == 200
+        by_id = {item["id"]: item for item in resp.json()["items"]}
+        # All three sessions count, regardless of status - a card fact
+        # answers "how many sessions live here", not "how many are
+        # currently running".
+        assert by_id[busy_wid]["session_count"] == 3
+        assert by_id[idle_wid]["session_count"] == 0
+
 
 # ===========================================================================
 # Sessions sub-resource

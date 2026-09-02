@@ -27,6 +27,7 @@ import email.utils
 import hashlib
 import logging
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -71,6 +72,7 @@ from primer.model.external_tool import (
 )
 from primer.model.storage import (
     CursorPageResponse,
+    OffsetPage,
     OffsetPageResponse,
     OrderBy,
     PageRequest,
@@ -501,6 +503,58 @@ workspace_router = APIRouter(tags=["workspaces"])
 
 _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
 
+_SESSION_COUNT_PAGE_SIZE = 200
+
+
+class WorkspaceRowWithUsage(WorkspaceRow):
+    """Response-only shape: a Workspace plus its live session count.
+
+    Never persisted -- session_count is computed fresh on every
+    GET /v1/workspaces (bounded scan over Session storage, tallied by
+    workspace_id in memory), not a stored field, so it carries no
+    MIGRATIONS implication. Mirrors ModelProfileWithUsage's agent_count/
+    graph_node_count pattern (model_profiles.py) -- same "always bounded
+    scans, never N+1" trade-off.
+    """
+
+    session_count: int = Field(
+        default=0,
+        description=(
+            "Number of WorkspaceSession rows whose workspace_id names "
+            "this workspace -- every status, including ended/tombstoned "
+            "sessions from workspaces that were later destroyed do NOT "
+            "count here since their workspace_id no longer matches any "
+            "row in this listing."
+        ),
+    )
+
+
+async def _enrich_with_session_counts(
+    resp: OffsetPageResponse | CursorPageResponse, request: Request,
+) -> OffsetPageResponse | CursorPageResponse:
+    """Attach a live session count to one page of workspaces."""
+    session_storage = get_storage_provider(request).get_storage(WorkspaceSession)
+
+    counts: Counter[str] = Counter()
+    offset = 0
+    while True:
+        page = await session_storage.list(
+            OffsetPage(offset=offset, length=_SESSION_COUNT_PAGE_SIZE),
+        )
+        for session in page.items:
+            counts[session.workspace_id] += 1
+        if len(page.items) < _SESSION_COUNT_PAGE_SIZE:
+            break
+        offset += _SESSION_COUNT_PAGE_SIZE
+
+    enriched = [
+        WorkspaceRowWithUsage(
+            **item.model_dump(), session_count=counts.get(item.id, 0),
+        )
+        for item in resp.items
+    ]
+    return resp.model_copy(update={"items": enriched})
+
 
 @workspace_router.get(
     "/workspaces",
@@ -508,11 +562,13 @@ _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
     responses=common_responses(400, 422, 500),
 )
 async def list_workspaces(
+    request: Request,
     page: PageRequest = Depends(parse_page),
     order_by: list[OrderBy] | None = Depends(parse_order_by),
     storage=Depends(get_workspace_storage),
 ) -> _PageResp:
-    return await storage.list(page, order_by=order_by)
+    resp = await storage.list(page, order_by=order_by)
+    return await _enrich_with_session_counts(resp, request)
 
 
 @workspace_router.post(
