@@ -67,8 +67,11 @@ class WorkerPoolHealth(BaseModel):
     capacity: int | None = Field(
         default=None,
         description=(
-            "Configured per-worker concurrency. Null when the process "
-            "is API-only."
+            "This process's own worker-pool concurrency, or (when this "
+            "process has no local pool attached) the durable scheduler "
+            "registry's summed capacity across live workers. Null only "
+            "when neither source is available (no local pool and no "
+            "scheduler)."
         ),
     )
     metrics: dict[str, Any] = Field(
@@ -130,6 +133,21 @@ async def health(request: Request) -> HealthStatus:
             pool_metrics = {}
         pool_in_flight = pool_metrics.get("primer_worker_in_flight")
         pool_capacity = pool_metrics.get("primer_worker_capacity")
+
+    if pool_capacity is None and scheduler is not None:
+        # This process has no local worker pool attached (API-only, per
+        # the field docstring) — worker pods own the pool in this
+        # topology, so the in-process metrics snapshot above can never
+        # answer capacity here. Fall back to the durable scheduler
+        # registry, summing live (non-dead) workers' capacity, the same
+        # aggregate the Workers page computes client-side. in_flight has
+        # no durable equivalent (per-worker live load is process-local
+        # and never persisted) so it is left null rather than guessed.
+        try:
+            workers = await scheduler.list_workers()
+            pool_capacity = sum(w.capacity for w in workers if w.status != "dead")
+        except Exception:
+            pool_capacity = None
 
     return HealthStatus(
         version=APP_VERSION,

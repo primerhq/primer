@@ -83,6 +83,18 @@ def test_health_cards_match_notes_not_the_old_scheduler_dump():
     assert "status=running" in SYS, "sessions-active reads GET /sessions?status=running"
 
 
+def test_worker_pool_capacity_falls_back_to_a_clean_label_not_a_bare_question_mark():
+    # 01a063c3: a null worker_pool.capacity (this API process has no
+    # local pool attached) used to render the card subtitle as the
+    # literal "of ? capacity" - a raw unresolved-placeholder character,
+    # not a clean fallback. The backend now sums the durable scheduler
+    # registry's live workers when its own pool is absent (health.py),
+    # but the UI must still degrade cleanly for the case neither source
+    # can answer (no scheduler either).
+    assert 'wp.capacity == null ? "?"' not in SYS
+    assert 'wp.capacity == null ? "n/a" : wp.capacity' in SYS
+
+
 def test_worker_rows_carry_turns_and_uptime():
     # notes section 4: "worker rows show ... turns + uptime". Turns come
     # from grouping /workers/stats by worker id (workers.jsx's own lane

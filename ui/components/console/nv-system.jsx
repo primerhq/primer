@@ -101,7 +101,7 @@ function NV_HealthCards() {
     },
     {
       k: "worker pool", v: String(wp.in_flight == null ? "…" : wp.in_flight),
-      sub: "of " + (wp.capacity == null ? "?" : wp.capacity) + " capacity",
+      sub: "of " + (wp.capacity == null ? "n/a" : wp.capacity) + " capacity",
       tone: "var(--blue)",
     },
     {
