@@ -19,6 +19,9 @@ already supports out of the box.
 
 from __future__ import annotations
 
+import re
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, Path, Query
 from pydantic import BaseModel
 
@@ -242,6 +245,27 @@ async def get_graph_node_turn_log(
     )
 
 
+# _FanoutInstance.synthesized_id's broadcast/map format (primer/graph/
+# _node_refs.py): "{target}[{i}]" -- e.g. "worker[2]". tee's synthesized
+# id has no bracket (it's a distinct node id already, no base-id
+# ambiguity), so it never matches this and is treated as its own base.
+_FANOUT_INSTANCE_RE = re.compile(r"^(?P<base>.+)\[(?P<idx>\d+)\]$")
+
+
+def _base_node_id(node_id: str) -> str:
+    """Strip a fan-out instance suffix ("worker[2]" -> "worker").
+    Returns node_id unchanged when it isn't instance-qualified."""
+    m = _FANOUT_INSTANCE_RE.match(node_id)
+    return m.group("base") if m else node_id
+
+
+def _instance_sort_key(node_id: str) -> tuple[str, int]:
+    m = _FANOUT_INSTANCE_RE.match(node_id)
+    if m:
+        return (m.group("base"), int(m.group("idx")))
+    return (node_id, -1)
+
+
 class _NodeStateOut(BaseModel):
     """One node's runtime snapshot for the run-view canvas + inspector."""
 
@@ -274,6 +298,15 @@ async def get_graph_run_node_states(
     ``kind``. Nodes that have not run yet (absent from the persisted
     state map) surface as ``pending``.
 
+    A fan-out target (broadcast/map) runs as N instances keyed
+    ``"{base}[{i}]"`` in the state map (``_FanoutInstance.synthesized_id``),
+    not under its bare graph-definition id -- each live instance is
+    surfaced as its own row (``node_id="worker[0]"`` etc.), grouped
+    under the base node's declared ``kind``, rather than one row per
+    graph-definition node that a bare-id lookup would never match (the
+    lookup always missed, so every fan-out node showed "pending"
+    forever regardless of its real status -- 01a05935 item 1).
+
     Resolution mirrors the graph turn-log routes:
     1. ``run_id`` is a WorkspaceSession bound to a graph -> read
        ``<state_path>/graphs/<run_id>/state.json`` via the workspace.
@@ -292,19 +325,27 @@ async def get_graph_run_node_states(
         storage_provider=storage_provider,
     )
 
+    by_base_id: dict[str, list[str]] = defaultdict(list)
+    for state_key in state_map:
+        by_base_id[_base_node_id(state_key)].append(state_key)
+    for instance_keys in by_base_id.values():
+        instance_keys.sort(key=_instance_sort_key)
+
     items: list[dict] = []
     for node_id, kind in kinds.items():
-        ns = state_map.get(node_id) or {}
-        items.append(
-            _NodeStateOut(
-                node_id=node_id,
-                kind=kind,
-                status=ns.get("status", "pending"),
-                iteration=ns.get("last_run_iteration"),
-                last_run_at=ns.get("last_run_at"),
-                error=ns.get("error"),
-            ).model_dump()
-        )
+        instance_keys = by_base_id.get(node_id) or [None]
+        for key in instance_keys:
+            ns = (state_map.get(key) or {}) if key is not None else {}
+            items.append(
+                _NodeStateOut(
+                    node_id=key if key is not None else node_id,
+                    kind=kind,
+                    status=ns.get("status", "pending"),
+                    iteration=ns.get("last_run_iteration"),
+                    last_run_at=ns.get("last_run_at"),
+                    error=ns.get("error"),
+                ).model_dump()
+            )
     return {"items": items, "run_id": run_id, "graph_id": graph_id}
 
 
