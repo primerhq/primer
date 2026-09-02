@@ -17,15 +17,19 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+from primer.graph.base import _FanoutInstance, _PendingToolCall
 from primer.graph.executor import GraphExecutor
 from primer.model.agent import Agent
 from primer.model.chat import Message, StreamEvent, ToolResultPart
 from primer.model.graph import (
+    FanOutSpec,
     Graph,
     GraphNodeMessage,
     GraphThread,
     _BeginNode,
     _EndNode,
+    _FanInNode,
+    _FanOutNode,
     _StaticEdge,
     _ToolCallNode,
 )
@@ -262,3 +266,89 @@ async def test_toolcall_yield_carries_original_call_metadata() -> None:
     assert oc is not None, "outer approval yield dropped original_call"
     assert oc["name"] == "workspace__write"
     assert oc["arguments"] == {"path": "release.txt", "content": "hi"}
+
+
+@pytest.mark.asyncio
+async def test_toolcall_yield_carries_original_call_for_fanout_instance() -> None:
+    """01a05935 item 2: a fan-out TOOL_CALL instance's node_id is
+    instance-qualified ("worker[1]"), not the graph-definition's bare id
+    ("worker"). Both places that rebuild original_call from the node's
+    tool_id -- the outer park yield and the checkpoint's pending_dispatch
+    entry -- must resolve through the fan-out instance record (like
+    _resolve_node_def already does for every other node lookup), not
+    scan the graph definition for a literal id match, which never
+    matches an instance id and silently drops tool_id to "<unknown>"."""
+    graph = Graph(
+        id="g-fanout-meta",
+        description="begin -> fan_out -> tool(yields) -> fan_in -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _FanOutNode(
+                id="fo",
+                specs=[FanOutSpec(
+                    kind="broadcast", target_node_id="worker", count=2,
+                )],
+            ),
+            _ToolCallNode(id="worker", tool_id="web__search",
+                          arguments={"q": "x"}),
+            _FanInNode(id="fi", aggregate_template="{{ nodes.worker | length }}"),
+            _EndNode(id="exit"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="fo"),
+            _StaticEdge(from_node="worker", to_node="fi"),
+            _StaticEdge(from_node="fi", to_node="exit"),
+        ],
+    )
+
+    async def agent_resolver(agent_id: str) -> Agent:
+        raise KeyError(agent_id)
+
+    async def llm_resolver(agent):
+        raise NotImplementedError
+
+    thread_storage: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
+    message_storage: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(
+        graph=graph, thread_storage=thread_storage,  # type: ignore[arg-type]
+    )
+    executor = GraphExecutor(
+        graph=graph, agent_resolver=agent_resolver,
+        llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        thread_storage=thread_storage,  # type: ignore[arg-type]
+        message_storage=message_storage,  # type: ignore[arg-type]
+        graph_thread_id=thread.id,
+    )
+
+    # Synthesize exactly the state a real fan-out dispatch leaves behind:
+    # one live instance record for "worker[1]", and that instance parked
+    # on an approval.
+    executor._fanout_instances = {
+        "worker[1]": _FanoutInstance(
+            synthesized_id="worker[1]", target_node_id="worker",
+            fanout_index=1, fanout_item=None,
+        ),
+    }
+    executor._pending_toolcalls = [
+        _PendingToolCall(
+            node_id="worker[1]",
+            tool_call_id="tc-fo-1",
+            parked_event_key="tool_approval:gsid-1:tc-fo-1",
+            arguments={"q": "y"},
+        ),
+    ]
+
+    yld = executor._build_pending_park_yield()
+    oc = (yld.yielded.resume_metadata or {}).get("original_call")
+    assert oc is not None, "fan-out instance dropped original_call entirely"
+    assert oc["name"] == "web__search", (
+        f"expected the fan-out target's tool_id, got {oc['name']!r} - "
+        "the node lookup fell through to the graph-definition scan and "
+        "missed the instance id"
+    )
+    assert oc["arguments"] == {"q": "y"}
+
+    # The checkpoint's pending_dispatch entry (channel/REST surface)
+    # resolves the same way.
+    entry = executor._toolcall_dispatch_entry(executor._pending_toolcalls[0])
+    assert entry["resume_metadata"]["original_call"]["name"] == "web__search"
