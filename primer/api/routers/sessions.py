@@ -23,6 +23,7 @@ from primer.api.deps import (
     get_session_storage,
     get_storage_provider,
     get_workspace_registry,
+    get_workspace_storage,
 )
 from primer.api.errors import common_responses
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
@@ -668,6 +669,99 @@ async def find_sessions(
     sessions=Depends(get_session_storage),
 ):
     return await sessions.find(body.predicate, body.page, order_by=body.order_by)
+
+
+class RecentSession(WorkspaceSession):
+    """Response-only shape: one live session plus resolved display
+    context for a cross-workspace "recent sessions" feed (the palette
+    and rail).  Never persisted -- ``workspace_name``/``last_activity_at``
+    are computed fresh on every call, a read-time join, not a
+    denormalization (01a06431 c-1)."""
+
+    workspace_name: str | None = Field(
+        default=None,
+        description=(
+            "Resolved display name of the owning workspace. Falls back "
+            "to the workspace id in the console, same convention as "
+            "Workspace.name itself."
+        ),
+    )
+    last_activity_at: datetime = Field(
+        ...,
+        description=(
+            "last_turn_at when set, else created_at -- resolved "
+            "server-side so callers (palette, rail) don't each "
+            "re-derive the same fallback."
+        ),
+    )
+
+
+_RECENT_SCAN_WINDOW = 200
+_RECENT_DEFAULT_LIMIT = 20
+_RECENT_MAX_LIMIT = 100
+
+
+@top_session_router.get(
+    "/sessions/recent",
+    summary="Recently-active sessions across every live workspace",
+    responses=common_responses(400, 422, 500),
+)
+async def recent_sessions(
+    limit: int = Query(default=_RECENT_DEFAULT_LIMIT, ge=1, le=_RECENT_MAX_LIMIT),
+    sessions=Depends(get_session_storage),
+    workspaces=Depends(get_workspace_storage),
+) -> list[RecentSession]:
+    """Cross-workspace "recent sessions", scoped to live workspaces only.
+
+    ``GET /sessions/find`` (unscoped) is a generic, complete finder --
+    deliberately including sessions whose workspace was later destroyed
+    (``ended_reason="workspace_lost"``/``"failed"``), a tombstone an
+    audit caller may want. This route exists because the palette/rail
+    "recent sessions" feed is NOT that caller: surfacing tombstoned
+    sessions with no workspace/agent context made rows indistinguishable
+    ("triplicate 'main' rows", uiv2 Phase-2 finding). Excludes any
+    session whose workspace_id no longer names a live workspace, resolves
+    workspace_name via a read-time join (no denormalization), and orders
+    by last_activity_at desc. The bound agent/graph qualifier is already
+    on ``binding`` (WorkspaceSession's own field) -- Agent/Graph ids ARE
+    their display names in this codebase (Describeable has no separate
+    name field), so no extra per-row lookup is needed for that part.
+
+    Scans the ``_RECENT_SCAN_WINDOW`` most-recently-created sessions
+    (not the whole table) as the candidate pool, then filters/sorts/caps
+    to ``limit`` in memory -- storage's generic Storage[T] has no
+    order-by-expression support, so this mirrors the shape the UI's own
+    client-side normalisation already did (SH_api.allSessions), just
+    moved server-side where the workspace join can happen too.
+    """
+    live_workspaces: dict[str, str] = {}
+    offset = 0
+    while True:
+        page = await workspaces.list(OffsetPage(offset=offset, length=200))
+        for ws in page.items:
+            live_workspaces[ws.id] = ws.name or ws.id
+        if len(page.items) < 200:
+            break
+        offset += 200
+
+    candidates = await sessions.list(
+        OffsetPage(offset=0, length=_RECENT_SCAN_WINDOW),
+        order_by=[OrderBy(field="created_at", direction="desc")],
+    )
+
+    rows: list[RecentSession] = []
+    for session in candidates.items:
+        workspace_name = live_workspaces.get(session.workspace_id)
+        if workspace_name is None:
+            continue
+        rows.append(RecentSession(
+            **session.model_dump(),
+            workspace_name=workspace_name,
+            last_activity_at=session.last_turn_at or session.created_at,
+        ))
+
+    rows.sort(key=lambda r: r.last_activity_at, reverse=True)
+    return rows[:limit]
 
 
 class SessionDetail(WorkspaceSession):

@@ -1607,3 +1607,144 @@ async def test_rename_session_not_found(sessions_client, seeded_workspace):
         json={"name": "x"},
     )
     assert resp.status_code == 404, resp.text
+
+
+# ===========================================================================
+# GET /v1/sessions/recent (01a06431 c-1) - cross-workspace recents feed
+# ===========================================================================
+
+
+async def test_recent_sessions_excludes_orphaned_workspaces(
+    app, sessions_client, seeded_workspace, seeded_agent,
+):
+    """01a06431 c-1: a session whose workspace was destroyed (or never
+    registered) is a real, permanent tombstone row (ended_reason
+    "workspace_lost"/"failed") - correct for the generic /sessions/find
+    finder, wrong for the palette/rail "recent sessions" feed, which
+    surfaced these with no context ("triplicate 'main' rows", uiv2
+    Phase-2 finding). /sessions/recent scopes to live workspaces only."""
+    live = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "name": "live session",
+            "auto_start": False,
+        },
+    )
+    assert live.status_code == 201, live.text
+    live_sid = live.json()["id"]
+
+    from primer.model.workspace_session import (
+        AgentSessionBinding, SessionStatus, WorkspaceSession,
+    )
+
+    sess_storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await sess_storage.create(WorkspaceSession(
+        id="sess-orphan-1",
+        workspace_id="ws-does-not-exist",
+        binding=AgentSessionBinding(agent_id="agt-orphan"),
+        status=SessionStatus.ENDED,
+        name="main",
+        created_at=datetime.now(timezone.utc),
+        ended_reason="workspace_lost",
+    ))
+
+    resp = await sessions_client.get("/v1/sessions/recent")
+    assert resp.status_code == 200, resp.text
+    ids = {row["id"] for row in resp.json()}
+    assert live_sid in ids
+    assert "sess-orphan-1" not in ids
+
+    live_row = next(r for r in resp.json() if r["id"] == live_sid)
+    assert live_row["workspace_id"] == seeded_workspace.id
+    assert live_row["workspace_name"]
+
+
+async def test_recent_sessions_orders_by_last_activity_desc(
+    app, seeded_workspace, sessions_client,
+):
+    """Ordering follows last_turn_at when set, else created_at - not
+    creation order alone (an old session that just ran a turn is more
+    "recent" than a newer session that never started)."""
+    from primer.model.workspace_session import (
+        AgentSessionBinding, SessionStatus, WorkspaceSession,
+    )
+
+    sess_storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Created LAST but never ran a turn -> oldest activity.
+    await sess_storage.create(WorkspaceSession(
+        id="sess-stale",
+        workspace_id=seeded_workspace.id,
+        binding=AgentSessionBinding(agent_id="agt-1"),
+        status=SessionStatus.ENDED,
+        created_at=base,
+    ))
+    # Created FIRST but ran a turn recently -> most recent activity.
+    await sess_storage.create(WorkspaceSession(
+        id="sess-active",
+        workspace_id=seeded_workspace.id,
+        binding=AgentSessionBinding(agent_id="agt-1"),
+        status=SessionStatus.RUNNING,
+        created_at=base.replace(year=2025),
+        last_turn_at=base.replace(month=6),
+    ))
+
+    resp = await sessions_client.get("/v1/sessions/recent")
+    assert resp.status_code == 200, resp.text
+    order = [r["id"] for r in resp.json()]
+    assert order.index("sess-active") < order.index("sess-stale")
+
+
+async def test_recent_sessions_respects_limit(
+    app, seeded_workspace, sessions_client,
+):
+    from primer.model.workspace_session import (
+        AgentSessionBinding, SessionStatus, WorkspaceSession,
+    )
+
+    sess_storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    for i in range(5):
+        await sess_storage.create(WorkspaceSession(
+            id=f"sess-lim-{i}",
+            workspace_id=seeded_workspace.id,
+            binding=AgentSessionBinding(agent_id="agt-1"),
+            status=SessionStatus.ENDED,
+            created_at=datetime.now(timezone.utc),
+        ))
+
+    resp = await sessions_client.get("/v1/sessions/recent?limit=2")
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()) == 2
+
+    too_big = await sessions_client.get("/v1/sessions/recent?limit=101")
+    assert too_big.status_code == 422, too_big.text
+
+
+async def test_recent_sessions_serves_graph_bound_qualifier(
+    app, seeded_workspace, seeded_graph, sessions_client,
+):
+    """A graph-bound row's qualifier is the graph ref, not an agent_id -
+    the UI needs to know which shape it got to render the right glyph."""
+    from primer.model.workspace_session import (
+        GraphSessionBinding, SessionStatus, WorkspaceSession,
+    )
+
+    # seeded_graph pre-creates its default graph on fixture setup;
+    # seeded_graph.id names it, calling seeded_graph() again would
+    # conflict on the same default id.
+    graph_id = seeded_graph.id
+    sess_storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await sess_storage.create(WorkspaceSession(
+        id="sess-graph-1",
+        workspace_id=seeded_workspace.id,
+        binding=GraphSessionBinding(graph_id=graph_id),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    resp = await sessions_client.get("/v1/sessions/recent")
+    assert resp.status_code == 200, resp.text
+    row = next(r for r in resp.json() if r["id"] == "sess-graph-1")
+    assert row["binding"]["kind"] == "graph"
+    assert row["binding"]["graph_id"] == graph_id
