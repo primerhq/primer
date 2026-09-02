@@ -327,7 +327,37 @@ async def test_spec_b_end_to_end_graph_runs_to_completion() -> None:
     # ToolCall ran; the bare ``worker``-tagged events confirm graph
     # event multiplexing for agent nodes.
 
-    # -------- 7. Thread state ENDED completed ------------------------
+    # -------- 7. Each fan-out sibling persists its OWN turn history ---
+    # 01a05935 item 3: _stream_agent_node used to load/persist history
+    # keyed by the base node.id ("worker") regardless of which fan-out
+    # instance was running, so all 3 concurrent siblings read and wrote
+    # the SAME GraphNodeMessage rows - one sibling's turn could clobber
+    # or interleave with another's. Persisted rows must land under each
+    # instance's own qualified node_id, matching the same
+    # current_graph_node_id()-or-node.id convention the event-tagging
+    # line above already uses.
+    persisted_node_ids = {m.node_id for m in message_storage._data.values()}
+    worker_history_ids = {
+        nid for nid in persisted_node_ids
+        if nid == "worker" or nid.startswith("worker[")
+    }
+    assert worker_history_ids == {"worker[0]", "worker[1]", "worker[2]"}, (
+        f"expected each fan-out sibling's history under its own "
+        f"instance-qualified node_id, got {sorted(worker_history_ids)}"
+    )
+    for i in range(3):
+        rows = [
+            m for m in message_storage._data.values()
+            if m.node_id == f"worker[{i}]"
+        ]
+        user_rows = [m for m in rows if m.role == "user"]
+        assert len(user_rows) == 1, (
+            f"worker[{i}] should have exactly its own one user turn "
+            f"persisted, found {len(user_rows)}"
+        )
+        assert user_rows[0].parts[0].text == f"W{i}"  # type: ignore[union-attr]
+
+    # -------- 8. Thread state ENDED completed ------------------------
     loaded = await thread_storage.get(thread.id)
     assert loaded is not None
     assert loaded.ended_reason == "completed"
