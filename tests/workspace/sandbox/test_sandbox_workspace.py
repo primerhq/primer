@@ -94,6 +94,25 @@ async def test_list_files_recursive(tmp_path: Path) -> None:
     assert any(p.endswith("b.txt") for p in paths)
 
 
+@pytest.mark.asyncio
+async def test_list_files_recursive_max_entries_bounds_the_walk(
+    tmp_path: Path,
+) -> None:
+    """01a0644b: _walk's naive unbounded recursion otherwise visits every
+    file/subdirectory before returning - max_entries stops both
+    appending AND descending further the moment the cap is hit."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-1", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    for i in range(10):
+        await ws.write_file(f"d/f{i}.txt", str(i).encode())
+    entries = await ws.list_files(".", recursive=True, max_entries=3)
+    assert len(entries) == 3
+
+
 class _AbsPathSandbox(FakeSandbox):
     """Mimics the real container/k8s runtime, whose ``list_dir`` returns
     ABSOLUTE entry paths (``/workspace/...``) — unlike FakeSandbox, which

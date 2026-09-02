@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import itertools
 import logging
 import shutil
 import tarfile
@@ -343,6 +344,7 @@ class LocalWorkspace(Workspace):
         path: str = ".",
         *,
         recursive: bool = False,
+        max_entries: int | None = None,
     ) -> list[FileEntry]:
         target = self._resolve_path(path)
         if not await asyncio.to_thread(target.exists):
@@ -351,7 +353,8 @@ class LocalWorkspace(Workspace):
             raise BadRequestError(f"{path!r} is not a directory")
 
         return await asyncio.to_thread(
-            _walk_for_user, target, self._root, recursive=recursive
+            _walk_for_user, target, self._root,
+            recursive=recursive, max_entries=max_entries,
         )
 
     async def read_file(self, path: str) -> bytes:
@@ -895,6 +898,7 @@ def _walk_for_user(
     workspace_root: Path,
     *,
     recursive: bool,
+    max_entries: int | None = None,
 ) -> list[FileEntry]:
     # `target` is already a resolved path (see _resolve_path). Resolve the
     # workspace root too so entries from `target.iterdir()` share a common
@@ -914,7 +918,20 @@ def _walk_for_user(
     # need to distinguish "empty" from "gone".
     try:
         if recursive:
-            iterator = list(target.rglob("*"))
+            # `rglob` is a lazy generator that yields as it discovers
+            # entries; `islice` stops pulling from it (and therefore
+            # stops descending into as-yet-unvisited directories) the
+            # moment `max_entries` is reached, rather than the walk
+            # materialising the whole subtree before anyone gets to
+            # page/slice the result (the pre-existing, unbounded shape
+            # this replaces -- a workspace with a large tree, e.g. a
+            # vendored node_modules, made every recursive=True call
+            # here expensive regardless of how few entries the caller
+            # actually wanted back).
+            walk = target.rglob("*")
+            if max_entries is not None:
+                walk = itertools.islice(walk, max_entries)
+            iterator = list(walk)
         else:
             iterator = sorted(target.iterdir(), key=lambda p: p.name)
     except OSError:
