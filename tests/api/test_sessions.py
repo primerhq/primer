@@ -1651,13 +1651,17 @@ async def test_recent_sessions_excludes_orphaned_workspaces(
 
     resp = await sessions_client.get("/v1/sessions/recent")
     assert resp.status_code == 200, resp.text
-    ids = {row["id"] for row in resp.json()}
+    items = resp.json()["items"]
+    ids = {row["session_id"] for row in items}
     assert live_sid in ids
     assert "sess-orphan-1" not in ids
 
-    live_row = next(r for r in resp.json() if r["id"] == live_sid)
+    live_row = next(r for r in items if r["session_id"] == live_sid)
     assert live_row["workspace_id"] == seeded_workspace.id
     assert live_row["workspace_name"]
+    assert live_row["agent_id"] == seeded_agent.id
+    assert live_row["agent_name"] == seeded_agent.id
+    assert live_row["graph_ref"] is None
 
 
 async def test_recent_sessions_orders_by_last_activity_desc(
@@ -1692,7 +1696,7 @@ async def test_recent_sessions_orders_by_last_activity_desc(
 
     resp = await sessions_client.get("/v1/sessions/recent")
     assert resp.status_code == 200, resp.text
-    order = [r["id"] for r in resp.json()]
+    order = [r["session_id"] for r in resp.json()["items"]]
     assert order.index("sess-active") < order.index("sess-stale")
 
 
@@ -1715,7 +1719,7 @@ async def test_recent_sessions_respects_limit(
 
     resp = await sessions_client.get("/v1/sessions/recent?limit=2")
     assert resp.status_code == 200, resp.text
-    assert len(resp.json()) == 2
+    assert len(resp.json()["items"]) == 2
 
     too_big = await sessions_client.get("/v1/sessions/recent?limit=101")
     assert too_big.status_code == 422, too_big.text
@@ -1724,8 +1728,10 @@ async def test_recent_sessions_respects_limit(
 async def test_recent_sessions_serves_graph_bound_qualifier(
     app, seeded_workspace, seeded_graph, sessions_client,
 ):
-    """A graph-bound row's qualifier is the graph ref, not an agent_id -
-    the UI needs to know which shape it got to render the right glyph."""
+    """A graph-bound row's qualifier is graph_ref, not agent_id/agent_name
+    - the console needs to know which shape it got to render the right
+    glyph. graph_ref is a pinned field name (Dev-Prime's palette
+    consumer reads it directly), not an internal detail."""
     from primer.model.workspace_session import (
         GraphSessionBinding, SessionStatus, WorkspaceSession,
     )
@@ -1745,6 +1751,7 @@ async def test_recent_sessions_serves_graph_bound_qualifier(
 
     resp = await sessions_client.get("/v1/sessions/recent")
     assert resp.status_code == 200, resp.text
-    row = next(r for r in resp.json() if r["id"] == "sess-graph-1")
-    assert row["binding"]["kind"] == "graph"
-    assert row["binding"]["graph_id"] == graph_id
+    row = next(r for r in resp.json()["items"] if r["session_id"] == "sess-graph-1")
+    assert row["graph_ref"] == graph_id
+    assert row["agent_id"] is None
+    assert row["agent_name"] is None
