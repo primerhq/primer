@@ -62,14 +62,60 @@ async def test_health_surfaces_scheduler_degraded(app, client) -> None:
 async def test_health_surfaces_worker_pool_in_flight_capacity(client) -> None:
     """/v1/health includes worker_pool.in_flight + worker_pool.capacity.
 
-    The test app does not run a real WorkerPool (worker_pool=None), so
-    in_flight + capacity should both be null but the keys must exist.
+    The test app does not run a real WorkerPool (worker_pool=None) and
+    has no workers registered with the scheduler, so in_flight stays
+    null (no durable equivalent) and capacity falls back to the durable
+    registry's sum — 0 for an empty registry, not null.
     """
     response = await client.get("/v1/health")
     body = response.json()
     assert "worker_pool" in body
     assert body["worker_pool"]["in_flight"] is None
-    assert body["worker_pool"]["capacity"] is None
+    assert body["worker_pool"]["capacity"] == 0
+
+
+@pytest.mark.asyncio
+async def test_health_worker_pool_capacity_falls_back_to_scheduler_registry(
+    app, client,
+) -> None:
+    """01a063c3: an API-only process (no local WorkerPool) must not
+    report capacity=null just because worker pods, not this pod, own
+    the pool — that rendered as the dashboard's literal 'of ? capacity'.
+    Capacity instead sums the durable scheduler registry's live
+    (non-dead) workers, excluding a dead one."""
+    await app.state.scheduler.register_worker(
+        worker_id="w1", host="h1", pid=1, capacity=3,
+    )
+    await app.state.scheduler.register_worker(
+        worker_id="w2", host="h2", pid=2, capacity=4,
+    )
+    await app.state.scheduler.register_worker(
+        worker_id="w3", host="h3", pid=3, capacity=99,
+    )
+    app.state.scheduler.mark_worker_dead_for_test("w3")
+
+    response = await client.get("/v1/health")
+    body = response.json()
+    assert body["worker_pool"]["in_flight"] is None
+    assert body["worker_pool"]["capacity"] == 7
+
+
+@pytest.mark.asyncio
+async def test_health_worker_pool_capacity_null_without_scheduler(app, client) -> None:
+    """No local pool and no scheduler at all: capacity has nothing to
+    fall back to, so it stays null (the UI renders its own clean
+    fallback for that case, not this endpoint's job to fake a number)."""
+    real_scheduler = app.state.scheduler
+    app.state.scheduler = None
+    try:
+        response = await client.get("/v1/health")
+        body = response.json()
+        assert body["worker_pool"]["in_flight"] is None
+        assert body["worker_pool"]["capacity"] is None
+        # scheduler.alive also reflects the missing scheduler.
+        assert body["scheduler"]["alive"] is False
+    finally:
+        app.state.scheduler = real_scheduler
 
 
 @pytest.mark.asyncio
