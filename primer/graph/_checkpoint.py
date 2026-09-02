@@ -52,9 +52,18 @@ class _CheckpointMixin:
             first = self._pending_toolcalls[0]
             primary_event_key = first.parked_event_key
             primary_tcid = first.tool_call_id
-            node_def = next(
-                (n for n in self._graph.nodes if n.id == first.node_id), None
-            )
+            # _resolve_node_def (mixed in from _NodeDispatchMixin) resolves
+            # a fan-out instance id (e.g. "worker[2]") to its TARGET node's
+            # definition via _fanout_instances -- a bare `n.id == node_id`
+            # scan over the graph definition never matches an instance id,
+            # which silently dropped tool_id (and therefore the whole
+            # original_call block) for every fan-out TOOL_CALL approval
+            # (01a05935 item 2). KeyError -> None mirrors this file's other
+            # "topology drifted between checkpoint and resume" fallbacks.
+            try:
+                node_def = self._resolve_node_def(first.node_id)
+            except KeyError:
+                node_def = None
             tool_id = getattr(node_def, "tool_id", None)
             resume_meta: dict[str, Any] = {}
             if tool_id is not None:
@@ -220,6 +229,13 @@ class _CheckpointMixin:
                 "tool_call_id": p.tool_call_id,
                 "resume_metadata": dict(p.resume_metadata or {}),
             }
+        # Same fan-out-instance resolution as _build_pending_park_yield
+        # above (01a05935 item 2) -- p.node_id may be "worker[2]", which a
+        # bare graph-definition scan never matches.
+        try:
+            node_def = self._resolve_node_def(p.node_id)
+        except KeyError:
+            node_def = None
         return {
             "kind": "_approval",
             "node_id": p.node_id,
@@ -227,11 +243,7 @@ class _CheckpointMixin:
             "resume_metadata": {
                 "original_call": {
                     "id": p.tool_call_id,
-                    "name": getattr(
-                        next((n for n in self._graph.nodes
-                              if n.id == p.node_id), None),
-                        "tool_id", "<unknown>",
-                    ),
+                    "name": getattr(node_def, "tool_id", "<unknown>"),
                     "arguments": dict(p.arguments),
                 },
             },
