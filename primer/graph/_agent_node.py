@@ -156,8 +156,15 @@ class _AgentNodeMixin:
         )
         new_user_msg = Message(role="user", parts=[TextPart(text=rendered)])
 
+        # 01a05935 item 3: instance-qualified, same reasoning as the
+        # event-tagging line below - concurrent fan-out siblings of this
+        # SAME agent node must not read/write the SAME history rows.
+        # Both storage backends key purely on whatever string they're
+        # given, so this is the complete fix (no storage-layer change).
+        history_node_id = current_graph_node_id() or node.id
+
         # Build the prompt: system + history + new user msg.
-        history = await self._load_node_history(node.id)
+        history = await self._load_node_history(history_node_id)
         prompt: list[Message] = []
         if agent.system_prompt:
             sys_text = render_system_prompt_or_raw(agent.system_prompt, context.ctx)
@@ -209,7 +216,7 @@ class _AgentNodeMixin:
         # Persist the new user msg + every message produced this turn
         # (assistant + any tool result messages from the loop).
         all_new = [new_user_msg] + produced_messages
-        await self._persist_node_turn(node.id, context.iteration, all_new)
+        await self._persist_node_turn(history_node_id, context.iteration, all_new)
 
         return self._agent_node_output(
             produced_messages, node.response_format,
@@ -242,7 +249,15 @@ class _AgentNodeMixin:
             node.input_template, context=context, extra_scope=None
         )
         new_user_msg = Message(role="user", parts=[TextPart(text=rendered)])
-        history = await self._load_node_history(node.id)
+        # 01a05935 item 3: pending.node_id is the fan-out-instance-
+        # qualified id this specific park record belongs to (node.id
+        # above is the base node's DEFINITION - _resolve_node_def
+        # already collapsed the instance id to look it up), so it's the
+        # authoritative key here, not a contextvar lookup - this method
+        # isn't necessarily called from the same dispatch path that sets
+        # current_graph_node_id, and pending.node_id is already exactly
+        # right without depending on that ambient state being set.
+        history = await self._load_node_history(pending.node_id)
         prompt: list[Message] = []
         if agent.system_prompt:
             sys_text = render_system_prompt_or_raw(agent.system_prompt, context.ctx)
@@ -269,7 +284,7 @@ class _AgentNodeMixin:
             pass
 
         all_new = [new_user_msg, *rehydrated_assistant, tool_result_msg, *produced_messages]
-        await self._persist_node_turn(node.id, pending.iteration, all_new)
+        await self._persist_node_turn(pending.node_id, pending.iteration, all_new)
 
         return self._agent_node_output(
             produced_messages, node.response_format,
