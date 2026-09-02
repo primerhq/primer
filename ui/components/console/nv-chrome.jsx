@@ -136,10 +136,73 @@ function NV_ProfileMenu() {
   );
 }
 
+// uiv2 Wave 1 (01a06431): the workspace-selector chip un-retires the
+// topbar switcher US-012b (2026-08-29) folded into the rail tree alone
+// ("the two were redundant"). The mockup shows both coexisting - the
+// chip is an always-visible, rail-scroll-independent entry point; the
+// rail stays the detailed browse/session view. No new switching logic:
+// both the row click and the footer "+ New workspace…" run the SAME
+// workspace.switch/workspace.create verbs the rail already uses, and
+// this also fixes a live dead path - workspace.switch's own run(),
+// called with no wid (palette row, Ctrl+Shift+o), already did
+// setOpenMenu("ws") expecting a listener; nothing rendered against
+// "ws" until now, so the chord/palette verb was silently a no-op.
+function NV_WorkspaceChip() {
+  var con = NV_useConsole();
+  var workspaces = con.workspaces || [];
+  var active = workspaces.filter(function (w) { return w.id === con.wid; })[0];
+  return (
+    <div className="nv-ws-wrap">
+      <button type="button" className="nv-ws-chip" title="Switch workspace"
+        data-verb="workspace.switch" data-testid="nv-ws-chip"
+        onClick={function (ev) { ev.stopPropagation(); con.toggleMenu("ws"); }}>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+          stroke="currentColor" strokeWidth="1.3" style={{ flexShrink: 0 }}>
+          <path d="M1.5 3.5 6 1l4.5 2.5v5L6 11 1.5 8.5Z M6 6v5M1.5 3.5 6 6l4.5-2.5" />
+        </svg>
+        <span className="nv-ws-chip-name">{active ? (active.name || active.id) : "Workspace"}</span>
+        <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor"
+          strokeWidth="1.5" style={{ flexShrink: 0 }}>
+          <path d="M2.5 3.5 5 6.5 7.5 3.5" />
+        </svg>
+      </button>
+      {con.openMenu === "ws" ? (
+        <div className="nv-ws-menu" data-testid="nv-ws-menu"
+          onClick={function (ev) { ev.stopPropagation(); }}>
+          {workspaces.map(function (w) {
+            return (
+              <button type="button" key={w.id} className="nv-ws-menu-row"
+                data-testid={"nv-ws-menu-row:" + w.id}
+                data-current={w.id === con.wid ? "true" : "false"}
+                onClick={function () {
+                  con.toggleMenu(null);
+                  var verb = con.registry.get("workspace.switch");
+                  if (verb) verb.run({ wid: w.id });
+                }}>
+                <span className="nv-ws-menu-name">{w.name || w.id}</span>
+                {w.name ? <span className="nv-ws-menu-id mono">{w.id}</span> : null}
+              </button>
+            );
+          })}
+          <div className="nv-menu-sep" />
+          <button type="button" className="nv-ws-menu-new"
+            data-verb="workspace.create" data-testid="nv-ws-menu-new"
+            onClick={function () {
+              con.toggleMenu(null);
+              var verb = con.registry.get("workspace.create");
+              if (verb) verb.run();
+            }}>+ New workspace…</button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function NV_Topbar() {
   var con = NV_useConsole();
   return (
     <div className="nv-topbar" data-testid="nv-topbar">
+      {con.view.name === "studio" ? <NV_WorkspaceChip /> : null}
       <div className="nv-search-wrap">
         <button type="button" className="nv-search-btn" data-verb="palette.open"
           data-testid="nv-search-btn"

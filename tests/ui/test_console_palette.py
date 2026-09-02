@@ -85,10 +85,15 @@ def test_wiki_source_opens_a_wiki_tab():
 
 
 def test_empty_query_shows_recent_sessions():
-    assert '"Recent"' in SRC
+    # uiv2 Wave 1: relabeled "Recent" -> "Sessions" to match the
+    # mockup's own taxonomy (Verbs, Sessions, Files) - it already only
+    # ever held sessions. Scoped to the else-branch body, not a bare
+    # SRC-wide check, since "Sessions" also names the searched group
+    # below (NV_matchRows(..., q, "Sessions")) for a different reason.
     start = SRC.index("} else {", SRC.index("if (q.trim())"))
     end = SRC.index("\n  }\n\n  var flat", start)
     body = SRC[start:end]
+    assert 'label: "Sessions"' in body
     assert "sessions.data" in body
     assert "last_activity_at" in body
     assert "NV_PALETTE_CAP" in body
@@ -113,11 +118,17 @@ def test_empty_query_also_shows_recent_files_from_the_already_open_cache():
 
 
 def test_recents_absent_once_a_query_is_typed():
+    # uiv2 Wave 1: both branches now push a "Sessions" group (relabeled
+    # from "Recent" to match the mockup taxonomy), so the two are no
+    # longer told apart by label - check the empty-query-only recents
+    # machinery (the capped/sorted variables) is absent here instead.
     start = SRC.index("if (q.trim()) {")
     end = SRC.index("} else {", start)
     body = SRC[start:end]
-    assert '"Recent"' not in body
+    assert "NV_PALETTE_CAP" not in body
+    assert "last_activity_at" not in body
     assert "recentFiles" not in body
+    assert 'label: "Sessions"' not in body
 
 
 # ---------------------------------------------------------------------------
@@ -140,3 +151,78 @@ def test_the_shared_row_testid_is_unchanged():
     silently break every caller of that helper, so data-row-key must be a
     second attribute alongside it, not a replacement."""
     assert 'data-testid="nv-palette-row"' in SRC
+
+
+# ---------------------------------------------------------------------------
+# uiv2 reconciliation Wave 1 (studio shell): group taxonomy, row
+# iconography, FREQUENT tags, the self-referential "Open Palette" filter.
+# Session/agent qualifier dedupe itself is a separate backend task
+# (01a06431); this wave only builds the UI to render it once served.
+# ---------------------------------------------------------------------------
+
+
+def test_session_rows_carry_an_agent_glyph_not_a_text_badge():
+    fn = SRC[SRC.index("function sessionRow("):SRC.index("function fileRow(")]
+    assert "NV_identity(s.binding)" in fn
+    assert "glyph: ident" in fn
+    assert "tag: null" in fn
+
+
+def test_file_and_verb_rows_lead_with_a_dot_not_a_text_badge():
+    file_fn = SRC[SRC.index("function fileRow("):SRC.index("if (q.trim()) {")]
+    assert "dot: true" in file_fn
+    assert "tag: null" in file_fn
+    assert 'f.is_dir ? "folder" : "file"' not in SRC
+
+    verb_rows = SRC[SRC.index("var verbRows ="):SRC.index("if (verbRows.length)")]
+    assert "dot: true" in verb_rows
+
+
+def test_session_rows_carry_an_agent_at_workspace_sub_label():
+    """Client-computable disambiguator for the triplicate-'main'-rows live
+    bug (backend dedupe/qualifier work is a separate task, not this one) -
+    workspace/agent are already on every session row (s.workspace_id,
+    s.binding), so this does not wait on that batch landing."""
+    fn = SRC[SRC.index("function sessionRow("):SRC.index("function fileRow(")]
+    assert "agentLabel + \" @ \"" in fn
+    assert "sub: " in fn
+
+
+def test_frequent_tag_reflects_in_session_frecency_not_invented():
+    assert 'con.frecency.scoreFor(verb.id) > 0 ? "frequent" : null' in SRC
+
+
+def test_open_palette_filters_itself_from_its_own_results():
+    m = re.search(r"var rankedVerbsVisible = rankedVerbs\.filter\(([\s\S]{0,120})", SRC)
+    assert m
+    assert 'verb.id !== "palette.open"' in m.group(1)
+    assert "rankedVerbsVisible.slice(0, 8)" in SRC
+
+
+def test_recents_endpoint_404_degrades_to_the_client_derived_fallback():
+    """The approved recents endpoint (sh-api.jsx's SH_api.recentSessions)
+    may land on a separate branch after this one - a 404 must fall back
+    to the exact same allSessions()-derived computation the palette
+    shipped with before that endpoint existed, not surface an error."""
+    assert "SH_api.recentSessions(signal)" in SRC
+    m = re.search(r"\.catch\(function \(err\) \{([\s\S]{0,120})", SRC)
+    assert m
+    assert 'err.status === 404' in m.group(1)
+    assert "return null;" in m.group(1)
+
+    empty_start = SRC.index("} else {", SRC.index("if (q.trim())"))
+    empty_end = SRC.index("\n  }\n\n  var flat", empty_start)
+    body = SRC[empty_start:empty_end]
+    assert "recents.data && recents.data.items" in body
+    assert ".map(sessionRowFromRecent)" in body
+    assert ".map(sessionRow)" in body, "the fallback branch must still exist"
+
+
+def test_recent_endpoint_rows_read_the_agreed_field_names_defensively():
+    fn = SRC[SRC.index("function sessionRowFromRecent("):SRC.index("function fileRow(")]
+    assert "r.workspace_name" in fn
+    assert "r.graph_ref" in fn
+    assert "r.agent_id" in fn
+    # Never throws on an unexpected shape - always resolves to something
+    # renderable, same default sessionRow() uses.
+    assert '"operator"' in fn

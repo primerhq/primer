@@ -1,4 +1,4 @@
-/* global React, SH_api, SH_rankVerbs, NV_useConsole */
+/* global React, SH_api, SH_rankVerbs, NV_useConsole, NV_identity */
 // The universal search bar (wiring plan P1 T5): one field over verbs,
 // sessions (every workspace), files (current workspace), and platform
 // entities. Grouped rows, arrow keys spanning every group, Enter runs.
@@ -45,6 +45,25 @@ function NV_Palette() {
     "nv-rail-all-sessions",
     function (signal) { return SH_api.allSessions(signal); },
     { pollMs: 0 }
+  );
+  // uiv2 Wave 1: the approved recents endpoint (sh-api.jsx's own
+  // comment has the full row shape) - a 404 means it is not deployed on
+  // this server yet (its own branch may land after this one), so that
+  // specific status degrades to null rather than throwing; every other
+  // error still surfaces through useResource's normal error state. null
+  // data is exactly what the empty-query Sessions group below already
+  // treats as "fall back to deriving it from allSessions/con.workspaces".
+  var recents = window.primerApi.useResource(
+    "nv-palette-recents",
+    function (signal) {
+      return open
+        ? SH_api.recentSessions(signal).catch(function (err) {
+            if (err && err.status === 404) return null;
+            throw err;
+          })
+        : Promise.resolve(null);
+    },
+    { pollMs: 0, deps: [open] }
   );
   var agents = window.primerApi.useResource(
     "nv-palette-agents",
@@ -140,12 +159,25 @@ function NV_Palette() {
     });
     rankedVerbs = sessionVerbs.concat(otherVerbs);
   }
-  var verbRows = rankedVerbs.slice(0, 8).map(function (verb) {
+  // uiv2 Wave 1: "Open Palette" inside the already-open palette is a
+  // self-referential registry entry the mockup never surfaces in this
+  // state - filtered before the top-8 slice so it never displaces a
+  // real result either.
+  var rankedVerbsVisible = rankedVerbs.filter(function (verb) {
+    return verb.id !== "palette.open";
+  });
+  var verbRows = rankedVerbsVisible.slice(0, 8).map(function (verb) {
     return {
       key: "v:" + verb.id,
       label: verb.label,
       chord: verb.chord || null,
-      tag: null,
+      dot: true,
+      // FREQUENT (mockup): at minimum render what in-session frecency
+      // already tracks (record()/remember() below feed it) rather than
+      // overpromise a footer that says "frecency-ranked" with nothing to
+      // show for it - per-user persistence across sessions is the
+      // backend half (c-2), unimplemented here.
+      tag: con.frecency && con.frecency.scoreFor(verb.id) > 0 ? "frequent" : null,
       run: runAndClose(function () {
         if (con.frecency) {
           con.frecency.record(verb.id);
@@ -161,12 +193,32 @@ function NV_Palette() {
   // AND route a cross-workspace target through the combined
   // con.openInWorkspace nav, one history entry either way. Shared by
   // both the searched "Sessions" group below and the empty-query
-  // "Recent" group (F9) so the two never drift.
+  // "Sessions" group (F9) so the two never drift.
+  //
+  // uiv2 Wave 1: the trailing "SESSION" text badge is gone - a session
+  // row now leads with the same colored agent glyph the rail/tab-groups
+  // already use (NV_identity(s.binding)), matching the mockup, and
+  // reserving the trailing tag slot for the Platform group where
+  // multiple entity kinds share one heading. The sub label ("agent @
+  // workspace") is a client-computable disambiguator for the live
+  // triplicate-"main"-rows bug (workspace/agent already ride on every
+  // session row - s.workspace_id, s.binding) - it does not wait on the
+  // backend dedupe/qualifier batch (01a06431 item 1), which fixes the
+  // actual data-scoping bug (stale/cross-scope rows) a display label
+  // cannot: two rows that are genuinely different sessions both named
+  // "main" stay two rows, just no longer indistinguishable ones.
   function sessionRow(s) {
+    var ws = (con.workspaces || []).filter(function (w) { return w.id === s.workspace_id; })[0];
+    var ident = NV_identity(s.binding);
+    var agentLabel = s.binding && s.binding.kind === "graph"
+      ? "graph"
+      : (s.binding && s.binding.agent_id) || "operator";
     return {
       key: "s:" + s.session_id,
       label: s.name || s.session_id,
-      tag: "session",
+      sub: agentLabel + " @ " + ((ws && (ws.name || ws.id)) || s.workspace_id || "?"),
+      glyph: ident,
+      tag: null,
       run: runAndClose(function () {
         con.goView("studio");
         if (s.workspace_id && s.workspace_id !== con.wid && con.openInWorkspace) {
@@ -179,13 +231,51 @@ function NV_Palette() {
     };
   }
 
+  // uiv2 Wave 1: the recents-endpoint row shape, when it's actually
+  // deployed (see the `recents` resource above) - pre-composed
+  // workspace_name/agent fields replace the client-side lookups
+  // sessionRow() above does, so this only feeds the empty-query group,
+  // never the searched one (which still needs the FULL session list to
+  // search over, not a capped "recent 20"). Field names beyond
+  // workspace_name are read defensively (a few plausible candidates,
+  // then a plain fallback) since this endpoint's own branch had not
+  // landed as of this wave - if the real names differ once it does,
+  // this degrades to the same "operator" default sessionRow() uses
+  // rather than showing an unresolved value.
+  function sessionRowFromRecent(r) {
+    var agentLabel = r.graph_ref ? "graph"
+      : r.agent_display_name || r.agent_name || r.agent_id || "operator";
+    var syntheticBinding = r.graph_ref ? { kind: "graph" }
+      : r.agent_id ? { agent_id: r.agent_id } : null;
+    return {
+      key: "s:" + r.session_id,
+      label: r.name || r.session_id,
+      sub: agentLabel + " @ " + (r.workspace_name || r.workspace_id || "?"),
+      glyph: NV_identity(syntheticBinding),
+      tag: null,
+      run: runAndClose(function () {
+        con.goView("studio");
+        if (r.workspace_id && r.workspace_id !== con.wid && con.openInWorkspace) {
+          con.openInWorkspace(r.workspace_id, { kind: "session", ref: r.session_id });
+        } else {
+          con.setDoc({ kind: "session", ref: r.session_id });
+        }
+        if (con.promoteDoc) con.promoteDoc("session:" + r.session_id);
+      }),
+    };
+  }
+
   // Shared by both the searched "Files" group below and the empty-query
   // recent-files group (F9), same reason sessionRow is shared above.
+  // uiv2 Wave 1: folder/file text badge dropped for the same reason -
+  // the group heading already says "Files"; a leading dot (dot: true)
+  // takes its place per the mockup's row iconography.
   function fileRow(f) {
     return {
       key: "f:" + f.path,
       label: f.path,
-      tag: f.is_dir ? "folder" : "file",
+      tag: null,
+      dot: true,
       run: runAndClose(function () {
         con.goView("studio");
         if (!f.is_dir) con.setDoc({ kind: "file", ref: f.path });
@@ -273,19 +363,41 @@ function NV_Palette() {
     // recent sessions + files under the verbs"). last_activity_at is
     // stamped onto every row by SH_api.allSessions' own normalisation,
     // independent of the list's server-side order.
-    var recent = ((sessions.data && sessions.data.items) || [])
-      .slice()
-      .sort(function (a, b) {
-        return String(b.last_activity_at || "").localeCompare(
-          String(a.last_activity_at || ""));
-      })
-      .slice(0, NV_PALETTE_CAP)
-      .map(sessionRow);
-    if (recent.length) groups.push({ label: "Recent", rows: recent });
+    // uiv2 Wave 1: prefer the recents endpoint's own pre-composed rows
+    // (already ordered last_activity_at desc, live-workspaces only -
+    // no client-side sort/dedupe needed) when it is actually deployed;
+    // recents.data is null on a 404 (see the resource above), so this
+    // degrades to the exact same client-derived computation the wave
+    // shipped with before that endpoint existed.
+    var recent = recents.data && recents.data.items
+      ? recents.data.items.slice(0, NV_PALETTE_CAP).map(sessionRowFromRecent)
+      : ((sessions.data && sessions.data.items) || [])
+        .slice()
+        .sort(function (a, b) {
+          return String(b.last_activity_at || "").localeCompare(
+            String(a.last_activity_at || ""));
+        })
+        .slice(0, NV_PALETTE_CAP)
+        .map(sessionRow);
+    // uiv2 Wave 1: the empty-query group label matches the mockup's own
+    // taxonomy now (Verbs, Sessions, Files) - it already only ever held
+    // sessions, the old label just said otherwise.
+    if (recent.length) groups.push({ label: "Sessions", rows: recent });
 
     // files/tree stamps a real mtime per entry (workspaces.py file_tree);
     // only leaf files carry an "open this" action, so directories (no
     // recency signal worth surfacing here) are left out.
+    //
+    // KNOWN GAP, flagged not built: /files/tree is a documented
+    // one-level listing (recursive=False, workspaces.py file_tree) - a
+    // workspace whose root holds only folders (this dogfood workspace's
+    // does: .tmp, artifacts) legitimately produces zero leaf files here,
+    // same as the mockup's own src/api.ts example would if its root
+    // were listed one level deep. Matching the mockup for a real nested
+    // repo needs either a capped recursive walk (N extra calls, no
+    // natural depth bound) or a backend "recent files" endpoint -
+    // either is out of this UI-only wave's scope, so this stays a
+    // one-level fetch rather than growing ad hoc recursion here.
     var recentFiles = ((files.data && files.data.items) || [])
       .filter(function (f) { return !f.is_dir; })
       .slice()
@@ -368,7 +480,18 @@ function NV_Palette() {
                       data-row-key={r.key}
                       data-active={idx === selIdx ? "true" : "false"}
                       onClick={r.run}>
-                      <span className="nv-palette-label">{r.label}</span>
+                      {r.glyph ? (
+                        <svg width="11" height="11" viewBox="0 0 12 12"
+                          style={{ flexShrink: 0, color: r.glyph.color }}>
+                          <path d={r.glyph.d} fill="currentColor" />
+                        </svg>
+                      ) : r.dot ? (
+                        <span className="nv-palette-dot" />
+                      ) : null}
+                      <span className="nv-palette-main">
+                        <span className="nv-palette-label">{r.label}</span>
+                        {r.sub ? <span className="nv-palette-sub">{r.sub}</span> : null}
+                      </span>
                       {r.tag ? (
                         <span className="nv-palette-tag">{r.tag}</span>
                       ) : null}

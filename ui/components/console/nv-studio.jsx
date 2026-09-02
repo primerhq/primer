@@ -143,6 +143,10 @@ function NV_Studio() {
             var verb = con.registry.get("workspace.create");
             if (verb) verb.run();
           }}
+          onCreateSession={function () {
+            var verb = con.registry.get("session.create");
+            if (verb) verb.run();
+          }}
           onOpenWorkspaceSettings={function (wid) {
             con.openOverlay("workspaces", "detail", wid);
           }}

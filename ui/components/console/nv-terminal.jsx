@@ -43,7 +43,11 @@ function NV_Terminal() {
   var setHeight = heightState[1];
 
   var ws = (con.workspaces || []).find(function (w) { return w.id === con.wid; });
-  var wsLabel = (ws && (ws.name || ws.id)) || con.wid;
+  // uiv2 Wave 1: the mockup's header names the workspace ID short form
+  // ("ws-3f8a9bc"), not the display name other rail/files headers
+  // prefer - implementer-notes 2.6's own literal example, kept as-is
+  // rather than switched to name-preferred for cross-file consistency.
+  var wsLabel = (ws && ws.id) || con.wid;
 
   React.useEffect(function () {
     if (!hostRef.current || !window.Terminal) return undefined;
@@ -64,10 +68,29 @@ function NV_Terminal() {
     // the pre-connect value (the closure was created once, above), so
     // this is a plain local the two handlers share within one effect run.
     var gotExit = false;
+    // uiv2 Wave 1: the mockup's terminal content sits flush on the
+    // console theme, not xterm's own default black viewport (xterm.min.
+    // css hardcodes .xterm-viewport background-color: #000, overridden
+    // per-panel below via .nv-terminal-host .xterm-viewport - CSS
+    // custom properties resolve to real color strings at construction
+    // time here since xterm's theme option needs actual values, not
+    // var() references, and switching theme requires a fresh Terminal
+    // instance anyway (this effect already reruns per con.wid/retry,
+    // not per theme change - a live theme toggle mid-session keeps the
+    // colors it opened with, same as fontFamily/fontSize above).
+    var rootStyle = getComputedStyle(document.documentElement);
+    var termAccent = rootStyle.getPropertyValue("--accent").trim() || "#61d46a";
+    var termText = rootStyle.getPropertyValue("--text").trim() || "#e7e7e7";
     var term = new window.Terminal({
       fontFamily: "IBM Plex Mono, monospace",
       fontSize: 12,
-      theme: { background: "transparent" },
+      theme: {
+        background: "transparent",
+        foreground: termAccent,
+        cursor: termAccent,
+        cursorAccent: termText,
+        selectionBackground: rootStyle.getPropertyValue("--accent-dim").trim() || undefined,
+      },
     });
     var fit = window.FitAddon ? new window.FitAddon.FitAddon() : null;
     if (fit) term.loadAddon(fit);
@@ -181,7 +204,8 @@ function NV_Terminal() {
         onMouseDown={startResize}
       />
       <div className="nv-trace-head">
-        <span>{wsLabel} · pty</span>
+        <span>Terminal</span>
+        <span className="nv-rail-section-ws mono">{wsLabel} · pty</span>
         {exitCode != null ? (
           <span className="nv-term-exit">exit {exitCode}</span>
         ) : null}
