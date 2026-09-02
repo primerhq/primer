@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field, model_validator
@@ -671,29 +671,43 @@ async def find_sessions(
     return await sessions.find(body.predicate, body.page, order_by=body.order_by)
 
 
-class RecentSession(WorkspaceSession):
-    """Response-only shape: one live session plus resolved display
-    context for a cross-workspace "recent sessions" feed (the palette
-    and rail).  Never persisted -- ``workspace_name``/``last_activity_at``
-    are computed fresh on every call, a read-time join, not a
-    denormalization (01a06431 c-1)."""
+class RecentSessionRow(BaseModel):
+    """One row of the cross-workspace "recent sessions" feed (the
+    palette and rail). A purpose-built, flat, read-only projection --
+    NOT a WorkspaceSession subclass -- field names are a pinned wire
+    contract the console already codes against (01a06431 c-1); do not
+    rename without updating the consumer first."""
 
-    workspace_name: str | None = Field(
+    session_id: str
+    name: str | None = None
+    workspace_id: str
+    workspace_name: str
+    agent_id: str | None = Field(
+        default=None,
+        description="Set for an agent-bound session; null when graph-bound.",
+    )
+    agent_name: str | None = Field(
         default=None,
         description=(
-            "Resolved display name of the owning workspace. Falls back "
-            "to the workspace id in the console, same convention as "
-            "Workspace.name itself."
+            "Display name for agent_id. Equal to agent_id today -- "
+            "Agent/Graph rows in this codebase have no separate display-"
+            "name field (Describeable carries only id + description) -- "
+            "served as its own field so the console never has to know "
+            "that, and a future real display name is a backend-only "
+            "change."
         ),
     )
-    last_activity_at: datetime = Field(
-        ...,
-        description=(
-            "last_turn_at when set, else created_at -- resolved "
-            "server-side so callers (palette, rail) don't each "
-            "re-derive the same fallback."
-        ),
+    graph_ref: str | None = Field(
+        default=None,
+        description="Set for a graph-bound session; null when agent-bound.",
     )
+    status: SessionStatus
+    session_state: Literal["waiting", "running", "parked", "ended"]
+    last_activity_at: datetime
+
+
+class RecentSessionsResponse(BaseModel):
+    items: list[RecentSessionRow]
 
 
 _RECENT_SCAN_WINDOW = 200
@@ -710,7 +724,7 @@ async def recent_sessions(
     limit: int = Query(default=_RECENT_DEFAULT_LIMIT, ge=1, le=_RECENT_MAX_LIMIT),
     sessions=Depends(get_session_storage),
     workspaces=Depends(get_workspace_storage),
-) -> list[RecentSession]:
+) -> RecentSessionsResponse:
     """Cross-workspace "recent sessions", scoped to live workspaces only.
 
     ``GET /sessions/find`` (unscoped) is a generic, complete finder --
@@ -722,10 +736,7 @@ async def recent_sessions(
     ("triplicate 'main' rows", uiv2 Phase-2 finding). Excludes any
     session whose workspace_id no longer names a live workspace, resolves
     workspace_name via a read-time join (no denormalization), and orders
-    by last_activity_at desc. The bound agent/graph qualifier is already
-    on ``binding`` (WorkspaceSession's own field) -- Agent/Graph ids ARE
-    their display names in this codebase (Describeable has no separate
-    name field), so no extra per-row lookup is needed for that part.
+    by last_activity_at desc.
 
     Scans the ``_RECENT_SCAN_WINDOW`` most-recently-created sessions
     (not the whole table) as the candidate pool, then filters/sorts/caps
@@ -749,19 +760,32 @@ async def recent_sessions(
         order_by=[OrderBy(field="created_at", direction="desc")],
     )
 
-    rows: list[RecentSession] = []
+    rows: list[RecentSessionRow] = []
     for session in candidates.items:
         workspace_name = live_workspaces.get(session.workspace_id)
         if workspace_name is None:
             continue
-        rows.append(RecentSession(
-            **session.model_dump(),
+        agent_id = (
+            session.binding.agent_id if session.binding.kind == "agent" else None
+        )
+        graph_ref = (
+            session.binding.graph_id if session.binding.kind == "graph" else None
+        )
+        rows.append(RecentSessionRow(
+            session_id=session.id,
+            name=session.name,
+            workspace_id=session.workspace_id,
             workspace_name=workspace_name,
+            agent_id=agent_id,
+            agent_name=agent_id,
+            graph_ref=graph_ref,
+            status=session.status,
+            session_state=session.session_state,
             last_activity_at=session.last_turn_at or session.created_at,
         ))
 
     rows.sort(key=lambda r: r.last_activity_at, reverse=True)
-    return rows[:limit]
+    return RecentSessionsResponse(items=rows[:limit])
 
 
 class SessionDetail(WorkspaceSession):
