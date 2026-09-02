@@ -18,6 +18,10 @@ def _src() -> str:
     return (UI / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
 
 
+def _form_src() -> str:
+    return (UI / "components" / "provider-form.jsx").read_text(encoding="utf-8")
+
+
 def test_rows_offer_delete() -> None:
     """RETARGET (platform wave P1a item 3): the reference card anatomy
     puts Delete directly on each card's own footer rather than beside a
@@ -40,15 +44,24 @@ def test_delete_asks_first() -> None:
 
 
 def test_invalidate_is_offered_only_where_the_endpoint_exists() -> None:
+    """01a063ab: the Invalidate action itself relocated into the edit
+    overlay (PC_InvalidateAction in provider-form.jsx) - the card footer
+    stays mockup-pure (Open/Delete only) per the lead's ruling, so the
+    capability moved rather than being dropped. Which classes offer it
+    (invalidate: true on PROVIDER_CLASSES) is unchanged and still lives
+    on the catalog."""
     src = _src()
-    assert "/invalidate" in src
     marked = re.findall(r'key:\s*"(\w+)"[^}]*invalidate:\s*true', src)
     assert marked == ["llm", "embedding", "cross_encoder"], marked
+    assert "/invalidate" in _form_src()
 
 
 def test_the_backend_reason_is_shown_inline_not_swallowed() -> None:
     src = _src()
-    assert "err.status" in src or "error.status" in src
+    # RETARGET (01a063ab): the delete catch variable was renamed from the
+    # generic `err` (which would have shadowed the sibling error-message
+    # state variable of the same name) to `deleteErr`.
+    assert "deleteErr.status" in src
     assert "detail" in src
     assert 'data-testid={`provider-card-error-${row.id}`}' in src
 

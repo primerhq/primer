@@ -38,29 +38,36 @@
 // third file to patch for this pass.
 // ============================================================================
 
+// Designer reconciliation (uiv2 "Primer Console.dc.html", implementer-
+// notes.md 3.2): order and labels now match the mockup's chip row
+// exactly (LLM, Embedding, TTS, ASR, Semantic search, Cross encoding,
+// Workspace, Web search, Web fetch, Channels, Artifact storage) - this
+// array is the single source both the chip row and the Register
+// dropdown draw from, so reordering it here reorders both. Keys are
+// untouched (backend-facing, unrelated to display order/labels).
 const PROVIDER_CLASSES = [
   { key: "llm", label: "LLM", plural: "llm_providers", form: "crud", profiles: true, invalidate: true },
   { key: "embedding", label: "Embedding", plural: "embedding_providers", form: "crud", invalidate: true },
-  { key: "cross_encoder", label: "Cross-Encoder", plural: "cross_encoder_providers", form: "crud", invalidate: true },
-  { key: "ssp", label: "Semantic Search", plural: "ssp", form: "panel",
+  { key: "tts", label: "TTS", plural: "tts_providers", form: "crud" },
+  { key: "stt", label: "ASR", plural: "stt_providers", form: "crud" },
+  { key: "ssp", label: "Semantic search", plural: "ssp", form: "panel",
     panel: () => window.SSPListPage,
     // Without a detail the catalog selected a store and then showed the
     // list again, so a vector store's own page was unreachable. It takes
     // its id as `sspId`, hence detailProp.
     detail: () => window.SSPDetail, detailProp: "sspId" },
-  { key: "stt", label: "Speech-to-Text", plural: "stt_providers", form: "crud" },
-  { key: "tts", label: "Text-to-Speech", plural: "tts_providers", form: "crud" },
-  { key: "web_search", label: "Web Search", plural: "web_search_providers", form: "crud" },
-  { key: "web_fetch", label: "Web Fetch", plural: "web_fetch_providers", form: "crud" },
-  { key: "artifact_storage", label: "Artifact Storage", plural: "artifact_storage_providers", form: "crud" },
-  { key: "workspace", label: "Workspaces", plural: "workspace_providers", form: "panel",
+  { key: "cross_encoder", label: "Cross encoding", plural: "cross_encoder_providers", form: "crud", invalidate: true },
+  { key: "workspace", label: "Workspace", plural: "workspace_providers", form: "panel",
     panel: () => window.WorkspaceProvidersPage,
     detail: () => window.WorkspaceProviderDetail },
+  { key: "web_search", label: "Web search", plural: "web_search_providers", form: "crud" },
+  { key: "web_fetch", label: "Web fetch", plural: "web_fetch_providers", form: "crud" },
   { key: "channel", label: "Channels", plural: "channel_providers", form: "panel",
     panel: () => window.ChannelProvidersPage,
     // A panel class can still have a detail view; without one the
     // catalog can select an instance and then show the list again.
     detail: () => window.ChannelProviderDetail },
+  { key: "artifact_storage", label: "Artifact storage", plural: "artifact_storage_providers", form: "crud" },
 ];
 
 // IA restructure 01a04d6a: "All" is a synthetic, non-fetchable pseudo-
@@ -70,23 +77,6 @@ const PROVIDER_CLASSES = [
 // real backend-class registry every other lookup (Register dropdown,
 // per-card labels, plural/form lookups) keys off unmodified.
 const PC_ALL_TYPE_CHIPS = [{ key: "all", label: "All" }, ...PROVIDER_CLASSES];
-
-// One glyph per provider class, same 12x12 stroke language as the
-// platform nav (ui-ux pass 2026-08-26: the rail was bare text links).
-const PC_CLASS_ICONS = {
-  all: "M2.5 2.5h3.5v3.5H2.5Z M8 2.5h3.5v3.5H8Z M2.5 8h3.5v3.5H2.5Z M8 8h3.5v3.5H8Z",
-  llm: "M2 4.5 7 2l5 2.5-5 2.5Z M2 7l5 2.5L12 7 M2 9.5 7 12l5-2.5",
-  embedding: "M2 10h2.2V6.5H2Z M5.4 10h2.2V3H5.4Z M8.8 10H11V5H8.8Z M2 12h9",
-  cross_encoder: "M2 3.5h6.5 M5.5 7h6.5 M2 10.5h6.5 M10 2l2 1.5-2 1.5 M4 5.5 2 7l2 1.5 M10 9l2 1.5-2 1.5",
-  ssp: "M2 3.5a5 1.8 0 0 0 10 0 5 1.8 0 0 0-10 0Z M2 3.5v7a5 1.8 0 0 0 10 0v-7 M2 7a5 1.8 0 0 0 10 0",
-  stt: "M5 1.5h4v5.5a2 2 0 0 1-4 0Z M2.8 6a4.2 4.2 0 0 0 8.4 0 M7 10.2V13",
-  tts: "M2 5h2.3L8 2.2v9.6L4.3 9H2Z M9.8 4.6a3.4 3.4 0 0 1 0 4.8",
-  web_search: "M5.8 1.5a4.3 4.3 0 1 0 0 8.6 4.3 4.3 0 0 0 0-8.6Z M9 9l3.5 3.5",
-  web_fetch: "M7 1.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z M1.5 7h11 M7 1.5c2.2 2.6 2.2 8.4 0 11",
-  artifact: "M2 4.5 7 2l5 2.5v5L7 12 2 9.5Z M2 4.5 7 7l5-2.5 M7 7v5",
-  workspaces: "M1.5 3.5h4l1 1.5h6V11h-11Z",
-  channel: "M2 2.5h10v7H6L3 12V9.5H2Z",
-};
 
 // Platform wave P1a item 1: the family rail becomes a CHIPS row (reuses the
 // app's own .chip-group/.chip pattern, already proven elsewhere - e.g. the
@@ -99,6 +89,11 @@ const PC_CLASS_ICONS = {
 // "All" entry prepended by the caller (PC_ALL_TYPE_CHIPS below); this
 // component itself stays a plain, presentational chip row with no
 // opinion about what "All" means.
+// Designer reconciliation: compact rounded PILLS, no icons - a single
+// row of .pc-chips overrides (styles.css) rather than the app's default
+// segmented-control .chip-group look, since the two read as visually
+// distinct families (a bordered container of tightly-packed tabs vs.
+// individually-outlined, gapped pills).
 function PC_TypeFilter({ classes, selected, onSelect }) {
   return (
     <div className="chip-group pc-chips" role="tablist"
@@ -119,12 +114,7 @@ function PC_TypeFilter({ classes, selected, onSelect }) {
             }
           }}
         >
-          <svg width="12" height="12" viewBox="0 0 14 14" fill="none"
-            stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"
-            aria-hidden="true">
-            <path d={PC_CLASS_ICONS[cls.key] || PC_CLASS_ICONS.llm} />
-          </svg>
-          <span>{cls.label}</span>
+          {cls.label}
         </span>
       ))}
     </div>
@@ -237,29 +227,30 @@ function PC_RegisterAll({ onPick }) {
 function PC_ReachabilityBadge({ lastProbeAt, lastProbeOk }) {
   if (lastProbeAt == null) return null;
   const ok = !!lastProbeOk;
-  const color = ok ? "var(--green)" : "var(--red)";
+  // Designer reconciliation: plain colored TEXT, no pill background/dot.
   return (
-    <span className="pill" data-testid="provider-card-reachability"
-      style={{ color, borderColor: "var(--border)", background: "var(--bg-2)" }}>
-      <span className="dot" style={{ background: color }}></span>
+    <span className={`pc-card-status ${ok ? "ok" : "down"}`}
+      data-testid="provider-card-reachability">
       {ok ? "reachable" : "unreachable"}
     </span>
   );
 }
 
-// The three actions a card's footer offers: Open (address the instance),
-// Invalidate (only where the endpoint exists - the model-family registry
-// caches an adapter per row id, api/registries/provider_registry.py; the
-// sibling registries drop their entry on the CRUD hook and need no button),
-// Delete (confirm-gated). Reference anatomy is Open+Delete only; Invalidate
-// is real, tested, currently-shipped functionality for three classes, kept
-// as a third small action rather than silently dropped to match a mockup
-// that likely never modeled cache invalidation at all.
-function PC_InstanceCard({ klass, row, onOpen, onChanged }) {
+// Designer reconciliation: the card footer is mockup-pure now - Open (a
+// text link) and Delete (muted text) only. Invalidate is real, tested,
+// currently-shipped functionality (the model-family registry caches an
+// adapter per row id, api/registries/provider_registry.py; the sibling
+// registries drop their entry on the CRUD hook and need no button) - it
+// did NOT get dropped, it moved into the provider edit overlay next to
+// the Live-model-probe panel (that panel's own Test connect probes the
+// DRAFT config, never the stored cache, so this stays a genuinely
+// distinct action - see PC_ProbePanel's own comment). A capability-
+// preserving addition beyond the mockup, per lead ruling.
+function PC_InstanceCard({ klass, row, onOpen, onChanged, profileCount }) {
   const { apiFetch, useResource } = window.primerApi;
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [err, setErr] = React.useState("");
-  const [busy, setBusy] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
   const encoded = encodeURIComponent(row.id);
 
   // Wave P1a item 3 / CI fix: "models N probed live". Two real gates,
@@ -287,32 +278,63 @@ function PC_InstanceCard({ klass, row, onOpen, onChanged }) {
     ? discovered.data.models.length
     : null;
 
-  const run = async (what, method, path) => {
+  const remove = async () => {
     setErr("");
-    setBusy(what);
+    setBusy(true);
     try {
-      await apiFetch(method, path);
+      await apiFetch("DELETE", `/${klass.plural}/${encoded}`);
       setConfirmDelete(false);
-      const toast = window.primerApi && window.primerApi.toastPush;
-      if (what === "invalidate" && typeof toast === "function") {
-        toast({ kind: "success", title: "Cache dropped", detail: row.id });
-      }
-      if (onChanged) onChanged(what);
-    } catch (err) {
+      if (onChanged) onChanged("delete");
+    } catch (deleteErr) {
       // 403 means a reserved row; the backend detail says which and why
       // (routers/providers.py:116-135). Show it where the click was
       // rather than hiding the button behind a copied id list.
-      const detail = err && err.detail ? err.detail : null;
-      const message =
-        (detail && (detail.message || detail)) || (err && err.title) || String(err);
-      setErr(err && err.status ? `${err.status}: ${message}` : String(message));
+      const detail = deleteErr && deleteErr.detail ? deleteErr.detail : null;
+      const message = (detail && (detail.message || detail))
+        || (deleteErr && deleteErr.title) || String(deleteErr);
+      setErr(deleteErr && deleteErr.status ? `${deleteErr.status}: ${message}` : String(message));
     } finally {
-      setBusy("");
+      setBusy(false);
     }
   };
 
   const virgin = row.last_probe_at == null;
   const unreachable = !virgin && !row.last_probe_ok;
+
+  // Designer reconciliation: the fact SET itself differs by reachability
+  // (matching the mockup's own reachable vs. unreachable examples
+  // exactly), not a single combined list every card shows a subset of -
+  // a reachable row's operationally useful facts (how much it serves,
+  // what depends on it, whether a key is set) are different questions
+  // than an unreachable row's (why, and since when). Every row maps to
+  // a REAL served field; "failover" from the mockup's unreachable
+  // example has NO backend counterpart on a plain LLMProvider (it only
+  // exists inside an aggregated row's own config - primer/model/
+  // providers/llm.py's AggregatedLLMConfig), so it is not rendered here
+  // at all rather than invented - flagged in the PR body.
+  const facts = [];
+  if (!unreachable) {
+    if (modelCount != null) {
+      facts.push({ key: "models", value: `${modelCount} probed live` });
+    }
+    if (klass.profiles && profileCount != null) {
+      facts.push({
+        key: "default for",
+        value: `${profileCount} profile${profileCount === 1 ? "" : "s"}`,
+      });
+    }
+    if (row.config && row.config.api_key) {
+      facts.push({ key: "key", value: row.config.api_key, mono: true });
+    }
+  } else {
+    if (row.last_error) {
+      facts.push({ key: "error", value: row.last_error, mono: true, danger: true });
+    }
+    facts.push({
+      key: "last probe",
+      value: relativeTime((Date.now() - new Date(row.last_probe_at).getTime()) / 1000),
+    });
+  }
 
   return (
     <div className="pc-card" data-testid={`provider-card-${row.id}`}>
@@ -324,55 +346,45 @@ function PC_InstanceCard({ klass, row, onOpen, onChanged }) {
       <div className="pc-card-subtitle">
         {[row.provider, row.config && row.config.url].filter(Boolean).join(" · ")}
       </div>
-      <div className="pc-card-facts">
-        {modelCount != null ? (
-          <div className="pc-card-fact">
-            <span className="muted">models</span>
-            <span>{modelCount} probed live</span>
-          </div>
-        ) : null}
-        {!virgin ? (
-          <div className="pc-card-fact">
-            <span className="muted">last probed</span>
-            <span>{relativeTime((Date.now() - new Date(row.last_probe_at).getTime()) / 1000)}</span>
-          </div>
-        ) : null}
-        {unreachable && row.last_error ? (
-          <div className="pc-card-fact" data-testid={`provider-card-probe-error-${row.id}`}>
-            <span className="muted">error</span>
-            <span className="mono text-sm" style={{ color: "var(--red)" }}>{row.last_error}</span>
-          </div>
-        ) : null}
-      </div>
+      {facts.length ? (
+        <div className="pc-card-facts">
+          {facts.map((f) => (
+            <div className="pc-card-fact" key={f.key}
+              data-testid={f.key === "error" ? `provider-card-probe-error-${row.id}` : undefined}>
+              <span className="muted">{f.key}</span>
+              <span className={f.mono ? "mono text-sm" : ""}
+                style={f.danger ? { color: "var(--red)" } : undefined}>
+                {f.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="pc-card-footer">
-        <Btn kind="primary" size="sm" data-testid={`provider-card-open-${row.id}`}
+        <button type="button" className="pc-card-open"
+          data-testid={`provider-card-open-${row.id}`}
           onClick={() => onOpen(row)}>
           Open
-        </Btn>
+        </button>
         <span style={{ flex: 1 }} />
-        {klass.invalidate ? (
-          <Btn kind="ghost" size="sm" disabled={busy !== ""}
-            data-testid={`provider-card-invalidate-${row.id}`}
-            onClick={() => run("invalidate", "POST", `/${klass.plural}/${encoded}/invalidate`)}>
-            Invalidate
-          </Btn>
-        ) : null}
         {confirmDelete ? (
-          <>
-            <Btn kind="danger" size="sm" disabled={busy !== ""}
+          <React.Fragment>
+            <button type="button" className="pc-card-delete-confirm" disabled={busy}
               data-testid={`provider-card-delete-confirm-${row.id}`}
-              onClick={() => run("delete", "DELETE", `/${klass.plural}/${encoded}`)}>
+              onClick={remove}>
               Confirm
-            </Btn>
-            <Btn kind="ghost" size="sm" onClick={() => setConfirmDelete(false)}>
+            </button>
+            <button type="button" className="pc-card-delete"
+              onClick={() => setConfirmDelete(false)}>
               Cancel
-            </Btn>
-          </>
+            </button>
+          </React.Fragment>
         ) : (
-          <Btn kind="ghost" size="sm" data-testid={`provider-card-delete-${row.id}`}
+          <button type="button" className="pc-card-delete"
+            data-testid={`provider-card-delete-${row.id}`}
             onClick={() => { setErr(""); setConfirmDelete(true); }}>
             Delete
-          </Btn>
+          </button>
         )}
       </div>
       {err ? (
@@ -382,7 +394,49 @@ function PC_InstanceCard({ klass, row, onOpen, onChanged }) {
   );
 }
 
-function PC_InstanceGrid({ klass, onSelect, onRegisterRefetch }) {
+// Designer reconciliation: "default for N profiles" - one combined
+// fetch grouped client-side by provider_id, same shape PC_ProfilesPanel
+// already uses below (no server-side provider_id filter is wired for
+// this list route - POST /model_profiles/find takes a Predicate and
+// COULD do this server-side, unused here only to match the existing
+// pattern). `enabled=false` (any class but LLM) skips the fetch
+// entirely rather than running it and discarding the result.
+function PC_useProfileCounts(enabled) {
+  const { useResource, apiFetch } = window.primerApi;
+  const profiles = useResource(
+    "pc:profile-counts",
+    (signal) => enabled
+      ? apiFetch("GET", "/model_profiles?limit=200", null, { signal })
+      : Promise.resolve({ items: [] }),
+    { pollMs: null },
+  );
+  return React.useMemo(() => {
+    const map = {};
+    ((profiles.data && profiles.data.items) || []).forEach((p) => {
+      map[p.provider_id] = (map[p.provider_id] || 0) + 1;
+    });
+    return map;
+  }, [profiles.data]);
+}
+
+// Designer reconciliation: client-side substring filter over name (id)
+// and kind (provider) - "over the visible cards" per the mockup spec,
+// so it narrows THIS page's already-fetched rows rather than issuing a
+// new server query; a filter that hides every row on the current page
+// while matches exist on another page is a known, accepted limit of
+// that scope (Pager itself is untouched by it - it reflects the real
+// server-side list, not the filtered view).
+function PC_filterRows(items, filterQuery) {
+  const q = (filterQuery || "").trim().toLowerCase();
+  if (!q) return items;
+  return items.filter((row) => {
+    const name = String(row.id || "").toLowerCase();
+    const kind = String(row.provider || "").toLowerCase();
+    return name.indexOf(q) >= 0 || kind.indexOf(q) >= 0;
+  });
+}
+
+function PC_InstanceGrid({ klass, onSelect, onRegisterRefetch, filterQuery, onCountChange }) {
   const { usePagedList } = window.primerApi;
   const list = usePagedList({
     key: `catalog:${klass.plural}`,
@@ -399,6 +453,15 @@ function PC_InstanceGrid({ klass, onSelect, onRegisterRefetch }) {
     if (onRegisterRefetch) onRegisterRefetch(() => list.refetch());
   }, [onRegisterRefetch, list.refetch]);
 
+  const items = list.items || [];
+  // The header's "N entities" count - this class's own list, unaffected
+  // by the filter narrowing what's actually drawn below.
+  React.useEffect(() => {
+    if (onCountChange) onCountChange(items.length);
+  }, [items.length, onCountChange]);
+
+  const profileCounts = PC_useProfileCounts(!!klass.profiles);
+
   if (list.error) {
     return (
       <Banner
@@ -408,7 +471,6 @@ function PC_InstanceGrid({ klass, onSelect, onRegisterRefetch }) {
       />
     );
   }
-  const items = list.items || [];
   if (!list.loading && items.length === 0) {
     return (
       <div className="empty-state" data-testid={`provider-empty-${klass.key}`}>
@@ -418,22 +480,31 @@ function PC_InstanceGrid({ klass, onSelect, onRegisterRefetch }) {
     );
   }
 
+  const filtered = PC_filterRows(items, filterQuery);
+
   return (
     <div data-testid={`provider-instances-${klass.key}`} style={{ minWidth: 0, flex: "1 1 0" }}>
-      <div className="pc-card-grid">
-        {items.map((row) => (
-          <PC_InstanceCard
-            key={row.id}
-            klass={klass}
-            row={row}
-            onOpen={onSelect}
-            onChanged={(what) => {
-              list.refetch();
-              if (what === "delete" && onSelect) onSelect(null);
-            }}
-          />
-        ))}
-      </div>
+      {filtered.length === 0 ? (
+        <div className="empty-state" data-testid={`provider-filter-empty-${klass.key}`}>
+          <p>No providers match "{filterQuery}".</p>
+        </div>
+      ) : (
+        <div className="pc-card-grid">
+          {filtered.map((row) => (
+            <PC_InstanceCard
+              key={row.id}
+              klass={klass}
+              row={row}
+              profileCount={profileCounts[row.id]}
+              onOpen={onSelect}
+              onChanged={(what) => {
+                list.refetch();
+                if (what === "delete" && onSelect) onSelect(null);
+              }}
+            />
+          ))}
+        </div>
+      )}
       <Pager pager={list} label="providers" />
     </div>
   );
@@ -449,7 +520,7 @@ function PC_InstanceGrid({ klass, onSelect, onRegisterRefetch }) {
 // pair with real, class-specific actions (reindex, channel rules, ...) a
 // generic card would either omit or fake; reachable via their own type
 // filter chip instead, unchanged from before this restructure.
-function PC_AllInstancesGrid({ onSelect, reloadKey }) {
+function PC_AllInstancesGrid({ onSelect, reloadKey, filterQuery, onCountChange }) {
   const { apiFetch, useResource } = window.primerApi;
   const crudClasses = PROVIDER_CLASSES.filter((c) => c.form === "crud");
   const all = useResource(
@@ -468,6 +539,11 @@ function PC_AllInstancesGrid({ onSelect, reloadKey }) {
     { pollMs: 15000 },
   );
   const rows = (all.data && all.data.rows) || [];
+  const profileCounts = PC_useProfileCounts(true);
+
+  React.useEffect(() => {
+    if (onCountChange) onCountChange(rows.length);
+  }, [rows.length, onCountChange]);
 
   if (all.error) {
     return (
@@ -485,22 +561,34 @@ function PC_AllInstancesGrid({ onSelect, reloadKey }) {
     );
   }
 
+  const q = (filterQuery || "").trim().toLowerCase();
+  const filtered = q
+    ? rows.filter(({ row }) => PC_filterRows([row], filterQuery).length > 0)
+    : rows;
+
   return (
     <div data-testid="provider-instances-all" style={{ minWidth: 0, flex: "1 1 0" }}>
-      <div className="pc-card-grid">
-        {rows.map(({ klass, row }) => (
-          <div key={`${klass.key}:${row.id}`} className="pc-card-wrap">
-            <span className="pc-card-type-label"
-              data-testid={`provider-card-type-${row.id}`}>{klass.label}</span>
-            <PC_InstanceCard
-              klass={klass}
-              row={row}
-              onOpen={() => onSelect(klass, row)}
-              onChanged={() => all.refetch()}
-            />
-          </div>
-        ))}
-      </div>
+      {filtered.length === 0 ? (
+        <div className="empty-state" data-testid="provider-filter-empty-all">
+          <p>No providers match "{filterQuery}".</p>
+        </div>
+      ) : (
+        <div className="pc-card-grid">
+          {filtered.map(({ klass, row }) => (
+            <div key={`${klass.key}:${row.id}`} className="pc-card-wrap">
+              <span className="pc-card-type-label"
+                data-testid={`provider-card-type-${row.id}`}>{klass.label}</span>
+              <PC_InstanceCard
+                klass={klass}
+                row={row}
+                profileCount={klass.profiles ? profileCounts[row.id] : null}
+                onOpen={() => onSelect(klass, row)}
+                onChanged={() => all.refetch()}
+              />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -748,10 +836,23 @@ function PC_ActiveWebSearchPanel() {
 }
 
 function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
-  // IA restructure 01a04d6a: "all" is the default - the user directive's
-  // "ONE page, all types together" - not the first real class.
-  const [classKey, setClassKey] = React.useState(initialClass || "all");
+  // Designer reconciliation (uiv2 mockup, supersedes IA restructure
+  // 01a04d6a's "all is the default" directive per the user's own
+  // ratified exhibit): LLM is the default selection, not the merged
+  // "All" grid. isAll/PC_AllInstancesGrid/PC_RegisterAll below are ALL
+  // still fully intact, just unreached from the chip row now that "All"
+  // is not one of its entries - restoring that view is a one-line
+  // PC_TypeFilter classes={PC_ALL_TYPE_CHIPS} swap below, not a rewrite.
+  const [classKey, setClassKey] = React.useState(initialClass || "llm");
   const [instanceId, setInstanceId] = React.useState(initialInstanceId || null);
+  // Header row: entity count (of the current class's own list, not the
+  // filter-narrowed count - a stable "how many exist" stat beside a
+  // separate "narrow what's visible" control) and the client-side
+  // substring filter itself, both threaded down to whichever grid is
+  // showing (PC_InstanceGrid today; PC_AllInstancesGrid if "All" is ever
+  // restored - both accept the same two props).
+  const [entityCount, setEntityCount] = React.useState(0);
+  const [filterQuery, setFilterQuery] = React.useState("");
   // The addressed instance wins. This was seeded once and never looked at
   // again, so a page inside the catalog that navigates on its own -- the
   // vector-store list does, to /ssp/<id> -- updated the url and the crumb
@@ -785,6 +886,10 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   const selectClass = (key) => {
     setClassKey(key);
     setInstanceId(null);
+    // A filter narrowing THIS type's cards has no meaning once the type
+    // itself changes - carrying it over would silently hide cards in
+    // the new type with no visible reason why.
+    setFilterQuery("");
     if (typeof onNavigate === "function") {
       onNavigate({ kind: "provider-class", classKey: key });
     }
@@ -810,6 +915,18 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     setFormKlass(k);
     setEditingRow(null);
     setDraft({});
+    setFormOpen(true);
+  }
+
+  // Designer reconciliation: with a type always selected, Register lists
+  // that type's KINDS directly (PC_RegisterDropdown) rather than naming
+  // the type again - picking a kind opens the SAME create modal above,
+  // just pre-seeded with `provider` so the in-form kind picker (now
+  // removed per exhibit 2) is never needed at all, for create or edit.
+  function openCreateWithKind(k, kind) {
+    setFormKlass(k);
+    setEditingRow(null);
+    setDraft({ provider: kind });
     setFormOpen(true);
   }
 
@@ -875,7 +992,8 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   let body;
   if (isAll) {
     body = (
-      <PC_AllInstancesGrid onSelect={openEdit} reloadKey={reloadKey} />
+      <PC_AllInstancesGrid onSelect={openEdit} reloadKey={reloadKey}
+        filterQuery={filterQuery} onCountChange={setEntityCount} />
     );
   } else if (cls.form === "panel") {
     const Detail = instanceId && cls.detail ? cls.detail() : null;
@@ -916,6 +1034,8 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
           openEdit(cls, row);
         }}
         onRegisterRefetch={(fn) => { listRefetchRef.current = fn; }}
+        filterQuery={filterQuery}
+        onCountChange={setEntityCount}
       />
     );
   }
@@ -924,11 +1044,30 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     <div className="col pc-catalog" style={{ gap: 16 }}>
       <div className="row" style={{ alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         <h2 className="text-lg" style={{ margin: 0 }}>Providers</h2>
+        <span className="muted text-sm" data-testid="provider-entity-count">
+          {entityCount} {entityCount === 1 ? "entity" : "entities"}
+        </span>
         <span style={{ flex: 1 }} />
-        <PC_RegisterAll onPick={openCreate} />
+        <input
+          type="text"
+          className="input"
+          placeholder="Filter…"
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          data-testid="provider-filter"
+        />
+        {/* Designer reconciliation: a type is always selected now, so
+            Register lists that type's KINDS (PC_RegisterDropdown) - the
+            type-listing PC_RegisterAll stays reachable for the "All"
+            path if that view is ever restored (isAll above). */}
+        {klass ? (
+          <PC_RegisterDropdown klass={klass} onPick={(kind) => openCreateWithKind(klass, kind)} />
+        ) : (
+          <PC_RegisterAll onPick={openCreate} />
+        )}
       </div>
       <PC_TypeFilter
-        classes={PC_ALL_TYPE_CHIPS}
+        classes={PROVIDER_CLASSES}
         selected={classKey}
         onSelect={selectClass}
       />
@@ -944,13 +1083,25 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       {formOpen ? (
         <Modal
           width={720}
-          title={`${editingRow ? "Edit" : "New"} ${formKlass.label} provider`}
+          // Designer reconciliation: title is now "{name} — {kind}" once
+          // an id exists (edit) or "New {type} provider — {kind}" before
+          // it does (create) - the schema badge moves INLINE beside it
+          // (Modal renders `title` as-is inside its own title span, so a
+          // fragment here works with no change to the shared component)
+          // rather than as a separate line inside the form body below.
+          title={(
+            <React.Fragment>
+              {editingRow
+                ? `${editingRow.id} — ${draft.provider || formKlass.key}`
+                : `New ${formKlass.key} provider — ${draft.provider || ""}`}
+              <span className="pc-modal-chip-inline mono text-sm muted"
+                data-testid="provider-modal-schema-chip">
+                schema-driven from /providers/_types
+              </span>
+            </React.Fragment>
+          )}
           onClose={closeForm}
         >
-          <div className="pc-modal-chip mono text-sm muted"
-            data-testid="provider-modal-schema-chip">
-            schema-driven from /providers/_types
-          </div>
           <window.PC_ProviderForm
             plural={formKlass.plural}
             typesPath={`/${formKlass.plural}/_types`}
@@ -959,6 +1110,8 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
             onSubmit={save}
             onCancel={closeForm}
             editing={!!editingRow}
+            existingId={editingRow ? editingRow.id : null}
+            canInvalidate={!!formKlass.invalidate}
           />
         </Modal>
       ) : null}

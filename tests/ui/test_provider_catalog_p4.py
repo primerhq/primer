@@ -61,15 +61,29 @@ def test_reachable_and_unreachable_are_derived_from_last_probe_ok() -> None:
 
 
 def test_card_shows_last_probed_and_error_fact_rows() -> None:
+    """RETARGET (01a063ab): facts became a `{key, value}` array feeding a
+    real two-column CSS grid (the designer mockup's aligned key-value
+    card) - "last probed" (a verb-phrase label) became the noun-phrase
+    "last probe" to match its siblings' key style ("models", "default
+    for", "key", "error"). Same information, consistent column heading."""
     card = _card_src()
-    assert "last probed" in card
+    assert '"last probe"' in card
     assert "row.last_error" in card
-    assert 'data-testid={`provider-card-probe-error-${row.id}`}' in card
+    # The testid is now assigned per-fact via a ternary (only the "error"
+    # fact row carries it), not a literal per-field JSX attribute.
+    assert '`provider-card-probe-error-${row.id}` : undefined' in card
 
 
 def test_error_row_only_renders_when_actually_unreachable() -> None:
+    """RETARGET (01a063ab): the fact set is now built by an if(!unreachable)
+    / else branch (reachable and unreachable rows show different fact
+    sets entirely, matching the mockup's own two examples) rather than a
+    single flat list each fact self-guards within - the error fact is
+    still only ever pushed from inside the `unreachable` branch."""
     card = _card_src()
-    assert "unreachable && row.last_error" in card
+    else_branch = card[card.index("} else {"):card.index("\n  }\n\n  return (")]
+    assert "if (row.last_error) {" in else_branch
+    assert 'facts.push({ key: "error"' in else_branch
 
 
 # ---- PC_ProfilesPanel: real card wiring + the fixed modal invocation ------

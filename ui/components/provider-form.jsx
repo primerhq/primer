@@ -31,6 +31,20 @@ function PC_fieldType(name) {
   return PC_FIELD_TYPES[name] || "text";
 }
 
+// Designer reconciliation: "no raw snake_case labels where a human name
+// is obvious" - the model-family classes' own /_types response already
+// serves real labels ("Base URL", "API key (optional)", ...primer/api/
+// routers/providers.py's _form_field calls), left untouched below; this
+// is the fallback for the bare-string classes (web_search, web_fetch,
+// speech - see the comment on PC_normalizeField) whose served "label" IS
+// just the raw key, which PC_normalizeField's old `field.label || field.
+// key` fallback rendered verbatim.
+function PC_humanizeKey(key) {
+  return String(key || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 // _types answers in two shapes. web_search, web_fetch and the speech
 // classes serve bare field NAMES (routers/web_search.py:216-222); the
 // model-family classes serve DESCRIPTORS (routers/providers.py
@@ -39,7 +53,7 @@ function PC_normalizeField(field) {
   if (typeof field === "string") {
     return {
       key: field,
-      label: field,
+      label: PC_humanizeKey(field),
       type: PC_fieldType(field),
       required: false,
       help: "",
@@ -49,7 +63,7 @@ function PC_normalizeField(field) {
   }
   return {
     key: field.key,
-    label: field.label || field.key,
+    label: field.label || PC_humanizeKey(field.key),
     type: field.type || PC_fieldType(field.key),
     required: !!field.required,
     help: field.help || "",
@@ -134,14 +148,18 @@ function PC_Field({ field, value, onChange, disabled }) {
   // Platform wave P1a item 4: secret fields (api_key/token/password/
   // secret_access_key - PC_fieldType above) get the reference's own label
   // pattern rather than an unlabeled password box. The value itself is
-  // whatever the operator types (a plain password input) - see PC_Field's
-  // caller comment for why there is no masked-tail DISPLAY here.
+  // whatever is in `draft` already - on edit that is the served MASK
+  // STRING verbatim (see the input's own comment above), so a masked
+  // secret renders as "**********xxxx"-shaped text with no extra code
+  // here: the mask IS the value, displayed the same as any other field.
   const isSecret = field.type === "password";
   return (
-    <label className="field" data-field={field.key} data-locked={disabled ? "true" : "false"}>
-      <span>
-        {field.label}
-        {isSecret ? " secret — masked on read" : ""}
+    <label className="field pc-field" data-field={field.key} data-locked={disabled ? "true" : "false"}>
+      <span className="pc-field-label">
+        <span className="pc-field-label-main">{field.label}</span>
+        {isSecret ? (
+          <span className="pc-field-label-annotation muted">secret — masked on read</span>
+        ) : null}
         {field.required ? <em className="req"> *</em> : null}
       </span>
       {input}
@@ -191,24 +209,31 @@ function PC_ProbePanel({ plural, draft, selectedType }) {
 
   return (
     <div className="pc-probe" data-testid="provider-probe-panel">
-      <div className="pc-probe-head">Live model probe</div>
-      <Btn kind="primary" size="sm" disabled={busy}
-        data-testid="provider-probe-test" onClick={probe}>
-        Test connect
-      </Btn>
+      {/* Designer reconciliation: heading + compact green-outline Test
+          connect on ONE row - kind="ghost" (transparent bg + border,
+          the closest existing Btn variant to "outline") plus a scoped
+          CSS override for the green tint, rather than a new Btn kind
+          just for this one button. */}
+      <div className="pc-probe-head-row">
+        <div className="pc-probe-head">Live model probe</div>
+        <Btn kind="ghost" size="sm" disabled={busy}
+          data-testid="provider-probe-test" onClick={probe}>
+          Test connect
+        </Btn>
+      </div>
       {result ? (
         result.ok ? (
           <div className="pc-probe-result" data-testid="provider-probe-result">
             <div className="pc-probe-count">
               {models.length} models · probed on the DRAFT config
             </div>
-            <ul className="pc-probe-models">
+            <div className="pc-probe-models">
               {shown.map((m, i) => (
-                <li key={i} className="mono">{(m && m.name) || m}</li>
+                <div key={i} className="pc-probe-model-row mono">{(m && m.name) || m}</div>
               ))}
-            </ul>
+            </div>
             {overflow > 0 ? (
-              <div className="muted text-sm">+ {overflow} more</div>
+              <div className="pc-probe-model-row muted text-sm">+ {overflow} more</div>
             ) : null}
           </div>
         ) : (
@@ -216,6 +241,49 @@ function PC_ProbePanel({ plural, draft, selectedType }) {
             {result.error}
           </div>
         )
+      ) : null}
+    </div>
+  );
+}
+
+// Lead ruling (designer reconciliation, Invalidate stop-and-flag): the
+// card footer drops Invalidate to match the mockup exactly, but the
+// capability itself is real and stays reachable - moved here, beside
+// the panel above, as a deliberate capability-preserving addition the
+// mockup itself doesn't show. Genuinely distinct from Test connect: that
+// probes the DRAFT config pre-save, this drops the STORED adapter cache
+// for the row that already exists (api/registries/provider_registry.py)
+// - edit-mode only (nothing to invalidate before Save has ever run).
+function PC_InvalidateAction({ plural, existingId }) {
+  const { apiFetch } = window.primerApi;
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState("");
+
+  const run = async () => {
+    setErr("");
+    setBusy(true);
+    try {
+      await apiFetch("POST", `/${plural}/${encodeURIComponent(existingId)}/invalidate`);
+      const toast = window.primerApi && window.primerApi.toastPush;
+      if (typeof toast === "function") {
+        toast({ kind: "success", title: "Cache dropped", detail: existingId });
+      }
+    } catch (invalidateErr) {
+      setErr((invalidateErr && (invalidateErr.detail || invalidateErr.message))
+        || String(invalidateErr));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="pc-invalidate" data-testid="provider-form-invalidate">
+      <button type="button" className="pc-invalidate-link" disabled={busy}
+        data-testid="provider-form-invalidate-action" onClick={run}>
+        Invalidate model cache
+      </button>
+      {err ? (
+        <span className="field-help" data-testid="provider-form-invalidate-error">{err}</span>
       ) : null}
     </div>
   );
@@ -233,6 +301,16 @@ const PC_CAPABILITIES_FOOTNOTE =
 // max_concurrency inside it has no default, so the form has to offer it.
 // The optional timeouts are left blank by default: an empty box means
 // "use the model default", which is what the backend's None means.
+// Designer reconciliation: the boxed <fieldset> dissolves into the same
+// full-width, humanized-label fields every other field above/below it
+// uses - a subtle group heading (not a border/legend box) is enough to
+// keep the three fields visually together. Distinct labels for the two
+// timeout fields (not a shared "Timeout (s)"): a provider row carries
+// BOTH simultaneously (primer/model/providers/_shared.py), so one
+// ambiguous label would leave an operator unable to tell which box sets
+// which - the mockup's single "Timeout (s)" was for a kind (anthropic)
+// whose real schema has no config-level timeout field at all, i.e. not
+// a real precedent to generalize from (flagged in the PR body).
 function PC_LimitsFieldset({ value, onChange }) {
   const limits = value || { max_concurrency: 1 };
   const set = (key, raw) => {
@@ -242,10 +320,13 @@ function PC_LimitsFieldset({ value, onChange }) {
     onChange(next);
   };
   return (
-    <fieldset className="limits" data-testid="provider-form-limits">
-      <legend>Limits</legend>
-      <label className="field">
-        <span>max_concurrency<em className="req"> *</em></span>
+    <div className="pc-limits-group" data-testid="provider-form-limits">
+      <div className="pc-field-group-heading muted text-sm">Limits</div>
+      <label className="field pc-field">
+        <span className="pc-field-label">
+          <span className="pc-field-label-main">Max concurrency</span>
+          <em className="req"> *</em>
+        </span>
         <input
           type="number"
           min="1"
@@ -253,8 +334,10 @@ function PC_LimitsFieldset({ value, onChange }) {
           onChange={(e) => set("max_concurrency", e.target.value || "1")}
         />
       </label>
-      <label className="field">
-        <span>request_timeout_seconds</span>
+      <label className="field pc-field">
+        <span className="pc-field-label">
+          <span className="pc-field-label-main">Request timeout (s)</span>
+        </span>
         <input
           type="number"
           min="0"
@@ -262,8 +345,10 @@ function PC_LimitsFieldset({ value, onChange }) {
           onChange={(e) => set("request_timeout_seconds", e.target.value)}
         />
       </label>
-      <label className="field">
-        <span>connect_timeout_seconds</span>
+      <label className="field pc-field">
+        <span className="pc-field-label">
+          <span className="pc-field-label-main">Connect timeout (s)</span>
+        </span>
         <input
           type="number"
           min="0"
@@ -271,7 +356,7 @@ function PC_LimitsFieldset({ value, onChange }) {
           onChange={(e) => set("connect_timeout_seconds", e.target.value)}
         />
       </label>
-    </fieldset>
+    </div>
   );
 }
 
@@ -350,6 +435,7 @@ function PC_submittable(draft, shape, selectedType) {
 
 function PC_ProviderForm({
   plural, typesPath, value, onChange, onSubmit, onTest, onCancel, editing,
+  existingId, canInvalidate,
 }) {
   const { useResource, apiFetch, useCapabilities, capabilityHint,
     EXTRA_FOR_PROVIDER_TYPE } = window.primerApi;
@@ -455,37 +541,17 @@ function PC_ProviderForm({
   const showProbePanel = !!shape.discoverable
     && PC_DISCOVER_MODELS_PLURALS.indexOf(plural) >= 0;
 
+  // Designer reconciliation: the in-form kind dropdown (and the T0379
+  // mismatch warning it existed to explain) is REMOVED - kind arrives
+  // preselected from the catalog's own kind-listing Register dropdown
+  // (create) or is simply the row's own real value (edit), so
+  // `selectedType`/`shape` above are never actually driven by a control
+  // in this form any more, only read from `draft.provider`. The T0379
+  // mismatch class this warning existed for mostly evaporates once kind
+  // can no longer be picked independently of the fields shown for it -
+  // flagged in the PR body per the task's own instruction.
   const fields = (
     <div className="col" style={{ gap: 12, minWidth: 0 }}>
-      <div className="field">
-        <label className="field-label" htmlFor="pf-provider">provider</label>
-        <select
-          id="pf-provider"
-          className="input"
-          value={selectedType}
-          disabled={editing}
-          onChange={(e) => setField("row", "provider", e.target.value)}
-        >
-          {typeKeys.map((k) => (
-            <option key={k} value={k}>{(typeMap[k] || {}).label || k}</option>
-          ))}
-        </select>
-        {/* Documented anomaly, surfaced in place rather than hidden
-            (docs/dev/subsystems/ui-pages.md). The per-class create
-            modals carried this line and the catalog that replaced them
-            dropped it, so nothing warned an operator before they
-            submitted a mismatched pair. */}
-        <div className="field-help" data-testid="provider-form-t0379">
-          {editing
-            ? "Locked on edit: a provider's kind decides its config shape " +
-              "(T0379) - changing it here would leave stale fields from " +
-              "the old kind behind."
-            : "Provider and config alignment is NOT cross-validated " +
-              "server-side (T0379): make sure the vendor name matches " +
-              "the config shape you are filling in."}
-        </div>
-      </div>
-
       {missingExtra ? (
         <Banner kind="info" title="Optional dependency required">
           {capabilityHint(extra)}
@@ -493,7 +559,10 @@ function PC_ProviderForm({
       ) : null}
 
       <PC_Field
-        field={PC_normalizeField({ key: "id", label: "id", required: true })}
+        field={PC_normalizeField({
+          key: "id", label: "Name", required: true,
+          placeholder: selectedType ? `e.g. ${selectedType}-prod` : "e.g. my-provider",
+        })}
         value={draft.id}
         disabled={editing}
         onChange={(next) => setField("row", "id", next)}
@@ -544,6 +613,16 @@ function PC_ProviderForm({
     </div>
   );
 
+  // Invalidate is edit-mode-only (nothing to invalidate before Save has
+  // ever run) and class-gated (canInvalidate, from the catalog's own
+  // klass.invalidate flag - llm/embedding/cross_encoder only). It needs
+  // a right column even for a kind/class with no probe panel (cross_
+  // encoder has no discover_models route at all, so showProbePanel is
+  // always false for it, but it DOES carry klass.invalidate) - the two
+  // gates are independent, so the column renders whenever EITHER wants it.
+  const showInvalidate = editing && canInvalidate && !!existingId;
+  const showRightColumn = showProbePanel || showInvalidate;
+
   return (
     <div className="col" style={{ gap: 12 }}
       data-testid={`provider-form-${plural}`}>
@@ -561,16 +640,23 @@ function PC_ProviderForm({
           auto minimum forces content-based sizing without it). */}
       <div className="pc-form-grid" style={{
         display: "grid",
-        gridTemplateColumns: showProbePanel ? "minmax(0, 1fr) 240px" : "minmax(0, 1fr)",
+        gridTemplateColumns: showRightColumn ? "minmax(0, 1fr) 240px" : "minmax(0, 1fr)",
         gap: 20, alignItems: "start",
       }}>
         {fields}
-        {showProbePanel ? (
+        {showRightColumn ? (
           <div className="col pc-form-right" style={{ gap: 10, minWidth: 0 }}>
-            <PC_ProbePanel plural={plural} draft={draft} selectedType={selectedType} />
-            <div className="field-help" data-testid="provider-form-capabilities-footnote">
-              {PC_CAPABILITIES_FOOTNOTE}
-            </div>
+            {showProbePanel ? (
+              <React.Fragment>
+                <PC_ProbePanel plural={plural} draft={draft} selectedType={selectedType} />
+                <div className="field-help" data-testid="provider-form-capabilities-footnote">
+                  {PC_CAPABILITIES_FOOTNOTE}
+                </div>
+              </React.Fragment>
+            ) : null}
+            {showInvalidate ? (
+              <PC_InvalidateAction plural={plural} existingId={existingId} />
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -581,18 +667,29 @@ function PC_ProviderForm({
             Cancel
           </Btn>
         ) : null}
-        <Btn
-          kind="ghost"
-          data-testid="provider-form-test"
-          onClick={runTest}
-          disabled={busy}
-        >
-          Test
-        </Btn>
+        {/* Designer reconciliation: the footer Test button is redundant
+            ONLY where the probe panel already offers Test connect - for
+            classes with no probe panel (no discover_models route: stt/
+            tts/web_search/web_fetch/artifact_storage/cross_encoder),
+            removing it would leave NO way at all to test a draft config
+            before saving, which the task's own tripwire says to flag
+            rather than drop. Kept, conditionally, for exactly those. */}
+        {!showProbePanel ? (
+          <Btn
+            kind="ghost"
+            data-testid="provider-form-test"
+            onClick={runTest}
+            disabled={busy}
+          >
+            Test
+          </Btn>
+        ) : null}
         <Btn data-testid="provider-form-save"
           onClick={() => onSubmit && onSubmit(PC_submittable(draft, shape, selectedType))}
           disabled={busy || missingRequired()
-            || modelRowsIncomplete(shape.row_fields)}>Save</Btn>
+            || modelRowsIncomplete(shape.row_fields)}>
+          Save provider
+        </Btn>
       </div>
     </div>
   );

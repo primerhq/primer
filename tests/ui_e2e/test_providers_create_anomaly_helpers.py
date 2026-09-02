@@ -39,16 +39,15 @@ def test_u0010_embedding_provider_modal_shows_t0025_static_models_helper(
     phrasing and the (T0025) tag are present so a future copy-edit can't
     silently drop the anomaly reference.
     """
-    # RETARGET (IA restructure 01a04d6a): "Register provider" now names
-    # the TYPE ("embedding"), not the kind directly - the kind ("openai")
-    # is re-picked inside the form, same mechanic every retargeted test
-    # in this file uses.
+    # RETARGET (01a063ab, designer reconciliation): Register now lists
+    # the active class's KINDS directly (PC_RegisterDropdown) - kind
+    # arrives preselected, there is no more in-form kind picker to
+    # re-pick it from.
     open_legacy_route(page, console_url, "providers/embedding")
-    page.get_by_test_id("provider-register-all-toggle").click()
-    page.get_by_test_id("provider-register-type-embedding").click()
+    page.get_by_test_id("provider-register-toggle").click()
+    page.get_by_test_id("provider-register-kind-openai").click()
     form = page.get_by_test_id("provider-form-embedding_providers")
     form.wait_for(state="visible", timeout=15_000)
-    form.locator("#pf-provider").select_option(value="openai")
     # The form root renders before /\_types resolves, so wait for the
     # field the helper hangs off before reading the text: a bare
     # inner_text() here reads an empty shell and reports the copy as
@@ -73,51 +72,17 @@ def test_u0010_embedding_provider_modal_shows_t0025_static_models_helper(
     )
 
 
-def test_u0011_llm_provider_modal_shows_t0379_cross_validation_warning(
-    page,
-    console_url: str,
-) -> None:
-    """U0011 — Opening the New LLM provider modal renders the documented
-    T0379 cross-validation warning ("Provider ↔ config alignment is NOT
-    cross-validated server-side (T0379) — make sure the vendor name
-    matches the config shape") somewhere in the modal body.
-
-    Sister of U0010. The T0379 warning lives alongside the provider
-    dropdown in PROVIDER_FIELDS so operators see it before submitting
-    a misaligned provider×config combo. Like U0010, no backend
-    precondition needed — text is unconditional UI copy.
-
-    Defence: if a future copy-edit drops the T0379 reference, this
-    test catches it before the anomaly drift propagates to operators.
-    """
-    # RETARGET (IA restructure 01a04d6a): same mechanic as U0010 above -
-    # Register provider names the TYPE, the kind is picked inside the
-    # form. The T0379 copy itself is unconditional create-mode text
-    # (provider-form.jsx's PC_ProviderForm), untouched by the restructure
-    # beyond moving alongside a new editing-mode variant - this assertion
-    # still targets the same string.
-    open_legacy_route(page, console_url, "providers/llm")
-    page.get_by_test_id("provider-register-all-toggle").click()
-    page.get_by_test_id("provider-register-type-llm").click()
-    form = page.get_by_test_id("provider-form-llm_providers")
-    form.wait_for(state="visible", timeout=15_000)
-    form.locator("#pf-provider").select_option(value="anthropic")
-
-    modal_text = form.inner_text()
-    assert "Provider" in modal_text and "config" in modal_text, (
-        "Expected T0379 cross-validation warning copy mentioning "
-        "'Provider ↔ config' alignment in the New LLM provider modal.\n"
-        f"Modal text was:\n{modal_text}"
-    )
-    assert "cross-validated" in modal_text or "cross-validation" in modal_text, (
-        "Expected T0379 helper text mentioning 'cross-validated' / "
-        "'cross-validation' in the modal body — copy drift?\n"
-        f"Modal text was:\n{modal_text}"
-    )
-    assert "T0379" in modal_text, (
-        "T0379 anomaly tag missing from the modal body — copy edit "
-        "dropped the anomaly reference?\nModal text was:\n" + modal_text
-    )
+## test_u0011_llm_provider_modal_shows_t0379_cross_validation_warning
+## retired (01a063ab, designer reconciliation): the T0379 warning existed
+## to flag a mismatch between a manually re-picked kind and the fields
+## shown for it. That mismatch class is now structurally impossible -
+## kind always arrives preselected from PC_RegisterDropdown (create) or
+## is the row's own real value (edit), with no in-form control left to
+## re-pick it from - so provider-form.jsx dropped both the kind <select>
+## and the warning it explained (see the "Designer reconciliation"
+## comment above PC_ProviderForm's `fields` block). Flagged in the PR
+## body per the task's own instruction; not replaced, since there is no
+## remaining surface for this anomaly to occupy.
 
 
 def test_provider_create_disabled_until_model_name_filled(
@@ -134,19 +99,18 @@ def test_provider_create_disabled_until_model_name_filled(
     ``body.models.0.name: Field required``. The fix requires every
     non-optional model field to be non-empty before enabling Create.
 
-    RETARGET (IA restructure 01a04d6a): "Register provider" now names
-    the TYPE ("embedding") up front instead of the kind directly - the
-    kind ("openai") is re-picked inside the form (same testids, same
-    gate logic once it renders).
+    RETARGET (01a063ab, designer reconciliation): Register now lists the
+    active class's KINDS directly (PC_RegisterDropdown) - kind arrives
+    preselected, so this opens straight on the openai embedding form
+    (same testids, same gate logic once it renders).
     """
     from playwright.sync_api import expect
 
     open_legacy_route(page, console_url, "providers/embedding")
-    page.get_by_test_id("provider-register-all-toggle").click()
-    page.get_by_test_id("provider-register-type-embedding").click()
+    page.get_by_test_id("provider-register-toggle").click()
+    page.get_by_test_id("provider-register-kind-openai").click()
     form = page.get_by_test_id("provider-form-embedding_providers")
     form.wait_for(state="visible", timeout=15_000)
-    form.locator("#pf-provider").select_option(value="openai")
 
     save_btn = form.get_by_test_id("provider-form-save")
     model_list = form.get_by_test_id("provider-form-model-list")

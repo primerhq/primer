@@ -1,8 +1,14 @@
-"""Providers IA restructure (01a04d6a, user directive supersedes the
-mockup where they conflict): ONE page, all types together with a type
-filter, Register-by-type, card-click opens the SAME overlay in edit
-mode, form spacing fixed. Static source checks, same technique as
-tests/ui/test_provider_catalog.py.
+"""Providers IA restructure. Originally 01a04d6a (user directive
+supersedes the mockup where they conflict); superseded in turn by
+01a063ab where the ratified uiv2 designer mockup itself was named
+authoritative - LLM is now the default class (not the merged All view)
+and Register lists a class's kinds via PC_RegisterDropdown, not
+PC_RegisterAll. The merged All view and PC_RegisterAll survive as a
+restorable fallback (unreachable from the header once a class is
+selected, kept for symmetry - see PC_ALL_TYPE_CHIPS/PC_AllInstancesGrid
+below). Card-click-opens-the-same-overlay-in-edit-mode and form-spacing
+fixes are unaffected by the mockup and remain as originally landed.
+Static source checks, same technique as tests/ui/test_provider_catalog.py.
 """
 
 from __future__ import annotations
@@ -30,13 +36,19 @@ def _platform() -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_all_is_the_default_class_and_the_first_type_chip() -> None:
+def test_llm_is_the_default_class_and_all_survives_as_a_restorable_fallback() -> None:
+    """01a063ab: the ratified mockup drops the "All" chip and its
+    per-type section headings, defaulting to LLM instead. PC_ALL_TYPE_CHIPS
+    and PC_AllInstancesGrid are kept intact (unreferenced from the header
+    once a class is selected) so the merged view can be restored without
+    reconstructing it from scratch."""
     src = _catalog()
-    assert 'React.useState(initialClass || "all")' in src, (
-        "the catalog must default to the merged All view, not the first "
-        "real class"
+    assert 'React.useState(initialClass || "llm")' in src, (
+        "the catalog must default to the LLM class per the ratified mockup"
     )
-    assert 'const PC_ALL_TYPE_CHIPS = [{ key: "all", label: "All" }, ...PROVIDER_CLASSES];' in src
+    assert 'const PC_ALL_TYPE_CHIPS = [{ key: "all", label: "All" }, ...PROVIDER_CLASSES];' in src, (
+        "the merged All view's chip list must survive for restorability"
+    )
 
 
 def test_all_instances_grid_merges_only_crud_classes() -> None:
@@ -85,9 +97,28 @@ def test_register_all_lists_every_type_with_no_fetch() -> None:
     assert "function PC_RegisterDropdown" in src
 
 
-def test_register_all_is_the_top_level_control_not_gated_on_a_class() -> None:
+def test_register_dropdown_is_primary_and_register_all_is_the_no_class_fallback() -> None:
+    """01a063ab: with a class always selected by default (LLM), the live
+    top-level control is PC_RegisterDropdown (lists that class's KINDS,
+    not types) - PC_RegisterAll only surfaces if isAll is ever reached
+    again, which is why its exact call survives verbatim as the fallback
+    branch rather than being deleted."""
     src = _catalog()
+    assert "<PC_RegisterDropdown klass={klass} onPick={(kind) => openCreateWithKind(klass, kind)} />" in src
     assert "<PC_RegisterAll onPick={openCreate} />" in src
+
+
+def test_register_dropdown_shows_the_served_kind_label() -> None:
+    """01a063ab: retired from test_provider_form_fields.py's old
+    test_the_type_picker_shows_the_served_label - the in-form kind
+    picker it pinned is gone; the served-label behavior lives in
+    PC_RegisterDropdown now, annotated per kind (discoverable ->
+    "probes models live", aggregated variant -> "gated / special")."""
+    src = _catalog()
+    dropdown = src[src.index("function PC_RegisterDropdown"):]
+    dropdown = dropdown[:dropdown.index("\nfunction ", 1)]
+    assert "typeMap[k]" in dropdown
+    assert "{meta.label || k}" in dropdown
 
 
 def test_picking_a_panel_type_switches_the_filter_not_a_form() -> None:
@@ -145,14 +176,15 @@ def test_form_receives_the_editing_flag() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_id_field_and_kind_select_are_disabled_while_editing() -> None:
+def test_id_field_is_disabled_while_editing() -> None:
+    """01a063ab: the in-form kind <select> is gone entirely (kind always
+    arrives preselected from the Register dropdown), so only the id/Name
+    PC_Field is left to gate - exactly one `disabled={editing}` JSX prop
+    now exists (a second, unrelated `disabled` guards Save on `busy`, not
+    `editing`, so this counts the literal prop, not the word)."""
     src = _form()
-    # Both the id PC_Field and the provider <select> must be gated - not
-    # just one of the two - so exactly two `disabled={editing}` JSX
-    # props exist (a third, unrelated `disabled` guards Save on `busy`,
-    # not `editing`, so this counts the literal prop, not the word).
-    assert src.count("disabled={editing}") == 2
-    id_block = src[src.index('field={PC_normalizeField({ key: "id"'):]
+    assert src.count("disabled={editing}") == 1
+    id_block = src[src.index('key: "id", label: "Name"'):]
     id_block = id_block[:id_block.index("/>")]
     assert "disabled={editing}" in id_block
 
@@ -229,9 +261,13 @@ def test_form_opens_in_a_wider_modal() -> None:
 
 
 def test_fields_and_probe_panel_are_a_real_css_grid() -> None:
+    """01a063ab: the right column now also hosts PC_InvalidateAction for
+    classes with no probe panel (e.g. cross_encoder), so the grid gates
+    on showRightColumn (showProbePanel || showInvalidate), not
+    showProbePanel alone."""
     src = _form()
     assert 'display: "grid"' in src
-    assert 'gridTemplateColumns: showProbePanel ? "minmax(0, 1fr) 240px" : "minmax(0, 1fr)"' in src
+    assert 'gridTemplateColumns: showRightColumn ? "minmax(0, 1fr) 240px" : "minmax(0, 1fr)"' in src
     # The old flex tug-of-war (flex: 1 fields vs. a fixed-width sibling
     # in the same flex row) must be gone, not just supplemented.
     assert 'className="row" style={{ gap: 20, alignItems: "flex-start" }}' not in src
