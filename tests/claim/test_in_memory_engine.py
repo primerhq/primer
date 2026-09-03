@@ -43,6 +43,38 @@ async def test_claim_due_returns_eligible_leases_sorted_by_priority():
 
 
 @pytest.mark.asyncio
+async def test_claim_due_kinds_none_admits_every_kind():
+    """Default (no kinds arg) is byte-identical to every existing caller."""
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.HARNESS, "h1")
+    await engine.upsert(ClaimKind.SESSION, "s1")
+    leases = await engine.claim_due("worker-A", max_count=10)
+    assert {l.kind for l in leases} == {ClaimKind.HARNESS, ClaimKind.SESSION}
+
+
+@pytest.mark.asyncio
+async def test_claim_due_kinds_filter_restricts_to_subset():
+    """Phase 3 stage 7a (01a0518b): pool-class separation calls claim_due
+    twice per iteration - once excluding TOOL_CALL for general capacity,
+    once restricted to it for the reserve. The filter must not leak
+    other kinds into either slice."""
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.HARNESS, "h1")
+    await engine.upsert(ClaimKind.SESSION, "s1")
+    await engine.upsert(ClaimKind.TOOL_CALL, "t1")
+
+    general = await engine.claim_due(
+        "worker-A", max_count=10, kinds=[ClaimKind.HARNESS, ClaimKind.SESSION],
+    )
+    assert {l.entity_id for l in general} == {"h1", "s1"}
+
+    reserve = await engine.claim_due(
+        "worker-B", max_count=10, kinds=[ClaimKind.TOOL_CALL],
+    )
+    assert {l.entity_id for l in reserve} == {"t1"}
+
+
+@pytest.mark.asyncio
 async def test_claim_due_respects_max_count():
     engine = InMemoryClaimEngine(adapters={})
     for i in range(5):

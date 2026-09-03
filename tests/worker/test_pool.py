@@ -102,6 +102,125 @@ async def _async_return(value):
     return value
 
 
+# ---------------------------------------------------------------------------
+# Phase 3 stage 7a (01a0518b) - pool-class separation: claim_due kinds
+# filter + the reserved-split claim loop (ruling C). Tested directly
+# against _claim_slice / _reserve_and_dispatch (bypassing start()'s
+# heavier side effects - scheduler registration, heartbeat loop, the
+# background claim task itself) so these are fast, deterministic unit
+# tests rather than poll-interval-timed end-to-end ones.
+# ---------------------------------------------------------------------------
+
+
+def _bare_pool(scheduler, engine, *, tool_call_reserved_concurrency=None):
+    pool = WorkerPool(
+        config=WorkerConfig(
+            concurrency=4,
+            tool_call_reserved_concurrency=tool_call_reserved_concurrency,
+        ),
+        scheduler=scheduler, storage=None,             # type: ignore[arg-type]
+        workspace_registry=None,                       # type: ignore[arg-type]
+        provider_registry=None,                        # type: ignore[arg-type]
+        engine=engine,
+    )
+    pool._worker_id = "wrk-reserve-test"
+    return pool
+
+
+async def test_claim_slice_restricts_to_given_kinds(scheduler, engine):
+    pool = _bare_pool(scheduler, engine)
+    dispatched: list[str] = []
+
+    async def _fake_handler(lease):
+        dispatched.append(lease.entity_id)
+        return ReleaseOutcome(success=True, drop_lease=True)
+
+    pool._dispatch = {
+        ClaimKind.HARNESS: _fake_handler,
+        ClaimKind.SESSION: _fake_handler,
+    }
+    await engine.upsert(ClaimKind.HARNESS, "h1", priority=100)
+    await engine.upsert(ClaimKind.SESSION, "s1", priority=100)
+
+    claimed = await pool._claim_slice(kinds=[ClaimKind.HARNESS], max_count=10)
+
+    assert claimed is True
+    assert (ClaimKind.HARNESS, "h1") in pool._in_flight
+    assert (ClaimKind.SESSION, "s1") not in pool._in_flight
+
+
+async def test_claim_slice_returns_false_when_nothing_claimed(scheduler, engine):
+    pool = _bare_pool(scheduler, engine)
+    pool._dispatch = {}
+    claimed = await pool._claim_slice(kinds=[ClaimKind.HARNESS], max_count=10)
+    assert claimed is False
+    assert pool._in_flight == set()
+
+
+async def test_reserved_loop_claims_both_slices_independently(scheduler, engine):
+    """The reserved loop's two _claim_slice calls together cover every
+    kind, each restricted to its own slice - a burst on one slice must
+    not starve the other's claim (the whole point of ruling C)."""
+    pool = _bare_pool(scheduler, engine, tool_call_reserved_concurrency=1)
+    dispatched: list[tuple] = []
+
+    async def _fake_handler(lease):
+        dispatched.append((lease.kind, lease.entity_id))
+        return ReleaseOutcome(success=True, drop_lease=True)
+
+    pool._dispatch = {
+        ClaimKind.HARNESS: _fake_handler,
+        ClaimKind.SESSION: _fake_handler,
+        ClaimKind.TOOL_CALL: _fake_handler,
+    }
+    await engine.upsert(ClaimKind.HARNESS, "h1", priority=100)
+    await engine.upsert(ClaimKind.TOOL_CALL, "t1", priority=100)
+
+    general = await pool._claim_slice(
+        kinds=[k for k in pool._dispatch if k != ClaimKind.TOOL_CALL],
+        max_count=10,
+    )
+    reserved = await pool._claim_slice(kinds=[ClaimKind.TOOL_CALL], max_count=1)
+
+    assert general is True
+    assert reserved is True
+    assert (ClaimKind.HARNESS, "h1") in pool._in_flight
+    assert (ClaimKind.TOOL_CALL, "t1") in pool._in_flight
+
+
+async def test_start_routes_to_reserved_loop_only_when_configured(
+    scheduler, engine,
+):
+    """Routing decision (made once, at start(), not per-iteration) picks
+    the reserved loop iff tool_call_reserved_concurrency is set - the
+    default (None) must schedule the exact same _engine_claim_loop as
+    before this knob existed."""
+    default_pool = _bare_pool(scheduler, engine)
+    with patch.object(
+        WorkerPool, "_engine_claim_loop", return_value=_async_return(None),
+    ) as unified, patch.object(
+        WorkerPool, "_engine_claim_loop_reserved", return_value=_async_return(None),
+    ) as reserved:
+        await default_pool.start()
+        await default_pool.drain_and_stop()
+    unified.assert_called_once()
+    reserved.assert_not_called()
+
+    reserve_engine = InMemoryClaimEngine(adapters={})
+    reserved_pool = _bare_pool(
+        scheduler, reserve_engine, tool_call_reserved_concurrency=1,
+    )
+    with patch.object(
+        WorkerPool, "_engine_claim_loop", return_value=_async_return(None),
+    ) as unified2, patch.object(
+        WorkerPool, "_engine_claim_loop_reserved", return_value=_async_return(None),
+    ) as reserved2:
+        await reserved_pool.start()
+        await reserved_pool.drain_and_stop()
+    reserved2.assert_called_once()
+    unified2.assert_not_called()
+
+
 async def test_claim_loop_runs_runnable_session(scheduler, engine, monkeypatch):
     """End-to-end: enqueue a session via engine, start the pool, the claim
     loop picks it up, and dispatches to run_one_session_turn."""

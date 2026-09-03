@@ -314,6 +314,64 @@ def test_build_claim_query_schema_qualifies_entity_tables():
 
 
 # ---------------------------------------------------------------------------
+# Tests — PostgresClaimEngine._claim_query_for (unit, no DB, always run)
+# ---------------------------------------------------------------------------
+
+
+class _StorageProviderStub:
+    """Bare-minimum stand-in - PostgresClaimEngine.__init__ only reads
+    these two attributes; no live connection is touched until claim_due
+    itself runs, so _claim_query_for is fully testable without a DB."""
+
+    def __init__(self, *, schema: str | None = "test") -> None:
+        self.leases_table = '"test"."leases"'
+        self.schema = schema
+
+
+def test_claim_query_for_none_returns_the_prebuilt_all_kinds_query():
+    engine = PostgresClaimEngine(
+        storage_provider=_StorageProviderStub(),
+        adapters={
+            ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
+            ClaimKind.SESSION: SessionClaimAdapter(session_storage=None),
+        },
+    )
+    assert engine._claim_query_for(None) is engine._claim_query
+    assert "harness_cand" in engine._claim_query_for(None)
+    assert "session_cand" in engine._claim_query_for(None)
+
+
+def test_claim_query_for_kinds_scopes_to_the_subset_and_caches():
+    """Phase 3 stage 7a (01a0518b) pool-class separation: the pool loop
+    calls claim_due twice per iteration with different kind subsets -
+    each subset's compiled query must only contain THAT subset's CTEs,
+    and a repeated call for the same subset must hit the cache rather
+    than rebuild."""
+    engine = PostgresClaimEngine(
+        storage_provider=_StorageProviderStub(),
+        adapters={
+            ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
+            ClaimKind.SESSION: SessionClaimAdapter(session_storage=None),
+        },
+    )
+    scoped = engine._claim_query_for([ClaimKind.HARNESS])
+    assert "harness_cand" in scoped
+    assert "session_cand" not in scoped
+    assert "UNION ALL" not in scoped
+
+    # Repeat call with an equal (but distinct list object) subset hits
+    # the cache - same compiled string, not merely an equal one.
+    again = engine._claim_query_for([ClaimKind.HARNESS])
+    assert again is scoped
+
+    # A different subset gets its own, independently-cached query.
+    other = engine._claim_query_for([ClaimKind.SESSION])
+    assert "session_cand" in other
+    assert "harness_cand" not in other
+    assert other is not scoped
+
+
+# ---------------------------------------------------------------------------
 # Tests — heartbeat
 # ---------------------------------------------------------------------------
 

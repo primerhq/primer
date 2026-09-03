@@ -177,8 +177,19 @@ class WorkerPool:
                 name=f"scheduler-cancel-{self._worker_id}",
             ),
         ]
+        # Phase 3 stage 7a (01a0518b) pool-class separation: a reserved
+        # TOOL_CALL slice routes to a dedicated loop with its own claim_due
+        # split (ruling C, leader-approved). Decided once, at start - NOT
+        # per-iteration - so the unreserved (default) path stays exactly
+        # the loop it always was, with zero risk of the split logic
+        # touching it.
+        claim_loop = (
+            self._engine_claim_loop_reserved
+            if self.config.tool_call_reserved_concurrency is not None
+            else self._engine_claim_loop
+        )
         self._engine_claim_task = asyncio.create_task(
-            self._engine_claim_loop(),
+            claim_loop(),
             name=f"engine-claim-{self._worker_id}",
         )
         self._engine_bus_task = asyncio.create_task(
@@ -362,28 +373,121 @@ class WorkerPool:
                         pass
                     continue
                 self._claims_total += len(leases)
-                # Reserve in_flight slots immediately before dispatching
-                # so back-to-back claim iterations see the correct free count.
-                for lease in leases:
-                    self._in_flight.add((lease.kind, lease.entity_id))
-                for lease in leases:
-                    handler = self._dispatch.get(lease.kind)
-                    if handler is None:
-                        logger.error(
-                            "engine_claim_loop: no handler for kind %r, "
-                            "entity %s — skipping",
-                            lease.kind, lease.entity_id,
-                        )
-                        self._in_flight.discard((lease.kind, lease.entity_id))
-                        continue
-                    task = asyncio.create_task(
-                        self._run_engine(lease, handler),
-                        name=f"engine-{lease.kind}-{lease.entity_id}",
-                    )
-                    self._turn_tasks.add(task)
-                    task.add_done_callback(self._turn_tasks.discard)
+                self._reserve_and_dispatch(leases)
         except asyncio.CancelledError:
             return
+
+    def _reserve_and_dispatch(self, leases: list[ClaimLease]) -> None:
+        """Reserve in_flight slots for ``leases`` and dispatch each.
+
+        Extracted from the unified claim loop so the Phase 3 stage 7a
+        (01a0518b) reserved-split loop below can share it verbatim -
+        the reserve-then-dispatch bookkeeping is identical either way,
+        only WHICH leases get claimed differs.
+        """
+        # Reserve in_flight slots immediately before dispatching so
+        # back-to-back claim iterations see the correct free count.
+        for lease in leases:
+            self._in_flight.add((lease.kind, lease.entity_id))
+        for lease in leases:
+            handler = self._dispatch.get(lease.kind)
+            if handler is None:
+                logger.error(
+                    "engine_claim_loop: no handler for kind %r, "
+                    "entity %s — skipping",
+                    lease.kind, lease.entity_id,
+                )
+                self._in_flight.discard((lease.kind, lease.entity_id))
+                continue
+            task = asyncio.create_task(
+                self._run_engine(lease, handler),
+                name=f"engine-{lease.kind}-{lease.entity_id}",
+            )
+            self._turn_tasks.add(task)
+            task.add_done_callback(self._turn_tasks.discard)
+
+    async def _engine_claim_loop_reserved(self) -> None:
+        """Claim loop variant used when config.tool_call_reserved_concurrency
+        is set (Phase 3 stage 7a, 01a0518b, ruling C).
+
+        Splits ``concurrency`` into two independently-tracked slices:
+        a TOOL_CALL-only reserve, and everything else. Each slice has
+        its own free-capacity accounting (based on in_flight entries
+        of the matching kind) and its own claim_due call, so a burst
+        of tool-call tasks cannot starve session/harness/trigger
+        claiming - or vice versa, a general-kind burst starving
+        tool-call claiming - the way one shared free count would allow.
+        Otherwise mirrors _engine_claim_loop exactly (same batch-size
+        cap, same empty-poll backoff, same wake-on-work).
+        """
+        assert self._engine is not None
+        reserve = self.config.tool_call_reserved_concurrency
+        assert reserve is not None  # only routed here when set
+        general_capacity = self.config.concurrency - reserve
+        try:
+            while not self._stopping.is_set():
+                tool_call_in_flight = sum(
+                    1 for kind, _ in self._in_flight if kind == ClaimKind.TOOL_CALL
+                )
+                general_in_flight = len(self._in_flight) - tool_call_in_flight
+                general_free = general_capacity - general_in_flight
+                tool_call_free = reserve - tool_call_in_flight
+
+                claimed_any = False
+                if general_free > 0:
+                    claimed_any |= await self._claim_slice(
+                        kinds=[k for k in self._dispatch if k != ClaimKind.TOOL_CALL],
+                        max_count=min(self.config.claim_batch_size, general_free),
+                    )
+                if tool_call_free > 0:
+                    claimed_any |= await self._claim_slice(
+                        kinds=[ClaimKind.TOOL_CALL],
+                        max_count=min(self.config.claim_batch_size, tool_call_free),
+                    )
+
+                if not claimed_any:
+                    # Only count as an "empty poll" when at least one
+                    # slice actually had free capacity to claim into -
+                    # mirrors the unified loop's own free>0-but-empty
+                    # accounting; both-slices-full is the reserved
+                    # equivalent of its free<=0 short-circuit.
+                    if general_free > 0 or tool_call_free > 0:
+                        self._claims_empty_total += 1
+                    self._wake.clear()
+                    try:
+                        await asyncio.wait_for(
+                            self._wake.wait(),
+                            timeout=self.config.poll_interval_seconds,
+                        )
+                    except TimeoutError:
+                        pass
+        except asyncio.CancelledError:
+            return
+
+    async def _claim_slice(
+        self, *, kinds: list[ClaimKind], max_count: int,
+    ) -> bool:
+        """One claim_due call restricted to ``kinds``, then dispatch.
+
+        Returns True if anything was claimed (drives the reserved
+        loop's empty-poll backoff, mirroring the unified loop's own
+        "if not leases" branch).
+        """
+        try:
+            leases = await self._engine.claim_due(
+                self._worker_id, max_count=max_count, kinds=kinds,
+            )
+        except Exception:
+            logger.exception(
+                "engine claim_loop_reserved iteration failed (kinds=%r)", kinds,
+            )
+            await asyncio.sleep(self.config.poll_interval_seconds)
+            return False
+        if not leases:
+            return False
+        self._claims_total += len(leases)
+        self._reserve_and_dispatch(leases)
+        return True
 
     async def _run_engine(
         self,

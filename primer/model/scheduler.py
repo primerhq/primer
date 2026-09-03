@@ -92,6 +92,31 @@ class WorkerConfig(BaseModel):
         ),
     )
 
+    tool_call_reserved_concurrency: int | None = Field(
+        default=None,
+        ge=1,
+        le=127,
+        description=(
+            "Phase 3 stage 7a (01a0518b) pool-class separation (leader "
+            "ruling C: 'build the minimal form into 7a's first cut'). "
+            "None (default) = no reservation; ClaimKind.TOOL_CALL shares "
+            "the single general pool exactly like every other kind does "
+            "today. A value carves this many slots EXCLUSIVELY out of "
+            "concurrency for TOOL_CALL claims: the pool loop then calls "
+            "claim_due twice per iteration (kinds=[everything but "
+            "TOOL_CALL] for the remaining concurrency - reserve slots, "
+            "kinds=[TOOL_CALL] for the reserve) so a burst of tool-call "
+            "tasks cannot starve session/harness/trigger claiming, or "
+            "vice versa - the starvation risk identified in the 7a "
+            "ground-truth remap (a worker holding a pool slot for a "
+            "delegate-tool task can block on an untimed provider-slot "
+            "acquire). Only meaningful when "
+            "tool_calls_as_claims_enabled=True; ignored otherwise "
+            "(nothing ever claims ClaimKind.TOOL_CALL leases with the "
+            "flag off)."
+        ),
+    )
+
     @model_validator(mode="after")
     def _lease_ttl_at_least_2x_heartbeat(self) -> "WorkerConfig":
         if self.lease_ttl_seconds < 2 * self.heartbeat_interval_seconds:
@@ -100,6 +125,20 @@ class WorkerConfig(BaseModel):
                 f">= 2 * heartbeat_interval_seconds "
                 f"({self.heartbeat_interval_seconds}) to tolerate one "
                 "missed beat"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _tool_call_reserve_leaves_general_capacity(self) -> "WorkerConfig":
+        if (
+            self.tool_call_reserved_concurrency is not None
+            and self.tool_call_reserved_concurrency >= self.concurrency
+        ):
+            raise ValueError(
+                f"tool_call_reserved_concurrency "
+                f"({self.tool_call_reserved_concurrency}) must be < "
+                f"concurrency ({self.concurrency}) - at least one slot "
+                "must remain for session/harness/trigger claiming"
             )
         return self
 

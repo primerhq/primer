@@ -72,15 +72,19 @@ class InMemoryClaimEngine(ClaimEngine):
             return False
         return row.expires_at > datetime.now(UTC)
 
-    async def claim_due(self, worker_id: str, *, max_count: int) -> list[Lease]:
+    async def claim_due(
+        self, worker_id: str, *, max_count: int, kinds: list[ClaimKind] | None = None,
+    ) -> list[Lease]:
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
             now = datetime.now(UTC)
+            kind_set = None if kinds is None else set(kinds)
             eligible = [
                 row for row in self._leases.values()
                 if (row.claimed_by is None
                     or (row.expires_at is not None and row.expires_at < now))
                 and row.next_attempt_at <= now
+                and (kind_set is None or row.kind in kind_set)
             ]
             eligible.sort(key=lambda r: (r.priority_score, r.next_attempt_at))
             chosen = eligible[:max_count]

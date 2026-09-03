@@ -86,12 +86,25 @@ class PostgresClaimEngine(ClaimEngine):
         # lease_ttl >= 2*heartbeat validator actually governs the engine
         # (arch review A-I1).
         self.lease_ttl_seconds = lease_ttl_seconds
-        # Build once; claim_due uses it on every call.
+        # Build once; claim_due uses it on every call (the common,
+        # unfiltered case - kinds=None).
         self._claim_query = build_claim_query(
             adapters,
             self._table,
             schema=storage_provider.schema,
         )
+        # Phase 3 stage 7a (01a0518b) pool-class separation: claim_due's
+        # optional kinds filter needs a DIFFERENT compiled query (a
+        # different CTE/UNION subset), not a runtime WHERE clause bolted
+        # onto the shared one - so cache one compiled query per distinct
+        # kind-subset actually requested, keyed by frozenset(kinds).
+        # Real callers only ever ask for a small, fixed number of
+        # subsets (e.g. "everything but TOOL_CALL" / "TOOL_CALL only"),
+        # so this cache never grows unbounded. Seeded with the
+        # already-built unfiltered query for the None key.
+        self._claim_query_cache: dict[frozenset[ClaimKind] | None, str] = {
+            None: self._claim_query,
+        }
         # Entity tables are created lazily by the storage layer on first write.
         # The claim query JOINs them unconditionally, so on a fresh DB (before
         # any chat/harness/trigger exists) the JOIN target is missing and the
@@ -102,6 +115,28 @@ class PostgresClaimEngine(ClaimEngine):
             {a.entity_table for a in adapters.values()}
         )
         self._entity_tables_ensured = False
+
+    def _claim_query_for(self, kinds: list[ClaimKind] | None) -> str:
+        """The compiled claim_due query for ``kinds`` (None = every adapter).
+
+        Builds + caches a query scoped to the given kind subset on first
+        use; every later call with an equal subset hits the cache.
+        """
+        if kinds is None:
+            return self._claim_query
+        key = frozenset(kinds)
+        cached = self._claim_query_cache.get(key)
+        if cached is not None:
+            return cached
+        scoped_adapters = {
+            kind: adapter for kind, adapter in self._adapters.items()
+            if kind in key
+        }
+        query = build_claim_query(
+            scoped_adapters, self._table, schema=self._storage.schema,
+        )
+        self._claim_query_cache[key] = query
+        return query
 
     def _qualified_entity(self, table: str) -> str:
         schema = self._storage.schema
@@ -213,11 +248,15 @@ class PostgresClaimEngine(ClaimEngine):
     # claim_due
     # ------------------------------------------------------------------
 
-    async def claim_due(self, worker_id: str, *, max_count: int) -> list[Lease]:
+    async def claim_due(
+        self, worker_id: str, *, max_count: int, kinds: list[ClaimKind] | None = None,
+    ) -> list[Lease]:
         """Atomically claim up to *max_count* due leases.
 
         Uses the pre-compiled UNION ALL CTE query that joins each
-        adapter's entity table for eligibility filtering.
+        adapter's entity table for eligibility filtering. ``kinds``
+        (default None = every registered kind) selects a differently
+        -scoped compiled query via :meth:`_claim_query_for`.
         """
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
@@ -225,7 +264,7 @@ class PostgresClaimEngine(ClaimEngine):
                 if not self._entity_tables_ensured:
                     await self._ensure_entity_tables(conn)
                 rows = await conn.fetch(
-                    self._claim_query,
+                    self._claim_query_for(kinds),
                     max_count,
                     worker_id,
                     # TTL in seconds (string cast to interval in the query,
