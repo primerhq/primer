@@ -45,6 +45,7 @@ from primer.graph._node_refs import (
     _NodeDone,
     _PendingAgentYield,
     _PendingToolCall,
+    _ToolDispatchBarrier,
     _map_toolcall_result,
     _materialise_begin_output,
     _render_end_output,
@@ -115,7 +116,7 @@ class _NodeDispatchMixin:
         self,
         node_id: str,
         context: GraphContext,
-        queue: "asyncio.Queue[StreamEvent | _NodeDone]",
+        queue: "asyncio.Queue[StreamEvent | _NodeDone | _ToolDispatchBarrier]",
     ) -> None:
         """Run one node; push events live to ``queue``, then a _NodeDone.
 
@@ -477,7 +478,7 @@ class _NodeDispatchMixin:
         self,
         node: _GraphNodeRef,
         context: GraphContext,
-        queue: "asyncio.Queue[StreamEvent | _NodeDone]",
+        queue: "asyncio.Queue[StreamEvent | _NodeDone | _ToolDispatchBarrier]",
         *,
         extra_scope: dict[str, Any] | None = None,
     ) -> NodeOutput:
