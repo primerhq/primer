@@ -264,6 +264,17 @@ class _CoalesceState:
     # ToolCallStart can reuse the same raw id). Keyed by (node_id, raw_id)
     # like tool_names above, for the identical reason.
     scoped_call_ids: dict[tuple[str | None, str], str] = field(default_factory=dict)
+    # (turn_no, coalesced text) of the most recent ASSISTANT_TOKEN record
+    # actually written to the log, whichever node produced it — a plain
+    # global tracker, not per-node, because "the immediately preceding
+    # ASSISTANT_TOKEN" is a messages.jsonl-order concept, not a graph-
+    # topology one. Live finding 01a064d3: a graph's End node renders its
+    # own ASSISTANT_TOKEN from output_template (see the _GraphEndOutputEvent
+    # branch below); when that template is a passthrough of the immediately
+    # preceding node's answer, the two records are byte-identical and the
+    # transcript shows the same paragraph twice. Set wherever a real
+    # ASSISTANT_TOKEN record is emitted, consulted only by that branch.
+    last_assistant_token: tuple[int, str] | None = None
 
 
 class _DeltaSink(Protocol):
@@ -402,6 +413,32 @@ def translate_stream_event(
         )
 
     if isinstance(event, _GraphEndOutputEvent):
+        # Live finding 01a064d3: two suppressions, both approved rulings,
+        # a distinct record kind for graph results (the long-term shape)
+        # deliberately deferred to Phase 3 stage 7a's record-vocabulary
+        # work rather than done here as part of a bug fix.
+        #
+        # (c) An End node with no/empty output_template renders "" -
+        # writing that as an ASSISTANT_TOKEN is pure noise in every graph
+        # transcript, so skip it outright rather than persist an empty
+        # answer bubble.
+        if not event.text:
+            return None
+        # (a) A passthrough output_template (the common case: End just
+        # echoes the last node's answer) renders byte-identical text to
+        # the ASSISTANT_TOKEN immediately preceding it in THIS turn - the
+        # worker's answer IS the graph's result, so a second record adds
+        # no information, only a visible duplicate paragraph. Compare the
+        # final COALESCED text (state.last_assistant_token), never raw
+        # deltas, and only within the same turn_no - a genuine
+        # transformation (the template actually changes the text) still
+        # gets its own finish-attributed record, which is semantically
+        # correct. Fragility bound, accepted: a template that changes
+        # only whitespace still writes both records (byte equality, not
+        # a semantic diff).
+        if state.last_assistant_token == (turn_no, event.text):
+            return None
+        state.last_assistant_token = (turn_no, event.text)
         return SessionMessageRecord(
             seq=1,  # WorkspaceMessageWriter overwrites
             kind=SessionMessageKind.ASSISTANT_TOKEN,
@@ -507,6 +544,7 @@ def translate_stream_event(
                 )
             )
             state.text_buffers[node_id] = ""
+            state.last_assistant_token = (turn_no, buffered)
         # 01a0518f: the durable TOOL_CALL id is the SCOPED id minted at
         # ToolCallStart (was the raw provider id verbatim, which
         # restarts at the same value every llm.stream() call and can
@@ -663,6 +701,7 @@ def translate_stream_event(
                 )
             )
             state.text_buffers[node_id] = ""
+            state.last_assistant_token = (turn_no, buffered)
         done_payload: dict = {"stop_reason": event.stop_reason, "raw_reason": event.raw_reason}
         last_usage = state.last_usage_by.get(node_id)
         if last_usage is not None:

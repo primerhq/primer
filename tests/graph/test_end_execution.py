@@ -162,7 +162,12 @@ async def _run_through_writer(
 async def test_empty_output_template_emits_no_payload(tmp_path: Path) -> None:
     """An End with an empty ``output_template`` still terminates the
     graph (completed) but produces no ``assistant_token`` record in
-    messages.jsonl — the rendered text is the empty string."""
+    messages.jsonl at all. Live finding 01a064d3, ruling (c): an empty
+    ASSISTANT_TOKEN was pure noise in every graph transcript (an empty
+    answer bubble) - translate_stream_event's _GraphEndOutputEvent
+    branch (primer/session/persistence.py) now returns None outright
+    for empty text rather than persisting an empty payload, so this is
+    a single definite outcome now, not "either is fine"."""
     graph = Graph(
         id="g-empty-end",
         description="Begin -> End (empty template)",
@@ -176,20 +181,12 @@ async def test_empty_output_template_emits_no_payload(tmp_path: Path) -> None:
         graph=graph, tmp_path=tmp_path, session_id="sid-empty",
     )
 
-    # The event is still emitted (even with empty text) — but it carries
-    # an empty payload. The translator + writer's behaviour: emit the
-    # assistant_token only when there's something to say.
     end_records = [
         r for r in persisted
         if r["kind"] == SessionMessageKind.ASSISTANT_TOKEN.value
         and r["payload"].get("end_node_id") == "end"
     ]
-    if end_records:
-        # If the implementation chooses to emit anyway, the payload's
-        # text MUST be empty (so the UI's collapsible block renders
-        # nothing). Both behaviours satisfy the spec; the contract is
-        # "no payload reaches the user."
-        assert end_records[0]["payload"]["text"] == ""
+    assert end_records == []
 
 
 # ===========================================================================
