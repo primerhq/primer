@@ -63,6 +63,7 @@ from primer.session.persistence import (
     WorkspaceMessageWriter,
     _CoalesceState,
     infer_agent_phase,
+    stash_graph_scoped_ids,
     translate_stream_event,
 )
 from primer.observability.turn_log_writer import (
@@ -645,6 +646,14 @@ async def run_one_session_turn(
         # resume dispatch can route to the graph resume adapter.
         graph_checkpoint = getattr(park, "graph_checkpoint", None)
 
+        # 01a0690a: stash each pending entry's scoped tool-call id (the id
+        # the durable TOOL_CALL record actually carries, minted by THIS
+        # turn's coalesce_state via the live path's _GraphNodeEvent unwrap)
+        # into graph_checkpoint, plus the per-node mint-seq snapshot the
+        # eventual resume drain needs to avoid re-minting colliding ids.
+        # {}/None for an agent-bound park (graph_checkpoint is None).
+        node_tool_call_seq = stash_graph_scoped_ids(graph_checkpoint, coalesce_state)
+
         # A yield raised inside a NESTED invoke_agent invocation arrives with
         # ``park.frames`` already populated (run_subagent/resume_subagent
         # prepended one AgentFrame per in-flight caller). Persist that stack so
@@ -666,6 +675,7 @@ async def run_one_session_turn(
             started_at=_turn_started_at,
             tool_call_id=park.tool_call_id,
             scoped_tool_call_id=scoped_tool_call_id,
+            node_tool_call_seq=node_tool_call_seq or None,
             graph_checkpoint=graph_checkpoint,
             frames=list(getattr(park, "frames", []) or []),
             # Frozen at park so a fenced resume rebuilds the SAME toolset

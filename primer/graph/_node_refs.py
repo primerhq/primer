@@ -760,6 +760,18 @@ class _PendingToolCall:
         ask_user's ``prompt`` / ``response_schema`` / ``tool_call_id``).
         Surfaced to the channel/REST ask_user prompt + handed to the
         resume hook. Empty for an approval gate.
+    scoped_tool_call_id
+        01a0690a: the SCOPED id (``node:tool:turn_no:seq``) the durable
+        TOOL_CALL record this park will eventually be answered by was
+        minted with (dispatch.py's coalesce_state, via the live path's
+        ``_GraphNodeEvent`` unwrap) -- distinct from ``tool_call_id``
+        above, the raw provider id. Stashed once, at the original park
+        (dispatch.py's ``except YieldToWorker`` catch); every repark
+        carries it forward unchanged (mirrors ``ParkedState.
+        scoped_tool_call_id`` for the agent path, 0b4e8bfc). ``None``
+        for a checkpoint written before this field existed, or if the
+        mint lookup missed (defensive) -- the resume write falls back
+        to the raw id in that case.
     """
 
     node_id: str
@@ -768,6 +780,7 @@ class _PendingToolCall:
     arguments: dict[str, Any]
     tool_name: str | None = None
     resume_metadata: dict[str, Any] = field(default_factory=dict)
+    scoped_tool_call_id: str | None = None
 
 
 @dataclass
@@ -799,4 +812,7 @@ class _PendingAgentYield:
     iteration: int
     frames: list[dict[str, Any]] = field(default_factory=list)
     leaf: dict[str, Any] | None = None
+    # 01a0690a: same doctrine as _PendingToolCall.scoped_tool_call_id above
+    # -- the id the paired durable TOOL_CALL record actually carries.
+    scoped_tool_call_id: str | None = None
 
