@@ -19,6 +19,7 @@ from primer.agent.workspace_executor import WorkspaceAgentExecutor
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
     Done,
+    ImagePart,
     Message,
     StreamEvent,
     TextDelta,
@@ -222,6 +223,111 @@ class TestPersistence:
             # Initial instruction "hello" + new user msg + assistant msg.
             assert len(lines) >= 3
             assert "hello!" in lines[-1]  # assistant text in last line
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+
+# ===========================================================================
+# Attachment hydration (session path -- see tests/agent/test_run_agent_turn_hydration.py
+# for the shared-seam unit tests; this proves the session's own DI wiring
+# reaches run_agent_turn end to end)
+# ===========================================================================
+
+
+class _MemArtifacts:
+    def __init__(self) -> None:
+        self.blobs: dict[str, "Any"] = {}
+
+    async def put(self, *, data, mime_type, filename=None):
+        from primer.int.artifact_storage import ArtifactBlob
+        aid = f"art-{len(self.blobs) + 1}"
+        self.blobs[aid] = ArtifactBlob(data=data, mime_type=mime_type, filename=filename)
+        return aid
+
+    async def get(self, artifact_id):
+        return self.blobs.get(artifact_id)
+
+
+class TestAttachmentHydration:
+    @pytest.mark.asyncio
+    async def test_artifact_backed_part_hydrated_before_llm_sees_it(
+        self, tmp_path: Path
+    ) -> None:
+        backend, _, session = await _build_session(tmp_path)
+        try:
+            arts = _MemArtifacts()
+            aid = await arts.put(data=b"PNGBYTES", mime_type="image/png")
+            llm = _FakeLLM(
+                scripts=[
+                    [
+                        TextDelta(text="I see it", index=0),
+                        Done(stop_reason="stop", raw_reason="stop"),
+                    ]
+                ]
+            )
+            mgr = ToolExecutionManager.for_workspace(
+                toolset_providers={}, session=session
+            )
+            executor = WorkspaceAgentExecutor(
+                agent=_agent(),
+                llm=llm,  # type: ignore[arg-type]
+                llm_model=_model(),
+                tool_manager=mgr,
+                session=session,
+                artifact_storage=arts,  # type: ignore[arg-type]
+            )
+            await _drain(executor.invoke([
+                Message(role="user", parts=[
+                    TextPart(text="what is this"),
+                    ImagePart(artifact_id=aid, mime_type="image/png"),
+                ]),
+            ]))
+            sent_messages = llm.calls[0]["messages"]
+            new_user_msg = sent_messages[-1]
+            sent_image = new_user_msg.parts[1]
+            assert isinstance(sent_image, ImagePart)
+            assert sent_image.data == b"PNGBYTES"
+            assert sent_image.artifact_id is None
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+    @pytest.mark.asyncio
+    async def test_no_artifact_storage_leaves_part_unhydrated(
+        self, tmp_path: Path
+    ) -> None:
+        """Every executor constructed without artifact_storage (today's
+        default for every non-vision-attachment call site) keeps behaving
+        exactly as before: an artifact-backed part rides through as-is."""
+        backend, _, session = await _build_session(tmp_path)
+        try:
+            llm = _FakeLLM(
+                scripts=[
+                    [
+                        TextDelta(text="ok", index=0),
+                        Done(stop_reason="stop", raw_reason="stop"),
+                    ]
+                ]
+            )
+            mgr = ToolExecutionManager.for_workspace(
+                toolset_providers={}, session=session
+            )
+            executor = WorkspaceAgentExecutor(
+                agent=_agent(),
+                llm=llm,  # type: ignore[arg-type]
+                llm_model=_model(),
+                tool_manager=mgr,
+                session=session,
+            )
+            await _drain(executor.invoke([
+                Message(role="user", parts=[
+                    ImagePart(artifact_id="art-orphan", mime_type="image/png"),
+                ]),
+            ]))
+            sent_image = llm.calls[0]["messages"][-1].parts[0]
+            assert sent_image.artifact_id == "art-orphan"
+            assert sent_image.data is None
         finally:
             await session.aclose()
             await backend.aclose()

@@ -36,6 +36,7 @@ from primer.model.yield_ import YieldToWorker
 
 
 if TYPE_CHECKING:
+    from primer.int.artifact_storage import ArtifactStorage
     from primer.int.llm import LLM
     from primer.model.agent import Agent
     from primer.model.principal import PrincipalRef
@@ -66,6 +67,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         compaction: CompactionStrategy | None = None,
         principal: str | None = None,
         identity: "PrincipalRef | None" = None,
+        artifact_storage: "ArtifactStorage | None" = None,
     ) -> None:
         # Extend the agent's system prompt with the workspace fragment
         # so the LLM sees workspace-tool documentation in its system
@@ -93,6 +95,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             tool_manager=tool_manager,
             compaction=compaction,
             principal=principal,
+            artifact_storage=artifact_storage,
         )
         self._session = session
         self._execution_context = build_execution_context(

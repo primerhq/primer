@@ -149,6 +149,7 @@ async def _build_executor(
     agents: dict[str, Agent] | None = None,
     tool_manager_resolver=None,
     graph_resolver=None,
+    artifact_storage=None,
 ) -> WorkspaceGraphExecutor:
     if agents is None:
         agents = {}
@@ -167,6 +168,7 @@ async def _build_executor(
         graph_session_id=graph_session_id,
         tool_manager_resolver=tool_manager_resolver,
         graph_resolver=graph_resolver,
+        artifact_storage=artifact_storage,
     )
 
 

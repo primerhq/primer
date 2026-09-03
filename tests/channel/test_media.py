@@ -8,11 +8,11 @@ import pytest
 
 from primer.channel.media import (
     MediaConfig, MediaTooLarge, MediaTypeNotAllowed, collect_media_parts,
-    compress_image, enforce_limits, hydrate_part, part_cls_for_mime,
-    store_inbound_media,
+    compress_image, enforce_limits, hydrate_part, hydrate_prompt_parts,
+    part_cls_for_mime, store_inbound_media,
 )
 from primer.int.artifact_storage import ArtifactBlob
-from primer.model.chat import AudioPart, DocumentPart, ImagePart, TextPart
+from primer.model.chat import AudioPart, DocumentPart, ImagePart, Message, TextPart
 
 
 class _MemArtifacts:
@@ -99,3 +99,44 @@ def test_collect_media_parts():
     media = collect_media_parts(parts)
     assert len(media) == 1
     assert isinstance(media[0], ImagePart)
+
+
+@pytest.mark.asyncio
+async def test_hydrate_prompt_parts_fills_artifact_backed_parts():
+    arts = _MemArtifacts()
+    aid = await arts.put(data=b"PNGBYTES", mime_type="image/png")
+    messages = [
+        Message(role="system", parts=[TextPart(text="sys")]),
+        Message(role="user", parts=[
+            TextPart(text="look at this"),
+            ImagePart(artifact_id=aid, mime_type="image/png"),
+        ]),
+    ]
+    out = await hydrate_prompt_parts(arts, messages)
+    assert out[0] is messages[0]  # no binary parts -> same object, no copy
+    hydrated_image = out[1].parts[1]
+    assert hydrated_image.data == b"PNGBYTES"
+    assert hydrated_image.artifact_id is None
+    # Original messages/parts are untouched (hydrate_part copies).
+    assert messages[1].parts[1].data is None
+    assert messages[1].parts[1].artifact_id == aid
+
+
+@pytest.mark.asyncio
+async def test_hydrate_prompt_parts_noop_when_storage_is_none():
+    messages = [Message(role="user", parts=[
+        ImagePart(artifact_id="art-1", mime_type="image/png"),
+    ])]
+    out = await hydrate_prompt_parts(None, messages)
+    assert out is messages
+
+
+@pytest.mark.asyncio
+async def test_hydrate_prompt_parts_missing_artifact_leaves_part_unhydrated():
+    arts = _MemArtifacts()
+    messages = [Message(role="user", parts=[
+        ImagePart(artifact_id="does-not-exist", mime_type="image/png"),
+    ])]
+    out = await hydrate_prompt_parts(arts, messages)
+    assert out[0].parts[0].artifact_id == "does-not-exist"
+    assert out[0].parts[0].data is None

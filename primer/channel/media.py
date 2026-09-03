@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 from primer.int.artifact_storage import ArtifactStorage
 from primer.model.chat import (
-    AudioPart, DocumentPart, ImagePart, Part, VideoPart,
+    AudioPart, DocumentPart, ImagePart, Message, Part, VideoPart,
 )
 
 
@@ -290,6 +290,34 @@ async def hydrate_part(artifact_storage: ArtifactStorage, part: Part) -> Part:
     return part.model_copy(update=update)
 
 
+async def hydrate_prompt_parts(
+    artifact_storage: ArtifactStorage | None, messages: list[Message],
+) -> list[Message]:
+    """Resolve every part's ``artifact_id`` to inline ``data`` across a
+    whole prompt, so an LLM adapter (which only reads ``data``/``url``/
+    ``file_id``, never ``artifact_id``) sees real bytes for any
+    artifact-backed part in history or the turn's new messages.
+
+    ``artifact_storage=None`` returns ``messages`` unchanged (no-op) --
+    callers that never resolve a store (tests, surfaces with no
+    ArtifactStorage wired) keep today's behaviour exactly. Messages with
+    no binary parts are returned as the SAME object (no copy), so this is
+    cheap to call unconditionally on every turn.
+    """
+    if artifact_storage is None:
+        return messages
+    out: list[Message] = []
+    for msg in messages:
+        if not any(getattr(p, "artifact_id", None) for p in msg.parts):
+            out.append(msg)
+            continue
+        hydrated_parts = [
+            await hydrate_part(artifact_storage, p) for p in msg.parts
+        ]
+        out.append(msg.model_copy(update={"parts": hydrated_parts}))
+    return out
+
+
 __all__ = [
     "MediaConfig",
     "MediaError",
@@ -300,6 +328,7 @@ __all__ = [
     "enforce_limits",
     "hydrate_media_dicts",
     "hydrate_part",
+    "hydrate_prompt_parts",
     "is_allowed",
     "media_from_workspace_files",
     "part_cls_for_mime",
