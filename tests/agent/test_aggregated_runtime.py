@@ -1,26 +1,25 @@
-"""_resolve_agent_runtime resolves an aggregated provider + virtual model."""
+"""_resolve_agent_runtime resolves an agent bound to an aggregated profile.
+
+Rewritten for the ModelProfile move (01a067c4): there is no more
+"aggregated LLMProvider + a profile naming a virtual model on it" pair --
+the aggregated ModelProfile IS what an Agent's model.profile_id names
+directly, and it carries no model_name of its own (see ResolvedModel's
+docstring on why: no single member to attribute a name to).
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 import pytest
-
-from tests.conftest import seed_model_profile
 from pydantic import SecretStr
 
 from primer.agent.invoke import _resolve_agent_runtime
 from primer.api.registries.provider_registry import ProviderRegistry
 from primer.llm.aggregated import AggregatedLLM
 from primer.model.agent import Agent, AgentModel
-from primer.model.provider import (
-    AggregatedLLMConfig,
-    AggregatedMember,
-    AnthropicConfig,
-    Limits,
-    LLMProvider,
-    LLMProviderType,
-)
+from primer.model.model_profile import ModelProfile
+from primer.model.provider import AnthropicConfig, Limits, LLMProvider, LLMProviderType
 
 
 class _FakeStorage:
@@ -49,37 +48,41 @@ class _FakeStorageProvider:
 
 
 @pytest.mark.asyncio
-async def test_resolves_aggregated_runtime_and_virtual_model():
+async def test_resolves_aggregated_runtime():
     sp = _FakeStorageProvider()
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
-            id="member-1",
+            id="member-provider-1",
             provider=LLMProviderType.ANTHROPIC,
             config=AnthropicConfig(api_key=SecretStr("sk-x")),
             limits=Limits(max_concurrency=4),
         )
     )
-    await sp.get_storage(LLMProvider).create(
-        LLMProvider(
-            id="agg-1",
-            provider=LLMProviderType.AGGREGATED,
-            config=AggregatedLLMConfig(
-                members=[
-                    AggregatedMember(provider_id="member-1", model_name="claude-x"),
-                ]
-            ),
-            limits=Limits(max_concurrency=4),
+    await sp.get_storage(ModelProfile).create(
+        ModelProfile(
+            id="member-1", description="member one",
+            provider_id="member-provider-1", model_name="claude-x",
+            context_length=200_000,
         )
     )
-    # The aggregated provider's VIRTUAL model name now lives on a profile:
-    # ModelProfile.model_name is the name agents select, and the aggregated
-    # adapter maps it onto each member's own model_name at dispatch.
-    await seed_model_profile(sp, "agg-1--virtual-1")
+    await sp.get_storage(ModelProfile).create(
+        ModelProfile(
+            id="member-2", description="member two",
+            provider_id="member-provider-1", model_name="claude-y",
+            context_length=8_192,
+        )
+    )
+    await sp.get_storage(ModelProfile).create(
+        ModelProfile(
+            id="agg-1", description="an aggregated profile",
+            kind="aggregated", members=["member-1", "member-2"],
+        )
+    )
     await sp.get_storage(Agent).create(
         Agent(
             id="ag-1",
             description="test agent",
-            model=AgentModel(profile_id="agg-1--virtual-1"),
+            model=AgentModel(profile_id="agg-1"),
         )
     )
     registry = ProviderRegistry(sp)
@@ -90,4 +93,9 @@ async def test_resolves_aggregated_runtime_and_virtual_model():
         provider_registry=registry,
     )
     assert isinstance(llm, AggregatedLLM)
-    assert llm_model.model_name == "virtual-1"  # virtual name, from the profile
+    # No single provider/model to report -- see ResolvedModel's docstring
+    # (ruling 5's "no fabricated label" flat view).
+    assert llm_model.provider_id is None
+    assert llm_model.model_name is None
+    # MIN over members, so a caller never overpromises the window.
+    assert llm_model.context_length == 8_192
