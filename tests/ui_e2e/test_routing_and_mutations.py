@@ -4,7 +4,8 @@ modules.
 
 Covers:
 * U0023 — New-workspace modal: create → toast → navigate to detail.
-* U0033 — Agent detail Config tab deep-link survives reload.
+* U0033 — Agent detail deep-link survives reload (uiv2 Wave 2: retargeted
+  off the retired Config-tab premise - see the test's own docstring).
 * U0039 — Agent detail "Back" button navigates to /agents.
 * U0044 — Modal ESC keypress closes the open modal.
 """
@@ -14,6 +15,7 @@ from __future__ import annotations
 import re
 
 import httpx
+from playwright.sync_api import expect
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
 from tests.ui_e2e._shell_helpers import open_legacy_route
 
@@ -173,25 +175,20 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
 # ---------------------------------------------------------------------------
 
 
-def test_u0033_agent_config_tab_deep_link_survives_reload(
+def test_u0033_agent_detail_deep_link_survives_reload(
     page,
     base_url: str,
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0033 — Sister to U0018 (Tools tab) for the Config tab.
-    Navigate to ``#/agents/<id>?tab=config``, confirm Config is
-    selected, reload the page, confirm Config is still selected and
-    the URL still carries ``?tab=config``.
-
-    Priority 6 — routing. Pins that the routerQuery.tab handling is
-    symmetric across all four AGENT_TABS, not just Tools.
-    Re-validates against the documented contract at
-    agents.jsx:363 (``AGENT_TABS.some(...) ? routerQuery.tab : "config"``).
-
-    Config is the default tab — so this test also defends against a
-    regression where the default-fallback path silently strips the
-    query string on reload.
+    """U0033 — RETARGETED (uiv2 Wave 2): the tab-selection-survives-
+    reload premise this test pinned no longer applies - the agent
+    detail overlay is one direct-edit form now, not four routed tabs
+    (AGENT_TABS/routerQuery.tab are gone). What's still real and worth
+    pinning: the deep link itself survives a reload - the form is still
+    addressing the SAME agent afterward, not silently falling back to
+    the list. See test_u0018 in test_anomaly_surfaces.py for the sister
+    retarget (was the Tools-tab variant of this same test).
     """
     provider_id = f"llm-u0033-{unique_suffix}"
     agent_id = f"ag-u0033-{unique_suffix}"
@@ -199,35 +196,21 @@ def test_u0033_agent_config_tab_deep_link_survives_reload(
     _seed_agent(base_url, agent_id, provider_id)
 
     try:
-        open_legacy_route(page, console_url, f"agents/{agent_id}", tab="config")
+        open_legacy_route(page, console_url, f"agents/{agent_id}")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
+        # The locked Name field is the form's own confirmation that it
+        # opened bound to THIS agent, not a blank create form.
+        expect(page.locator("#na-id")).to_have_value(agent_id)
 
-        config_tab = page.get_by_role("tab", name="Config").first
-        config_tab.wait_for(state="visible", timeout=5_000)
-        assert config_tab.get_attribute("aria-selected") == "true", (
-            f"Config tab not selected on initial deep-link nav; "
-            f"aria-selected={config_tab.get_attribute('aria-selected')!r}"
-        )
-
-        # Reload — URL query should survive.
         page.reload(wait_until="domcontentloaded")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
-
-        config_tab_after = page.get_by_role("tab", name="Config").first
-        config_tab_after.wait_for(state="visible", timeout=5_000)
-        assert config_tab_after.get_attribute("aria-selected") == "true", (
-            f"Config tab lost selected state after reload; "
-            f"aria-selected={config_tab_after.get_attribute('aria-selected')!r}"
-        )
-
-        # Defence: the tab travels in the overlay target's section
-        # slot now, not as a ?tab= query.
-        assert f"overlay=agents:config:{agent_id}" in page.url, (
-            f"reload dropped the config tab: {page.url}"
+        expect(page.locator("#na-id")).to_have_value(agent_id)
+        assert f"overlay=agents::{agent_id}" in page.url, (
+            f"reload dropped the addressed agent: {page.url}"
         )
     finally:
         _cleanup(base_url, [

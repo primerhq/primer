@@ -39,14 +39,25 @@ def test_modal_has_a_verb_chip() -> None:
     assert 'verb: {isEdit ? "Edit" : "Create"} Agent' in modal
 
 
-# ---- Tools tab: footnote + already-live y/w/r/n badges -----------------
+# ---- Tools: footnote + already-live y/w/r/n badges ----------------------
+#
+# RETARGET (uiv2 Wave 2): both moved from AG_NewAgentModal's own inline
+# Tools tab into the shared, reusable ToolPicker (ui/components/shared/
+# tool-picker.jsx) - the modal now just mounts <window.ToolPicker>, it no
+# longer renders these strings itself.
+
+
+def _tool_picker_src() -> str:
+    return (UI / "components" / "shared" / "tool-picker.jsx").read_text(encoding="utf-8")
 
 
 def test_tools_footnote_is_verbatim() -> None:
-    modal = _modal_src()
-    assert 'data-testid="agent-tools-footnote"' in modal
-    assert "y yields · w" in modal
-    assert "workspace · r role · n notifying" in modal
+    src = _tool_picker_src()
+    assert 'data-testid="tool-picker-footnote"' in src
+    assert "y yields · w" in src
+    assert "workspace · r role · n notifying" in src
+    # And the modal actually mounts the shared picker, not a local copy.
+    assert "<window.ToolPicker " in _modal_src()
 
 
 def test_capability_badges_are_already_live_not_a_p2_placeholder() -> None:
@@ -55,8 +66,7 @@ def test_capability_badges_are_already_live_not_a_p2_placeholder() -> None:
     flags on every tool row from data GET /tools already serves. Pin
     that the working component stayed wired rather than being ripped
     out for an empty P2 slot."""
-    modal = _modal_src()
-    assert "CapabilityBadges" in modal
+    assert "CapabilityBadges" in _tool_picker_src()
 
 
 # ---- Autonomous: disabled, honest no-op ---------------------------------

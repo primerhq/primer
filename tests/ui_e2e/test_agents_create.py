@@ -19,6 +19,7 @@ from collections.abc import Iterator
 
 import httpx
 import pytest
+from playwright.sync_api import expect
 
 
 # ---------------------------------------------------------------------------
@@ -95,13 +96,21 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
     unique_suffix: str,
 ) -> None:
     """U0006 - Filling and submitting the New agent form (with an
-    API-seeded LLM provider) closes the modal, surfaces a success
-    toast, and the operator lands on the new agent's detail page.
+    API-seeded LLM provider) transitions to the new agent's edit view,
+    surfaces a success toast, and the operator lands on the new
+    agent's detail page.
 
     Verifies the cross-cutting mutation-feedback contract from UI
     spec §3 with the agent-specific navigate-away tweak from
     NewAgentModal.onCreate (agents.jsx):
-      * modal closes on success
+      * the modal transitions from the create form to the new agent's
+        edit form in place (uiv2 Wave 2 RETARGET: this used to assert
+        the modal disappeared entirely, but the agent editor is now
+        ITSELF a `.modal` - before Wave 2 it was a raw-JSON sheet
+        with a different DOM shape, so create-then-navigate used to
+        land on a `.modal`-free page; now it lands on another
+        `.modal`, just with edit-mode content, so "closes" is checked
+        by content, not visibility)
       * success toast appears
       * URL navigates to `#/agents/<new-id>` and the detail-page
         title renders the new agent id (the list refetches in the
@@ -139,17 +148,30 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             modal.locator("#na-description").fill(
                 f"u0006 seed {unique_suffix}",
             )
-            # One picker, not a pair: an agent names a ModelProfile,
-            # which already pins the provider and the wire model name.
-            modal.locator("#na-model-profile").select_option(
-                profile_id_for(provider_id, "fake-model"),
-            )
+            # uiv2 Wave 2: the model-profile <select> became a stacked
+            # AG_ProfilePicker (mockup's own picker style - one bordered
+            # row per profile, click to pick) - one picker, not a pair:
+            # an agent names a ModelProfile, which already pins the
+            # provider and the wire model name.
+            modal.get_by_test_id(
+                f"agent-profile-row-{profile_id_for(provider_id, 'fake-model')}",
+            ).click()
 
             # Submit.
             modal.get_by_role("button", name="Create").click()
 
-            # Modal should disappear on success.
-            modal.wait_for(state="hidden", timeout=10_000)
+            # uiv2 Wave 2 (RETARGETED): the modal does NOT disappear -
+            # it transitions in place to the new agent's edit view
+            # (still one `.modal`, new content). Confirm the
+            # transition landed on the right row: the Name field is
+            # now locked and holds the new agent's id, and the verb
+            # chip reads "Edit Agent" instead of "Create Agent".
+            expect(modal.locator("#na-id")).to_have_value(
+                agent_id, timeout=10_000,
+            )
+            expect(modal.get_by_test_id("agent-modal-verb-chip")).to_contain_text(
+                "Edit", timeout=5_000,
+            )
 
             # Success toast appears. Toast container is portal'd
             # outside the modal; assert on its text content.
@@ -216,12 +238,12 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
 
         modal.locator("#na-id").fill(agent_id)
         modal.locator("#na-description").fill("u0007 422 probe")
-        modal.locator("#na-model-profile").select_option(
-            profile_id_for(provider_id, "fake-model"),
-        )
-        # Temperature lives on the "Advanced" tab of the form - switch to
-        # it and wait for the input before filling.
-        modal.get_by_test_id("agent-tab-advanced").click()
+        modal.get_by_test_id(
+            f"agent-profile-row-{profile_id_for(provider_id, 'fake-model')}",
+        ).click()
+        # uiv2 Wave 2: temperature moved out from behind the old
+        # "Advanced" tab - it is always visible now, right under the
+        # profile picker (a-11: numerics live near what they gate).
         temperature_input = modal.locator("#na-temperature")
         temperature_input.wait_for(state="visible", timeout=5_000)
         # The deliberate bad value - violates Agent.temperature's
@@ -317,13 +339,19 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
                 state="visible", timeout=10_000,
             )
 
-            # Click the Delete button in the page header. The header
-            # has Test agent + Delete + Back buttons - `name="Delete"`
-            # uniquely matches the danger one.
+            # Click the Delete button in the agent editor's own footer
+            # (uiv2 Wave 2: Delete moved from a page action bar into
+            # AG_NewAgentModal's footer alongside Cancel/Save) -
+            # `name="Delete"` uniquely matches it before the confirm
+            # dialog exists.
             page.get_by_role("button", name="Delete").first.click()
 
             # Confirm dialog appears with title containing the agent id.
-            confirm = page.locator(".modal").first
+            # uiv2 Wave 2: the agent editor is now ITSELF a `.modal`
+            # (it used to be a raw-JSON sheet outside the Modal
+            # primitive), so the confirm dialog is the SECOND `.modal`
+            # in the DOM, stacked on top - `.last`, not `.first`.
+            confirm = page.locator(".modal").last
             confirm.wait_for(state="visible", timeout=5_000)
             assert agent_id in confirm.inner_text(), (
                 f"confirm dialog should mention the agent id "
@@ -332,9 +360,8 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
 
             # Click the danger-Delete button inside the confirm modal.
             # The modal has Cancel + Delete; locating by role + name +
-            # narrowing to the modal scope avoids matching the header
-            # Delete we just clicked (which is now hidden under the
-            # overlay anyway, but be explicit).
+            # narrowing to the modal scope avoids matching the editor's
+            # own footer Delete button underneath.
             confirm.get_by_role("button", name="Delete").first.click()
 
             # Dialog closes.

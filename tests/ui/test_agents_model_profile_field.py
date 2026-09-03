@@ -33,9 +33,16 @@ class TestFormSendsTheProfileShape:
         assert "a.model?.model_name" not in src
 
     def test_picker_lists_profiles_not_providers(self) -> None:
+        """uiv2 Wave 2: retargeted from a <select htmlFor="na-model-
+        profile"> to the stacked AG_ProfilePicker (mockup's own picker
+        style - one bordered row per profile, the bound one tinted) - a
+        button-per-row group has no single focusable target for a plain
+        <label for>, so the label instead carries its own id and the
+        picker its own data-testid."""
         src = _src()
         assert '"/model_profiles?limit=200"' in src
-        assert 'htmlFor="na-model-profile"' in src
+        assert 'id="na-model-profile-label"' in src
+        assert "<AG_ProfilePicker" in src
 
     def test_submit_is_blocked_without_a_profile(self) -> None:
         assert "disabled={!profileId || create.loading}" in _src()
