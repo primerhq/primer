@@ -51,6 +51,15 @@ class ReferenceCheck:
         The foreign-key field on the child model that references the parent
         entity's ``id``.  Set by the router author (never by user input) so it
         is trusted as a valid field name.
+    op:
+        The :class:`~primer.model.storage.Op` used to match ``child_field``
+        against the parent id. Defaults to ``Op.EQ`` (a plain scalar
+        foreign-key field). Pass ``Op.CONTAINS`` when ``child_field`` names
+        a JSON array field instead (e.g. an ordered ``members: list[str]``)
+        -- matches when the array contains the parent id, which is also
+        what makes a *self-referential* check (``child_storage`` returning
+        the SAME entity's own storage) meaningful: "is this row named
+        inside some other row's list field."
     error_code:
         The string placed in the ``error`` key of the 409 response body.
         Defaults to ``"in_use_by"``.
@@ -59,6 +68,7 @@ class ReferenceCheck:
     child_kind: str
     child_storage: Callable[[Request], Any]
     child_field: str
+    op: Op = field(default=Op.EQ)
     error_code: str = field(default="in_use_by")
 
 
@@ -97,7 +107,7 @@ def build_reference_block_hook(
             storage = check.child_storage(request)
             predicate = Predicate(
                 left=FieldRef(name=check.child_field),
-                op=Op.EQ,
+                op=check.op,
                 right=Value(value=entity_id),
             )
             page = await storage.find(predicate, OffsetPage(offset=0, length=1))

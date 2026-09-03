@@ -317,12 +317,12 @@ async def _resolve_agent_runtime(
     if agent is None:
         raise ValueError(f"agent {agent_id!r} does not exist")
 
-    from primer.model_profile import resolve_model
+    from primer.model_profile import resolve_llm
 
-    llm_model = await resolve_model(
-        storage_provider, default_profile_id=agent.model.profile_id,
+    llm, llm_model = await resolve_llm(
+        storage_provider, provider_registry,
+        default_profile_id=agent.model.profile_id,
     )
-    llm = await provider_registry.get_llm(llm_model.provider_id)
     return agent, llm, llm_model
 
 

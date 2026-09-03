@@ -6,6 +6,6 @@ the resolution logic that turns a profile id into the concrete facts a turn
 needs.
 """
 
-from primer.model_profile.resolver import ResolvedModel, resolve_model
+from primer.model_profile.resolver import ResolvedModel, resolve_llm, resolve_model
 
-__all__ = ["ResolvedModel", "resolve_model"]
+__all__ = ["ResolvedModel", "resolve_llm", "resolve_model"]

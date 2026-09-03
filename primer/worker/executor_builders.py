@@ -597,16 +597,20 @@ async def resolve_llm_and_model(
 ):
     """Resolve both the adapter and the model facts for one turn.
 
-    Every build path needs the pair, and the provider id now comes from
-    the resolved profile rather than the agent, so resolving them apart
-    would mean two lookups and an opportunity to disagree.
+    Every build path needs the pair. Delegates to
+    :func:`primer.model_profile.resolve_llm`, which knows how to build
+    an :class:`~primer.llm.aggregated.AggregatedLLM` when the resolved
+    profile is ``kind="aggregated"`` -- the naive ``resolve_model`` then
+    ``get_llm(resolved.provider_id)`` two-step this replaced would call
+    ``get_llm(None)`` for an aggregated profile (see ResolvedModel's
+    docstring on why that field is null), which is exactly the loud
+    failure that told us this seam needed migrating.
     """
-    # Through pool._resolve_llm_model, not the module function directly:
-    # this module's contract is that builders route via the pool so a test
-    # monkeypatching pool._resolve_llm_model still steers resolution.
-    resolved = await pool._resolve_llm_model(agent, override_profile_id)
-    llm = await pool._provider_registry.get_llm(resolved.provider_id)
-    return llm, resolved
+    # Through pool._resolve_llm, not the module function directly: this
+    # module's contract is that builders route via the pool so a test
+    # monkeypatching pool._resolve_llm still steers resolution (mirrors
+    # resolve_llm_model routing through pool._resolve_llm_model above).
+    return await pool._resolve_llm(agent, override_profile_id)
 
 
 def infer_post_turn_status(

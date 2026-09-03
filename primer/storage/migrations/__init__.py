@@ -44,6 +44,9 @@ from primer.storage.migrations.m005_document_directories import (
 from primer.storage.migrations.m006_unified_search_grants import (
     M006UnifiedSearchGrants,
 )
+from primer.storage.migrations.m007_aggregated_model_profiles import (
+    M007AggregatedModelProfiles,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M004DocumentSlugs(),
     M005DocumentDirectories(),
     M006UnifiedSearchGrants(),
+    M007AggregatedModelProfiles(),
 )
 
 #: Highest version this build knows how to apply.

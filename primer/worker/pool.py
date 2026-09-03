@@ -1024,6 +1024,14 @@ class WorkerPool:
             self, agent, override_profile_id,
         )
 
+    async def _resolve_llm(self, agent, override_profile_id=None):
+        from primer.model_profile import resolve_llm
+        return await resolve_llm(
+            self._storage, self._provider_registry,
+            default_profile_id=agent.model.profile_id,
+            override_profile_id=override_profile_id,
+        )
+
     def _infer_post_turn_status(self, executor, session: WorkspaceSession) -> SessionStatus:
         return executor_builders.infer_post_turn_status(self, executor, session)
 
