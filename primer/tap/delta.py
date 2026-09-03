@@ -193,6 +193,31 @@ def part_id(node_id: str | None, kind: str, turn_no: int) -> str:
     return f"{node_id or 'x'}:{kind}:{turn_no}"
 
 
+def scoped_tool_call_id(node_id: str | None, turn_no: int, seq: int) -> str:
+    """Stable, collision-proof id for one tool call within a turn.
+
+    Same node/kind/turn-scoping as :func:`part_id`, plus a per-node
+    per-turn ``seq`` (1-based, caller-maintained) since a single node can
+    make several tool calls in one turn - ``part_id`` alone would collide
+    all of them onto one part.
+
+    Originally minted only by the log/tap coalescing layer
+    (primer/session/persistence.py, for the durable ``TOOL_CALL`` record's
+    ``id`` and its live delta frames). Phase 3 stage 7a
+    (docs/superpowers/2026-08-29-phase3-execution-topology-design.md,
+    01a0518b) needs the SAME id at the dispatch seam too (``ToolCallTask.id``,
+    the approval-gate ``event_key``, resume matching) - raw provider call
+    ids collide across fan-out siblings and multi-round turns (the
+    94fc2460 bug), which is exactly the failure this id was designed to
+    avoid. Extracted here as the single source of truth so both layers
+    mint byte-identical ids for the same logical call: they consume the
+    same ordered stream of ``ToolCallStart`` events per node per turn, so
+    an independently-maintained ``seq`` counter incremented in that same
+    order is guaranteed to line up between the two callers.
+    """
+    return f"{node_id or 'x'}:{KIND_TOOL}:{turn_no}:{seq}"
+
+
 def _split_by_bytes(text: str, max_bytes: int) -> list[str]:
     """Split *text* into chunks each <= ``max_bytes`` UTF-8 bytes.
 
@@ -387,4 +412,5 @@ __all__ = [
     "PhaseFrame",
     "part_id",
     "publish_phase_frame",
+    "scoped_tool_call_id",
 ]
