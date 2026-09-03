@@ -217,6 +217,15 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 await pool._write_approval_record_for_graph(
                     session=session, checkpoint=ck, tcid=tcid, payload=payload,
                 )
+        # 01a0690a piece 2: agent_tool_result is a synthesized delivery
+        # (ask_user answer / unwound nested continuation) with no
+        # StreamEvent of its own -- the only way it gets a durable display
+        # record is an explicit write here.
+        if agent_tool_result is not None:
+            await pool._persist_resume_tool_result_record_for_graph(
+                session=session, checkpoint=ck, tcid=tcid,
+                agent_tool_result=agent_tool_result,
+            )
         try:
             _decision, repark = await resume_graph_from_checkpoint(
                 executor=executor,
@@ -443,6 +452,95 @@ async def graph_agent_tool_result(pool: "WorkerPool", checkpoint, tcid, payload)
         return Message(role="tool", parts=[ToolResultPart(
             id=tcid or ay["tool_call_id"], output="resume failed",
             error=True)])
+
+
+async def persist_resume_tool_result_record_for_graph(
+    pool: "WorkerPool", *, session, checkpoint, tcid, agent_tool_result,
+) -> None:
+    """Write the modern TOOL_RESULT counterpart for a resumed graph yield.
+
+    01a0690a piece 2/3. ``agent_tool_result`` (built by
+    :func:`graph_agent_tool_result` or the nested-continuation walk) is a
+    pure in-memory ``Message`` fed into the resumed node's LLM history for
+    continuation -- it has no corresponding StreamEvent, so no amount of
+    tapping the resume drain (piece 3) ever catches it. Mirrors
+    ``session_resume_coordinator._persist_resume_tool_result_record``
+    (0b4e8bfc / 01a068ea-dc95) for the agent path, node-tagged since graph
+    records carry a ``node_id`` the agent path has none of. ``call_id`` uses
+    the matched pending entry's ``scoped_tool_call_id`` (piece 1's stash),
+    falling back to the raw ``tcid`` for a checkpoint written before that
+    field existed.
+
+    A value-yielding tool_call's resume (ask_user answered via a
+    _PendingToolCall, not a _PendingAgentYield) has no durable record gap
+    to begin with: the node re-runs for real through _dispatch_toolcall_
+    with_bypass, so its ToolCallStart/End/Result flow through the live
+    _GraphNodeEvent-tapped pipeline exactly like any other execution --
+    that's why this only searches pending_agent_yields.
+
+    Best-effort, same doctrine as the agent-path sibling: a write failure
+    here must not fail an otherwise-successful resume.
+    """
+    if pool._storage is None or agent_tool_result is None:
+        return
+    from primer.model.chat import ToolResultPart
+    from primer.model.workspace_session import (
+        SessionMessageKind,
+        SessionMessageRecord,
+        WorkspaceSession,
+    )
+    from primer.session.persistence import WorkspaceMessageWriter
+
+    tool_result_part = next(
+        (p for p in agent_tool_result.parts if isinstance(p, ToolResultPart)),
+        None,
+    )
+    if tool_result_part is None:
+        return
+
+    node_id = None
+    scoped_call_id = None
+    for e in (checkpoint.get("pending_agent_yields") or []):
+        if e.get("tool_call_id") == tcid:
+            node_id = e.get("node_id")
+            scoped_call_id = e.get("scoped_tool_call_id")
+            break
+
+    try:
+        ws = await pool._load_workspace_for_persist(session.workspace_id)
+        writer = WorkspaceMessageWriter(
+            workspace_io=ws, session_id=session.id, start_seq=session.last_seq,
+        )
+        new_seq = await writer.append(SessionMessageRecord(
+            seq=1,  # overwritten by the writer's monotonic counter
+            kind=SessionMessageKind.TOOL_RESULT,
+            payload={
+                "call_id": scoped_call_id or tcid or tool_result_part.id,
+                "output": tool_result_part.output,
+                "error": tool_result_part.error,
+            },
+            node_id=node_id,
+            created_at=datetime.now(timezone.utc),
+        ))
+        await writer.flush()
+        storage = pool._storage.get_storage(WorkspaceSession)
+        await storage.update(session.model_copy(update={"last_seq": new_seq}))
+        if pool._event_bus is not None:
+            try:
+                await pool._event_bus.publish(
+                    f"session:{session.id}:tick", {"seq": new_seq},
+                )
+            except Exception:  # noqa: BLE001 - advisory
+                logger.exception(
+                    "resume: tick publish failed for graph session %s",
+                    session.id,
+                )
+    except Exception:  # noqa: BLE001 - best-effort, see docstring
+        logger.exception(
+            "resume: failed to persist modern TOOL_RESULT record for "
+            "graph session %s",
+            session.id,
+        )
 
 
 def repark_graph_outcome(pool: "WorkerPool", session, repark):
