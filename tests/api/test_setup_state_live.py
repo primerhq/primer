@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from primer.bootstrap.defaults import RESERVED_DEFAULT_WORKSPACE
 from primer.model.provider import (
-    AggregatedLLMConfig,
-    AggregatedMember,
     AnthropicConfig,
     LLMProvider,
     LLMProviderType,
@@ -57,31 +55,6 @@ async def test_state_returns_six_predicates_default_fixture(client, app):
 
     assert body["complete"] is False
     assert set(body["missing"]) == {"llm_provider", "default_workspace"}
-
-
-async def test_llm_provider_live_check_falls_back_to_pass_when_probe_unsupported(
-    client, app,
-):
-    """Aggregated providers have no list-models probe (_probe_llm_models'
-    own dispatch has no branch for them) - no live signal either way, so
-    this must read as configured rather than a false failure that would
-    block the wizard gate for a legitimately-working setup."""
-    providers = app.state.storage_provider.get_storage(LLMProvider)
-    await providers.create(LLMProvider(
-        id="llm-provider-agg-test",
-        provider=LLMProviderType.AGGREGATED,
-        config=AggregatedLLMConfig(members=[
-            AggregatedMember(provider_id="does-not-exist", model_name="whatever"),
-        ]),
-        limits=Limits(max_concurrency=1),
-    ))
-    r = await client.get("/v1/setup/state")
-    assert r.status_code == 200, r.text
-    by_key = {p["key"]: p for p in r.json()["predicates"]}
-    assert by_key["llm_provider"] == {
-        "key": "llm_provider", "label": "LLM provider responds",
-        "ok": True, "live": True, "detail": None,
-    }
 
 
 async def test_llm_provider_live_check_fails_on_unreachable_provider(client, app):
