@@ -72,6 +72,25 @@ class WorkerConfig(BaseModel):
             "Used only to build the stable metric label."
         ),
     )
+    tool_calls_as_claims_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 3 stage 7a (docs/superpowers/2026-08-29-"
+            "phase3-execution-topology-design.md, 01a0518b, user-approved). "
+            "When enabled, each tool call in a batch becomes its own "
+            "independently-claimable ToolCallTask instead of executing "
+            "sequentially in-process, so a single gated call (approval "
+            "required, or a yielding tool) no longer blocks its batch "
+            "siblings. Default OFF per the design's own rollout plan. "
+            "WARNING: multi-process unsafe for write-capable workspaces "
+            "until cross-process serialization is wired (the existing "
+            "workspace write-lock is in-process-only today; the "
+            "cross-process flock is sequenced late in this arc, as its "
+            "own commit, after the core entity/adapter/park work proves "
+            "out) - do not enable on a real multi-worker-process topology "
+            "before that lands."
+        ),
+    )
 
     @model_validator(mode="after")
     def _lease_ttl_at_least_2x_heartbeat(self) -> "WorkerConfig":
