@@ -661,7 +661,13 @@ function NV_DecisionCard(props) {
               );
             }}>Approve</button>
           <button type="button" className="nv-btn-reject"
-            data-testid="nv-reject" disabled={!!props.ended}
+            data-testid="nv-reject"
+            // uiv2 Wave 3 (a-14 fold): this card is now the ONLY reject
+            // path (the records-sheet's AP_RecordRow, which explicitly
+            // disabled its own Send-rejection until reason.trim(), is
+            // deleted) - the second-click submit needs the same guard,
+            // not just the first-click "open the reason box" step.
+            disabled={!!props.ended || (rejOpen && !reason.trim())}
             onClick={function () {
               if (!rejOpen) { setRej(true); return; }
               SH_api.reject(item.sessionId, item.toolCallId, reason).then(

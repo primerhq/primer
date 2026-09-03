@@ -21,13 +21,23 @@ MOBILE_AWARE_PAGES = [
     "semantic-search.jsx",
     "toolsets.jsx",
     "provider-catalog.jsx",
-    "approvals.jsx",
     "channels.jsx",
     "harnesses.jsx",
     "harness_form.jsx",
     "workers.jsx",
     "health.jsx",
 ]
+
+# uiv2 Wave 3 (a-14 fold): approvals.jsx dropped OUT of this sweep, not
+# just off the useViewport hook - its own mobile-specific CardList/
+# BottomSheet approve/deny panel was deleted along with the rest of
+# the records-sheet (that capability lives on the Inbox rail and
+# session-detail's NV_DecisionCard/ApprovalBanner now, both already
+# mobile-aware in their own right). What's left in approvals.jsx (a
+# config-hint banner + AP_NewPolicyModal, a <Modal>) needs no isMobile
+# branch of its own - Modal already handles narrow viewports, same
+# "self-reflowing, no page-level branch needed" shape as provider-
+# catalog.jsx's grid below.
 
 
 
