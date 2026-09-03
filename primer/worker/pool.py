@@ -674,7 +674,8 @@ class WorkerPool:
                     # bypasses that function, so re-check here (e2e t0867).
                     outcome = await self._pause_session(session_row)
                 else:
-                    outcome = await self._resume_engine_session(engine_lease, session_row)
+                    handler = self._select_resume_handler(session_row)
+                    outcome = await handler(engine_lease, session_row)
             else:
                 outcome = await run_one_session_turn(engine_lease, deps)
         except asyncio.CancelledError:
@@ -737,6 +738,33 @@ class WorkerPool:
                 # the old lease is actually gone) so a genuinely queued
                 # turn always gets a fresh claim.
                 await self._maybe_rearm_session(sid)
+
+    def _select_resume_handler(
+        self, session_row: WorkspaceSession,
+    ) -> Callable[[ClaimLease, WorkspaceSession], Coroutine]:
+        """Which resume handler pool.py's resume branch should call.
+
+        Phase 3 stage 7a (01a0518b): a tool_wait park
+        (``session_row.parked_state`` kind ``"tool_wait"``) is NOT
+        ``Yielded``-shaped — ``session_resume_coordinator``'s own
+        ``ParkedState.from_jsonable`` rehydration assumes exactly that
+        shape (built from a ``Yielded`` sentinel), so a tool_wait park
+        must never reach it. Peeked here, BEFORE
+        ``session_resume_coordinator`` is ever entered, so its own
+        contract stays "Yielded-shaped blobs only", un-widened — pool.py
+        already owns what-kind-of-work-is-this dispatch (see
+        ``_select_claim_loop``, the same pattern). A defensive tripwire
+        also guards the top of ``resume_engine_session`` itself in case
+        this routing is ever bypassed (see that function's own
+        docstring) — belt and braces, not redundancy: the tripwire turns
+        a hypothetical mis-route from a silent misparse into a loud
+        error, this function is what actually prevents it from
+        happening in the first place.
+        """
+        parked_state = session_row.parked_state or {}
+        if parked_state.get("kind") == "tool_wait":
+            return self._resume_engine_tool_wait
+        return self._resume_engine_session
 
     async def _maybe_rearm_session(self, session_id: str) -> None:
         """Re-arm a fresh SESSION claim lease if a turn is still queued.
@@ -847,6 +875,15 @@ class WorkerPool:
 
     async def _resume_engine_session(self, engine_lease, session):
         return await session_resume_coordinator.resume_engine_session(
+            self, engine_lease, session,
+        )
+
+    async def _resume_engine_tool_wait(self, engine_lease, session):
+        """Resume a session parked on a tool_wait batch (Phase 3 stage
+        7a, 01a0518b). Routed here by ``_select_resume_handler`` -
+        never reaches ``session_resume_coordinator``, whose own
+        rehydration assumes a ``Yielded``-shaped park."""
+        return await tool_wait_resume_coordinator.resume_engine_tool_wait(
             self, engine_lease, session,
         )
 
@@ -1040,3 +1077,4 @@ from primer.worker import executor_builders  # noqa: E402
 from primer.worker import engine_handlers  # noqa: E402
 from primer.worker import graph_resume_coordinator  # noqa: E402
 from primer.worker import session_resume_coordinator  # noqa: E402
+from primer.worker import tool_wait_resume_coordinator  # noqa: E402
