@@ -113,13 +113,20 @@ def test_collection_document_path_browser_full_journey(
         # "Documents" button that used to raise a path-browser modal is
         # gone along with the modal. The tree, the grep box and the header
         # actions are all on the page.
+        #
+        # uiv2 Wave 2: the collection browser (KN_CollectionDetail) is now
+        # ITSELF a `.modal` (it used to be a bare div hung off the list
+        # page), so New-document/Move are nested modals stacked INSIDE
+        # it, not the only `.modal` on screen - `.modal.first` now means
+        # the outer browser, not the nested dialog. `.last` targets the
+        # innermost open modal.
         browser = page.get_by_test_id("nv-overlay-body")
 
         # ---- create ----
         # A document is addressed by parent + slug now, not by typing a
         # whole path into one box.
         browser.get_by_role("button", name="New document").first.click()
-        new_modal = page.locator(".modal").first
+        new_modal = page.locator(".modal").last
         new_modal.wait_for(state="visible", timeout=5_000)
         new_modal.get_by_placeholder(
             "slug (lowercase letters, digits, hyphens)",
@@ -157,9 +164,11 @@ def test_collection_document_path_browser_full_journey(
         # nested modal (the one that owns the new-path input) and match exactly
         # so we don't re-target the header trigger behind the overlay.
         browser.get_by_role("button", name="Move", exact=True).first.click()
-        # Only one modal now: the browser is the page, not an outer modal,
-        # so nothing else contains the move input.
-        move_modal = page.locator(".modal").first
+        # `.last`, not `.first`: the outer collection-browser Modal is
+        # still on screen (with its own "Move" trigger button still in
+        # the DOM), so `.first` would resolve to IT, not the nested
+        # confirm dialog - see the comment above `browser` for why.
+        move_modal = page.locator(".modal").last
         move_modal.wait_for(state="visible", timeout=5_000)
         # Parent stays root; only the slug changes, which is the rename
         # case the old single-path box expressed by retyping the whole

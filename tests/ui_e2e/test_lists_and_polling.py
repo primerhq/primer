@@ -1,10 +1,11 @@
 """List-page filter behaviour + workspaces sidebar polling cadence +
-Metadata tab deep-link preservation.
+legacy Metadata deep-link routing.
 
 Covers:
 * U0024 — Workspaces sidebar count polls within ~12s of API
   workspace create.
-* U0034 — Agent detail Metadata tab deep-link survives reload.
+* U0034 — Agent detail legacy Metadata deep-link lands on the edit
+  view (uiv2 Wave 2: retargeted off the retired Metadata-tab premise).
 * U0037 — Agents list filter input narrows the table to matching ids.
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 
 import httpx
+from playwright.sync_api import expect
 
 
 # ---------------------------------------------------------------------------
@@ -68,22 +70,27 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_u0034_agent_metadata_tab_deep_link_survives_reload(
+def test_u0034_agent_metadata_deep_link_lands_on_edit_view(
     page,
     base_url: str,
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0034 — Sister of U0018 (Tools) and U0033 (Config) for the
-    Metadata tab. Navigate to ``#/agents/<id>?tab=metadata``,
-    confirm Metadata is selected, reload, confirm the URL query
-    survives and Metadata is still selected.
+    """U0034 — RETARGETED (uiv2 Wave 2): the Metadata tab this test
+    pinned is gone - AGENT_TABS/routerQuery.tab were removed wholesale
+    when the agent detail overlay became one direct-edit form (see
+    U0018/U0033's sister retargets in test_anomaly_surfaces.py /
+    test_routing_and_mutations.py). Metadata itself was dropped, not
+    relocated: the Agent model has no metadata field at all (confirmed
+    from the live schema during Wave 2's enumeration pass), so the old
+    tab was always empty for every agent - there is no "which surface
+    should this land on" ambiguity to resolve for the CONTENT, only
+    for the deep link.
 
-    Priority 6 — routing. Pins that the routerQuery.tab handling
-    is symmetric across all four AGENT_TABS (agents.jsx:352-357).
-    Metadata is the last tab in the array — a regression that
-    silently dropped it from AGENT_TABS would fall back to the
-    "config" default on reload and surface here.
+    What's still real and worth pinning: an old bookmarked
+    ``?tab=metadata`` deep link must not dead-end or silently
+    misroute - it lands on the one edit view for the SAME agent, same
+    as every other legacy tab deep link now does.
     """
     provider_id = f"llm-u0034-{unique_suffix}"
     agent_id = f"ag-u0034-{unique_suffix}"
@@ -95,32 +102,20 @@ def test_u0034_agent_metadata_tab_deep_link_survives_reload(
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
-
-        metadata_tab = page.get_by_role("tab", name="Metadata").first
-        metadata_tab.wait_for(state="visible", timeout=5_000)
-        assert metadata_tab.get_attribute("aria-selected") == "true", (
-            f"Metadata tab not selected on initial deep-link nav; "
-            f"aria-selected={metadata_tab.get_attribute('aria-selected')!r}"
-        )
+        expect(page.locator("#na-id")).to_have_value(agent_id)
 
         page.reload(wait_until="domcontentloaded")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
+        expect(page.locator("#na-id")).to_have_value(agent_id)
 
-        metadata_tab_after = page.get_by_role("tab", name="Metadata").first
-        metadata_tab_after.wait_for(state="visible", timeout=5_000)
-        assert metadata_tab_after.get_attribute("aria-selected") == "true", (
-            f"Metadata tab lost selected state after reload; "
-            f"aria-selected={metadata_tab_after.get_attribute('aria-selected')!r}"
-        )
-
-        # Defence: the URL still carries the tab. The shell states it
-        # in the overlay target's section slot rather than as a ?tab=
-        # query, which is the same deep link in the one grammar the URL
-        # now has.
+        # Defence: the URL still carries the legacy tab in the overlay
+        # target's section slot (the one grammar the URL has now) -
+        # the deep link resolves, it just no longer selects anything
+        # since there is nothing left to select.
         assert f"overlay=agents:metadata:{agent_id}" in page.url, (
-            f"reload dropped the metadata tab: {page.url}"
+            f"reload dropped the addressed agent: {page.url}"
         )
     finally:
         _cleanup(base_url, [

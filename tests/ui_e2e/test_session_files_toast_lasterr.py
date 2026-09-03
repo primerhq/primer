@@ -184,9 +184,12 @@ def test_u0032_toast_renders_request_id_on_5xx(
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
         modal.locator("#na-id").fill(f"ag-32-{unique_suffix}")
-        modal.locator("#na-model-profile").select_option(
-            profile_id_for(pid, "fake-model"),
-        )
+        # uiv2 Wave 2: the model-profile <select> became a stacked
+        # AG_ProfilePicker (one bordered row per profile, click to pick) -
+        # same retarget as test_agents_create.py's u0006/u0007.
+        modal.get_by_test_id(
+            f"agent-profile-row-{profile_id_for(pid, 'fake-model')}",
+        ).click()
 
         # Click "Create" - mocked response will return our 500.
         create_btn = page.get_by_role(
