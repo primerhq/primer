@@ -758,38 +758,183 @@ function NV_TemplateModal(props) {
   );
 }
 
-// The decisions audit under the approvals cards: who decided what, when.
+// uiv2 Wave 3 (a-14 fold): headless per-session pending fetcher, same
+// N+1 pattern approvals.jsx's old AP_RecordFetcher used (GET /yields/
+// pending is the cheaper cross-workspace call but never carries tool_
+// name/arguments/gate_reason - it only reads them internally to
+// classify "approval" vs "ask" vs "parked" - so it can't populate the
+// TOOL column). 404 means this parked session isn't gated on
+// tool_approval (ask_user/sleep/watch_files etc.) - reports null so
+// the parent drops it.
+function NV_AuditPendingFetcher({ sid, onRecord }) {
+  var pending = window.primerApi.useResource(
+    "nv-plat:audit-pending:" + sid,
+    function (signal) {
+      return window.primerApi.apiFetch(
+        "GET", "/sessions/" + encodeURIComponent(sid) + "/tool_approval/pending",
+        null, { signal: signal });
+    },
+    { pollMs: 5000, deps: [sid] }
+  );
+  React.useEffect(function () {
+    if (pending.error && pending.error.status === 404) { onRecord(sid, null); return; }
+    if (!pending.data) return;
+    onRecord(sid, pending.data);
+  }, [pending.data, pending.error && pending.error.status, sid]);
+  return null;
+}
+
+var NV_AUDIT_STATUS_RANK = { pending: 0, approved: 1, rejected: 2, timeout: 3, cancelled: 4 };
+
+// The decisions audit under the approvals cards: who decided what,
+// when - uiv2 Wave 3 (a-14): folded in the records-sheet's sort
+// controls and live pending merge, then the sheet itself retired.
+// READ-ONLY by design: the mockup's own pending row ("workspace__
+// write_file · pending · awaiting an admin · 09:41") carries no
+// action buttons - this is a passive record, not a second actionable
+// surface. Approve/Reject stays exactly where it already lives: the
+// Inbox rail and session-detail's NV_DecisionCard/ApprovalBanner.
 function NV_ApprovalsAudit() {
+  var con = NV_useConsole();
+  var sortState = React.useState("time");
+  var sortBy = sortState[0], setSortBy = sortState[1];
+  var dirState = React.useState("desc");
+  var sortDir = dirState[0], setSortDir = dirState[1];
+  var pendingState = React.useState({});
+  var pendingBySession = pendingState[0], setPendingBySession = pendingState[1];
+
+  var onPendingRecord = React.useCallback(function (sid, record) {
+    setPendingBySession(function (prev) {
+      if (record == null) {
+        if (!(sid in prev)) return prev;
+        var next = Object.assign({}, prev);
+        delete next[sid];
+        return next;
+      }
+      return Object.assign({}, prev, { [sid]: record });
+    });
+  }, []);
+
+  var parkedSessions = window.primerApi.useResource(
+    "nv-plat:audit-parked-sessions",
+    function (signal) {
+      return window.primerApi.apiFetch("POST", "/sessions/find", {
+        predicate: {
+          kind: "predicate",
+          left: { kind: "field", name: "parked_status" },
+          op: "=",
+          right: { kind: "value", value: "parked" },
+        },
+        page: { kind: "offset", offset: 0, length: 100 },
+      }, { signal: signal });
+    },
+    { pollMs: 5000 }
+  );
   var records = window.primerApi.useResource(
     "nv-plat:approval-records",
     function (signal) { return SH_api.approvalRecords(signal); },
-    { pollMs: 15000 }
+    { pollMs: 5000 }
   );
-  var rows = ((records.data && records.data.items) || []).slice(0, 30);
+
+  var sessionIds = ((parkedSessions.data && parkedSessions.data.items) || [])
+    .map(function (s) { return s.id; });
+
+  var pendingRows = sessionIds
+    .map(function (sid) { return { sid: sid, rec: pendingBySession[sid] }; })
+    .filter(function (x) { return x.rec; })
+    .map(function (x) {
+      var rec = x.rec;
+      return {
+        key: "pending:" + rec.tool_call_id,
+        sessionId: x.sid,
+        // A pending record's tool_name already IS the full scoped id
+        // (original_call.name, as issued) - unlike a resolved record's
+        // separate toolset_id/tool_name pair, there is no join needed.
+        toolPattern: rec.tool_name || "",
+        status: "pending",
+        decidedByText: SH_routingLine(
+          { approvers: rec.approvers },
+          { username: con.username, role: con.role },
+        ),
+        at: rec.parked_at,
+      };
+    });
+
+  var resolvedRows = ((records.data && records.data.items) || []).map(function (r) {
+    // Phase-2c (platform-approvals-staged): TOOL was reading
+    // r.tool_id/r.tool, neither of which exist on ToolApprovalRecord
+    // (real fields: toolset_id/tool_name) - confirmed live bug, not a
+    // data gap. Reuses the same mono tool-pattern helper the policy
+    // cards use.
+    var status = NV_approvalDerivedStatus(r);
+    return {
+      key: r.id,
+      sessionId: r.session_id || "",
+      toolPattern: NV_approvalToolPattern(r),
+      status: status,
+      decidedByText: NV_approvalDecidedBy(r, status),
+      at: r.decided_at,
+    };
+  });
+
+  var allRows = pendingRows.concat(resolvedRows).sort(function (a, b) {
+    var cmp;
+    if (sortBy === "status") {
+      cmp = (NV_AUDIT_STATUS_RANK[a.status] ?? 99) - (NV_AUDIT_STATUS_RANK[b.status] ?? 99);
+      if (cmp === 0) cmp = new Date(b.at || 0) - new Date(a.at || 0);
+    } else {
+      cmp = new Date(b.at || 0) - new Date(a.at || 0);
+    }
+    return sortDir === "asc" ? -cmp : cmp;
+  });
+  var rows = allRows.slice(0, 30);
+
   return (
     <div className="nv-audit" data-testid="nv-plat-audit">
-      <div className="nv-audit-title">Decisions — audit</div>
+      {sessionIds.map(function (sid) {
+        return <NV_AuditPendingFetcher key={sid} sid={sid} onRecord={onPendingRecord} />;
+      })}
+      <div className="nv-audit-title-row">
+        <div className="nv-audit-title">Decisions — audit</div>
+        <span style={{ flex: 1 }} />
+        <span className="muted text-sm">sort</span>
+        <select
+          className="select"
+          value={sortBy}
+          onChange={function (e) { setSortBy(e.target.value); }}
+          style={{ fontSize: 12 }}
+          data-testid="nv-audit-sort-by"
+        >
+          <option value="time">by time</option>
+          <option value="status">by status</option>
+        </select>
+        <Btn
+          size="sm"
+          kind="ghost"
+          icon={sortDir === "desc" ? "chevron-down" : "chevron-up"}
+          onClick={function () { setSortDir(function (d) { return d === "desc" ? "asc" : "desc"; }); }}
+          title={sortDir === "desc" ? "descending" : "ascending"}
+          data-testid="nv-audit-sort-dir"
+        >
+          {sortDir === "desc" ? "newest" : "oldest"}
+        </Btn>
+      </div>
       <div className="nv-audit-table">
         <div className="nv-audit-head">
           <span>Session</span><span>Tool</span><span>Status</span>
           <span>Decided by</span><span>At</span>
         </div>
-        {rows.map(function (r, i) {
-          // Phase-2c (platform-approvals-staged): TOOL was reading
-          // r.tool_id/r.tool, neither of which exist on
-          // ToolApprovalRecord (real fields: toolset_id/tool_name) -
-          // confirmed live bug, not a data gap. Reuses the same mono
-          // tool-pattern helper the policy cards use.
-          var status = NV_approvalDerivedStatus(r);
+        {rows.map(function (row) {
+          var color = row.status === "pending" ? "var(--amber)" : NV_approvalStatusColor(row.status);
           return (
-            <div key={r.id || i} className="nv-audit-row">
-              <span>{r.session_id || ""}</span>
-              <span className="nv-audit-mono">{NV_approvalToolPattern(r)}</span>
-              <span className="nv-audit-mono" style={{ color: NV_approvalStatusColor(status) }}>
-                {status}
+            <div key={row.key} className="nv-audit-row">
+              <span>{row.sessionId}</span>
+              <span className="nv-audit-mono">{row.toolPattern}</span>
+              <span className="nv-audit-mono" style={{ color: color }}>
+                {row.status}
               </span>
-              <span>{NV_approvalDecidedBy(r, status)}</span>
-              <span className="nv-audit-mono">{NV_approvalAt(r.decided_at)}</span>
+              <span>{row.decidedByText}</span>
+              <span className="nv-audit-mono">{NV_approvalAt(row.at)}</span>
             </div>
           );
         })}

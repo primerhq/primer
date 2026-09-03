@@ -730,7 +730,11 @@ def test_decision_and_ask_cards_disable_when_the_session_has_ended():
     decision = DOC[DOC.index("function NV_DecisionCard"):
                    DOC.index("function NV_AskCard")]
     assert 'data-testid="nv-approve" disabled={!!props.ended}' in decision
-    assert 'data-testid="nv-reject" disabled={!!props.ended}' in decision
+    # uiv2 Wave 3 (a-14 fold): nv-reject now ALSO guards on an empty
+    # reason once the box is open (see test_reject_button_requires_a_
+    # non_empty_reason_to_submit) - the ended check is one clause of a
+    # combined disabled expression now, not the whole thing.
+    assert "disabled={!!props.ended || (rejOpen && !reason.trim())}" in decision
     assert "session ended before this could be resolved" in decision
 
     ask = DOC[DOC.index("function NV_AskCard"):]
