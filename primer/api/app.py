@@ -194,6 +194,8 @@ def create_test_app(
             provider_registry=provider_registry,
             semantic_search_registry=_test_ssp_registry,
             workspace_registry=workspace_registry,
+            # Same sharing invariant as the real lifespan (01a06610).
+            approval_resolver=_test_approval_resolver,
         )
     if workspaces_toolset is None:
         # The test factory builds its scheduler/event_bus/claim_engine
