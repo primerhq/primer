@@ -188,6 +188,7 @@ def build_system_toolset(
     semantic_search_registry: "SemanticSearchRegistry | None" = None,
     workspace_registry: "WorkspaceRegistry | None" = None,
     toolset_id: str = SYSTEM_TOOLSET_ID,
+    approval_resolver: "ApprovalResolver | None" = None,
 ) -> InternalToolsetProvider:
     """Construct the immutable ``_system`` toolset.
 
@@ -195,6 +196,11 @@ def build_system_toolset(
     a single :class:`InternalToolsetProvider`. Mutation cascades are
     threaded into the provider/vector-store registries so the system
     toolset stays consistent with the REST routers.
+
+    ``approval_resolver`` is the app-level :class:`ApprovalResolver` when
+    the caller has one (the API lifespan does); the meta-dispatch gate
+    shares its cache so an operator ``/invalidate`` takes effect here
+    too. ``None`` builds a private resolver (standalone/test builders).
     """
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
 
@@ -649,12 +655,17 @@ def build_system_toolset(
         registry[name] = entry
 
     # ---- Toolset extras ---------------------------------------------
-    # Build a ToolApprovalPolicy resolver so call_tool's meta-dispatch
-    # path enforces the same approval gate the agent loop applies; without
-    # this a gated tool invoked via system__call_tool would run unguarded.
-    approval_resolver = ApprovalResolver(
-        storage=storage_provider.get_storage(ToolApprovalPolicy),
-    )
+    # call_tool's meta-dispatch path enforces the same approval gate the
+    # agent loop applies; without a resolver a gated tool invoked via
+    # system__call_tool would run unguarded. Callers with an app-level
+    # ApprovalResolver MUST pass it in (01a06610): the operator-facing
+    # /tool_approval_policies/invalidate endpoint clears only that
+    # instance, so a private one here would keep serving stale verdicts
+    # for its full cache TTL after an explicit invalidate.
+    if approval_resolver is None:
+        approval_resolver = ApprovalResolver(
+            storage=storage_provider.get_storage(ToolApprovalPolicy),
+        )
     name, entry = _list_toolset_tools_tool(provider_registry)
     registry[name] = entry
     name, entry = _call_tool_tool(provider_registry, approval_resolver)
@@ -1034,7 +1045,12 @@ def build_system_toolset(
     )
 
 
-    return InternalToolsetProvider(toolset_id=toolset_id, registry=registry)
+    provider = InternalToolsetProvider(toolset_id=toolset_id, registry=registry)
+    # The resolver the call_tool/invoke_agent closures captured -- exposed
+    # so wiring can be asserted (app.state.approval_resolver must be this
+    # same object for the /invalidate endpoint to reach meta-dispatch).
+    provider.approval_resolver = approval_resolver
+    return provider
 
 
 # Register the ask_user yielding-tool resume hook at import time. The

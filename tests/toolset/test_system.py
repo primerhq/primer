@@ -1409,3 +1409,67 @@ class TestCallToolApprovalGate:
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "approval-required"
+
+
+# ===========================================================================
+# 01a06610: the meta-dispatch gate shares the app-level resolver's cache
+# ===========================================================================
+
+
+class TestCallToolResolverSharing:
+    @pytest.mark.asyncio
+    async def test_injected_resolver_invalidate_reaches_meta_dispatch(
+        self, sp: _SP, pr: ProviderRegistry
+    ) -> None:
+        """The operator ``/invalidate`` clears ONE shared cache: after
+        call_tool caches policy=None for an inner tool, creating a policy
+        row and invalidating the injected (app-level) resolver re-gates
+        the very next dispatch, instead of a private second resolver
+        serving the stale verdict until its TTL runs out."""
+        from primer.agent.approval import ApprovalResolver
+        from primer.model.tool_approval import ToolApprovalPolicy
+        from primer.model.yield_ import YieldToWorker
+
+        resolver = ApprovalResolver(
+            storage=sp.get_storage(ToolApprovalPolicy),
+            cache_ttl_seconds=600.0,  # a TTL expiry can't mask the miss
+        )
+        provider = build_system_toolset(
+            storage_provider=sp,  # type: ignore[arg-type]
+            provider_registry=pr,
+            approval_resolver=resolver,
+        )
+        pr._system_toolset_provider = provider  # type: ignore[attr-defined]
+        assert provider.approval_resolver is resolver
+
+        await provider.call(
+            tool_name="create_llm_provider",
+            arguments={"entity": _llm().model_dump(mode="json")},
+        )
+        call_args = {
+            "toolset_id": SYSTEM_TOOLSET_ID,
+            "tool_name": "get_llm_provider",
+            "arguments": {"id": "anthropic-1"},
+        }
+        # First dispatch caches policy=None for the inner tool's key.
+        result = await provider.call(
+            tool_name="call_tool", arguments=call_args, ctx=_ctx(),
+        )
+        assert not result.is_error, result.output
+
+        await sp.get_storage(ToolApprovalPolicy).create(
+            _required_policy(SYSTEM_TOOLSET_ID, "get_llm_provider")
+        )
+        # Still cached: the new row is invisible until an invalidate.
+        result = await provider.call(
+            tool_name="call_tool", arguments=call_args, ctx=_ctx(),
+        )
+        assert not result.is_error, result.output
+
+        # What POST /tool_approval_policies/invalidate does to the
+        # app-level instance -- must re-gate meta-dispatch immediately.
+        resolver.invalidate()
+        with pytest.raises(YieldToWorker):
+            await provider.call(
+                tool_name="call_tool", arguments=call_args, ctx=_ctx(),
+            )

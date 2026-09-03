@@ -220,6 +220,11 @@ def _make_lifespan(config: AppConfig):
             provider_registry=provider_registry,
             semantic_search_registry=semantic_search_registry,
             workspace_registry=workspace_registry,
+            # Share the app-level resolver (01a06610): the
+            # /tool_approval_policies/invalidate endpoint clears THIS
+            # instance, and call_tool's meta-dispatch gate must see that
+            # immediately rather than serving stale verdicts until TTL.
+            approval_resolver=approval_resolver,
         )
         provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
         # NOTE: the always-on _workspaces toolset is built later in this
