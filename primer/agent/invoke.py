@@ -270,6 +270,10 @@ async def run_subagent(
         from primer.session.delegation import current_delegation_sink
 
         _sink = current_delegation_sink()
+        # No artifact_storage: this subagent path is scope-cut from the
+        # vision-attachments hydration seam (01a052d9) -- it's a third,
+        # nested-invocation surface, text-in/text-out today, that nobody
+        # has asked to carry vision attachments yet.
         async for _ev in run_agent_turn(
             agent=agent, llm=llm, llm_model=llm_model, tool_manager=tool_manager,
             prompt=prompt_msgs, principal=principal, messages_out=produced,
@@ -395,6 +399,8 @@ async def resume_subagent(
             from primer.session.delegation import current_delegation_sink
 
             _sink = current_delegation_sink()
+            # No artifact_storage -- see the invoke_agent call site above;
+            # same scope-cut applies to this resume path.
             async for _ev in run_agent_turn(
                 agent=agent, llm=llm, llm_model=llm_model,
                 tool_manager=tool_manager, prompt=resume_prompt,
