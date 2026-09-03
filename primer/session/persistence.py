@@ -265,6 +265,22 @@ class _CoalesceState:
     # ToolCallStart can reuse the same raw id). Keyed by (node_id, raw_id)
     # like tool_names above, for the identical reason.
     scoped_call_ids: dict[tuple[str | None, str], str] = field(default_factory=dict)
+    # 01a0518b (seam-split A-chat/workspace surface): scoped tool-call id ->
+    # the durable TOOL_CALL record's own seq. translate_stream_event is
+    # synchronous and never sees the seq (WorkspaceMessageWriter.append is
+    # async and owned by the caller), so this is populated by the dispatch
+    # loop immediately after append() returns, keyed by the SAME scoped id
+    # as scoped_call_ids above (== TOOL_CALL payload["id"] ==
+    # ToolCallTask.id). The eventual seam-split dispatch reads this map
+    # SYNCHRONOUSLY instead of threading a return value back through
+    # run_agent_turn's yield chain — safe on this surface because the
+    # chat/workspace path is a pull-based async-generator chain with no
+    # fan-out queue in between: by the time run_agent_turn's frame resumes
+    # after yielding a ToolCallEnd event, the consumer has already run
+    # translate_stream_event + awaited append() for it. Never popped —
+    # bounded to this _CoalesceState's lifetime (one turn) like every
+    # other field here.
+    tool_call_record_seq: dict[str, int] = field(default_factory=dict)
     # (turn_no, coalesced text) of the most recent ASSISTANT_TOKEN record
     # actually written to the log, whichever node produced it — a plain
     # global tracker, not per-node, because "the immediately preceding
