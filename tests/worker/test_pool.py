@@ -188,13 +188,43 @@ async def test_reserved_loop_claims_both_slices_independently(scheduler, engine)
     assert (ClaimKind.TOOL_CALL, "t1") in pool._in_flight
 
 
+def test_select_claim_loop_none_reserve_is_unreserved(scheduler, engine):
+    pool = _bare_pool(scheduler, engine)
+    pool._dispatch = {ClaimKind.SESSION: object()}  # reserve is None either way
+    assert pool._select_claim_loop() == pool._engine_claim_loop
+
+
+def test_select_claim_loop_reserve_without_tool_call_adapter_is_unreserved(
+    scheduler, engine,
+):
+    """Review finding on c6bb92c1: today's real self._dispatch (built by
+    start()) NEVER contains ClaimKind.TOOL_CALL - nothing registers that
+    handler until a later commit. A reserve configured ahead of that
+    landing must not silently shrink general capacity for a slice
+    nothing can claim into."""
+    pool = _bare_pool(scheduler, engine, tool_call_reserved_concurrency=1)
+    pool._dispatch = {ClaimKind.SESSION: object(), ClaimKind.HARNESS: object()}
+    assert pool._select_claim_loop() == pool._engine_claim_loop
+
+
+def test_select_claim_loop_reserve_with_tool_call_adapter_is_reserved(
+    scheduler, engine,
+):
+    """Once a future commit registers a TOOL_CALL handler, a configured
+    reserve DOES route to the split loop."""
+    pool = _bare_pool(scheduler, engine, tool_call_reserved_concurrency=1)
+    pool._dispatch = {ClaimKind.SESSION: object(), ClaimKind.TOOL_CALL: object()}
+    assert pool._select_claim_loop() == pool._engine_claim_loop_reserved
+
+
 async def test_start_routes_to_reserved_loop_only_when_configured(
     scheduler, engine,
 ):
-    """Routing decision (made once, at start(), not per-iteration) picks
-    the reserved loop iff tool_call_reserved_concurrency is set - the
-    default (None) must schedule the exact same _engine_claim_loop as
-    before this knob existed."""
+    """End-to-end through start(): today's real dispatch table never
+    contains a TOOL_CALL handler (see the direct _select_claim_loop
+    tests above for that half), so BOTH the default AND a configured
+    reserve must schedule the exact same _engine_claim_loop until a
+    future commit registers one."""
     # No return_value= given: patch.object auto-detects both targets are
     # coroutine functions and builds AsyncMocks, which fabricate a fresh
     # awaitable per call - pre-building ONE coroutine via return_value=
@@ -222,8 +252,8 @@ async def test_start_routes_to_reserved_loop_only_when_configured(
     ) as reserved2:
         await reserved_pool.start()
         await reserved_pool.drain_and_stop()
-    reserved2.assert_called_once()
-    unified2.assert_not_called()
+    unified2.assert_called_once()
+    reserved2.assert_not_called()
 
 
 async def test_claim_loop_runs_runnable_session(scheduler, engine, monkeypatch):
