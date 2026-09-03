@@ -19,6 +19,9 @@ from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.adapters.harnesses import HarnessClaimAdapter
+from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
+from primer.int.claim import ParkRequest
+from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
 
 
 # ---------------------------------------------------------------------------
@@ -194,3 +197,79 @@ async def test_harness_on_release_none_storage_raises(sqlite_provider):
     outcome = ReleaseOutcome(success=True)
     with pytest.raises(RuntimeError, match="harness_storage"):
         await adapter.on_release(conn=None, entity_id="harness-1", outcome=outcome)
+
+
+# ---------------------------------------------------------------------------
+# ToolCallClaimAdapter.on_release (Phase 3 stage 7a, 01a0518b) - real
+# storage round-trip, complementing test_tool_call_adapter.py's FakeStorage
+# unit tests with proof the model actually persists through the real
+# Storage layer (JSONB serialization, table auto-creation on first write).
+# ---------------------------------------------------------------------------
+
+def _make_tool_call_task(id: str = "worker:tool:1:1") -> ToolCallTask:
+    return ToolCallTask(
+        id=id,
+        session_id="sess-1",
+        turn_no=1,
+        tool_name="workspace__write",
+        state=ToolCallTaskState.RUNNING,
+        created_at=datetime.now(UTC),
+        started_at=datetime.now(UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_call_on_release_success_sets_done(sqlite_provider):
+    storage = sqlite_provider.get_storage(ToolCallTask)
+    task = _make_tool_call_task()
+    await storage.create(task)
+
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    outcome = ReleaseOutcome(success=True, drop_lease=True)
+    await adapter.on_release(conn=None, entity_id=task.id, outcome=outcome)
+
+    updated = await storage.get(task.id)
+    assert updated is not None
+    assert updated.state == ToolCallTaskState.DONE
+    assert updated.finished_at is not None
+    assert updated.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_tool_call_on_release_gate_sets_gated(sqlite_provider):
+    storage = sqlite_provider.get_storage(ToolCallTask)
+    task = _make_tool_call_task()
+    await storage.create(task)
+
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    outcome = ReleaseOutcome(
+        success=False, drop_lease=True,
+        park=ParkRequest(
+            parked_state={"kind": "approval"},
+            parked_event_key="tool_approval:sess-1:worker:tool:1:1",
+            parked_until=None,
+            parked_at=datetime.now(UTC),
+        ),
+    )
+    await adapter.on_release(conn=None, entity_id=task.id, outcome=outcome)
+
+    updated = await storage.get(task.id)
+    assert updated is not None
+    assert updated.state == ToolCallTaskState.GATED
+    assert updated.gate_event_key == "tool_approval:sess-1:worker:tool:1:1"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_on_release_missing_entity_returns_silently(sqlite_provider):
+    storage = sqlite_provider.get_storage(ToolCallTask)
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    outcome = ReleaseOutcome(success=True, drop_lease=True)
+    await adapter.on_release(conn=None, entity_id="nonexistent", outcome=outcome)
+
+
+@pytest.mark.asyncio
+async def test_tool_call_on_release_none_storage_raises(sqlite_provider):
+    adapter = ToolCallClaimAdapter(task_storage=None)
+    outcome = ReleaseOutcome(success=True)
+    with pytest.raises(RuntimeError, match="task_storage"):
+        await adapter.on_release(conn=None, entity_id="worker:tool:1:1", outcome=outcome)
