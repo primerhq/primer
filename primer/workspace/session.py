@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import TypeAdapter
 
-from primer.model.chat import Message, TextPart
+from primer.model.chat import Message, Part, TextPart
 from primer.model.except_ import ConflictError
 from primer.model.workspace_session import (
     AgentBinding,
@@ -483,13 +483,20 @@ class AgentSession:
                 if self._info.status != SessionStatus.ENDED:
                     self._info = disk
 
-    async def append_instruction(self, content: str) -> Instruction:
+    async def append_instruction(
+        self, content: str, *, extra_parts: list[Part] | None = None,
+    ) -> Instruction:
         """Queue a user instruction for delivery to the next turn.
 
         Allowed in any non-ENDED status. In WAITING, the runtime
         typically observes the new message and transitions back to
         RUNNING (clearing ``waiting.json``); the transition itself is
         the runtime's responsibility, not this method's.
+
+        ``extra_parts`` (vision/document attachments) are appended after
+        the instruction's own :class:`TextPart` in the stored
+        :class:`Message`. ``None`` (every existing caller) is unchanged
+        behaviour: a single-TextPart message exactly as before.
 
         Returns the :class:`Instruction` record (id + timestamps) for
         caller bookkeeping.
@@ -509,7 +516,10 @@ class AgentSession:
                 content=content,
                 queued_at=now,
             )
-            message = Message(role="user", parts=[TextPart(text=content)])
+            parts: list[Part] = [TextPart(text=content)]
+            if extra_parts:
+                parts.extend(extra_parts)
+            message = Message(role="user", parts=parts)
 
             # Updated session metadata: last_activity_at moves forward.
             updated_info = self._info.model_copy(

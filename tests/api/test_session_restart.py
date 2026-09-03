@@ -29,7 +29,9 @@ class _FakeSlot:
     async def reopen(self) -> None:
         self.reopened = True
 
-    async def append_instruction(self, instruction: str) -> None:
+    async def append_instruction(
+        self, instruction: str, *, extra_parts=None,
+    ) -> None:
         self.instructions.append(instruction)
 
 

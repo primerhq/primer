@@ -41,7 +41,9 @@ class _FakeWorkspace:
 
 
 class _FakeSlot:
-    async def append_instruction(self, content: str) -> None:
+    async def append_instruction(
+        self, content: str, *, extra_parts=None,
+    ) -> None:
         pass
 
 

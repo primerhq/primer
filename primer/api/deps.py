@@ -125,6 +125,18 @@ def get_artifact_storage_registry(request: Request):
     return reg
 
 
+def get_optional_artifact_storage_registry(request: Request):
+    """Same as :func:`get_artifact_storage_registry`, but ``None`` instead
+    of a 503 when unconfigured.
+
+    For routes where artifact storage is only used conditionally (e.g. a
+    steer body's optional ``attachments`` field): a request that carries
+    no attachments must not 503 just because the deployment never
+    configured artifact storage at all.
+    """
+    return getattr(request.app.state, "artifact_storage_registry", None)
+
+
 def get_artifact_storage_provider_storage(
     storage_provider=Depends(get_storage_provider),
 ) -> "Storage":

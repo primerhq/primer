@@ -148,7 +148,7 @@ class _LiveSession:
 
         self._status = SessionStatus.RUNNING
 
-    async def append_instruction(self, content):
+    async def append_instruction(self, content, *, extra_parts=None):
         from datetime import datetime, timezone
         from primer.model.workspace_session import Instruction
 

@@ -74,8 +74,20 @@ async def wake_session(
     instruction: str | None,
     deps: SessionWakeDeps,
     external_tools: "list | None" = None,
+    extra_parts: "list | None" = None,
+    extra_payload: "dict | None" = None,
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
+
+    ``extra_parts`` (vision/document attachments, already resolved to
+    artifact-backed :class:`~primer.model.chat.Part` objects) rides the
+    same :class:`~primer.model.chat.Message` the instruction's
+    :class:`~primer.model.chat.TextPart` does -- forwarded to
+    :meth:`AgentSession.append_instruction`. ``extra_payload`` merges into
+    the USER_INPUT display record's ``payload`` dict (e.g. attachment
+    paths) so the transcript surface can show what was attached without
+    reconstructing it from the full Message. Both ``None`` (every
+    existing caller) is unchanged behaviour.
 
     Raises NotFoundError (missing / workspace mismatch). An ENDED session is
     reopened in place (reopen slot + invocation divider + ENDED->CREATED)
@@ -150,14 +162,16 @@ async def wake_session(
             try:
                 slot = await ws.get_session(session_id)
                 if slot is not None:
-                    await slot.append_instruction(instruction)
+                    await slot.append_instruction(
+                        instruction, extra_parts=extra_parts,
+                    )
                 writer = WorkspaceMessageWriter(
                     workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
                 )
                 user_input_seq = await writer.append(SessionMessageRecord(
                     seq=1,  # overwritten by the writer's monotonic counter
                     kind=SessionMessageKind.USER_INPUT,
-                    payload={"text": instruction},
+                    payload={"text": instruction, **(extra_payload or {})},
                     created_at=datetime.now(timezone.utc),
                 ))
                 await writer.flush()

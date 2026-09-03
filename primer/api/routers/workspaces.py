@@ -40,6 +40,7 @@ from primer.api.deps import (
     get_claim_engine,
     get_collection_storage,
     get_event_bus,
+    get_optional_artifact_storage_registry,
     get_provider_registry,
     get_scheduler,
     get_session_storage,
@@ -199,6 +200,57 @@ _DIAGNOSTIC_COMMAND_WHITELIST: frozenset[str] = frozenset(
 )
 
 
+def _reject_path_escape(value: str) -> str:
+    """Reject an absolute path or any ``..`` segment.
+
+    Same check as :meth:`WorkspaceTemplate._validate_workspace_relative_path`
+    (``primer/model/workspace.py``) -- kept as a standalone function here
+    rather than importing that bound classmethod, since it validates an
+    unrelated model. This is the WIRE-LAYER half of the traversal defence:
+    it turns an escape attempt into a clean 422 before the request reaches
+    ``media_from_workspace_files``, which independently re-derives the same
+    guarantee at the filesystem layer via ``Workspace._resolve_path``
+    (``candidate.relative_to(root)``) -- belt and suspenders, not a
+    substitute for each other.
+    """
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        raise ValueError(
+            f"attachment path {value!r} must be relative to the workspace "
+            f"root, not absolute"
+        )
+    parts = value.replace("\\", "/").split("/")
+    if any(p == ".." for p in parts):
+        raise ValueError(
+            f"attachment path {value!r} must not contain '..' segments "
+            f"(would escape the workspace root)"
+        )
+    return value
+
+
+class AttachmentIn(BaseModel):
+    """One workspace file to fold into a steer as vision/document input.
+
+    The file must already exist in the workspace -- upload it first via
+    the existing ``PUT /v1/workspaces/{id}/files`` (unchanged). Resolved
+    server-side through :func:`primer.channel.media.media_from_workspace_files`,
+    the same artifact-backed-Part pipeline ``ask_user``/``inform_user``
+    already use for outbound files.
+    """
+
+    path: str = Field(
+        ...,
+        min_length=1,
+        description="Workspace-relative path to an already-uploaded file.",
+    )
+
+    @model_validator(mode="after")
+    def _safe_path(self) -> "AttachmentIn":
+        _reject_path_escape(self.path)
+        return self
+
+
 class SteerBody(BaseModel):
     """Body of ``POST /v1/workspaces/{id}/sessions/{sid}/steer``.
 
@@ -208,7 +260,10 @@ class SteerBody(BaseModel):
     pending calls, then the instruction steers the resumed turn.
     ``external_tools`` registers invoker-supplied tool defs for the
     turn this message triggers (gated by the agent's
-    ``allow_external_tools``).
+    ``allow_external_tools``). ``attachments`` folds already-uploaded
+    workspace files into the turn as true vision/document input,
+    alongside the existing plain-text ``"Attached file: {path}"``
+    convention the composer also supports.
     """
 
     response_format: dict[str, Any] | None = Field(
@@ -244,6 +299,17 @@ class SteerBody(BaseModel):
             "any state changes."
         ),
     )
+    attachments: list[AttachmentIn] | None = Field(
+        default=None,
+        description=(
+            "Workspace files to fold into this turn's user message as "
+            "true vision/document input. Requires 'instruction' -- an "
+            "attachment needs a user turn to ride in on. A missing/"
+            "oversized/disallowed-type file is dropped with a log rather "
+            "than failing the whole steer (matches the ask_user/"
+            "inform_user files= convention)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _at_least_one(self) -> "SteerBody":
@@ -253,6 +319,11 @@ class SteerBody(BaseModel):
             )
         if self.tool_results is not None and len(self.tool_results) == 0:
             raise ValueError("'tool_results' must be non-empty when present")
+        if self.attachments and not self.instruction:
+            raise ValueError(
+                "'attachments' requires 'instruction' -- an attachment "
+                "needs a user turn to ride in on"
+            )
         if self.external_tools:
             validate_external_tool_defs(self.external_tools)
         return self
@@ -1564,6 +1635,7 @@ async def steer_session(
     engine=Depends(get_claim_engine),
     storage_provider=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
+    artifact_registry=Depends(get_optional_artifact_storage_registry),
 ) -> WorkspaceSession:
     """Send a user message to a session and auto-wake it.
 
@@ -1615,6 +1687,7 @@ async def steer_session(
         payload={
             "has_instruction": bool(body.instruction),
             "has_tool_results": bool(body.tool_results),
+            "has_attachments": bool(body.attachments),
         },
     )
 
@@ -1666,11 +1739,17 @@ async def steer_session(
         # Bodies carrying tool defs are exempt alongside results: a
         # pending row has nowhere to hold external_tools, so deferring
         # one would silently drop the registration for the turn it was
-        # meant to arm.
+        # meant to arm. Bodies carrying attachments are exempt for the
+        # same reason: PendingSessionMessage.parts is a plain text-only
+        # projection today (realize_next_pending only ever extracts
+        # type=="text"), so a deferred attachment would silently vanish
+        # rather than reach the model. append_instruction's own message
+        # FIFO (used below via wake_session) already carries parts.
         if (
             row is not None
             and not body.tool_results
             and not body.external_tools
+            and not body.attachments
             and route_steer(row) == ROUTE_PENDING
         ):
             await store_pending_steer(
@@ -1690,6 +1769,36 @@ async def steer_session(
             row = row.model_copy(update={"metadata": meta})
             await sessions.update(row)
 
+        # Resolve attachments to artifact-backed Parts through the SAME
+        # pipeline ask_user/inform_user already use for outbound files
+        # (primer.channel.media.media_from_workspace_files). Best-effort,
+        # matching that pipeline's own tolerance: a missing/oversized/
+        # disallowed file or an unconfigured artifact store drops the
+        # attachment with a log rather than failing the whole steer.
+        extra_parts = None
+        extra_payload = None
+        if body.attachments:
+            from primer.channel.media import media_from_workspace_files
+
+            if artifact_registry is None:
+                logger.warning(
+                    "steer_session: attachments given but no artifact "
+                    "storage registry is configured; dropping %d "
+                    "attachment(s) for session %r",
+                    len(body.attachments), session_id,
+                )
+            else:
+                workspace = await registry.get_workspace(workspace_id)
+                artifact_store = await artifact_registry.get_default()
+                extra_parts = await media_from_workspace_files(
+                    workspace, artifact_store,
+                    [a.path for a in body.attachments],
+                )
+                if extra_parts:
+                    extra_payload = {
+                        "attachments": [a.path for a in body.attachments],
+                    }
+
         deps = SessionWakeDeps(
             storage_provider=storage_provider,
             scheduler=scheduler,
@@ -1702,6 +1811,8 @@ async def steer_session(
             session_id=session_id,
             instruction=body.instruction,
             external_tools=body.external_tools,
+            extra_parts=extra_parts,
+            extra_payload=extra_payload,
             deps=deps,
         )
 
