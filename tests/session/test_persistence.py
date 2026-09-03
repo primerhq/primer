@@ -879,6 +879,111 @@ def test_graph_end_output_record_carries_node_id() -> None:
     assert rec.payload["end_node_id"] == "end1"
 
 
+def test_graph_end_output_with_empty_text_writes_no_record() -> None:
+    """Live finding 01a064d3, ruling (c): an End node with no/empty
+    output_template renders "" - writing that as an ASSISTANT_TOKEN put
+    an empty answer bubble into every graph transcript. Suppress at the
+    source rather than persist noise."""
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    rec = translate_stream_event(
+        _GraphEndOutputEvent(text="", parsed=None, end_node_id="end1"), state
+    )
+    assert rec is None
+
+
+def test_graph_end_output_suppresses_a_passthrough_duplicate() -> None:
+    """Live finding 01a064d3, ruling (a): an End node whose
+    output_template just echoes the immediately preceding node's answer
+    (the common case) renders byte-identical text to that node's own
+    ASSISTANT_TOKEN, already written this turn. The worker's answer IS
+    the graph's result - a second record adds no information, only a
+    duplicate paragraph in the transcript. Compare the final coalesced
+    text (not deltas), scoped to the same turn_no."""
+    from primer.model.chat import Done, TextDelta
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(
+        TextDelta(text="the worker's answer", index=0), state,
+        node_id="worker", turn_no=3,
+    )
+    worker_done = translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), state,
+        node_id="worker", turn_no=3,
+    )
+    assert isinstance(worker_done, list)
+    assert worker_done[0].kind == SessionMessageKind.ASSISTANT_TOKEN
+    assert worker_done[0].payload["text"] == "the worker's answer"
+
+    # Passthrough: byte-identical text, same turn -> suppressed.
+    rec = translate_stream_event(
+        _GraphEndOutputEvent(
+            text="the worker's answer", parsed=None, end_node_id="end1",
+        ),
+        state, turn_no=3,
+    )
+    assert rec is None
+
+
+def test_graph_end_output_keeps_a_genuine_transformation() -> None:
+    """The other half of ruling (a): when output_template actually
+    transforms the text (not a bare passthrough), the End record is
+    semantically distinct from the worker's answer and must still be
+    written - only a BYTE-IDENTICAL echo is noise."""
+    from primer.model.chat import Done, TextDelta
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(
+        TextDelta(text="raw worker text", index=0), state,
+        node_id="worker", turn_no=1,
+    )
+    translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), state,
+        node_id="worker", turn_no=1,
+    )
+
+    rec = translate_stream_event(
+        _GraphEndOutputEvent(
+            text="{summary: raw worker text}", parsed=None, end_node_id="end1",
+        ),
+        state, turn_no=1,
+    )
+    assert isinstance(rec, SessionMessageRecord)
+    assert rec.payload["text"] == "{summary: raw worker text}"
+
+
+def test_graph_end_output_passthrough_check_is_scoped_to_the_same_turn() -> None:
+    """The equality suppression only looks BACK within the same turn -
+    an End node in a LATER turn that happens to render the same text as
+    a PRIOR turn's last answer is not a duplicate of anything in this
+    turn's transcript and must still be written."""
+    from primer.model.chat import Done, TextDelta
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(
+        TextDelta(text="same text", index=0), state, node_id="worker", turn_no=1,
+    )
+    translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), state,
+        node_id="worker", turn_no=1,
+    )
+
+    rec = translate_stream_event(
+        _GraphEndOutputEvent(text="same text", parsed=None, end_node_id="end1"),
+        state, turn_no=2,
+    )
+    assert isinstance(rec, SessionMessageRecord)
+    assert rec.payload["text"] == "same text"
+
+
 def test_translate_reasoning_delta_coalesces_and_flushes_before_text() -> None:
     """ReasoningDeltas coalesce; Done flushes thought BEFORE the answer.
 
