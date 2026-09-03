@@ -50,7 +50,7 @@ async def _seeded_user(fake_storage_provider) -> User:
 async def _mcp_call(app, *, headers: dict[str, str], tool_name: str, arguments=None):
     """Drive a real ``tools/call`` through the /v1/mcp mount.
 
-    Uses an in-process ASGI transport (via a custom ``httpx_client_factory``)
+    Uses an in-process ASGI transport (via an injected ``httpx.AsyncClient``)
     so the full StreamableHTTP protocol -- initialize handshake, then
     tools/call -- runs against the test app without a live socket. Returns
     the SDK's ``CallToolResult``.
@@ -58,26 +58,30 @@ async def _mcp_call(app, *, headers: dict[str, str], tool_name: str, arguments=N
     import httpx as _httpx
     from httpx import ASGITransport
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.streamable_http import streamable_http_client
 
-    def _factory(headers=None, timeout=None, auth=None):
-        return _httpx.AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-            follow_redirects=True,
-            headers=headers,
-            timeout=timeout or _httpx.Timeout(30),
-            auth=auth,
-        )
-
-    async with streamablehttp_client(
-        "http://test/v1/mcp/",
+    # mcp>=2.0: streamable_http_client (renamed from streamablehttp_client)
+    # dropped headers=/httpx_client_factory= in favour of an injected
+    # httpx.AsyncClient (http_client=) - build the same in-process
+    # ASGI-transport client directly instead of via a factory callback.
+    # http_client is caller-owned (streamable_http_client only manages the
+    # client's lifecycle when it builds one internally), so it's entered
+    # via its own `async with`. Yields a 2-tuple now, not 3 - no more
+    # get_session_id.
+    async with _httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        follow_redirects=True,
         headers=headers,
-        httpx_client_factory=_factory,
-    ) as (read, write, _get_session_id):
-        async with ClientSession(read, write) as sess:
-            await sess.initialize()
-            return await sess.call_tool(tool_name, arguments=arguments or {})
+        timeout=_httpx.Timeout(30),
+    ) as http_client:
+        async with streamable_http_client(
+            "http://test/v1/mcp/",
+            http_client=http_client,
+        ) as (read, write):
+            async with ClientSession(read, write) as sess:
+                await sess.initialize()
+                return await sess.call_tool(tool_name, arguments=arguments or {})
 
 
 @pytest.mark.asyncio
@@ -122,7 +126,7 @@ async def test_mcp_endpoint_cookie_session_call_succeeds(client, app):
     result = await _mcp_call(
         app, headers={"Cookie": cookie_header}, tool_name="misc__uuid_v4",
     )
-    assert result.isError is False, getattr(result, "content", result)
+    assert result.is_error is False, getattr(result, "content", result)
 
 
 @pytest.mark.asyncio
@@ -180,7 +184,7 @@ async def test_mcp_endpoint_with_bearer_mcp_scope_call_succeeds(
     client.cookies.clear()
     headers = {"Authorization": f"Bearer {plaintext}"}
     result = await _mcp_call(app, headers=headers, tool_name="misc__uuid_v4")
-    assert result.isError is False, getattr(result, "content", result)
+    assert result.is_error is False, getattr(result, "content", result)
 
 
 @pytest.mark.asyncio
@@ -217,7 +221,7 @@ async def test_mcp_endpoint_with_bearer_no_mcp_scope_connects_then_call_denied(
     assert resp.status_code != 403, resp.text
 
     result = await _mcp_call(app, headers=headers, tool_name="misc__uuid_v4")
-    assert result.isError is True
+    assert result.is_error is True
     text = result.content[0].text
     assert "mcp" in text
     assert "scope" in text
@@ -263,5 +267,5 @@ async def test_mcp_endpoint_restricted_role_connects_but_call_denied(
     result = await _mcp_call(
         app, headers={"Cookie": cookie_header}, tool_name="misc__uuid_v4",
     )
-    assert result.isError is True
+    assert result.is_error is True
     assert "requires" in result.content[0].text

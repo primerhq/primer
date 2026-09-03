@@ -470,17 +470,19 @@ async def test_build_mcp_server_registers_handlers(
     fake_storage_provider, fake_provider_registry_with_tools,
 ) -> None:
     """The returned Server has list_tools + call_tool handlers installed."""
-    from mcp.types import CallToolRequest, ListToolsRequest
 
     def factory() -> ExposureDeps:
         return _deps(fake_storage_provider, fake_provider_registry_with_tools)
 
     server = build_mcp_server(factory)
 
-    # The SDK keys its request dispatcher by request-type; presence of
-    # both keys proves the decorators registered the handlers.
-    assert ListToolsRequest in server.request_handlers
-    assert CallToolRequest in server.request_handlers
+    # mcp>=2.0: handlers are keyed by JSON-RPC method string
+    # ("tools/list" / "tools/call"), not request-type class (the SDK
+    # dropped the public request_handlers dict along with the decorator
+    # API); presence of both proves on_list_tools/on_call_tool were
+    # passed to the Server constructor.
+    assert server.get_request_handler("tools/list") is not None
+    assert server.get_request_handler("tools/call") is not None
 
 
 @pytest.mark.asyncio

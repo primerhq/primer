@@ -154,7 +154,7 @@ class McpTaskBridge(_BackgroundTask):
                 event_key,
                 {"result": {"isError": True, "content": [
                     {"type": "text",
-                     "text": (status_result.statusMessage
+                     "text": (status_result.status_message
                               or f"task {task_id} failed")},
                 ]}},
             )

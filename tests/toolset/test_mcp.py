@@ -7,13 +7,15 @@ HTTP-transport tests live in the same file (added in Task 6).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 import mcp.types as mcp_types
 import pytest
+from mcp import ClientSession
+from mcp.client._memory import InMemoryTransport
 from mcp.server.lowlevel import Server
-from mcp.shared.memory import create_connected_server_and_client_session
 
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.except_ import (
@@ -28,13 +30,27 @@ from primer.toolset.mcp import McpToolsetProvider
 # ---------- in-memory MCP server fixtures ---------------------------------
 
 
+@asynccontextmanager
+async def _connected_client_session(server: Server) -> AsyncIterator[ClientSession]:
+    """Wire client + server over in-memory streams, initialize, yield.
+
+    mcp>=2.0 dropped the SDK's own all-in-one
+    ``mcp.shared.memory.create_connected_server_and_client_session``
+    helper; ``InMemoryTransport`` (private module, used by the SDK's own
+    test suite for exactly this purpose) is the replacement primitive.
+    """
+    async with InMemoryTransport(server) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            yield session
+
+
 def _make_test_server() -> Server:
     """A minimal MCP server exposing two tools: 'echo' and 'fail'."""
-    server = Server("primer-test-server")
 
-    @server.list_tools()
-    async def _list() -> list[mcp_types.Tool]:
-        return [
+    async def _list(ctx: Any, params: Any) -> mcp_types.ListToolsResult:
+        del ctx, params
+        return mcp_types.ListToolsResult(tools=[
             mcp_types.Tool(
                 name="echo",
                 description="echo arguments back as text",
@@ -49,21 +65,37 @@ def _make_test_server() -> Server:
                 description="always returns an error result",
                 inputSchema={"type": "object", "properties": {}},
             ),
-        ]
+        ])
 
-    @server.call_tool()
-    async def _call(name: str, arguments: dict[str, Any]):
+    async def _call(
+        ctx: Any, params: mcp_types.CallToolRequestParams,
+    ) -> mcp_types.CallToolResult:
+        del ctx
+        name = params.name
+        arguments = params.arguments or {}
         if name == "echo":
-            return [
+            return mcp_types.CallToolResult(content=[
                 mcp_types.TextContent(
-                    type="text", text=f"echo:{arguments.get('text', '')}"
-                )
-            ]
+                    type="text", text=f"echo:{arguments.get('text', '')}",
+                ),
+            ])
         if name == "fail":
-            raise ValueError("simulated tool failure")
+            # mcp>=2.0 no longer auto-wraps a raised handler exception
+            # into an isError result (release notes #3314 - it now
+            # becomes a protocol-level MCPError instead). Construct the
+            # isError result explicitly, same pattern
+            # primer.mcp.server's own on_call_tool handler uses, so this
+            # fixture still exercises the isError=True path the tests
+            # below expect.
+            return mcp_types.CallToolResult(
+                isError=True,
+                content=[mcp_types.TextContent(
+                    type="text", text="simulated tool failure",
+                )],
+            )
         raise ValueError(f"unknown tool {name}")
 
-    return server
+    return Server("primer-test-server", on_list_tools=_list, on_call_tool=_call)
 
 
 # ---------- a McpToolsetProvider subclass that accepts a pre-built session
@@ -73,9 +105,9 @@ class _InMemoryMcpToolsetProvider(McpToolsetProvider):
     """McpToolsetProvider variant that bypasses real transport setup.
 
     Tests drive the provider against a pre-built ``ClientSession``
-    yielded by ``create_connected_server_and_client_session``. The base
-    class supplies the request-translation logic; this subclass just
-    swaps out the session-acquisition path.
+    yielded by ``_connected_client_session``. The base class supplies
+    the request-translation logic; this subclass just swaps out the
+    session-acquisition path.
     """
 
     def __init__(self, toolset_id: str, session) -> None:
@@ -124,7 +156,7 @@ class TestConstructor:
 class TestListToolsStdio:
     async def test_lists_both_test_tools(self) -> None:
         server = _make_test_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with _connected_client_session(server) as session:
             provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=session)
             tools = [t async for t in provider.list_tools()]
         names = sorted(t.id for t in tools)
@@ -132,7 +164,7 @@ class TestListToolsStdio:
 
     async def test_tools_carry_provider_toolset_id(self) -> None:
         server = _make_test_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with _connected_client_session(server) as session:
             provider = _InMemoryMcpToolsetProvider(
                 toolset_id="ts-provider", session=session
             )
@@ -142,7 +174,7 @@ class TestListToolsStdio:
 
     async def test_tools_preserve_input_schema(self) -> None:
         server = _make_test_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with _connected_client_session(server) as session:
             provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=session)
             tools = {t.id: t async for t in provider.list_tools()}
         assert tools["echo"].args_schema == {
@@ -155,7 +187,7 @@ class TestListToolsStdio:
 class TestCallToolStdio:
     async def test_text_content_is_returned_as_output(self) -> None:
         server = _make_test_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with _connected_client_session(server) as session:
             provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=session)
             result = await provider.call(tool_name="echo", arguments={"text": "hi"})
         assert isinstance(result, ToolCallResult)
@@ -164,7 +196,7 @@ class TestCallToolStdio:
 
     async def test_failing_tool_returns_is_error_true(self) -> None:
         server = _make_test_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with _connected_client_session(server) as session:
             provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=session)
             result = await provider.call(tool_name="fail", arguments={})
         assert result.is_error is True
@@ -172,12 +204,17 @@ class TestCallToolStdio:
     async def test_unknown_tool_propagates_as_provider_error(self) -> None:
         from primer.model.except_ import ProviderError
 
-        # The MCP lowlevel server catches handler exceptions and converts
-        # them to ``CallToolResult(isError=True, content=[TextContent(...)])``
-        # rather than letting them surface as McpError. Either path is a
-        # valid "tool failed" signal -- accept whichever the SDK delivers.
+        # mcp>=2.0: an on_call_tool handler exception is no longer
+        # auto-wrapped into an isError result - it surfaces as a
+        # protocol-level MCPError instead (release notes #3314; see
+        # _make_test_server's own "fail" branch above, which now
+        # constructs isError=True explicitly for the case that DOES want
+        # that shape). The fixture's "unknown tool" branch still just
+        # raises, so this is the MCPError path; kept as a defensive
+        # try/except rather than a hard assert in case a future SDK
+        # revives the auto-wrap for unhandled exceptions too.
         server = _make_test_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with _connected_client_session(server) as session:
             provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=session)
             try:
                 result = await provider.call(
@@ -191,30 +228,32 @@ class TestCallToolStdio:
 
 class TestContentMapping:
     async def test_image_content_serialises_to_extended(self) -> None:
-        server = Server("img-test")
-
-        @server.list_tools()
-        async def _list() -> list[mcp_types.Tool]:
-            return [
+        async def _list(ctx: Any, params: Any) -> mcp_types.ListToolsResult:
+            del ctx, params
+            return mcp_types.ListToolsResult(tools=[
                 mcp_types.Tool(
                     name="picture",
                     description="returns an image",
                     inputSchema={"type": "object", "properties": {}},
                 ),
-            ]
+            ])
 
-        @server.call_tool()
-        async def _call(name: str, arguments: dict[str, Any]):
-            return [
+        async def _call(
+            ctx: Any, params: mcp_types.CallToolRequestParams,
+        ) -> mcp_types.CallToolResult:
+            del ctx, params
+            return mcp_types.CallToolResult(content=[
                 mcp_types.TextContent(type="text", text="see image"),
                 mcp_types.ImageContent(
                     type="image",
                     data="base64data",
                     mimeType="image/png",
                 ),
-            ]
+            ])
 
-        async with create_connected_server_and_client_session(server) as session:
+        server = Server("img-test", on_list_tools=_list, on_call_tool=_call)
+
+        async with _connected_client_session(server) as session:
             provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=session)
             result = await provider.call(tool_name="picture", arguments={})
 
@@ -287,10 +326,10 @@ class TestHttpTransportSuccess:
 
         @asynccontextmanager
         async def fake_streamablehttp(**kwargs):
-            yield (object(), object(), lambda: None)
+            yield (object(), object())
 
         monkeypatch.setattr(
-            "mcp.client.streamable_http.streamablehttp_client",
+            "mcp.client.streamable_http.streamable_http_client",
             fake_streamablehttp,
         )
         monkeypatch.setattr(
@@ -325,13 +364,25 @@ class TestHttpTransportSuccess:
 
         captured: dict[str, object] = {}
 
+        # mcp>=2.0: headers no longer reach streamable_http_client directly
+        # (it dropped headers= for an injected httpx.AsyncClient); primer's
+        # _open_session now builds that client via create_mcp_http_client
+        # (mcp.shared._httpx_utils), so headers are captured there instead.
+        @asynccontextmanager
+        async def fake_create_mcp_http_client(**kwargs):
+            captured.update(kwargs)
+            yield object()
+
         @asynccontextmanager
         async def fake_streamablehttp(**kwargs):
-            captured.update(kwargs)
-            yield (object(), object(), lambda: None)
+            yield (object(), object())
 
         monkeypatch.setattr(
-            "mcp.client.streamable_http.streamablehttp_client",
+            "mcp.shared._httpx_utils.create_mcp_http_client",
+            fake_create_mcp_http_client,
+        )
+        monkeypatch.setattr(
+            "mcp.client.streamable_http.streamable_http_client",
             fake_streamablehttp,
         )
         monkeypatch.setattr(
@@ -370,10 +421,10 @@ class TestHttpTransportSuccess:
 
         @asynccontextmanager
         async def fake_streamablehttp(**kwargs):
-            yield (object(), object(), lambda: None)
+            yield (object(), object())
 
         monkeypatch.setattr(
-            "mcp.client.streamable_http.streamablehttp_client",
+            "mcp.client.streamable_http.streamable_http_client",
             fake_streamablehttp,
         )
         monkeypatch.setattr(
@@ -395,7 +446,7 @@ class TestHttpTransportSuccess:
 
 class TestSseTransport:
     """Legacy HTTP+SSE routes through mcp.client.sse.sse_client (not
-    streamablehttp_client) and copes with its 2-tuple stream yield."""
+    streamable_http_client) and copes with its 2-tuple stream yield."""
 
     def test_sse_config_is_accepted(self) -> None:
         provider = McpToolsetProvider(
@@ -426,18 +477,19 @@ class TestSseTransport:
         @asynccontextmanager
         async def fake_sse(**kwargs):
             used["sse"] = True
-            # sse_client yields a 2-tuple (read, write), NOT streamable's
-            # 3-tuple; the unified dispatch must handle the shorter arity.
+            # Both transports yield a 2-tuple (read, write) in mcp>=2.0;
+            # this stub is a tripwire proving streamable-http is never
+            # invoked for an SSE-configured provider, not a shape check.
             yield (object(), object())
 
         @asynccontextmanager
         async def fake_streamablehttp(**kwargs):
             used["streamable"] = True
-            yield (object(), object(), lambda: None)
+            yield (object(), object())
 
         monkeypatch.setattr("mcp.client.sse.sse_client", fake_sse)
         monkeypatch.setattr(
-            "mcp.client.streamable_http.streamablehttp_client",
+            "mcp.client.streamable_http.streamable_http_client",
             fake_streamablehttp,
         )
         monkeypatch.setattr(
