@@ -98,34 +98,29 @@ def test_u0110_policy_modal_llm_judge_journey(
       1. Seed LLMProvider with a named judge model via API.
       2. Navigate /providers/llm → assert the seeded row is listed
          (proves the cross-page dropdown source is populated).
-      3. Navigate /approvals → click Policies tab.
-      4. Click "New policy" → modal opens.
-      5. Fill id + toolset + tool, then click "LLM judge" chip.
-      6. Provider dropdown shows the seeded provider; select it.
-      7. Model dropdown auto-enables + populates with the provider's
+      3. Navigate /approvals, open the New-policy modal via the
+         config hint.
+      4. Fill id, pick a real tool via the shared picker (uiv2 Wave 3),
+         then click "LLM judge" chip.
+      5. Provider dropdown shows the seeded provider; select it.
+      6. Model dropdown auto-enables + populates with the provider's
          model; select it. Fill the judge prompt.
-      8. Click "Create policy" → "Policy created" toast.
-      9. Policies table now contains a row with the new policy id.
-     10. Toggle the row's enabled checkbox → "Policy updated" toast.
-     11. Click the row's delete button → confirmation modal renders.
-     12. Click "Delete" in the confirm modal → "Policy deleted" toast
-         + row disappears within the next refetch cycle.
+      7. Click "Create policy" → "Policy created" toast, modal closes.
+      8. Verify the persisted policy via API (no more inline policies
+         table with toggle/delete on this page - see _cleanup for
+         teardown).
 
     Pinned invariants:
       * LLM-type form dropdowns are fed by live /v1/llm_providers
         — the seeded provider must appear within the modal open.
       * Provider→model effect: picking a provider unblocks the model
         select and prefills the first available model.
-      * Each mutation (create, toggle, delete) surfaces the documented
-        toast title via approvals.jsx + the console shell toaster wiring.
-      * The delete confirmation modal is a real gate — the row only
-        disappears after the confirm button in the modal is clicked.
+      * The create mutation surfaces the documented toast title via
+        approvals.jsx + the console shell toaster wiring.
     """
     judge_model = "judge-m1"
     pid = f"u0110-llm-{unique_suffix}"
     policy_id = f"u0110-pol-{unique_suffix}"
-    toolset_id = f"u0110-ts-{unique_suffix}"
-    tool_name = f"u0110-tool-{unique_suffix}"
 
     _seed_llm_provider(base_url, pid, judge_model)
 
@@ -154,8 +149,8 @@ def test_u0110_policy_modal_llm_judge_journey(
         # --- 2. Open the policy modal from the Tools page ----------
         # uiv2 cutover: the standalone Tools catalog page retired; the
         # Approvals page's config hint now opens the same
-        # AP_NewPolicyModal directly (free-form id / toolset / tool
-        # inputs are still editable, so we override them below).
+        # AP_NewPolicyModal directly (uiv2 Wave 3: Tool is now the
+        # shared picker, not free-form toolset/tool text inputs).
         open_legacy_route(page, console_url, "approvals")
 
         # --- 3. Open the New-policy modal via the config hint -------
@@ -168,15 +163,15 @@ def test_u0110_policy_modal_llm_judge_journey(
 
         # --- 4. Fill core identity fields --------------------------
         modal.locator("[data-testid='approval-policy-id']").fill(policy_id)
-        # The toolset select defaults to _workspaces; the input override
-        # below it accepts free-text. Use the override input to set a
-        # unique user-defined toolset id so this test doesn't collide
-        # with sibling tests' internal-toolset writes.
-        toolset_inputs = modal.locator("input.input.mono")
-        # First mono input is the id (already filled); second is the
-        # toolset override; third is the tool name.
-        toolset_inputs.nth(1).fill(toolset_id)
-        modal.locator("[data-testid='approval-policy-tool']").fill(tool_name)
+        # uiv2 Wave 3: Tool is now the shared window.ToolPicker in
+        # single-select mode - no more free-text toolset/tool-name
+        # override, so pick a real, always-available built-in tool
+        # (primer/toolset/misc.py) instead of a synthetic unique pair.
+        # The policy id above is what makes this test's row unique;
+        # this test's own `finally` cleanup deletes the policy, freeing
+        # the (toolset, tool) pair for the next run.
+        modal.get_by_test_id("tool-picker-filter").fill("uuid_v4")
+        modal.get_by_test_id("tool-picker-row-misc__uuid_v4").click()
 
         # --- 5. Switch to LLM-judge type ---------------------------
         modal.locator("[data-testid='approval-policy-type-llm']").click()

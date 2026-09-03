@@ -3,8 +3,6 @@
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with AP_ to avoid clashes with other components.
 
-const AP_INTERNAL_TOOLSETS = ["workspaces", "system", "misc", "search", "web"];
-
 function AP_ageSec(iso) {
   if (!iso) return null;
   if (iso instanceof Date) return (Date.now() - iso.getTime()) / 1000;
@@ -31,7 +29,7 @@ const AP_PARKED_PREDICATE = {
   right: { kind: "value", value: "parked" },
 };
 
-function ApprovalsPage({ pushToast, onNavigate }) {
+function ApprovalsPage({ pushToast, onNavigate, startCreate }) {
   const { useResource, useViewport, apiFetch } = window.primerApi;
   // eslint-disable-next-line no-unused-vars
   const { isMobile } = useViewport();
@@ -39,9 +37,16 @@ function ApprovalsPage({ pushToast, onNavigate }) {
   const [sortBy, setSortBy] = React.useState("time");
   const [sortDir, setSortDir] = React.useState("desc");
   // US-011a: the standalone Tools catalog page retired; configuring a
-  // gate opens AP_NewPolicyModal directly, with its own embedded
-  // AP_ToolPicker to find the tool - no page to navigate to anymore.
+  // gate opens AP_NewPolicyModal directly - no page to navigate to
+  // anymore.
   const [configuringPolicy, setConfiguringPolicy] = React.useState(false);
+  // uiv2 Wave 3 (routing fix, item 0): "New policy" now addresses this
+  // overlay with section="new" (same convention as AgentsPage's
+  // startCreate) instead of landing here and requiring a second click
+  // on the in-page config hint.
+  React.useEffect(() => {
+    if (startCreate) setConfiguringPolicy(true);
+  }, [startCreate]);
 
   // Parked sessions — sessions in parked_status="parked" state. Each row
   // may or may not be parked on tool_approval (could be ask_user, sleep,
@@ -585,107 +590,15 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
 // =============================================================
 // Approval configuration modal - Required/Policy/LLM create + edit.
 // Opened directly from ApprovalsPage's AP_ConfigHint link (US-011a: the
-// standalone Tools catalog page retired; its own embedded AP_ToolPicker
-// below is the only way left to find a tool to gate).
+// standalone Tools catalog page retired) and from AP_PolicyDetail (uiv2
+// Wave 3 routing fix). The Tool row uses the shared window.ToolPicker
+// in single-select mode (uiv2 Wave 3, approved judgment call) - a
+// policy gates exactly one tool, so the bespoke browser this used to
+// have (plus the redundant toolset-select/tool-name-input pair right
+// below it - THREE controls for two fields) collapsed into the one
+// compact field the mockup specs ("Tool: workspace__write_file (the
+// shared toolset__tool picker)").
 // =============================================================
-
-// Searchable tool catalogue browser for the policy form: picking a row
-// fills toolset + tool name AND shows that tool's y/w/r/n capability
-// badges, so an operator gating a call can see up front whether it
-// yields, needs a workspace, is role-gated, or is fire-and-forget --
-// context the old free-text-only fields never surfaced. Reuses
-// GET /tools (same endpoint TS_ToolsTab reads, batch-2 + the
-// GET /toolsets/{id}/tools follow-up both carry the 4 fields there
-// already). The free-text fields below stay -- this is a faster way to
-// fill them, not a replacement for typing a not-yet-indexed id.
-function AP_ToolPicker({ toolsetId, toolName, onPick }) {
-  const { useResource, apiFetch } = window.primerApi;
-  const [q, setQ] = React.useState("");
-  const catalogue = useResource(
-    "approval-policy:tools-catalogue",
-    (signal) => apiFetch("GET", "/tools", null, { signal }),
-    { pollMs: null },
-  );
-  const groups = catalogue.data?.items ?? [];
-  const ql = q.trim().toLowerCase();
-  const rows = React.useMemo(() => {
-    const out = [];
-    for (const g of groups) {
-      if (!g.available) continue;
-      for (const t of g.tools || []) {
-        if (ql && !(
-          t.id.toLowerCase().includes(ql)
-          || g.id.toLowerCase().includes(ql)
-          || (t.description || "").toLowerCase().includes(ql)
-        )) continue;
-        out.push({ toolsetId: g.id, tool: t });
-      }
-    }
-    return out;
-  }, [groups, ql]);
-
-  return (
-    <div className="field">
-      <label className="field-label">
-        browse tool catalogue
-        <span className="hint">pick a tool to fill toolset + tool name below, with its y/w/r/n capabilities</span>
-      </label>
-      <div className="input-icon">
-        <Icon name="search" size={13} className="icon" />
-        <input
-          className="input"
-          placeholder="Filter by tool, toolset, or description…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          data-testid="approval-policy-tool-picker-filter"
-          style={{ width: "100%" }}
-        />
-      </div>
-      <div
-        style={{
-          maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)",
-          borderRadius: 6, marginTop: 6,
-        }}
-        data-testid="approval-policy-tool-picker-results"
-      >
-        {catalogue.loading && rows.length === 0 && (
-          <div className="muted text-sm" style={{ padding: 10 }}>Loading tool catalogue…</div>
-        )}
-        {!catalogue.loading && rows.length === 0 && (
-          <div className="muted text-sm" style={{ padding: 10 }}>No tools match.</div>
-        )}
-        {rows.map((r) => {
-          const rowKey = `${r.toolsetId}__${r.tool.id}`;
-          const selected = r.toolsetId === toolsetId && r.tool.id === toolName;
-          return (
-            <div
-              key={rowKey}
-              data-testid={`approval-policy-tool-picker-row-${rowKey}`}
-              onClick={() => onPick(r.toolsetId, r.tool.id)}
-              style={{
-                display: "flex", alignItems: "center", gap: 8,
-                padding: "6px 10px", cursor: "pointer",
-                background: selected ? "var(--bg-2)" : "transparent",
-                borderBottom: "1px solid var(--bg-1)",
-              }}
-            >
-              <span
-                className="mono"
-                style={{
-                  fontSize: 12, minWidth: 0, flex: 1, overflow: "hidden",
-                  textOverflow: "ellipsis", whiteSpace: "nowrap",
-                }}
-              >
-                {r.toolsetId} · {r.tool.id}
-              </span>
-              <CapabilityBadges tool={r.tool} testid={`approval-policy-tool-picker-badges-${rowKey}`} />
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   // Same modal: create (no existing, or existing with empty id) and
@@ -719,6 +632,24 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
     const arr = spec.kind === "roles" ? spec.roles : spec.users;
     return (arr || []).join(", ");
   });
+  // uiv2 Wave 3 (approved judgment call): roles are a fixed, small enum
+  // (primer/model/user.py's Literal["admin","user","restricted"]), so
+  // "role(s)" renders as toggleable chip tokens per the mockup ("admin
+  // ✓" green-tinted / "user" neutral) instead of typed free text.
+  // "specific users" has no such bounded set (real usernames, not an
+  // enum) and the mockup doesn't show that variant, so it keeps the
+  // existing comma-separated input unchanged.
+  const AP_ROLE_OPTIONS = ["admin", "user", "restricted"];
+  const apprRoleSet = React.useMemo(
+    () => new Set(apprList.split(",").map((s) => s.trim()).filter(Boolean)),
+    [apprList],
+  );
+  const toggleApprRole = (role) => {
+    const next = new Set(apprRoleSet);
+    if (next.has(role)) next.delete(role);
+    else next.add(role);
+    setApprList([...next].join(", "));
+  };
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   // Provider dropdown source — keyed separately from the page-level
@@ -901,49 +832,27 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
         {fieldErr("body.id")}
       </div>
 
-      <AP_ToolPicker
-        toolsetId={toolsetId}
-        toolName={toolName}
-        onPick={(pickedToolsetId, pickedToolName) => {
-          setToolsetId(pickedToolsetId);
-          setToolName(pickedToolName);
-        }}
-      />
-
       <div className="field">
-        <label className="field-label">toolset</label>
-        <select
-          className="select mono"
-          value={toolsetId}
-          onChange={(e) => setToolsetId(e.target.value)}
-          style={{ width: "100%" }}
-          data-testid="approval-policy-toolset"
-        >
-          {AP_INTERNAL_TOOLSETS.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <div className="field-help">
-          Pick a built-in toolset, or type a user-defined toolset id below.
-        </div>
-        <input
-          className="input mono"
-          value={toolsetId}
-          onChange={(e) => setToolsetId(e.target.value)}
-          style={{ width: "100%", marginTop: 4 }}
-          placeholder="or type a toolset id…"
+        <label className="field-label">
+          Tool
+          <span className="hint">the shared toolset__tool picker</span>
+        </label>
+        <window.ToolPicker
+          mode="single"
+          pageSize={6}
+          selected={toolsetId && toolName ? new Set([`${toolsetId}__${toolName}`]) : new Set()}
+          onChange={(next) => {
+            const picked = [...next][0] || "";
+            // Toolset ids never contain "__" themselves (builtins are
+            // `_system`/`_workspaces`/`_misc`/`_search`/`web`; the same
+            // assumption the agent-tools scoped id already relies on),
+            // so splitting on the first occurrence recovers both parts.
+            const sep = picked.indexOf("__");
+            setToolsetId(sep < 0 ? "" : picked.slice(0, sep));
+            setToolName(sep < 0 ? "" : picked.slice(sep + 2));
+          }}
         />
         {fieldErr("body.toolset_id")}
-      </div>
-
-      <div className="field">
-        <label className="field-label">tool name</label>
-        <input
-          className="input mono"
-          value={toolName}
-          onChange={(e) => setToolName(e.target.value)}
-          style={{ width: "100%" }}
-          placeholder="fs.delete"
-          data-testid="approval-policy-tool"
-        />
         {fieldErr("body.tool_name")}
       </div>
 
@@ -983,13 +892,31 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
             </span>
           ))}
         </div>
-        {apprKind !== "anyone" && (
+        {apprKind === "roles" && (
+          <div className="chip-group" style={{ marginTop: 6 }} data-testid="approval-policy-approvers-role-chips">
+            {AP_ROLE_OPTIONS.map((role) => {
+              const on = apprRoleSet.has(role);
+              return (
+                <span
+                  key={role}
+                  className={`chip${on ? " active" : ""}`}
+                  style={on ? { color: "var(--green)", borderColor: "var(--green)" } : undefined}
+                  onClick={() => toggleApprRole(role)}
+                  data-testid={`approval-policy-approvers-role-${role}`}
+                >
+                  {role}{on ? " ✓" : ""}
+                </span>
+              );
+            })}
+          </div>
+        )}
+        {apprKind === "users" && (
           <input
             className="input mono"
             style={{ width: "100%", marginTop: 6 }}
             value={apprList}
             onChange={(e) => setApprList(e.target.value)}
-            placeholder={apprKind === "roles" ? "user, admin" : "alice, bob"}
+            placeholder="alice, bob"
             data-testid="approval-policy-approvers-list"
           />
         )}
@@ -1076,6 +1003,38 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
       )}
     </Modal>
   );
+}
+
+// =============================================================
+// AP_PolicyDetail - uiv2 Wave 3 routing fix (item 0): the "Open" card
+// action now addresses this overlay WITH the policy's id
+// (nv-platform.jsx's approvals.open), landing here instead of the
+// generic records sheet. Fetches the one row and hands it to
+// AP_NewPolicyModal's existing edit-mode support - the modal itself
+// already had everything it needed, only the entry point was missing.
+// =============================================================
+
+function AP_PolicyDetail({ policyId, pushToast, onClose }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const policy = useResource(
+    "approvals:policy:" + policyId,
+    (signal) => apiFetch("GET", "/tool_approval_policies/" + encodeURIComponent(policyId), null, { signal }),
+    { pollMs: null },
+  );
+  if (policy.loading && !policy.data) {
+    return <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>;
+  }
+  if (policy.error && !policy.data) {
+    return (
+      <Banner
+        kind="error"
+        title={policy.error.title || "Couldn't load policy"}
+        detail={policy.error.detail || policy.error.message}
+        actions={<Btn size="sm" icon="chevron-left" onClick={onClose}>Back to list</Btn>}
+      />
+    );
+  }
+  return <AP_NewPolicyModal existing={policy.data} pushToast={pushToast} onClose={onClose} />;
 }
 
 // =============================================================
@@ -1194,4 +1153,5 @@ function ApprovalBanner({ data, scope, id, pushToast }) {
 }
 
 window.ApprovalsPage = ApprovalsPage;
+window.AP_PolicyDetail = AP_PolicyDetail;
 window.ApprovalBanner = ApprovalBanner;
