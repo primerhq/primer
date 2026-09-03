@@ -718,6 +718,34 @@ def test_decision_card_diff_preview_via_mini_racer():
     assert ctx.call("SH_looksLikeDiff", "") is False
 
 
+def test_decision_and_ask_cards_disable_when_the_session_has_ended():
+    """Live finding 01a064d3: a park can outlive its session (a sweep/
+    timeout continuation that then fails ends the session without
+    clearing parked_status), so the decision/ask card could still render
+    as if a human could act on it - live Approve/Reject/Answer buttons
+    on an already-ended session, contradicting the header's own "Ended"
+    pill. The ended state must win: keep the card for historical
+    context, but its controls are disabled and annotated rather than
+    live-looking."""
+    decision = DOC[DOC.index("function NV_DecisionCard"):
+                   DOC.index("function NV_AskCard")]
+    assert 'data-testid="nv-approve" disabled={!!props.ended}' in decision
+    assert 'data-testid="nv-reject" disabled={!!props.ended}' in decision
+    assert "session ended before this could be resolved" in decision
+
+    ask = DOC[DOC.index("function NV_AskCard"):]
+    assert 'data-testid="nv-ask-submit" disabled={!!props.ended}' in ask
+    assert 'data-testid="nv-ask-answer" disabled={!!props.ended}' in ask
+    assert "session ended before this could be answered" in ask
+
+    # ended is threaded from the SAME NV_sessionIsOver check the fold
+    # line and header pill already use - one source of truth, not a
+    # second computation that could drift from it.
+    assert "var ended = NV_sessionIsOver(session);" in DOC
+    assert "<NV_DecisionCard key={item.id} item={item} ended={ended}" in DOC
+    assert "<NV_AskCard key={item.id} item={item} ended={ended}" in DOC
+
+
 def test_decision_card_uses_the_diff_helpers_only_when_diff_shaped():
     card = DOC[DOC.index("function NV_DecisionCard"):
                DOC.index("function NV_AskCard")]
@@ -882,12 +910,12 @@ def test_composer_wait_note_uses_the_shared_parked_status_line():
     ctx.eval(STATUS[wait_start:wait_end])
     ctx.eval(STATUS[parked_start:parked_end])
 
-    approval_gate = [{"kind": "approval", "toolName": "workspace__write_file"}]
+    approval_gate = [{"kind": "approval", "gatedTool": "workspace__write_file"}]
     assert ctx.call(
         "SH_parkedStatusLine", {"parked_status": "parked"}, approval_gate,
     ) == "waiting on approval — workspace__write_file (parked, worker released)"
 
-    ask_gate = [{"kind": "question", "toolName": "ask_user"}]
+    ask_gate = [{"kind": "question", "gatedTool": "ask_user"}]
     assert ctx.call(
         "SH_parkedStatusLine", {"parked_status": "parked"}, ask_gate,
     ) == "waiting on your answer — ask_user (parked, worker released)"
@@ -940,12 +968,20 @@ def test_short_time_formats_like_the_transcript_helper_via_mini_racer():
 
 
 def test_trace_header_label_via_mini_racer():
-    """Audit A item 5: NV_TraceSplit's header enriches "trace · turn N"
-    to "trace · {calls} · {span}s" using the turn's own rows (already
-    fetched for the transcript - no new request). Span is the last tool
-    activity minus the first (not a sum of individual durations - see
-    SH_traceHeaderLabel's own comment for why), and a turn with zero tool
-    calls keeps the plain form exactly as before."""
+    """Audit A item 5, amended by the live finding in 01a064d3:
+    NV_TraceSplit's header enriches "trace · turn N" to "trace ·
+    {calls} · {span}s" using the SAME timeline nodes the trace body
+    renders below it (tool_call AND llm_call - both get a T/A glyph row
+    per NV_traceGlyph). The header used to count only over the
+    transcript's own turnRows, which SA_toTranscript deliberately never
+    populates with llm_call records (session-adapter.jsx's
+    SA_SKIP_IN_TRANSCRIPT), so a turn with any llm_call undercounted
+    against what the body actually showed ("1 CALL" above three visible
+    rows, live capture evidence). Span is the latest node end (ts +
+    duration_ms) minus the earliest node start, not a sum of individual
+    durations (a sum here would read 4s + 3s = 7s, not the correct 8s
+    below), and a turn with zero tool/llm calls keeps the plain form
+    exactly as before."""
     from py_mini_racer import MiniRacer
 
     start = TURNS.index("function SH_traceHeaderLabel")
@@ -955,32 +991,30 @@ def test_trace_header_label_via_mini_racer():
     ctx = MiniRacer()
     ctx.eval(src)
 
-    # Zero tool calls (pure reasoning + answer) - unchanged plain form.
+    # No tool/llm calls (just a graph boundary marker) - unchanged plain form.
     assert ctx.eval(
-        'SH_traceHeaderLabel(3, [{kind: "reasoning"}, {kind: "user_message"}])'
+        'SH_traceHeaderLabel(3, [{kind: "node"}])'
     ) == "trace · turn 3"
     assert ctx.eval("SH_traceHeaderLabel(3, [])") == "trace · turn 3"
 
-    # One call - singular "call", span from its own call/result pair.
+    # One call - singular "call", span from its own start + duration.
     one = ctx.eval(
         """
         SH_traceHeaderLabel(1, [
-          {kind: "tool_call", createdAt: "2026-08-29T00:00:00Z"},
-          {kind: "tool_result", createdAt: "2026-08-29T00:00:04Z"},
+          {kind: "tool_call", ts: "2026-08-29T00:00:00Z", duration_ms: 4000},
         ])
         """
     )
     assert one == "trace · 1 call · 4s"
 
-    # Multiple calls - plural, span is last-end minus first-start across
-    # ALL of them, not a sum (a sum here would read 4s + 3s = 7s).
+    # tool_call + llm_call (the exact shape that previously undercounted)
+    # - plural, both count, span is last-end minus first-start across
+    # ALL of them, not a sum.
     multi = ctx.eval(
         """
         SH_traceHeaderLabel(2, [
-          {kind: "tool_call", createdAt: "2026-08-29T00:00:00Z"},
-          {kind: "tool_result", createdAt: "2026-08-29T00:00:04Z"},
-          {kind: "tool_call", createdAt: "2026-08-29T00:00:05Z"},
-          {kind: "tool_result", createdAt: "2026-08-29T00:00:08Z"},
+          {kind: "tool_call", ts: "2026-08-29T00:00:00Z", duration_ms: 4000},
+          {kind: "llm_call", ts: "2026-08-29T00:00:05Z", duration_ms: 3000},
         ])
         """
     )
@@ -1173,17 +1207,29 @@ def test_trace_row_expand_toggle_via_mini_racer():
 
 
 def test_trace_split_uses_the_enriched_header_label():
-    """NV_TraceSplit's header renders SH_traceHeaderLabel(turnNo, turnRows)
-    rather than the bare "trace · turn N" string directly, and the caller
-    passes the turn's own rows (turnRowsFor, filtered from the same flat
-    transcript array traceTurnFor already indexes - no new fetch)."""
+    """NV_TraceSplit's header renders SH_traceHeaderLabel(turnNo, ...)
+    rather than the bare "trace · turn N" string directly. Live finding
+    01a064d3: the header used to be fed props.turnRows - the TRANSCRIPT's
+    own rows, which SA_toTranscript deliberately never populates with
+    llm_call records (session-adapter.jsx's SA_SKIP_IN_TRANSCRIPT) - so
+    it silently undercounted against the trace BODY, which renders the
+    turn's full timeline node tree (tool_call AND llm_call) fetched
+    separately via SH_api.timeline. The header must aggregate over that
+    SAME node list the body renders, not a narrower transcript-derived
+    one - so both NV_TraceSplit's sidebar header and NV_TraceMaximize's
+    overlay header now read the flattened timeline nodes (traceNodes),
+    and the now-dead turnRowsFor/turnRows plumbing is gone, not just
+    unused."""
     trace = DOC[DOC.index("function NV_TraceSplit"):]
     trace = trace[:trace.index("function NV_Composer")]
-    assert "SH_traceHeaderLabel(props.turnNo, props.turnRows)" in trace
+    assert "var traceNodes = flatRows.map(function (r) { return r.node; });" in trace
+    assert "SH_traceHeaderLabel(props.turnNo, traceNodes)" in trace
+    assert "SH_traceHeaderLabel(props.turnNo, props.traceNodes)" in trace
     assert "trace · turn {props.turnNo}" not in trace
 
-    assert "function turnRowsFor(turnNo)" in DOC
-    assert "turnRows={turnRowsFor(traceTurn)}" in DOC
+    assert "function turnRowsFor(turnNo)" not in DOC
+    assert "turnRows={turnRowsFor(traceTurn)}" not in DOC
+    assert "props.turnRows" not in DOC
 
 
 def test_divider_renders_as_a_rule_not_a_bubble_via_mini_racer():

@@ -129,30 +129,41 @@ function SH_shortTime(createdAt) {
 
 // UX reconcile wave 2 (audit A item 5): the trace split's header - "trace
 // · turn N" names the turn but says nothing about what happened in it.
-// Enrich to "trace · {calls} · {span}" using the turn's OWN rows (already
-// fetched for the transcript, each carrying createdAt - no new request):
-// N = tool_call row count; span = last tool activity minus first (the
-// latest of any tool_call/tool_result timestamp, minus the earliest tool
-// call) rather than summing individual durations, since overlapping or
-// back-to-back calls would double-count shared time in a sum. A turn with
-// no tool calls (pure reasoning + answer) keeps the plain "turn N" form -
-// there is nothing to count.
-function SH_traceHeaderLabel(turnNo, turnRows) {
-  var toolCallCount = 0;
+// Enrich to "trace · {calls} · {span}" using the SAME node list the trace
+// body renders below it (the turn's timeline nodes, from the /timeline
+// endpoint - see NV_TraceSplit/NV_TraceMaximize's flatRows) rather than
+// the transcript's own turnRows: SA_toTranscript deliberately skips
+// llm_call records (SA_SKIP_IN_TRANSCRIPT in session-adapter.jsx - "the
+// Trace panel reads it from the timeline endpoint"), so turnRows can
+// never contain them and a header counting only over turnRows silently
+// undercounts against a body that renders both tool_call AND llm_call
+// rows (live finding 01a064d3: "1 CALL" above three visible rows).
+// N = tool_call + llm_call node count (every row the body actually
+// shows a T/A glyph for - see NV_traceGlyph); span = latest node end
+// (ts + duration_ms) minus earliest node start, using each node's own
+// authoritative duration_ms (primer/session/timeline.py already
+// computes it per node via _delta_ms) rather than reconstructing it
+// from paired tool_call/tool_result timestamps. A turn with no
+// tool/llm calls (pure reasoning + answer, or nothing yet) keeps the
+// plain "turn N" form - there is nothing to count.
+function SH_traceHeaderLabel(turnNo, traceNodes) {
+  var callCount = 0;
   var minMs = null;
   var maxMs = null;
-  for (var i = 0; i < (turnRows || []).length; i++) {
-    var row = turnRows[i];
-    if (row.kind !== "tool_call" && row.kind !== "tool_result") continue;
-    if (row.kind === "tool_call") toolCallCount += 1;
-    if (!row.createdAt) continue;
-    var ms = Date.parse(row.createdAt);
-    if (isNaN(ms)) continue;
-    if (minMs === null || ms < minMs) minMs = ms;
-    if (maxMs === null || ms > maxMs) maxMs = ms;
+  for (var i = 0; i < (traceNodes || []).length; i++) {
+    var node = traceNodes[i];
+    if (node.kind !== "tool_call" && node.kind !== "llm_call") continue;
+    callCount += 1;
+    if (!node.ts) continue;
+    var startMs = Date.parse(node.ts);
+    if (isNaN(startMs)) continue;
+    var endMs = startMs
+      + (typeof node.duration_ms === "number" ? node.duration_ms : 0);
+    if (minMs === null || startMs < minMs) minMs = startMs;
+    if (maxMs === null || endMs > maxMs) maxMs = endMs;
   }
-  if (!toolCallCount) return "trace · turn " + turnNo;
-  var callsLabel = toolCallCount + (toolCallCount === 1 ? " call" : " calls");
+  if (!callCount) return "trace · turn " + turnNo;
+  var callsLabel = callCount + (callCount === 1 ? " call" : " calls");
   if (minMs === null || maxMs === null) return "trace · " + callsLabel;
   var seconds = Math.max(0, Math.round((maxMs - minMs) / 1000));
   return "trace · " + callsLabel + " · " + seconds + "s";

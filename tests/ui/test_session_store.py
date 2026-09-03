@@ -367,6 +367,39 @@ def test_legacy_message_is_superseded_by_a_rest_shaped_real_record() -> None:
     assert records[0]["text"] == "hello world"
 
 
+def test_legacy_assistant_message_is_superseded_by_its_assistant_token_twin() -> None:
+    """Live finding 01a064d3: a legacy ASSISTANT placeholder races its
+    modern `assistant_token` twin the same way a legacy USER placeholder
+    races `user_input` (previous test) - _persist_turn writes the legacy
+    `{role: "assistant", parts}` line to messages.jsonl before dispatch's
+    flush lands the real assistant_token record, so REST-seeding this
+    session in file order applies the placeholder first. The eviction
+    used to be scoped to `recordKind === "user_input"` only, so this
+    placeholder was never dropped once its real record arrived - it
+    rendered a second, misattributed (hardcoded user_message, see the
+    console-session-doc test) copy of the final answer ahead of the
+    real transcript. Must dedupe exactly like the user_input case."""
+    ctx = _ctx()
+    rows = _transcript(ctx, "w8b", "s8b", [
+        {"role": "assistant",
+         "parts": [{"type": "text", "text": "the final answer"}],
+         "session_id": "s8b"},
+    ])
+    legacy = [r for r in rows if r["kind"] == "legacy"]
+    assert len(legacy) == 1
+    assert legacy[0]["role"] == "assistant"
+
+    rows = _transcript(ctx, "w8b", "s8b", [
+        {"class": "assistant_token", "session_id": "s8b", "seq": 9,
+         "payload": {"text": "the final answer"}},
+    ])
+    legacy = [r for r in rows if r["kind"] == "legacy"]
+    records = [r for r in rows if r["kind"] == "record"]
+    assert legacy == []
+    assert len(records) == 1
+    assert records[0]["text"] == "the final answer"
+
+
 def test_legacy_message_is_deduped_against_a_repeat_of_itself() -> None:
     """messages.jsonl can carry the same instruction's legacy line twice
     (e.g. session create with initial_instructions plus a later steer

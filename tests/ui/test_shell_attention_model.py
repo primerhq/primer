@@ -91,6 +91,25 @@ def test_the_decision_preview_survives_into_the_item() -> None:
     assert preview == "workspace__write_file(path=src/api.ts)"
 
 
+def test_gated_tool_names_the_real_tool_not_the_yield_kind() -> None:
+    """Live finding 01a064d3: item.toolName is the yield KIND ("approval"/
+    "ask_user"), reserved for SH_tierFor's tier routing - the decision
+    card's tool chip and the parked status strip need the actual gated
+    tool id instead, which is what gatedTool (SH_gatedToolOf) exposes.
+    A pending approval's gatedTool is resume_metadata.original_call.name;
+    a pending question's is the literal "ask_user" (it has no gated
+    call), same as toolName already read for that one case."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        'JSON.stringify(SH_toAttentionItems({pending: PENDING.items, '
+        'records: []}).map(function (i) '
+        '{ return [i.toolName, i.gatedTool]; }))'
+    ))
+    by_kind = {row[0]: row[1] for row in out}
+    assert by_kind["approval"] == "workspace__write_file"
+    assert by_kind["ask_user"] == "ask_user"
+
+
 def test_snooze_and_mute_filter_without_deleting() -> None:
     ctx = _ctx()
     out = json.loads(ctx.eval(
