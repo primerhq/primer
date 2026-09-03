@@ -86,7 +86,22 @@ class ClaimAdapter(ABC):
 
 class ClaimEngine(ABC):
     @abstractmethod
-    async def claim_due(self, worker_id: str, *, max_count: int) -> list[Lease]: ...
+    async def claim_due(
+        self, worker_id: str, *, max_count: int, kinds: list[ClaimKind] | None = None,
+    ) -> list[Lease]:
+        """Claim up to ``max_count`` due leases and return them.
+
+        ``kinds``: restrict eligibility to this subset of adapters
+        (default ``None`` = every registered kind, byte-identical to
+        every existing caller). Phase 3 stage 7a (01a0518b) pool-class
+        separation: the worker pool calls this twice per iteration when
+        a reserved tool-call slice is configured — once excluding
+        ``ClaimKind.TOOL_CALL`` for the general capacity, once
+        restricted to it for the reserve — so a burst of tool-call
+        tasks cannot starve session/harness/trigger claiming, or vice
+        versa.
+        """
+        ...
 
     @abstractmethod
     async def heartbeat(
