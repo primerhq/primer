@@ -40,10 +40,12 @@ class _FakeSP:
 class _FakeSlot:
     def __init__(self):
         self.appended = []
+        self.appended_extra_parts = []
         self.reopened = False
 
-    async def append_instruction(self, content):
+    async def append_instruction(self, content, *, extra_parts=None):
         self.appended.append(content)
+        self.appended_extra_parts.append(extra_parts)
 
     async def reopen(self):
         self.reopened = True
@@ -157,6 +159,59 @@ async def test_running_session_is_steered_without_status_change():
     assert out.turn_status == "claimable"
     assert slot.appended == ["steer me"]
     assert sched.enqueued == ["sess-1"]
+
+
+@pytest.mark.asyncio
+async def test_extra_parts_forwarded_to_append_instruction():
+    from primer.model.chat import ImagePart
+
+    row = _row(SessionStatus.CREATED)
+    deps, slot, sched, eng = _deps(row)
+    image = ImagePart(artifact_id="art-1", mime_type="image/png")
+    await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="look",
+        extra_parts=[image],
+        deps=deps,
+    )
+    assert slot.appended == ["look"]
+    assert slot.appended_extra_parts == [[image]]
+
+
+@pytest.mark.asyncio
+async def test_extra_payload_merges_into_user_input_record():
+    row = _row(SessionStatus.CREATED)
+    deps, slot, sched, eng = _deps(row)
+    ws = deps.workspace_registry._ws
+    await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="look",
+        extra_parts=["unused-marker"],  # only extra_payload is asserted here
+        extra_payload={"attachments": ["uploads/pic.png"]},
+        deps=deps,
+    )
+    records = _decode_records(ws)
+    user_input = next(r for r in records if r["kind"] == "user_input")
+    assert user_input["payload"]["text"] == "look"
+    assert user_input["payload"]["attachments"] == ["uploads/pic.png"]
+
+
+@pytest.mark.asyncio
+async def test_no_extra_parts_or_payload_is_unchanged():
+    """Every pre-existing caller (external_tools tests, restart, pending
+    realize) omits both kwargs -- must behave exactly as before."""
+    row = _row(SessionStatus.CREATED)
+    deps, slot, sched, eng = _deps(row)
+    ws = deps.workspace_registry._ws
+    await wake_session(
+        workspace_id="ws-1", session_id="sess-1", instruction="hello", deps=deps,
+    )
+    assert slot.appended_extra_parts == [None]
+    records = _decode_records(ws)
+    user_input = next(r for r in records if r["kind"] == "user_input")
+    assert user_input["payload"] == {"text": "hello"}
 
 
 @pytest.mark.asyncio

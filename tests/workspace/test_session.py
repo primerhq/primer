@@ -171,6 +171,29 @@ class TestAppendInstruction:
         content = msgs_path.read_text(encoding="utf-8")
         assert "do the thing" in content
 
+    async def test_extra_parts_ride_the_same_message(
+        self, state_repo: StateRepo, truncation_store: TruncationStore
+    ) -> None:
+        from primer.model.chat import ImagePart
+
+        session = await _start_session(state_repo, truncation_store)
+        image = ImagePart(artifact_id="art-1", mime_type="image/png")
+        await session.append_instruction("look at this", extra_parts=[image])
+        pending = await session.take_pending_messages()
+        msg = pending[-1]
+        assert msg.parts[0].text == "look at this"
+        # take_pending_messages() reads back through storage, so this is
+        # value equality, not the same Python object.
+        assert msg.parts[1] == image
+
+    async def test_no_extra_parts_is_unchanged_single_text_part(
+        self, state_repo: StateRepo, truncation_store: TruncationStore
+    ) -> None:
+        session = await _start_session(state_repo, truncation_store)
+        await session.append_instruction("plain")
+        pending = await session.take_pending_messages()
+        assert len(pending[-1].parts) == 1
+
     async def test_returns_unique_instruction_ids(
         self, state_repo: StateRepo, truncation_store: TruncationStore
     ) -> None:

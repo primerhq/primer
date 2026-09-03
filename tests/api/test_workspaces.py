@@ -157,8 +157,9 @@ class _FakeAgentSession:
     async def request_resume(self) -> None:
         self._status = SessionStatus.RUNNING
 
-    async def append_instruction(self, content: str):
+    async def append_instruction(self, content: str, *, extra_parts=None):
         self.appended.append(content)
+        self.appended_extra_parts = extra_parts
         from primer.model.workspace_session import Instruction
 
         return Instruction(

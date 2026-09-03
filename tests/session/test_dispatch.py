@@ -1155,7 +1155,9 @@ class _SeqFakeSlot:
         self.appended: list[str] = []
         self.reopened = 0
 
-    async def append_instruction(self, content: str) -> None:
+    async def append_instruction(
+        self, content: str, *, extra_parts=None,
+    ) -> None:
         self.appended.append(content)
 
     async def reopen(self) -> None:
