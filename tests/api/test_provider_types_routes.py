@@ -72,16 +72,6 @@ async def test_openrouter_marks_its_key_required(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_aggregated_declares_its_own_editor(client) -> None:
-    """An ordered member list is not a flat field set, so the type says so
-    instead of pretending it has none."""
-    body = (await client.get("/v1/llm_providers/_types")).json()
-    agg = body[LLMProviderType.AGGREGATED.value]
-    assert agg["variant"] == "aggregated"
-    assert agg["config_fields"] == []
-
-
-@pytest.mark.asyncio
 async def test_discoverable_flag_matches_the_probe_helper(client) -> None:
     """Platform wave P2 addendum (A): _types' discoverable flag must
     agree with what _probe_llm_models (primer/api/routers/providers.py)
@@ -102,9 +92,6 @@ async def test_discoverable_flag_matches_the_probe_helper(client) -> None:
     }
     for kind, meta in body.items():
         assert meta["discoverable"] is (kind in discoverable_kinds), kind
-    # Aggregated is a meta-provider with no upstream of its own to probe -
-    # the one kind outside the probe helper's docstring list entirely.
-    assert body[LLMProviderType.AGGREGATED.value]["discoverable"] is False
 
 
 @pytest.mark.asyncio

@@ -189,11 +189,18 @@ def _like_match(value: str, pattern: str, *, case_insensitive: bool) -> bool:
 def _eval_predicate(entity: Any, node: Any) -> bool:
     """Tiny predicate evaluator for the in-memory test storage.
 
-    Supports EQ / NE / GT / LT / GE / LE / LIKE / ILIKE / IS_NULL /
-    IS_NOT_NULL / AND / OR -- the operators the API routers actually emit
-    when translating query params (LIKE/ILIKE back the ``?q=`` search).
-    Other operators fall through to ``True`` (the test storage is
-    intentionally minimal).
+    Supports EQ / NE / GT / LT / GE / LE / LIKE / ILIKE / CONTAINS /
+    IS_NULL / IS_NOT_NULL / AND / OR -- the operators the API routers
+    actually emit when translating query params (LIKE/ILIKE back the
+    ``?q=`` search) or declarative checks (CONTAINS backs
+    ``ReferenceCheck(op=Op.CONTAINS)``, array-membership reference
+    checks like "is this profile a member of any aggregate"). Other
+    operators fall through to ``True`` (the test storage is
+    intentionally minimal) -- CONTAINS is deliberately NOT one of them:
+    an unimplemented array-membership check silently matching every row
+    turns a reference-integrity block into a false positive on every
+    delete, which is worse than an explicit NotImplementedError would
+    have been.
     """
     if isinstance(node, Predicate):
         if node.op in (Op.AND, Op.OR):
@@ -232,6 +239,10 @@ def _eval_predicate(entity: Any, node: Any) -> bool:
                     expected,
                     case_insensitive=(node.op == Op.ILIKE),
                 )
+            if node.op == Op.CONTAINS:
+                if not isinstance(actual, (list, tuple)):
+                    return False
+                return expected in actual
         return True
     return True
 
