@@ -632,7 +632,7 @@ function NV_DecisionCard(props) {
       <div className="nv-card-head">
         <span className="nv-dot-attention" />
         <span className="nv-card-title">Approval required</span>
-        <span className="nv-card-tool">{item.toolName}</span>
+        <span className="nv-card-tool">{item.gatedTool}</span>
         <span style={{ flex: 1 }} />
         <span className="nv-card-routing">{routing}</span>
       </div>
@@ -653,7 +653,7 @@ function NV_DecisionCard(props) {
         ) : null}
         <div className="nv-card-actions">
           <button type="button" className="nv-btn-primary"
-            data-testid="nv-approve"
+            data-testid="nv-approve" disabled={!!props.ended}
             onClick={function () {
               SH_api.approve(item.sessionId, item.toolCallId).then(
                 props.onResolved,
@@ -661,7 +661,7 @@ function NV_DecisionCard(props) {
               );
             }}>Approve</button>
           <button type="button" className="nv-btn-reject"
-            data-testid="nv-reject"
+            data-testid="nv-reject" disabled={!!props.ended}
             onClick={function () {
               if (!rejOpen) { setRej(true); return; }
               SH_api.reject(item.sessionId, item.toolCallId, reason).then(
@@ -669,13 +669,15 @@ function NV_DecisionCard(props) {
                 function (err) { con.toast("Reject failed: " + (err.detail || err.message)); }
               );
             }}>Reject with feedback</button>
-          <span className="nv-card-note">
-            also in your attention feed — keep scrolling while you judge
+          <span className="nv-card-note" data-testid="nv-decision-ended-note">
+            {props.ended
+              ? "session ended before this could be resolved"
+              : "also in your attention feed — keep scrolling while you judge"}
           </span>
         </div>
         {rejOpen ? (
           <textarea className="nv-card-reason" value={reason}
-            data-testid="nv-reject-reason"
+            data-testid="nv-reject-reason" disabled={!!props.ended}
             placeholder="Why not — the agent reads this"
             onChange={function (ev) { setReason(ev.target.value); }} />
         ) : null}
@@ -737,7 +739,7 @@ function NV_AskCard(props) {
                   data-testid={"nv-ask-option:" + i}
                   data-selected={val === optVal ? "true" : "false"}>
                   <input type="radio" name={"nv-ask-" + item.toolCallId}
-                    checked={val === optVal}
+                    checked={val === optVal} disabled={!!props.ended}
                     onChange={function () { setVal(optVal); }} />
                   <span className="nv-ask-option-label">{opt.label}</span>
                 </label>
@@ -746,7 +748,7 @@ function NV_AskCard(props) {
           </div>
         ) : (
           <textarea className="nv-card-reason" value={val}
-            data-testid="nv-ask-answer"
+            data-testid="nv-ask-answer" disabled={!!props.ended}
             placeholder="Your answer — the agent resumes with it"
             onChange={function (ev) { setVal(ev.target.value); }}
             onKeyDown={function (ev) {
@@ -760,9 +762,14 @@ function NV_AskCard(props) {
         {err ? (
           <div className="nv-form-error" data-testid="nv-ask-error">{err}</div>
         ) : null}
+        {props.ended ? (
+          <div className="nv-card-note" data-testid="nv-ask-ended-note">
+            session ended before this could be answered
+          </div>
+        ) : null}
         <div className="nv-card-actions">
           <button type="button" className="nv-btn-primary"
-            data-testid="nv-ask-submit"
+            data-testid="nv-ask-submit" disabled={!!props.ended}
             onClick={submit}>Answer & resume</button>
         </div>
       </div>
@@ -957,13 +964,14 @@ function NV_TraceSplit(props) {
     return out;
   }
   var flatRows = flat(rows, 0, []);
+  var traceNodes = flatRows.map(function (r) { return r.node; });
   var maxState = React.useState(false);
   var maximized = maxState[0];
   var setMaximized = maxState[1];
   return (
     <div className="nv-trace-split" data-testid="nv-trace-split">
       <div className="nv-trace-head">
-        <span>{SH_traceHeaderLabel(props.turnNo, props.turnRows)}</span>
+        <span>{SH_traceHeaderLabel(props.turnNo, traceNodes)}</span>
         <span style={{ flex: 1 }} />
         <button type="button" className="nv-rail-iconbtn" title="Maximize"
           data-testid="nv-trace-maximize-open"
@@ -983,8 +991,8 @@ function NV_TraceSplit(props) {
         </div>
       </div>
       {maximized ? (
-        <NV_TraceMaximize flatRows={flatRows} turnNo={props.turnNo}
-          turnRows={props.turnRows} agentName={props.agentName}
+        <NV_TraceMaximize flatRows={flatRows} traceNodes={traceNodes}
+          turnNo={props.turnNo} agentName={props.agentName}
           isGraph={props.isGraph}
           onClose={function () { setMaximized(false); }} />
       ) : null}
@@ -1007,7 +1015,7 @@ function NV_TraceMaximize(props) {
         onClick={function (ev) { ev.stopPropagation(); }}>
         <div className="nv-overlay-head">
           <h3 className="nv-overlay-title">
-            {SH_traceHeaderLabel(props.turnNo, props.turnRows)}
+            {SH_traceHeaderLabel(props.turnNo, props.traceNodes)}
           </h3>
           <span style={{ flex: 1 }} />
           <button type="button" className="nv-rail-iconbtn"
@@ -1851,10 +1859,16 @@ function NV_SessionDoc(props) {
     // seqs never collide with a real one (persistence.py's
     // WorkspaceMessageWriter starts real seqs at 1).
     if (store && store.legacyMessages && store.legacyMessages.length) {
+      // Live finding 01a064d3: this placeholder isn't always a user
+      // instruction - a legacy ASSISTANT line races its modern
+      // assistant_token twin the same way (session-store.js's SS_apply
+      // comment), and hardcoding "user_message" rendered that case with
+      // the wrong avatar/name/side. Pick the row kind from the legacy
+      // line's own role instead.
       var legacyRows = store.legacyMessages.map(function (lm, li) {
         return {
           seq: li - store.legacyMessages.length,
-          kind: "user_message",
+          kind: lm.role === "assistant" ? "assistant_message" : "user_message",
           nodeId: null,
           label: lm.text,
           payload: { text: lm.text },
@@ -1988,15 +2002,6 @@ function NV_SessionDoc(props) {
     var t = turnOfSeq[row.seq];
     return t == null ? 0 : t;
   }
-  // Audit A item 5: the trace split's header needs the turn's OWN rows
-  // (tool_call/tool_result, each carrying createdAt from SA_toTranscript)
-  // to compute its enriched "{N} calls · {span}s" label - turnOfSeq
-  // already maps every seq to its ordinal turn, so this is a plain
-  // filter over the same flat array, not a new fetch.
-  function turnRowsFor(turnNo) {
-    return flat.filter(function (row) { return turnOfSeq[row.seq] === turnNo; });
-  }
-
   // US-008 R3 item 1: live tool-call ARGUMENTS as they stream in, before
   // the call's durable record even exists.
   //
@@ -2468,11 +2473,19 @@ function NV_SessionDoc(props) {
               );
             })}
             {gateItems.map(function (item) {
+              // Live finding 01a064d3: a park can outlive its session (a
+              // sweep/timeout continuation that then fails ends the
+              // session without clearing parked_status - the gate item
+              // is still here, but acting on it now would just 404/error
+              // against a dead session). The ended state must win: keep
+              // the card for historical context, but it can no longer be
+              // actionable.
+              var ended = NV_sessionIsOver(session);
               return item.kind === "approval" ? (
-                <NV_DecisionCard key={item.id} item={item}
+                <NV_DecisionCard key={item.id} item={item} ended={ended}
                   onResolved={refetchAll} />
               ) : (
-                <NV_AskCard key={item.id} item={item}
+                <NV_AskCard key={item.id} item={item} ended={ended}
                   onResolved={refetchAll} />
               );
             })}
@@ -2495,7 +2508,6 @@ function NV_SessionDoc(props) {
         </div>
         {traceTurn != null ? (
           <NV_TraceSplit sid={sid} turnNo={traceTurn}
-            turnRows={turnRowsFor(traceTurn)}
             agentName={agentId} isGraph={!!graphId}
             onClose={function () { setTraceTurn(null); }} />
         ) : null}

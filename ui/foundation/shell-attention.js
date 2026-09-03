@@ -65,6 +65,21 @@ function SH_yieldKind(row) {
   return (row && (row.kind || row.tool_name)) || "";
 }
 
+// Live finding 01a064d3: item.toolName is deliberately the YIELD KIND
+// ("approval"/"ask_user" - SH_tierFor/SH_isDecisionTool's tier-routing
+// allowlist needs exactly that literal), NOT the gated tool's own id -
+// but the decision card's "tool" chip (nv-session-doc.jsx's
+// nv-card-tool) and the parked status strip (shell-status.js's
+// SH_waitLine) both want the LATTER ("workspace__write", not
+// "approval"). Same original_call.name SH_titleOf already reads,
+// exposed as its own field so those two consumers stop reading
+// toolName for a purpose it was never named for.
+function SH_gatedToolOf(row) {
+  if (SH_yieldKind(row) === "ask_user") return "ask_user";
+  var call = ((row && row.resume_metadata) || {}).original_call || {};
+  return call.name || null;
+}
+
 function SH_titleOf(row) {
   var call = ((row && row.resume_metadata) || {}).original_call || {};
   if (SH_yieldKind(row) === "ask_user") return "Question";
@@ -138,6 +153,7 @@ function SH_toAttentionItems(input) {
       sessionId: row.session_id,
       toolCallId: row.tool_call_id,
       toolName: SH_yieldKind(row),
+      gatedTool: SH_gatedToolOf(row),
       kind: SH_yieldKind(row) === "ask_user" ? "question" : "approval",
       title: SH_titleOf(row),
       // Kind decides the preview source (BDD pass 2026-08-24): a
@@ -187,6 +203,7 @@ function SH_toAttentionItems(input) {
       sessionId: rec.session_id,
       toolCallId: rec.tool_call_id,
       toolName: rec.tool_name,
+      gatedTool: rec.tool_name,
       kind: "approval",
       // The records endpoint's field is `decision` (approved/rejected);
       // `status` never existed on ToolApprovalRecord (live-pass finding,

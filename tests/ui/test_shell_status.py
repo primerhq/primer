@@ -52,14 +52,14 @@ def test_long_runs_read_in_minutes() -> None:
 def test_wait_line_names_the_tool_for_an_approval() -> None:
     ctx = _ctx()
     assert ctx.eval(
-        'SH_waitLine({kind: "approval", toolName: "workspace__write_file"})'
-    ) == "waiting on approval — workspace__write_file (parked, worker released)"
+        'SH_waitLine({kind: "approval", gatedTool: "workspace__write"})'
+    ) == "waiting on approval — workspace__write (parked, worker released)"
 
 
 def test_wait_line_reads_as_an_answer_for_a_question() -> None:
     ctx = _ctx()
     assert ctx.eval(
-        'SH_waitLine({kind: "question", toolName: "ask_user"})'
+        'SH_waitLine({kind: "question", gatedTool: "ask_user"})'
     ) == "waiting on your answer — ask_user (parked, worker released)"
 
 
@@ -71,6 +71,21 @@ def test_wait_line_falls_back_without_a_tool_name() -> None:
     assert ctx.eval('SH_waitLine({kind: "question"})') == (
         "waiting on your answer — ask_user (parked, worker released)"
     )
+
+
+def test_wait_line_names_the_gated_tool_not_the_yield_kind() -> None:
+    """Live finding 01a064d3: item.toolName is the yield KIND
+    ("approval"/"ask_user" - shell-attention.js's SH_tierFor tier
+    routing needs exactly that literal), never the actual gated tool -
+    but the status strip used to read toolName anyway and rendered
+    "waiting on approval — approval" for every approval gate regardless
+    of which tool it gated. Pin that a stale/irrelevant toolName is
+    ignored in favor of gatedTool (shell-attention.js's SH_gatedToolOf)."""
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_waitLine({kind: "approval", toolName: "approval", '
+        'gatedTool: "workspace__write"})'
+    ) == "waiting on approval — workspace__write (parked, worker released)"
 
 
 def test_wait_line_is_null_with_nothing_parked() -> None:
@@ -91,19 +106,32 @@ def test_parked_status_line_is_null_when_not_parked() -> None:
     assert ctx.eval("SH_parkedStatusLine(null, [])") is None
 
 
+def test_parked_status_line_is_null_once_the_session_has_ended() -> None:
+    """Live finding 01a064d3: a sweep/timeout continuation that then
+    fails can end a session without clearing parked_status - the
+    composer used to keep showing "waiting on your answer — ask_user
+    (parked, worker released)" underneath an "Ended" header on the SAME
+    session. A stale parked_status must never outrank status: "ended"."""
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_parkedStatusLine({parked_status: "parked", status: "ended"}, '
+        '[{kind: "question", gatedTool: "ask_user"}])'
+    ) is None
+
+
 def test_parked_status_line_names_the_approval_gate() -> None:
     ctx = _ctx()
     assert ctx.eval(
         'SH_parkedStatusLine({parked_status: "parked"}, '
-        '[{kind: "approval", toolName: "workspace__write_file"}])'
-    ) == "waiting on approval — workspace__write_file (parked, worker released)"
+        '[{kind: "approval", gatedTool: "workspace__write"}])'
+    ) == "waiting on approval — workspace__write (parked, worker released)"
 
 
 def test_parked_status_line_names_the_ask_gate() -> None:
     ctx = _ctx()
     assert ctx.eval(
         'SH_parkedStatusLine({parked_status: "parked"}, '
-        '[{kind: "question", toolName: "ask_user"}])'
+        '[{kind: "question", gatedTool: "ask_user"}])'
     ) == "waiting on your answer — ask_user (parked, worker released)"
 
 

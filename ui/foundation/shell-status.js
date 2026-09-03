@@ -45,7 +45,12 @@ function SH_statusLine(status) {
 // generic "parked - waiting on {waiting_reason}" line, not new data.
 function SH_waitLine(item) {
   if (!item) return null;
-  var tool = item.toolName || (item.kind === "question" ? "ask_user" : "a tool call");
+  // Live finding 01a064d3: item.toolName is the yield KIND ("approval"),
+  // used elsewhere for tier routing - the gated TOOL id lives on
+  // item.gatedTool (shell-attention.js's SH_gatedToolOf). Reading
+  // toolName here rendered "waiting on approval — approval" instead of
+  // "waiting on approval — workspace__write".
+  var tool = item.gatedTool || (item.kind === "question" ? "ask_user" : "a tool call");
   var lead = item.kind === "question" ? "waiting on your answer" : "waiting on approval";
   return lead + " — " + tool + " (parked, worker released)";
 }
@@ -62,6 +67,12 @@ function SH_waitLine(item) {
 // expression, not new data collection.
 function SH_parkedStatusLine(session, gateItems) {
   if (!session || !session.parked_status) return null;
+  // Live finding 01a064d3: a park can outlive its session (a sweep/
+  // timeout continuation that then fails ends the session without
+  // clearing parked_status), so parked_status alone is not sufficient -
+  // an ended session is never still "waiting" on anything, no matter
+  // what its stale parked_status column says. The ended state wins.
+  if (session.status === "ended") return null;
   var gate = (gateItems || [])[0];
   return gate ? SH_waitLine(gate) : "parked — waiting on a wake";
 }

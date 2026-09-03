@@ -305,9 +305,19 @@ function SS_apply(store, frame) {
     }
     // SEV-2 fix: a real record superseding an earlier legacy `{role,
     // parts}` placeholder (see the branch above) must drop that
-    // placeholder - otherwise the user's own message would render
-    // TWICE once the durable record catches up.
-    if (recordKind === "user_input" && store.legacyMessages.length) {
+    // placeholder - otherwise the same content would render TWICE once
+    // the durable record catches up. Originally scoped to user_input
+    // only; that missed the SAME race for a legacy ASSISTANT placeholder
+    // (live finding 01a064d3): the legacy assistant line is written to
+    // messages.jsonl before its modern `assistant_token` twin
+    // (primer/agent/workspace_executor.py's _persist_turn runs inside
+    // the turn loop, before dispatch's flush), so `alreadyReal` above
+    // sees nothing yet when the legacy line is applied and the
+    // placeholder gets queued - it still needs evicting once the real
+    // record lands, exactly like a user_input placeholder does. Match
+    // on text alone rather than a specific kind, so this covers
+    // whichever record kind eventually carries the same text.
+    if (store.legacyMessages.length) {
       var supersededText = SS_recordText(frame);
       if (supersededText) {
         store.legacyMessages = store.legacyMessages.filter(function (m) {
