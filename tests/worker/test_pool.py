@@ -195,11 +195,16 @@ async def test_start_routes_to_reserved_loop_only_when_configured(
     the reserved loop iff tool_call_reserved_concurrency is set - the
     default (None) must schedule the exact same _engine_claim_loop as
     before this knob existed."""
+    # No return_value= given: patch.object auto-detects both targets are
+    # coroutine functions and builds AsyncMocks, which fabricate a fresh
+    # awaitable per call - pre-building ONE coroutine via return_value=
+    # here would leave the not-selected mock's coroutine never awaited
+    # (a real RuntimeWarning this test tripped before this fix).
     default_pool = _bare_pool(scheduler, engine)
     with patch.object(
-        WorkerPool, "_engine_claim_loop", return_value=_async_return(None),
+        WorkerPool, "_engine_claim_loop",
     ) as unified, patch.object(
-        WorkerPool, "_engine_claim_loop_reserved", return_value=_async_return(None),
+        WorkerPool, "_engine_claim_loop_reserved",
     ) as reserved:
         await default_pool.start()
         await default_pool.drain_and_stop()
@@ -211,9 +216,9 @@ async def test_start_routes_to_reserved_loop_only_when_configured(
         scheduler, reserve_engine, tool_call_reserved_concurrency=1,
     )
     with patch.object(
-        WorkerPool, "_engine_claim_loop", return_value=_async_return(None),
+        WorkerPool, "_engine_claim_loop",
     ) as unified2, patch.object(
-        WorkerPool, "_engine_claim_loop_reserved", return_value=_async_return(None),
+        WorkerPool, "_engine_claim_loop_reserved",
     ) as reserved2:
         await reserved_pool.start()
         await reserved_pool.drain_and_stop()
