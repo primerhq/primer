@@ -220,8 +220,14 @@ class TestCallToolStdio:
                 result = await provider.call(
                     tool_name="never-defined", arguments={}
                 )
-            except (ProviderError, UnsupportedContentError):
-                return  # acceptable: surfaced as a primer exception
+            except (ProviderError, UnsupportedContentError) as exc:
+                # Surfaced as a primer exception (the mcp>=2.0 path). The
+                # tool's NAME must still reach the caller's failure surface
+                # - under 1.x the isError branch below asserted this, and
+                # without it here nothing in the suite would verify more
+                # than "some ProviderError happened".
+                assert "never-defined" in str(exc)
+                return
             assert result.is_error is True
             assert "never-defined" in result.output
 
@@ -368,13 +374,16 @@ class TestHttpTransportSuccess:
         # (it dropped headers= for an injected httpx.AsyncClient); primer's
         # _open_session now builds that client via create_mcp_http_client
         # (mcp.shared._httpx_utils), so headers are captured there instead.
+        built_client = object()
+
         @asynccontextmanager
         async def fake_create_mcp_http_client(**kwargs):
             captured.update(kwargs)
-            yield object()
+            yield built_client
 
         @asynccontextmanager
         async def fake_streamablehttp(**kwargs):
+            captured["transport_kwargs"] = kwargs
             yield (object(), object())
 
         monkeypatch.setattr(
@@ -404,6 +413,12 @@ class TestHttpTransportSuccess:
         # headers is dict[str, SecretStr] on the model (masked on every API
         # read path); the REAL token must reach the wire, never the mask.
         assert captured["headers"] == {"Authorization": "Bearer x"}
+        # ...and the client built WITH those headers must be the one handed
+        # to the SDK transport: streamable_http_client(http_client=None)
+        # silently builds its own headerless client, so dropping the
+        # http_client= argument would strip auth without any other test
+        # noticing (only the network-gated live e2e would catch it).
+        assert captured["transport_kwargs"]["http_client"] is built_client
 
     async def test_http_session_path_initialise_failure_is_classified(
         self, monkeypatch: pytest.MonkeyPatch
