@@ -1,36 +1,43 @@
-"""UI E2E: Approvals operator-journey across the /approvals tab and
-session-detail's ApprovalBanner.
+"""UI E2E: Approvals operator-journey across the Studio session
+transcript's decision cards.
 
 Multi-page user journey that walks an operator through the §2 approval
-surfaces post-Designer reconciliation:
+surfaces post-uiv2 Wave 3 (a-14 fold):
 
-  /approvals (pending tab) → row visible → click Reject → reason input
-  → assert "Send rejection" disabled with empty reason → type reason →
-  Send rejection → "Decision sent" toast → navigate to /sessions/{sid}
-  via the row's "from session" anchor → ApprovalBanner renders on the
-  detail page (cross-page state coherence — same pending data backs
-  both surfaces) → click Approve on the banner → second "Decision sent"
-  toast → API GET /v1/sessions/{sid}/tool_approval/pending still 200
-  (parked_state survives the respond POST in THIS setup because the
-  asyncpg-injected session has no session_leases row, so
-  mark_resumable's lease UPDATE no-ops and the worker pool never
-  claims the row to drive the resume cycle. Roadmap §7 resume wiring
-  IS landed; the API-loop's T0861 covers the full resume cycle when
-  a lease row is present).
+  open session #1 in the Studio → decision card visible in its
+  transcript → click Reject → reason textarea appears → assert the
+  SAME button stays disabled with an empty/whitespace reason → type a
+  reason → click again to submit → the card is optimistically removed
+  (no toast — see NV_DecisionCard's onResolved wiring) → open session
+  #2 in the Studio → its own decision card renders (cross-session
+  state coherence — the same per-session pending fetch backs every
+  transcript) → click Approve → the card is removed there too → API
+  GET /v1/sessions/{sid}/tool_approval/pending still 200 (parked_state
+  survives the respond POST in THIS setup because the asyncpg-injected
+  session has no session_leases row, so mark_resumable's lease UPDATE
+  no-ops and the worker pool never claims the row to drive the resume
+  cycle. Roadmap §7 resume wiring IS landed; the API-loop's T0861
+  covers the full resume cycle when a lease row is present).
 
 Subsystems exercised in one test:
 
-  1. /approvals page mounts; Pending tab renders the row driven by
-     POST /sessions/find (parked_status=parked) + per-row
-     tool_approval/pending lookups.
-  2. Reject-flow gate: Send rejection button must stay disabled until
-     the reason input has non-empty text (`canSubmit` gate in
-     approvals.jsx).
+  1. The Studio's per-session decision card (NV_DecisionCard,
+     nv-session-doc.jsx) renders a pending `_approval` park within the
+     shell's poll cadence after JSONB injection — the interactive
+     `/approvals` records-sheet was retired in the a-14 fold; its
+     read-only successor (DECISIONS — AUDIT on the platform page)
+     carries no action buttons by design, so actionability now lives
+     exclusively on the Inbox rail + this per-session card.
+  2. Reject-flow gate: the same Reject button that opens the reason
+     box also guards its own submit — it stays disabled while the
+     reason is empty/whitespace once the box is open (`disabled={!!
+     props.ended || (rejOpen && !reason.trim())}` in NV_DecisionCard).
   3. Reject + Approve mutations POST /tool_approval/respond (returns
-     202) and surface a "Decision sent" toast on success.
-  4. Cross-page consistency: the same pending payload renders BOTH
-     the approvals-list row AND the ApprovalBanner on session detail
-     (shared `tool-approval:session:{sid}` cache key).
+     202); on success the card is optimistically removed from the
+     transcript (props.onResolved → refetchAll) — no toast.
+  4. Cross-session consistency: each session's own decision card is
+     driven by that session's own pending fetch, independent of any
+     other parked session in the shared DB.
 
 The asyncpg-based _approval-park injection mirrors
 `tests/e2e/test_tool_approval_pending_respond.py`. Direct JSONB
@@ -56,7 +63,6 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import expand_debug_sidebar, open_session_in_studio
-from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 # ---------------------------------------------------------------------------
@@ -281,33 +287,40 @@ def test_u0109_approvals_operator_journey(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0109 — Walk the operator through a pending approval on the
-    /approvals page, exercise the reject-requires-reason gate, send a
-    rejection, then cross-page to the session-detail's ApprovalBanner
-    and approve from there.
+    """U0109 — Walk the operator through a pending approval on session
+    #1's own Studio transcript, exercise the reject-requires-reason
+    gate, send a rejection, then open a SECOND session's transcript
+    and approve its own pending approval from there.
 
     Pages traversed:
-      /console/#/approvals (pending tab default) →
-      /console/#/sessions/{sid}
+      /console/#/w/{wid}?doc=session:{sid} →
+      /console/#/w/{wid}?doc=session:{sid_banner}
 
     Pinned invariants:
-      * Approvals pending tab surfaces a parked _approval session
-        within the 5s poll cadence after JSONB injection.
-      * Reject reason input renders with the placeholder
-        "Reason for rejection (required)…".
-      * "Send rejection" stays disabled while reason is empty/whitespace
-        (approvals.jsx `disabled={!reason.trim() || respond.loading}`).
-      * "Decision sent" toast appears on a successful Reject + Approve.
-      * Cross-page: session-detail's ApprovalBanner renders for a
-        pending approval. The banner check runs against a SECOND,
-        freshly parked session — never responded-to — rather than the
-        rejected one. Rejecting flips parked_status to 'resumable',
-        which the claim-eligibility filter admits, so the worker pool
-        claims + resumes that row and clears parked_state out from
-        under the banner (an intermittent race that used to flake this
-        test). A never-responded session stays parked_status='parked'
-        (excluded by the eligibility filter), so its park is stable and
-        the banner renders deterministically. (T0861 covers the full
+      * The Studio surfaces a parked _approval session's decision card
+        in its transcript within the shell's poll cadence after JSONB
+        injection.
+      * The reject reason textarea (`nv-reject-reason`) appears after
+        the first click on Reject.
+      * The Reject button stays disabled while reason is empty/
+        whitespace once the reason box is open (NV_DecisionCard
+        `disabled={!!props.ended || (rejOpen && !reason.trim())}`) —
+        this is the SAME button for both the "open the box" click and
+        the "submit" click, unlike the retired records-sheet's row,
+        which had a separate Send-rejection button.
+      * A successful Reject/Approve optimistically removes the card
+        from the transcript (props.onResolved → refetchAll) — there is
+        no toast on this path.
+      * Cross-session: the SECOND session's decision card is checked
+        rather than re-checking the first (now-rejected) one.
+        Rejecting flips parked_status to 'resumable', which the claim-
+        eligibility filter admits, so the worker pool claims + resumes
+        that row and clears parked_state out from under any lingering
+        card (an intermittent race that used to flake this test back
+        when both surfaces read the same row). A never-responded
+        session stays parked_status='parked' (excluded by the
+        eligibility filter), so its park is stable and its card
+        renders deterministically. (T0861 covers the full
         park→respond→resume cycle when a lease row IS present.)
     """
     ids = _seed_session_ladder(base_url, unique_suffix)
@@ -316,11 +329,11 @@ def test_u0109_approvals_operator_journey(
     policy_id = f"pol-u0109-{unique_suffix}"
     inner_tool = "fs.delete"
     gate_reason = "destructive path under /etc"
-    sid_banner: str | None = None  # 2nd session for the cross-page banner
+    sid_banner: str | None = None  # 2nd session, checked independently in step 6
 
     try:
         # --- 0. Inject the approval park BEFORE the page is opened so
-        # the first /approvals poll cycle sees it immediately. ---------
+        # the Studio's first pending-approval poll sees it immediately. -
         _inject_approval_park(
             session_id=sid,
             tool_call_id=tool_call_id,
@@ -329,63 +342,67 @@ def test_u0109_approvals_operator_journey(
             gate_reason=gate_reason,
         )
 
-        # --- 1. Navigate to /approvals (pending tab default) ----------
-        open_legacy_route(page, console_url, "approvals")
-        # Pending tab is the default; it shows a count chip when at
-        # least one row is parked. Wait for our seeded row to appear.
-        row = page.locator(f"[data-testid='approval-row-{sid}']")
-        # Generous timeout: this runs against a shared eval stack under CI
-        # load where the find + per-row pending fetches that drive the list
-        # can lag. The row is deterministic (the park is pre-injected), so a
-        # longer wait only absorbs latency, it never masks a missing row.
-        expect(row).to_be_visible(timeout=30_000)
-        # The row should mention the inner tool name + policy id (these
-        # come from resume_metadata.original_call.name / policy_id).
-        expect(row).to_contain_text(inner_tool)
-        expect(row).to_contain_text(policy_id)
+        # --- 1. Open session #1 in the Studio ---------------------------
+        # Re-pointed (uiv2 Wave 3, a-14 fold): the interactive /approvals
+        # records-sheet is retired. A pending approval now surfaces as a
+        # decision card of kind "approval" in the session's own
+        # transcript, reached via the Studio — the same mechanism step 6
+        # below already used for sid_banner.
+        open_session_in_studio(page, console_url, ids["workspace"], sid, kind="agent")
+        expand_debug_sidebar(page)
 
-        # --- 2. Click Reject → reason input appears -------------------
-        # Scope every action locator to OUR row — a previous iteration
-        # may have left another parked session in the shared DB, so a
-        # raw page.locator on the action testids hits strict-mode
-        # violations.
-        reject_btn = row.locator("[data-testid='approval-reject']")
+        decision_card = page.locator("[data-kind='approval']").filter(
+            has=page.get_by_test_id("nv-reject")
+        ).first
+        expect(decision_card).to_be_visible(timeout=30_000)
+        # The card names the inner gated tool (resume_metadata.
+        # original_call.name — the same field the retired row read).
+        expect(decision_card).to_contain_text(inner_tool)
+
+        # --- 2. Click Reject → reason textarea appears ------------------
+        reject_btn = decision_card.get_by_test_id("nv-reject")
         expect(reject_btn).to_be_visible(timeout=10_000)
         reject_btn.click()
 
-        reason_input = row.locator(
-            "[data-testid='approval-reject-reason']",
-        )
+        reason_input = decision_card.get_by_test_id("nv-reject-reason")
         expect(reason_input).to_be_visible(timeout=5_000)
-        # Reject-reason flow exposes the Send-rejection button.
-        send_reject = row.locator(
-            "[data-testid='approval-reject-submit']",
-        )
-        expect(send_reject).to_be_visible(timeout=5_000)
 
-        # --- 3. Send rejection stays disabled with empty reason -------
-        # Pins approvals.jsx:327 disabled={!reason.trim() || …}
-        expect(send_reject).to_be_disabled(timeout=2_000)
+        # --- 3. Reject stays disabled with an empty/whitespace reason --
+        # Pins NV_DecisionCard's disabled={!!props.ended || (rejOpen &&
+        # !reason.trim())} — a real regression found and fixed during
+        # this retarget. Before the fix, the SAME button that opens the
+        # reason box carried no guard on its second (submit) click, since
+        # the retired records-sheet's separate Send-rejection button
+        # (which DID have `disabled={!reason.trim() || …}`) was the only
+        # thing enforcing this, and it's gone along with the sheet.
+        expect(reject_btn).to_be_disabled(timeout=2_000)
 
         # Whitespace-only is also blocked.
         reason_input.fill("   ")
-        expect(send_reject).to_be_disabled(timeout=2_000)
+        expect(reject_btn).to_be_disabled(timeout=2_000)
 
-        # --- 4. Type a real reason → button enables → submit ---------
+        # --- 4. Type a real reason → button re-enables → submit --------
         reason_input.fill("denied by security review")
-        expect(send_reject).to_be_enabled(timeout=5_000)
-        send_reject.click()
+        expect(reject_btn).to_be_enabled(timeout=5_000)
+        reject_btn.click()
 
-        # --- 5. "Decision sent" toast appears -------------------------
-        toast = page.locator(".toast", has_text="Decision sent")
-        expect(toast).to_be_visible(timeout=10_000)
+        # --- 5. Success signal: the card is optimistically removed -----
+        # NV_DecisionCard has no toast on resolve (see step 7's note on
+        # Approve) — SH_api.reject resolves into props.onResolved, which
+        # refetches and drops the item from the attention feed.
+        expect(
+            page.locator("[data-kind='approval']").filter(
+                has=page.get_by_test_id("nv-reject")
+            )
+        ).to_have_count(0, timeout=10_000)
 
-        # --- 5b. Seed a SECOND, freshly parked session for the banner.
+        # --- 5b. Seed a SECOND, freshly parked session for session #2. ---
         # The step-1 session was just rejected → parked_status='resumable'
         # → the worker pool claims + resumes it and clears parked_state, so
-        # its banner is racy. A never-responded session stays
-        # parked_status='parked' (excluded by the claim-eligibility filter),
-        # so its park is stable and the banner renders deterministically. --
+        # re-checking its card would be racy. A never-responded session
+        # stays parked_status='parked' (excluded by the claim-eligibility
+        # filter), so its park is stable and its card renders
+        # deterministically. --
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             r = c.post(
                 f"/v1/workspaces/{ids['workspace']}/sessions",
@@ -404,14 +421,15 @@ def test_u0109_approvals_operator_journey(
             gate_reason=gate_reason,
         )
 
-        # --- 6. Cross-surface: open the fresh session in the Studio ----
-        # Re-pointed: the session-detail ApprovalBanner is retired. A
-        # pending approval surfaces in the shell rail's attention list as
-        # a decision card of kind "approval", carrying Approve Gate and
-        # Reject Gate. sid_banner is freshly parked and never responded-to, so
-        # its park is stable (parked_status='parked' is excluded by the
-        # claim-eligibility filter → the worker never resumes it and clears
-        # parked_state), making the item deterministic.
+        # --- 6. Open session #2 in the Studio ---------------------------
+        # Same mechanism as step 1, a different session and a different
+        # verb (Approve, not Reject) — confirms the decision card is
+        # driven by EACH session's own pending fetch rather than some
+        # cross-session cache holding step 1's (now-resolved) state.
+        # sid_banner is freshly parked and never responded-to, so its
+        # park is stable (parked_status='parked' is excluded by the
+        # claim-eligibility filter → the worker never resumes it and
+        # clears parked_state), making the item deterministic.
         open_session_in_studio(page, console_url, ids["workspace"], sid_banner, kind="agent")
         # The right-sidebar debug panel (Action Required) starts collapsed;
         # expand it before looking for the decision card.
