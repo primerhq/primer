@@ -257,6 +257,7 @@ async def test_tool_call_on_release_gate_sets_gated(sqlite_provider):
     assert updated is not None
     assert updated.state == ToolCallTaskState.GATED
     assert updated.gate_event_key == "tool_approval:sess-1:worker:tool:1:1"
+    assert updated.gate_state == {"kind": "approval"}
 
 
 @pytest.mark.asyncio

@@ -80,6 +80,12 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 "state": ToolCallTaskState.GATED,
                 "gate_event_key": p.parked_event_key,
                 "gate_until": p.parked_until,
+                # Ruling 3 (01a0518b): the gate's live payload blob - same
+                # shape session/graph parks already stash on parked_state,
+                # here on the task since a bare ToolCallTask has no other
+                # durable home to point at. Cleared on every other branch
+                # below so it never survives past the gate it belongs to.
+                "gate_state": p.parked_state,
             })
             await self._storage.update(gated, conn=conn)
             return
@@ -98,6 +104,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 ),
                 "finished_at": now,
                 "last_error": None if outcome.success else outcome.last_error,
+                "gate_state": None,
             })
             await self._storage.update(updated, conn=conn)
             return
@@ -112,6 +119,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
         retried = task.model_copy(update={
             "state": ToolCallTaskState.QUEUED,
             "started_at": None,
+            "gate_state": None,
         })
         await self._storage.update(retried, conn=conn)
 
