@@ -117,6 +117,23 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
 
     sid = session.id
     blob = session.parked_state or {}
+    # Phase 3 stage 7a (01a0518b) tripwire: a tool_wait park is not
+    # Yielded-shaped (ParkedState.from_jsonable below assumes exactly
+    # that shape) and must never reach this function - routing lives in
+    # primer.worker.pool.WorkerPool._select_resume_handler, which peeks
+    # this SAME key before ever calling here. This is a belt-and-braces
+    # guard for if that routing is ever bypassed: fail LOUD and
+    # immediately, not via the generic malformed-blob except below
+    # (which would silently end the session as "failed" - a real bug
+    # wearing the costume of an ordinary parked-state corruption).
+    if blob.get("kind") == "tool_wait":
+        raise RuntimeError(
+            f"resume_engine_session: session {sid!r} has a tool_wait park "
+            "- this must route through "
+            "primer.worker.tool_wait_resume_coordinator.resume_engine_tool_wait "
+            "instead (see WorkerPool._select_resume_handler); reaching here "
+            "means that routing was bypassed"
+        )
     try:
         parked = ParkedState.from_jsonable(blob)
     except (KeyError, ValueError, TypeError):
