@@ -106,11 +106,17 @@ class M007AggregatedModelProfiles:
     description = "aggregated LLM providers become aggregated ModelProfiles"
 
     async def apply(self, sp: StorageProvider) -> None:
-        aggregated_provider_ids = await self._convert_profiles(sp)
-        await self._delete_orphaned_providers(sp, aggregated_provider_ids)
+        aggregated_provider_ids, unconverted_provider_ids = (
+            await self._convert_profiles(sp)
+        )
+        await self._delete_orphaned_providers(
+            sp, aggregated_provider_ids, unconverted_provider_ids,
+        )
 
     # -- step 1 ------------------------------------------------------------
-    async def _convert_profiles(self, sp: StorageProvider) -> set[str]:
+    async def _convert_profiles(
+        self, sp: StorageProvider,
+    ) -> tuple[set[str], set[str]]:
         providers = sp.get_storage(LLMProvider)
         profiles = sp.get_storage(ModelProfile)
 
@@ -119,7 +125,7 @@ class M007AggregatedModelProfiles:
             if row.provider == "aggregated":
                 aggregated_providers[row.id] = row
         if not aggregated_providers:
-            return set()
+            return set(), set()
 
         # ALL aggregated provider ids are returned (not just ones a
         # profile was successfully converted for) -- every one of them
@@ -129,6 +135,7 @@ class M007AggregatedModelProfiles:
         # permanently unreadable (fails Pydantic validation) the next
         # time anything lists LLMProvider rows generically.
         converted = 0
+        unconverted_provider_ids: set[str] = set()
         async for profile in _iter_rows(profiles, ModelProfile):
             if profile.kind == "aggregated":
                 continue  # already converted by a prior run
@@ -144,7 +151,9 @@ class M007AggregatedModelProfiles:
                 # provider id that step 2 is about to delete -- broken,
                 # loudly and diagnosably, matching m002's own precedent
                 # ("the agent was already broken; do not invent a
-                # target") rather than fabricating data.
+                # target") rather than fabricating data. Recorded (not
+                # just logged here) so step 2 can call this out loudly
+                # too, at the point it actually orphans the profile.
                 logger.warning(
                     "aggregated provider has fewer than two resolvable "
                     "members (old schema allowed 1; new requires >= 2); "
@@ -152,19 +161,31 @@ class M007AggregatedModelProfiles:
                     "pointing at a provider id this migration deletes",
                     extra={"provider_id": provider.id, "profile_id": profile.id},
                 )
+                unconverted_provider_ids.add(provider.id)
                 continue
             cfg = provider.config or {}
+            # model_copy(update=...) does NOT run field validators/
+            # coercion -- it assigns update's values verbatim. cfg's
+            # values are plain strings read off an untyped dict, so they
+            # must be coerced to the real enum types explicitly here, or
+            # the written row would hold a str where a RoutingStrategy/
+            # FailoverPoint/FailoverClasses is expected (StrEnum
+            # equality happens to make `==` comparisons still pass, which
+            # is exactly what let this slip past a first draft -- but
+            # isinstance checks and JSON serialization would not).
             await profiles.update(
                 profile.model_copy(
                     update={
                         "kind": "aggregated",
                         "members": member_ids,
-                        "strategy": cfg.get("strategy", RoutingStrategy.SEQUENTIAL),
-                        "failover_point": cfg.get(
-                            "failover_point", FailoverPoint.BEFORE_FIRST_TOKEN,
+                        "strategy": RoutingStrategy(
+                            cfg.get("strategy", RoutingStrategy.SEQUENTIAL)
                         ),
-                        "failover_on": cfg.get(
-                            "failover_on", FailoverClasses.TRANSIENT_AND_CONFIG,
+                        "failover_point": FailoverPoint(
+                            cfg.get("failover_point", FailoverPoint.BEFORE_FIRST_TOKEN)
+                        ),
+                        "failover_on": FailoverClasses(
+                            cfg.get("failover_on", FailoverClasses.TRANSIENT_AND_CONFIG)
                         ),
                         "provider_id": None,
                         "model_name": None,
@@ -179,7 +200,7 @@ class M007AggregatedModelProfiles:
                 "aggregated ModelProfiles",
                 extra={"count": converted},
             )
-        return set(aggregated_providers)
+        return set(aggregated_providers), unconverted_provider_ids
 
     async def _resolve_member_ids(
         self, profiles, provider: LLMProvider,
@@ -228,17 +249,41 @@ class M007AggregatedModelProfiles:
 
     # -- step 2 --------------------------------------------------------
     async def _delete_orphaned_providers(
-        self, sp: StorageProvider, provider_ids: set[str],
+        self,
+        sp: StorageProvider,
+        provider_ids: set[str],
+        unconverted_provider_ids: set[str],
     ) -> None:
         if not provider_ids:
             return
         providers = sp.get_storage(LLMProvider)
         deleted = 0
+        deleted_unconverted: list[str] = []
         for provider_id in provider_ids:
             if await providers.get(provider_id) is None:
                 continue  # already deleted by a prior run
             await providers.delete(provider_id)
             deleted += 1
+            if provider_id in unconverted_provider_ids:
+                deleted_unconverted.append(provider_id)
+        if deleted_unconverted:
+            # The "defensive, should be impossible under the old schema"
+            # case from step 1 actually happened: at least one profile
+            # is now left pointing at a provider id that no longer
+            # exists. Logged at ERROR (not the step-1 WARNING) because
+            # this is the point the orphaning becomes real, and it needs
+            # to be findable in migration output, not just inferred from
+            # a step-1 warning several log lines earlier.
+            logger.error(
+                "deleted aggregated LLMProvider rows whose profile could "
+                "NOT be converted (fewer than 2 resolvable members) -- "
+                "those profiles now have a dangling provider_id and need "
+                "manual repair",
+                extra={
+                    "count": len(deleted_unconverted),
+                    "provider_ids": deleted_unconverted,
+                },
+            )
         if deleted:
             logger.info(
                 "deleted orphaned aggregated LLMProvider rows",

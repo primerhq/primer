@@ -1,4 +1,16 @@
-"""Unit tests for AggregatedLLM (fake-LLM async generators; no SDK/network)."""
+"""Unit tests for AggregatedLLM (fake-LLM async generators; no SDK/network).
+
+AggregatedLLM's failover ALGORITHM is unchanged by the ModelProfile move
+(01a067c4) -- only its constructor and ``resolve_member`` contract
+changed shape: a "member" used to be an ``AggregatedMember(provider_id,
+model_name)`` resolved by provider id; it is now a member ModelProfile
+id, resolved (recursively, through ``resolve_llm``) to a ``(LLM,
+ResolvedModel)`` pair -- the pair is what now carries the member's own
+``model_name`` for the per-member ``stream(model=...)`` call, since
+that no longer lives on the member reference itself. Every test below
+keeps its ORIGINAL failover-semantics assertion; only the setup
+(``_profile``/``_resolver``) changed to match.
+"""
 
 from __future__ import annotations
 
@@ -25,16 +37,14 @@ from primer.model.except_ import (
     RateLimitError,
     ServerError,
 )
-from primer.model.provider import (
-    AggregatedLLMConfig,
-    AggregatedMember,
+from primer.model.model_profile import (
     FailoverClasses,
     FailoverPoint,
-    Limits,
-    LLMProvider,
-    LLMProviderType,
+    ModelProfile,
+    ModelProfileConfig,
     RoutingStrategy,
 )
+from primer.model_profile.resolver import ResolvedModel
 
 
 class _FakeLLM(LLM):
@@ -88,20 +98,41 @@ class _FakeLLM(LLM):
         self.closed = True
 
 
-def _row(config: AggregatedLLMConfig) -> LLMProvider:
-    return LLMProvider(
+def _profile(
+    members: list[str],
+    *,
+    strategy=RoutingStrategy.SEQUENTIAL,
+    failover_point=FailoverPoint.BEFORE_FIRST_TOKEN,
+    failover_on=FailoverClasses.TRANSIENT_AND_CONFIG,
+) -> ModelProfile:
+    return ModelProfile(
         id="agg-1",
-        provider=LLMProviderType.AGGREGATED,
-        config=config,
-        limits=Limits(max_concurrency=4),
+        description="an aggregated profile",
+        kind="aggregated",
+        members=members,
+        strategy=strategy,
+        failover_point=failover_point,
+        failover_on=failover_on,
     )
 
 
-def _resolver(mapping: dict[str, LLM]):
-    async def resolve(pid: str) -> LLM:
-        if pid not in mapping:
-            raise NotFoundError(f"LLMProvider {pid!r} does not exist")
-        return mapping[pid]
+def _resolver(mapping: dict[str, tuple[LLM, str]]):
+    """``mapping``: member profile id -> ``(llm, model_name)``.
+
+    Mirrors resolve_llm's own (LLM, ResolvedModel) pair contract -- the
+    real resolve_llm recurses through itself for each member; here the
+    member's downstream LLM and its own model_name are supplied directly
+    since these are unit tests of AggregatedLLM alone.
+    """
+    async def resolve(member_id: str) -> tuple[LLM, ResolvedModel]:
+        if member_id not in mapping:
+            raise NotFoundError(f"ModelProfile {member_id!r} does not exist")
+        llm, model_name = mapping[member_id]
+        resolved = ResolvedModel(
+            profile_id=member_id, provider_id="prov", model_name=model_name,
+            context_length=8192, config=ModelProfileConfig(),
+        )
+        return llm, resolved
     return resolve
 
 
@@ -117,11 +148,10 @@ async def test_connect_raise_fails_over_to_next_member():
     good = _FakeLLM(events=[StreamStart(model="m2"), TextDelta(text="hi", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
     bad = _FakeLLM(connect_exc=RateLimitError("429"))
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="bad", model_name="m1"),
-        AggregatedMember(provider_id="good", model_name="m2"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert any(isinstance(e, TextDelta) for e in events)
     assert isinstance(events[-1], Done)
@@ -135,11 +165,10 @@ async def test_first_event_error_fails_over_no_tokens_emitted():
     bad = _FakeLLM(events=[ChatError(fatal=True, code=None, message="429")])
     good = _FakeLLM(events=[StreamStart(model="m2"), TextDelta(text="ok", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="bad", model_name="m1"),
-        AggregatedMember(provider_id="good", model_name="m2"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     # No Error from the failed member reached the subscriber.
     assert not any(isinstance(e, ChatError) for e in events)
@@ -154,11 +183,10 @@ async def test_first_event_error_with_hypothetical_transient_code_fails_over():
     bad = _FakeLLM(events=[ChatError(fatal=True, code="rate_limit", message="429")])
     good = _FakeLLM(events=[TextDelta(text="ok", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="bad", model_name="m1"),
-        AggregatedMember(provider_id="good", model_name="m2"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert any(isinstance(e, TextDelta) for e in events)
 
@@ -173,11 +201,10 @@ async def test_stream_start_then_error_surfaces_no_failover():
                            ChatError(fatal=True, code=None, message="boom")])
     good = _FakeLLM(events=[TextDelta(text="SHOULD-NOT-APPEAR", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="bad", model_name="m1"),
-        AggregatedMember(provider_id="good", model_name="m2"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert isinstance(events[0], StreamStart)
     assert isinstance(events[-1], ChatError)
@@ -192,8 +219,8 @@ async def test_abandoned_stream_closes_downstream_generator():
     good = _FakeLLM(events=[StreamStart(model="m"), TextDelta(text="a", index=0),
                             TextDelta(text="b", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(members=[AggregatedMember(provider_id="good", model_name="m")])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"good": good}))
+    profile = _profile(members=["good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver({"good": (good, "m")}))
     agen = agg.stream(model="virtual-1", messages=_MSG)
     first = await agen.__anext__()          # StreamStart committed
     assert isinstance(first, StreamStart)
@@ -210,11 +237,10 @@ async def test_token_then_error_before_first_token_surfaces_error_no_failover():
                            ChatError(fatal=True, code=None, message="429")])
     good = _FakeLLM(events=[TextDelta(text="SHOULD-NOT-APPEAR", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="bad", model_name="m1"),
-        AggregatedMember(provider_id="good", model_name="m2"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert [e.text for e in events if isinstance(e, TextDelta)] == ["partial"]
     assert isinstance(events[-1], ChatError)
@@ -224,11 +250,10 @@ async def test_token_then_error_before_first_token_surfaces_error_no_failover():
 async def test_all_members_fail_raises_aggregated_rate_limit():
     a = _FakeLLM(connect_exc=RateLimitError("429 a"))
     b = _FakeLLM(connect_exc=ServerError("500 b"))
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="a", model_name="m"),
-        AggregatedMember(provider_id="b", model_name="m"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"a": a, "b": b}))
+    profile = _profile(members=["a", "b"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"a": (a, "m"), "b": (b, "m")}
+    ))
     with pytest.raises(RateLimitError, match="all 2 aggregated members failed"):
         await _drain(agg.stream(model="virtual-1", messages=_MSG))
 
@@ -237,11 +262,8 @@ async def test_all_members_fail_raises_aggregated_rate_limit():
 async def test_not_found_member_is_skipped():
     good = _FakeLLM(events=[TextDelta(text="ok", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="missing", model_name="m1"),
-        AggregatedMember(provider_id="good", model_name="m2"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"good": good}))
+    profile = _profile(members=["missing", "good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver({"good": (good, "m2")}))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert any(isinstance(e, TextDelta) for e in events)
 
@@ -250,8 +272,8 @@ async def test_not_found_member_is_skipped():
 async def test_non_eligible_exception_propagates_unchanged():
     # ConfigError is neither ProviderError nor NetworkError -> propagate.
     bad = _FakeLLM(connect_exc=ConfigError("boom"))
-    cfg = AggregatedLLMConfig(members=[AggregatedMember(provider_id="bad", model_name="m")])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad}))
+    profile = _profile(members=["bad"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver({"bad": (bad, "m")}))
     with pytest.raises(ConfigError, match="boom"):
         await _drain(agg.stream(model="virtual-1", messages=_MSG))
 
@@ -260,30 +282,30 @@ async def test_non_eligible_exception_propagates_unchanged():
 async def test_stream_maps_virtual_model_to_each_member_model_name():
     record: list[str] = []
     good = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")], record=record)
-    cfg = AggregatedLLMConfig(members=[AggregatedMember(provider_id="good", model_name="member-model")])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"good": good}))
+    profile = _profile(members=["good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"good": (good, "member-model")}
+    ))
     await _drain(agg.stream(model="virtual-1", messages=_MSG))
-    # The incoming virtual name is NOT forwarded; the member's own model is.
+    # The incoming virtual name is NOT forwarded; the member's own
+    # (resolved) model_name is -- now carried by the ResolvedModel half
+    # of resolve_member's pair, not an AggregatedMember field.
     assert record == ["member-model"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_count_tokens_delegates_to_first_resolvable_member():
     good = _FakeLLM(name="g")
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="missing", model_name="m1"),
-        AggregatedMember(provider_id="good", model_name="m2"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"good": good}))
+    profile = _profile(members=["missing", "good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver({"good": (good, "m2")}))
     assert await agg.count_tokens(model="virtual-1", messages=_MSG) == 7
 
 
 @pytest.mark.asyncio
 async def test_aclose_is_noop_does_not_close_members():
     good = _FakeLLM()
-    cfg = AggregatedLLMConfig(members=[AggregatedMember(provider_id="good", model_name="m")])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"good": good}))
+    profile = _profile(members=["good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver({"good": (good, "m")}))
     await agg.aclose()
     assert good.closed is False
 
@@ -292,11 +314,10 @@ async def test_aclose_is_noop_does_not_close_members():
 async def test_failover_is_logged(caplog):
     bad = _FakeLLM(connect_exc=RateLimitError("429"))
     good = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="bad", model_name="m1"),
-        AggregatedMember(provider_id="good", model_name="m2"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     with caplog.at_level(logging.INFO, logger="primer.llm.aggregated"):
         await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert any("failing over" in r.message or "failing over" in r.getMessage()
@@ -307,15 +328,14 @@ async def test_failover_is_logged(caplog):
 async def test_empty_stream_member_is_treated_as_failure():
     # Member[0]'s stream ends immediately (StopAsyncIteration on the first
     # fetch) -> recorded as a member failure and failover proceeds to
-    # member[1] (aggregated.py:224-227).
+    # member[1] (aggregated.py's connect-phase handling).
     empty = _FakeLLM(events=[])
     good = _FakeLLM(events=[TextDelta(text="ok", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(members=[
-        AggregatedMember(provider_id="empty", model_name="m1"),
-        AggregatedMember(provider_id="good", model_name="m2"),
-    ])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"empty": empty, "good": good}))
+    profile = _profile(members=["empty", "good"])
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"empty": (empty, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert any(isinstance(e, TextDelta) for e in events)
     assert isinstance(events[-1], Done)
@@ -326,14 +346,10 @@ async def test_sequential_always_starts_at_member_zero():
     records = {"a": [], "b": []}
     a = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")], record=records["a"], name="a")
     b = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")], record=records["b"], name="b")
-    cfg = AggregatedLLMConfig(
-        strategy=RoutingStrategy.SEQUENTIAL,
-        members=[
-            AggregatedMember(provider_id="a", model_name="ma"),
-            AggregatedMember(provider_id="b", model_name="mb"),
-        ],
-    )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"a": a, "b": b}))
+    profile = _profile(members=["a", "b"], strategy=RoutingStrategy.SEQUENTIAL)
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"a": (a, "ma"), "b": (b, "mb")}
+    ))
     for _ in range(3):
         await _drain(agg.stream(model="virtual-1", messages=_MSG))
     # Member[0] served every call; member[1] never reached.
@@ -350,15 +366,10 @@ async def test_round_robin_rotates_starting_member():
                         record=records[k], name=k)
 
     a, b, c = mk("a"), mk("b"), mk("c")
-    cfg = AggregatedLLMConfig(
-        strategy=RoutingStrategy.ROUND_ROBIN,
-        members=[
-            AggregatedMember(provider_id="a", model_name="ma"),
-            AggregatedMember(provider_id="b", model_name="mb"),
-            AggregatedMember(provider_id="c", model_name="mc"),
-        ],
-    )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"a": a, "b": b, "c": c}))
+    profile = _profile(members=["a", "b", "c"], strategy=RoutingStrategy.ROUND_ROBIN)
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"a": (a, "ma"), "b": (b, "mb"), "c": (c, "mc")}
+    ))
     for _ in range(3):
         await _drain(agg.stream(model="virtual-1", messages=_MSG))
     # Each call commits to its start member, so each member served exactly once.
@@ -372,14 +383,10 @@ async def test_transient_only_propagates_auth_error():
     # failover_on=TRANSIENT: an AuthenticationError is NOT eligible -> propagate.
     bad = _FakeLLM(connect_exc=AuthenticationError("401"))
     good = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(
-        failover_on=FailoverClasses.TRANSIENT,
-        members=[
-            AggregatedMember(provider_id="bad", model_name="m1"),
-            AggregatedMember(provider_id="good", model_name="m2"),
-        ],
-    )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"], failover_on=FailoverClasses.TRANSIENT)
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     with pytest.raises(AuthenticationError):
         await _drain(agg.stream(model="virtual-1", messages=_MSG))
 
@@ -389,14 +396,12 @@ async def test_transient_and_config_fails_over_auth_error():
     bad = _FakeLLM(connect_exc=AuthenticationError("401"))
     good = _FakeLLM(events=[TextDelta(text="ok", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(
-        failover_on=FailoverClasses.TRANSIENT_AND_CONFIG,
-        members=[
-            AggregatedMember(provider_id="bad", model_name="m1"),
-            AggregatedMember(provider_id="good", model_name="m2"),
-        ],
+    profile = _profile(
+        members=["bad", "good"], failover_on=FailoverClasses.TRANSIENT_AND_CONFIG,
     )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert any(isinstance(e, TextDelta) for e in events)
 
@@ -426,11 +431,12 @@ async def test_round_robin_cursor_is_concurrency_safe():
                         record=records[k], name=k)
 
     fakes = {str(i): mk(str(i)) for i in range(n)}
-    cfg = AggregatedLLMConfig(
-        strategy=RoutingStrategy.ROUND_ROBIN,
-        members=[AggregatedMember(provider_id=str(i), model_name=f"m{i}") for i in range(n)],
+    profile = _profile(
+        members=[str(i) for i in range(n)], strategy=RoutingStrategy.ROUND_ROBIN,
     )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver(fakes))
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {k: (v, f"m{k}") for k, v in fakes.items()}
+    ))
     await asyncio.gather(*[
         _drain(agg.stream(model="virtual-1", messages=_MSG)) for _ in range(n)
     ])
@@ -458,14 +464,10 @@ async def test_mid_stream_restarts_on_next_member_with_dup():
         TextDelta(text=" full", index=0),
         Done(stop_reason="stop", raw_reason="stop"),
     ])
-    cfg = AggregatedLLMConfig(
-        failover_point=FailoverPoint.MID_STREAM,
-        members=[
-            AggregatedMember(provider_id="bad", model_name="m1"),
-            AggregatedMember(provider_id="good", model_name="m2"),
-        ],
-    )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"], failover_point=FailoverPoint.MID_STREAM)
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     texts = [e.text for e in events if isinstance(e, TextDelta)]
     # "partial" appears twice (member[0] then member[1] restart) -> duplication.
@@ -484,14 +486,12 @@ async def test_before_first_token_does_not_restart_on_mid_stream_error():
     ])
     good = _FakeLLM(events=[TextDelta(text="unused", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(
-        failover_point=FailoverPoint.BEFORE_FIRST_TOKEN,
-        members=[
-            AggregatedMember(provider_id="bad", model_name="m1"),
-            AggregatedMember(provider_id="good", model_name="m2"),
-        ],
+    profile = _profile(
+        members=["bad", "good"], failover_point=FailoverPoint.BEFORE_FIRST_TOKEN,
     )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     texts = [e.text for e in events if isinstance(e, TextDelta)]
     assert texts == ["partial"]
@@ -509,14 +509,10 @@ async def test_mid_stream_raised_timeout_restarts_under_mid_stream():
     )
     good = _FakeLLM(events=[TextDelta(text="served", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(
-        failover_point=FailoverPoint.MID_STREAM,
-        members=[
-            AggregatedMember(provider_id="bad", model_name="m1"),
-            AggregatedMember(provider_id="good", model_name="m2"),
-        ],
-    )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"], failover_point=FailoverPoint.MID_STREAM)
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     texts = [e.text for e in events if isinstance(e, TextDelta)]
     assert texts == ["partial", "served"]      # restarted after the raised timeout
@@ -533,14 +529,12 @@ async def test_before_first_token_propagates_raised_mid_stream_timeout():
         mid_exc=_PTE("stalled", code="stream_timeout"),
     )
     good = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(
-        failover_point=FailoverPoint.BEFORE_FIRST_TOKEN,
-        members=[
-            AggregatedMember(provider_id="bad", model_name="m1"),
-            AggregatedMember(provider_id="good", model_name="m2"),
-        ],
+    profile = _profile(
+        members=["bad", "good"], failover_point=FailoverPoint.BEFORE_FIRST_TOKEN,
     )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     with pytest.raises(_PTE):
         await _drain(agg.stream(model="virtual-1", messages=_MSG))
 
@@ -554,14 +548,10 @@ async def test_mid_stream_failover_closes_abandoned_downstream():
         TextDelta(text="never", index=0),
     ])
     good = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(
-        failover_point=FailoverPoint.MID_STREAM,
-        members=[
-            AggregatedMember(provider_id="bad", model_name="m1"),
-            AggregatedMember(provider_id="good", model_name="m2"),
-        ],
-    )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    profile = _profile(members=["bad", "good"], failover_point=FailoverPoint.MID_STREAM)
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert bad.stream_closed is True
 
@@ -577,15 +567,14 @@ async def test_mid_stream_non_eligible_yielded_error_surfaces_no_restart():
     ])
     good = _FakeLLM(events=[TextDelta(text="SHOULD-NOT-APPEAR", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(
+    profile = _profile(
+        members=["bad", "good"],
         failover_point=FailoverPoint.MID_STREAM,
         failover_on=FailoverClasses.TRANSIENT,
-        members=[
-            AggregatedMember(provider_id="bad", model_name="m1"),
-            AggregatedMember(provider_id="good", model_name="m2"),
-        ],
     )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     texts = [e.text for e in events if isinstance(e, TextDelta)]
     assert texts == ["partial"]                # no restart, no duplication
@@ -603,14 +592,38 @@ async def test_mid_stream_non_eligible_raised_error_propagates_no_restart():
     )
     good = _FakeLLM(events=[TextDelta(text="SHOULD-NOT-APPEAR", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
-    cfg = AggregatedLLMConfig(
+    profile = _profile(
+        members=["bad", "good"],
         failover_point=FailoverPoint.MID_STREAM,
         failover_on=FailoverClasses.TRANSIENT,
-        members=[
-            AggregatedMember(provider_id="bad", model_name="m1"),
-            AggregatedMember(provider_id="good", model_name="m2"),
-        ],
     )
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
     with pytest.raises(AuthenticationError):
         await _drain(agg.stream(model="virtual-1", messages=_MSG))
+
+
+@pytest.mark.asyncio
+async def test_nested_aggregation_raises_bad_request():
+    """Unit-level pin of the runtime guard: if a member resolves to
+    ANOTHER AggregatedLLM (should be unreachable given the CRUD-time
+    eager rejection in model_profiles.py -- ruling 6 -- but this adapter
+    keeps its own defense-in-depth check), stream() raises rather than
+    recursing silently.
+    """
+    inner_good = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")])
+    nested = AggregatedLLM(
+        _profile(members=["inner"]),
+        resolve_member=_resolver({"inner": (inner_good, "m")}),
+    )
+
+    async def resolve_to_nested(member_id: str):
+        return nested, ResolvedModel(
+            profile_id=member_id, provider_id=None, model_name=None,
+            context_length=8192, config=ModelProfileConfig(),
+        )
+
+    outer = AggregatedLLM(_profile(members=["nested-member"]), resolve_member=resolve_to_nested)
+    with pytest.raises(BadRequestError, match="nesting/self-reference is not allowed"):
+        await _drain(outer.stream(model="virtual-1", messages=_MSG))
