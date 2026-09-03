@@ -499,6 +499,17 @@ async def run_one_session_turn(
 
             for rec in records:
                 seq = await writer.append(rec)
+                if rec.kind == SessionMessageKind.TOOL_CALL:
+                    # 01a0518b (seam-split A-chat/workspace surface): stash
+                    # the record's own seq for the eventual seam-split
+                    # dispatch to read synchronously (see
+                    # _CoalesceState.tool_call_record_seq), and flush NOW
+                    # rather than waiting for the buffer's normal 16KB/100ms
+                    # policy — a claim-based worker reads messages.jsonl
+                    # from a DIFFERENT PROCESS, so unflushed bytes are
+                    # invisible to it. Durable means flushed, always.
+                    coalesce_state.tool_call_record_seq[rec.payload["id"]] = seq
+                    await writer.flush()
                 await deps.event_bus.publish(
                     f"session:{session_id}:tick", {"seq": seq}
                 )
