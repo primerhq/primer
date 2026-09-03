@@ -177,6 +177,9 @@ class _CheckpointMixin:
                     # reply (resume hook on the operator payload).
                     "tool_name": p.tool_name,
                     "resume_metadata": dict(p.resume_metadata or {}),
+                    # 01a0690a: the scoped id the paired durable TOOL_CALL
+                    # record carries -- see _PendingToolCall's docstring.
+                    "scoped_tool_call_id": p.scoped_tool_call_id,
                 }
                 for p in self._pending_toolcalls
             ],
@@ -194,6 +197,8 @@ class _CheckpointMixin:
                     # nested invoke_agent. Empty / None for an ordinary park.
                     "frames": list(p.frames),
                     "leaf": dict(p.leaf) if p.leaf is not None else None,
+                    # 01a0690a: see _PendingAgentYield's docstring.
+                    "scoped_tool_call_id": p.scoped_tool_call_id,
                 }
                 for p in self._pending_agent_yields
             ],
@@ -320,6 +325,9 @@ class _CheckpointMixin:
                 # ``{}`` keep the approval-gate (bypass re-dispatch) path.
                 tool_name=raw.get("tool_name"),
                 resume_metadata=dict(raw.get("resume_metadata") or {}),
+                # 01a0690a: None for a checkpoint written before this field
+                # existed -- the resume write falls back to the raw id.
+                scoped_tool_call_id=raw.get("scoped_tool_call_id"),
             )
             for raw in (payload.get("pending_toolcalls") or [])
         ]
@@ -334,6 +342,7 @@ class _CheckpointMixin:
                 iteration=raw["iteration"],
                 frames=list(raw.get("frames") or []),
                 leaf=dict(raw["leaf"]) if raw.get("leaf") is not None else None,
+                scoped_tool_call_id=raw.get("scoped_tool_call_id"),
             )
             for raw in (payload.get("pending_agent_yields") or [])
         ]

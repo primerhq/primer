@@ -122,6 +122,18 @@ class ParkedState:
     client_tools_attached: bool = False
     binding_epoch: int | None = None
     frames: list = field(default_factory=list)
+    # 01a0690a: per-node monotonic tool-call-seq high-water mark, snapshotted
+    # from dispatch.py's coalesce_state.tool_call_seq at park time -- ONLY
+    # meaningful for a graph park (None for an agent-bound park, which has
+    # no node_id keying to begin with). A resumed graph drain that mints
+    # MORE scoped ids (Gap 2: tool calls after the resumed node continues)
+    # must seed its own fresh _CoalesceState.tool_call_seq from this instead
+    # of restarting every node's counter at 0 -- a fresh counter would
+    # re-mint node:tool:turn_no:1.. and collide with ids this SAME turn_no
+    # already minted before the park (turn_no does not bump until
+    # on_release, so the resume drain observes the identical turn_no).
+    # None for a checkpoint written before this field existed.
+    node_tool_call_seq: dict[str, int] | None = None
     schema_version: int = PARKED_STATE_SCHEMA_VERSION
     # 01a068ea-dc95: the DURABLE TOOL_CALL SessionMessageRecord this park
     # answers was minted with the SCOPED id (primer.session.persistence's
@@ -165,6 +177,11 @@ class ParkedState:
                 else None
             ),
             "frames": frames_to_jsonable(self.frames),
+            "node_tool_call_seq": (
+                dict(self.node_tool_call_seq)
+                if self.node_tool_call_seq is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -248,6 +265,11 @@ class ParkedState:
             frames=frames,
             schema_version=version,
             scoped_tool_call_id=data.get("scoped_tool_call_id"),
+            node_tool_call_seq=(
+                dict(data["node_tool_call_seq"])
+                if data.get("node_tool_call_seq") is not None
+                else None
+            ),
         )
 
 

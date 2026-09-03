@@ -149,6 +149,10 @@ async def test_snapshot_and_restore_preserves_state() -> None:
             tool_call_id="tc-abc",
             parked_event_key="tool_approval:gsid-1:tc-abc",
             arguments={"q": "x", "limit": 10},
+            # 01a0690a: the scoped id the paired durable TOOL_CALL record
+            # carries — must survive the snapshot/restore round-trip so a
+            # repark carries it forward unchanged.
+            scoped_tool_call_id="worker[1]:tool:3:1",
         ),
     ]
 
@@ -207,3 +211,4 @@ async def test_snapshot_and_restore_preserves_state() -> None:
     assert p.tool_call_id == "tc-abc"
     assert p.parked_event_key == "tool_approval:gsid-1:tc-abc"
     assert p.arguments == {"q": "x", "limit": 10}
+    assert p.scoped_tool_call_id == "worker[1]:tool:3:1"

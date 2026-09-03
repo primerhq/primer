@@ -572,6 +572,68 @@ def test_translate_done_usage_with_optional_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 01a0690a: stash_graph_scoped_ids — graph-park scoped-id/seq stashing
+# ---------------------------------------------------------------------------
+
+
+def test_stash_graph_scoped_ids_none_checkpoint_is_noop() -> None:
+    """An agent-bound park (no graph_checkpoint) has nothing to stash."""
+    from primer.session.persistence import _CoalesceState, stash_graph_scoped_ids
+
+    state = _CoalesceState()
+    assert stash_graph_scoped_ids(None, state) == {}
+
+
+def test_stash_graph_scoped_ids_sets_matching_entries() -> None:
+    """Each pending entry's scoped_tool_call_id is set from coalesce_state,
+    keyed by (node_id, tool_call_id); the per-node seq snapshot is returned
+    for ParkedState.node_tool_call_seq."""
+    from primer.session.persistence import _CoalesceState, stash_graph_scoped_ids
+
+    state = _CoalesceState()
+    state.scoped_call_ids[("worker[0]", "tc-1")] = "worker[0]:tool:5:1"
+    state.scoped_call_ids[("asker", "tc-2")] = "asker:tool:5:1"
+    state.tool_call_seq["worker[0]"] = 1
+    state.tool_call_seq["asker"] = 1
+    checkpoint = {
+        "pending_toolcalls": [
+            {"node_id": "worker[0]", "tool_call_id": "tc-1", "scoped_tool_call_id": None},
+        ],
+        "pending_agent_yields": [
+            {"node_id": "asker", "tool_call_id": "tc-2", "scoped_tool_call_id": None},
+        ],
+    }
+
+    node_tool_call_seq = stash_graph_scoped_ids(checkpoint, state)
+
+    assert checkpoint["pending_toolcalls"][0]["scoped_tool_call_id"] == "worker[0]:tool:5:1"
+    assert checkpoint["pending_agent_yields"][0]["scoped_tool_call_id"] == "asker:tool:5:1"
+    assert node_tool_call_seq == {"worker[0]": 1, "asker": 1}
+
+
+def test_stash_graph_scoped_ids_preserves_existing_value() -> None:
+    """An entry carried forward from an earlier park (repark) already has a
+    scoped_tool_call_id; a resume-time coalesce_state that never minted it
+    must not overwrite it with a (missing) lookup."""
+    from primer.session.persistence import _CoalesceState, stash_graph_scoped_ids
+
+    state = _CoalesceState()  # fresh -- mints nothing for tc-1
+    checkpoint = {
+        "pending_toolcalls": [
+            {
+                "node_id": "worker[0]", "tool_call_id": "tc-1",
+                "scoped_tool_call_id": "worker[0]:tool:3:1",
+            },
+        ],
+        "pending_agent_yields": [],
+    }
+
+    stash_graph_scoped_ids(checkpoint, state)
+
+    assert checkpoint["pending_toolcalls"][0]["scoped_tool_call_id"] == "worker[0]:tool:3:1"
+
+
+# ---------------------------------------------------------------------------
 # F1a: per-graph-node agent events flow into the session log, attributed by
 # node_id (the wrapped _GraphNodeEvent un-drop + per-node coalescing).
 # ---------------------------------------------------------------------------

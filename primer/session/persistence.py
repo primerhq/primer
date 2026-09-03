@@ -752,6 +752,47 @@ def translate_stream_event(
     return None
 
 
+def stash_graph_scoped_ids(
+    graph_checkpoint: dict[str, Any] | None, coalesce_state: "_CoalesceState",
+) -> dict[str, int]:
+    """Stash node-qualified scoped tool-call ids into a graph checkpoint's
+    pending entries, at the moment a ``_CoalesceState`` that minted them is
+    still in scope (01a0690a — the graph-path sibling of 0b4e8bfc's
+    ``ParkedState.scoped_tool_call_id`` for the agent path).
+
+    Two call sites share this: dispatch.py's top-level ``except
+    YieldToWorker`` catch (a fresh park, ``coalesce_state`` populated by the
+    live turn's own ``translate_stream_event`` calls via the
+    ``_GraphNodeEvent`` unwrap), and the graph-resume drain's own repark
+    catch (worker/graph_resume.py — a FRESH ``_CoalesceState`` seeded from
+    the checkpoint's prior mints, see ``ParkedState.node_tool_call_seq``).
+
+    Mutates ``pending_toolcalls``/``pending_agent_yields`` entries IN PLACE,
+    setting ``scoped_tool_call_id`` from ``coalesce_state.scoped_call_ids``
+    keyed by ``(entry["node_id"], entry["tool_call_id"])`` — but only when
+    the entry doesn't already carry one: an entry stashed by an EARLIER park
+    in this same checkpoint's history (carried forward through a repark)
+    keeps its original id rather than being re-derived (there is nothing to
+    re-derive from a resume-time ``coalesce_state`` that never minted it).
+
+    Returns a snapshot of ``coalesce_state.tool_call_seq`` (the per-node
+    monotonic mint counters) for ``ParkedState.node_tool_call_seq`` — {} for
+    an agent-bound park (``graph_checkpoint is None``, nothing to stash).
+    """
+    if graph_checkpoint is None:
+        return {}
+    for entries_key in ("pending_toolcalls", "pending_agent_yields"):
+        for entry in graph_checkpoint.get(entries_key) or []:
+            if entry.get("scoped_tool_call_id") is not None:
+                continue
+            sid = coalesce_state.scoped_call_ids.get(
+                (entry.get("node_id"), entry.get("tool_call_id"))
+            )
+            if sid is not None:
+                entry["scoped_tool_call_id"] = sid
+    return dict(coalesce_state.tool_call_seq)
+
+
 def infer_agent_phase(event: StreamEvent) -> str | None:
     """Map a raw StreamEvent to the agent_phase (01a04d91-a7a0) it
     implies, or ``None`` if this event kind carries no phase information
@@ -791,4 +832,7 @@ def infer_agent_phase(event: StreamEvent) -> str | None:
     return None
 
 
-__all__ = ["WorkspaceMessageWriter", "WorkspaceIO", "_CoalesceState", "translate_stream_event"]
+__all__ = [
+    "WorkspaceMessageWriter", "WorkspaceIO", "_CoalesceState",
+    "translate_stream_event", "stash_graph_scoped_ids",
+]
