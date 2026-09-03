@@ -23,6 +23,14 @@
 // Controlled component: `selected` is a Set<scoped_id>, `onChange(next)`
 // receives the new Set on every toggle - the caller owns persistence
 // (agent.tools, a graph node's tool list, ...).
+//
+// `mode="single"` (uiv2 Wave 3, approved for the approval-policy Tool
+// row - a policy gates exactly one tool): rows become radio-styled and
+// picking one REPLACES the selection instead of adding to it, the
+// toolset group header's bulk-select checkbox and the "selected · N"
+// filter chip are hidden (neither makes sense with at most one pick).
+// Default (no `mode`, or "multi") is byte-identical to before this was
+// added - every existing multi-select consumer is unaffected.
 
 function TP_toggleSet(set, id) {
   const next = new Set(set);
@@ -31,7 +39,7 @@ function TP_toggleSet(set, id) {
   return next;
 }
 
-function TP_Row({ tool, checked, onToggle, open, onToggleOpen }) {
+function TP_Row({ tool, checked, onToggle, open, onToggleOpen, single }) {
   const hl = window.primerVendor?.highlightJson;
   return (
     <div style={{ borderTop: "1px solid var(--bg-1)" }}>
@@ -44,7 +52,7 @@ function TP_Row({ tool, checked, onToggle, open, onToggleOpen }) {
         data-testid={`tool-picker-row-${tool.scoped_id}`}
       >
         <input
-          type="checkbox"
+          type={single ? "radio" : "checkbox"}
           checked={checked}
           onChange={() => onToggle(tool.scoped_id)}
           style={{ marginTop: 3 }}
@@ -85,8 +93,9 @@ function TP_Row({ tool, checked, onToggle, open, onToggleOpen }) {
   );
 }
 
-function ToolPicker({ selected, onChange, pageSize }) {
+function ToolPicker({ selected, onChange, pageSize, mode }) {
   const { useResource, apiFetch } = window.primerApi;
+  const single = mode === "single";
   const size = pageSize || 6;
   const catalogue = useResource(
     "tool-picker:catalogue",
@@ -165,7 +174,8 @@ function ToolPicker({ selected, onChange, pageSize }) {
   const pageEnd = Math.min(pageStart + size, flatTools.length);
   const pageTools = flatTools.slice(pageStart, pageEnd);
 
-  const toggleId = (scopedId) => onChange(TP_toggleSet(selected, scopedId));
+  const toggleId = (scopedId) =>
+    onChange(single ? new Set([scopedId]) : TP_toggleSet(selected, scopedId));
   const toggleGroup = (entry, allSelected) => {
     let next = new Set(selected);
     for (const t of entry.tools) {
@@ -191,17 +201,19 @@ function ToolPicker({ selected, onChange, pageSize }) {
             style={{ width: "100%" }}
           />
         </div>
-        <button
-          type="button"
-          data-testid="tool-picker-filter-selected"
-          className={"chip" + (selectedOnly ? " active" : "")}
-          aria-pressed={selectedOnly}
-          onClick={() => setSelectedOnly((v) => !v)}
-          title={selectedOnly ? "Show all tools" : "Show only selected tools"}
-          style={{ whiteSpace: "nowrap" }}
-        >
-          selected · {selectedCount}
-        </button>
+        {!single && (
+          <button
+            type="button"
+            data-testid="tool-picker-filter-selected"
+            className={"chip" + (selectedOnly ? " active" : "")}
+            aria-pressed={selectedOnly}
+            onClick={() => setSelectedOnly((v) => !v)}
+            title={selectedOnly ? "Show all tools" : "Show only selected tools"}
+            style={{ whiteSpace: "nowrap" }}
+          >
+            selected · {selectedCount}
+          </button>
+        )}
       </div>
       {staleIds.length > 0 && (
         <div className="field-help" style={{ color: "var(--amber)", marginBottom: 6 }} data-testid="tool-picker-stale">
@@ -255,11 +267,13 @@ function ToolPicker({ selected, onChange, pageSize }) {
                       borderTop: lastToolsetId === null ? "none" : "1px solid var(--border)",
                       borderBottom: "1px solid var(--border)", position: "sticky", top: 0, zIndex: 1,
                     }}>
-                    <input type="checkbox" checked={allSelected}
-                      ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
-                      onChange={() => toggleGroup(entry, allSelected)}
-                      disabled={entry.tools.length === 0}
-                      data-testid={`tool-picker-group-${entry.id}`} />
+                    {!single && (
+                      <input type="checkbox" checked={allSelected}
+                        ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                        onChange={() => toggleGroup(entry, allSelected)}
+                        disabled={entry.tools.length === 0}
+                        data-testid={`tool-picker-group-${entry.id}`} />
+                    )}
                     <span className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{entry.id}</span>
                     {entry.builtin && <span className="muted text-sm" style={{ fontSize: 10.5 }}>· built-in</span>}
                     <span className="muted text-sm" style={{ marginLeft: "auto" }}>
@@ -274,7 +288,8 @@ function ToolPicker({ selected, onChange, pageSize }) {
                   checked={selected.has(t.scoped_id)}
                   onToggle={toggleId}
                   open={openId === t.scoped_id}
-                  onToggleOpen={(id) => setOpenId((cur) => (cur === id ? null : id))} />
+                  onToggleOpen={(id) => setOpenId((cur) => (cur === id ? null : id))}
+                  single={single} />
               );
             }
             return rows;

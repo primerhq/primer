@@ -366,21 +366,173 @@ var NV_PLAT_PAGES = {
     },
     card: function (row) {
       return {
-        name: row.id, sub: row.description || row.tool_pattern || "",
-        chip: row.mode ? { label: row.mode, color: "var(--text-3)" } : null,
-        facts: [
-          NV_fact("tool", row.tool_pattern || row.tool_id),
-          NV_fact("action", row.action || row.decision),
-        ],
+        // rev-2 synthesis Wave 3 item 48/49: title is the mono TOOL
+        // PATTERN (toolset_id__tool_name), not the policy's own
+        // entity id - the id still addresses Open/Delete, it just
+        // isn't the thing an operator scans the grid for.
+        name: NV_approvalToolPattern(row),
+        sub: "strategy: " + NV_approvalStrategyLabel(row),
+        // .nv-pcard-chip (bare mono, no pill border) is the mockup's
+        // "active" treatment - .nv-pcard-status (bordered pill) is a
+        // DIFFERENT, unrelated affordance used by other entities.
+        chip: {
+          label: row.enabled ? "active" : "disabled",
+          color: row.enabled ? "var(--green)" : "var(--text-3)",
+        },
+        facts: NV_approvalFacts(row),
       };
     },
-    open: function (con) { con.openOverlay("approvals", null, null); },
-    create: function (con) { con.openOverlay("approvals", null, null); },
+    // uiv2 Wave 3 routing fix (item 0, approved): thread row.id through
+    // like every sibling entity (services et al.) - the "approvals"
+    // overlay now dispatches on the id slot itself (nv-overlays.jsx),
+    // landing on AP_PolicyDetail's edit-mode AP_NewPolicyModal instead
+    // of the generic records sheet. "new" mirrors AgentsPage's own
+    // startCreate convention for an immediate create modal.
+    open: function (con, row) { con.openOverlay("approvals", null, row.id); },
+    create: function (con) { con.openOverlay("approvals", "new", null); },
     delPath: function (row) {
       return "/tool_approval_policies/" + encodeURIComponent(row.id);
     },
   },
 };
+
+// Approval-policy card helpers (rev-2 synthesis Wave 3 item 49) - kept
+// module-local since only the approvals card() above uses them. Real
+// ToolApprovalPolicy fields (primer/model/tool_approval.py): toolset_id,
+// tool_name, enabled, approval.{type,policy,provider_id,model},
+// timeout_seconds, approvers.{kind,roles,users}.
+
+function NV_approvalToolPattern(row) {
+  return (row.toolset_id || "?") + "__" + (row.tool_name || "?");
+}
+
+function NV_approvalStrategyLabel(row) {
+  var t = row.approval && row.approval.type;
+  if (t === "policy") return "Rego";
+  if (t === "llm") return "LLM judge";
+  return "always require";
+}
+
+// "anyone" | "role: x, y" | "user: x, y" - admins are always admitted
+// regardless (ApproverSpec.allows), so that's not spelled out here.
+function NV_approvalWhoDecides(row) {
+  var spec = row.approvers;
+  if (!spec || spec.kind === "anyone") return "anyone";
+  var names = (spec.kind === "roles" ? spec.roles : spec.users) || [];
+  var noun = spec.kind === "roles" ? "role" : "user";
+  return names.length ? noun + ": " + names.join(", ") : noun + ": (none set)";
+}
+
+// timeout_seconds is a float; render whole minutes when it divides
+// evenly (the common case), falling back to seconds for odd values
+// rather than showing a decimal.
+function NV_approvalTimeoutLabel(row) {
+  var secs = row.timeout_seconds;
+  if (secs == null) return "60m (default) → reject";
+  var mins = secs / 60;
+  var text = Number.isInteger(mins) ? mins + "m" : Math.round(secs) + "s";
+  return text + " → reject";
+}
+
+function NV_approvalFacts(row) {
+  var t = row.approval && row.approval.type;
+  if (t === "policy") {
+    // No separate human-readable description field on
+    // PolicyApprovalConfig (only the raw Rego source) - show its
+    // first non-blank line rather than inventing summary prose.
+    var firstLine = ((row.approval && row.approval.policy) || "")
+      .split("\n").map(function (l) { return l.trim(); })
+      .filter(function (l) { return l && l[0] !== "#"; })[0] || "(empty policy)";
+    return [
+      NV_fact("who decides", "returned per call"),
+      NV_fact("policy", firstLine),
+    ];
+  }
+  if (t === "llm") {
+    var judge = row.approval
+      ? (row.approval.provider_id || "?") + " · " + (row.approval.model || "?")
+      : "?";
+    return [
+      NV_fact("judge", judge),
+      NV_fact("who decides", NV_approvalWhoDecides(row) + " (judge may escalate)"),
+    ];
+  }
+  return [
+    NV_fact("who decides", NV_approvalWhoDecides(row)),
+    NV_fact("timeout", NV_approvalTimeoutLabel(row)),
+  ];
+}
+
+// Decisions-audit row helpers (Phase-2c: platform-approvals-staged).
+// ToolApprovalRecord (primer/model/tool_approval.py) is the real
+// shape - `decided_by` is null for SYNTHESIZED verdicts (timeout/
+// cancel), and classify_approval_payload (primer/worker/yield_runtime.
+// py) always collapses both to decision="rejected", distinguishing
+// them only by the literal reason string "timed-out" (timeout) vs
+// whatever the cancel payload gave, defaulting to "cancelled". The
+// literal decision values "timeout"/"cancelled" are separately
+// reachable via the chat-abandon flow and are honoured as-is.
+function NV_approvalDerivedStatus(r) {
+  if (r.decision === "timeout" || r.decision === "cancelled") return r.decision;
+  if (r.decision === "rejected" && !r.decided_by) {
+    if (r.reason === "timed-out") return "timeout";
+    // A synthesized reject with SOME reason but no timeout marker is
+    // the cancel path. No mockup slot for this state exists (its 4
+    // rows are pending/approved/rejected/timeout only) - rendering it
+    // as its own "cancelled" token rather than silently folding back
+    // into "rejected" is a judgment call, flagged for the PR body.
+    if (r.reason) return "cancelled";
+  }
+  return r.decision || "";
+}
+
+function NV_approvalStatusColor(status) {
+  if (status === "approved") return "var(--green)";
+  if (status === "rejected" || status === "timeout" || status === "cancelled") return "var(--red)";
+  return "var(--text-3)";
+}
+
+function NV_ellipsize(s, max) {
+  if (!s || s.length <= max) return s || "";
+  return s.slice(0, max) + "…";
+}
+
+// "{N}m elapsed → rejected" derives from the RECORD's own requested_at/
+// decided_at span, not the policy's configured timeout_seconds - the
+// staged fixture that surfaced this fired on the 60-minute GLOBAL yield
+// cap (policy timeout_seconds was null), where reconstructing a
+// hardcoded "30m" from the mockup's own example would have been wrong.
+// The record always carries both timestamps, so this is exact
+// regardless of which timeout (policy or global cap) actually fired.
+function NV_approvalDecidedBy(r, status) {
+  if (status === "timeout") {
+    if (r.requested_at && r.decided_at) {
+      const mins = Math.round((new Date(r.decided_at) - new Date(r.requested_at)) / 60000);
+      return `${mins}m elapsed → rejected`;
+    }
+    return "elapsed → rejected";
+  }
+  if (status === "cancelled") {
+    return r.reason && r.reason !== "cancelled" ? `cancelled — "${NV_ellipsize(r.reason, 40)}"` : "cancelled";
+  }
+  if (r.decided_by) {
+    return r.reason ? `${r.decided_by} — "${NV_ellipsize(r.reason, 40)}"` : r.decided_by;
+  }
+  return "—";
+}
+
+function NV_approvalAt(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear()
+    && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  if (sameDay) return `${hh}:${mm}`;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${months[d.getMonth()]} ${d.getDate()} · ${hh}:${mm}`;
+}
 
 // notes 3.1: "pager (range + prev/next appears past 6 entities)".
 var NV_PLAT_PAGE_SIZE = 6;
@@ -618,19 +770,21 @@ function NV_ApprovalsAudit() {
           <span>Decided by</span><span>At</span>
         </div>
         {rows.map(function (r, i) {
-          var status = r.status || r.decision || "";
+          // Phase-2c (platform-approvals-staged): TOOL was reading
+          // r.tool_id/r.tool, neither of which exist on
+          // ToolApprovalRecord (real fields: toolset_id/tool_name) -
+          // confirmed live bug, not a data gap. Reuses the same mono
+          // tool-pattern helper the policy cards use.
+          var status = NV_approvalDerivedStatus(r);
           return (
             <div key={r.id || i} className="nv-audit-row">
               <span>{r.session_id || ""}</span>
-              <span className="nv-audit-mono">{r.tool_id || r.tool || ""}</span>
-              <span className="nv-audit-mono" style={{
-                color: status === "approved" ? "var(--green)"
-                  : status === "rejected" ? "var(--red)" : "var(--text-3)",
-              }}>{status}</span>
-              <span>{r.decided_by || r.responded_by || "—"}</span>
-              <span className="nv-audit-mono">
-                {(r.decided_at || r.updated_at || "").slice(0, 16)}
+              <span className="nv-audit-mono">{NV_approvalToolPattern(r)}</span>
+              <span className="nv-audit-mono" style={{ color: NV_approvalStatusColor(status) }}>
+                {status}
               </span>
+              <span>{NV_approvalDecidedBy(r, status)}</span>
+              <span className="nv-audit-mono">{NV_approvalAt(r.decided_at)}</span>
             </div>
           );
         })}

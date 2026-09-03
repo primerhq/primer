@@ -107,15 +107,13 @@ def test_u0114_policy_modal_rego_compile_error_renders_inline(
     if the modal stays open.
     """
     policy_id = f"u0114-pol-{unique_suffix}"
-    toolset_id = f"u0114-ts-{unique_suffix}"
-    tool_name = f"u0114-tool-{unique_suffix}"
 
     try:
         # ----- 1. Open the policy modal from the Tools page ---------
         # uiv2 cutover: the standalone Tools catalog page retired; the
         # Approvals page's config hint now opens the same
-        # AP_NewPolicyModal directly (which still carries free-form
-        # id / toolset / tool inputs we override below).
+        # AP_NewPolicyModal directly (uiv2 Wave 3: Tool is now the
+        # shared picker, not free-form toolset/tool text inputs).
         open_legacy_route(page, console_url, "approvals")
 
         # ----- 2. New policy modal opens via the config hint --------
@@ -128,14 +126,13 @@ def test_u0114_policy_modal_rego_compile_error_renders_inline(
 
         # ----- 3. Fill required identity fields ---------------------
         modal.locator("[data-testid='approval-policy-id']").fill(policy_id)
-        # toolset override input is the second mono input in the
-        # modal (first is id; this lets us use a unique user-defined
-        # toolset so the test doesn't collide on the (toolset_id,
-        # tool_name) uniqueness constraint).
-        modal.locator("input.input.mono").nth(1).fill(toolset_id)
-        modal.locator(
-            "[data-testid='approval-policy-tool']",
-        ).fill(tool_name)
+        # uiv2 Wave 3: pick a real, always-available built-in tool via
+        # the shared picker (no more free-text toolset/tool override) -
+        # a DIFFERENT tool than U0110's misc__uuid_v4 so this test has
+        # no (toolset_id, tool_name) uniqueness-constraint coupling to
+        # a sibling test regardless of execution order.
+        modal.get_by_test_id("tool-picker-filter").fill("get_datetime")
+        modal.get_by_test_id("tool-picker-row-misc__get_datetime").click()
 
         # ----- 4. Switch to Policy (Rego) type ---------------------
         modal.locator("[data-testid='approval-policy-type-policy']").click()

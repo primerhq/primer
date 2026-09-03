@@ -705,11 +705,24 @@ var NV_OVERLAY_MOUNTS = {
       return <window.WorkersPage pushToast={window.primerApi.toastPush} />;
     },
   },
+  // List/records and the policy editor are ONE overlay: the id slot
+  // decides which renders (same "list and record are ONE overlay"
+  // convention as `agents` above) - uiv2 Wave 3 routing fix (item 0).
   approvals: {
     render: function (state, shell) {
+      if (state.id) {
+        return (
+          <window.AP_PolicyDetail
+            policyId={state.id}
+            pushToast={window.primerApi.toastPush}
+            onClose={function () { shell.openOverlay("approvals", null, null); }}
+          />
+        );
+      }
       return (
         <window.ApprovalsPage
           pushToast={window.primerApi.toastPush}
+          startCreate={state.section === "new"}
           onNavigate={function (page, sid) {
             if (sid) {
               shell.openDoc({ kind: "session", ref: sid, preview: false });
