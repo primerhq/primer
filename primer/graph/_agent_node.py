@@ -28,7 +28,11 @@ from primer.agent.loop import run_agent_turn
 from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph._node_identity import current_graph_node_id
-from primer.graph._node_refs import _NodeDone, _PendingAgentYield
+from primer.graph._node_refs import (
+    _NodeDone,
+    _PendingAgentYield,
+    _ToolDispatchBarrier,
+)
 from primer.graph.template import render_input_template
 from primer.model.chat import Message, StreamEvent, TextPart
 from primer.model.graph import GraphContext, NodeOutput, _AgentNodeRef
@@ -137,7 +141,7 @@ class _AgentNodeMixin:
         self,
         node: _AgentNodeRef,
         context: GraphContext,
-        queue: "asyncio.Queue[StreamEvent | _NodeDone]",
+        queue: "asyncio.Queue[StreamEvent | _NodeDone | _ToolDispatchBarrier]",
         *,
         extra_scope: dict[str, Any] | None = None,
     ) -> NodeOutput:

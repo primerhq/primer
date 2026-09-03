@@ -56,6 +56,8 @@ __all__ = [
     "_NodeDone",
     "_PendingToolCall",
     "_PendingAgentYield",
+    "_ToolDispatchBarrier",
+    "await_tool_dispatch_barrier",
 ]
 
 
@@ -716,6 +718,65 @@ class _NodeDone:
         # the executor tracks it via ``_pending_toolcalls`` and resumes
         # via :meth:`_BaseGraphExecutor.resume_from_checkpoint`.
         self.suspended = suspended
+
+
+class _ToolDispatchBarrier:
+    """Sentinel posted to the merge queue to await FIFO drain-through.
+
+    01a0518b (seam-split A-graph surface). The graph twin of the
+    chat/workspace surface's "no wait needed" pull-chain guarantee
+    (primer.session.persistence._CoalesceState.tool_call_record_seq): a
+    node's own tool-dispatch code needs to know that every StreamEvent it
+    already pushed onto this SAME queue (in particular its own
+    ToolCallStart/ToolCallEnd) has been drained AND translated+appended by
+    the consumer (dispatch.py's translate_stream_event + append) before it
+    reads back their assigned seqs from coalesce state. Unlike the
+    chat/workspace surface, ``queue.put`` here never suspends (unbounded
+    queue), so a node's own task races ahead of the drainer with nothing
+    to make it wait — this sentinel is that wait.
+
+    Posted via :func:`await_tool_dispatch_barrier`, which does the
+    put-then-await; resolved by :meth:`_BaseGraphExecutor._run_superstep_loop`
+    the INSTANT it is dequeued, never yielded further (it isn't a
+    StreamEvent). That resolution point is deliberate, not incidental:
+    ``_run_superstep_loop``'s ``while`` loop only re-enters ``queue.get()``
+    for item N once item N-1's own ``yield`` has been RESUMED by the
+    consumer chain — and that resume only happens after ``execute()``'s
+    ``yield`` and, above that, dispatch.py's ``async for`` loop body
+    (translate_stream_event + append) for item N-1 has already run to
+    completion (async generators execute in the caller's task; a `yield`
+    only unsuspends on the next `.__anext__()`). So dequeuing THIS sentinel
+    is itself proof every item enqueued before it — on any producer task
+    sharing this queue, not just the one that posted the barrier — has
+    already round-tripped through dispatch.py's translate+append. Resolving
+    later (e.g. deferred to the NEXT drained item) would also satisfy that
+    guarantee; resolving earlier (e.g. before this item is even dequeued)
+    would not.
+    """
+
+    __slots__ = ("future",)
+
+    def __init__(self, future: "asyncio.Future[None]") -> None:
+        self.future = future
+
+
+async def await_tool_dispatch_barrier(
+    queue: "asyncio.Queue[Any]",
+) -> None:
+    """Post a :class:`_ToolDispatchBarrier` onto ``queue`` and await it.
+
+    Building block for the eventual seam-split dispatch (01a0518b) on the
+    graph surface: call this after enqueuing a batch's ToolCallStart/
+    ToolCallEnd events and before reading their seqs back out of coalesce
+    state, so the drainer has necessarily already translated+appended them
+    by the time this returns. Yields the event loop while waiting (the
+    ``await`` on the future), which is what lets the independent drainer
+    task actually run — see the ``_ToolDispatchBarrier`` docstring for why
+    that independence is what makes this safe rather than a deadlock.
+    """
+    future: "asyncio.Future[None]" = asyncio.get_running_loop().create_future()
+    await queue.put(_ToolDispatchBarrier(future=future))
+    await future
 
 
 @dataclass(frozen=True)

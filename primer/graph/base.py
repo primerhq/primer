@@ -125,6 +125,7 @@ from primer.graph._node_refs import (  # noqa: E402
     _RoutingFailed,
     _ToolApprovalRejected,
     _ToolCallOutputResult,
+    _ToolDispatchBarrier,
     _is_value_yield_toolcall,
     _map_toolcall_result,
     _resume_value_yield_toolcall,
@@ -134,6 +135,7 @@ from primer.graph._node_refs import (  # noqa: E402
     _resolve_fanout_spec,
     _resolve_initial_ready_node,
     _resolve_toolcall_arguments,
+    await_tool_dispatch_barrier,
 )
 from primer.graph._checkpoint import _CheckpointMixin  # noqa: E402
 from primer.graph._agent_node import _AgentNodeMixin  # noqa: E402
@@ -1052,7 +1054,9 @@ class _BaseGraphExecutor(
             # drains AND no nodes are in-flight; the sort here is kept
             # purely for deterministic stream ordering.
             ready_ordered = sorted(ready)
-            queue: "asyncio.Queue[StreamEvent | _NodeDone]" = asyncio.Queue()
+            queue: "asyncio.Queue[StreamEvent | _NodeDone | _ToolDispatchBarrier]" = (
+                asyncio.Queue()
+            )
 
             # Per-node turn-log writers + start timestamps. Writers
             # are cached on self._node_turn_logs so a node that fires
@@ -1104,6 +1108,19 @@ class _BaseGraphExecutor(
             try:
                 while done_count < len(tasks):
                     item = await queue.get()
+                    if isinstance(item, _ToolDispatchBarrier):
+                        # 01a0518b (seam-split A-graph surface). Resolved the
+                        # INSTANT this sentinel is dequeued, never yielded
+                        # further (it isn't a StreamEvent) — see
+                        # _ToolDispatchBarrier's own docstring for why this
+                        # exact point is the correct one: reaching this line
+                        # for item N is only possible once item N-1's own
+                        # `yield` below was resumed, which only happens
+                        # after dispatch.py's translate_stream_event+append
+                        # for item N-1 already ran to completion.
+                        if not item.future.done():
+                            item.future.set_result(None)
+                        continue
                     if isinstance(item, _NodeDone):
                         results[item.node_id] = item
                         done_count += 1
