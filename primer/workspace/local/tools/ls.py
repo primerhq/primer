@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
 
@@ -48,9 +49,11 @@ class LsArgs(BaseModel):
 class Ls(WorkspaceTool):
     """List entries in a workspace directory.
 
-    Output: one line per entry, ``<type> <size> <name>`` where type is
-    ``f`` / ``d`` / ``l`` (file / dir / symlink). Sorted alphabetically.
-    Sizes are in bytes; directories and symlinks report 0.
+    Output: one line per entry, ``<type> <size> <mtime> <name>`` where
+    type is ``f`` / ``d`` / ``l`` (file / dir / symlink). Sorted
+    alphabetically. Sizes are in bytes; directories and symlinks report
+    0. mtime is UTC ISO-8601 (``YYYY-MM-DDTHH:MM:SSZ``), matching the
+    sandbox backend's rendering.
     """
 
     id: ClassVar[str] = "ls"
@@ -148,6 +151,11 @@ def _walk(
 
 
 def _format_entry(entry: Path, base: Path) -> str:
+    # lstat for symlinks so a broken link still formats instead of raising.
+    try:
+        st = entry.lstat() if entry.is_symlink() else entry.stat()
+    except OSError:
+        st = None
     if entry.is_symlink():
         kind = "l"
         size = 0
@@ -156,12 +164,15 @@ def _format_entry(entry: Path, base: Path) -> str:
         size = 0
     else:
         kind = "f"
-        try:
-            size = entry.stat().st_size
-        except OSError:
-            size = 0
+        size = st.st_size if st is not None else 0
+    if st is not None:
+        mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    else:
+        mtime = "?"
     rel = entry.relative_to(base).as_posix()
-    return f"{kind} {size:>10} {rel}"
+    return f"{kind} {size:>10} {mtime} {rel}"
 
 
 __all__ = ["Ls", "LsArgs"]

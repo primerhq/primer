@@ -7,6 +7,8 @@ real AgentSession). Per-tool sections separate the assertions.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -99,9 +101,20 @@ class TestLs:
         (workspace_root / "b.txt").write_text("bbb")
         (workspace_root / "sub").mkdir()
         result = await Ls(workspace_root).execute(LsArgs(), ctx)
-        assert "f          2 a.txt" in result.output
-        assert "f          3 b.txt" in result.output
-        assert "d          0 sub" in result.output
+        mtime = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+        assert re.search(rf"^f +2 {mtime} a\.txt$", result.output, re.M)
+        assert re.search(rf"^f +3 {mtime} b\.txt$", result.output, re.M)
+        assert re.search(rf"^d +0 {mtime} sub$", result.output, re.M)
+
+    async def test_mtime_reflects_the_file(
+        self, workspace_root: Path, ctx: ToolCallContext
+    ) -> None:
+        f = workspace_root / "old.txt"
+        f.write_text("x")
+        # 2001-09-09T01:46:40Z -- a fixed instant well in the past.
+        os.utime(f, (1_000_000_000, 1_000_000_000))
+        result = await Ls(workspace_root).execute(LsArgs(), ctx)
+        assert "2001-09-09T01:46:40Z old.txt" in result.output
 
     async def test_skips_dotfiles_by_default(
         self, workspace_root: Path, ctx: ToolCallContext
