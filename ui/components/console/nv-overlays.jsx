@@ -879,6 +879,33 @@ function NV_LegacyOverlay(props) {
       </NV_OverlayPanel>
     );
   }
+  // uiv2 Wave 2 ("Overlay geometry: centered modal, not near-fullscreen
+  // sheet, for both overlays"): the agent editor and collection browser
+  // DETAIL sub-views (overlay.id set) now render their own complete
+  // Modal chrome (title/verb-chip/close/footer) instead of the shared
+  // wrapper's wide sheet + breadcrumb row - stacking the shared VISIBLE
+  // chrome around an already-complete inner Modal would produce two
+  // title bars and two close buttons. The nv-overlay-body/nv-overlay:
+  // {name} testids stay (unstyled passthrough divs) rather than being
+  // dropped outright - tests/ui_e2e/_shell_helpers.py's open_legacy_route
+  // is shared infrastructure across every overlay in this file, not
+  // just these two, and asserts on exactly those testids as its "did
+  // the navigation actually land" signal; the inner Modal's own scrim/
+  // centering is 100% of the VISIBLE result either way. Scoped to just
+  // these two names' detail case (list views - AgentsPage, the
+  // collections table - are genuine list pages and keep the wide sheet
+  // unchanged; every OTHER overlay in NV_OVERLAY_MOUNTS is untouched,
+  // out of this wave's scope).
+  var bypassChrome = (name === "agents" || name === "collections") && !!overlay.id;
+  if (bypassChrome) {
+    return (
+      <div data-testid="nv-overlay-body">
+        <div data-testid={"nv-overlay:" + name}>
+          {mount.render(overlay, adapter)}
+        </div>
+      </div>
+    );
+  }
   return (
     <NV_OverlayPanel title={NV_overlayTitle(overlay)} wide
       testid={"nv-overlay:" + name} onClose={con.closeOverlay}>

@@ -86,8 +86,14 @@ def test_loads_after_shared_before_agents() -> None:
 
 
 def test_agents_tool_picker_renders_the_badges() -> None:
+    # RETARGET (uiv2 Wave 2): the agent form's tool picker was extracted
+    # into the shared ToolPicker (ui/components/shared/tool-picker.jsx) -
+    # the badges render there now, mounted by agents.jsx via
+    # <window.ToolPicker>, not inline in agents.jsx itself.
+    picker_src = (UI / "components" / "shared" / "tool-picker.jsx").read_text(encoding="utf-8")
+    assert "CapabilityBadges" in picker_src
     agents_src = (UI / "components" / "agents.jsx").read_text(encoding="utf-8")
-    assert "CapabilityBadges" in agents_src
+    assert "<window.ToolPicker " in agents_src
 
 
 def test_bundle_transpiles_with_capability_badges() -> None:

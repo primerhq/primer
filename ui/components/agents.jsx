@@ -4,18 +4,14 @@
 // scaffold was replaced in Phase 2 — every fetch goes through
 // window.primerApi.{apiFetch, useResource, useMutation}. Cache-key convention
 // follows other components: "agents:list", "agent-detail:${aid}",
-// "agent-status:${aid}", "agent-sessions:${aid}", "toolset-tools:${tid}".
+// "agent-status:${aid}", "agent-sessions:${aid}". The tool catalogue
+// itself is owned by the shared ToolPicker (ui/components/shared/
+// tool-picker.jsx, cache key "tool-picker:catalogue") since uiv2 Wave 2 -
+// this file no longer fetches /tools directly.
 //
 // Babel-standalone shares the global scope across <script> tags so every
 // top-level binding in this file is prefixed with AG_ to avoid name clashes
 // with providers.jsx (PROVIDER_FIELDS) and workspaces.jsx (WS_TERMINAL).
-
-const AG_TABS = [
-  { id: "config",   label: "Config",   icon: "settings" },
-  { id: "tools",    label: "Tools",    icon: "tools" },
-  { id: "sessions", label: "Sessions", icon: "zap" },
-  { id: "metadata", label: "Metadata", icon: "doc" },
-];
 
 const AG_PROVIDER_COLORS = {
   openai: "var(--green)",
@@ -371,11 +367,150 @@ function AG_Toggle({ checked, onChange, label, help, disabled, testid }) {
 // New agent modal
 // ============================================================================
 
-function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
+function AG_ProfilePicker({ profiles, loading, value, onChange, missingId }) {
+  // uiv2 Wave 2: the mockup renders model profiles as stacked
+  // selectable rows (bound one green-bordered/green-mono, the rest
+  // plain) rather than a <select> - same data (GET /model_profiles),
+  // just a richer picker matching the reference exactly.
+  return (
+    <div className="col" style={{ gap: 6 }} data-testid="agent-profile-picker">
+      {missingId && (
+        <div style={{
+          border: "1px solid var(--red)", borderRadius: 6, padding: "8px 10px",
+          color: "var(--red)",
+        }} data-testid="agent-profile-row-missing">
+          <span className="mono">{missingId}</span> <span className="text-sm">(missing) — pick another below</span>
+        </div>
+      )}
+      {loading && profiles.length === 0 && (
+        <div className="muted text-sm" style={{ padding: 10 }}>Loading model profiles…</div>
+      )}
+      {!loading && profiles.length === 0 && (
+        <div className="field-help" style={{ color: "var(--amber)" }}>
+          No model profiles configured. Create one at <span className="mono">/providers?class=llm</span> first.
+        </div>
+      )}
+      {profiles.map((pr) => {
+        const active = pr.id === value;
+        return (
+          <button type="button" key={pr.id}
+            onClick={() => onChange(pr.id)}
+            data-testid={`agent-profile-row-${pr.id}`}
+            data-active={active ? "true" : "false"}
+            style={{
+              display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2,
+              textAlign: "left", padding: "8px 10px", borderRadius: 6, cursor: "pointer",
+              border: "1px solid " + (active ? "var(--accent)" : "var(--border)"),
+              background: active ? "var(--accent-dim)" : "var(--bg-1)",
+            }}>
+            <span className="mono" style={{ color: active ? "var(--accent)" : "var(--text)", fontSize: 12.5 }}>{pr.id}</span>
+            <span className="muted text-sm" style={{ fontSize: 11 }}>
+              {pr.provider_id}/{pr.model_name}
+              {pr.config?.reasoning ? ` · reasoning ${pr.config.reasoning}` : ""}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// uiv2 Wave 2: everything JSON-visible with no mockup form field
+// (description was already homed; response_format/allow_external_tools/
+// compaction_tool_access are real but rare enough the mockup's own
+// minimal example never shows them) - kept reachable behind one
+// collapsed disclosure rather than cluttering the two-column layout.
+function AG_AdvancedDisclosure({ open, onToggle, children }) {
+  // Controlled (not self-contained state): submit() must be able to
+  // force this open when response_format fails to parse, the same way
+  // the old tabbed layout jumped to the Advanced tab on that error.
+  return (
+    <div className="panel" data-testid="agent-advanced-disclosure">
+      <button type="button" onClick={onToggle}
+        style={{
+          display: "flex", alignItems: "center", gap: 6, width: "100%",
+          background: "none", border: "none", cursor: "pointer", padding: "8px 10px",
+          color: "var(--text-2)", fontSize: 12,
+        }}>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
+        Advanced
+      </button>
+      {open && (
+        <div style={{ padding: "0 10px 10px", display: "flex", flexDirection: "column", gap: 12 }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// uiv2 Wave 2 (a-6, re-homed as a collapsible panel rather than its own
+// tab): unchanged fetch/table from the old Sessions tab, just a smaller
+// footprint so it fits the consolidated form's right column.
+function AG_SessionsPanel({ agentId }) {
+  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { navigate } = useRouter();
+  const [open, setOpen] = React.useState(false);
+  const sessions = useResource(
+    `agent-sessions:${agentId}`,
+    (signal) => apiFetch("GET", "/sessions?agent_id=" + encodeURIComponent(agentId) + "&limit=200", null, { signal }),
+    { pollMs: open ? 5000 : 0, deps: [agentId] }
+  );
+  const items = sessions.data?.items ?? [];
+  return (
+    <div className="panel" data-testid="agent-sessions-panel">
+      <button type="button" onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex", alignItems: "center", gap: 6, width: "100%",
+          background: "none", border: "none", cursor: "pointer", padding: "8px 10px",
+          color: "var(--text-2)", fontSize: 12,
+        }}>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
+        Sessions{items.length ? ` (${items.length})` : ""}
+      </button>
+      {open && (
+        <div style={{ padding: "0 10px 10px" }}>
+          {sessions.loading && items.length === 0 ? (
+            <div className="muted text-sm" style={{ padding: 10 }}>Loading…</div>
+          ) : items.length === 0 ? (
+            <div className="muted text-sm" style={{ padding: 10 }}>
+              No sessions. Use Chat below to start one.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {items.slice(0, 10).map((s) => (
+                <div key={s.id || s.session_id}
+                  onClick={() => navigate("/sessions/" + (s.id || s.session_id))}
+                  style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 11.5 }}>
+                  <StatusPill status={s.status} />
+                  <span className="mono muted" style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {s.id || s.session_id}
+                  </span>
+                  <span className="muted text-sm">
+                    {s.created_at ? relativeTime((Date.now() - new Date(s.created_at).getTime()) / 1000) : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
   // submit PUT-replaces, and the success callback is just close().
   const isEdit = !!existing;
+  // Harness-managed rows 409 on any PUT (routers/agents.py) - render a
+  // locked notice instead of a form that would fail on Save. Same
+  // capability AG_ConfigTab's old isManaged check had (hiding Edit
+  // entirely); this is that same check, just the only path left now
+  // that direct-edit is the landing view instead of Edit being a
+  // second click away.
+  const isManaged = isEdit && !!existing.harness_id;
   const { useResource, useMutation, apiFetch } = window.primerApi;
   // The agent's model field is a single profile id. A profile already
   // pins the provider, the wire model name and the API-level config, so
@@ -383,16 +518,6 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const profiles = useResource(
     "agents:model-profiles",
     (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
-    { pollMs: null }
-  );
-  // /v1/tools returns the merged catalogue across user-defined + the
-  // five built-in toolsets, with each tool's scoped id (toolset__tool)
-  // already computed server-side. Failures per-toolset are surfaced
-  // via available=false on the toolset entry so the picker can render
-  // them dimmed instead of breaking entirely.
-  const toolsCatalogue = useResource(
-    "agents:tools-catalogue",
-    (signal) => apiFetch("GET", "/tools", null, { signal }),
     { pollMs: null }
   );
   // The Advanced tab gates a tts_voice picker on the speech capability
@@ -453,14 +578,25 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   );
   const [responseFormatError, setResponseFormatError] = React.useState(null);
   const [fieldErrors, setFieldErrors] = React.useState({});
-  const [activeTab, setActiveTab] = React.useState("basic");
-  const [toolFilter, setToolFilter] = React.useState("");
-  // "Selected" filter chip (studio-ux fix 4): the Tools tab's search had no
-  // way to see WHICH tools are ticked across all toolsets/pages — this ANDs
-  // with the text filter, reusing the same selectedScopedIds set the
-  // "N of 172 selected" counter already tracks.
-  const [showSelectedOnly, setShowSelectedOnly] = React.useState(false);
-  const [toolPage, setToolPage] = React.useState(1);
+  // uiv2 Wave 2 (a-11): the two numerics that had NO control anywhere in
+  // the app before this wave (grep-confirmed against agents.jsx pre-
+  // change). max_tool_turns has a real server default (50, not null) -
+  // initializing from it rather than leaving the field blank means a
+  // save that never touches this field still round-trips the agent's
+  // real value instead of PUT-replacing it back down to the schema
+  // default.
+  const [maxToolTurns, setMaxToolTurns] = React.useState(
+    String(existing?.max_tool_turns ?? 50)
+  );
+  const [maxOutputTokens, setMaxOutputTokens] = React.useState(
+    existing?.max_output_tokens != null ? String(existing.max_output_tokens) : ""
+  );
+  const [showAdvanced, setShowAdvanced] = React.useState(false);
+  // Raw-JSON + cross-reference view (synthesis doc: "JSON can survive as
+  // a secondary/advanced view but must not be the landing IA") - edit
+  // mode only, folds AG_ConfigTab's read-only render + AG_ReferencesPanel
+  // into one disclosure rather than a whole tab.
+  const [showJson, setShowJson] = React.useState(false);
 
   React.useEffect(() => {
     if (!profileId && profiles.data?.items?.length) {
@@ -474,95 +610,6 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   // the agent at whatever happens to sort first.
   const selectedProfile = profileOptions.find((pr) => pr.id === profileId);
   const profileMissing = !!profileId && !selectedProfile && !profiles.loading;
-
-  const toolsetEntries = toolsCatalogue.data?.items ?? [];
-
-  const filteredToolsetEntries = React.useMemo(() => {
-    const q = toolFilter.trim().toLowerCase();
-    let entries = toolsetEntries;
-    if (q) {
-      entries = entries
-        .map((ts) => ({
-          ...ts,
-          tools: ts.tools.filter(
-            (t) =>
-              t.id.toLowerCase().includes(q) ||
-              t.scoped_id.toLowerCase().includes(q) ||
-              (t.description || "").toLowerCase().includes(q) ||
-              ts.id.toLowerCase().includes(q),
-          ),
-        }))
-        .filter((ts) => ts.tools.length > 0 || ts.id.toLowerCase().includes(q));
-    }
-    // "Selected" filter chip: restrict to tools currently in
-    // selectedScopedIds, across every toolset/page (not just the visible
-    // slice), so it composes cleanly with the text filter above.
-    if (showSelectedOnly) {
-      entries = entries
-        .map((ts) => ({ ...ts, tools: ts.tools.filter((t) => selectedScopedIds.has(t.scoped_id)) }))
-        .filter((ts) => ts.tools.length > 0);
-    }
-    return entries;
-  }, [toolsetEntries, toolFilter, showSelectedOnly, selectedScopedIds]);
-
-  const totalAvailable = React.useMemo(
-    () => toolsetEntries.reduce((acc, ts) => acc + ts.tools.length, 0),
-    [toolsetEntries],
-  );
-
-  // Built-in toolsets alone can ship 100+ tools (the `system` toolset
-  // currently exposes ~102), so the picker has to paginate or the
-  // modal becomes a 3000-px-tall scroll. The list is flattened across
-  // available toolsets so paging counts whole tools, not whole groups
-  // (toolsets that span pages get their header re-rendered at the top
-  // of each page so the operator never loses scope context). Unavailable
-  // toolsets are stripped here and rendered as a compact summary above
-  // the paginated list so they don't waste page slots.
-  const AGENT_TOOL_PAGE_SIZE = 25;
-  const flatTools = React.useMemo(() => {
-    const out = [];
-    for (const ts of filteredToolsetEntries) {
-      if (!ts.available) continue;
-      for (const tool of ts.tools) {
-        out.push({ ...tool, _toolset: ts });
-      }
-    }
-    return out;
-  }, [filteredToolsetEntries]);
-  const unavailableToolsets = React.useMemo(
-    () => filteredToolsetEntries.filter((ts) => !ts.available),
-    [filteredToolsetEntries],
-  );
-  const toolTotalPages = Math.max(1, Math.ceil(flatTools.length / AGENT_TOOL_PAGE_SIZE));
-  // Snap to first page whenever the filter narrows the result set,
-  // and clamp the current page if the page count shrinks below it.
-  React.useEffect(() => { setToolPage(1); }, [toolFilter, showSelectedOnly]);
-  React.useEffect(() => {
-    if (toolPage > toolTotalPages) setToolPage(toolTotalPages);
-  }, [toolPage, toolTotalPages]);
-  const toolPageStart = (toolPage - 1) * AGENT_TOOL_PAGE_SIZE;
-  const toolPageEnd = Math.min(toolPageStart + AGENT_TOOL_PAGE_SIZE, flatTools.length);
-  const pageTools = flatTools.slice(toolPageStart, toolPageEnd);
-
-  const toggleScopedId = (scopedId) => {
-    setSelectedScopedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(scopedId)) next.delete(scopedId);
-      else next.add(scopedId);
-      return next;
-    });
-  };
-
-  const toggleToolsetGroup = (entry, allSelected) => {
-    setSelectedScopedIds((prev) => {
-      const next = new Set(prev);
-      for (const t of entry.tools) {
-        if (allSelected) next.delete(t.scoped_id);
-        else next.add(t.scoped_id);
-      }
-      return next;
-    });
-  };
 
   const create = useMutation(
     (body) => isEdit
@@ -602,7 +649,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
         responseFormatValue = JSON.parse(responseFormat);
       } catch (e) {
         setResponseFormatError(String(e.message || e));
-        setActiveTab("advanced");
+        setShowAdvanced(true);
         return;
       }
     }
@@ -626,6 +673,23 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
     }
+    // uiv2 Wave 2 (a-11): always sent, never conditionally dropped - see
+    // the maxToolTurns state comment above for why (real non-null server
+    // default means omitting it on a PUT-replace save would silently
+    // reset a customized value).
+    const parsedMaxToolTurns = Number(maxToolTurns);
+    body.max_tool_turns = Number.isFinite(parsedMaxToolTurns) && parsedMaxToolTurns > 0
+      ? Math.floor(parsedMaxToolTurns) : 50;
+    // max_output_tokens defaults to null (unbounded) - same
+    // always-on-edit/conditional-on-create pattern as response_format.
+    let maxOutputTokensValue = null;
+    if (maxOutputTokens.trim() !== "") {
+      const n = Number(maxOutputTokens);
+      if (Number.isFinite(n) && n > 0) maxOutputTokensValue = Math.floor(n);
+    }
+    if (maxOutputTokensValue !== null || isEdit) {
+      body.max_output_tokens = maxOutputTokensValue;
+    }
     // PUT is a full replace, so always send response_format on edit
     // (null clears a previously-set schema); on create only include it
     // when set, matching the model default.
@@ -636,25 +700,63 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   };
 
   const selectedCount = selectedScopedIds.size;
+  const verbChip = (
+    <span className="pc-modal-chip mono text-sm muted"
+      data-testid="agent-modal-verb-chip"
+      style={{ marginLeft: 10, marginBottom: 0, verticalAlign: "middle" }}>
+      verb: {isEdit ? "Edit" : "Create"} Agent
+    </span>
+  );
+  // Edit mode identifies the specific row in the title itself (same
+  // "Noun — id" pattern as KN_CollectionDetail) - the verb chip alone
+  // ("Agent · verb: Edit Agent") lost the agent id when this overlay
+  // stopped delegating to NV_OverlayPanel's own id-bearing title.
+  const modalTitle = (
+    <h1 className="page-title" style={{ font: "inherit", margin: 0, display: "inline" }}>
+      {isEdit ? `Agent — ${existing.id}` : "Agent"}
+      {verbChip}
+    </h1>
+  );
+
+  // uiv2 Wave 2 (harness_id): a managed row 409s on any PUT
+  // (routers/agents.py) - AG_ConfigTab used to just hide its Edit
+  // button and leave the raw-JSON view up; now that direct-edit IS the
+  // landing view, a locked summary replaces the form outright rather
+  // than rendering inputs Save can never persist.
+  if (isManaged) {
+    return (
+      <Modal
+        title={modalTitle}
+        onClose={onClose}
+        footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}
+      >
+        <Banner kind="info" title={`Managed by harness ${existing.harness_id}`}
+          detail="Direct edits are blocked - update the harness's sync/uninstall flow instead." />
+        <div className="col" style={{ gap: 10, marginTop: 14 }}>
+          <div><span className="field-label">Name</span><div className="mono">{existing.id}</div></div>
+          <div><span className="field-label">Description</span><div>{existing.description}</div></div>
+          <div><span className="field-label">Model profile</span><div className="mono">{existing.model?.profile_id || "—"}</div></div>
+          <div><span className="field-label">Tools</span><div>{(existing.tools || []).length} registered</div></div>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
-      title={
-        <>
-          {isEdit ? `Edit agent · ${existing.id}` : "Agent"}
-          {/* Platform wave P1b item 4: verb chip, reusing P1a's
-              .pc-modal-chip (providers surface) for visual consistency
-              across every create/edit modal rather than a new class. */}
-          <span className="pc-modal-chip mono text-sm muted"
-            data-testid="agent-modal-verb-chip"
-            style={{ marginLeft: 10, marginBottom: 0, verticalAlign: "middle" }}>
-            verb: {isEdit ? "Edit" : "Create"} Agent
-          </span>
-        </>
-      }
+      title={modalTitle}
+      width={760}
       onClose={onClose}
       footer={
         <>
+          {isEdit && onDelete && (
+            <Btn kind="ghost" onClick={onDelete} style={{ marginRight: "auto", color: "var(--red)" }}>Delete</Btn>
+          )}
+          {isEdit && onChat && (
+            <Btn kind="ghost" icon="send" onClick={onChat} disabled={chatLoading}>
+              {chatLoading ? "Opening chat…" : "Chat"}
+            </Btn>
+          )}
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
           <Btn
             kind="primary"
@@ -667,35 +769,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
         </>
       }
     >
-      <div className="tabs" style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--border)", marginBottom: 14 }}>
-        {[
-          { key: "basic", label: "Basic" },
-          { key: "tools", label: `Tools${selectedCount > 0 ? ` (${selectedCount})` : ""}` },
-          { key: "advanced", label: "Advanced" },
-        ].map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            data-testid={`agent-tab-${t.key}`}
-            onClick={() => setActiveTab(t.key)}
-            style={{
-              background: "none", border: "none",
-              borderBottom: activeTab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
-              padding: "6px 12px", marginBottom: -1, cursor: "pointer",
-              color: activeTab === t.key ? "var(--text)" : "var(--text-2)",
-              fontSize: 12.5, fontWeight: activeTab === t.key ? 600 : 400,
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === "basic" && (
-        <>
+      {isEdit && <AG_StatusPanel id={existing.id} status={status} />}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) 340px",
+        gap: 22,
+        marginTop: isEdit ? 14 : 0,
+      }}>
+        <div className="col" style={{ gap: 14, minWidth: 0 }}>
           <div className="field">
             <label className="field-label" htmlFor="na-id">
-              ID {isEdit
+              Name {isEdit
                 ? <span className="hint">locked — id cannot change after create</span>
                 : <span className="hint">optional — backend assigns if blank</span>}
             </label>
@@ -704,7 +788,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
               className="input"
               value={id}
               onChange={(e) => setId(e.target.value)}
-              placeholder="auto-generated"
+              placeholder="e.g. refund-triage"
               disabled={isEdit}
               style={{ width: "100%" }}
             />
@@ -723,255 +807,51 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             )}
           </div>
           <div className="field">
-            <label className="field-label" htmlFor="na-model-profile">Model profile</label>
-            <select
-              id="na-model-profile"
-              className="select"
+            <label className="field-label" id="na-model-profile-label">
+              Model profile <span className="hint">default, overridable per run</span>
+            </label>
+            <AG_ProfilePicker
+              profiles={profileOptions}
+              loading={profiles.loading}
               value={profileId}
-              onChange={(e) => setProfileId(e.target.value)}
-              style={{ width: "100%" }}
-            >
-              <option value="">-- pick a model profile --</option>
-              {profileMissing && (
-                <option value={profileId}>{profileId} (missing)</option>
-              )}
-              {profileOptions.map((pr) => (
-                <option key={pr.id} value={pr.id}>
-                  {pr.id} · {pr.provider_id}/{pr.model_name}
-                  {pr.config?.reasoning ? ` · reasoning ${pr.config.reasoning}` : ""}
-                </option>
-              ))}
-            </select>
+              onChange={setProfileId}
+              missingId={profileMissing ? profileId : null}
+            />
             <div className="field-help">
               This is the agent's DEFAULT model. A session or chat may name a
               different profile at invocation time.
             </div>
-            {profileMissing && (
-              <div className="field-help" style={{ color: "var(--red)" }}>
-                This agent names a profile that no longer exists. Pick another
-                one, or recreate it at <span className="mono">/providers?class=llm</span>.
-              </div>
-            )}
-            {profileOptions.length === 0 && !profiles.loading && (
-              <div className="field-help" style={{ color: "var(--amber)" }}>
-                No model profiles configured. Create one at <span className="mono">/providers?class=llm</span> first.
-              </div>
-            )}
             {fieldErrors["body.model.profile_id"] && (
               <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.profile_id"]}</div>
             )}
           </div>
-        </>
-      )}
-
-      {activeTab === "tools" && (
-        <div>
-          <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
-            <div className="input-icon" style={{ flex: 1 }}>
-              <Icon name="search" size={13} className="icon" />
-              <input
-                className="input"
-                placeholder="Filter by tool name, description, or toolset…"
-                value={toolFilter}
-                onChange={(e) => setToolFilter(e.target.value)}
-                data-testid="agent-tool-filter"
-                style={{ width: "100%" }}
-              />
+          {/* uiv2 Wave 2 (a-11): the numerics live right under the
+              profile picker, not tucked behind Advanced - they gate the
+              same model call the profile does. */}
+          <div style={{ display: "flex", gap: 10 }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="field-label" htmlFor="na-temperature">
+                Temperature <span className="hint">optional</span>
+              </label>
+              <input id="na-temperature" className="input" type="number" step="0.05" min="0"
+                value={temperature} onChange={(e) => setTemperature(e.target.value)} style={{ width: "100%" }} />
+              {fieldErrors["body.temperature"] && (
+                <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.temperature"]}</div>
+              )}
             </div>
-            <button
-              type="button"
-              data-testid="agent-tool-filter-selected"
-              className={"chip" + (showSelectedOnly ? " active" : "")}
-              aria-pressed={showSelectedOnly}
-              onClick={() => setShowSelectedOnly((v) => !v)}
-              title={showSelectedOnly ? "Show all tools" : "Show only selected tools"}
-              style={{ whiteSpace: "nowrap" }}
-            >
-              Selected
-            </button>
-            {/* Platform wave P1b item 4: "selected · N" counter chip per
-                the reference, reusing the small bordered-pill look P1a
-                established for the providers surface (no new CSS class -
-                this file's own convention is inline styles throughout). */}
-            <span className="mono text-sm" data-testid="agent-tools-selected-count" style={{
-              whiteSpace: "nowrap", padding: "2px 8px", borderRadius: 999,
-              border: "1px solid var(--border)", background: "var(--bg-1)",
-              color: "var(--text-2)",
-            }}>
-              selected · {selectedCount} of {totalAvailable}
-            </span>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="field-label" htmlFor="na-max-tool-turns">Max tool turns</label>
+              <input id="na-max-tool-turns" className="input" type="number" step="1" min="1"
+                value={maxToolTurns} onChange={(e) => setMaxToolTurns(e.target.value)} style={{ width: "100%" }} />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="field-label" htmlFor="na-max-output-tokens">
+                Max output tokens <span className="hint">optional</span>
+              </label>
+              <input id="na-max-output-tokens" className="input" type="number" step="1" min="1"
+                value={maxOutputTokens} onChange={(e) => setMaxOutputTokens(e.target.value)} style={{ width: "100%" }} />
+            </div>
           </div>
-          {toolsCatalogue.loading && toolsetEntries.length === 0 && (
-            <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>
-              Loading tool catalogue…
-            </div>
-          )}
-          {!toolsCatalogue.loading && filteredToolsetEntries.length === 0 && (
-            <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }} data-testid="agent-tool-empty">
-              {showSelectedOnly
-                ? `No selected tools${toolFilter ? " match the filter." : "."}`
-                : toolFilter ? "No tools match the filter." : "No toolsets available."}
-            </div>
-          )}
-          {/* Unavailable toolsets stay visible outside the paginated
-              body so operators can see which providers exist but aren't
-              currently usable — they don't consume page slots. */}
-          {unavailableToolsets.length > 0 && (
-            <div style={{ marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
-              {unavailableToolsets.map((entry) => (
-                <span
-                  key={entry.id}
-                  className="muted text-sm"
-                  style={{
-                    fontSize: 11, padding: "2px 8px",
-                    border: "1px dashed var(--border)", borderRadius: 4,
-                    color: "var(--amber)", opacity: 0.85,
-                  }}
-                  title={entry.unavailable_reason || "unavailable"}
-                >
-                  <span className="mono">{entry.id}</span> · unavailable
-                </span>
-              ))}
-            </div>
-          )}
-          {flatTools.length > 0 && (
-            <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
-              {(() => {
-                // Render the paginated slice with a toolset header
-                // every time the parent toolset changes. The header
-                // tristate operates on the FULL toolset (across pages),
-                // not just the visible slice, so bulk select stays
-                // meaningful regardless of paging.
-                const rows = [];
-                let lastToolsetId = null;
-                for (const t of pageTools) {
-                  if (t._toolset.id !== lastToolsetId) {
-                    const entry = t._toolset;
-                    const allSelected = entry.tools.length > 0 && entry.tools.every((x) => selectedScopedIds.has(x.scoped_id));
-                    const someSelected = entry.tools.some((x) => selectedScopedIds.has(x.scoped_id));
-                    rows.push(
-                      <div
-                        key={`h-${entry.id}-p${toolPage}`}
-                        style={{
-                          display: "flex", alignItems: "center", gap: 8,
-                          padding: "8px 10px", background: "var(--bg-2)",
-                          borderTop: lastToolsetId === null ? "none" : "1px solid var(--border)",
-                          borderBottom: "1px solid var(--border)",
-                          position: "sticky", top: 0, zIndex: 1,
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={allSelected}
-                          ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
-                          onChange={() => toggleToolsetGroup(entry, allSelected)}
-                          disabled={entry.tools.length === 0}
-                          data-testid={`agent-toolset-group-${entry.id}`}
-                        />
-                        <span className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{entry.id}</span>
-                        {entry.builtin && <span className="muted text-sm" style={{ fontSize: 10.5 }}>· built-in</span>}
-                        {entry.tagline && (
-                          <span className="muted text-sm" style={{ fontSize: 11, marginLeft: 4 }}>{entry.tagline}</span>
-                        )}
-                        <span className="muted text-sm" style={{ marginLeft: "auto" }}>
-                          {entry.tools.length} tool{entry.tools.length === 1 ? "" : "s"}
-                        </span>
-                      </div>
-                    );
-                    lastToolsetId = entry.id;
-                  }
-                  const checked = selectedScopedIds.has(t.scoped_id);
-                  rows.push(
-                    <label
-                      key={t.scoped_id}
-                      style={{
-                        display: "flex", alignItems: "flex-start", gap: 8,
-                        padding: "6px 10px 6px 28px", cursor: "pointer",
-                        borderTop: "1px solid var(--bg-1)",
-                        background: checked ? "var(--bg-2)" : "transparent",
-                      }}
-                      data-testid={`agent-tool-${t.scoped_id}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleScopedId(t.scoped_id)}
-                        style={{ marginTop: 3 }}
-                      />
-                      <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "flex-start", gap: 8 }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div className="mono" style={{ fontSize: 12 }}>{t.id}</div>
-                          {t.description && (
-                            <div className="muted text-sm" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.4 }}>
-                              {t.description}
-                            </div>
-                          )}
-                        </div>
-                        <window.primerApi.CapabilityBadges tool={t} testid={`agent-tool-badges-${t.scoped_id}`} />
-                      </div>
-                    </label>
-                  );
-                }
-                return rows;
-              })()}
-            </div>
-          )}
-          {flatTools.length > 0 && (
-            <div
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                marginTop: 8, fontSize: 11.5, color: "var(--text-3)",
-              }}
-            >
-              <span className="tabular">
-                Showing <strong style={{ color: "var(--text)" }}>{flatTools.length === 0 ? 0 : toolPageStart + 1}</strong>–
-                <strong style={{ color: "var(--text)" }}>{toolPageEnd}</strong> of{" "}
-                <strong style={{ color: "var(--text)" }}>{flatTools.length}</strong>
-              </span>
-              <div className="pager" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <Btn
-                  size="sm"
-                  kind="ghost"
-                  icon="chevron-left"
-                  disabled={toolPage === 1}
-                  onClick={() => setToolPage((p) => Math.max(1, p - 1))}
-                  data-testid="agent-tool-page-prev"
-                >Previous</Btn>
-                <span className="muted text-sm tabular" style={{ padding: "0 6px" }}>
-                  Page {toolPage} of {toolTotalPages}
-                </span>
-                <Btn
-                  size="sm"
-                  kind="ghost"
-                  iconRight="chevron-right"
-                  disabled={toolPage === toolTotalPages}
-                  onClick={() => setToolPage((p) => Math.min(toolTotalPages, p + 1))}
-                  data-testid="agent-tool-page-next"
-                >Next</Btn>
-              </div>
-            </div>
-          )}
-          <div className="field-help" style={{ marginTop: 8 }}>
-            Tools are referenced as <span className="mono">toolset_id__tool_name</span>. The agent has
-            access to <strong>only</strong> the tools picked here — never a whole toolset. Bulk-select via the
-            toolset header ticks every tool in that toolset (across pages); the toolset itself is not
-            implicitly registered.
-          </div>
-          {/* Platform wave P1b item 4: verbatim reference footnote. The
-              y/w/r/n flag chips it describes are NOT a P2 gap here - they
-              are already live on every row above via the shared
-              CapabilityBadges component (batch-2 catalogue-badges work) -
-              see this task's report for that correction. */}
-          <div className="field-help" data-testid="agent-tools-footnote" style={{ marginTop: 8 }}>
-            One picker everywhere: agent bindings, graph tool nodes, approval
-            policies, service grants, the MCP allowlist. Flags: y yields · w
-            workspace · r role · n notifying.
-          </div>
-        </div>
-      )}
-
-      {activeTab === "advanced" && (
-        <>
           <div className="field">
             <label className="field-label">
               System prompt <span className="hint">optional · parts</span>
@@ -993,7 +873,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
                     next[i] = e.target.value;
                     setSystemPromptParts(next);
                   }}
-                  rows={4}
+                  rows={3}
                 />
                 <Btn kind="ghost" size="sm" icon="x"
                   data-testid={`agent-system-prompt-remove-${i}`}
@@ -1012,6 +892,12 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
               Add part
             </Btn>
           </div>
+          {/* uiv2 Wave 2 (b-2): a separately-labeled field, not a second
+              unlabeled textarea under the System prompt heading - the
+              schema already treats these as distinct concepts
+              (compaction_prompt is its own field, system_prompt an
+              unbounded ordered list, confirmed live pre-wave). One-pass
+              adjustable if the user rules b-2 differently. */}
           <div className="field">
             <label className="field-label" htmlFor="na-compaction-prompt">
               Compaction prompt <span className="hint">optional · used when the conversation outgrows the LLM context window</span>
@@ -1021,7 +907,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
               className="textarea"
               value={compactionPrompt}
               onChange={(e) => setCompactionPrompt(e.target.value)}
-              rows={4}
+              rows={3}
               placeholder="Instructions the runtime uses to summarise older turns when context is tight. Empty = use the framework default."
             />
             <div className="field-help">
@@ -1034,15 +920,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             </p>
           </div>
           <div className="field">
-            {/* Platform wave P1b item 4: the reference shows an
-                "Autonomous" inherit/on/off segment, but autonomous
-                (workspace_session.py:421) lives on the SESSION binding,
-                not the Agent definition - Agent has no such field, and
-                neither /agents create nor update accepts one (confirmed
-                against primer/model/agent.py). Rendering a segment that
-                silently no-ops would lie about what Save does, so it is
-                disabled with an explanatory note instead of a fake write -
-                see this task's report for the gap. */}
+            {/* Platform wave P1b item 4 / uiv2 Wave 2 ruling: the
+                reference shows an "Autonomous" inherit/on/off segment,
+                but autonomous (workspace_session.py:421) lives on the
+                SESSION binding, not the Agent definition - Agent has no
+                such field, and neither /agents create nor update accepts
+                one (confirmed against primer/model/agent.py). Rendering
+                a segment that silently no-ops would lie about what Save
+                does, so it stays disabled with an explanatory note
+                (August-round precedent) rather than a fake write or a
+                unilateral backend addition - flagged to the user as its
+                own open decision. */}
             <span>Autonomous</span>
             <div className="chip-group" data-testid="agent-autonomous-segment"
               style={{ opacity: 0.55, pointerEvents: "none", width: "fit-content" }}
@@ -1057,27 +945,39 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
               there is nothing here for Save to write yet.
             </div>
           </div>
-          <div className="field">
-        {!!(caps.data && caps.data.speech && caps.data.speech.tts_configured) && (
-          <label className="field">
-            <span>tts_voice</span>
-            <select
-              data-testid="agent-tts-voice"
-              value={ttsVoice || ""}
-              onChange={(e) => setTtsVoice(e.target.value || null)}
-            >
-              <option value="">(use the global default)</option>
-              {((voices.data && voices.data.voices) || []).map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
-            {ttsVoice ? (
-              <div className="field-help" data-testid="agent-voice-pairing-note">
-                {ttsVoice} · pairs with the identity chip
-              </div>
-            ) : null}
-          </label>
-        )}
+          {!!(caps.data && caps.data.speech && caps.data.speech.tts_configured) && (
+            <div className="field">
+              <label className="field-label" htmlFor="na-tts-voice">Voice <span className="hint">optional</span></label>
+              <select
+                id="na-tts-voice"
+                className="select"
+                data-testid="agent-tts-voice"
+                value={ttsVoice || ""}
+                onChange={(e) => setTtsVoice(e.target.value || null)}
+                style={{ width: "100%" }}
+              >
+                <option value="">(use the global default)</option>
+                {((voices.data && voices.data.voices) || []).map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+              {ttsVoice ? (
+                <div className="field-help" data-testid="agent-voice-pairing-note">
+                  {ttsVoice} · pairs with the identity chip
+                </div>
+              ) : null}
+            </div>
+          )}
+        </div>
+        <div className="col" style={{ gap: 12, minWidth: 0 }}>
+          <div>
+            <label className="field-label">
+              Tools <span className="hint">scoped ids — never whole toolsets</span>
+            </label>
+            <window.ToolPicker selected={selectedScopedIds} onChange={setSelectedScopedIds} pageSize={6} />
+          </div>
+          {isEdit && <AG_SessionsPanel agentId={existing.id} />}
+          <AG_AdvancedDisclosure open={showAdvanced} onToggle={() => setShowAdvanced((v) => !v)}>
             <AG_Toggle
               checked={compactionToolAccess}
               onChange={setCompactionToolAccess}
@@ -1085,8 +985,6 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
               label="Tool access during compaction"
               help="let the compaction prompt call this agent's tools while summarising — e.g. dump the compacted content to workspace files. Runs in a bounded, ephemeral loop; the tool calls don't enter conversation history. Leave off for plain text-only compaction."
             />
-          </div>
-          <div className="field">
             <AG_Toggle
               checked={allowExternalTools}
               onChange={setAllowExternalTools}
@@ -1094,67 +992,52 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
               label="Allow external tools"
               help="let API callers attach their own per-invocation tool definitions when invoking this agent. When the model calls one, the turn pauses until the caller responds through the invocation API. Leave off to reject invocation bodies carrying external tools."
             />
-          </div>
-          <div className="field">
-            <label className="field-label" htmlFor="na-temperature">
-              Temperature <span className="hint">optional · default is provider-decided</span>
-            </label>
-            <input
-              id="na-temperature"
-              className="input"
-              type="number"
-              step="0.05"
-              min="0"
-              value={temperature}
-              onChange={(e) => setTemperature(e.target.value)}
-              style={{ width: 100 }}
-            />
-            {fieldErrors["body.temperature"] && (
-              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.temperature"]}</div>
-            )}
-          </div>
-          <div className="field">
-            <label className="field-label" htmlFor="na-response-format">
-              Response format <span className="hint">optional · structured-output JSON Schema</span>
-            </label>
-            <textarea
-              id="na-response-format"
-              className="textarea mono"
-              value={responseFormat}
-              onChange={(e) => setResponseFormat(e.target.value)}
-              onBlur={() => {
-                // Validate-on-blur like the graph editor's GR_JsonField:
-                // empty == no schema (cleared), otherwise must parse.
-                if (responseFormat.trim() === "") {
-                  setResponseFormatError(null);
-                  return;
-                }
-                try {
-                  JSON.parse(responseFormat);
-                  setResponseFormatError(null);
-                } catch (e) {
-                  setResponseFormatError(String(e.message || e));
-                }
-              }}
-              rows={6}
-              placeholder={'{\n  "type": "object",\n  "properties": { "verdict": { "type": "string" } },\n  "required": ["verdict"]\n}'}
-              style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
-              data-testid="agent-response-format"
-            />
-            <div className="field-help">
-              When set, the LLM is constrained to emit JSON matching this schema (same shape
-              as a graph agent-node's <span className="mono">response_format</span>). Leave blank
-              to run the agent unconstrained. Validated as a JSON Schema on save.
+            <div className="field">
+              <label className="field-label" htmlFor="na-response-format">
+                Response format <span className="hint">optional · structured-output JSON Schema</span>
+              </label>
+              <textarea
+                id="na-response-format"
+                className="textarea mono"
+                value={responseFormat}
+                onChange={(e) => setResponseFormat(e.target.value)}
+                onBlur={() => {
+                  // Validate-on-blur like the graph editor's GR_JsonField:
+                  // empty == no schema (cleared), otherwise must parse.
+                  if (responseFormat.trim() === "") {
+                    setResponseFormatError(null);
+                    return;
+                  }
+                  try {
+                    JSON.parse(responseFormat);
+                    setResponseFormatError(null);
+                  } catch (e) {
+                    setResponseFormatError(String(e.message || e));
+                  }
+                }}
+                rows={5}
+                placeholder={'{\n  "type": "object",\n  "properties": { "verdict": { "type": "string" } },\n  "required": ["verdict"]\n}'}
+                style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
+                data-testid="agent-response-format"
+              />
+              <div className="field-help">
+                When set, the LLM is constrained to emit JSON matching this schema (same shape
+                as a graph agent-node's <span className="mono">response_format</span>). Leave blank
+                to run the agent unconstrained. Validated as a JSON Schema on save.
+              </div>
+              {responseFormatError && (
+                <div className="field-help" style={{ color: "var(--red)" }}>JSON parse: {responseFormatError}</div>
+              )}
+              {fieldErrors["body.response_format"] && (
+                <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.response_format"]}</div>
+              )}
             </div>
-            {responseFormatError && (
-              <div className="field-help" style={{ color: "var(--red)" }}>JSON parse: {responseFormatError}</div>
-            )}
-            {fieldErrors["body.response_format"] && (
-              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.response_format"]}</div>
-            )}
-          </div>
-        </>
-      )}
+          </AG_AdvancedDisclosure>
+          {isEdit && (
+            <AG_JsonDisclosure agent={existing} open={showJson} onToggle={() => setShowJson((v) => !v)} />
+          )}
+        </div>
+      </div>
     </Modal>
   );
 }
@@ -1165,10 +1048,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
 
 function AgentDetail({ agentId, pushToast }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
-  const { params, query, navigate } = useRouter();
+  const { params, navigate } = useRouter();
   const id = agentId || params.id;
-  const tab = AG_TABS.some((t) => t.id === query.tab) ? query.tab : "config";
-  const setTab = (t) => navigate("/agents/" + id + "?tab=" + t);
 
   const detail = useResource(
     "agent-detail:" + id,
@@ -1233,76 +1114,45 @@ function AgentDetail({ agentId, pushToast }) {
   );
   const startChat = () => { if (!startChatMut.loading) startChatMut.mutate(); };
 
+  // uiv2 Wave 2: the landing view IS the direct-edit form now (no more
+  // Config-tab-with-raw-JSON as the first thing an operator sees) - a
+  // loading/error state before AG_NewAgentModal has data to edit still
+  // needs its own small standalone rendering, but there is no more
+  // action bar to anchor it to (Chat/Delete/Back all moved into the
+  // form's own footer, which needs `existing` to exist at all).
   if (detail.loading && !detail.data) {
-    return (
-      <div className="col" style={{ gap: 14 }}>
-        <AG_DetailActions onChat={startChat} chatLoading={startChatMut.loading} onDelete={() => { setDeleteError(null); setConfirmDelete(true); }} onBack={() => navigate("/agents")} />
-        <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>
-      </div>
-    );
+    return <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>;
   }
   if (detail.error && !detail.data) {
     return (
-      <div className="col" style={{ gap: 14 }}>
-        <AG_DetailActions onChat={startChat} chatLoading={startChatMut.loading} onDelete={() => { setDeleteError(null); setConfirmDelete(true); }} onBack={() => navigate("/agents")} />
-        <Banner
-          kind="error"
-          title={detail.error.title || "Couldn't load agent"}
-          detail={detail.error.detail || detail.error.message}
-          actions={<Btn size="sm" icon="chevron-left" onClick={() => navigate("/agents")}>Back to list</Btn>}
-        />
-      </div>
+      <Banner
+        kind="error"
+        title={detail.error.title || "Couldn't load agent"}
+        detail={detail.error.detail || detail.error.message}
+        actions={<Btn size="sm" icon="chevron-left" onClick={() => navigate("/agents")}>Back to list</Btn>}
+      />
     );
   }
 
   const a = detail.data;
 
   return (
-    <div className="col" style={{ gap: 14 }}>
-      <AG_DetailActions
-        onChat={startChat} chatLoading={startChatMut.loading}
+    <>
+      <AG_NewAgentModal
+        existing={a}
+        status={status}
+        pushToast={pushToast}
+        onChat={startChat}
+        chatLoading={startChatMut.loading}
         onDelete={() => { setDeleteError(null); setConfirmDelete(true); }}
-        onBack={() => navigate("/agents")}
+        onClose={() => navigate("/agents")}
+        onCreate={() => {
+          if (typeof pushToast === "function") {
+            pushToast({ kind: "info", title: "Agent updated", detail: a.id });
+          }
+          navigate("/agents");
+        }}
       />
-
-      <AG_StatusPanel id={id} status={status} />
-
-      <div className="panel">
-        <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
-          {AG_TABS.map((t) => (
-            <button
-              key={t.id}
-              role="tab"
-              aria-selected={tab === t.id}
-              onClick={() => setTab(t.id)}
-              className={tab === t.id ? "active" : ""}
-              style={{
-                background: "none",
-                border: "none",
-                padding: "10px 14px",
-                cursor: "pointer",
-                color: tab === t.id ? "var(--text)" : "var(--text-3)",
-                fontSize: 12.5,
-                fontWeight: tab === t.id ? 600 : 400,
-                borderBottom: tab === t.id ? "2px solid var(--accent)" : "2px solid transparent",
-                marginBottom: -1,
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              <Icon name={t.icon} size={13} />
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <div className="panel-body" style={{ padding: 0 }}>
-          {tab === "config" && <AG_ConfigTab agent={a} pushToast={pushToast} />}
-          {tab === "tools" && <AG_ToolsTab agent={a} />}
-          {tab === "sessions" && <AG_SessionsTab agentId={id} />}
-          {tab === "metadata" && <AG_MetadataTab agent={a} />}
-        </div>
-      </div>
 
       {confirmDelete && (
         <Modal
@@ -1337,25 +1187,7 @@ function AgentDetail({ agentId, pushToast }) {
           </ul>
         </Modal>
       )}
-
-    </div>
-  );
-}
-
-// Internal action bar — rendered INSIDE the page body so the
-// .page-header .page-actions selector resolves to the buttons even
-// though app.jsx renders its own outer page-header.
-function AG_DetailActions({ onChat, chatLoading, onDelete, onBack }) {
-  return (
-    <div className="page-header" style={{ marginBottom: 0, justifyContent: "flex-end" }}>
-      <div className="page-actions">
-        <Btn icon="send" kind="primary" onClick={onChat} disabled={chatLoading}>
-          {chatLoading ? "Opening chat…" : "Chat"}
-        </Btn>
-        <Btn icon="trash" kind="danger" onClick={onDelete}>Delete</Btn>
-        <Btn icon="chevron-left" kind="ghost" onClick={onBack}>Back</Btn>
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -1422,59 +1254,34 @@ function AG_StatusPanel({ id, status }) {
 // Config tab — read-only JSON + References cross-check
 // ============================================================================
 
-function AG_ConfigTab({ agent, pushToast }) {
+// uiv2 Wave 2: demoted from the landing IA to a secondary disclosure
+// (synthesis doc: "JSON can survive as a secondary/advanced view but
+// must not be the landing IA") - was AG_ConfigTab, a whole tab with its
+// own Edit button; direct-edit is the landing view now so there is no
+// more "Edit" mode-switch to render, just the read-only JSON +
+// cross-reference check folded under one collapsed toggle.
+function AG_JsonDisclosure({ agent, open, onToggle }) {
   const hl = window.primerVendor?.highlightJson;
-  const isManaged = !!agent.harness_id;
-
-  const [editing, setEditing] = React.useState(false);
-
   const pretty = React.useMemo(() => JSON.stringify(agent, null, 2), [agent]);
-
   return (
-    <div style={{ padding: 14 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 10 }}>
-        <div className="muted text-sm">
-          {isManaged ? (
-            <>This agent is managed by harness <span className="mono">{agent.harness_id}</span>. Direct edits are blocked — update the harness instead.</>
-          ) : (
-            <>PUT-replace edit via the form. References panel below cross-checks the bound provider + toolsets after save.</>
-          )}
+    <div className="panel" data-testid="agent-json-disclosure">
+      <button type="button" onClick={onToggle}
+        style={{
+          display: "flex", alignItems: "center", gap: 6, width: "100%",
+          background: "none", border: "none", cursor: "pointer", padding: "8px 10px",
+          color: "var(--text-2)", fontSize: 12,
+        }}>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
+        View raw config
+      </button>
+      {open && (
+        <div style={{ padding: "0 10px 10px" }}>
+          {hl
+            ? <div className="code-block" dangerouslySetInnerHTML={{ __html: hl(pretty) }} />
+            : <pre className="code-block">{pretty}</pre>}
+          <AG_ReferencesPanel agent={agent} />
         </div>
-        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-          {!isManaged && (
-            <Btn size="sm" icon="edit" kind="secondary" onClick={() => setEditing(true)}>Edit</Btn>
-          )}
-        </div>
-      </div>
-      {editing && (
-        <AG_NewAgentModal
-          existing={agent}
-          pushToast={pushToast}
-          onClose={() => setEditing(false)}
-          onCreate={() => {
-            setEditing(false);
-            if (typeof pushToast === "function") {
-              pushToast({ kind: "info", title: "Agent updated", detail: agent.id });
-            }
-          }}
-        />
       )}
-      {false ? (
-        <textarea
-          readOnly
-          value={pretty}
-          style={{
-            // unreachable — kept so the closing `: hl ? ... : <pre>`
-            // branches below stay valid JSX without a deeper rewrite
-            // of this tab; the actual rendered output is the highlighted
-            // / pre block.
-            display: "none",
-          }}
-        />
-      ) : hl
-        ? <div className="code-block" dangerouslySetInnerHTML={{ __html: hl(pretty) }} />
-        : <pre className="code-block">{pretty}</pre>}
-      <AG_ReferencesPanel agent={agent} />
     </div>
   );
 }
@@ -1619,287 +1426,6 @@ function AG_ToolsetRefRow({ tsId, registeredCount, navigate }) {
         <span className="pill pill-failed"><span className="dot"></span>err</span>
       ) : (
         <span className="pill pill-ended"><span className="dot"></span>ok</span>
-      )}
-    </div>
-  );
-}
-
-// ============================================================================
-// Tools tab — per-toolset isolation (U0009 / T0711 contract)
-// ============================================================================
-
-function AG_ToolsTab({ agent }) {
-  const scopedIds = agent.tools || [];
-  // Group the agent's scoped tool ids by their toolset prefix so the
-  // page renders one panel per source toolset, each listing only the
-  // tools the agent actually registered (never the toolset's full
-  // catalogue).
-  const grouped = React.useMemo(() => {
-    const m = new Map();
-    for (const sid of scopedIds) {
-      if (typeof sid !== "string" || !sid.includes("__")) continue;
-      const [prefix, ...rest] = sid.split("__");
-      const bare = rest.join("__");
-      if (!m.has(prefix)) m.set(prefix, []);
-      m.get(prefix).push({ scoped_id: sid, bare });
-    }
-    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [scopedIds]);
-
-  if (scopedIds.length === 0) {
-    return (
-      <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
-        No tools registered with this agent.
-      </div>
-    );
-  }
-  return (
-    <div style={{ padding: 14 }}>
-      <div className="muted text-sm mb-3">
-        {scopedIds.length} tool{scopedIds.length === 1 ? "" : "s"} registered, grouped by source
-        toolset. Each card lists the canonical tool <span className="mono">id</span> (T0140/T0141
-        — not <span className="mono">name</span>). The toolset itself is NOT implicitly attached;
-        only the tools listed below are exposed to the LLM.
-      </div>
-      {grouped.map(([tsId, entries]) => (
-        <AG_ToolsetSection
-          key={tsId}
-          tsId={tsId}
-          registeredBareIds={entries.map((e) => e.bare)}
-        />
-      ))}
-    </div>
-  );
-}
-
-function AG_ToolsetSection({ tsId, registeredBareIds }) {
-  const { useResource, apiFetch } = window.primerApi;
-  const tools = useResource(
-    `toolset-tools:${tsId}`,
-    (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(tsId) + "/tools", null, { signal }),
-    { pollMs: null, deps: [tsId] }
-  );
-  // Filter the toolset's full catalogue to just the bare tool ids the
-  // agent actually registered — the operator picks per-tool, so the
-  // detail view must match that scope, not surface the entire toolset.
-  const registeredSet = React.useMemo(
-    () => new Set(registeredBareIds || []),
-    [registeredBareIds],
-  );
-
-  // T0711 — for any toolset whose /tools returns a 5xx (unreachable MCP-HTTP
-  // upstream -> 504, etc.), surface the anomaly block instead of crashing the
-  // rest of the page (U0009).
-  if (tools.error?.status >= 500) {
-    return (
-      <div className="panel" style={{ marginBottom: 14 }}>
-        <div className="panel-h">
-          <Icon name="tools" size={12} className="muted" />
-          <span className="mono">{tsId}</span>
-          <span className="pill pill-failed" style={{ marginLeft: 6 }}><span className="dot"></span>T0711</span>
-        </div>
-        <div className="panel-body">
-          <Banner
-            kind="error"
-            title="Tools list unavailable"
-            detail="The MCP-HTTP server for this toolset is unreachable (T0711), so its tools can't be listed. Visit the toolset detail to Invalidate the cached provider and retry."
-            actions={<Btn size="sm" icon="refresh" onClick={tools.refetch}>Retry</Btn>}
-          />
-        </div>
-      </div>
-    );
-  }
-  if (tools.error) {
-    return (
-      <div className="panel" style={{ marginBottom: 14 }}>
-        <div className="panel-h">
-          <Icon name="tools" size={12} className="muted" />
-          <span className="mono">{tsId}</span>
-          <span className="pill pill-failed" style={{ marginLeft: 6 }}><span className="dot"></span>error</span>
-        </div>
-        <div className="panel-body">
-          <Banner
-            kind="error"
-            title={tools.error.title || "Couldn't load tools"}
-            detail={tools.error.detail || tools.error.message}
-            actions={<Btn size="sm" icon="refresh" onClick={tools.refetch}>Retry</Btn>}
-          />
-        </div>
-      </div>
-    );
-  }
-  if (tools.loading && !tools.data) {
-    return (
-      <div className="panel" style={{ marginBottom: 14 }}>
-        <div className="panel-h">
-          <Icon name="tools" size={12} className="muted" />
-          <span className="mono">{tsId}</span>
-        </div>
-        <div className="panel-body">
-          <div className="muted text-sm" style={{ textAlign: "center" }}>Loading…</div>
-        </div>
-      </div>
-    );
-  }
-  const allItems = tools.data?.tools || [];
-  // Show only tools the agent actually registered. If the toolset
-  // metadata is reachable, intersect with registeredBareIds; if the
-  // toolset returned them in a different order than the agent's
-  // ``tools`` field, that's fine — we still want the agent's surface.
-  const items = registeredSet.size > 0
-    ? allItems.filter((t) => registeredSet.has(t.id))
-    : allItems;
-  // Detect bare ids the agent registered that the toolset no longer
-  // exposes (e.g. the MCP server dropped a tool between agent create
-  // and now). Surface them as stale rows so the operator can see what
-  // needs cleanup.
-  const reachableBareIds = new Set(allItems.map((t) => t.id));
-  const staleBareIds = [...registeredSet].filter((b) => !reachableBareIds.has(b));
-  return (
-    <div className="panel" style={{ marginBottom: 14 }}>
-      <div className="panel-h">
-        <Icon name="tools" size={12} className="muted" />
-        <span className="mono">{tsId}</span>
-        <span className="sub">· {items.length + staleBareIds.length} registered</span>
-      </div>
-      <div className="panel-body" style={{ padding: 0 }}>
-        {items.length === 0 && staleBareIds.length === 0 ? (
-          <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>No tools.</div>
-        ) : (
-          <>
-            {items.map((tool, i) => <AG_ToolEntry key={tool.id || i} tool={tool} />)}
-            {staleBareIds.map((bare) => (
-              <div key={`stale-${bare}`} style={{ borderTop: "1px solid var(--border)", padding: "8px 14px", display: "flex", alignItems: "center", gap: 8 }}>
-                <Icon name="alert" size={11} style={{ color: "var(--amber)" }} />
-                <span className="mono" style={{ flex: 1 }}>{bare}</span>
-                <span className="pill pill-paused"><span className="dot"></span>not currently exposed</span>
-              </div>
-            ))}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function AG_ToolEntry({ tool }) {
-  const [open, setOpen] = React.useState(false);
-  const hl = window.primerVendor?.highlightJson;
-  return (
-    <div style={{ borderBottom: "1px solid var(--border)" }}>
-      <div
-        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", cursor: "pointer" }}
-        onClick={() => setOpen(!open)}
-      >
-        <Icon name={open ? "chevron-down" : "chevron-right"} size={11} className="muted" />
-        <span className="mono" style={{ flex: 1, minWidth: 0 }}>{tool.id}</span>
-        {tool.description && (
-          <span className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {tool.description}
-          </span>
-        )}
-        <Btn
-          size="sm"
-          kind="ghost"
-          disabled
-          title="Tool invocation endpoint not yet implemented (planned — backend-additions §2.2)"
-        >Test call</Btn>
-      </div>
-      {open && tool.schema && (
-        <div style={{ padding: "8px 14px 12px" }}>
-          {hl
-            ? <div className="code-block" dangerouslySetInnerHTML={{ __html: hl(JSON.stringify(tool.schema, null, 2)) }} />
-            : <pre className="code-block">{JSON.stringify(tool.schema, null, 2)}</pre>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================================================
-// Sessions tab — server-filtered by agent_id
-// ============================================================================
-
-function AG_SessionsTab({ agentId }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
-  const { navigate } = useRouter();
-  const sessions = useResource(
-    `agent-sessions:${agentId}`,
-    (signal) => apiFetch("GET", "/sessions?agent_id=" + encodeURIComponent(agentId) + "&limit=200", null, { signal }),
-    { pollMs: 5000, deps: [agentId] }
-  );
-  const items = sessions.data?.items ?? [];
-  return (
-    <div style={{ padding: 14 }}>
-      <div className="muted text-sm mb-3">
-        Sessions bound to <span className="mono">{agentId}</span>, server-filtered.
-      </div>
-      {sessions.loading && items.length === 0 ? (
-        <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>Loading…</div>
-      ) : items.length === 0 ? (
-        <div className="empty" style={{ padding: "30px 20px" }}>
-          <div className="ico-wrap"><Icon name="zap" size={18} /></div>
-          <div className="head">No sessions</div>
-          <div className="sub">Use the Test agent button above to start one.</div>
-        </div>
-      ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr><th>Status</th><th>Session</th><th>Workspace</th><th>Turns</th><th>Created</th></tr>
-            </thead>
-            <tbody>
-              {items.map((s) => (
-                <tr
-                  key={s.id || s.session_id}
-                  onClick={() => navigate("/sessions/" + (s.id || s.session_id))}
-                  style={{ cursor: "pointer" }}
-                >
-                  <td><StatusPill status={s.status} /></td>
-                  <td className="mono">{s.id || s.session_id}</td>
-                  <td className="mono muted">
-                    {(s.workspace_id || "").slice(0, 18)}
-                    {s.workspace_id && s.workspace_id.length > 18 ? "…" : ""}
-                  </td>
-                  <td className="mono num tabular">{s.turn_count ?? 0}</td>
-                  <td className="mono muted">
-                    {s.created_at
-                      ? relativeTime((Date.now() - new Date(s.created_at).getTime()) / 1000)
-                      : "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================================================
-// Metadata tab
-// ============================================================================
-
-function AG_MetadataTab({ agent }) {
-  const meta = agent.metadata || {};
-  const keys = Object.keys(meta);
-  return (
-    <div style={{ padding: 14 }}>
-      <div className="muted text-sm mb-3">
-        Free-form key/value bag on the agent row. {keys.length} key{keys.length === 1 ? "" : "s"}.
-      </div>
-      {keys.length === 0 ? (
-        <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>No metadata.</div>
-      ) : (
-        <dl className="kv" style={{ gridTemplateColumns: "200px 1fr" }}>
-          {keys.map((k) => (
-            <React.Fragment key={k}>
-              <dt>{k}</dt>
-              <dd className="mono">{typeof meta[k] === "object" ? JSON.stringify(meta[k]) : String(meta[k])}</dd>
-            </React.Fragment>
-          ))}
-        </dl>
       )}
     </div>
   );

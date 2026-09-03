@@ -107,19 +107,21 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
                 pass
 
 
-def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
+def test_u0018_deep_link_reload_preserves_agent_detail_tools(
     page,
     base_url: str,
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0018 - Reloading the browser on an agent detail deep-link
-    with ``?tab=tools`` re-renders the same tab selected, not the
-    default Config tab.
-
-    Priority 6 - routing. The tab is read from routerQuery.tab and
-    validated against AGENT_TABS (agents.jsx:363). Reload preserves
-    the URL hash + query so the tab choice survives.
+    """U0018 - RETARGETED (uiv2 Wave 2): the tab-selection-survives-
+    reload premise this test pinned no longer applies - the agent
+    detail overlay is one direct-edit form now, not four routed tabs
+    (AGENT_TABS/routerQuery.tab are gone; see test_u0033's sister
+    retarget in test_routing_and_mutations.py for the Config-tab
+    variant of this same change). What's still real and worth pinning:
+    the ToolPicker (which superseded the old Tools tab) is actually
+    populated with the agent's real tools both before AND after a
+    reload - not just present, but showing the right data each time.
     """
     # Seed an LLM provider + agent so the detail page has data.
     provider_id = f"llm-u0018-{unique_suffix}"
@@ -137,59 +139,49 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
             "id": agent_id,
             "description": "u0018 deep-link probe",
             "model": agent_model(provider_id, "fake-model"),
-            "tools": [],
+            # A real, always-available built-in tool (primer/toolset/
+            # misc.py) so the ToolPicker's "selected · N" counter has
+            # something non-zero to check before/after reload.
+            "tools": ["misc__uuid_v4"],
             "system_prompt": ["test"],
         })
         assert r.status_code == 201, f"seed agent failed: {r.text}"
 
     try:
-        # Navigate directly to the deep-link with ?tab=tools.
-        open_legacy_route(page, console_url, f"agents/{agent_id}", tab="tools")
+        open_legacy_route(page, console_url, f"agents/{agent_id}")
 
         # Wait for the agent detail page to render.
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
 
-        # Helper: the active tab is rendered with class "active" or
-        # similar; using role+name + aria-selected is robust.
-        tools_tab = page.get_by_role("tab", name="Tools").first
-        tools_tab.wait_for(state="visible", timeout=5_000)
-        # Tab should already be selected before reload - sanity check.
-        # If not selected, the tab routing is broken (Config would be
-        # default).
-        assert tools_tab.get_attribute("aria-selected") == "true" \
-            or "active" in (tools_tab.get_attribute("class") or ""), (
-            f"Tools tab not selected after initial deep-link nav; "
-            f"aria-selected={tools_tab.get_attribute('aria-selected')!r}, "
-            f"class={tools_tab.get_attribute('class')!r}"
+        selected_chip = page.get_by_test_id("tool-picker-filter-selected")
+        selected_chip.wait_for(state="visible", timeout=10_000)
+        assert "1" in (selected_chip.inner_text() or ""), (
+            f"expected the picker's selected-count chip to show 1 tool "
+            f"before reload; got {selected_chip.inner_text()!r}"
         )
 
-        # Reload - the URL + query should survive.
         page.reload(wait_until="domcontentloaded")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
 
-        # After reload, Tools tab MUST still be selected.
-        tools_tab_after = page.get_by_role("tab", name="Tools").first
-        tools_tab_after.wait_for(state="visible", timeout=5_000)
-        assert (
-            tools_tab_after.get_attribute("aria-selected") == "true"
-            or "active" in (tools_tab_after.get_attribute("class") or "")
-        ), (
-            "Tools tab lost its selected state after reload - "
-            "deep-link ?tab= query not preserved. "
-            f"aria-selected={tools_tab_after.get_attribute('aria-selected')!r}, "
-            f"class={tools_tab_after.get_attribute('class')!r}"
+        # After reload, the ToolPicker must still be populated with the
+        # SAME agent's real tools, not reset to empty or stuck loading.
+        selected_chip_after = page.get_by_test_id("tool-picker-filter-selected")
+        selected_chip_after.wait_for(state="visible", timeout=10_000)
+        assert "1" in (selected_chip_after.inner_text() or ""), (
+            f"expected the picker's selected-count chip to still show 1 "
+            f"tool after reload; got {selected_chip_after.inner_text()!r}"
         )
 
-        # Defence: the URL still carries the tab after reload. The shell
-        # states it in the overlay target's section slot rather than as a
-        # ?tab= query, which is the same deep link in the one grammar the
-        # URL now has.
-        assert f"overlay=agents:tools:{agent_id}" in page.url, (
-            f"reload dropped the tools tab: {page.url}"
+        # Defence: the URL still addresses this agent after reload (no
+        # ?tab= query in the new grammar - agents/{id} is a 2-segment
+        # legacy route with an empty section slot, so the overlay target
+        # is "agents::{id}", not "agents:tools:{id}").
+        assert f"overlay=agents::{agent_id}" in page.url, (
+            f"reload dropped the addressed agent: {page.url}"
         )
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -322,23 +314,28 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
                     pass
 
 
-def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
+def test_u0009_agent_tools_picker_isolates_one_unavailable_toolset(
     page,
     base_url: str,
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0009 - An agent bound to TWO toolsets - one that loads
-    cleanly and one whose ``/tools`` endpoint 500-leaks - renders the
-    good toolset's tools and the bad toolset's T0711 banner side by
-    side. The page must NOT blank out; the failure must be confined
-    to the offending toolset's panel.
+    """U0009 - RETARGETED (uiv2 Wave 2): an agent bound to TWO
+    toolsets - one that loads cleanly and one whose catalogue entry
+    comes back ``available: false`` (an unreachable MCP-HTTP server) -
+    must still render the shared ToolPicker with the good toolset's
+    tools selectable and the bad toolset called out separately. The
+    page must NOT blank out; the failure must be confined to the one
+    toolset, not the whole picker.
 
-    Priority 3 - anomaly surface. Implements the per-toolset
-    isolation contract documented at agents.jsx:638-700: each
-    bound toolset is rendered by its own ``<ToolsetSection>`` and
-    a ``tools.error?.status === 500`` only collapses that panel,
-    not the parent ``<AgentToolsTab>``.
+    The old per-toolset ``<ToolsetSection>``/T0711-banner mechanism
+    this test originally pinned was deleted in Wave 2 (ToolPicker
+    ruling, see test_t0711_banner_status.py): the backend now computes
+    ``available``/``unavailable_reason`` per toolset at ``/tools``
+    aggregation time (``primer/api/routers/providers.py``), and the
+    picker surfaces an unavailable toolset as a small dashed pill
+    (``<span class="mono">{id}</span> · unavailable``, the reason in
+    its title tooltip) rather than a dedicated banner per panel.
 
     Good toolset: the built-in ``misc`` internal toolset (always
     available, returns 5 tools per primer/toolset/misc.py).
@@ -390,49 +387,63 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
         assert r.status_code == 201, f"seed agent failed: {r.text}"
 
     try:
-        # Navigate directly to the Tools tab via deep-link.
-        open_legacy_route(page, console_url, f"agents/{agent_id}", tab="tools")
+        # Navigate directly to the agent detail overlay - no more
+        # tab= deep-link, the Tools picker lives on the one form.
+        open_legacy_route(page, console_url, f"agents/{agent_id}")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
 
-        # Good toolset panel renders the misc id as a header. At
-        # least one of the 5 misc tools (e.g. uuid_v4) must appear
-        # as a clickable row - confirms the panel rendered through
-        # to ToolEntry rows.
-        page.locator(".panel-h:has(.mono:text('misc'))").first.wait_for(
+        # Bad toolset is called out via the picker's unavailable-
+        # toolset summary - a dashed pill naming the toolset id next
+        # to the word "unavailable" (unavailable_reason is a tooltip,
+        # not asserted here). This is the mechanism that superseded
+        # the old per-toolset T0711 banner. The summary isn't
+        # paginated, so it's visible before any search/filter
+        # interaction - check it first, before the search box below
+        # would filter it out of the result set entirely.
+        page.locator(
+            f'span:has-text("{bad_toolset_id}"):has-text("unavailable")'
+        ).first.wait_for(state="visible", timeout=15_000)
+
+        # Good toolset renders its group header + at least one tool
+        # row - confirms the picker's catalogue fetch resolved and
+        # rendered through to TP_Row for the reachable toolset. The
+        # catalogue-wide pager (6 tools/page) would bury "misc" many
+        # pages behind the much larger builtin toolsets (the "system"
+        # toolset alone carries 100+ tools) that sort ahead of it, so
+        # scope down with the picker's own search box first - the same
+        # thing an operator hunting for one toolset would do.
+        page.get_by_test_id("tool-picker-filter").fill("misc")
+        page.get_by_test_id("tool-picker-group-misc").first.wait_for(
             state="visible", timeout=15_000,
         )
-        page.get_by_text("uuid_v4", exact=False).first.wait_for(
+        page.get_by_test_id("tool-picker-row-misc__uuid_v4").first.wait_for(
             state="visible", timeout=10_000,
         )
 
-        # Bad toolset panel renders the documented T0711 banner -
-        # both the title ("Tools list unavailable") and the T0711
-        # reference are required (same contract as U0008).
-        page.get_by_text("Tools list unavailable", exact=False).first.wait_for(
-            state="visible", timeout=15_000,
-        )
-        page.get_by_text("T0711", exact=False).first.wait_for(
-            state="visible", timeout=5_000,
-        )
-
         # Defence: the page-title is still rendered (no blank crash).
-        # The agent detail h1 carries the agent id - if a render
-        # error blew up the whole AgentToolsTab, the title would
-        # still be visible via the page chrome, but the panels
-        # wouldn't be. The asserts above already prove the panels
-        # are present; this is a final structural sanity check.
+        # The agent detail h1 carries the agent id - if a render error
+        # blew up the whole ToolPicker, the title would still be
+        # visible via the page chrome, but the picker wouldn't be. The
+        # asserts above already prove the picker rendered through for
+        # both toolsets; this is a final structural sanity check.
         assert page.locator("h1.page-title").first.is_visible(), (
-            "agent detail title disappeared after Tools tab render - "
-            "page may have blanked out instead of isolating the failure"
+            "agent detail title disappeared after the tools picker "
+            "rendered - page may have blanked out instead of isolating "
+            "the failure to the one toolset"
         )
 
-        # Defence 2: both panels are present at the same time. The
-        # bad-toolset panel carries its toolset id as the .mono
-        # span inside its .panel-h, just like the good one.
-        page.locator(f".panel-h:has(.mono:text('{bad_toolset_id}'))").first.wait_for(
-            state="visible", timeout=5_000,
+        # Defence 2: the good toolset's tools are still selectable
+        # (checkbox present and not disabled) alongside the bad
+        # toolset's unavailable pill - proves the good panel wasn't
+        # dragged down by the bad one.
+        good_checkbox = page.locator(
+            '[data-testid="tool-picker-row-misc__uuid_v4"] input[type="checkbox"]'
+        )
+        assert good_checkbox.is_enabled(), (
+            "the reachable toolset's tool row should stay interactive "
+            "even though a sibling toolset is unavailable"
         )
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:

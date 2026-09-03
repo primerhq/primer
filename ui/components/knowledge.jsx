@@ -536,24 +536,54 @@ function KN_GrepBox({ collection, onJump }) {
 }
 
 // ---------------------------------------------------------------------------
-// Search settings
+// Search ladder + indexing strip
 // ---------------------------------------------------------------------------
 
-function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProviders, pushToast, onChanged }) {
-  const { useResource, apiFetch, useCapabilities, capabilityHint } = window.primerApi;
+// uiv2 Wave 2: presentational only. The mockup shows 5 selectable-
+// looking chips (auto/semantic/fulltext/literal/regex), but only two
+// are REAL, independently switchable backend paths today: semantic
+// search (opt-in, PUT /collections/{id}/search) and grep (regex or a
+// literal pattern - the SAME endpoint, just a different query, not two
+// distinct modes). No server-side "fulltext" or "auto" concept exists
+// (grepped primer/api/routers/collections.py - no such route/param) -
+// these chips are not clickable and do not claim to switch anything;
+// they show which tier is CURRENTLY active (semantic once ready, else
+// the always-available grep tier - "documents stay greppable regardless
+// of indexing state"), using the mockup's own vocabulary without
+// inventing a mode-switch that doesn't exist server-side. Flagged in
+// the PR body.
+function KN_SearchLadder({ activeRung }) {
+  const rungs = ["auto", "semantic", "fulltext", "literal", "regex"];
+  return (
+    <div className="row" style={{ gap: 6, flexWrap: "wrap" }} data-testid="kn-search-ladder">
+      <span className="muted text-sm" style={{ marginRight: 2 }}>search ladder</span>
+      {rungs.map((r) => (
+        <span key={r}
+          className={"chip" + (r === activeRung ? " active" : "")}
+          style={{ pointerEvents: "none" }}
+          data-testid={`kn-ladder-${r}`}>
+          {r}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// uiv2 Wave 2 (a-9/a-10): re-homed from a standalone "Semantic search"
+// block below the tree into the top-of-overlay indexing strip the
+// mockup specs - same fetch/enable/disable logic KN_SearchSettings
+// always had, restyled into the strip layout with the ladder beside it.
+// The enablement form (a real, must-not-drop capability per the delta)
+// folds into the strip's own disabled-state branch rather than living
+// as a separate section.
+function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pushToast, onChanged }) {
+  const { apiFetch, useCapabilities, capabilityHint } = window.primerApi;
   const caps = useCapabilities();
   const cid = collection.id;
   const [embedder, setEmbedder] = React.useState("");
   const [model, setModel] = React.useState("");
   const [ssp, setSsp] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const [reloadKey, setReloadKey] = React.useState(0);
-
-  const status = useResource(
-    `kn:search-status:${cid}:${reloadKey}`,
-    (signal) => apiFetch("GET", `/collections/${encodeURIComponent(cid)}/search`, null, { signal }),
-    { pollMs: null },
-  );
 
   const enable = async () => {
     setBusy(true);
@@ -563,7 +593,6 @@ function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProvid
         vector_store_provider_id: ssp,
       });
       pushToast && pushToast({ kind: "success", title: "Search enabled" });
-      setReloadKey((k) => k + 1);
       onChanged && onChanged();
     } catch (err) {
       pushToast && pushToast({
@@ -580,7 +609,6 @@ function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProvid
     setBusy(true);
     try {
       await apiFetch("DELETE", `/collections/${encodeURIComponent(cid)}/search`);
-      setReloadKey((k) => k + 1);
       onChanged && onChanged();
     } finally {
       setBusy(false);
@@ -588,6 +616,8 @@ function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProvid
   };
 
   const st = status.data;
+  const ready = st?.state === "ready";
+  const activeRung = ready ? "semantic" : "regex";
   const embedRows = embedProviders?.data?.items ?? [];
   const sspRows = sspProviders?.data?.items ?? [];
   // An embedded (lance) vector store needs the extra installed on the
@@ -600,25 +630,24 @@ function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProvid
     caps.data?.extras?.lance === false;
 
   return (
-    <div className="col" style={{ gap: 10 }}>
-      <div className="row" style={{ gap: 8, alignItems: "center" }}>
-        <span className="muted text-sm">Semantic search</span>
-        {st ? <StatusPill status={st.state === "ready" ? "ok" : st.state === "error" ? "error" : "paused"} /> : null}
-        {st ? <span className="mono text-sm">{st.state}</span> : null}
-        {st && st.state !== "disabled" ? (
-          <span className="muted text-sm">
-            {st.documents_indexed}/{st.documents_total} indexed
+    <div className="col" style={{ gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)" }}
+      data-testid="kn-indexing-strip">
+      <div className="row" style={{ gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <span className="muted text-sm" style={{ textTransform: "uppercase", fontSize: 10.5, letterSpacing: "0.06em" }}>
+            Semantic indexing
           </span>
-        ) : null}
+          {st ? <StatusPill status={ready ? "ok" : st.state === "error" ? "error" : "paused"} /> : null}
+          <span className="mono text-sm">
+            {st ? st.state : "…"}
+            {st && st.state !== "disabled" ? ` — ${st.documents_indexed}/${st.documents_total} docs` : ""}
+          </span>
+        </div>
+        <KN_SearchLadder activeRung={activeRung} />
       </div>
 
       {st?.state === "error" ? (
-        <Banner kind="error" title="Indexing failed">
-          {st.error}
-        </Banner>
-      ) : null}
-      {st?.state === "indexing" ? (
-        <div className="muted text-sm">Indexing in progress.</div>
+        <Banner kind="error" title="Indexing failed">{st.error}</Banner>
       ) : null}
 
       {st?.state === "disabled" ? (
@@ -654,12 +683,12 @@ function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProvid
               {capabilityHint("lance")}
             </div>
           ) : null}
-          <Btn onClick={enable} disabled={busy || !embedder || !model || !ssp}>
+          <Btn size="sm" onClick={enable} disabled={busy || !embedder || !model || !ssp}>
             Enable search
           </Btn>
         </div>
       ) : (
-        <Btn kind="ghost" onClick={disable} disabled={busy}>Disable search</Btn>
+        <Btn kind="ghost" size="sm" onClick={disable} disabled={busy}>Disable search</Btn>
       )}
     </div>
   );
@@ -670,12 +699,25 @@ function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProvid
 // ---------------------------------------------------------------------------
 
 function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProviders, pushToast, onBack }) {
+  const { useResource, apiFetch } = window.primerApi;
   const [expanded, setExpanded] = React.useState({});
   const [selectedPath, setSelectedPath] = React.useState(null);
   const [reloadKey, setReloadKey] = React.useState(0);
   const [importOpen, setImportOpen] = React.useState(false);
   const [rootNewOpen, setRootNewOpen] = React.useState(false);
   const readOnly = !!collection.system;
+  const cid = collection.id;
+
+  // Lifted from the old KN_SearchSettings (uiv2 Wave 2): the header
+  // facts row needs the same search-status fetch the indexing strip
+  // does, so it is fetched once here and threaded to both rather than
+  // each fetching its own copy.
+  const status = useResource(
+    `kn:search-status:${cid}:${reloadKey}`,
+    (signal) => apiFetch("GET", `/collections/${encodeURIComponent(cid)}/search`, null, { signal }),
+    { pollMs: null },
+  );
+  const st = status.data;
 
   const toggle = (path) =>
     setExpanded((cur) => ({ ...cur, [path]: !cur[path] }));
@@ -691,67 +733,94 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
     setExpanded((cur) => ({ ...cur, ...opens }));
   };
 
+  // uiv2 Wave 2 ("Collection — {name}" header row, type/state/doc-count
+  // facts inline, Import zip + close): doc count is only shown when the
+  // search-status fetch actually serves one (documents_total, once
+  // search is configured) - a collection with search disabled has no
+  // cheap accurate total-document count available (the tree endpoint is
+  // one level at a time), so it is omitted rather than guessed.
+  const title = (
+    <h1 className="page-title" style={{ font: "inherit", margin: 0, display: "inline" }}>
+      Collection — {cid}
+      <span className="pc-modal-chip mono text-sm muted" style={{ marginLeft: 10, marginBottom: 0, verticalAlign: "middle" }}>
+        {readOnly ? "read-only" : st ? (st.state === "ready" ? "semantic" : st.state) : "…"}
+      </span>
+      {st && st.state !== "disabled" ? (
+        <span className="muted text-sm" style={{ marginLeft: 8 }}>{st.documents_total} documents</span>
+      ) : null}
+    </h1>
+  );
+
   return (
-    <div className="col" style={{ gap: 12 }}>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <div className="row" style={{ gap: 8, alignItems: "center" }}>
-          <a className="knowledge-mobile-back" onClick={onBack}>
-            <Icon name="chevron-left" /> Collections
-          </a>
-          <span className="mono">{collection.id}</span>
-          {readOnly ? <Icon name="lock" /> : null}
-        </div>
-        {readOnly ? null : (
-          <div className="row" style={{ gap: 6 }}>
-            <Btn icon="upload" kind="ghost" onClick={() => setImportOpen(true)}>Import zip</Btn>
+    <Modal
+      title={title}
+      width={860}
+      onClose={onBack}
+      footer={
+        readOnly ? null : (
+          <>
+            <Btn kind="ghost" icon="upload" onClick={() => setImportOpen(true)}>Import zip</Btn>
             <Btn icon="plus" onClick={() => setRootNewOpen(true)}>New document</Btn>
-          </div>
-        )}
-      </div>
-
-      <KN_GrepBox collection={collection} onJump={jump} />
-
-      <div className="row" style={{ gap: 16, alignItems: "flex-start" }}>
-        <div className="col kn-tree" style={{ minWidth: 240, maxWidth: 320 }}>
-          <KN_Tree
-            cid={collection.id}
-            parent=""
-            depth={0}
-            expanded={expanded}
-            toggle={toggle}
-            selectedPath={selectedPath}
-            onSelect={setSelectedPath}
-            reloadKey={reloadKey}
-          />
-        </div>
-        <div className="col" style={{ flex: 1, minWidth: 0 }}>
-          {selectedPath ? (
-            <KN_DocumentPane
-              collection={collection}
-              path={selectedPath}
-              readOnly={readOnly}
-              pushToast={pushToast}
-              onChanged={bump}
+          </>
+        )
+      }
+    >
+      <div className="col" style={{ gap: 0, margin: "-16px" }}>
+        {/* Mobile-only (@media max-width: 639px in styles.css) - Modal's
+            own mobile variant is a bottom sheet with just a bare ×
+            close; this names where "back" actually goes, same as
+            before this wave's desktop reconciliation. */}
+        <a className="knowledge-mobile-back" onClick={onBack}>
+          <Icon name="chevron-left" /> Collections
+        </a>
+        <KN_IndexingStrip
+          collection={collection}
+          status={status}
+          embedProviders={embedProviders}
+          sspProviders={sspProviders}
+          pushToast={pushToast}
+          onChanged={bump}
+        />
+        <div className="row" style={{ gap: 16, alignItems: "flex-start", padding: "14px 16px 16px" }}>
+          <div className="col kn-tree" style={{ minWidth: 240, maxWidth: 320, gap: 8 }}>
+            {/* uiv2 Wave 2 (a-9, re-homed not deleted): the grep bar now
+                lives at the top of the tree column, matching the
+                delta's own suggested home - documents stay greppable
+                regardless of indexing state, so this control belongs
+                beside the tree it jumps within, not floating above the
+                whole overlay. */}
+            <KN_GrepBox collection={collection} onJump={jump} />
+            <KN_Tree
+              cid={cid}
+              parent=""
+              depth={0}
+              expanded={expanded}
+              toggle={toggle}
+              selectedPath={selectedPath}
               onSelect={setSelectedPath}
+              reloadKey={reloadKey}
             />
-          ) : (
-            <KN_EmptyState
-              ico="book"
-              head="Select a document"
-              sub="Pick a node on the left, or grep to jump straight to a line."
-            />
-          )}
+          </div>
+          <div className="col" style={{ flex: 1, minWidth: 0 }}>
+            {selectedPath ? (
+              <KN_DocumentPane
+                collection={collection}
+                path={selectedPath}
+                readOnly={readOnly}
+                pushToast={pushToast}
+                onChanged={bump}
+                onSelect={setSelectedPath}
+              />
+            ) : (
+              <KN_EmptyState
+                ico="book"
+                head="Select a document"
+                sub="Pick a node on the left, or grep to jump straight to a line."
+              />
+            )}
+          </div>
         </div>
       </div>
-
-      <KN_SearchSettings
-        collection={collection}
-        embedProviders={embedProviders}
-        sspProviders={sspProviders}
-        cerProviders={cerProviders}
-        pushToast={pushToast}
-        onChanged={bump}
-      />
 
       {importOpen ? (
         <KN_ImportModal
@@ -770,7 +839,7 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
           onCreated={(p) => { setRootNewOpen(false); bump(); setSelectedPath(p); }}
         />
       ) : null}
-    </div>
+    </Modal>
   );
 }
 
