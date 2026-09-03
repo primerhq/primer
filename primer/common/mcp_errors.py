@@ -2,14 +2,15 @@
 
 Used by :class:`primer.toolset.mcp.McpToolsetProvider` (and any future
 adapter that talks to an MCP server). Maps the mcp SDK's
-:class:`mcp.shared.exceptions.MCPError` plus the underlying httpx
-exceptions onto the primer exception hierarchy so callers see one
-universal error surface regardless of which adapter raised.
+:class:`mcp.shared.exceptions.MCPError` plus the underlying httpx /
+httpx2 exceptions onto the primer exception hierarchy so callers see
+one universal error surface regardless of which adapter raised.
 """
 
 from __future__ import annotations
 
 import httpx
+import httpx2
 from mcp.shared.exceptions import MCPError
 
 from primer.model.except_ import (
@@ -20,6 +21,22 @@ from primer.model.except_ import (
     ProviderError,
     RateLimitError,
     ServerError,
+)
+
+# mcp>=2.0's transports (streamable_http / sse / _httpx_utils) are built on
+# the httpx2 package, whose exception classes share NO ancestry with plain
+# httpx (isinstance(httpx2.ConnectError(), httpx.ConnectError) is False).
+# primer itself still uses httpx elsewhere, so an MCP failure can surface
+# either family depending on which layer raised - match both. httpx2 is a
+# hard dependency of mcp, so the unconditional import fails loudly if the
+# dependency tree ever breaks rather than silently degrading classification.
+_CONNECT_ERRORS = (httpx.ConnectError, httpx2.ConnectError)
+_STATUS_ERRORS = (httpx.HTTPStatusError, httpx2.HTTPStatusError)
+_NETWORK_ERRORS = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx2.TimeoutException,
+    httpx2.NetworkError,
 )
 
 
@@ -67,12 +84,12 @@ def classify_mcp_exception(exc: Exception) -> PrimerError:
             if isinstance(leaf, Exception):
                 return classify_mcp_exception(leaf)
         return ProviderError(str(exc), cause=exc)
-    if isinstance(exc, httpx.ConnectError):
+    if isinstance(exc, _CONNECT_ERRORS):
         return NetworkError(
             f"could not connect to the MCP server: {exc}",
             cause=exc,
         )
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, _STATUS_ERRORS):
         status = exc.response.status_code
         if status in (401, 403):
             return AuthenticationError(
@@ -103,7 +120,7 @@ def classify_mcp_exception(exc: Exception) -> PrimerError:
             status_code=status,
             cause=exc,
         )
-    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+    if isinstance(exc, _NETWORK_ERRORS):
         return NetworkError(
             f"MCP network failure: {type(exc).__name__}",
             cause=exc,
