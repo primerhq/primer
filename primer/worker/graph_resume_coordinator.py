@@ -185,6 +185,11 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
         replies = [(resumed_tcid, resume_payload.payload)]
 
     repark = None
+    # 01a0690a piece 3: per-node mint-seq high-water mark, seeded from the
+    # original park and advanced after each drain below -- threaded into
+    # any repark this loop produces so a chain of resumes never re-mints a
+    # colliding scoped id.
+    node_tool_call_seq = dict(getattr(parked, "node_tool_call_seq", None) or {})
     for tcid, payload in replies:
         # Unified nested-yield: when the parked agent-node yielded from
         # INSIDE a nested invoke_agent invocation, its pending entry carries
@@ -227,12 +232,19 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 agent_tool_result=agent_tool_result,
             )
         try:
-            _decision, repark = await resume_graph_from_checkpoint(
+            _decision, repark, node_tool_call_seq = await resume_graph_from_checkpoint(
                 executor=executor,
                 checkpoint=ck,
                 payload=payload,
                 resumed_tcid=tcid,
                 agent_tool_result=agent_tool_result,
+                pool=pool,
+                session=session,
+                # 01a0690a piece 3: seed from wherever the LAST drain left
+                # off, not the original park -- a multi-event park's later
+                # replies resume through this same loop, and each drain's
+                # own mints must not collide with the ones before it.
+                node_tool_call_seq=node_tool_call_seq,
             )
         except Exception:
             logger.exception(
@@ -247,7 +259,9 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     if repark is not None:
         # Human-interaction nodes still pending (not yet replied to) ->
         # re-park on the remaining keys (no re-dispatch).
-        return pool._repark_graph_outcome(session, repark)
+        return pool._repark_graph_outcome(
+            session, repark, node_tool_call_seq=node_tool_call_seq,
+        )
 
     # Drained to completion (the graph's own state.json carries the
     # real ended_reason; the session row mirrors _GraphTurnDriver).
@@ -404,6 +418,11 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
         started_at=now,
         tool_call_id=parked.tool_call_id,
         graph_checkpoint=new_ck,
+        # 01a0690a: the continuation walk mints no new tool-call events
+        # (it operates purely on the frames/leaf stack) -- nothing to
+        # seed with, so carry the original park's snapshot forward
+        # unchanged, same doctrine as 0b4e8bfc's repark_continuation.
+        node_tool_call_seq=getattr(parked, "node_tool_call_seq", None),
     )
     return ReleaseOutcome(
         success=True,
@@ -543,9 +562,17 @@ async def persist_resume_tool_result_record_for_graph(
         )
 
 
-def repark_graph_outcome(pool: "WorkerPool", session, repark):
+def repark_graph_outcome(
+    pool: "WorkerPool", session, repark, *, node_tool_call_seq=None,
+):
     """Build a ReleaseOutcome that re-parks a graph session on the
-    remaining human-interaction keys after one reply was resumed."""
+    remaining human-interaction keys after one reply was resumed.
+
+    ``node_tool_call_seq`` (01a0690a piece 3): the resume drain's own
+    per-node mint-seq snapshot -- carried into the new park so a further
+    resume of THIS repark seeds past whatever THIS drain just minted,
+    instead of the stale pre-park snapshot the checkpoint started with.
+    """
     from datetime import timedelta
     from primer.int.claim import ParkRequest, ReleaseOutcome
 
@@ -558,6 +585,7 @@ def repark_graph_outcome(pool: "WorkerPool", session, repark):
         started_at=now,
         tool_call_id=repark.tool_call_id,
         graph_checkpoint=repark.graph_checkpoint,
+        node_tool_call_seq=node_tool_call_seq or None,
     )
     return ReleaseOutcome(
         success=True,

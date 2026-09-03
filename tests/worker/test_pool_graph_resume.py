@@ -21,6 +21,7 @@ turn loop while still pinning the load-bearing contract:
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
@@ -284,7 +285,7 @@ async def test_resume_graph_from_checkpoint_approved_drains() -> None:
 
     resume_executor.resume_from_checkpoint = _tap  # type: ignore[assignment]
 
-    decision, _repark = await resume_graph_from_checkpoint(
+    decision, _repark, _node_tool_call_seq = await resume_graph_from_checkpoint(
         executor=resume_executor,
         checkpoint=restored.graph_checkpoint,  # type: ignore[arg-type]
         payload={"decision": "approved"},
@@ -301,6 +302,140 @@ async def test_resume_graph_from_checkpoint_approved_drains() -> None:
     loaded = await thread_storage.get(thread.id)
     assert loaded is not None
     assert loaded.ended_reason == "completed"
+
+
+# ===========================================================================
+# 01a0690a piece 3: the resume drain's events are durably tapped, not
+# discarded (Gap 2 -- worker/graph_resume.py's _ResumeDrainTap)
+# ===========================================================================
+
+
+class _FakeWorkspaceIO:
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, bytes]] = []
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        self.lines.append((session_id, line))
+
+
+class _FakeSessionRow:
+    def __init__(self, *, sid: str, workspace_id: str, turn_no: int, last_seq: int) -> None:
+        self.id = sid
+        self.workspace_id = workspace_id
+        self.turn_no = turn_no
+        self.last_seq = last_seq
+
+    def model_copy(self, *, update: dict):
+        merged = {**self.__dict__, **update}
+        return _FakeSessionRow(
+            sid=merged["id"], workspace_id=merged["workspace_id"],
+            turn_no=merged["turn_no"], last_seq=merged["last_seq"],
+        )
+
+
+class _FakeSessionStorage:
+    def __init__(self, row) -> None:
+        self._row = row
+
+    async def get(self, sid: str):
+        return self._row if self._row.id == sid else None
+
+    async def update(self, row) -> None:
+        self._row = row
+
+
+class _FakeStorage:
+    def __init__(self, session_storage) -> None:
+        self._session_storage = session_storage
+
+    def get_storage(self, _model_cls):
+        return self._session_storage
+
+
+class _FakePool:
+    def __init__(self, *, workspace_io, storage) -> None:
+        self._storage = storage
+        self._event_bus = None
+        self._workspace_io = workspace_io
+
+    async def _load_workspace_for_persist(self, _workspace_id: str):
+        return self._workspace_io
+
+
+@pytest.mark.asyncio
+async def test_resume_graph_from_checkpoint_taps_drain_into_durable_records() -> None:
+    """Gap 2: previously ``async for _ev in ...: pass`` -- the resumed
+    drain's own StreamEvents (node exit transitions, the End output) were
+    silently discarded. With pool/session passed, they land as durable
+    SessionMessageRecords via the same WorkspaceMessageWriter vocabulary
+    the live turn uses."""
+    graph = _make_simple_graph("g-resume-tapped")
+    yielded_obj = Yielded(tool_name="_approval", event_key="tool_approval:sid:tc-1")
+
+    async def first_dispatcher(node, arguments):
+        raise YieldToWorker(yielded_obj, tool_call_id="tc-1")
+
+    async def resume_dispatcher(node, arguments, bypass_approval=False):
+        return ToolResultPart(id="tc-1", output="ok")
+
+    thread_storage = _InMemoryStorage(GraphThread)
+    message_storage = _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(
+        graph=graph, thread_storage=thread_storage,  # type: ignore[arg-type]
+    )
+    park_executor = GraphExecutor(
+        graph=graph,
+        agent_resolver=_agent_resolver,
+        llm_resolver=_llm_resolver,  # type: ignore[arg-type]
+        thread_storage=thread_storage,  # type: ignore[arg-type]
+        message_storage=message_storage,  # type: ignore[arg-type]
+        graph_thread_id=thread.id,
+        tool_dispatcher=first_dispatcher,
+    )
+    _events, raised = await _drain_until_yield(park_executor.invoke([]))
+    assert raised is not None
+    checkpoint = park_executor.snapshot_state()
+
+    resume_executor = GraphExecutor(
+        graph=graph,
+        agent_resolver=_agent_resolver,
+        llm_resolver=_llm_resolver,  # type: ignore[arg-type]
+        thread_storage=thread_storage,  # type: ignore[arg-type]
+        message_storage=message_storage,  # type: ignore[arg-type]
+        graph_thread_id=thread.id,
+        tool_dispatcher=resume_dispatcher,
+    )
+
+    ws = _FakeWorkspaceIO()
+    session_row = _FakeSessionRow(
+        sid="gs-tapped", workspace_id="ws-1", turn_no=1, last_seq=0,
+    )
+    pool = _FakePool(workspace_io=ws, storage=_FakeStorage(_FakeSessionStorage(session_row)))
+
+    decision, repark, node_tool_call_seq = await resume_graph_from_checkpoint(
+        executor=resume_executor,
+        checkpoint=checkpoint,
+        payload={"decision": "approved"},
+        pool=pool,  # type: ignore[arg-type]
+        session=session_row,
+    )
+    assert decision == "approved"
+    assert repark is None
+    assert node_tool_call_seq == {}  # no ToolCallStart events on this path
+
+    # The graph's own lifecycle events (node exit transition, End output)
+    # landed as durable records instead of being discarded. The writer
+    # buffers multiple records per append_message_line call, newline-
+    # separated, so flatten before parsing.
+    assert ws.lines, "resume drain produced no durable records"
+    kinds = [
+        json.loads(raw)["kind"]
+        for _sid, line in ws.lines
+        for raw in line.decode().splitlines()
+        if raw.strip()
+    ]
+    assert "graph_transition" in kinds
+    assert "assistant_token" in kinds  # the End node's output_template
 
 
 # ===========================================================================
@@ -363,7 +498,7 @@ async def test_resume_graph_from_checkpoint_rejected_terminates_failed() -> None
 
     resume_executor.resume_from_checkpoint = _tap  # type: ignore[assignment]
 
-    decision, _repark = await resume_graph_from_checkpoint(
+    decision, _repark, _node_tool_call_seq = await resume_graph_from_checkpoint(
         executor=resume_executor,
         checkpoint=checkpoint,
         payload={"decision": "rejected", "reason": "no thanks"},
@@ -423,7 +558,7 @@ async def test_resume_graph_from_checkpoint_timeout_terminates_failed() -> None:
         tool_dispatcher=never_called,
     )
 
-    decision, _repark = await resume_graph_from_checkpoint(
+    decision, _repark, _node_tool_call_seq = await resume_graph_from_checkpoint(
         executor=resume_executor,
         checkpoint=checkpoint,
         payload=YieldTimeout(elapsed_seconds=3600.0),
