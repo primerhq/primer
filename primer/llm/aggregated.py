@@ -1,12 +1,13 @@
 """Aggregated chat-model adapter.
 
-Wraps an ordered pool of downstream (provider_id, model_name) members
-behind one LLM interface. On a rate-limited / unavailable member the
-adapter fails over to the next member. Members are resolved LAZILY on
-each ``stream`` call through the ``resolve_member`` callable (which the
-ProviderRegistry binds to its own ``get_llm``), so member edits and
-cache invalidations are picked up transparently and no build-time cycle
-is created.
+Wraps an ordered pool of downstream ModelProfile members (``kind==
+"single"``) behind one LLM interface. On a rate-limited / unavailable
+member the adapter fails over to the next member. Members are resolved
+LAZILY on each ``stream`` call through the ``resolve_member`` callable
+(which :func:`primer.model_profile.resolve_llm` binds to itself, so a
+member that is itself resolved recursively), so member edits and cache
+invalidations are picked up transparently and no build-time cycle is
+created.
 
 Two failover channels, mirroring the real adapters:
 
@@ -31,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -49,14 +50,21 @@ from primer.model.except_ import (
     RateLimitError,
     ServerError,
 )
-from primer.model.provider import (
-    AggregatedLLMConfig,
-    AggregatedMember,
+from primer.model.model_profile import (
     FailoverClasses,
     FailoverPoint,
-    LLMProvider,
+    ModelProfile,
     RoutingStrategy,
 )
+
+# Deferred: primer.model_profile.resolver (home of ResolvedModel and the
+# resolve_llm function that constructs THIS class) imports AggregatedLLM
+# at runtime to build an aggregated adapter, so importing ResolvedModel
+# back at module scope here would be circular. Type-only under
+# TYPE_CHECKING is safe because `from __future__ import annotations`
+# above defers every annotation to a string.
+if TYPE_CHECKING:
+    from primer.model_profile.resolver import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -134,21 +142,24 @@ class AggregatedLLM(LLM):
 
     def __init__(
         self,
-        provider: LLMProvider,
+        profile: ModelProfile,
         *,
-        resolve_member: Callable[[str], Awaitable[LLM]],
+        resolve_member: Callable[[str], Awaitable[tuple[LLM, "ResolvedModel"]]],
     ) -> None:
-        self._provider = provider
-        assert isinstance(provider.config, AggregatedLLMConfig)
-        self._config: AggregatedLLMConfig = provider.config
+        assert profile.kind == "aggregated"
+        assert profile.members is not None
+        self._profile = profile
+        self._members: list[str] = profile.members
+        self._strategy = profile.strategy
+        self._failover_point = profile.failover_point
+        self._failover_on = profile.failover_on
         self._resolve = resolve_member
         self._cursor = 0
         self._cursor_lock = asyncio.Lock()
 
-
-    async def _member_order(self) -> list[AggregatedMember]:
-        members = self._config.members
-        if self._config.strategy == RoutingStrategy.SEQUENTIAL:
+    async def _member_order(self) -> list[str]:
+        members = self._members
+        if self._strategy == RoutingStrategy.SEQUENTIAL:
             return list(members)
         n = len(members)
         async with self._cursor_lock:
@@ -156,10 +167,10 @@ class AggregatedLLM(LLM):
             self._cursor = (self._cursor + 1) % n
         return [members[(start + i) % n] for i in range(n)]
 
-    def _log_failover(self, member: AggregatedMember, reason: str) -> None:
+    def _log_failover(self, member_id: str, reason: str) -> None:
         logger.info(
-            "aggregated-llm %s: member %s (model=%s) failing over: %s",
-            self._provider.id, member.provider_id, member.model_name, reason,
+            "aggregated-llm %s: member %s failing over: %s",
+            self._profile.id, member_id, reason,
         )
 
     async def stream(
@@ -176,23 +187,24 @@ class AggregatedLLM(LLM):
         tool_choice: ToolChoice | None = None,
         extended: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        cfg = self._config
+        failover_point = self._failover_point
+        failover_on = self._failover_on
         errors: list[str] = []
-        for member in await self._member_order():
+        for member_id in await self._member_order():
             try:
-                llm = await self._resolve(member.provider_id)
+                llm, resolved = await self._resolve(member_id)
             except NotFoundError:
-                errors.append(f"{member.provider_id}: not found")
-                self._log_failover(member, "provider row not found")
+                errors.append(f"{member_id}: not found")
+                self._log_failover(member_id, "profile not found")
                 continue
             if isinstance(llm, AggregatedLLM):
                 raise BadRequestError(
-                    f"aggregated LLM provider {self._provider.id!r} member "
-                    f"{member.provider_id!r} resolves to another aggregated "
-                    f"provider; nesting/self-reference is not allowed",
+                    f"aggregated model profile {self._profile.id!r} member "
+                    f"{member_id!r} resolves to another aggregated "
+                    f"profile; nesting/self-reference is not allowed",
                 )
             agen = llm.stream(
-                model=member.model_name,
+                model=resolved.model_name,
                 messages=messages,
                 temperature=temperature,
                 top_p=top_p,
@@ -218,23 +230,23 @@ class AggregatedLLM(LLM):
                 try:
                     first = await agen.__anext__()
                 except StopAsyncIteration:
-                    errors.append(f"{member.provider_id}: empty stream")
-                    self._log_failover(member, "empty stream")
+                    errors.append(f"{member_id}: empty stream")
+                    self._log_failover(member_id, "empty stream")
                     continue
                 except (ProviderError, NetworkError) as exc:
-                    if _exc_eligible(exc, cfg.failover_on):
-                        errors.append(f"{member.provider_id}: {type(exc).__name__}")
-                        self._log_failover(member, f"connect {type(exc).__name__}: {exc}")
+                    if _exc_eligible(exc, failover_on):
+                        errors.append(f"{member_id}: {type(exc).__name__}")
+                        self._log_failover(member_id, f"connect {type(exc).__name__}: {exc}")
                         continue
                     raise
                 # --- first event in hand ---
                 if (
                     isinstance(first, ChatError)
                     and first.fatal
-                    and _yielded_eligible(first.code, cfg.failover_on)
+                    and _yielded_eligible(first.code, failover_on)
                 ):
-                    errors.append(f"{member.provider_id}: first-event Error code={first.code}")
-                    self._log_failover(member, f"first-event Error code={first.code}")
+                    errors.append(f"{member_id}: first-event Error code={first.code}")
+                    self._log_failover(member_id, f"first-event Error code={first.code}")
                     continue
                 # commit to this member: nothing has been yielded downstream yet.
                 yield first
@@ -242,14 +254,14 @@ class AggregatedLLM(LLM):
                 try:
                     async for ev in agen:
                         if (
-                            cfg.failover_point == FailoverPoint.MID_STREAM
+                            failover_point == FailoverPoint.MID_STREAM
                             and isinstance(ev, ChatError)
                             and ev.fatal
-                            and _yielded_eligible(ev.code, cfg.failover_on)
+                            and _yielded_eligible(ev.code, failover_on)
                         ):
-                            errors.append(f"{member.provider_id}: mid-stream Error code={ev.code}")
+                            errors.append(f"{member_id}: mid-stream Error code={ev.code}")
                             self._log_failover(
-                                member,
+                                member_id,
                                 f"mid-stream YIELDED Error code={ev.code} (tokens may duplicate)",
                             )
                             failed_over = True
@@ -261,12 +273,12 @@ class AggregatedLLM(LLM):
                     # tokens, so only MID_STREAM may restart on the next member;
                     # BEFORE_FIRST_TOKEN cannot fail over post-commit -> propagate.
                     if (
-                        cfg.failover_point == FailoverPoint.MID_STREAM
-                        and _exc_eligible(exc, cfg.failover_on)
+                        failover_point == FailoverPoint.MID_STREAM
+                        and _exc_eligible(exc, failover_on)
                     ):
-                        errors.append(f"{member.provider_id}: mid-stream {type(exc).__name__}")
+                        errors.append(f"{member_id}: mid-stream {type(exc).__name__}")
                         self._log_failover(
-                            member,
+                            member_id,
                             f"mid-stream RAISED {type(exc).__name__} (tokens may duplicate)",
                         )
                         failed_over = True
@@ -290,9 +302,9 @@ class AggregatedLLM(LLM):
     ) -> int:
         # Best-effort: delegate to the first resolvable member. Token
         # counts across members differ; documented.
-        for member in self._config.members:
+        for member_id in self._members:
             try:
-                llm = await self._resolve(member.provider_id)
+                llm, resolved = await self._resolve(member_id)
             except NotFoundError:
                 continue
             if isinstance(llm, AggregatedLLM):
@@ -302,10 +314,10 @@ class AggregatedLLM(LLM):
                 # member rather than raising strict validation here.
                 continue
             return await llm.count_tokens(
-                model=member.model_name, messages=messages, tools=tools,
+                model=resolved.model_name, messages=messages, tools=tools,
             )
         raise ConfigError(
-            f"aggregated LLM provider {self._provider.id!r} has no resolvable "
+            f"aggregated model profile {self._profile.id!r} has no resolvable "
             f"member for count_tokens",
         )
 

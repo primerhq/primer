@@ -426,15 +426,6 @@ async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
             "row_fields": [],
             "discoverable": True,
         },
-        LLMProviderType.AGGREGATED.value: {
-            "label": "Aggregated",
-            # An ordered member list with routing and failover switches is
-            # not a flat field set; the console mounts its own editor.
-            "variant": "aggregated",
-            "config_fields": [],
-            "row_fields": [],
-            "discoverable": False,
-        },
     })
 
 

@@ -1186,7 +1186,7 @@ async def compact_session_endpoint(
     from primer.agent.compaction_mixin import force_compact
     from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
     from primer.model.agent import Agent
-    from primer.model_profile import resolve_model
+    from primer.model_profile import resolve_llm
     from primer.session.compaction import compact_session, guard_compactable
     from primer.workspace.session import reconstruct_compacted_history
     from primer.worker.io_shim import _WorkspaceIOShim
@@ -1211,22 +1211,17 @@ async def compact_session_endpoint(
         )
 
     try:
-        llm_model = await resolve_model(
+        llm, llm_model = await resolve_llm(
             storage_provider,
+            provider_registry,
             default_profile_id=agent.model.profile_id,
             override_profile_id=getattr(row.binding, "profile_id", None),
         )
-    except NotFoundError as exc:
-        raise ConfigError(
-            f"Agent {agent.id!r} names model profile "
-            f"{agent.model.profile_id!r}, which does not exist: {exc}"
-        ) from exc
-    try:
-        llm = await provider_registry.get_llm(llm_model.provider_id)
     except (NotFoundError, ConfigError) as exc:
         raise ConfigError(
-            f"Agent {agent.id!r} has no resolvable LLM provider "
-            f"({llm_model.provider_id!r}): {exc}"
+            f"Agent {agent.id!r} names model profile "
+            f"{agent.model.profile_id!r}, which does not resolve to a "
+            f"usable LLM: {exc}"
         ) from exc
 
     workspace = await registry.get_workspace(workspace_id)
@@ -1258,7 +1253,15 @@ async def compact_session_endpoint(
             strategy=CompactionStrategy(),
             history=list(hist),
             compaction_prompt=compaction_prompt,
-            model_name=llm_model.model_name,
+            # llm_model.model_name is None for an aggregated profile (see
+            # ResolvedModel's docstring); it is also inert to
+            # AggregatedLLM.stream/count_tokens (which resolve each
+            # member's own model_name internally), but force_compact's
+            # model_name is typed str and gets stored on a result shim
+            # for display, so fall back to the profile id rather than
+            # leak a raw None -- the same "no fabricated label, show the
+            # profile's own id" fallback ruling (5) prescribes elsewhere.
+            model_name=llm_model.model_name or llm_model.profile_id,
             context_length=llm_model.context_length,
         )
 
