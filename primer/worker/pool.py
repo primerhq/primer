@@ -899,6 +899,14 @@ class WorkerPool:
             self, checkpoint, tcid, payload,
         )
 
+    async def _persist_resume_tool_result_record_for_graph(
+        self, *, session, checkpoint, tcid, agent_tool_result,
+    ) -> None:
+        return await graph_resume_coordinator.persist_resume_tool_result_record_for_graph(
+            self, session=session, checkpoint=checkpoint, tcid=tcid,
+            agent_tool_result=agent_tool_result,
+        )
+
     def _repark_graph_outcome(self, session, repark):
         return graph_resume_coordinator.repark_graph_outcome(self, session, repark)
 
