@@ -41,6 +41,7 @@ def _make_task(
         turn_no=1,
         tool_name="workspace__write",
         state=state,
+        record_seq=1,
         gate_event_key="tool_approval:sess-1:worker:tool:1:1",
         created_at=datetime.now(UTC),
         started_at=datetime.now(UTC),

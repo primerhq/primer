@@ -213,6 +213,7 @@ def _make_tool_call_task(id: str = "worker:tool:1:1") -> ToolCallTask:
         turn_no=1,
         tool_name="workspace__write",
         state=ToolCallTaskState.RUNNING,
+        record_seq=1,
         created_at=datetime.now(UTC),
         started_at=datetime.now(UTC),
     )
