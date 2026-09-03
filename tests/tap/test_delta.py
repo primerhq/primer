@@ -38,7 +38,12 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.session.persistence import _CoalesceState, translate_stream_event
-from primer.tap.delta import DELTA_EVENT_SUFFIX, DeltaBuffer, part_id
+from primer.tap.delta import (
+    DELTA_EVENT_SUFFIX,
+    DeltaBuffer,
+    part_id,
+    scoped_tool_call_id,
+)
 from primer.tap.router import WorkspaceTapRouter
 
 
@@ -101,6 +106,37 @@ def _session(sid: str, wid: str) -> WorkspaceSession:
 
 async def _seed(storage_provider, session: WorkspaceSession) -> None:
     await storage_provider.get_storage(WorkspaceSession).create(session)
+
+
+# ---------------------------------------------------------------------------
+# scoped_tool_call_id (Phase 3 stage 7a, 01a0518b) - the shared minting
+# function the log/tap layer and the future dispatch-seam layer both call,
+# so a fan-out sibling's raw provider call id never collides across the two
+# layers' independently-derived scoped ids.
+# ---------------------------------------------------------------------------
+
+
+def test_scoped_tool_call_id_shape() -> None:
+    assert scoped_tool_call_id("worker", 2, 3) == "worker:tool:2:3"
+
+
+def test_scoped_tool_call_id_none_node_becomes_x() -> None:
+    assert scoped_tool_call_id(None, 0, 1) == "x:tool:0:1"
+
+
+def test_scoped_tool_call_id_distinguishes_by_seq() -> None:
+    first = scoped_tool_call_id("worker", 1, 1)
+    second = scoped_tool_call_id("worker", 1, 2)
+    assert first != second
+
+
+def test_scoped_tool_call_id_distinguishes_fanout_siblings() -> None:
+    # Same turn/seq, different node - the instance-qualified node id
+    # (primer/graph/_node_identity.py) is what keeps fan-out siblings from
+    # colliding onto the same scoped id.
+    sibling_a = scoped_tool_call_id("worker[0]", 1, 1)
+    sibling_b = scoped_tool_call_id("worker[1]", 1, 1)
+    assert sibling_a != sibling_b
 
 
 # ---------------------------------------------------------------------------

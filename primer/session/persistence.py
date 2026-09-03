@@ -50,6 +50,7 @@ from primer.tap.delta import (
     KIND_TEXT,
     KIND_TOOL,
     part_id,
+    scoped_tool_call_id,
 )
 
 # Reusable validator for the discriminated ``StreamEvent`` union.  Used to
@@ -492,8 +493,8 @@ def translate_stream_event(
         # reconciliation to work. See _CoalesceState.scoped_call_ids.
         seq = state.tool_call_seq.get(node_id, 0) + 1
         state.tool_call_seq[node_id] = seq
-        state.scoped_call_ids[(node_id, event.id)] = (
-            f"{node_id or 'x'}:{KIND_TOOL}:{turn_no}:{seq}"
+        state.scoped_call_ids[(node_id, event.id)] = scoped_tool_call_id(
+            node_id, turn_no, seq
         )
         return None
 
