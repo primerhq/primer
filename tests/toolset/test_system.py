@@ -494,43 +494,51 @@ class TestLLMProviderTools:
         assert json.loads(result.output)["type"] == "validation-error"
 
 
-class TestAggregatedLLMProviderTool:
+class TestAggregatedModelProfileTool:
+    """Aggregated is a ModelProfile shape now, not an LLMProvider one
+    (01a067c4) -- was TestAggregatedLLMProviderTool, round-tripping
+    ``provider="aggregated"`` through create_llm_provider/get_llm_provider.
+    That shape no longer exists; this exercises the same "a non-trivial
+    discriminated shape survives model_validate untouched through the
+    generic system toolset" intent against create_model_profile/
+    get_model_profile instead. Member existence/kind/self-reference/
+    duplicate checks (model_profiles.py's on_pre_create) do NOT apply
+    here -- this toolset's CRUD is generic Storage[T] access, the same
+    admin-level bypass every other entry in crud_specs gets, not the
+    REST router -- so arbitrary member ids are fine for this roundtrip.
+    """
+
     @pytest.mark.asyncio
-    async def test_create_aggregated_llm_provider_roundtrips(
+    async def test_create_aggregated_model_profile_roundtrips(
         self, system_toolset
     ) -> None:
         body = {
             "id": "agg-tool-1",
-            "provider": "aggregated",
-            "config": {
-                "members": [
-                    {"provider_id": "p1", "model_name": "m1"},
-                    {"provider_id": "p2", "model_name": "m2"},
-                ],
-                "strategy": "round_robin",
-                "failover_point": "before_first_token",
-                "failover_on": "transient_and_config",
-            },
-            "models": [{"name": "virtual-1", "context_length": 200000}],
-            "limits": {"max_concurrency": 4},
+            "description": "an aggregated profile",
+            "kind": "aggregated",
+            "members": ["member-1", "member-2"],
+            "strategy": "round_robin",
+            "failover_point": "before_first_token",
+            "failover_on": "transient_and_config",
         }
         result = await system_toolset.call(
-            tool_name="create_llm_provider", arguments={"entity": body}
+            tool_name="create_model_profile", arguments={"entity": body}
         )
         assert not result.is_error, result.output
         created = json.loads(result.output)
         assert created["id"] == "agg-tool-1"
-        assert created["provider"] == "aggregated"
-        # The aggregated config survived model_validate untouched.
-        assert created["config"]["strategy"] == "round_robin"
-        assert created["config"]["members"] == body["config"]["members"]
+        assert created["kind"] == "aggregated"
+        # The aggregated shape survived model_validate untouched.
+        assert created["strategy"] == "round_robin"
+        assert created["members"] == body["members"]
+        assert created["provider_id"] is None
 
-        # Read back through get_llm_provider.
+        # Read back through get_model_profile.
         got = await system_toolset.call(
-            tool_name="get_llm_provider", arguments={"id": "agg-tool-1"}
+            tool_name="get_model_profile", arguments={"id": "agg-tool-1"}
         )
         assert not got.is_error
-        assert json.loads(got.output)["config"]["failover_on"] == "transient_and_config"
+        assert json.loads(got.output)["failover_on"] == "transient_and_config"
 
 
 # ===========================================================================
