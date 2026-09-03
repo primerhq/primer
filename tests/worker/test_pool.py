@@ -217,6 +217,44 @@ def test_select_claim_loop_reserve_with_tool_call_adapter_is_reserved(
     assert pool._select_claim_loop() == pool._engine_claim_loop_reserved
 
 
+def _make_session_row(*, parked_state: dict | None = None) -> WorkspaceSession:
+    return WorkspaceSession(
+        id="sess-1",
+        workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        parked_status="resumable",
+        parked_state=parked_state,
+    )
+
+
+def test_select_resume_handler_none_parked_state_is_classic(scheduler, engine):
+    """A session with no parked_state at all (shouldn't normally reach
+    the resume branch, but the peek must degrade gracefully) routes to
+    the classic per-yield coordinator."""
+    pool = _bare_pool(scheduler, engine)
+    row = _make_session_row(parked_state=None)
+    assert pool._select_resume_handler(row) == pool._resume_engine_session
+
+
+def test_select_resume_handler_yielded_shaped_park_is_classic(scheduler, engine):
+    pool = _bare_pool(scheduler, engine)
+    row = _make_session_row(parked_state={"yielded": {"tool_name": "ask_user"}})
+    assert pool._select_resume_handler(row) == pool._resume_engine_session
+
+
+def test_select_resume_handler_tool_wait_park_is_tool_wait(scheduler, engine):
+    """01a0518b: routes a tool_wait park to the new coordinator, BEFORE
+    session_resume_coordinator (whose own rehydration assumes a
+    Yielded-shaped blob) is ever entered."""
+    pool = _bare_pool(scheduler, engine)
+    row = _make_session_row(
+        parked_state={"kind": "tool_wait", "outstanding_task_ids": ["t1"]},
+    )
+    assert pool._select_resume_handler(row) == pool._resume_engine_tool_wait
+
+
 async def test_start_routes_to_reserved_loop_only_when_configured(
     scheduler, engine,
 ):

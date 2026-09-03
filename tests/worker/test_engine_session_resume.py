@@ -507,3 +507,32 @@ async def test_resume_malformed_parked_state_ends_failed(monkeypatch):
     assert not any(
         l.kind == ClaimKind.SESSION and l.entity_id == sid for l in leases
     ), "ended session must not have a surviving lease (drop_lease=True)"
+
+
+@pytest.mark.asyncio
+async def test_resume_engine_session_tripwire_on_tool_wait_park() -> None:
+    """01a0518b: a tool_wait park must never reach resume_engine_session -
+    routing lives in WorkerPool._select_resume_handler, which peeks
+    parked_state.kind BEFORE this function is ever entered (its own
+    ParkedState.from_jsonable assumes a Yielded-shaped blob, which
+    tool_wait's isn't). This is the belt-and-braces guard for if that
+    routing is ever bypassed: fail loud and immediately, not via the
+    generic malformed-blob except (which would silently end the session
+    as "failed" instead of surfacing the real bug)."""
+    from primer.worker import session_resume_coordinator
+
+    sess = _make_resumable_session(
+        "sess-tool-wait-tripwire",
+        tool_name="ask_user",  # irrelevant - the tripwire fires before
+        tool_call_id="tc-x",  # this or resume_event_payload is ever read
+        resume_event_payload=None,
+        parked_state_blob={
+            "kind": "tool_wait",
+            "outstanding_task_ids": ["w:tool:1:1", "w:tool:1:2"],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="tool_wait"):
+        await session_resume_coordinator.resume_engine_session(
+            None, None, sess,
+        )
