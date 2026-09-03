@@ -176,6 +176,14 @@ class _WorkspacePathArgs(BaseModel):
     path: str = Field(..., min_length=1)
 
 
+# 01a0645c: bounds a recursive=True walk's own cost, same magnitude and
+# reasoning as the HTTP files route's _MAX_RECURSIVE_WALK_ENTRIES
+# (primer/api/routers/workspaces.py, 01a0644b) - a private module
+# constant each, not shared, since these are unrelated call sites that
+# happen to want the same safety margin.
+_MAX_RECURSIVE_WALK_ENTRIES = 10_000
+
+
 class _ListFilesArgs(BaseModel):
     workspace_id: str = Field(..., min_length=1)
     path: str = Field(default=".")
@@ -1533,21 +1541,55 @@ def build_workspaces_toolset(
             return _err_from_validation(exc)
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
-            entries = await ws.list_files(args.path, recursive=args.recursive)
+            # 01a0645c: recursive=True used to walk the ENTIRE subtree
+            # before this call got a chance to slice it - same cost risk
+            # the files route (01a0644b, above in this same PR) already
+            # fixed, but a naive copy of that fix would silently mislead
+            # here: this tool's "total" field is agent-facing, persisted
+            # into the session transcript, and read back on resume/
+            # replanning - a `"total": 200` that's actually a capped
+            # partial count (because the walk stopped early) could lead
+            # the model to reason "small tree, safe to read everything"
+            # about a workspace that's actually huge. Ruling: cap the
+            # walk (bounded cost, same max_entries mechanism) AND be
+            # honest about it - request one MORE entry than the cap so a
+            # truncated walk is detected precisely (not guessed from
+            # `len(entries) == cap`, which would also misfire when the
+            # tree's true size happens to equal the cap exactly), then
+            # only add the truncated/note fields when it actually fires
+            # - every workspace under the cap gets byte-identical output
+            # to before this fix.
+            walk_cap = (
+                min(args.offset + args.limit, _MAX_RECURSIVE_WALK_ENTRIES)
+                if args.recursive else None
+            )
+            entries = await ws.list_files(
+                args.path, recursive=args.recursive,
+                max_entries=(walk_cap + 1) if walk_cap is not None else None,
+            )
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except (BadRequestError, PrimerError) as exc:
             return _err_from_primer(exc, error_type="bad-request")
+        truncated = walk_cap is not None and len(entries) > walk_cap
+        if truncated:
+            entries = entries[:walk_cap]
         sliced = entries[args.offset : args.offset + args.limit]
-        return _ok(
-            {
-                "items": [e.model_dump(mode="json") for e in sliced],
-                "offset": args.offset,
-                "length": len(sliced),
-                "total": len(entries),
-                "path": args.path,
-            }
-        )
+        result: dict[str, Any] = {
+            "items": [e.model_dump(mode="json") for e in sliced],
+            "offset": args.offset,
+            "length": len(sliced),
+            "total": len(entries),
+            "path": args.path,
+        }
+        if truncated:
+            result["truncated"] = True
+            result["note"] = (
+                f"the recursive walk was capped at {walk_cap} entries; "
+                "the workspace tree may be larger than `total` reflects "
+                "- narrow `path` or page further with `offset` to see more"
+            )
+        return _ok(result)
 
     name, entry = _tool(
         "list_workspace_files",
@@ -1555,7 +1597,10 @@ def build_workspaces_toolset(
             "List files in a workspace at ``path`` (default: root) "
             "with pagination. ``recursive=true`` walks the whole tree. "
             "Each item is a FileEntry (path, kind, size_bytes, "
-            "modified_at)."
+            "modified_at). On a very large tree, the walk itself is "
+            "capped for cost - the response then carries "
+            "``truncated: true`` and a ``note``, and ``total`` is a "
+            "lower bound, not necessarily the tree's true size."
         ),
         (
             "Use when browsing a workspace's filesystem; not for one "

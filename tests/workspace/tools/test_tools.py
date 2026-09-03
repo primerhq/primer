@@ -142,6 +142,52 @@ class TestLs:
         assert "a/b" not in result.output
         assert "leaf.txt" not in result.output
 
+    async def test_walk_reports_truncation_when_capped(
+        self, workspace_root: Path, ctx: ToolCallContext, monkeypatch,
+    ) -> None:
+        """01a0645c: a wide-but-shallow tree (many siblings, one level
+        deep) isn't bounded by max_depth at all - only an entry-count
+        cap protects the walk's own cost. Patch the module cap down so
+        this doesn't need thousands of real files to exercise."""
+        import primer.workspace.local.tools.ls as ls_module
+
+        monkeypatch.setattr(ls_module, "_MAX_ENTRIES", 3)
+        for i in range(5):
+            (workspace_root / f"f{i}.txt").write_text("x")
+        result = await Ls(workspace_root).execute(LsArgs(), ctx)
+        lines = result.output.splitlines()
+        assert len(lines) == 4  # 3 entries + the trailing truncation line
+        assert lines[-1] == "... truncated at 3 entries (of unknown more)"
+
+    async def test_walk_omits_truncation_line_under_the_cap(
+        self, workspace_root: Path, ctx: ToolCallContext,
+    ) -> None:
+        (workspace_root / "a.txt").write_text("x")
+        result = await Ls(workspace_root).execute(LsArgs(), ctx)
+        assert "truncated" not in result.output
+
+    async def test_cap_stops_descending_not_just_appending(
+        self, workspace_root: Path, ctx: ToolCallContext, monkeypatch,
+    ) -> None:
+        """The cap must stop recursion itself, not just truncate a
+        flat list after the fact - otherwise a huge subtree still gets
+        fully walked (paying the real cost this fix exists to avoid)
+        even though only a few of its entries end up in the output."""
+        import primer.workspace.local.tools.ls as ls_module
+
+        monkeypatch.setattr(ls_module, "_MAX_ENTRIES", 2)
+        (workspace_root / "a.txt").write_text("x")
+        (workspace_root / "b.txt").write_text("x")
+        deep = workspace_root / "sub" / "nested"
+        deep.mkdir(parents=True)
+        (deep / "leaf.txt").write_text("x")
+        result = await Ls(workspace_root).execute(
+            LsArgs(recursive=True), ctx
+        )
+        assert "leaf.txt" not in result.output
+        assert "nested" not in result.output
+        assert "truncated at 2 entries" in result.output
+
     async def test_rejects_missing_path(
         self, workspace_root: Path, ctx: ToolCallContext
     ) -> None:
