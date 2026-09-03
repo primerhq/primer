@@ -264,7 +264,28 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
         page.goto(f"{console_url}#/w/primer?view=system:dashboard",
                   wait_until="domcontentloaded")
         row = page.get_by_test_id(f"nv-worker:{worker_id}")
-        row.wait_for(state="visible", timeout=15_000)
+        # 01a0651f (4-strike CI flake, root-caused from 3 real CI log
+        # occurrences across PR #215 and #220, evidence-first per the
+        # de-flake convention this repo already uses for the same
+        # shape - see 7d404cac/cd949f69): "domcontentloaded" only means
+        # the initial HTML loaded, not that React has mounted. This
+        # no-build app transpiles its whole JSX bundle with babel-
+        # standalone IN the browser on every load, then NV_WorkerFleet
+        # mounts and fires its FIRST /v1/workers fetch immediately (not
+        # poll-gated - confirmed in ui/foundation/use-resource.js,
+        # runFetch() runs synchronously on mount, pollMs only paces
+        # SUBSEQUENT fetches). The 15s budget covers that entire
+        # navigate -> transpile -> mount -> fetch -> render chain in
+        # ONE wait with no margin; two of the three CI failures also
+        # had OTHER, unrelated bootstrap-dependent waits fail in the
+        # same run, pointing at general CI-runner contention (shared
+        # CPU under the full ui_e2e suite) rather than anything specific
+        # to worker draining or /v1/workers itself - the API confirms
+        # the worker is genuinely active moments before this wait even
+        # starts. 30s matches this repo's existing convention for this
+        # exact flake shape (absorb runner load, not chase a phantom
+        # backend bug).
+        row.wait_for(state="visible", timeout=30_000)
         assert "active" in (row.text_content() or ""), (
             f"expected an active worker row, got {row.text_content()!r}"
         )
