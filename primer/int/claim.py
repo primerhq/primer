@@ -11,6 +11,7 @@ class ClaimKind(StrEnum):
     SESSION = "session"
     HARNESS = "harness"
     TRIGGER = "trigger"
+    TOOL_CALL = "tool_call"
 
 
 @dataclass(frozen=True)

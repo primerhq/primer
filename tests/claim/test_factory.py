@@ -66,7 +66,7 @@ def test_factory_returns_postgres_engine_for_non_in_memory_bus():
     assert isinstance(engine, PostgresClaimEngine)
 
 
-def test_factory_in_memory_engine_has_all_three_adapters():
+def test_factory_in_memory_engine_has_all_four_adapters():
     engine = ClaimEngineFactory.create(
         storage_provider=_FakeStorageProvider(),
         event_bus=InMemoryEventBus(),
@@ -74,10 +74,14 @@ def test_factory_in_memory_engine_has_all_three_adapters():
     assert isinstance(engine, InMemoryClaimEngine)
     assert ClaimKind.SESSION in engine._adapters
     assert ClaimKind.HARNESS in engine._adapters
-    assert ClaimKind.HARNESS in engine._adapters
+    # Pre-existing typo fixed in the same edit that added TOOL_CALL below:
+    # this assertion used to repeat HARNESS a second time and never
+    # actually checked TRIGGER at all.
+    assert ClaimKind.TRIGGER in engine._adapters
+    assert ClaimKind.TOOL_CALL in engine._adapters
 
 
-def test_factory_postgres_engine_has_all_three_adapters():
+def test_factory_postgres_engine_has_all_four_adapters():
     engine = ClaimEngineFactory.create(
         storage_provider=_FakeStorageProvider(),
         event_bus=_FakePostgresEventBus(),
@@ -85,4 +89,5 @@ def test_factory_postgres_engine_has_all_three_adapters():
     assert isinstance(engine, PostgresClaimEngine)
     assert ClaimKind.SESSION in engine._adapters
     assert ClaimKind.HARNESS in engine._adapters
-    assert ClaimKind.HARNESS in engine._adapters
+    assert ClaimKind.TRIGGER in engine._adapters
+    assert ClaimKind.TOOL_CALL in engine._adapters
