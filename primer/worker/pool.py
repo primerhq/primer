@@ -177,19 +177,8 @@ class WorkerPool:
                 name=f"scheduler-cancel-{self._worker_id}",
             ),
         ]
-        # Phase 3 stage 7a (01a0518b) pool-class separation: a reserved
-        # TOOL_CALL slice routes to a dedicated loop with its own claim_due
-        # split (ruling C, leader-approved). Decided once, at start - NOT
-        # per-iteration - so the unreserved (default) path stays exactly
-        # the loop it always was, with zero risk of the split logic
-        # touching it.
-        claim_loop = (
-            self._engine_claim_loop_reserved
-            if self.config.tool_call_reserved_concurrency is not None
-            else self._engine_claim_loop
-        )
         self._engine_claim_task = asyncio.create_task(
-            claim_loop(),
+            self._select_claim_loop()(),
             name=f"engine-claim-{self._worker_id}",
         )
         self._engine_bus_task = asyncio.create_task(
@@ -330,6 +319,36 @@ class WorkerPool:
             return
 
     # ---- engine-driven loops (Task 13: one loop, one bus loop) -----------
+
+    def _select_claim_loop(self) -> Callable[[], Coroutine]:
+        """Which claim-loop coroutine function start() should schedule.
+
+        Phase 3 stage 7a (01a0518b) pool-class separation: a reserved
+        TOOL_CALL slice routes to a dedicated loop with its own claim_due
+        split (ruling C, leader-approved). Decided once, at start - NOT
+        per-iteration - so the unreserved (default) path stays exactly
+        the loop it always was, with zero risk of the split logic
+        touching it.
+
+        Requires an actual TOOL_CALL handler in self._dispatch, not just
+        the config knob: with the reserve set but
+        tool_calls_as_claims_enabled off (no TOOL_CALL adapter
+        registered), the reserved loop would still run - silently
+        shrinking general capacity by the reserve for a slice nothing
+        can ever claim into, and issuing a no-op claim_due every poll
+        (build_claim_query({}) is a valid no-op, so no crash - just
+        wasted capacity and a wasted query, contradicting this knob's
+        own "ignored when the flag is off" docstring promise). Found in
+        review of c6bb92c1. Extracted to its own method (rather than
+        inlined in start()) so this decision is testable without
+        fighting start()'s own _dispatch construction.
+        """
+        if (
+            self.config.tool_call_reserved_concurrency is not None
+            and ClaimKind.TOOL_CALL in self._dispatch
+        ):
+            return self._engine_claim_loop_reserved
+        return self._engine_claim_loop
 
     async def _engine_claim_loop(self) -> None:
         """Unified claim loop driven by ClaimEngine.claim_due.
