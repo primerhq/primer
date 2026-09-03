@@ -1,8 +1,22 @@
 """Coverage tests for the OpenRouterLLM adapter.
 
 Placed outside ``tests/llm/`` so ``primer.llm.openrouter`` counts in the
-CI unit sweep. The openai SDK transport is mocked with respx, so the
-stream/discover paths run in-process with no network IO.
+CI unit sweep.
+
+``TestDiscover`` mocks with respx: ``_discover_openrouter_models`` uses a
+plain ``httpx.AsyncClient`` directly (not the openai SDK), so respx's
+``httpx``-transport patching still works.
+
+``TestStream`` instead monkeypatches ``primer.llm.openrouter.AsyncOpenAI``
+itself (mirroring ``tests/llm/test_openresponses.py``'s ``_patched_client``
+pattern) rather than mocking at the HTTP layer. openai 3.x's SDK client
+now defaults to an internal ``httpx2.AsyncClient`` (a separate package
+from ``httpx``, see ``openai._base_client.AsyncAPIClient``) that respx
+cannot intercept -- every TestStream test that respx-mocked the wire
+silently stopped being mocked at all and started making a real network
+call to OpenRouter, which correctly 401'd. Mocking the SDK client
+construction instead is transport-agnostic by construction: it never
+cares whether the SDK's own default is httpx or httpx2.
 """
 
 from __future__ import annotations
@@ -12,8 +26,12 @@ from primer.model.model_profile import ModelProfileConfig
 
 import json
 import logging
+from collections.abc import AsyncIterator
+from types import SimpleNamespace as NS
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import openai
 import pytest
 import respx
 from pydantic import BaseModel as PydanticBaseModel
@@ -76,20 +94,95 @@ def _make_provider(
     )
 
 
-_SSE = (
-    b'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'
-    b'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\n\n'
-    b'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n'
-    b"data: [DONE]\n\n"
-)
+def _chunk(
+    *,
+    delta_role: str | None = None,
+    delta_content: str | None = None,
+    finish_reason: str | None = None,
+    usage: NS | None = None,
+) -> NS:
+    """One duck-typed Chat Completions streaming chunk.
 
-
-def _mock_stream() -> None:
-    respx.post(f"{OPENROUTER_BASE_URL}/chat/completions").mock(
-        return_value=httpx.Response(
-            200, content=_SSE, headers={"content-type": "text/event-stream"}
-        )
+    ``_translate_chunk`` (primer/llm/_openai_compat.py) reads every field
+    via ``getattr(x, attr, None)``, so a plain SimpleNamespace is exactly
+    as good a stand-in as a real ``openai.types.chat.ChatCompletionChunk``
+    -- test_mid_stream_error_yields_chat_error already relied on this same
+    duck-typing before this migration.
+    """
+    return NS(
+        id="x",
+        model="anthropic/claude-3.5-sonnet",
+        choices=[
+            NS(
+                index=0,
+                delta=NS(
+                    role=delta_role, content=delta_content, tool_calls=None,
+                    reasoning_content=None, reasoning=None,
+                ),
+                finish_reason=finish_reason,
+            )
+        ],
+        usage=usage,
     )
+
+
+# Same three-chunk shape the old SSE fixture encoded: a role-opening
+# delta, a content delta ("hello"), then a stop + usage chunk.
+_HAPPY_CHUNKS: list[NS] = [
+    _chunk(delta_role="assistant"),
+    _chunk(delta_content="hello"),
+    _chunk(
+        finish_reason="stop",
+        usage=NS(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+    ),
+]
+
+
+async def _aiter(items: list) -> AsyncIterator:
+    for item in items:
+        yield item
+
+
+def _make_openai_error(cls: type, *, status_code: int = 400, code: str | None = None):
+    """Build an openai SDK exception with minimal init plumbing.
+
+    The SDK's exception constructors require a Response and body in real
+    use; bypass __init__ and set the attributes classify_openai_exception
+    actually reads. Same name/shape as tests/llm/test_openresponses.py's
+    helper for the sibling adapter -- duplicated locally rather than
+    imported, matching this test suite's convention of self-contained
+    adapter test files.
+    """
+    exc = cls.__new__(cls)
+    exc.status_code = status_code
+    exc.code = code
+    exc.message = f"test {cls.__name__}"
+    Exception.__init__(exc, exc.message)
+    return exc
+
+
+def _patched_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Patch the AsyncOpenAI symbol in the adapter module to a MagicMock.
+
+    Returns the mock instance the adapter will see when it constructs
+    the client (OpenRouterLLM._get_client). Tests configure
+    ``mock.chat.completions.create`` to drive the SDK behaviour, and can
+    inspect ``mock.ctor_mock.call_args`` to assert what the adapter
+    passed to the constructor (api_key, default_headers) -- the
+    boundary the adapter code actually controls, in place of the old
+    respx-captured wire headers. ``close`` is also an AsyncMock --
+    OpenRouterLLM.aclose() awaits it, and a plain MagicMock() default
+    isn't awaitable.
+    """
+    mock_instance = MagicMock()
+    mock_instance.chat = MagicMock()
+    mock_instance.chat.completions = MagicMock()
+    mock_instance.chat.completions.create = AsyncMock()
+    mock_instance.close = AsyncMock()
+    cls_mock = MagicMock(return_value=mock_instance)
+    mock_instance.ctor_mock = cls_mock
+    monkeypatch.setattr("primer.llm.openrouter.AsyncOpenAI", cls_mock)
+    return mock_instance
 
 
 class TestAttributionHeaders:
@@ -178,9 +271,9 @@ class TestCountTokens:
 
 
 class TestStream:
-    @respx.mock
-    async def test_happy_path_events(self) -> None:
-        _mock_stream()
+    async def test_happy_path_events(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_HAPPY_CHUNKS)
         llm = OpenRouterLLM(_make_provider())
         try:
             events = [
@@ -197,9 +290,11 @@ class TestStream:
         assert any(isinstance(e, Usage) for e in events)
         assert isinstance(events[-1], Done) and events[-1].stop_reason == "stop"
 
-    @respx.mock
-    async def test_attribution_and_auth_headers_sent(self) -> None:
-        _mock_stream()
+    async def test_attribution_and_auth_headers_sent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_HAPPY_CHUNKS)
         llm = OpenRouterLLM(
             _make_provider(api_key="sk-or-v1-zzz", app_name="primer", app_url="https://p.example")
         )
@@ -209,20 +304,25 @@ class TestStream:
                 messages=[Message(role="user", parts=[TextPart(text="hi")])],
             ):
                 pass
-            req = respx.calls.last.request
-            assert req.headers["Authorization"] == "Bearer sk-or-v1-zzz"
-            assert req.headers["X-Title"] == "primer"
-            assert req.headers["HTTP-Referer"] == "https://p.example/"
+            # Assert at the boundary the adapter itself controls: what it
+            # passed to construct the SDK client. Whether the SDK then
+            # correctly turns default_headers/api_key into wire headers
+            # is the SDK's own tested responsibility, not this adapter's.
+            ctor_kwargs = client.ctor_mock.call_args.kwargs
+            assert ctor_kwargs["api_key"] == "sk-or-v1-zzz"
+            assert ctor_kwargs["default_headers"] == {
+                "X-Title": "primer",
+                "HTTP-Referer": "https://p.example/",
+            }
         finally:
             await llm.aclose()
 
-    @respx.mock
-    async def test_4xx_surfaces_as_bad_request(self) -> None:
-        respx.post(f"{OPENROUTER_BASE_URL}/chat/completions").mock(
-            return_value=httpx.Response(
-                400,
-                json={"error": {"message": "bad model id", "code": "invalid_request_error"}},
-            )
+    async def test_4xx_surfaces_as_bad_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.side_effect = _make_openai_error(
+            openai.BadRequestError, status_code=400, code="invalid_request_error",
         )
         llm = OpenRouterLLM(_make_provider())
         try:
@@ -235,9 +335,11 @@ class TestStream:
         finally:
             await llm.aclose()
 
-    @respx.mock
-    async def test_request_body_includes_tools_and_response_format(self) -> None:
-        _mock_stream()
+    async def test_request_body_includes_tools_and_response_format(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_HAPPY_CHUNKS)
 
         class Out(PydanticBaseModel):
             value: int
@@ -264,7 +366,10 @@ class TestStream:
                 pass
         finally:
             await llm.aclose()
-        body = json.loads(respx.calls.last.request.content)
+        # The exact dict passed to create(**request) -- what the old
+        # respx assertion reconstructed by re-parsing the JSON the SDK
+        # put on the wire, without the SDK-serialisation round-trip.
+        body = client.chat.completions.create.call_args.kwargs
         assert body["stream"] is True
         assert body["stream_options"] == {"include_usage": True}
         assert body["max_tokens"] == 64
@@ -275,9 +380,11 @@ class TestStream:
         assert body["seed"] == 5
         assert "junk" not in body
 
-    @respx.mock
-    async def test_trace_llm_io_records_messages(self) -> None:
-        _mock_stream()
+    async def test_trace_llm_io_records_messages(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_HAPPY_CHUNKS)
         llm = OpenRouterLLM(_make_provider(), trace_llm_io=True)
         try:
             events = [
@@ -292,13 +399,13 @@ class TestStream:
             await llm.aclose()
         assert any(isinstance(e, Done) for e in events)
 
-    @respx.mock
     async def test_generation_budget_maps_to_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from primer.llm._timeout import GenerationBudgetExceeded
 
-        _mock_stream()
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_HAPPY_CHUNKS)
 
         async def budget_iter(*_a, **_k):
             raise GenerationBudgetExceeded("over")
@@ -317,11 +424,11 @@ class TestStream:
         finally:
             await llm.aclose()
 
-    @respx.mock
     async def test_stall_timeout_maps_to_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _mock_stream()
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_HAPPY_CHUNKS)
 
         async def stall_iter(*_a, **_k):
             raise TimeoutError("stall")
@@ -340,13 +447,11 @@ class TestStream:
         finally:
             await llm.aclose()
 
-    @respx.mock
     async def test_mid_stream_error_yields_chat_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from types import SimpleNamespace as NS
-
-        _mock_stream()
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_HAPPY_CHUNKS)
 
         async def failing_iter(*_a, **_k):
             yield NS(
