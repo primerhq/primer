@@ -1040,17 +1040,17 @@ def _dedupe_legacy_user_input(
     matching modern record for those during live streaming (confirmed:
     ToolCallEnd's TOOL_CALL record lands before dispatch, the
     ExtendedEvent(_ExecutorToolResult) that becomes TOOL_RESULT lands
-    right after), but a PARKED-then-resumed turn's rehydrated
-    tool-result does not - WorkspaceAgentExecutor.inject_resume_messages
-    -> _persist_turn writes only the legacy line for that content, and
-    nothing (not park time, not resume time) ever writes a matching
-    modern TOOL_RESULT record for it. That is a separate, not-yet-fixed
-    write-side gap (reported alongside this one); reconciling it here
-    without a real modern record to key off risks synthesizing the
-    wrong shape or, worse, silently deciding a line is "covered" when
-    it isn't and dropping real content the raw passthrough never lost.
-    Dev-Prime's UI-side legacy-line tolerance stays load-bearing for
-    that case.
+    right after). A PARKED-then-resumed turn's rehydrated tool-result
+    ALSO gets a matching modern record now -
+    session_resume_coordinator.py's _persist_resume_tool_result_record
+    (01a04e0a) writes it at resume time, correctly paired by the
+    display-record's scoped id since 01a068ea-dc95 fixed that write to
+    use it instead of the raw provider id. (An earlier revision of this
+    docstring claimed that write never happened at all - it was already
+    landed by the time that claim was written; corrected here rather
+    than left to mislead the next reader.) role="user" stays the only
+    shape this function reconciles regardless - that scoping is a
+    standalone choice, not a workaround for a missing write.
 
     For each role="user" legacy line: if a modern USER_INPUT record
     ANYWHERE in this file already carries the exact same text, drop the

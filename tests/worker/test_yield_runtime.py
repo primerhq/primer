@@ -100,6 +100,33 @@ class TestParkedStateRoundTrip:
         assert round_tripped.started_at == resumed.started_at
         assert round_tripped.frames == []
 
+    def test_roundtrip_with_scoped_tool_call_id(self, parked_state: ParkedState):
+        # 01a068ea-dc95: the id the paired durable TOOL_CALL record was
+        # minted with (persistence.py's ToolCallStart), distinct from
+        # ParkedState.tool_call_id (the raw provider id).
+        scoped = ParkedState(
+            yielded=parked_state.yielded,
+            llm_messages=parked_state.llm_messages,
+            turn_no=parked_state.turn_no,
+            started_at=parked_state.started_at,
+            tool_call_id="tc-1",
+            scoped_tool_call_id="x:tool:3:1",
+        )
+        round_tripped = ParkedState.from_jsonable(scoped.to_jsonable())
+        assert round_tripped.scoped_tool_call_id == "x:tool:3:1"
+        assert round_tripped.tool_call_id == "tc-1"
+
+    def test_legacy_blob_without_scoped_tool_call_id_loads_as_none(
+        self, parked_state: ParkedState,
+    ):
+        # A park written before this field existed has no such key at
+        # all -- from_jsonable must not KeyError, and the resume write
+        # falls back to the raw id (today's pre-fix behaviour).
+        blob = parked_state.to_jsonable()
+        del blob["scoped_tool_call_id"]
+        round_tripped = ParkedState.from_jsonable(blob)
+        assert round_tripped.scoped_tool_call_id is None
+
     def test_unknown_schema_version_raises_loudly(self, parked_state: ParkedState):
         blob = parked_state.to_jsonable()
         blob["schema_version"] = 9999

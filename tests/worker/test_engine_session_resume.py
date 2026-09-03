@@ -71,6 +71,14 @@ class _NoopPersist:
     pass
 
 
+class _FakeEventBus:
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict]] = []
+
+    async def publish(self, key: str, payload: dict) -> None:
+        self.published.append((key, payload))
+
+
 class _FakeWorkspaceIO:
     """Records ``append_message_line`` calls (the modern-record write
     path); ``_NoopPersist`` above deliberately lacks this method so tests
@@ -91,7 +99,7 @@ def _build_engine(session_storage) -> InMemoryClaimEngine:
     )
 
 
-def _build_pool(storage, engine) -> WorkerPool:
+def _build_pool(storage, engine, *, event_bus=None) -> WorkerPool:
     pool = WorkerPool(
         config=WorkerConfig(concurrency=1),
         scheduler=None,                  # type: ignore[arg-type]
@@ -99,6 +107,7 @@ def _build_pool(storage, engine) -> WorkerPool:
         workspace_registry=None,         # type: ignore[arg-type]
         provider_registry=None,          # type: ignore[arg-type]
         engine=engine,
+        event_bus=event_bus,             # type: ignore[arg-type]
     )
     pool._worker_id = "wrk-engine-resume"
     return pool
@@ -113,6 +122,7 @@ def _make_resumable_session(
     parked_state_blob: dict | None = None,
     llm_messages: list | None = None,
     turn_no: int = 0,
+    scoped_tool_call_id: str | None = None,
 ) -> WorkspaceSession:
     """Build a WorkspaceSession row pre-stamped with a resumable park,
     mirroring what the listener + mark_resumable leave behind."""
@@ -132,6 +142,7 @@ def _make_resumable_session(
             started_at=parked_at,
             tool_call_id=tool_call_id,
             resume_event_payload=resume_event_payload,
+            scoped_tool_call_id=scoped_tool_call_id,
         )
         parked_state_blob = parked_state.to_jsonable()
 
@@ -317,6 +328,135 @@ async def test_resume_agent_persists_modern_tool_result_record(monkeypatch):
     row = await session_storage.get(sid)
     assert row is not None
     assert row.last_seq == 4
+
+
+@pytest.mark.asyncio
+async def test_resume_agent_modern_tool_result_uses_scoped_id_when_present(
+    monkeypatch,
+):
+    """01a068ea-dc95: the durable TOOL_CALL record this TOOL_RESULT
+    answers was minted with the SCOPED id (primer.session.persistence's
+    ToolCallStart handler), not the raw provider tool_call_id every id
+    in this test file otherwise uses. When the park carries a
+    scoped_tool_call_id (stashed at park time - dispatch.py's
+    except YieldToWorker handler), the modern record must key off THAT,
+    not the raw id, or the display/trace UI can never pair the two."""
+    sid = "sess-engine-resume-scoped-id"
+    tool_call_id = "tc-ask-3"
+    scoped_id = "x:tool:0:1"
+
+    assistant_msg = Message(
+        role="assistant",
+        parts=[
+            ToolCallPart(
+                id=tool_call_id,
+                name="_misc__ask_user",
+                arguments={"prompt": "What is your name?"},
+            ),
+        ],
+    )
+
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = _build_engine(session_storage)
+    pool = _build_pool(storage_provider, engine)
+
+    sess = _make_resumable_session(
+        sid,
+        tool_name="ask_user",
+        tool_call_id=tool_call_id,
+        resume_event_payload={"response": "Alice"},
+        llm_messages=[assistant_msg.model_dump(mode="json")],
+        scoped_tool_call_id=scoped_id,
+    )
+    sess.last_seq = 3
+    await session_storage.create(sess)
+
+    fake_executor = _RecordingExecutor()
+    fake_ws = _FakeWorkspaceIO()
+    monkeypatch.setattr(
+        pool, "_load_workspace_for_persist",
+        lambda _ws_id: _async_return(fake_ws),
+    )
+    monkeypatch.setattr(
+        pool, "_build_agent_executor",
+        lambda _s, _w: _async_return(fake_executor),
+    )
+
+    lease = await _claim_session(engine, sid)
+    await pool._run_engine_session(lease)
+
+    # The legacy inject still carries the RAW id -- correct for LLM
+    # context reconstruction, unrelated to this fix.
+    injected = fake_executor.injected[0]
+    tool_part = next(
+        p for p in injected[-1].parts if isinstance(p, ToolResultPart)
+    )
+    assert tool_part.id == tool_call_id
+
+    # The modern display record uses the SCOPED id instead.
+    written_sid, blob = fake_ws.lines[0]
+    record = json.loads(blob.decode().splitlines()[0])
+    assert record["payload"]["call_id"] == scoped_id
+    assert record["payload"]["call_id"] != tool_call_id
+
+
+@pytest.mark.asyncio
+async def test_resume_agent_modern_tool_result_publishes_tick(monkeypatch):
+    """01a068ea-dc95 (sibling finding): a durable-but-unticked write is
+    invisible to a live client until its next poll. The resume branch's
+    modern-record append must publish session:{sid}:tick, same as every
+    other durable append in this codebase."""
+    sid = "sess-engine-resume-tick"
+    tool_call_id = "tc-ask-4"
+
+    assistant_msg = Message(
+        role="assistant",
+        parts=[
+            ToolCallPart(
+                id=tool_call_id,
+                name="_misc__ask_user",
+                arguments={"prompt": "What is your name?"},
+            ),
+        ],
+    )
+
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = _build_engine(session_storage)
+    event_bus = _FakeEventBus()
+    pool = _build_pool(storage_provider, engine, event_bus=event_bus)
+
+    sess = _make_resumable_session(
+        sid,
+        tool_name="ask_user",
+        tool_call_id=tool_call_id,
+        resume_event_payload={"response": "Alice"},
+        llm_messages=[assistant_msg.model_dump(mode="json")],
+    )
+    sess.last_seq = 3
+    await session_storage.create(sess)
+
+    fake_executor = _RecordingExecutor()
+    fake_ws = _FakeWorkspaceIO()
+    monkeypatch.setattr(
+        pool, "_load_workspace_for_persist",
+        lambda _ws_id: _async_return(fake_ws),
+    )
+    monkeypatch.setattr(
+        pool, "_build_agent_executor",
+        lambda _s, _w: _async_return(fake_executor),
+    )
+
+    lease = await _claim_session(engine, sid)
+    await pool._run_engine_session(lease)
+
+    tick_events = [
+        (key, payload) for key, payload in event_bus.published
+        if key == f"session:{sid}:tick"
+    ]
+    assert len(tick_events) == 1
+    assert tick_events[0][1] == {"seq": 4}  # start_seq (3) + 1
 
 
 @pytest.mark.asyncio

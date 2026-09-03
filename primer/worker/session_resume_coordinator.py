@@ -317,7 +317,7 @@ async def inject_resume_and_continue(
         )
         return await pool._end_session(session, reason="failed")
 
-    await _persist_resume_tool_result_record(pool, session, tool_result_part)
+    await _persist_resume_tool_result_record(pool, session, parked, tool_result_part)
 
     # Continuation: clear park (on_release) + keep the lease so the next
     # claim runs the continuation LLM turn.
@@ -325,7 +325,7 @@ async def inject_resume_and_continue(
 
 
 async def _persist_resume_tool_result_record(
-    pool: "WorkerPool", session, tool_result_part,
+    pool: "WorkerPool", session, parked, tool_result_part,
 ) -> None:
     """Write the modern TOOL_RESULT counterpart for a resumed tool call.
 
@@ -342,6 +342,15 @@ async def _persist_resume_tool_result_record(
     after ``primer.session.timeline`` was found unable to pair its old
     ``id``/``name``/``result`` shape back to a TOOL_CALL (it keys the
     lookup by ``call_id``).
+
+    01a068ea-dc95: ``call_id`` uses ``parked.scoped_tool_call_id`` (the
+    id the paired TOOL_CALL record actually carries -
+    ``primer.session.persistence``'s ``ToolCallStart`` mint), falling
+    back to ``tool_result_part.id`` (the raw provider id) only for a
+    park written before this field existed. Using the raw id
+    unconditionally (the pre-fix behaviour) left every resumed yield's
+    TOOL_RESULT unpaired from its TOOL_CALL in the transcript/trace UI,
+    since the durable pair never shared an id.
 
     Best-effort and best-effort ONLY: this is a secondary, display-side
     record. The turn's continuation already stands on the legacy write
@@ -368,7 +377,7 @@ async def _persist_resume_tool_result_record(
             seq=1,  # overwritten by the writer's monotonic counter
             kind=SessionMessageKind.TOOL_RESULT,
             payload={
-                "call_id": tool_result_part.id,
+                "call_id": parked.scoped_tool_call_id or tool_result_part.id,
                 "output": tool_result_part.output,
                 "error": tool_result_part.error,
             },
@@ -377,6 +386,21 @@ async def _persist_resume_tool_result_record(
         await writer.flush()
         storage = pool._storage.get_storage(WorkspaceSession)
         await storage.update(session.model_copy(update={"last_seq": new_seq}))
+        # 01a068ea-dc95 (sibling finding, same shape as
+        # claim/adapters/sessions.py's terminal-ERROR writer): a durable-
+        # but-unticked write is invisible to a live client until its next
+        # poll. Best-effort/advisory, same as every other tick publish in
+        # this module - never lets a bus hiccup fail an otherwise-
+        # successful write.
+        if pool._event_bus is not None:
+            try:
+                await pool._event_bus.publish(
+                    f"session:{session.id}:tick", {"seq": new_seq},
+                )
+            except Exception:  # noqa: BLE001 - advisory
+                logger.exception(
+                    "resume: tick publish failed for session %s", session.id,
+                )
     except Exception:  # noqa: BLE001 - best-effort, see docstring
         logger.exception(
             "resume: failed to persist modern TOOL_RESULT record for "
@@ -485,6 +509,12 @@ def repark_continuation(pool: "WorkerPool", session, parked, outcome):
         turn_no=session.turn_no,
         started_at=now,
         tool_call_id=parked.tool_call_id,
+        # 01a068ea-dc95: the leaf re-yielded, but the DURABLE TOOL_CALL
+        # record this eventual TOOL_RESULT answers is still the outer
+        # session-level call (parked.tool_call_id above) - carry its
+        # scoped id forward unchanged, same reasoning as tool_call_id
+        # itself.
+        scoped_tool_call_id=parked.scoped_tool_call_id,
         frames=list(outcome.frames),
     )
     return ReleaseOutcome(
@@ -538,6 +568,12 @@ def repark_resumed_yield_outcome(pool: "WorkerPool", session, parked, yld):
         turn_no=session.turn_no,
         started_at=now,
         tool_call_id=yld.tool_call_id,
+        # 01a068ea-dc95: phase 2 re-dispatches the SAME tool call directly
+        # (bypass_approval=True), outside the LLM-streaming pipeline that
+        # mints scoped ids - there is no new one to look up, so carry the
+        # phase-1 park's forward unchanged. It answers the same durable
+        # TOOL_CALL record either way.
+        scoped_tool_call_id=parked.scoped_tool_call_id,
         graph_checkpoint=getattr(yld, "graph_checkpoint", None),
     )
     return ReleaseOutcome(
