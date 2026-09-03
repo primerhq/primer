@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 import primer.observability.metrics as _metrics
 
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.media.hydrate import hydrate_prompt_parts
 from primer.model.chat import (
     Done,
     Error,
@@ -185,8 +186,6 @@ async def run_agent_turn(
     tool_round = 0
     while True:
         if artifact_storage is not None:
-            from primer.channel.media import hydrate_prompt_parts
-
             prompt = await hydrate_prompt_parts(artifact_storage, prompt)
         buffered: list[StreamEvent] = []
         held_done: StreamEvent | None = None
