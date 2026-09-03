@@ -18,9 +18,15 @@ class SandboxLs(WorkspaceTool):
     """``ls``: list directory contents inside a sandbox."""
 
     id: ClassVar[str] = "ls"
+    # Kept byte-identical to primer.workspace.local.tools.ls.Ls's
+    # description (drift guard: tests/toolset/test_local_tool_
+    # descriptions.py) - an agent sees the same guidance for the "ls"
+    # tool id regardless of workspace backend.
     description: ClassVar[str] = (
         "List the contents of a directory. Returns one entry per line "
-        "with kind, size, mtime, and name.\n\n"
+        "with kind, size, mtime, and name. A recursive walk over a very "
+        "large tree is capped; a trailing line notes it and the "
+        "listing is then partial, not exhaustive.\n\n"
         "Use when you need a directory listing; not for file contents "
         "(use ``read``)."
     )

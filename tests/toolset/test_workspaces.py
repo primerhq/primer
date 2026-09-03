@@ -183,7 +183,7 @@ class _LiveWorkspace:
         from datetime import datetime, timezone
         from primer.model.workspace import FileEntry
 
-        return [
+        items = [
             FileEntry(
                 path=p,
                 kind="file",
@@ -192,6 +192,16 @@ class _LiveWorkspace:
             )
             for p, c in self._files.items()
         ]
+        # 01a0645c: real backends stop the WALK at max_entries (an
+        # islice/early-exit, primer/workspace/{local,sandbox}/
+        # workspace.py) - this fake has no real tree to walk, so
+        # truncate the flat result the same way to exercise the
+        # caller's truncation-detection (list_workspace_files' "+1
+        # over-fetch, then check len(entries) > cap") against a fake
+        # workspace, not just the real backends' own unit tests.
+        if max_entries is not None:
+            items = items[:max_entries]
+        return items
 
     async def file_info(self, path):
         from datetime import datetime, timezone
@@ -654,6 +664,68 @@ class TestSubResourceHandlers:
             arguments={"workspace_id": seeded, "path": "hi.txt"},
         )
         assert not delete.is_error
+
+    @pytest.mark.asyncio
+    async def test_list_files_reports_truncation_when_the_walk_is_capped(
+        self, toolset, seeded,
+    ) -> None:
+        """01a0645c: recursive=True used to walk (and report) the tree's
+        TRUE size regardless of how small a page was requested - an
+        agent reading "total": 8 on a tree that's actually enormous
+        could reason falsely from it. The walk is now capped (same
+        max_entries mechanism the HTTP files route uses, 01a0644b) and
+        the response says so explicitly instead of letting `total`
+        silently under-report."""
+        for i in range(8):
+            write = await toolset.call(
+                tool_name="write_workspace_file",
+                arguments={
+                    "workspace_id": seeded, "path": f"f{i}.txt",
+                    "content": "x", "encoding": "text",
+                },
+            )
+            assert not write.is_error
+        listed = await toolset.call(
+            tool_name="list_workspace_files",
+            arguments={
+                "workspace_id": seeded, "path": ".",
+                "recursive": True, "limit": 5, "offset": 0,
+            },
+        )
+        assert not listed.is_error
+        payload = json.loads(listed.output)
+        assert payload["truncated"] is True
+        assert "note" in payload
+        assert payload["length"] == 5
+        assert payload["total"] == 5  # the capped count, not the true 8
+
+    @pytest.mark.asyncio
+    async def test_list_files_omits_truncation_fields_under_the_cap(
+        self, toolset, seeded,
+    ) -> None:
+        """The common case (tree smaller than the cap) must render
+        byte-identical to before this fix - no truncated/note keys at
+        all, not even false/empty ones."""
+        write = await toolset.call(
+            tool_name="write_workspace_file",
+            arguments={
+                "workspace_id": seeded, "path": "f.txt",
+                "content": "x", "encoding": "text",
+            },
+        )
+        assert not write.is_error
+        listed = await toolset.call(
+            tool_name="list_workspace_files",
+            arguments={
+                "workspace_id": seeded, "path": ".",
+                "recursive": True, "limit": 200, "offset": 0,
+            },
+        )
+        assert not listed.is_error
+        payload = json.loads(listed.output)
+        assert "truncated" not in payload
+        assert "note" not in payload
+        assert payload["total"] == 1
 
     @pytest.mark.asyncio
     async def test_file_ops_base64_round_trip(self, toolset, seeded) -> None:
