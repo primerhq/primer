@@ -32,6 +32,7 @@ def _make_task(
         turn_no=0,
         tool_name="workspace__write",
         state=state,
+        record_seq=1,
         gate_state=gate_state,
         created_at=_now(),
         started_at=_now(),
