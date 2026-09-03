@@ -70,6 +70,121 @@ async def test_ls_not_found(tmp_path: Path) -> None:
         await tool.execute(args, _ctx())
 
 
+@pytest.mark.asyncio
+async def test_ls_recursive_lists_subdirs(tmp_path: Path) -> None:
+    """01a065f1: recursive=True used to be silently ignored (schema-
+    visible, description-promised, never implemented) - a model
+    requesting a recursive listing on a sandbox workspace silently got
+    one level."""
+    sb = FakeSandbox(root=tmp_path)
+    await sb.make_dir("/workspace/src")
+    await sb.write_file("/workspace/src/main.py", b"pass")
+    tool = SandboxLs(sb, workspace_root="/workspace")
+    args = tool.parameters()(path=".", recursive=True)
+    res = await tool.execute(args, _ctx())
+    assert "src/main.py" in res.output
+
+
+@pytest.mark.asyncio
+async def test_ls_non_recursive_does_not_descend(tmp_path: Path) -> None:
+    sb = FakeSandbox(root=tmp_path)
+    await sb.make_dir("/workspace/src")
+    await sb.write_file("/workspace/src/main.py", b"pass")
+    tool = SandboxLs(sb, workspace_root="/workspace")
+    args = tool.parameters()(path=".")
+    res = await tool.execute(args, _ctx())
+    assert "src" in res.output
+    assert "main.py" not in res.output
+
+
+@pytest.mark.asyncio
+async def test_ls_skips_dotfiles_by_default(tmp_path: Path) -> None:
+    """01a065f1: show_hidden was ALSO silently ignored (dotfiles always
+    shown) alongside recursive - fixed as part of implementing the
+    shared LsArgs schema properly, not left half-done."""
+    sb = FakeSandbox(root=tmp_path)
+    await sb.write_file("/workspace/.hidden", b"x")
+    await sb.write_file("/workspace/visible", b"x")
+    tool = SandboxLs(sb, workspace_root="/workspace")
+    args = tool.parameters()(path=".")
+    res = await tool.execute(args, _ctx())
+    assert ".hidden" not in res.output
+    assert "visible" in res.output
+
+
+@pytest.mark.asyncio
+async def test_ls_show_hidden_includes_dotfiles(tmp_path: Path) -> None:
+    sb = FakeSandbox(root=tmp_path)
+    await sb.write_file("/workspace/.env", b"x")
+    tool = SandboxLs(sb, workspace_root="/workspace")
+    args = tool.parameters()(path=".", show_hidden=True)
+    res = await tool.execute(args, _ctx())
+    assert ".env" in res.output
+
+
+@pytest.mark.asyncio
+async def test_ls_max_depth_caps_recursion(tmp_path: Path) -> None:
+    sb = FakeSandbox(root=tmp_path)
+    await sb.make_dir("/workspace/a/b/c")
+    await sb.write_file("/workspace/a/b/c/leaf.txt", b"x")
+    tool = SandboxLs(sb, workspace_root="/workspace")
+    args = tool.parameters()(path=".", recursive=True, max_depth=1)
+    res = await tool.execute(args, _ctx())
+    # depth=1 includes 'a' and stops; 'b' and 'leaf.txt' should NOT appear.
+    assert "a/b" not in res.output
+    assert "leaf.txt" not in res.output
+
+
+@pytest.mark.asyncio
+async def test_ls_walk_reports_truncation_when_capped(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import primer.workspace.sandbox.tools.ls as sandbox_ls_module
+
+    monkeypatch.setattr(sandbox_ls_module, "_MAX_ENTRIES", 3)
+    sb = FakeSandbox(root=tmp_path)
+    for i in range(5):
+        await sb.write_file(f"/workspace/f{i}.txt", str(i).encode())
+    tool = SandboxLs(sb, workspace_root="/workspace")
+    args = tool.parameters()(path=".")
+    res = await tool.execute(args, _ctx())
+    lines = res.output.splitlines()
+    assert len(lines) == 4  # 3 entries + the trailing truncation line
+    assert lines[-1] == "... truncated at 3 entries (of unknown more)"
+
+
+@pytest.mark.asyncio
+async def test_ls_walk_omits_truncation_line_under_the_cap(
+    tmp_path: Path,
+) -> None:
+    sb = FakeSandbox(root=tmp_path)
+    await sb.write_file("/workspace/a.txt", b"x")
+    tool = SandboxLs(sb, workspace_root="/workspace")
+    args = tool.parameters()(path=".")
+    res = await tool.execute(args, _ctx())
+    assert "truncated" not in res.output
+
+
+@pytest.mark.asyncio
+async def test_ls_cap_stops_descending_not_just_appending(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import primer.workspace.sandbox.tools.ls as sandbox_ls_module
+
+    monkeypatch.setattr(sandbox_ls_module, "_MAX_ENTRIES", 2)
+    sb = FakeSandbox(root=tmp_path)
+    await sb.write_file("/workspace/a.txt", b"x")
+    await sb.write_file("/workspace/b.txt", b"x")
+    await sb.make_dir("/workspace/sub/nested")
+    await sb.write_file("/workspace/sub/nested/leaf.txt", b"x")
+    tool = SandboxLs(sb, workspace_root="/workspace")
+    args = tool.parameters()(path=".", recursive=True)
+    res = await tool.execute(args, _ctx())
+    assert "leaf.txt" not in res.output
+    assert "nested" not in res.output
+    assert "truncated at 2 entries" in res.output
+
+
 # ---- SandboxRead ----------------------------------------------------------
 
 
