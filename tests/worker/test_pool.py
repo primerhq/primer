@@ -408,22 +408,21 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
     fake_llm = object()
     fake_llm_model = ResolvedModel(profile_id="prov-1--m-1", provider_id="prov-1", model_name="m-1", context_length=8000, config=ModelProfileConfig())
 
-    async def _get_llm(provider_id):
-        assert provider_id == "prov-1"
-        return fake_llm
-
     async def _get_toolset(_id):
         raise AssertionError("agent has no toolsets registered")
 
-    async def _resolve_llm_model(_agent, _override=None):
-        return fake_llm_model
+    async def _resolve_llm(_agent, _override=None):
+        return fake_llm, fake_llm_model
 
     monkeypatch.setattr(
         pool, "_provider_registry",
-        type("R", (), {"get_llm": staticmethod(_get_llm),
-                       "get_toolset": staticmethod(_get_toolset)})(),
+        type("R", (), {"get_toolset": staticmethod(_get_toolset)})(),
     )
-    monkeypatch.setattr(pool, "_resolve_llm_model", _resolve_llm_model)
+    # build_agent_executor now goes through resolve_llm_and_model, which
+    # routes via pool._resolve_llm (the pair, not the old two-step of
+    # pool._resolve_llm_model + a separate _provider_registry.get_llm) --
+    # see executor_builders.resolve_llm_and_model / pool._resolve_llm.
+    monkeypatch.setattr(pool, "_resolve_llm", _resolve_llm)
 
     driver = await pool._build_executor(session, workspace)
     assert isinstance(driver, _TurnDriver)

@@ -80,24 +80,23 @@ def _build_pool(storage_provider: _FakeStorageProvider) -> WorkerPool:
     fake_llm = object()
     fake_llm_model = ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m-1", context_length=8000, config=ModelProfileConfig())
 
-    async def _get_llm(provider_id):
-        return fake_llm
-
     async def _get_toolset(_id):
         raise AssertionError("this test's agent registers no toolsets")
 
-    async def _resolve_llm_model(_agent, _override=None):
-        return fake_llm_model
+    async def _resolve_llm(_agent, _override=None):
+        return fake_llm, fake_llm_model
 
     pool._provider_registry = type(
         "R",
         (),
         {
-            "get_llm": staticmethod(_get_llm),
             "get_toolset": staticmethod(_get_toolset),
         },
     )()
-    pool._resolve_llm_model = _resolve_llm_model
+    # See test_pool.py's matching comment: build_agent_executor now routes
+    # through pool._resolve_llm (the pair), not pool._resolve_llm_model
+    # plus a separate _provider_registry.get_llm.
+    pool._resolve_llm = _resolve_llm
     return pool
 
 
