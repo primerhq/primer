@@ -20,13 +20,19 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _make_task(task_id: str, *, state: ToolCallTaskState = ToolCallTaskState.RUNNING) -> ToolCallTask:
+def _make_task(
+    task_id: str,
+    *,
+    state: ToolCallTaskState = ToolCallTaskState.RUNNING,
+    gate_state: dict | None = None,
+) -> ToolCallTask:
     return ToolCallTask(
         id=task_id,
         session_id="sess-1",
         turn_no=0,
         tool_name="workspace__write",
         state=state,
+        gate_state=gate_state,
         created_at=_now(),
         started_at=_now(),
     )
@@ -118,6 +124,7 @@ async def test_on_release_gate_sets_gated_state_and_event_key() -> None:
     assert updated.state == ToolCallTaskState.GATED
     assert updated.gate_event_key == "tool_approval:sess-1:t1"
     assert updated.gate_until == until
+    assert updated.gate_state == {"kind": "approval"}
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +134,10 @@ async def test_on_release_gate_sets_gated_state_and_event_key() -> None:
 
 @pytest.mark.asyncio
 async def test_on_release_terminal_success_sets_done() -> None:
-    task = _make_task("t2")
+    # gate_state seeded non-None: a call that was gated earlier in its
+    # life, then resumed and ran to completion, must not leave a stale
+    # gate payload behind on the terminal row.
+    task = _make_task("t2", gate_state={"resume_event_payload": {"decision": "approved"}})
     storage = FakeStorage(task)
     adapter = ToolCallClaimAdapter(task_storage=storage)
 
@@ -140,6 +150,7 @@ async def test_on_release_terminal_success_sets_done() -> None:
     assert updated.state == ToolCallTaskState.DONE
     assert updated.finished_at is not None
     assert updated.last_error is None
+    assert updated.gate_state is None
 
 
 @pytest.mark.asyncio
@@ -177,7 +188,10 @@ async def test_on_release_retryable_failure_resets_to_queued() -> None:
     picks it up again. The engine's own lease.attempt_count is the
     authoritative retry counter; this row just stops reading RUNNING once
     nobody is actually running it."""
-    task = _make_task("t4", state=ToolCallTaskState.RUNNING)
+    task = _make_task(
+        "t4", state=ToolCallTaskState.RUNNING,
+        gate_state={"resume_event_payload": {"decision": "approved"}},
+    )
     storage = FakeStorage(task)
     adapter = ToolCallClaimAdapter(task_storage=storage)
 
@@ -189,6 +203,7 @@ async def test_on_release_retryable_failure_resets_to_queued() -> None:
     updated = storage.updated[0]
     assert updated.state == ToolCallTaskState.QUEUED
     assert updated.started_at is None
+    assert updated.gate_state is None
 
 
 # ---------------------------------------------------------------------------

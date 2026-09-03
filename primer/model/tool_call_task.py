@@ -9,16 +9,19 @@ single gated call no longer blocks its siblings.
 
 This row is SCHEDULING STATE ONLY (01a0518b Q1, resolved: ref, not inline).
 The durable ``TOOL_CALL``/``TOOL_RESULT`` records in messages.jsonl remain
-the transcript truth; this row never carries tool arguments or results
-inline, only enough to answer "is this done, and what's its own lifecycle
-state" for the claim engine's eligibility filter and the session's
-last-task-releases-re-arms-the-turn bookkeeping.
+the transcript truth; this row never carries the tool's own execution
+arguments or results inline, only enough to answer "is this done, and
+what's its own lifecycle state" for the claim engine's eligibility
+filter and the session's last-task-releases-re-arms-the-turn
+bookkeeping. ``gate_state`` (below) is a narrow, ruling-approved
+exception, not the row's general payload — see its own docstring.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import Field
 
@@ -60,6 +63,29 @@ class ToolCallTask(Identifiable):
     # a batch does not block its siblings (the design's own motivating bug).
     gate_event_key: str | None = None
     gate_until: datetime | None = None
+
+    # Set only while state == GATED - the SAME parked-state blob shape
+    # session/graph parks already carry (yielded.resume_metadata.
+    # original_call + policy_id/approval_type/gate_reason - see
+    # primer.agent.approval_record.record_from_parked_blob, which reads
+    # exactly this shape and is reused unmodified for the task-granular
+    # ToolApprovalRecord write ruling 3's rider requires at resume).
+    # This is the one narrow exception to "scheduling state only" (Q1):
+    # ruling 3 (01a0518b) - task row stays pointer-only for the FINISHED
+    # transcript truth (TOOL_CALL/TOOL_RESULT records), but a gate's live
+    # payload has no other durable home at task granularity (unlike a
+    # session park, which already had parked_state as its established
+    # home; a bare-new ToolCallTask has nothing else to point at).
+    # NOT cleared at resume (GATED -> QUEUED, see
+    # primer.claim.tool_call_resume.durably_mark_tool_call_task_resumable):
+    # the resume decision itself gets stashed in here too
+    # (resume_event_payload/resume_event_key, mirroring
+    # WorkspaceSession.parked_state's own resume-payload convention) so
+    # the re-claiming worker has something to read the decision from.
+    # Cleared to None only once actually consumed - on a terminal
+    # release (DONE/FAILED) or a transient-failure requeue back to
+    # QUEUED, see ToolCallClaimAdapter.on_release.
+    gate_state: dict[str, Any] | None = None
 
     # Set only on a terminal (state in {DONE, FAILED}) release when the
     # underlying tool call itself failed - independent of whether the ROW's
