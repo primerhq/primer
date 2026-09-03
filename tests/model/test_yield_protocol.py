@@ -12,6 +12,7 @@ import pytest
 
 from primer.model.yield_ import (
     ToolContext,
+    ToolWaitPark,
     YieldCancelled,
     YieldTimeout,
     YieldToWorker,
@@ -213,3 +214,52 @@ class TestYieldToWorker:
         y = Yielded(tool_name="x", event_key="x:1")
         with pytest.raises(Exception):  # noqa: BLE001
             raise YieldToWorker(y, tool_call_id="tc")
+
+
+# ===========================================================================
+# ToolWaitPark (Phase 3 stage 7a, 01a0518b)
+# ===========================================================================
+
+
+class TestToolWaitPark:
+    def test_carries_outstanding_task_ids_and_event_key(self):
+        exc = ToolWaitPark(
+            outstanding_task_ids=["worker:tool:1:1", "worker:tool:1:2"],
+            event_key="tool_wait:sess-1:1",
+        )
+        assert exc.outstanding_task_ids == ["worker:tool:1:1", "worker:tool:1:2"]
+        assert exc.event_key == "tool_wait:sess-1:1"
+        assert exc.llm_messages is None
+        assert exc.frames == []
+
+    def test_message_is_diagnostic(self):
+        exc = ToolWaitPark(
+            outstanding_task_ids=["t1", "t2", "t3"], event_key="tool_wait:sess-1:1",
+        )
+        msg = str(exc)
+        assert "3" in msg
+        assert "tool_wait:sess-1:1" in msg
+
+    def test_is_exception_subclass_but_not_yield_to_worker(self):
+        """The whole point of the separate type (ruling, 01a0518b): a
+        generic `except YieldToWorker` catch site must NOT silently
+        absorb this and write single-call park state for a batch."""
+        exc = ToolWaitPark(outstanding_task_ids=["t1"], event_key="k")
+        assert isinstance(exc, Exception)
+        assert not isinstance(exc, YieldToWorker)
+        with pytest.raises(ToolWaitPark):
+            raise exc
+        with pytest.raises(Exception):  # noqa: BLE001
+            try:
+                raise ToolWaitPark(outstanding_task_ids=["t1"], event_key="k")
+            except YieldToWorker:
+                pytest.fail("must not be catchable as YieldToWorker")
+
+    def test_llm_messages_settable_like_yield_to_worker(self):
+        """Mirrors YieldToWorker's own contract: callers may leave
+        llm_messages unset and let the executor stamp it on the way out,
+        or set it directly."""
+        exc = ToolWaitPark(
+            outstanding_task_ids=["t1"], event_key="k", llm_messages=[1, 2],
+        )
+        assert exc.llm_messages == [1, 2]

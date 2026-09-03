@@ -292,10 +292,65 @@ class YieldToWorker(Exception):
         self.frames: list = []
 
 
+class ToolWaitPark(Exception):
+    """Raised by the claim-based tool-dispatch seam (Phase 3 stage 7a,
+    01a0518b) when a batch of tool calls became independently-claimable
+    ``ToolCallTask`` rows instead of executing sequentially in-process.
+
+    Deliberately NOT a :class:`YieldToWorker` subclass and NOT built on
+    :class:`Yielded` (leader ruling, 01a0518b): a subclass would
+    silently degrade at any EXISTING generic ``except YieldToWorker``
+    catch site (there are several, at multiple nesting layers — plain
+    session dispatch, graph node dispatch, nested subagent invocation)
+    — each would write classic single-call park state with a bogus
+    ``tool_call_id`` for what is actually a batch park across N tasks.
+    A genuinely separate exception type means an UNWIRED catch site
+    does not catch this at all: it propagates as an unhandled
+    exception and fails loudly, rather than parking the turn wrong.
+    Every layer that should understand a tool_wait park must gain its
+    own explicit ``except ToolWaitPark`` arm — same loud-over-silent
+    principle as the aggregated-profile ``provider_id=None`` ruling.
+
+    ``event_key`` is a synthetic, non-pub/sub identifier (mirrors how
+    ``ToolCallTask.gate_event_key`` already works) — nothing ever
+    publishes to it or subscribes on it; the actual wake trigger is
+    the LAST outstanding task's ``on_release`` re-arming the session's
+    claim lease directly (ruling 2), not an event-bus fire. It exists
+    purely for parity with the session's own ``parked_event_key``
+    column and for observability/debugging.
+
+    ``llm_messages`` / ``frames`` mirror :class:`YieldToWorker`'s own
+    fields exactly, for the same reason: the in-progress turn's
+    assistant message (carrying the tool_use parts the outstanding
+    tasks correspond to) is not yet ``_persist_turn``'d when this
+    fires, and the resume path needs it to reconstruct
+    ``[assistant_tool_use, tool_result...]`` history correctly. Callers
+    that raise this directly may leave ``llm_messages`` unset; the
+    executor stamps it on the way out, same as ``YieldToWorker``.
+    """
+
+    def __init__(
+        self,
+        *,
+        outstanding_task_ids: list[str],
+        event_key: str,
+        llm_messages: list | None = None,
+    ) -> None:
+        super().__init__(
+            f"tool batch parked as {len(outstanding_task_ids)} "
+            f"claimed task(s); event_key={event_key!r}"
+        )
+        self.outstanding_task_ids = outstanding_task_ids
+        self.event_key = event_key
+        self.llm_messages: list | None = llm_messages
+        self.frames: list = []
+
+
 __all__ = [
     "Yielded",
     "YieldTimeout",
     "YieldCancelled",
     "ToolContext",
     "YieldToWorker",
+    "ToolWaitPark",
 ]
