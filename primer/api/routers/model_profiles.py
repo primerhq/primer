@@ -1,16 +1,30 @@
 """ModelProfile CRUD router.
 
-A profile names one ``(provider, model)`` pair plus its API-level config,
-and the profile id is what an :class:`~primer.model.agent.Agent`
-references. Standard CRUD + Find from :mod:`primer.api.routers._crud`,
-plus three additions:
+A profile names one ``(provider, model)`` pair plus its API-level config
+(``kind="single"``), OR is itself an ordered aggregation of two or more
+other profiles (``kind="aggregated"``, no provider/model of its own) --
+see :class:`primer.model.model_profile.ModelProfile`. The profile id is
+what an :class:`~primer.model.agent.Agent` references either way.
+Standard CRUD + Find from :mod:`primer.api.routers._crud`, plus four
+additions:
 
 * ``provider_id`` must resolve to an existing :class:`LLMProvider`,
-  checked on create and update. Without this an operator can persist a
-  profile that fails only at turn time, which is a much worse place to
-  discover a typo.
-* Deleting a profile an Agent still references returns 409 rather than
-  silently breaking that agent.
+  checked on create and update -- only for ``kind="single"``, since an
+  aggregated profile has no ``provider_id`` of its own. Without this an
+  operator can persist a profile that fails only at turn time, which is
+  a much worse place to discover a typo.
+* An aggregated profile's ``members`` are validated on create and
+  update: at least two (the user's literal directive -- "an aggregated
+  profile is an aggregation of two or more model profiles"), every
+  member id must exist, every member must itself be ``kind="single"``
+  (nested aggregation is REJECTED eagerly here, v1 -- closes the gap
+  where the old ``AggregatedLLM`` only discovered a bad member lazily at
+  resolve/stream time), no self-reference, and no duplicate member ids
+  (order is the routing/failover chain, so silently deduping would
+  silently change semantics -- reject instead of guessing).
+* Deleting a profile an Agent still references, OR that is named as a
+  member of any aggregated profile, returns 409 rather than silently
+  breaking that agent or that aggregate.
 * The list route enriches each item with ``agent_count`` /
   ``graph_node_count`` (platform wave P2, #19) so a profile card can
   render "bound by N agents" from one fetch.
@@ -34,7 +48,7 @@ from primer.model.agent import Agent
 from primer.model.graph import Graph
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
-from primer.model.storage import CursorPageResponse, OffsetPage, OffsetPageResponse
+from primer.model.storage import CursorPageResponse, Op, OffsetPage, OffsetPageResponse
 
 _REF_COUNT_PAGE_SIZE = 200
 
@@ -128,13 +142,19 @@ async def _enrich_with_usage(
     return resp.model_copy(update={"items": enriched})
 
 
-async def _assert_provider_exists(entity: ModelProfile, request: Request) -> None:
+async def _check_provider_exists(entity: ModelProfile, request: Request) -> None:
     """422 when ``provider_id`` names an LLMProvider that does not exist.
+
+    Only meaningful for ``kind="single"`` -- an aggregated profile has no
+    ``provider_id`` of its own (see :class:`ModelProfile`'s own
+    kind-shape validator, which already guarantees it is None here).
 
     Uses 422 rather than 404: the request itself is well-formed, but a
     body field fails a semantic check, which is the same shape the CRUD
     factory uses for other reference validation.
     """
+    if entity.kind != "single":
+        return
     storage = request.app.state.storage_provider.get_storage(LLMProvider)
     if await storage.get(entity.provider_id) is None:
         raise HTTPException(
@@ -150,9 +170,86 @@ async def _assert_provider_exists(entity: ModelProfile, request: Request) -> Non
         )
 
 
+def _aggregation_error(error: str, field: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"error": error, "field": field, "message": message},
+    )
+
+
+async def _check_aggregation_valid(entity: ModelProfile, request: Request) -> None:
+    """422 when an aggregated profile's ``members`` violate the
+    aggregation invariants (see module docstring's second bullet for the
+    full list). No-op for ``kind="single"``.
+    """
+    if entity.kind != "aggregated":
+        return
+    members = entity.members or []
+    if len(members) < 2:
+        raise _aggregation_error(
+            "aggregation_too_small",
+            "members",
+            "an aggregated profile must name at least two member "
+            "profiles, per the aggregation directive: \"an aggregated "
+            "profile is an aggregation of two or more model profiles\"",
+        )
+    if entity.id in members:
+        raise _aggregation_error(
+            "self_reference",
+            "members",
+            f"profile {entity.id!r} cannot name itself as a member",
+        )
+    if len(set(members)) != len(members):
+        raise _aggregation_error(
+            "duplicate_member",
+            "members",
+            "members must not contain duplicates; order is the "
+            "routing/failover chain, so a duplicate would silently "
+            "change behaviour rather than being a harmless repeat",
+        )
+    storage = request.app.state.storage_provider.get_storage(ModelProfile)
+    for member_id in members:
+        member = await storage.get(member_id)
+        if member is None:
+            raise _aggregation_error(
+                "member_not_found",
+                "members",
+                f"member profile {member_id!r} does not exist",
+            )
+        if member.kind != "single":
+            raise _aggregation_error(
+                "nested_aggregation",
+                "members",
+                f"member profile {member_id!r} is itself "
+                "kind='aggregated'; nested aggregation is not "
+                "supported (v1)",
+            )
+
+
+async def _on_pre_create(entity: ModelProfile, request: Request) -> None:
+    await _check_provider_exists(entity, request)
+    await _check_aggregation_valid(entity, request)
+
+
+async def _on_pre_update(
+    entity: ModelProfile, existing: ModelProfile, request: Request
+) -> None:
+    del existing  # both checks validate the incoming shape only
+    await _check_provider_exists(entity, request)
+    await _check_aggregation_valid(entity, request)
+
+
 def _agent_storage_from_request(request: Request):
     """Adapt the ``Storage[Agent]`` handle to the ReferenceCheck contract."""
     return request.app.state.storage_provider.get_storage(Agent)
+
+
+def _model_profile_storage_from_request(request: Request):
+    """Adapt the ``Storage[ModelProfile]`` handle to the ReferenceCheck
+    contract -- self-referential: a profile can be a MEMBER of another
+    profile, so the "child" kind here is ModelProfile itself.
+    """
+    return request.app.state.storage_provider.get_storage(ModelProfile)
 
 
 model_profile_router = make_crud_router(
@@ -162,13 +259,20 @@ model_profile_router = make_crud_router(
     tag="model-profiles",
     managed_by_field="harness_id",
     search_fields=["id", "description", "model_name"],
-    on_pre_create=_assert_provider_exists,
-    on_pre_update=_assert_provider_exists,
+    on_pre_create=_on_pre_create,
+    on_pre_update=_on_pre_update,
     references=[
         ReferenceCheck(
             child_kind="agent",
             child_storage=_agent_storage_from_request,
             child_field="model.profile_id",
+            error_code="in_use_by",
+        ),
+        ReferenceCheck(
+            child_kind="model_profile (aggregate member)",
+            child_storage=_model_profile_storage_from_request,
+            child_field="members",
+            op=Op.CONTAINS,
             error_code="in_use_by",
         ),
     ],
