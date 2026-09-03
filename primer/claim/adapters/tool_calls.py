@@ -116,10 +116,17 @@ class ToolCallClaimAdapter(ClaimAdapter):
         # counter (see WorkerConfig.max_attempts) - this row does not
         # duplicate that bookkeeping, it only needs to stop reading
         # RUNNING once nobody is actually running it.
+        # result_state is also cleared here: a task reaching this branch
+        # was RUNNING (a live lease existed and either expired or the
+        # caller explicitly requeued it) - any result_state already
+        # written by that attempt is from a run that never reached a
+        # clean release and must not survive into the next attempt as
+        # if it were authoritative.
         retried = task.model_copy(update={
             "state": ToolCallTaskState.QUEUED,
             "started_at": None,
             "gate_state": None,
+            "result_state": None,
         })
         await self._storage.update(retried, conn=conn)
 

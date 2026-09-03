@@ -163,6 +163,39 @@ def _parse_record(line: bytes) -> SessionMessageRecord | None:
     return record
 
 
+async def read_record_by_seq(
+    workspace_io: _WorkspaceReadIO, *, session_id: str, seq: int,
+) -> SessionMessageRecord | None:
+    """Read the single record at ``seq`` from one session's messages.jsonl.
+
+    Phase 3 stage 7a (01a0518b): the read side of a ``ToolCallTask``'s
+    ``record_seq`` pointer (see its own docstring for the ordering
+    invariant this backs). Returns ``None`` when the log is missing or
+    no record at ``seq`` exists — callers that need a hard guarantee
+    the record exists (e.g. the ordering invariant above) raise on a
+    ``None`` themselves; this function stays a plain lookup, no opinion
+    on what a miss means to its caller.
+
+    No byte-offset index exists for a specific ``seq`` today, so this
+    reads the WHOLE log and scans for the match — the same cost
+    :func:`read_batch` already pays per session. Callers doing this
+    inside a hot per-task loop should be aware a very long session's
+    log gets re-read for each lookup; batching multiple tasks' lookups
+    against a single log read (if that pattern emerges) is a
+    reasonable future optimisation, not built here.
+    """
+    path = _messages_path(workspace_io, session_id)
+    raw = await _read_raw(workspace_io, path, session_id)
+    if raw is None:
+        return None
+    lines, _ = _complete_lines(raw)
+    for line in lines:
+        record = _parse_record(line)
+        if record is not None and record.seq == seq:
+            return record
+    return None
+
+
 # ---------------------------------------------------------------------------
 # read_session_since — incremental single-session path (live SSE)
 # ---------------------------------------------------------------------------
@@ -383,4 +416,4 @@ async def read_batch(
     return events, cursor
 
 
-__all__ = ["read_session_since", "read_batch"]
+__all__ = ["read_session_since", "read_batch", "read_record_by_seq"]

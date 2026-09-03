@@ -32,7 +32,7 @@ from primer.model.workspace_session import (
 )
 from primer.tap.cursor import TapCursor
 from primer.tap.event import TapEventClass
-from primer.tap.reader import read_batch, read_session_since
+from primer.tap.reader import read_batch, read_record_by_seq, read_session_since
 from primer.tap.selector import TapSelector
 
 _NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
@@ -279,6 +279,52 @@ class TestReadSessionSince:
             selector=sel,
         )
         assert [e.class_ for e in events] == [TapEventClass.TOOL_CALL]
+
+
+# ---------------------------------------------------------------------------
+# read_record_by_seq (Phase 3 stage 7a, 01a0518b)
+# ---------------------------------------------------------------------------
+
+
+class TestReadRecordBySeq:
+    @pytest.mark.asyncio
+    async def test_returns_the_matching_record(self) -> None:
+
+        io = _FakeWorkspaceIO()
+        io.write(
+            _msg_path("s1"),
+            _line(1, "user_input") + _line(2, "tool_call", id="x") + _line(3, "done"),
+        )
+        record = await read_record_by_seq(io, session_id="s1", seq=2)
+        assert record is not None
+        assert record.kind.value == "tool_call"
+        assert record.payload == {"id": "x"}
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_record_at_seq(self) -> None:
+
+        io = _FakeWorkspaceIO()
+        io.write(_msg_path("s1"), _line(1, "user_input"))
+        assert await read_record_by_seq(io, session_id="s1", seq=99) is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_log_missing(self) -> None:
+
+        io = _FakeWorkspaceIO()
+        assert await read_record_by_seq(io, session_id="no-such-session", seq=1) is None
+
+    @pytest.mark.asyncio
+    async def test_skips_a_compaction_marker_sharing_the_seq(self) -> None:
+        """Mirrors read_session_since's own treatment: a COMPACTION_MARKER
+        shares a seq with the turn's first streamed record and is never
+        the record a caller actually wants at that seq."""
+
+        io = _FakeWorkspaceIO()
+        io.write(
+            _msg_path("s1"),
+            _line(5, "compaction_marker") + _line(6, "user_input"),
+        )
+        assert await read_record_by_seq(io, session_id="s1", seq=5) is None
 
 
 # ---------------------------------------------------------------------------
