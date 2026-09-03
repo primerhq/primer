@@ -123,6 +123,21 @@ class ParkedState:
     binding_epoch: int | None = None
     frames: list = field(default_factory=list)
     schema_version: int = PARKED_STATE_SCHEMA_VERSION
+    # 01a068ea-dc95: the DURABLE TOOL_CALL SessionMessageRecord this park
+    # answers was minted with the SCOPED id (primer.session.persistence's
+    # ToolCallStart handler, node:tool:turn_no:seq) -- not this ParkedState's
+    # own tool_call_id, which is the raw provider id (correct for LLM-
+    # context reconstruction, but never the id the display-record pairing
+    # keys off). Stashed at park time, when the minting _CoalesceState is
+    # still in scope (primer.session.dispatch's except YieldToWorker
+    # handler); every repark path carries it forward unchanged, since a
+    # phase-2 re-dispatch (post-approval bypass) re-enters the SAME tool
+    # call outside the LLM-streaming pipeline and mints no new id. ``None``
+    # for a park written before this field existed, or if the scoped-id
+    # lookup somehow missed (defensive) -- the resume write falls back to
+    # the raw id in that case, exactly today's behaviour. Optional so
+    # pre-existing blobs load without a schema-version bump.
+    scoped_tool_call_id: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Render to a JSON-safe dict for persistence in sessions.data."""
@@ -132,6 +147,7 @@ class ParkedState:
         return {
             "schema_version": self.schema_version,
             "tool_call_id": self.tool_call_id,
+            "scoped_tool_call_id": self.scoped_tool_call_id,
             "yielded": self.yielded.to_jsonable(),
             "llm_messages": list(self.llm_messages),
             "turn_no": self.turn_no,
@@ -231,6 +247,7 @@ class ParkedState:
             graph_checkpoint=graph_checkpoint,
             frames=frames,
             schema_version=version,
+            scoped_tool_call_id=data.get("scoped_tool_call_id"),
         )
 
 

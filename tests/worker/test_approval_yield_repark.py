@@ -103,6 +103,7 @@ def _make_approval_parked_session(
     real_arguments: dict,
     resume_event_payload: dict,
     llm_messages: list,
+    scoped_tool_call_id: str | None = None,
 ) -> WorkspaceSession:
     """A session parked (phase 1) on an approval gate guarding a yielding
     tool. resume_metadata carries the original_call so the approved resume
@@ -128,6 +129,7 @@ def _make_approval_parked_session(
         started_at=parked_at,
         tool_call_id=tool_call_id,
         resume_event_payload=resume_event_payload,
+        scoped_tool_call_id=scoped_tool_call_id,
     )
     return WorkspaceSession(
         id=sid,
@@ -241,6 +243,80 @@ async def test_approved_yielding_tool_reparks_then_resumes(monkeypatch):
     assert row.parked_state["yielded"]["tool_name"] == real_tool_name
     # The in-progress turn messages were preserved across the re-park.
     assert row.parked_state["llm_messages"]
+
+
+@pytest.mark.asyncio
+async def test_repark_carries_scoped_tool_call_id_through_phase_2(monkeypatch):
+    """01a068ea-dc95: phase 2 re-dispatches the SAME tool call directly
+    (bypass_approval=True), outside the LLM-streaming pipeline that
+    mints scoped ids at ToolCallStart - there is no new one to look up
+    for the fresh yield, so repark_resumed_yield_outcome must carry the
+    phase-1 park's scoped_tool_call_id forward unchanged. Without this,
+    the eventual TOOL_RESULT (once the real event fires) would fall back
+    to the raw id and stay unpaired from the durable TOOL_CALL record,
+    same failure mode as the primary bug this task fixes."""
+    sid = "sess-approval-yield-scoped-id"
+    tool_call_id = "tc-sleep-scoped"
+    real_tool_name = "_test_yield_repark_tool_scoped"
+    scoped_id = "x:tool:0:1"
+
+    from primer.worker.yield_resume_registry import register_resume_hook
+
+    class _HookResult:
+        def __init__(self, output, is_error=False):
+            self.output = output
+            self.is_error = is_error
+
+    register_resume_hook(
+        real_tool_name,
+        lambda resume_metadata, payload, ctx: _HookResult(
+            json.dumps({"woke": True}),
+        ),
+    )
+
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = _build_engine(session_storage)
+    pool = _build_pool(storage_provider, engine)
+
+    real_event = Yielded(
+        tool_name=real_tool_name,
+        event_key=f"timer:{tool_call_id}",
+        timeout=120.0,
+        resume_metadata={"seconds": 30},
+    )
+    tm = _YieldingToolManager(yielded=real_event, tool_call_id=tool_call_id)
+    fake_executor = _RecordingExecutor(tool_manager=tm)
+
+    sess = _make_approval_parked_session(
+        sid,
+        tool_call_id=tool_call_id,
+        real_tool_name=real_tool_name,
+        real_arguments={"seconds": 30},
+        resume_event_payload={"decision": "approved"},
+        llm_messages=[_assistant_msg(tool_call_id, real_tool_name).model_dump(mode="json")],
+        scoped_tool_call_id=scoped_id,
+    )
+    await session_storage.create(sess)
+
+    monkeypatch.setattr(
+        pool, "_load_workspace_for_persist",
+        lambda _ws_id: _async_return(_NoopPersist()),
+    )
+    monkeypatch.setattr(
+        pool, "_build_agent_executor",
+        lambda _s, _w: _async_return(fake_executor),
+    )
+
+    lease = await _claim_session(engine, sid)
+    await pool._run_engine_session(lease)
+
+    row = await session_storage.get(sid)
+    assert row is not None
+    assert row.parked_status == "parked"
+    # The re-parked (phase 2) blob still carries the ORIGINAL scoped id,
+    # not None and not something re-derived.
+    assert row.parked_state["scoped_tool_call_id"] == scoped_id
 
     # ---- Phase 2 resume: the real (timer) event fires -> resume to done. ----
     # Re-stamp the row as resumable carrying the real event payload, mirroring

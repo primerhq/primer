@@ -560,6 +560,23 @@ async def run_one_session_turn(
         timeout = yielded.timeout if yielded.timeout is not None else 3600.0
         parked_until = parked_at + timedelta(seconds=timeout)
 
+        # 01a068ea-dc95: the durable TOOL_CALL SessionMessageRecord this
+        # park will answer was minted with the SCOPED id (persistence.py's
+        # ToolCallStart handler), not park.tool_call_id (the raw provider
+        # id LLM-context reconstruction needs). coalesce_state processed
+        # this call's ToolCallEnd earlier in the same async-for loop above
+        # (streaming events arrive strictly before the tool dispatch that
+        # might yield), and no _ExecutorToolResult ever popped the mapping
+        # since this call yielded instead of returning -- so the scoped id
+        # is still sitting in scoped_call_ids right now. node_id is always
+        # None here: this turn driver (run_one_session_turn) never passes
+        # one to translate_stream_event. Stash it so the resume coordinator
+        # can pair the eventual TOOL_RESULT display record correctly
+        # instead of falling back to the raw id.
+        scoped_tool_call_id = coalesce_state.scoped_call_ids.get(
+            (None, park.tool_call_id)
+        )
+
         # Stamp parked_at_iso into resume_metadata so the resume hook can
         # compute elapsed without a separate read.
         resume_metadata = dict(yielded.resume_metadata)
@@ -648,6 +665,7 @@ async def run_one_session_turn(
             # executor began streaming.
             started_at=_turn_started_at,
             tool_call_id=park.tool_call_id,
+            scoped_tool_call_id=scoped_tool_call_id,
             graph_checkpoint=graph_checkpoint,
             frames=list(getattr(park, "frames", []) or []),
             # Frozen at park so a fenced resume rebuilds the SAME toolset
