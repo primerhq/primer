@@ -896,11 +896,31 @@ function NV_LegacyOverlay(props) {
   // collections table - are genuine list pages and keep the wide sheet
   // unchanged; every OTHER overlay in NV_OVERLAY_MOUNTS is untouched,
   // out of this wave's scope).
+  //
+  // Root-caused a real, deterministic (not flaky) CI failure: these
+  // wrapper divs are bare, so their only box-contributing content is
+  // Modal's own `.modal-overlay`, which is `position: fixed` and is
+  // therefore taken OUT of normal flow - a bare block div with no
+  // in-flow content collapses to a zero-size box as a flex child of
+  // `.nv-root`, and Playwright's `to_be_visible()` correctly reports a
+  // zero-area element as hidden even though the fixed-position Modal
+  // still paints on top of it. The non-bypass path never hit this
+  // because `.nv-scrim` carries its own explicit full-viewport CSS
+  // sizing independent of its children. `position: fixed; inset: 0`
+  // here gives both wrapper divs that same guaranteed box without
+  // opting into any of `.nv-scrim`'s visible styling or its
+  // click-to-close handler (the inner Modal already owns both) - NOT
+  // `pointer-events: none`: that CSS property inherits, and Modal
+  // never resets it on its own content, so it would silently make
+  // every button/input inside unclickable. No dead-click-zone risk
+  // either way: Modal's own `.modal-overlay` backdrop is `position:
+  // fixed; inset: 0` too, so it exactly coincides with this box.
   var bypassChrome = (name === "agents" || name === "collections") && !!overlay.id;
   if (bypassChrome) {
+    var bypassStyle = { position: "fixed", inset: 0 };
     return (
-      <div data-testid="nv-overlay-body">
-        <div data-testid={"nv-overlay:" + name}>
+      <div data-testid="nv-overlay-body" style={bypassStyle}>
+        <div data-testid={"nv-overlay:" + name} style={bypassStyle}>
           {mount.render(overlay, adapter)}
         </div>
       </div>

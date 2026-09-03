@@ -118,11 +118,13 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
         # Submit.
         modal.get_by_role("button", name="Create").first.click()
 
-        # Modal closes on success.
-        modal.wait_for(state="hidden", timeout=10_000)
-
-        # Creating a collection OPENS it, so the list is no longer on
-        # screen; the browser for the new collection is.
+        # uiv2 Wave 2: creating a collection OPENS it, and the browser
+        # (KN_CollectionDetail) it lands on is now ITSELF a `.modal` (used
+        # to be a bare div) - so there is no longer a `.modal`-free
+        # moment to wait for; `.modal` stays present throughout, it just
+        # swaps from the create form to the browser. Assert the actual
+        # outcome (the new collection's browser is showing) instead of a
+        # "the modal closed" premise that no longer holds.
         expect(
             page.get_by_test_id("nv-overlay-body").get_by_text(
                 coll_id, exact=False,
@@ -132,14 +134,29 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
         # ===== 3. Create a doc in it, grep for it =========================
         # Already inside the collection: the create opened it, so there
         # is no row to click through any more.
+        #
+        # uiv2 Wave 2: the collection browser (KN_CollectionDetail) is now
+        # ITSELF a `.modal` (used to be a bare div), so "New document"
+        # opens a modal NESTED inside it - `.first` would resolve to the
+        # outer browser, and filling `input.input` there would hit
+        # whatever real input renders earliest in ITS OWN chrome (the
+        # grep box), not the new-document form, leaving the actual slug
+        # field empty and Create stuck disabled. `.last` targets the
+        # nested dialog.
         page.get_by_role("button", name="New document").first.click()
-        doc_modal = page.locator(".modal").first
+        doc_modal = page.locator(".modal").last
         doc_modal.wait_for(state="visible", timeout=5_000)
         doc_inputs = doc_modal.locator("input.input")
         doc_inputs.nth(0).fill("journey-doc")
         doc_modal.locator("textarea.input").first.fill("needle in the wiki")
         doc_modal.get_by_role("button", name="Create").first.click()
-        doc_modal.wait_for(state="hidden", timeout=10_000)
+        # `.modal` itself never becomes hidden - the outer collection
+        # browser is ALSO a `.modal` and stays open once the nested
+        # dialog closes, so `.last` would just keep re-resolving to it
+        # forever. The toast is a signal independent of modal nesting.
+        page.get_by_text("Document created", exact=False).first.wait_for(
+            state="visible", timeout=10_000,
+        )
 
         # Grep works with no embedder configured: that is the point of
         # the v2 model.
