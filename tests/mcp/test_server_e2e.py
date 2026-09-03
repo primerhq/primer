@@ -11,18 +11,29 @@ pin down the dispatch + audit + error-mapping contract; this file
 proves the SDK glue is correct: handler return shapes round-trip
 through the protocol, the allowlist filters ``tools/list``, and
 calling a disallowed tool surfaces as a JSON-RPC error (mapped to
-``McpError`` on the client) rather than a successful response.
+``MCPError`` on the client) rather than a successful response.
 
-The ``create_connected_server_and_client_session`` helper wires
-client + server with a pair of in-memory anyio streams and runs the
-server in the helper's task group; the test body sees a ready-to-use
-``ClientSession`` with ``initialize()`` already called.
+``_connected_client_session`` wires client + server with a pair of
+in-memory anyio streams and runs the server in a background task; the
+test body sees a ready-to-use ``ClientSession`` with ``initialize()``
+already called. mcp>=2.0 dropped the SDK's own all-in-one
+``mcp.shared.memory.create_connected_server_and_client_session``
+helper in favour of the lower-level ``create_client_server_memory_streams``
+primitive; ``mcp.client._memory.InMemoryTransport`` (private module,
+used by the SDK's own test suite for exactly this purpose) wraps that
+primitive with the server-lifecycle/shutdown handling this helper
+would otherwise have to reimplement.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import pytest
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp import ClientSession
+from mcp.client._memory import InMemoryTransport
+from mcp.server.lowlevel import Server
 
 from primer.mcp.exposure import ExposureDeps, update_exposure
 from primer.mcp.server import build_mcp_server, current_actor
@@ -31,6 +42,14 @@ from primer.model.principal import Principal
 
 def _deps(storage, registry) -> ExposureDeps:
     return ExposureDeps(storage_provider=storage, provider_registry=registry)
+
+
+@asynccontextmanager
+async def _connected_client_session(server: Server) -> AsyncIterator[ClientSession]:
+    async with InMemoryTransport(server) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            yield session
 
 
 _SAFE = "misc__uuid_v4"
@@ -54,7 +73,7 @@ async def test_list_returns_only_allowed(
     )
     server = build_mcp_server(lambda: deps)
 
-    async with create_connected_server_and_client_session(server) as client:
+    async with _connected_client_session(server) as client:
         result = await client.list_tools()
 
     names = {t.name for t in result.tools}
@@ -90,12 +109,12 @@ async def test_call_allowed_returns_result(
         )
     )
     try:
-        async with create_connected_server_and_client_session(server) as client:
+        async with _connected_client_session(server) as client:
             result = await client.call_tool(_SAFE, arguments={"foo": "bar"})
     finally:
         current_actor.reset(actor_tok)
 
-    assert result.isError is False
+    assert result.is_error is False
     assert result.content, "expected at least one content block"
     first = result.content[0]
     assert first.type == "text"
@@ -110,9 +129,9 @@ async def test_call_disallowed_returns_not_exposed(
 ) -> None:
     """Calling outside the allowlist surfaces as a JSON-RPC error.
 
-    The server raises :class:`McpError` with code ``METHOD_NOT_FOUND``;
+    The server raises :class:`MCPError` with code ``METHOD_NOT_FOUND``;
     the SDK's client-side dispatch either re-raises it as
-    :class:`McpError` or returns ``isError=True``. Both are valid
+    :class:`MCPError` or returns ``isError=True``. Both are valid
     failure shapes per the SDK contract — accept either, and confirm the
     response is *not* a successful tool result.
     """
@@ -124,7 +143,7 @@ async def test_call_disallowed_returns_not_exposed(
     )
     server = build_mcp_server(lambda: deps)
 
-    async with create_connected_server_and_client_session(server) as client:
+    async with _connected_client_session(server) as client:
         try:
             result = await client.call_tool(_SAFE, arguments={})
         except Exception as exc:  # noqa: BLE001 -- protocol error path
@@ -137,7 +156,7 @@ async def test_call_disallowed_returns_not_exposed(
             return
         # Some SDK versions surface protocol errors as isError=True
         # rather than raising — accept that too.
-        assert result.isError is True
+        assert result.is_error is True
 
 
 @pytest.mark.asyncio
@@ -153,7 +172,7 @@ async def test_disabled_exposure_returns_empty_list(
     deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
     server = build_mcp_server(lambda: deps)
 
-    async with create_connected_server_and_client_session(server) as client:
+    async with _connected_client_session(server) as client:
         result = await client.list_tools()
 
     assert result.tools == []

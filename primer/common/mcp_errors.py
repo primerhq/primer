@@ -2,7 +2,7 @@
 
 Used by :class:`primer.toolset.mcp.McpToolsetProvider` (and any future
 adapter that talks to an MCP server). Maps the mcp SDK's
-:class:`mcp.shared.exceptions.McpError` plus the underlying httpx
+:class:`mcp.shared.exceptions.MCPError` plus the underlying httpx
 exceptions onto the primer exception hierarchy so callers see one
 universal error surface regardless of which adapter raised.
 """
@@ -10,7 +10,7 @@ universal error surface regardless of which adapter raised.
 from __future__ import annotations
 
 import httpx
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 
 from primer.model.except_ import (
     AuthenticationError,
@@ -36,7 +36,7 @@ def classify_mcp_exception(exc: Exception) -> PrimerError:
     | ``httpx.HTTPStatusError`` 5xx | :class:`ServerError` |
     | other ``httpx.HTTPStatusError`` | :class:`ProviderError` |
     | ``httpx.TimeoutException``, ``httpx.NetworkError`` | :class:`NetworkError` |
-    | ``mcp.shared.exceptions.McpError`` | :class:`ProviderError` (carries the JSON-RPC error code) |
+    | ``mcp.shared.exceptions.MCPError`` | :class:`ProviderError` (carries the JSON-RPC error code) |
     | anything else | :class:`ProviderError` |
 
     Already-classified :class:`PrimerError` inputs pass through unchanged, and
@@ -108,7 +108,7 @@ def classify_mcp_exception(exc: Exception) -> PrimerError:
             f"MCP network failure: {type(exc).__name__}",
             cause=exc,
         )
-    if isinstance(exc, McpError):
+    if isinstance(exc, MCPError):
         data = exc.error
         return ProviderError(
             data.message,

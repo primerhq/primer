@@ -45,7 +45,7 @@ def is_mcp_task_tool(tool: mcp_types.Tool) -> bool:
     """Whether ``tool`` advertises task-style execution.
 
     Per the MCP 2025-11-25 ``tools/tasks`` extension, a tool's
-    ``execution.taskSupport`` may be ``forbidden`` / ``optional`` /
+    ``execution.task_support`` may be ``forbidden`` / ``optional`` /
     ``required``. The first two short-circuit to synchronous calls
     when the caller doesn't ask for task mode; ``required`` means
     the server only supports task-style invocation.
@@ -53,7 +53,7 @@ def is_mcp_task_tool(tool: mcp_types.Tool) -> bool:
     execution = getattr(tool, "execution", None)
     if execution is None:
         return False
-    return execution.taskSupport in ("optional", "required")
+    return execution.task_support in ("optional", "required")
 
 
 logger = logging.getLogger(__name__)
@@ -294,10 +294,12 @@ class McpToolsetProvider(ToolsetProvider):
         principal: str | None = None,
     ) -> mcp_types.GetTaskResult:
         """Send a ``tasks/get`` request for ``task_id``. Used by the bridge."""
-        request = mcp_types.ClientRequest(
-            mcp_types.GetTaskRequest(
-                params=mcp_types.GetTaskRequestParams(taskId=task_id),
-            )
+        # mcp>=2.0: ClientRequest is a bare type-hint union now (not a
+        # RootModel wrapper class) - send_request calls .model_dump()
+        # directly on the request it's given, so pass the concrete
+        # request object unwrapped.
+        request = mcp_types.GetTaskRequest(
+            params=mcp_types.GetTaskRequestParams(taskId=task_id),
         )
         async with self._open_session(principal=principal) as session:
             try:
@@ -314,22 +316,31 @@ class McpToolsetProvider(ToolsetProvider):
         principal: str | None = None,
     ) -> dict[str, Any]:
         """Send a ``tasks/result`` request once the task is terminal."""
-        request = mcp_types.ClientRequest(
-            mcp_types.GetTaskPayloadRequest(
-                params=mcp_types.GetTaskPayloadRequestParams(taskId=task_id),
-            )
+        request = mcp_types.GetTaskPayloadRequest(
+            params=mcp_types.GetTaskPayloadRequestParams(taskId=task_id),
         )
         async with self._open_session(principal=principal) as session:
             try:
+                # mcp>=2.0: GetTaskPayloadResult no longer retains the
+                # payload's wire fields as pydantic "extra" data (its own
+                # docstring: "which MCPModel does not retain"; empirically
+                # confirmed - model_dump() returns only {"meta": None}).
+                # Validate directly into the original request's own result
+                # type instead, per the SDK's own guidance in that
+                # docstring. Task mode is only ever used for tool calls
+                # here (_call_task_mode's only caller is call()), so
+                # CallToolResult is always the right shape.
                 result = await session.send_request(
-                    request, mcp_types.GetTaskPayloadResult,
+                    request, mcp_types.CallToolResult,
                 )
             except Exception as exc:
                 raise classify_mcp_exception(exc) from exc
-        # GetTaskPayloadResult is "additionalProperties: true" — the
-        # body of the original CallToolResult lives alongside _meta.
-        # model_dump preserves the extra fields the server attached.
-        return result.model_dump(mode="json", exclude_none=False)
+        # by_alias=True keeps the historical camelCase wire shape
+        # (isError/content/structuredContent) the bridge
+        # (primer/bus/mcp_tasks.py) and mcp_task_resume below both
+        # depend on - mcp>=2.0's model_dump default switched to the
+        # snake_case Python field names.
+        return result.model_dump(mode="json", exclude_none=False, by_alias=True)
 
     async def cancel_task(
         self,
@@ -338,10 +349,8 @@ class McpToolsetProvider(ToolsetProvider):
         principal: str | None = None,
     ) -> None:
         """Send a ``tasks/cancel`` request. Best-effort — caller swallows."""
-        request = mcp_types.ClientRequest(
-            mcp_types.CancelTaskRequest(
-                params=mcp_types.CancelTaskRequestParams(taskId=task_id),
-            )
+        request = mcp_types.CancelTaskRequest(
+            params=mcp_types.CancelTaskRequestParams(taskId=task_id),
         )
         async with self._open_session(principal=principal) as session:
             try:
@@ -400,17 +409,6 @@ class McpToolsetProvider(ToolsetProvider):
             assert isinstance(self._config.config, HttpConfig)
             http_cfg: HttpConfig = self._config.config
 
-            # Two HTTP wire protocols share the same connection details: modern
-            # streamable HTTP (transport="http") and legacy HTTP+SSE
-            # (transport="sse", which opens with an SSE `endpoint` event). Both
-            # take url= / headers= and run an anyio task group under the hood.
-            if self._config.transport == TransportType.SSE:
-                from mcp.client.sse import sse_client as transport_client
-            else:
-                from mcp.client.streamable_http import (
-                    streamablehttp_client as transport_client,
-                )
-
             # headers values are SecretStr (masked on every API read path);
             # unwrap here, at the network boundary, where the real token is
             # what has to go on the wire.
@@ -421,6 +419,7 @@ class McpToolsetProvider(ToolsetProvider):
                 # May raise AuthRequiredError -- intended bubble-out.
                 auth_headers = await self._oauth.authorize(principal=principal)
                 base_headers.update(auth_headers)
+            headers = base_headers if base_headers else None
 
             # Structured, lexically-nested `async with` -- NOT AsyncExitStack.
             # The HTTP/SSE transport client runs an anyio task group whose
@@ -434,22 +433,38 @@ class McpToolsetProvider(ToolsetProvider):
             # /v1/tools catalogue down with it. Lexical nesting keeps enter+exit
             # in one task; the try/except maps connection/handshake failures
             # onto the documented ProviderError/NetworkError envelope.
+            #
+            # The two wire protocols no longer share one call shape (mcp>=2.0):
+            # legacy HTTP+SSE's sse_client still takes headers= directly, but
+            # streamable_http_client (renamed from streamablehttp_client) DROPPED
+            # its own headers= param in favour of an injected httpx.AsyncClient
+            # (http_client=) - see mcp.client.streamable_http.streamable_http_client's
+            # docstring. create_mcp_http_client is the SDK's own private factory
+            # for that client (same one streamable_http_client itself builds
+            # internally when http_client=None); importing it directly is the
+            # only way to keep the "recommended MCP timeouts" default while also
+            # injecting our headers.
             try:
-                async with transport_client(
-                    url=http_cfg.url,
-                    headers=base_headers if base_headers else None,
-                ) as streams:
-                    # streamable HTTP yields (read, write, get_session_id);
-                    # sse_client yields (read, write). Take the first two.
-                    if len(streams) < 2:  # pragma: no cover - older mcp
-                        raise ConfigError(
-                            "MCP transport client returned an unexpected "
-                            "stream tuple"
-                        )
-                    read, write = streams[0], streams[1]
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        yield session
+                if self._config.transport == TransportType.SSE:
+                    from mcp.client.sse import sse_client
+
+                    async with sse_client(
+                        url=http_cfg.url, headers=headers,
+                    ) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            yield session
+                else:
+                    from mcp.client.streamable_http import streamable_http_client
+                    from mcp.shared._httpx_utils import create_mcp_http_client
+
+                    async with create_mcp_http_client(headers=headers) as http_client:
+                        async with streamable_http_client(
+                            url=http_cfg.url, http_client=http_client,
+                        ) as (read, write):
+                            async with ClientSession(read, write) as session:
+                                await session.initialize()
+                                yield session
             except (ConfigError, AuthRequiredError, GeneratorExit):
                 raise
             except Exception as exc:
@@ -559,7 +574,7 @@ class McpToolsetProvider(ToolsetProvider):
             id=t.name,
             description=t.description or "",
             toolset_id=self._toolset_id,
-            args_schema=t.inputSchema or {"type": "object", "properties": {}},
+            args_schema=t.input_schema or {"type": "object", "properties": {}},
         )
 
     def _mcp_call_result_to_primer(
@@ -587,7 +602,7 @@ class McpToolsetProvider(ToolsetProvider):
 
         return ToolCallResult(
             output="\n".join(text_chunks),
-            is_error=bool(r.isError),
+            is_error=bool(r.is_error),
             extended=extended,
         )
 

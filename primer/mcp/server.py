@@ -3,10 +3,22 @@
 Spec §3. Exposes :func:`build_mcp_server` — the factory used by the
 ASGI mount (Phase 5) to construct one ``Server`` instance per process.
 Handler bodies are intentionally thin: argument validation lives
-inside the SDK's ``call_tool`` decorator, authorisation lives in
-:mod:`primer.mcp.dispatch`, and observability lives in
-:func:`primer.agent.tool_manager.invoke_one`. This module's job is to
-glue those three together and surface MCP-protocol-shaped responses.
+inside the SDK's request-params model (``CallToolRequestParams``),
+authorisation lives in :mod:`primer.mcp.dispatch`, and observability
+lives in :func:`primer.agent.tool_manager.invoke_one`. This module's
+job is to glue those three together and surface MCP-protocol-shaped
+responses.
+
+mcp>=2.0 dropped the ``@server.list_tools()`` / ``@server.call_tool()``
+decorator API in favour of constructor-passed ``on_list_tools`` /
+``on_call_tool`` callables taking ``(ctx: ServerRequestContext, params)``
+and returning the SDK's own ``*Result`` model (see
+``mcp.server.lowlevel.server``'s module docstring). ``ctx`` is unused
+here — primer's own per-request identity threads through the
+``current_*`` ContextVars below, set by the auth gate
+(:func:`primer.api._app_mcp._make_mcp_auth_gate`) before the SDK's
+session manager invokes these handlers, not through the SDK's request
+context object.
 
 ContextVars are populated by the auth gate before the SDK's request
 runner enters the handler. They default to ``None`` for tests / dev
@@ -21,12 +33,14 @@ from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 
 from mcp.server.lowlevel import Server
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 from mcp.types import (
+    CallToolRequestParams,
     CallToolResult,
-    ErrorData,
     INVALID_PARAMS,
+    ListToolsResult,
     METHOD_NOT_FOUND,
+    PaginatedRequestParams,
     TextContent,
     Tool as McpTool,
 )
@@ -84,11 +98,13 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
     fields that change after process start).
     """
 
-    server: Server = Server("primer")
+    async def _list(ctx: Any, params: PaginatedRequestParams | None) -> ListToolsResult:
+        """Map primer's exposed tools onto the MCP ``Tool`` schema.
 
-    @server.list_tools()
-    async def _list() -> list[McpTool]:
-        """Map primer's exposed tools onto the MCP ``Tool`` schema."""
+        No pagination: every exposed tool is returned in one page, same
+        as before this handler took a ``params.cursor`` it doesn't read.
+        """
+        del ctx, params
         deps = deps_factory()
         exposed = await list_exposed_tools(deps)
         out: list[McpTool] = []
@@ -103,10 +119,9 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                     ),
                 )
             )
-        return out
+        return ListToolsResult(tools=out)
 
-    @server.call_tool()
-    async def _call(name: str, arguments: dict[str, Any]) -> CallToolResult:
+    async def _call(ctx: Any, params: CallToolRequestParams) -> CallToolResult:
         """Dispatch a single ``tools/call`` request.
 
         Error mapping:
@@ -119,6 +134,9 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
           convention for tool-execution failures the client should
           surface to the user without aborting the session.
         """
+        del ctx
+        name = params.name
+        arguments = params.arguments or {}
         deps = deps_factory()
         principal = current_principal.get()
         api_token_id = current_api_token_id.get()
@@ -131,7 +149,7 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
             try:
                 result = await invoke_exposed(
                     scoped_id=name,
-                    arguments=arguments or {},
+                    arguments=arguments,
                     principal=principal,
                     actor=actor,
                     api_token_scopes=api_token_scopes,
@@ -143,13 +161,11 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                 # The exc.reason is included for ops-only triage via the
                 # audit log; the wire-level message stays generic so we
                 # do not leak which tools exist behind the allowlist.
-                raise McpError(
-                    ErrorData(
-                        code=METHOD_NOT_FOUND,
-                        message=f"tool {name!r} not exposed",
-                    )
+                raise MCPError(
+                    code=METHOD_NOT_FOUND,
+                    message=f"tool {name!r} not exposed",
                 ) from exc
-            except McpError:
+            except MCPError:
                 # Already protocol-shaped; let the SDK propagate.
                 error_code = "mcp_error"
                 raise
@@ -192,7 +208,7 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
     # same import block without re-touching this file.
     _ = INVALID_PARAMS
 
-    return server
+    return Server("primer", on_list_tools=_list, on_call_tool=_call)
 
 
 __all__ = [

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData
+from mcp.shared.exceptions import MCPError
 
 from primer.common.mcp_errors import classify_mcp_exception
 from primer.model.except_ import (
@@ -63,7 +62,7 @@ class TestHttpStatusErrorMapping:
 
 class TestMcpErrorMapping:
     def test_mcp_error_with_message_becomes_provider_error(self) -> None:
-        exc = McpError(ErrorData(code=-32000, message="server boom"))
+        exc = MCPError(code=-32000, message="server boom")
         result = classify_mcp_exception(exc)
         assert isinstance(result, ProviderError)
         assert "server boom" in str(result)

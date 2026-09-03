@@ -129,23 +129,27 @@ class _FakeSession:
 
     async def send_request(self, request, result_type, **kwargs):
         self.send_request_calls.append((request, result_type))
-        # Unpack the inner request to figure out which mock to return.
-        root = request.root
-        method = getattr(root, "method", None)
-        params = getattr(root, "params", None)
+        # mcp>=2.0: ClientRequest is a bare type-hint union now, not a
+        # RootModel wrapper - the caller passes the concrete request
+        # object directly (no .root to unwrap), and its params carry
+        # the snake_case field (task_id) rather than the camelCase wire
+        # alias (taskId) attribute reads no longer resolve.
+        method = getattr(request, "method", None)
+        params = getattr(request, "params", None)
         if method == "tasks/get":
             return mcp_types.GetTaskResult(
-                taskId=params.taskId,
+                taskId=params.task_id,
                 status="completed",
-                createdAt=datetime.now(timezone.utc),
-                lastUpdatedAt=datetime.now(timezone.utc),
+                createdAt=datetime.now(timezone.utc).isoformat(),
+                lastUpdatedAt=datetime.now(timezone.utc).isoformat(),
                 ttl=60_000,
             )
         if method == "tasks/result":
-            # Payload mirrors a normal CallToolResult.
-            return mcp_types.GetTaskPayloadResult.model_validate(
+            # Payload mirrors a normal CallToolResult - fetch_task_result
+            # validates directly into CallToolResult now (mcp>=2.0:
+            # GetTaskPayloadResult no longer retains extra wire fields).
+            return mcp_types.CallToolResult.model_validate(
                 {
-                    "_meta": None,
                     "content": [
                         {"type": "text", "text": "task-completed result"}
                     ],
@@ -154,10 +158,10 @@ class _FakeSession:
             )
         if method == "tasks/cancel":
             return mcp_types.CancelTaskResult(
-                taskId=params.taskId,
+                taskId=params.task_id,
                 status="cancelled",
-                createdAt=datetime.now(timezone.utc),
-                lastUpdatedAt=datetime.now(timezone.utc),
+                createdAt=datetime.now(timezone.utc).isoformat(),
+                lastUpdatedAt=datetime.now(timezone.utc).isoformat(),
                 ttl=60_000,
             )
         raise AssertionError(f"unexpected send_request method: {method!r}")

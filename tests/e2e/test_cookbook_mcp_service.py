@@ -84,8 +84,26 @@ def _result_text(call_result) -> str:
 async def test_mcp_service_drives_a_session_end_to_end(
     authed_client, mock_llm, unique_suffix, tmp_path,
 ):
+    from contextlib import asynccontextmanager
+
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    @asynccontextmanager
+    async def _http_mcp_streams(url: str, *, headers: dict[str, str]):
+        """mcp>=2.0: streamable_http_client dropped headers= for an
+        injected httpx.AsyncClient (see primer/toolset/mcp.py's own
+        _open_session for the same fix) - wrap create_mcp_http_client so
+        the call below keeps the old url+headers shape and the 2-tuple
+        stream yield (no more get_session_id) at the SAME nesting depth
+        as before, with no need to re-indent the whole test body.
+        """
+        async with create_mcp_http_client(headers=headers) as http_client:
+            async with streamable_http_client(
+                url, http_client=http_client,
+            ) as streams:
+                yield streams
 
     registry, base_url = mock_llm
 
@@ -121,8 +139,8 @@ async def test_mcp_service_drives_a_session_end_to_end(
     headers = {"Cookie": cookie_header}
 
     try:
-        async with streamablehttp_client(mcp_url, headers=headers) as (
-            read, write, _get_session_id,
+        async with _http_mcp_streams(mcp_url, headers=headers) as (
+            read, write,
         ):
             async with ClientSession(read, write) as sess:
                 await sess.initialize()
@@ -149,7 +167,7 @@ async def test_mcp_service_drives_a_session_end_to_end(
                         "auto_start": True,
                     },
                 )
-                assert not created.isError, _result_text(created)
+                assert not created.is_error, _result_text(created)
                 sid = json.loads(_result_text(created))["id"]
                 assert sid
 
@@ -176,7 +194,7 @@ async def test_mcp_service_drives_a_session_end_to_end(
                             "path": f".state/sessions/{sid}/messages.jsonl",
                         },
                     )
-                    if not read_res.isError:
+                    if not read_res.is_error:
                         content = json.loads(_result_text(read_res))["content"]
                         if "PONG" in content:
                             break
@@ -212,14 +230,14 @@ async def test_mcp_service_drives_a_session_end_to_end(
                         "auto_start": True,
                     },
                 )
-                assert not created2.isError, _result_text(created2)
+                assert not created2.is_error, _result_text(created2)
                 sid2 = json.loads(_result_text(created2))["id"]
 
                 cancelled = await sess.call_tool(
                     "workspaces__cancel_workspace_session",
                     arguments={"workspace_id": wid, "session_id": sid2},
                 )
-                assert not cancelled.isError, _result_text(cancelled)
+                assert not cancelled.is_error, _result_text(cancelled)
 
                 # Re-poll to terminal: the cancel call itself always forces
                 # the row to ended/cancelled (cancel_session's inline

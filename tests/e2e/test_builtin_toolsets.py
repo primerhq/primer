@@ -519,7 +519,7 @@ async def test_t0711_mcp_http_transport_tools_unreachable_url_clean(
     DISCOVERY: the T0706 fix (try/except around `provider.list_tools`
     in the handler) catches stdio failures cleanly, but the HTTP
     transport raises BaseExceptionGroup from anyio's task group used
-    inside `streamablehttp_client`. The exception propagates outside
+    inside `streamable_http_client`. The exception propagates outside
     the handler's scope into Starlette's middleware, which surfaces
     "RuntimeError: No response returned" — the response never gets
     formed and Starlette emits a 500 /errors/internal.
