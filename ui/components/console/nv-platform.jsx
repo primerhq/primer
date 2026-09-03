@@ -476,11 +476,16 @@ function NV_approvalDerivedStatus(r) {
   if (r.decision === "timeout" || r.decision === "cancelled") return r.decision;
   if (r.decision === "rejected" && !r.decided_by) {
     if (r.reason === "timed-out") return "timeout";
-    // A synthesized reject with SOME reason but no timeout marker is
-    // the cancel path. No mockup slot for this state exists (its 4
-    // rows are pending/approved/rejected/timeout only) - rendering it
-    // as its own "cancelled" token rather than silently folding back
-    // into "rejected" is a judgment call, flagged for the PR body.
+    // HEURISTIC, not spec (approved as a judgment call, not derived
+    // from any documented contract): classify_approval_payload's only
+    // OTHER synthesized-reject path is YieldCancelled, whose reason is
+    // always non-null (either the given cancel reason or the literal
+    // fallback "cancelled") - so "no decided_by (synthesized) + a
+    // reason that isn't the timeout marker" is, by elimination, the
+    // cancel path. No mockup slot for this state exists (its 4 rows
+    // are pending/approved/rejected/timeout only), so surfacing it as
+    // its own "cancelled" token instead of silently folding back into
+    // "rejected" is this file's own call - flag it in the PR body.
     if (r.reason) return "cancelled";
   }
   return r.decision || "";

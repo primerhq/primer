@@ -204,6 +204,7 @@ function SH_toAttentionItems(input) {
       toolCallId: rec.tool_call_id,
       toolName: rec.tool_name,
       gatedTool: rec.tool_name,
+      toolsetId: rec.toolset_id,
       kind: "approval",
       // The records endpoint's field is `decision` (approved/rejected);
       // `status` never existed on ToolApprovalRecord (live-pass finding,
@@ -213,6 +214,16 @@ function SH_toAttentionItems(input) {
       at: rec.decided_at,
       resolved: true,
       workspaceId: rec.workspace_id || null,
+      // uiv2 Wave 3 (resolved-card renderer): explicit, undecorated
+      // fields for NV_ResolvedDecisionCard to derive the notes §2.4
+      // "approved/rejected by {user} · time — reason" line from - raw
+      // ToolApprovalRecord shape, same fields the DECISIONS - AUDIT
+      // table's derivation helpers already key off of.
+      decision: rec.decision,
+      decidedBy: rec.decided_by || null,
+      reason: rec.reason || null,
+      requestedAt: rec.requested_at || null,
+      decidedAt: rec.decided_at || null,
     };
     done.tier = SH_tierFor(done);
     out.push(done);

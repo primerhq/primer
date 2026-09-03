@@ -686,6 +686,46 @@ function NV_DecisionCard(props) {
   );
 }
 
+// uiv2 Wave 3 (Phase-2c missing-feature: "resolved decision cards do
+// not exist" - nv-session-doc.jsx used to build gate cards with
+// records:[] hardcoded, so an approved/rejected call just vanished
+// from the transcript). Static, no actions - a resolved record is
+// already terminal. Reuses the SAME derivation the DECISIONS - AUDIT
+// table uses (nv-platform.jsx's NV_approval* helpers, plain function
+// declarations sharing this file's top-level scope) so the one place
+// that can tell a session-bound timeout from a cancel (both collapse
+// to decision=rejected, only `reason` differs - primer/worker/
+// yield_runtime.py's classify_approval_payload) renders it the same
+// way in both surfaces.
+function NV_ResolvedDecisionCard(props) {
+  var item = props.item;
+  var rec = {
+    decision: item.decision, decided_by: item.decidedBy, reason: item.reason,
+    requested_at: item.requestedAt, decided_at: item.decidedAt,
+  };
+  var status = NV_approvalDerivedStatus(rec);
+  var color = NV_approvalStatusColor(status);
+  return (
+    <div className="nv-card" data-kind="approval-resolved"
+      data-testid={"nv-decision-resolved:" + item.toolCallId}>
+      <div className="nv-card-head">
+        <span className="nv-dot-resolved" style={{ color: color }} />
+        <span className="nv-card-title" style={{ color: color }}>
+          {status === "approved" ? "Approved" : "Rejected"}
+        </span>
+        <span className="nv-card-tool">{item.gatedTool}</span>
+        <span style={{ flex: 1 }} />
+        <span className="nv-card-routing">{NV_approvalAt(item.decidedAt)}</span>
+      </div>
+      <div className="nv-card-body">
+        <span className="nv-card-note" data-testid="nv-decision-resolved-line">
+          {NV_approvalDecidedBy(rec, status)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function NV_AskCard(props) {
   var con = NV_useConsole();
   var item = props.item;
@@ -1612,6 +1652,20 @@ function NV_SessionDoc(props) {
     },
     { pollMs: 5000, deps: [con.wid, sid] }
   );
+  // uiv2 Wave 3 (resolved-card renderer): this session's own resolved
+  // approval history - a park's pending yield disappears the moment a
+  // human decides it, so without this the card just vanishes instead
+  // of leaving the notes §2.4 resolved line. No poll: a resolved
+  // record can't change again, and the tap-listener refetch below
+  // covers the moment a NEW one lands (a decide always fires a
+  // "resumed" workspace-tap event).
+  var resolvedRecords = window.primerApi.useResource(
+    SH_api.keys.sessionRecords(sid),
+    function (signal) {
+      return SH_api.sessionApprovalRecords(sid, signal);
+    },
+    { pollMs: 0, deps: [sid] }
+  );
   // Top-level hook call (it is a hook: useRef+useEffect inside); the hook
   // keeps the latest closure in a ref, so gates.refetch stays current.
   window.useWorkspaceTapListener(con.wid, function (ev) {
@@ -1620,6 +1674,10 @@ function NV_SessionDoc(props) {
             || ev["class"] === "resumed"
             || ev["class"] === "done")) {
       gates.refetch();
+      // A decide fires "resumed" the same tick the pending yield
+      // clears - refetch here too, or the resolved card wouldn't
+      // appear until the operator reloads the page.
+      resolvedRecords.refetch();
     }
   });
   // Seed the store from the REST history resource so the first paint is
@@ -2069,7 +2127,8 @@ function NV_SessionDoc(props) {
   }, [flat.length, voiceOn, ttsOk]);
   var pending = (session && session.pending_messages) || [];
   var gateItems = window.SH_toAttentionItems({
-    pending: (gates.data && gates.data.items) || [], records: [],
+    pending: (gates.data && gates.data.items) || [],
+    records: (resolvedRecords.data && resolvedRecords.data.items) || [],
   });
   var agentId = session && session.binding
     ? (session.binding.agent_id || session.binding.graph_id)
@@ -2481,6 +2540,13 @@ function NV_SessionDoc(props) {
               // the card for historical context, but it can no longer be
               // actionable.
               var ended = NV_sessionIsOver(session);
+              // uiv2 Wave 3: a resolved record (item.resolved) is
+              // already terminal - it gets the static digest-tier
+              // card regardless of `ended`, never the pending
+              // approve/reject/ask actions.
+              if (item.resolved) {
+                return <NV_ResolvedDecisionCard key={item.id} item={item} />;
+              }
               return item.kind === "approval" ? (
                 <NV_DecisionCard key={item.id} item={item} ended={ended}
                   onResolved={refetchAll} />

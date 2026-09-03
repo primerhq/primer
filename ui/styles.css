@@ -3607,6 +3607,16 @@ input, textarea, select { font: inherit; color: inherit; }
   background: var(--attention);
   flex-shrink: 0;
 }
+/* Resolved decision cards (digest tier, uiv2 Wave 3): color comes from
+   an inline `color` matching NV_approvalStatusColor's palette (green
+   approved / red rejected-family) - one class, no per-outcome variants. */
+.nv-dot-resolved {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
 
 /* Files rows, history, context menu */
 .nv-file-row {
