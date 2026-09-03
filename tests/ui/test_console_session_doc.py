@@ -1423,3 +1423,89 @@ def test_file_doc_keeps_the_etag_discipline():
 
 def test_diff_lines_are_toned():
     assert 'data-tone={tone}' in FDOCS
+
+
+# ---------------------------------------------------------------------------
+# uiv2 Wave 3 - resolved decision cards (Phase-2c missing-feature: gate
+# cards used to be built with records:[] hardcoded, so an approved/
+# rejected call vanished from the transcript instead of leaving the
+# notes §2.4 resolved line). Derivation-logic correctness itself
+# (timeout/cancelled classification, decided-by phrasing) is already
+# covered by tests/ui/test_approvals_audit_derivation.py's 13 MiniRacer
+# tests against the exact same nv-platform.jsx helpers this reuses -
+# these pin the WIRING: real records reach the card, the right
+# component renders, and it calls into that shared logic rather than
+# re-deriving its own.
+# ---------------------------------------------------------------------------
+
+
+def test_records_are_no_longer_hardcoded_empty():
+    assert "records: []" not in DOC
+    assert "resolvedRecords.data" in DOC
+
+
+def test_a_decide_refetches_resolved_records_not_just_gates():
+    # Without this, an approve/reject fires the "resumed" tap event,
+    # the pending card clears via gates.refetch(), and the new resolved
+    # record silently never appears until the operator reloads.
+    m = re.search(r"useWorkspaceTapListener\([\s\S]{0,600}", DOC)
+    assert m and "gates.refetch()" in m.group(0)
+    assert "resolvedRecords.refetch()" in m.group(0)
+
+
+def test_session_scoped_records_resource_is_wired():
+    assert "SH_api.sessionApprovalRecords(sid" in DOC
+    assert "SH_api.keys.sessionRecords(sid)" in DOC
+
+
+def test_resolved_items_render_the_dedicated_card_not_the_actionable_ones():
+    m = re.search(r"gateItems\.map\(function \(item\) \{[\s\S]{0,1000}", DOC)
+    assert m
+    body = m.group(0)
+    assert "if (item.resolved)" in body
+    assert "<NV_ResolvedDecisionCard" in body
+    # The branch must come BEFORE the pending approval/ask ternary, or a
+    # resolved item could still fall through to the live-action cards.
+    assert body.index("if (item.resolved)") < body.index("item.kind ===")
+
+
+def test_resolved_decision_card_reuses_the_shared_derivation_not_its_own():
+    card = DOC[DOC.index("function NV_ResolvedDecisionCard"):
+               DOC.index("function NV_AskCard")]
+    assert "NV_approvalDerivedStatus(rec)" in card
+    assert "NV_approvalStatusColor(status)" in card
+    assert "NV_approvalDecidedBy(rec, status)" in card
+    assert "NV_approvalAt(item.decidedAt)" in card
+    # No actions - a resolved record is already terminal (per Dev-
+    # Backend's own read when we agreed the nv-session-doc.jsx split).
+    assert "onClick" not in card
+    assert 'data-testid="nv-decision-resolved-line"' in card
+
+
+def test_resolved_decision_card_registers_no_new_css_debt():
+    assert ".nv-dot-resolved" in STYLES
+
+
+def test_shell_attention_records_carry_explicit_fields_for_the_card():
+    # Not just `preview` (which the OLD, never-fed stub overloaded to
+    # hold the reason text) - the card needs decision/decidedBy/reason/
+    # requestedAt/decidedAt as their own fields to feed
+    # NV_approvalDerivedStatus's real ToolApprovalRecord-shaped input.
+    m = re.search(r"for \(var j = 0; j < records\.length[\s\S]{0,1400}", ATTENTION)
+    assert m
+    body = m.group(0)
+    for field in ("decision: rec.decision", "decidedBy: rec.decided_by",
+                  "reason: rec.reason", "requestedAt: rec.requested_at",
+                  "decidedAt: rec.decided_at"):
+        assert field in body, field
+
+
+def test_records_endpoint_gained_a_session_filter_not_a_client_side_one():
+    # The per-session transcript fetch scopes server-side
+    # (session_id=...) rather than fetching a page of the whole
+    # instance's records and filtering in JS on every open session.
+    api = (ROOT / "primer" / "api" / "routers" / "tool_approval.py").read_text(
+        encoding="utf-8",
+    )
+    assert "session_id" in api
+    assert 'query = query.where("session_id", session_id)' in api

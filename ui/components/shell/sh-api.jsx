@@ -276,6 +276,17 @@ var SH_api = {
       null, { signal: signal });
   },
 
+  // uiv2 Wave 3: the session-detail transcript's resolved-decision
+  // cards need exactly this session's history - the server-side
+  // session_id filter (added alongside this) avoids fetching + client-
+  // filtering a page of the whole instance's records per open session.
+  sessionApprovalRecords: function (sid, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/tool_approval/records?session_id=" + encodeURIComponent(sid)
+        + "&status=all&offset=0&length=50",
+      null, { signal: signal });
+  },
+
   // S7 spec section 5. The Trace tab derives its tree from this read.
   timeline: function (sid, turnNo, signal) {
     return window.primerApi.apiFetch(
@@ -428,6 +439,7 @@ var SH_api = {
     log: function (wid) { return "shell-log:" + wid; },
     commit: function (wid, sha) { return "shell-commit:" + wid + ":" + sha; },
     records: function () { return "shell-approval-records"; },
+    sessionRecords: function (sid) { return "shell-session-records:" + sid; },
     eventSubscriptions: function () { return "shell-event-subscriptions"; },
     timeline: function (sid, turnNo) {
       return "shell-timeline:" + sid + ":" + turnNo;

@@ -9,14 +9,16 @@ import pytest
 from primer.model.tool_approval import ToolApprovalRecord
 
 
-def _rec(*, id_: str, decision: str, decided_at: datetime) -> ToolApprovalRecord:
+def _rec(
+    *, id_: str, decision: str, decided_at: datetime, session_id: str = "sess-1",
+) -> ToolApprovalRecord:
     return ToolApprovalRecord(
         id=id_,
         tool_name="delete_workspace",
         toolset_id="workspaces",
         arguments={"id": "ws-x"},
         tool_call_id=f"call-{id_}",
-        session_id="sess-1",
+        session_id=session_id,
         decided_at=decided_at,
         decision=decision,  # type: ignore[arg-type]
         policy_id="p1",
@@ -91,3 +93,47 @@ async def test_records_list_empty(client):
 async def test_records_list_bad_status_422(client):
     r = await client.get("/v1/tool_approval/records?status=bogus")
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_records_list_filter_by_session_id(client, app):
+    # uiv2 Wave 3: the session-detail transcript's resolved-card
+    # renderer needs exactly one session's history, not a client-side
+    # filter over a page of the whole instance's records.
+    await _seed(app)
+    storage = app.state.storage_provider.get_storage(ToolApprovalRecord)
+    await storage.create(_rec(
+        id_="r5", decision="approved",
+        decided_at=datetime(2026, 6, 14, 9, 20, tzinfo=UTC),
+        session_id="sess-other",
+    ))
+    r = await client.get("/v1/tool_approval/records?session_id=sess-1")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    ids = [it["id"] for it in body["items"]]
+    assert ids == ["r3", "r2", "r4", "r1"]
+    assert all(it["session_id"] == "sess-1" for it in body["items"])
+
+
+@pytest.mark.asyncio
+async def test_records_list_filter_by_session_id_and_status(client, app):
+    await _seed(app)
+    storage = app.state.storage_provider.get_storage(ToolApprovalRecord)
+    await storage.create(_rec(
+        id_="r5", decision="rejected",
+        decided_at=datetime(2026, 6, 14, 9, 20, tzinfo=UTC),
+        session_id="sess-other",
+    ))
+    r = await client.get(
+        "/v1/tool_approval/records?session_id=sess-1&status=rejected",
+    )
+    assert r.status_code == 200, r.text
+    assert [it["id"] for it in r.json()["items"]] == ["r2"]
+
+
+@pytest.mark.asyncio
+async def test_records_list_filter_by_session_id_no_match(client, app):
+    await _seed(app)
+    r = await client.get("/v1/tool_approval/records?session_id=sess-nope")
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == []

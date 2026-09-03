@@ -478,25 +478,39 @@ def make_tool_approval_ops_router() -> APIRouter:
             Literal["all", "approved", "rejected", "timeout", "cancelled"],
             Query(),
         ] = "all",
+        session_id: Annotated[
+            str | None,
+            Query(
+                description=(
+                    "Scope to one session's resolved decisions - the "
+                    "session detail transcript's resolved-card renderer "
+                    "needs exactly this session's history, not a page of "
+                    "the whole instance's records to filter client-side."
+                ),
+            ),
+        ] = None,
         offset: Annotated[int, Query(ge=0)] = 0,
         length: Annotated[int, Query(ge=1, le=200)] = 50,
     ) -> OffsetPageResponse[ToolApprovalRecord]:
         """List resolved approval decisions, newest first.
 
-        ``status`` filters by decision (``all`` = no filter). Ordered by
-        ``decided_at`` descending so the most recent decisions lead, mirroring
-        the records view's default sort.
+        ``status`` filters by decision (``all`` = no filter). ``session_id``
+        optionally scopes to one session. Ordered by ``decided_at``
+        descending so the most recent decisions lead, mirroring the
+        records view's default sort.
         """
         sp = get_storage_provider(request)
         storage = sp.get_storage(ToolApprovalRecord)
         page = OffsetPage(offset=offset, length=length)
         order = [OrderBy(field="decided_at", direction="desc")]
-        if status == "all":
+        if status == "all" and session_id is None:
             return await storage.list(page, order_by=order)
-        predicate = (
-            Q(ToolApprovalRecord).where("decision", status).build()
-        )
-        return await storage.find(predicate, page, order_by=order)
+        query = Q(ToolApprovalRecord)
+        if session_id is not None:
+            query = query.where("session_id", session_id)
+        if status != "all":
+            query = query.where("decision", status)
+        return await storage.find(query.build(), page, order_by=order)
 
     return router
 
