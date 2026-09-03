@@ -95,6 +95,7 @@ from primer.observability.turn_log_writer import (
 
 
 if TYPE_CHECKING:
+    from primer.int.artifact_storage import ArtifactStorage
     from primer.int.llm import LLM
     from primer.model.agent import Agent
     from primer.model.chat import ToolResultPart
@@ -183,6 +184,7 @@ class _BaseGraphExecutor(
         router_registry: RouterRegistry | None = None,
         principal: str | None = None,
         max_parallel_nodes: int = DEFAULT_MAX_PARALLEL_NODES,
+        artifact_storage: "ArtifactStorage | None" = None,
     ) -> None:
         self._graph = graph
         self._agent_resolver = agent_resolver
@@ -194,6 +196,10 @@ class _BaseGraphExecutor(
         self._graph_resolver = graph_resolver
         self._router_registry = router_registry or RouterRegistry()
         self._principal = principal
+        # Forwarded to run_agent_turn by _AgentNodeMixin so artifact-backed
+        # parts resolve to inline bytes before the LLM sees them. None is a
+        # no-op -- see hydrate_prompt_parts.
+        self._artifact_storage = artifact_storage
         # Ambient run context exposed to node templates as ``ctx``. The base
         # executor is surface-agnostic, so default to an in-memory context;
         # WorkspaceGraphExecutor overrides this with real workspace ids.

@@ -71,6 +71,7 @@ from primer.model.graph import build_execution_context
 
 
 if TYPE_CHECKING:
+    from primer.int.artifact_storage import ArtifactStorage
     from primer.int.llm import LLM
     from primer.model.agent import Agent
     from primer.model_profile import ResolvedModel
@@ -115,6 +116,7 @@ class _BaseAgentExecutor(ABC):
         tool_manager: ToolExecutionManager,
         compaction: CompactionStrategy | None = None,
         principal: str | None = None,
+        artifact_storage: "ArtifactStorage | None" = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -122,6 +124,10 @@ class _BaseAgentExecutor(ABC):
         self._tool_manager = tool_manager
         self._compaction = compaction or CompactionStrategy()
         self._principal = principal
+        # Forwarded to run_agent_turn so artifact-backed parts (image/
+        # document attachments) resolve to inline bytes before the LLM
+        # sees them. None is a no-op -- see hydrate_prompt_parts.
+        self._artifact_storage = artifact_storage
         # Ambient run context exposed to the system prompt as ``ctx``. Base is
         # surface-agnostic -> memory default; subclasses override with the real
         # surface (AgentExecutor -> "chat", WorkspaceAgentExecutor -> "workspace").
@@ -330,6 +336,7 @@ class _BaseAgentExecutor(ABC):
                 principal=self._principal,
                 messages_out=full_turn_messages,
                 last_input_tokens_out=last_input_tokens_holder,
+                artifact_storage=self._artifact_storage,
             ):
                 await self._emit(event)
                 yield event

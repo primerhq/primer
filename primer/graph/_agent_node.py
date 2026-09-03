@@ -188,6 +188,7 @@ class _AgentNodeMixin:
                 response_format=node.response_format,
                 principal=self._principal,
                 messages_out=produced_messages,
+                artifact_storage=self._artifact_storage,
             ):
                 # 01a0518f: current_graph_node_id() is the fan-out-
                 # instance-qualified id (_stream_node sets it before
@@ -280,6 +281,7 @@ class _AgentNodeMixin:
             response_format=node.response_format,
             principal=self._principal,
             messages_out=produced_messages,
+            artifact_storage=self._artifact_storage,
         ):
             pass
 

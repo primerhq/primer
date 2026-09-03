@@ -49,6 +49,7 @@ from primer.model.except_ import AuthRequiredError, PrimerError
 
 
 if TYPE_CHECKING:
+    from primer.int.artifact_storage import ArtifactStorage
     from primer.int.llm import LLM
     from primer.model.agent import Agent
     from primer.model_profile import ResolvedModel
@@ -130,6 +131,7 @@ async def run_agent_turn(
     principal: str | None = None,
     messages_out: list[Message] | None = None,
     last_input_tokens_out: list[int | None] | None = None,
+    artifact_storage: "ArtifactStorage | None" = None,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -161,6 +163,15 @@ async def run_agent_turn(
         sets ``[0]`` to the most recent ``Usage.input_tokens`` value
         observed during the turn (or leaves it as-is if the LLM
         never emitted Usage).
+    artifact_storage
+        When given, every part with an ``artifact_id`` (image/document
+        attachments, MCP tool-result media) is resolved to inline
+        ``data`` immediately before each ``llm.stream`` call -- an
+        adapter only ever reads ``data``/``url``/``file_id``, never
+        ``artifact_id``. Re-run every tool round so media a tool
+        produces mid-turn is hydrated too, not just the turn's
+        starting prompt. ``None`` (the default) is a no-op: callers
+        that never resolve a store keep today's behaviour exactly.
 
     Raises
     ------
@@ -173,6 +184,10 @@ async def run_agent_turn(
 
     tool_round = 0
     while True:
+        if artifact_storage is not None:
+            from primer.channel.media import hydrate_prompt_parts
+
+            prompt = await hydrate_prompt_parts(artifact_storage, prompt)
         buffered: list[StreamEvent] = []
         held_done: StreamEvent | None = None
         call_t0 = time.monotonic()

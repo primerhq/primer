@@ -16,11 +16,15 @@ dependency tree at startup.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.pool import _toolset_ids_from_scoped
+
+
+logger = logging.getLogger(__name__)
 
 
 def _pool_event_recorder(pool):
@@ -88,6 +92,27 @@ async def client_toolset_for(pool: "WorkerPool", session_row) -> dict:
     from primer.toolset.client import CLIENT_TOOLSET_ID, ClientToolsetProvider
 
     return {CLIENT_TOOLSET_ID: ClientToolsetProvider()}
+
+
+async def _resolve_default_artifact_storage(pool: "WorkerPool"):
+    """The deployment's default ArtifactStorage, or ``None``.
+
+    ``pool._artifact_storage_registry`` is optional (unset in some
+    pool test configurations, same tolerance as ``pool._storage`` /
+    ``pool._channel_dispatcher`` elsewhere in this module) -- None
+    here means the turn's prompt is built without hydration, an
+    explicit no-op (see ``hydrate_prompt_parts``), not a hard failure.
+    """
+    if pool._artifact_storage_registry is None:
+        return None
+    try:
+        return await pool._artifact_storage_registry.get_default()
+    except Exception:  # noqa: BLE001 -- degrade to no hydration
+        logger.warning(
+            "executor_builders: default artifact storage resolve failed",
+            exc_info=True,
+        )
+        return None
 
 
 async def build_executor(pool: "WorkerPool", session: WorkspaceSession, workspace):
@@ -348,6 +373,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         tool_manager=tool_manager,
         session=agent_session,
         identity=initiated_by,
+        artifact_storage=await _resolve_default_artifact_storage(pool),
     )
     return _TurnDriver(executor)
 
@@ -542,6 +568,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         toolset_resolver=toolset_resolver,
         approval_resolver=pool._approval_resolver,
         max_parallel_nodes=pool.config.max_parallel_nodes,
+        artifact_storage=await _resolve_default_artifact_storage(pool),
     )
     return _GraphTurnDriver(executor)
 
