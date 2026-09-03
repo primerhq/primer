@@ -784,8 +784,10 @@ class WorkerPool:
             agent_tool_result=agent_tool_result,
         )
 
-    def _repark_graph_outcome(self, session, repark):
-        return graph_resume_coordinator.repark_graph_outcome(self, session, repark)
+    def _repark_graph_outcome(self, session, repark, *, node_tool_call_seq=None):
+        return graph_resume_coordinator.repark_graph_outcome(
+            self, session, repark, node_tool_call_seq=node_tool_call_seq,
+        )
 
     def _repark_resumed_yield_outcome(self, session, parked, yld):
         return session_resume_coordinator.repark_resumed_yield_outcome(

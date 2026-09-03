@@ -633,6 +633,57 @@ def test_stash_graph_scoped_ids_preserves_existing_value() -> None:
     assert checkpoint["pending_toolcalls"][0]["scoped_tool_call_id"] == "worker[0]:tool:3:1"
 
 
+def test_seeded_coalesce_state_avoids_scoped_id_collision_after_resume() -> None:
+    """01a0690a piece 3 collision guard: turn_no does not bump across a
+    park/resume (on_release only bumps it on a non-park release), so a
+    resumed drain's fresh _CoalesceState observes the SAME turn_no the
+    pre-park mints used. Without seeding tool_call_seq from the park's
+    node_tool_call_seq snapshot, a node that made 2 calls before parking
+    would mint seq 1, 2 again after resume -- a silent, unpaired id
+    collision in the durable record.
+
+    Simulates: node worker[0] makes 2 tool calls (minted live, pre-park),
+    parks; on resume a FRESH _CoalesceState is seeded from the snapshot
+    (mirroring _ResumeDrainTap.create) and the SAME node makes 2 more
+    calls. All 4 scoped ids must be distinct.
+    """
+    from primer.model.chat import ToolCallStart
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    turn_no = 3
+    node_id = "worker[0]"
+
+    # --- pre-park: 2 tool calls on the live coalesce_state ---
+    live_state = _CoalesceState()
+    for i in range(2):
+        translate_stream_event(
+            ToolCallStart(id=f"raw-{i}", name="t", index=i), live_state,
+            node_id=node_id, turn_no=turn_no,
+        )
+    pre_park_ids = {
+        live_state.scoped_call_ids[(node_id, f"raw-{i}")] for i in range(2)
+    }
+    assert len(pre_park_ids) == 2  # sanity: the two pre-park mints differ
+
+    # --- park: snapshot the mint-seq high-water mark (ParkedState.node_tool_call_seq) ---
+    node_tool_call_seq = dict(live_state.tool_call_seq)
+
+    # --- resume: a FRESH _CoalesceState, seeded per _ResumeDrainTap.create ---
+    resume_state = _CoalesceState()
+    resume_state.tool_call_seq = dict(node_tool_call_seq)
+    for i in range(2, 4):
+        translate_stream_event(
+            ToolCallStart(id=f"raw-{i}", name="t", index=i - 2), resume_state,
+            node_id=node_id, turn_no=turn_no,  # SAME turn_no as pre-park
+        )
+    post_resume_ids = {
+        resume_state.scoped_call_ids[(node_id, f"raw-{i}")] for i in range(2, 4)
+    }
+
+    all_ids = pre_park_ids | post_resume_ids
+    assert len(all_ids) == 4, f"expected 4 distinct scoped ids, got {all_ids}"
+
+
 # ---------------------------------------------------------------------------
 # F1a: per-graph-node agent events flow into the session log, attributed by
 # node_id (the wrapped _GraphNodeEvent un-drop + per-node coalescing).
