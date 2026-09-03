@@ -19,7 +19,7 @@ import pytest
 
 from primer.bus.in_memory import InMemoryEventBus
 from primer.int.claim import ClaimKind, Lease, ReleaseOutcome
-from primer.model.chat import Done, Error, TextDelta
+from primer.model.chat import Done, Error, TextDelta, ToolCallEnd, ToolCallStart
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionMessageKind,
@@ -60,8 +60,14 @@ def _make_lease(session_id: str = "s1") -> Lease:
 class FakeWorkspaceIO:
     def __init__(self) -> None:
         self._data: dict[tuple[str, str], bytes] = defaultdict(bytes)
+        # Count of append_message_line calls — each non-empty
+        # WorkspaceMessageWriter.flush() produces exactly one, so this is
+        # a proxy for "how many separate I/O writes happened" independent
+        # of how many records ended up batched into each one.
+        self.append_calls: int = 0
 
     async def append_message_line(self, session_id: str, line: bytes) -> None:
+        self.append_calls += 1
         self._data[(session_id, "messages.jsonl")] += line
 
     def read_lines(self, session_id: str, filename: str = "messages.jsonl") -> list[str]:
@@ -540,6 +546,48 @@ async def test_each_record_gets_a_tick(
     assert len(lines) == 1
     assert len(ticks) == 1
     assert ticks[0]["seq"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_call_record_flushes_immediately(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """01a0518b (seam-split A-chat/workspace surface): a TOOL_CALL record
+    is flushed to workspace_io the instant it's appended, not batched with
+    later records into the buffer's normal 16KB/100ms flush. A claim-based
+    worker will read messages.jsonl from a different process, so the
+    record must be durable (flushed) before that worker can see it —
+    without the early flush, this turn's TOOL_CALL and DONE records would
+    both still fit under 16KB well within 100ms and land in a single
+    combined write at turn end.
+    """
+    fake_executor = FakeExecutor([
+        ToolCallStart(id="call_0", name="my_tool", index=0),
+        ToolCallEnd(id="call_0", arguments={}, index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    await run_one_session_turn(lease, deps)
+
+    lines = fake_workspace_io.read_lines(seeded_session.id)
+    assert len(lines) == 2  # TOOL_CALL, DONE
+    # The TOOL_CALL record's own write must be a SEPARATE I/O call from
+    # the DONE record's — proof the flush happened at TOOL_CALL append
+    # time rather than being deferred to the end-of-turn flush.
+    assert fake_workspace_io.append_calls == 2
 
 
 @pytest.mark.asyncio
