@@ -233,7 +233,30 @@ def open_legacy_route(page: Page, console_url: str, route: str,
         target = f"{head}:{tab}:{record}" if record else f"{head}:{tab}"
     name = target.split(":")[0]
     prefix = f"#/w/{wid}" if wid else "#/"
-    page.goto(f"{console_url}{prefix}?overlay={target}")
+    fragment = f"{prefix}?overlay={target}"
+
+    # Every real caller reaches this with the console ALREADY loaded (the
+    # `page` fixture's own pre-navigation guarantees it), so a page.goto()
+    # to a URL differing from the current one only by hash is a same-
+    # document (fragment) navigation. Whether that reliably fires the
+    # hashchange event nv-shell.jsx's URL-sync listener depends on is not
+    # guaranteed across Playwright/browser navigation classification --
+    # the same trap class as the Phase-1 screenshot-rig lesson (fragment-
+    # only page.goto = same-document navigation, SPA router may not
+    # re-handle). Assign location.hash directly in-page instead: the
+    # browser's own native hash-assignment primitive, which unambiguously
+    # queues a hashchange task per spec regardless of how Playwright
+    # classifies the navigation. Falls back to a real goto() when the
+    # page isn't on this console origin yet (nothing to same-document-
+    # navigate from -- not exercised by the current suite, but a route
+    # helper shouldn't assume every future caller pre-navigates).
+    current_origin = page.url.split("#", 1)[0].rstrip("/")
+    console_origin = console_url.rstrip("/")
+    if current_origin == console_origin:
+        page.evaluate("(h) => { window.location.hash = h; }", fragment)
+    else:
+        page.goto(f"{console_url}{fragment}")
+
     body = page.get_by_test_id("nv-overlay-body")
     expect(body).to_be_visible(timeout=timeout)
     expect(page.get_by_test_id(f"nv-overlay:{name}")).to_be_visible(timeout=timeout)
