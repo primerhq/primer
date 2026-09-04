@@ -68,6 +68,7 @@ import asyncpg
 import httpx
 import pytest
 from tests._support.model_profiles import agent_model, seed_llm_provider
+from tests._support.runs import wait_terminal
 
 
 def _pg_port() -> int:
@@ -368,9 +369,22 @@ async def test_t0865_resume_after_on_disk_ended_clears_park(
         body1 = await _wait_for_resume(client, sid)
         assert body1["parked_status"] is None, body1
         assert body1["turn_no"] > baseline, body1
-        # The post-resume LLM call fails. Wait briefly for the
-        # fatal handler to advance status. We don't strictly
-        # depend on this — the next inject resets status='running'.
+        # 01a06bc1: parked_status clears as soon as the resume
+        # machinery injects the tool result and converts the park
+        # back into a normal turn - BEFORE that turn's own LLM call
+        # (the one that hits the bogus URL) actually runs and fails.
+        # Racing straight into cycle 2's inject after only the above
+        # assertions meant the defensive branch this test exists to
+        # pin could go unexercised while the test still passed: 5/5
+        # live runs (Dev-Backend, 2026-09-04) showed cycle 2's inject
+        # winning that race every time, with the bogus-URL turn never
+        # having run yet. Block on the row actually reaching its
+        # terminal ENDED/failed state before cycle 2 touches it, so
+        # the on-disk-ENDED edge case this test is named for is
+        # guaranteed to exist by the time cycle 2 fires.
+        body1b = await wait_terminal(client, sid, timeout_s=20.0)
+        assert body1b.get("status") == "ended", body1b
+        assert body1b.get("ended_reason") == "failed", body1b
 
         # ----- Cycle 2: inject onto post-fatal row ---------------
         # The on-disk AgentSession is now ENDED (cycle 1's fatal
