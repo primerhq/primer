@@ -71,8 +71,12 @@ def _observe_llm_call(
     Returns the elapsed seconds so the caller can reuse them.
     """
     elapsed = time.monotonic() - t0
+    # llm_model.provider_id is None for an aggregated profile (01a067c4);
+    # prometheus_client tolerates None (coerces to the literal string
+    # "None") but that defeats the label's purpose, so fall back to the
+    # profile id, same as the trace-row display consumers.
     _metrics.llm_calls_total.labels(
-        llm_model.provider_id, llm_model.profile_id, status,
+        llm_model.provider_id or llm_model.profile_id, llm_model.profile_id, status,
     ).inc()
     if usage is not None:
         if usage.input_tokens:

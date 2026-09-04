@@ -886,11 +886,6 @@ class WorkerPool:
     async def _build_graph_executor(self, session: WorkspaceSession, workspace):
         return await executor_builders.build_graph_executor(self, session, workspace)
 
-    async def _resolve_llm_model(self, agent, override_profile_id=None):
-        return await executor_builders.resolve_llm_model(
-            self, agent, override_profile_id,
-        )
-
     async def _resolve_llm(self, agent, override_profile_id=None):
         from primer.model_profile import resolve_llm
         return await resolve_llm(

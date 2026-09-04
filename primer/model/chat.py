@@ -1450,13 +1450,23 @@ class _LlmCall(BaseModel):
         ...,
         description="ModelProfile the call resolved under.",
     )
-    provider_id: str = Field(
+    provider_id: str | None = Field(
         ...,
-        description="Provider row id the profile resolved to.",
+        description=(
+            "Provider row id the profile resolved to. None when the "
+            "profile is kind=\"aggregated\" (01a067c4) -- there is no "
+            "single provider to report, and WHICH pool member actually "
+            "served this call is not tracked yet (winning-member trace "
+            "wiring is a filed follow-up); consumers fall back to "
+            "profile_id for display."
+        ),
     )
-    model: str = Field(
+    model: str | None = Field(
         ...,
-        description="Concrete model name sent to the provider.",
+        description=(
+            "Concrete model name sent to the provider. None under the "
+            "same aggregated condition as provider_id."
+        ),
     )
     input_tokens: int | None = Field(
         default=None,

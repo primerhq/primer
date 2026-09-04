@@ -38,7 +38,8 @@ aggregated rows in.
 Live-DB fact (verified before this migration was written): zero
 aggregated ``LLMProvider`` rows exist in production, so this migration's
 real-world effect is a no-op; its correctness is exercised purely by
-synthetic fixtures in ``tests/storage/test_migrations.py``. That is also
+synthetic fixtures in ``tests/storage/test_m007_aggregated_model_profiles.py``.
+That is also
 why the min-members tightening (the old ``AggregatedLLMConfig.members``
 allowed as few as 1; the new ``ModelProfile`` CRUD layer requires >= 2)
 ships with no grandfather path -- there is nothing to grandfather.

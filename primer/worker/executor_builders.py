@@ -546,25 +546,6 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     return _GraphTurnDriver(executor)
 
 
-async def resolve_llm_model(
-    pool: "WorkerPool", agent, override_profile_id: str | None = None,
-):
-    """Resolve the :class:`ResolvedModel` this turn should run under.
-
-    ``override_profile_id`` wins over the agent's own default when set,
-    which is how the session, chat, and graph-node override surfaces
-    reach the model layer. Raises :class:`NotFoundError` when the
-    resolved profile is absent.
-    """
-    from primer.model_profile import resolve_model
-
-    return await resolve_model(
-        pool._storage,
-        default_profile_id=agent.model.profile_id,
-        override_profile_id=override_profile_id,
-    )
-
-
 async def resolve_llm_and_model(
     pool: "WorkerPool", agent, override_profile_id: str | None = None,
 ):
@@ -581,8 +562,7 @@ async def resolve_llm_and_model(
     """
     # Through pool._resolve_llm, not the module function directly: this
     # module's contract is that builders route via the pool so a test
-    # monkeypatching pool._resolve_llm still steers resolution (mirrors
-    # resolve_llm_model routing through pool._resolve_llm_model above).
+    # monkeypatching pool._resolve_llm still steers resolution.
     return await pool._resolve_llm(agent, override_profile_id)
 
 

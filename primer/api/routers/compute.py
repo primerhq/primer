@@ -80,18 +80,41 @@ async def agent_status(
 
     issues: list[str] = []
 
-    # The agent names a ModelProfile, which in turn names the provider.
-    # Both hops are reported independently so a broken agent says WHICH
-    # link is missing rather than just "unhealthy".
+    # The agent names a ModelProfile, which in turn names the provider --
+    # OR, for kind="aggregated" (01a067c4), names an ordered pool of
+    # member profiles instead, each of which names its own provider. All
+    # hops are reported independently so a broken agent says WHICH link
+    # is missing rather than just "unhealthy".
     profile_id = agent.model.profile_id
     profile = await model_profiles.get(profile_id)
     if profile is None:
         issues.append(f"ModelProfile {profile_id!r} does not exist")
-    elif await llm_providers.get(profile.provider_id) is None:
-        issues.append(
-            f"LLMProvider {profile.provider_id!r} referenced by ModelProfile "
-            f"{profile_id!r} does not exist"
-        )
+    elif profile.kind == "single":
+        if await llm_providers.get(profile.provider_id) is None:
+            issues.append(
+                f"LLMProvider {profile.provider_id!r} referenced by ModelProfile "
+                f"{profile_id!r} does not exist"
+            )
+    else:  # kind == "aggregated": no provider_id of its own -- walk members.
+        for member_id in profile.members or []:
+            member = await model_profiles.get(member_id)
+            if member is None:
+                issues.append(
+                    f"ModelProfile {profile_id!r} member {member_id!r} "
+                    f"does not exist"
+                )
+            elif member.kind != "single":
+                issues.append(
+                    f"ModelProfile {profile_id!r} member {member_id!r} is "
+                    f"not a single-kind profile (nested aggregation is "
+                    f"not supported)"
+                )
+            elif await llm_providers.get(member.provider_id) is None:
+                issues.append(
+                    f"LLMProvider {member.provider_id!r} referenced by "
+                    f"ModelProfile {profile_id!r} member {member_id!r} "
+                    f"does not exist"
+                )
 
     # ``agent.tools`` carries scoped tool ids of the form
     # ``<toolset_id>__<bare_name>`` (or, for tools with no scope prefix,

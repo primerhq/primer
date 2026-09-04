@@ -251,18 +251,20 @@ async def _providers_map(storage_provider) -> dict[str, str]:
         [(r.id, f"providers/llm/{r.id}", _enum_value(r.provider)) for r in llms],
     )
 
+    def _profile_label(p) -> str:
+        # kind="aggregated" (01a067c4) profiles have no model_name/
+        # provider_id/context_length of their own -- the single-profile
+        # label would literally render "None on None, context None".
+        if p.kind == "aggregated":
+            return f"aggregated pool of {len(p.members or [])}: " + ", ".join(
+                p.members or [],
+            )
+        return f"{p.model_name} on {p.provider_id}, context {p.context_length}"
+
     profiles = await _all_rows(storage_provider, ModelProfile)
     out["providers/model-profiles"] = _index(
         "Model profiles",
-        [
-            (
-                p.id,
-                None,
-                f"{p.model_name} on {p.provider_id}, "
-                f"context {p.context_length}",
-            )
-            for p in profiles
-        ],
+        [(p.id, None, _profile_label(p)) for p in profiles],
         preamble=(
             "An agent names a profile, not a model. These are the profiles "
             "this install has registered."
