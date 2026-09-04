@@ -376,6 +376,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         identity=initiated_by,
         artifact_storage=await _resolve_default_artifact_storage(pool),
         turn_no=session.turn_no,
+        tool_calls_as_claims_enabled=pool.config.tool_calls_as_claims_enabled,
     )
     return _TurnDriver(executor)
 
@@ -574,6 +575,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         max_parallel_nodes=pool.config.max_parallel_nodes,
         artifact_storage=await _resolve_default_artifact_storage(pool),
         turn_no=session.turn_no,
+        tool_calls_as_claims_enabled=pool.config.tool_calls_as_claims_enabled,
     )
     return _GraphTurnDriver(executor)
 

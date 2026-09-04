@@ -138,6 +138,7 @@ async def run_agent_turn(
     last_input_tokens_out: list[int | None] | None = None,
     artifact_storage: "ArtifactStorage | None" = None,
     turn_no: int | None = None,
+    tool_calls_as_claims_enabled: bool = False,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -189,6 +190,21 @@ async def run_agent_turn(
         its own tool-call scoped ids from the record they need to pair
         against. ``None`` (the default) is a no-op for callers that
         haven't opted into the feature.
+    tool_calls_as_claims_enabled
+        Whether the tool-dispatch seam should mint independently-claimable
+        ``ToolCallTask`` rows for this turn's batch instead of dispatching
+        in-process (01a0518b). TOP-LEVEL ONLY, deliberately: unlike
+        ``turn_no`` (pure bookkeeping, ambiguity-free to inherit), this
+        flag ARMS machinery -- specifically a ``tool_wait`` park, which is
+        SESSION-anchored (``parked_state``, the re-arm event, the resume
+        coordinator all key off a session row). A nested subagent turn
+        (``system__invoke_agent``) has no session row of its own to park
+        on, so it is NEVER passed this flag -- ``run_subagent`` /
+        ``resume_subagent`` don't even accept it as a parameter, the same
+        deliberate scope-cut class as ``artifact_storage``'s own cut for
+        that exact surface. A nested batch always dispatches in-process,
+        regardless of the enclosing turn's own setting. ``False`` (the
+        default) is today's in-process behaviour, unchanged.
 
     Raises
     ------

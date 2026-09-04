@@ -118,6 +118,7 @@ class _BaseAgentExecutor(ABC):
         principal: str | None = None,
         artifact_storage: "ArtifactStorage | None" = None,
         turn_no: int | None = None,
+        tool_calls_as_claims_enabled: bool = False,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -136,6 +137,14 @@ class _BaseAgentExecutor(ABC):
         # ToolCallTask rows it creates. None is a no-op for callers that
         # haven't opted into tool_calls_as_claims.
         self._turn_no = turn_no
+        # 01a0518b: TOP-LEVEL ONLY - deliberately never forwarded into a
+        # nested subagent turn (system__invoke_agent). Unlike turn_no
+        # above (pure bookkeeping), this flag arms tool_wait parking,
+        # which is session-anchored; a nested subagent turn has no
+        # session row of its own to park on. Same scope-cut class as
+        # artifact_storage's own cut for that surface - see
+        # run_agent_turn's docstring for the full reasoning.
+        self._tool_calls_as_claims_enabled = tool_calls_as_claims_enabled
         # Ambient run context exposed to the system prompt as ``ctx``. Base is
         # surface-agnostic -> memory default; subclasses override with the real
         # surface (AgentExecutor -> "chat", WorkspaceAgentExecutor -> "workspace").
@@ -346,6 +355,7 @@ class _BaseAgentExecutor(ABC):
                 last_input_tokens_out=last_input_tokens_holder,
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
+                tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
             ):
                 await self._emit(event)
                 yield event

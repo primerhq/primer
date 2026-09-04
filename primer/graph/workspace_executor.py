@@ -117,6 +117,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         max_parallel_nodes: int = DEFAULT_MAX_PARALLEL_NODES,
         artifact_storage: "ArtifactStorage | None" = None,
         turn_no: int | None = None,
+        tool_calls_as_claims_enabled: bool = False,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
             agent_resolver, workspace_session
@@ -135,6 +136,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             max_parallel_nodes=max_parallel_nodes,
             artifact_storage=artifact_storage,
             turn_no=turn_no,
+            tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
         )
         self._state_repo = state_repo
         self._graph_session_id = graph_session_id
@@ -667,8 +669,12 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             # 01a0518b: a subgraph node's child graph runs WITHIN the same
             # session turn as its parent - inherit turn_no unchanged, same
             # reasoning as a nested subagent call (see run_agent_turn's
-            # own turn_no docstring).
+            # own turn_no docstring). tool_calls_as_claims_enabled inherits
+            # too - unlike a subagent turn, a subgraph node has the SAME
+            # session row to park on, so the "no session to park on"
+            # scope-cut does not apply here.
             turn_no=self._turn_no,
+            tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
         )
 
     # ---- Public helpers --------------------------------------------------

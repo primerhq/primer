@@ -150,6 +150,7 @@ async def _build_executor(
     tool_manager_resolver=None,
     graph_resolver=None,
     artifact_storage=None,
+    tool_calls_as_claims_enabled=False,
 ) -> WorkspaceGraphExecutor:
     if agents is None:
         agents = {}
@@ -169,6 +170,7 @@ async def _build_executor(
         tool_manager_resolver=tool_manager_resolver,
         graph_resolver=graph_resolver,
         artifact_storage=artifact_storage,
+        tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
     )
 
 
@@ -1656,3 +1658,48 @@ class TestIdentityPropagation:
         await _drain(executor.invoke([]))
 
         assert captured.get("initiated_by") is ref
+
+
+@pytest.mark.asyncio
+async def test_build_sub_executor_inherits_tool_calls_as_claims_flag(
+    tmp_path: Path,
+) -> None:
+    """01a0518b: a subgraph node's child executor inherits the parent's
+    tool_calls_as_claims_enabled unchanged - unlike a nested subagent
+    turn (system__invoke_agent, permanently scope-cut - see
+    run_agent_turn's docstring), a subgraph node shares the SAME session
+    row as its parent, so the "no session to park a tool_wait batch on"
+    reasoning that scope-cuts the subagent surface does not apply here.
+    """
+    sub_node = _GraphNodeRef(id="SUB", graph_id="inner")
+    parent_graph = Graph(
+        id="g-parent",
+        description="begin -> sub -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            sub_node,
+            _EndNode(id="end"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="SUB"),
+            _StaticEdge(from_node="SUB", to_node="end"),
+        ],
+    )
+    sub_graph = Graph(
+        id="g-inner",
+        description="begin -> end",
+        nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="end")],
+    )
+    repo = await _make_state_repo(tmp_path)
+    parent = await _build_executor(
+        graph=parent_graph,
+        llm=_FakeLLM(scripts=[]),
+        state_repo=repo,
+        graph_session_id="gsid-parent",
+        tool_calls_as_claims_enabled=True,
+    )
+
+    child = await parent._build_sub_executor(sub_node, sub_graph)
+
+    assert child._tool_calls_as_claims_enabled is True
