@@ -1,20 +1,32 @@
-"""01a052a5 item 5: real attachments flow, zero-backend default scope.
+"""01a052a5 item 5 + 01a052d9 step 3: composer attachments, plain-text
+convention plus the true-vision/document fold-split.
 
-The lead's ruling: wire the composer's attach button to the ALREADY
-WORKING upload primitive nv-files-sidebar.jsx uses (SH_api.fileUpload ->
-PUT .../files, base64 - binary-safe), show pending uploads as removable
-chips, and fold each finished upload's path into the sent instruction as
-a plain "Attached file: {path}" line - no message-schema change. True
-multimodal/vision attachments are a separate, explicitly-filed design
-task (SteerBody has no parts/attachments field today - only a bare
-`instruction: str | None`).
+01a052a5's original scope: wire the composer's attach button to the
+ALREADY WORKING upload primitive nv-files-sidebar.jsx uses
+(SH_api.fileUpload -> PUT .../files, base64 - binary-safe), show pending
+uploads as removable chips, and fold each finished upload's path into the
+sent instruction as a plain "Attached file: {path}" line - no message-
+schema change.
+
+01a052d9 step 3 (this file's newer half): SteerBody now HAS a real
+attachments field (list[AttachmentIn], each a bare {path}) that folds a
+workspace file into the turn as true vision/document input
+(ImagePart/DocumentPart via primer.channel.media.media_from_workspace_
+files), landed on main as part of the same design. send() now SPLITS
+readyAttachments by NV_isVisionDocAttachment(a.type): image/* and the
+handful of document mimes ride as steerAttachments (SteerBody.
+attachments); everything else (text/code/audio/video/unrecognised) keeps
+the original plain-text convention above, since the agent's existing
+file tools already handle those and there is no benefit to hydrating
+their bytes into the prompt.
 
 Static source checks (the ui/ suite convention) plus one MiniRacer test
-for send()'s text-folding logic, extracted and executed for real -
-mirrors test_trace_row_expand_toggle_via_mini_racer's "stub React, run
-the real snippet" technique, since the folding rule (empty text vs. text
-+ attachments vs. attachments-only, skipping non-"done" ones) is exactly
-the kind of conditional a source-grep alone could get subtly wrong.
+for send()'s text-folding + fold-split logic, extracted and executed for
+real - mirrors test_trace_row_expand_toggle_via_mini_racer's "stub React,
+run the real snippet" technique, since the folding/split rule (empty
+text vs. text + attachments vs. attachments-only, skipping non-"done"
+ones, routing by mime type) is exactly the kind of conditional a source-
+grep alone could get subtly wrong.
 """
 
 from __future__ import annotations
@@ -29,6 +41,16 @@ DOC = (UI / "components" / "console" / "nv-session-doc.jsx").read_text(encoding=
 def _composer() -> str:
     start = DOC.index("function NV_Composer")
     end = DOC.index("\n// ---", start)
+    return DOC[start:end]
+
+
+def _vision_doc_helper() -> str:
+    """NV_isVisionDocAttachment + its NV_VISION_DOC_EXACT_TYPES constant --
+    module-level, defined just above NV_Composer, which calls it. The
+    MiniRacer harness below needs this alongside the extracted composer
+    body since it isn't a closure-captured local."""
+    start = DOC.index("var NV_VISION_DOC_EXACT_TYPES")
+    end = DOC.index("\n\n// ---", start)
     return DOC[start:end]
 
 
@@ -112,10 +134,18 @@ def test_attachments_clear_only_on_successful_send():
     assert "setAttachments([])" not in failure_branch
 
 
-def test_send_folding_logic_via_mini_racer():
-    """Extracts send()'s guard + fullText computation (up to the point
-    it starts touching React state / the network) and runs it for real
-    against representative attachment lists."""
+def _send_fold_context():
+    """Build the MiniRacer context + `fold()` helper shared by the
+    folding and fold-split tests below. Extracts send()'s guard +
+    fullText/steerAttachments computation (up to the point it starts
+    touching React state / the network) and runs it for real against
+    representative attachment lists.
+
+    Returns ``fold(val, attachments, sending=False, pending=False)``,
+    which gives back ``{"fullText": ..., "steerAttachments": ...}`` (both
+    ``None`` when absent) or bare ``None`` when the guard's own early
+    ``return;`` fired (nothing to send).
+    """
     import json
 
     from py_mini_racer import MiniRacer
@@ -130,9 +160,14 @@ def test_send_folding_logic_via_mini_racer():
     end = composer.index("setSending(true);", start)
     body = composer[start:end]
     wrapped = (
+        _vision_doc_helper() + "\n"
         "function SEND_FOLD(val, attachments, sending, attachmentsPending) {\n"
         + body
-        + "\n  return fullText;\n}\n"
+        + "\n  return JSON.stringify({"
+        "fullText: (typeof fullText === \"undefined\" ? null : fullText), "
+        "steerAttachments: (typeof steerAttachments === \"undefined\" "
+        "? null : steerAttachments)"
+        "});\n}\n"
     )
     transpiled = bundler._transform(wrapped, "send_fold_test.jsx")
 
@@ -140,34 +175,94 @@ def test_send_folding_logic_via_mini_racer():
     ctx.eval(transpiled)
 
     def fold(val, attachments, sending=False, pending=False):
-        # A guard hit returns bare `undefined`, which py_mini_racer's
-        # JSON-marshalling ctx.call() cannot round-trip - coerce to null
-        # before crossing back into Python.
+        # A guard hit returns bare `undefined` for the whole function
+        # (SEND_FOLD's inlined `return;` never reaches the JSON.stringify
+        # tail below it) - coerce to None before crossing back into
+        # Python, same as the pre-fold-split version of this test did.
         ctx.eval(
             "var __r = SEND_FOLD(" + json.dumps(val) + ", "
             + json.dumps(attachments) + ", " + json.dumps(sending) + ", "
             + json.dumps(pending) + ");"
         )
-        return ctx.eval("__r === undefined ? null : __r")
+        raw = ctx.eval("__r === undefined ? null : __r")
+        return json.loads(raw) if raw is not None else None
 
-    assert fold("hello", []) == "hello"
+    return fold
+
+
+def test_send_folding_logic_via_mini_racer():
+    fold = _send_fold_context()
+
+    def text_of(val, attachments, **kw):
+        r = fold(val, attachments, **kw)
+        return r["fullText"] if r else None
+
+    assert text_of("hello", []) == "hello"
     assert fold("", []) is None, "nothing to send returns undefined (the guard's bare return)"
-    assert fold("", [{"path": "uploads/x-a.png", "status": "done"}]) == (
-        "Attached file: uploads/x-a.png"
+    assert text_of("", [{"path": "uploads/x-a.pdf", "status": "done", "type": "text/plain"}]) == (
+        "Attached file: uploads/x-a.pdf"
     )
-    assert fold("look at this", [{"path": "uploads/x-a.png", "status": "done"}]) == (
-        "look at this\n\nAttached file: uploads/x-a.png"
-    )
-    two = fold("", [
-        {"path": "uploads/x-a.png", "status": "done"},
-        {"path": "uploads/x-b.pdf", "status": "done"},
+    assert text_of(
+        "look at this",
+        [{"path": "uploads/x-a.pdf", "status": "done", "type": "text/plain"}],
+    ) == "look at this\n\nAttached file: uploads/x-a.pdf"
+    two = text_of("", [
+        {"path": "uploads/x-a.txt", "status": "done", "type": "text/plain"},
+        {"path": "uploads/x-b.csv", "status": "done", "type": "text/csv"},
     ])
-    assert two == "Attached file: uploads/x-a.png\nAttached file: uploads/x-b.pdf"
+    assert two == "Attached file: uploads/x-a.txt\nAttached file: uploads/x-b.csv"
     # An uploading/errored attachment is never folded into the sent text.
-    assert fold("hi", [{"path": "uploads/x-a.png", "status": "uploading"}]) == "hi"
-    assert fold("hi", [{"path": "uploads/x-a.png", "status": "error"}]) == "hi"
+    assert text_of("hi", [{"path": "uploads/x-a.txt", "status": "uploading", "type": "text/plain"}]) == "hi"
+    assert text_of("hi", [{"path": "uploads/x-a.txt", "status": "error", "type": "text/plain"}]) == "hi"
     # Only an uploading one blocks the guard when there is otherwise
     # nothing else to send yet.
-    assert fold("", [{"path": "uploads/x-a.png", "status": "uploading"}]) is None
+    assert fold("", [{"path": "uploads/x-a.txt", "status": "uploading", "type": "text/plain"}]) is None
     assert fold("hello", [], sending=True) is None
     assert fold("hello", [], pending=True) is None
+
+
+def test_send_fold_split_routes_images_and_documents_as_vision_attachments():
+    """01a052d9 step 3: image/* and document mimes ride as
+    steerAttachments (SteerBody.attachments -> true vision/document
+    input); everything else keeps the plain-text convention. Mixed lists
+    split correctly, and a vision-only attachment with no typed text
+    still has something to send (the guard does not block it)."""
+    fold = _send_fold_context()
+
+    image_only = fold("", [
+        {"path": "uploads/x-a.png", "status": "done", "type": "image/png"},
+    ])
+    assert image_only is not None, "a vision attachment alone must not hit the empty-send guard"
+    assert image_only["fullText"] == ""
+    assert image_only["steerAttachments"] == [{"path": "uploads/x-a.png"}]
+
+    pdf_only = fold("", [
+        {"path": "uploads/report.pdf", "status": "done", "type": "application/pdf"},
+    ])
+    assert pdf_only["steerAttachments"] == [{"path": "uploads/report.pdf"}]
+    assert pdf_only["fullText"] == ""
+
+    # A text/code file stays on the legacy convention, not steerAttachments.
+    text_only = fold("", [
+        {"path": "uploads/notes.txt", "status": "done", "type": "text/plain"},
+    ])
+    assert text_only["steerAttachments"] is None
+    assert text_only["fullText"] == "Attached file: uploads/notes.txt"
+
+    # A mixed list splits: the image goes to steerAttachments, the text
+    # file stays folded into fullText - and only the text file appears
+    # in fullText, not both.
+    mixed = fold("caption", [
+        {"path": "uploads/photo.jpg", "status": "done", "type": "image/jpeg"},
+        {"path": "uploads/readme.txt", "status": "done", "type": "text/plain"},
+    ])
+    assert mixed["steerAttachments"] == [{"path": "uploads/photo.jpg"}]
+    assert mixed["fullText"] == "caption\n\nAttached file: uploads/readme.txt"
+
+    # An uploading/errored image is not yet "done" - it must not appear
+    # in steerAttachments any more than it would in the old fullText fold.
+    still_uploading = fold("hi", [
+        {"path": "uploads/x-a.png", "status": "uploading", "type": "image/png"},
+    ])
+    assert still_uploading["steerAttachments"] is None
+    assert still_uploading["fullText"] == "hi"

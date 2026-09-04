@@ -566,7 +566,7 @@ function SS_isDegraded(store) {
 // server user_input record reconciles it (SS_apply / SS_reconcileOptimistic).
 // Returns the fetch promise; on failure the caller restores the composer text
 // and the optimistic row is removed here.
-function SS_sendUserMessage(store, text, clientId) {
+function SS_sendUserMessage(store, text, clientId, attachments) {
   store.optimistic[clientId] = {
     clientId: clientId,
     text: text,
@@ -584,11 +584,18 @@ function SS_sendUserMessage(store, text, clientId) {
   if (typeof apiFetch !== "function") {
     return Promise.reject(new Error("SS_sendUserMessage: apiFetch unavailable"));
   }
+  var body = { instruction: text };
+  // 01a052d9: only set when the composer's fold-split routed at least one
+  // upload as true vision/document input (NV_isVisionDocAttachment) -
+  // omit the key entirely rather than send [] so a pre-attachments
+  // SteerBody schema change never has to distinguish "no field" from
+  // "empty list".
+  if (attachments && attachments.length) body.attachments = attachments;
   return apiFetch(
     "POST",
     "/workspaces/" + encodeURIComponent(wid) + "/sessions/" +
       encodeURIComponent(sid) + "/steer",
-    { instruction: text }
+    body
   ).then(function () {
     // Success: the row stays pending until the server user_input record
     // arrives and reconciles it; the composer clears its text (Phase 0.2).

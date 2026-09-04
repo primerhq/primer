@@ -306,11 +306,16 @@ var SH_api = {
   // endpoint covers invoking, steering and resuming, and "content" was
   // not a field at all: every send from the composer 422'd, which is the
   // most important action in the console failing on every use.
-  steer: function (wid, sid, instruction) {
+  steer: function (wid, sid, instruction, attachments) {
+    var body = { instruction: instruction };
+    // 01a052d9: see SS_sendUserMessage's matching comment - omit the key
+    // rather than send [] when the composer's fold-split kept every
+    // upload on the legacy plain-text convention.
+    if (attachments && attachments.length) body.attachments = attachments;
     return window.primerApi.apiFetch(
       "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
         + encodeURIComponent(sid) + "/steer",
-      { instruction: instruction });
+      body);
   },
 
   deleteSession: function (wid, sid) {
