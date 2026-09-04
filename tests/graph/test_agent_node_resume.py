@@ -48,6 +48,23 @@ class _ContinuationLLM:
         return _g()
 
 
+class _ReAskingContinuationLLM:
+    """01a06ca4: the resumed turn's OWN continuation yields AGAIN (a
+    second ask_user) instead of finishing - e.g. the agent needs one more
+    piece of information before it can answer."""
+    async def list_models(self): return ["m"]
+    def stream(self, **kw) -> AsyncIterator[StreamEvent]:
+        async def _g():
+            raise YieldToWorker(
+                Yielded(tool_name="ask_user", event_key="ask_user:t:tc2",
+                        resume_metadata={"prompt": "and what shade?"}),
+                tool_call_id="tc2",
+                llm_messages=[Message(role="assistant",
+                                      parts=[TextPart(text="(calling ask_user again)")]).model_dump(mode="json")])
+            yield  # pragma: no cover
+        return _g()
+
+
 def _graph():
     return Graph(id="g", description="b->A->e", nodes=[
         _BeginNode(id="begin"), _AgentNodeRef(id="A", agent_id="x"),
@@ -136,6 +153,58 @@ async def test_resumed_node_continuation_events_reach_the_caller(tmp_path):
     inner_types = {ev.extended.inner_type for ev in node_a_events}
     assert "text_delta" in inner_types
     assert "done" in inner_types
+
+
+@pytest.mark.asyncio
+async def test_resume_agent_node_reyield_reparks_not_fails(tmp_path):
+    """01a06ca4: _resume_agent_node had no `except YieldToWorker` branch -
+    a nested re-yield during resume (the resumed turn asks a SECOND
+    ask_user before finishing) fell into the generic `except Exception`
+    handler in graph/base.py's ay_pending loop and was mapped to a node
+    FAILURE, discarding the in-progress turn entirely. Assert it instead
+    re-parks: resume_from_checkpoint raises YieldToWorker again, on the
+    NEW event key, carrying a fresh checkpoint built from live state."""
+    ex1 = await _build(tmp_path, _YieldingLLM(), "gsid-r5")
+    raised = await _drain_until_yield(ex1.invoke([]))
+    assert raised is not None and raised.graph_checkpoint is not None
+    checkpoint = raised.graph_checkpoint
+
+    ex2 = await _build(tmp_path, _ReAskingContinuationLLM(), "gsid-r5")
+    tool_result = Message(role="tool",
+                          parts=[ToolResultPart(id="tc1", output="blue")])
+    repark = await _drain_until_yield(ex2.resume_from_checkpoint(
+        checkpoint, resumed_tcid="tc1", agent_tool_result=tool_result))
+
+    assert repark is not None, (
+        "a mid-resume re-yield must re-park via YieldToWorker, not be "
+        "swallowed and mapped to a node failure"
+    )
+    assert repark.yielded.event_keys == ["ask_user:t:tc2"]
+    assert repark.graph_checkpoint is not None
+
+    state = await ex2.load_state()
+    assert state is not None
+    assert state["status"] == "waiting"
+    assert state["node_states"]["A"]["status"] != "failed"
+
+    # A third resume must see the FULL accumulated history (the original
+    # user turn + the first ask_user's rehydrated answer + this second
+    # ask_user's own in-progress assistant message), not just the second
+    # turn in isolation - proves _agent_node.py's except-branch stamped
+    # yld.llm_messages with the whole prefix, not produced_messages alone.
+    ex3 = await _build(tmp_path, _ContinuationLLM(), "gsid-r5")
+    tool_result_2 = Message(role="tool",
+                            parts=[ToolResultPart(id="tc2", output="navy")])
+    async for _ev in ex3.resume_from_checkpoint(
+        repark.graph_checkpoint, resumed_tcid="tc2",
+        agent_tool_result=tool_result_2):
+        pass
+
+    state3 = await ex3.load_state()
+    assert state3 is not None
+    assert state3["status"] == "ended"
+    assert state3["ended_reason"] == "completed"
+    assert state3["node_states"]["A"]["status"] == "ended"
 
 
 class _CountingYieldLLM:
