@@ -68,6 +68,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         principal: str | None = None,
         identity: "PrincipalRef | None" = None,
         artifact_storage: "ArtifactStorage | None" = None,
+        turn_no: int | None = None,
     ) -> None:
         # Extend the agent's system prompt with the workspace fragment
         # so the LLM sees workspace-tool documentation in its system
@@ -96,6 +97,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             compaction=compaction,
             principal=principal,
             artifact_storage=artifact_storage,
+            turn_no=turn_no,
         )
         self._session = session
         self._execution_context = build_execution_context(

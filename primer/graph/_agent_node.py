@@ -100,10 +100,14 @@ class _AgentNodeMixin:
         # (never None) to honour the invariant that every manager resolves
         # to a real invoker and to stay safe if tools are ever added here.
         if node.response_format is not None:
-            return ToolExecutionManager(initiated_by=PrincipalRef.system())
+            return ToolExecutionManager(
+                initiated_by=PrincipalRef.system(), turn_no=self._turn_no,
+            )
         if self._tool_manager_resolver is not None:
             return await self._tool_manager_resolver(agent)
-        return ToolExecutionManager(initiated_by=PrincipalRef.system())
+        return ToolExecutionManager(
+            initiated_by=PrincipalRef.system(), turn_no=self._turn_no,
+        )
 
     def _agent_node_output(
         self,
@@ -194,6 +198,7 @@ class _AgentNodeMixin:
                 principal=self._principal,
                 messages_out=produced_messages,
                 artifact_storage=self._artifact_storage,
+                turn_no=self._turn_no,
             ):
                 # 01a0518f: current_graph_node_id() is the fan-out-
                 # instance-qualified id (_stream_node sets it before
@@ -308,6 +313,7 @@ class _AgentNodeMixin:
                 principal=self._principal,
                 messages_out=produced_messages,
                 artifact_storage=self._artifact_storage,
+                turn_no=self._turn_no,
             ):
                 yield self._wrap_event(event, pending.node_id, pending.iteration)
         except YieldToWorker as yld:

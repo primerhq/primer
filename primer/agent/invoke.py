@@ -136,6 +136,11 @@ async def build_subagent_toolmanager(
     # identically. System fallback keeps a None invoker from failing closed
     # and denying every toolset call the subagent makes.
     initiated_by = getattr(context, "initiated_by", None) or PrincipalRef.system()
+    # 01a0518b: mirrors initiated_by's propagation immediately above - the
+    # parent turn's own turn_no rides on the AgentResumeContext (persisted
+    # across park/resume) so a nested subagent's tool dispatch stamps the
+    # SAME turn_no onto its own ToolContext, not a freshly-minted one.
+    turn_no = getattr(context, "turn_no", None)
     recorder = None
     if storage_provider is not None:
         from primer.events.recorder import recorder_for
@@ -150,6 +155,7 @@ async def build_subagent_toolmanager(
         chat_id=context.chat_id if subagent_session is None else None,
         initiated_by=initiated_by,
         event_recorder=recorder,
+        turn_no=turn_no,
     )
 
 
@@ -195,6 +201,7 @@ async def run_subagent(
     chat_id: str | None = None,
     invoke_tool_call_id: str | None = None,
     identity: "PrincipalRef | None" = None,
+    turn_no: int | None = None,
 ) -> str:
     """Run agent ``agent_id`` once on ``prompt`` (stateless: system prompt +
     prompt, no shared history) and return the final assistant text.
@@ -206,6 +213,12 @@ async def run_subagent(
     :class:`YieldToWorker`'s ``frames`` stack, and the exception is re-raised
     so the worker can park the whole nested-invocation chain. Wrap calls in
     ``invocation_depth_guard()``.
+
+    ``turn_no`` (01a0518b) is the ENCLOSING session turn's own turn number,
+    read straight off the calling tool's :class:`~primer.model.yield_.ToolContext`
+    and passed through unchanged - a nested subagent call belongs to the
+    outer turn, not a freshly-minted one, so it is threaded through
+    verbatim rather than re-derived here.
     """
     from primer.agent.loop import run_agent_turn
     from primer.model.yield_ import YieldToWorker
@@ -231,6 +244,7 @@ async def run_subagent(
         # Carry the parent run's invoker so the subagent's tool floor is
         # authorised as the same identity (and survives a park/resume).
         initiated_by=identity,
+        turn_no=turn_no,
     )
     tool_manager = await build_subagent_toolmanager(
         context,
@@ -277,6 +291,7 @@ async def run_subagent(
         async for _ev in run_agent_turn(
             agent=agent, llm=llm, llm_model=llm_model, tool_manager=tool_manager,
             prompt=prompt_msgs, principal=principal, messages_out=produced,
+            turn_no=turn_no,
         ):
             if _sink is not None:
                 await _sink.on_event(
@@ -405,6 +420,7 @@ async def resume_subagent(
                 agent=agent, llm=llm, llm_model=llm_model,
                 tool_manager=tool_manager, prompt=resume_prompt,
                 principal=context.principal, messages_out=produced,
+                turn_no=getattr(context, "turn_no", None),
             ):
                 if _sink is not None:
                     await _sink.on_event(

@@ -116,6 +116,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         approval_resolver: Any | None = None,
         max_parallel_nodes: int = DEFAULT_MAX_PARALLEL_NODES,
         artifact_storage: "ArtifactStorage | None" = None,
+        turn_no: int | None = None,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
             agent_resolver, workspace_session
@@ -133,6 +134,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             principal=principal,
             max_parallel_nodes=max_parallel_nodes,
             artifact_storage=artifact_storage,
+            turn_no=turn_no,
         )
         self._state_repo = state_repo
         self._graph_session_id = graph_session_id
@@ -662,6 +664,11 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             # Inherit the parent's per-superstep fan-out cap (BE5).
             max_parallel_nodes=self._max_parallel_nodes,
             artifact_storage=self._artifact_storage,
+            # 01a0518b: a subgraph node's child graph runs WITHIN the same
+            # session turn as its parent - inherit turn_no unchanged, same
+            # reasoning as a nested subagent call (see run_agent_turn's
+            # own turn_no docstring).
+            turn_no=self._turn_no,
         )
 
     # ---- Public helpers --------------------------------------------------
