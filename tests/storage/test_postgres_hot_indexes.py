@@ -32,10 +32,11 @@ from primer.storage.postgres import (
 
 def test_registry_declares_the_hot_tables():
     """token_hash / session status / channel routing / useridentity
-    uniqueness / webhook recovery are all registered."""
+    uniqueness / webhook recovery / tool-approval-record gate key are
+    all registered."""
     assert set(_HOT_FIELD_INDEXES) == {
         "apitoken", "sessions", "channel", "useridentity",
-        "webhookdelivery",
+        "webhookdelivery", "toolapprovalrecord",
     }
 
 
