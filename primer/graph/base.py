@@ -188,6 +188,7 @@ class _BaseGraphExecutor(
         max_parallel_nodes: int = DEFAULT_MAX_PARALLEL_NODES,
         artifact_storage: "ArtifactStorage | None" = None,
         turn_no: int | None = None,
+        tool_calls_as_claims_enabled: bool = False,
     ) -> None:
         self._graph = graph
         self._agent_resolver = agent_resolver
@@ -208,6 +209,14 @@ class _BaseGraphExecutor(
         # scope any ToolCallTask rows it creates. None is a no-op for
         # callers that haven't opted into tool_calls_as_claims.
         self._turn_no = turn_no
+        # 01a0518b: TOP-LEVEL ONLY - a subgraph node (_GraphNodeRef) shares
+        # the SAME session row as its parent graph (see _build_sub_executor
+        # in WorkspaceGraphExecutor), so it inherits this unchanged; a
+        # nested SUBAGENT turn (system__invoke_agent) does not and is
+        # never given it - see run_agent_turn's docstring for the full
+        # reasoning (same scope-cut class as artifact_storage's own cut
+        # for that surface).
+        self._tool_calls_as_claims_enabled = tool_calls_as_claims_enabled
         # Ambient run context exposed to node templates as ``ctx``. The base
         # executor is surface-agnostic, so default to an in-memory context;
         # WorkspaceGraphExecutor overrides this with real workspace ids.

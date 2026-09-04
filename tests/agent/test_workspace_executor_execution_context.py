@@ -87,3 +87,33 @@ async def test_workspace_execution_context_identity(tmp_path: Path) -> None:
     )
     assert ex._execution_context.identity is not None
     assert ex._execution_context.identity.id == "u-1"
+
+
+@pytest.mark.asyncio
+async def test_workspace_executor_threads_tool_calls_as_claims_flag(
+    tmp_path: Path,
+) -> None:
+    """01a0518b: the executor stores the top-level flag exactly as given -
+    the run_agent_turn wiring itself is covered by loop.py's own tests;
+    this pins the executor's own construction-time propagation, the seam
+    executor_builders.py actually calls through."""
+    _backend, _workspace, session = await _build_session(tmp_path)
+    mgr = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
+    ex = WorkspaceAgentExecutor(
+        agent=_agent(system_prompt=["base"]),
+        llm=_FakeLLM(scripts=[]),  # type: ignore[arg-type]
+        llm_model=_model(),
+        tool_manager=mgr,
+        session=session,
+        tool_calls_as_claims_enabled=True,
+    )
+    assert ex._tool_calls_as_claims_enabled is True
+
+    ex_default = WorkspaceAgentExecutor(
+        agent=_agent(system_prompt=["base"]),
+        llm=_FakeLLM(scripts=[]),  # type: ignore[arg-type]
+        llm_model=_model(),
+        tool_manager=mgr,
+        session=session,
+    )
+    assert ex_default._tool_calls_as_claims_enabled is False
