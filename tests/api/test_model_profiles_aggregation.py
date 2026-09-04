@@ -284,3 +284,82 @@ class TestReferenceIntegrity:
         await client.delete("/v1/model_profiles/magg-ref-agg-2")
         await client.delete(f"/v1/model_profiles/{m1}")
         await client.delete(f"/v1/model_profiles/{m2}")
+
+
+class TestAggregatedCacheInvalidation:
+    """01a067c4 gate finding #2's router-side half: model_profiles.py's
+    on_update/on_delete hooks must drop ProviderRegistry's cached
+    AggregatedLLM for a profile id, or an edit to the routing policy /
+    member list (or the row's outright deletion) would keep being served
+    by a stale cached instance until the process restarts. The registry
+    cache's own lock/generation-guard/invalidation-bus machinery is
+    covered directly in test_provider_registry.py /
+    test_provider_registry_invalidation.py -- this only pins that the
+    CRUD router actually calls it, end to end through the REST layer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_update_invalidates_the_cached_aggregate(
+        self, client, app,
+    ) -> None:
+        await _seed_provider(client, "magg-prov-inv-1")
+        m1 = await seed_profile(client, "magg-prov-inv-1", "model-1")
+        m2 = await seed_profile(client, "magg-prov-inv-1", "model-2")
+        m3 = await seed_profile(client, "magg-prov-inv-1", "model-3")
+        r = await client.post(
+            "/v1/model_profiles", json=_aggregated_body("magg-inv-1", [m1, m2]),
+        )
+        assert r.status_code in (200, 201), r.text
+
+        registry = app.state.provider_registry
+        # Populate the cache directly (a real resolve_llm() call would do
+        # this too, but this keeps the test focused on the invalidation
+        # wiring rather than also exercising AggregatedLLM construction).
+        sentinel = object()
+        registry._aggregated_llm_cache["magg-inv-1"] = sentinel
+        assert "magg-inv-1" in registry._aggregated_llm_cache
+
+        r = await client.put(
+            "/v1/model_profiles/magg-inv-1",
+            json=_aggregated_body("magg-inv-1", [m1, m2, m3]),
+        )
+        assert r.status_code == 200, r.text
+        assert "magg-inv-1" not in registry._aggregated_llm_cache
+
+    @pytest.mark.asyncio
+    async def test_delete_invalidates_the_cached_aggregate(
+        self, client, app,
+    ) -> None:
+        await _seed_provider(client, "magg-prov-inv-2")
+        m1 = await seed_profile(client, "magg-prov-inv-2", "model-1")
+        m2 = await seed_profile(client, "magg-prov-inv-2", "model-2")
+        r = await client.post(
+            "/v1/model_profiles", json=_aggregated_body("magg-inv-2", [m1, m2]),
+        )
+        assert r.status_code in (200, 201), r.text
+
+        registry = app.state.provider_registry
+        sentinel = object()
+        registry._aggregated_llm_cache["magg-inv-2"] = sentinel
+
+        r = await client.delete("/v1/model_profiles/magg-inv-2")
+        assert r.status_code == 204, r.text
+        assert "magg-inv-2" not in registry._aggregated_llm_cache
+
+    @pytest.mark.asyncio
+    async def test_invalidation_hook_is_a_noop_for_an_uncached_single_profile(
+        self, client, app,
+    ) -> None:
+        """Wired unconditionally on every update/delete, single or
+        aggregated, per Dev-Backend's reasoning: popping a key that was
+        never cached is a no-op, not an error."""
+        await _seed_provider(client, "magg-prov-inv-3")
+        pid = await seed_profile(client, "magg-prov-inv-3", "model-1")
+
+        r = await client.put(
+            f"/v1/model_profiles/{pid}",
+            json=profile_body("magg-prov-inv-3", "model-1", context_length=4096),
+        )
+        assert r.status_code == 200, r.text
+        r = await client.delete(f"/v1/model_profiles/{pid}")
+        assert r.status_code == 204, r.text
