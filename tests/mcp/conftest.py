@@ -108,12 +108,17 @@ class FakeProviderRegistry:
         return self._providers.get(toolset_id)
 
 
-def _make_tool(toolset_id: str, name: str, descr: str = "") -> Tool:
+def _make_tool(
+    toolset_id: str, name: str, descr: str = "", *, args_schema: dict | None = None,
+) -> Tool:
     return Tool(
         id=name,
         toolset_id=toolset_id,
         description=descr or f"{toolset_id}.{name}",
-        args_schema={"type": "object", "properties": {}},
+        args_schema=(
+            args_schema if args_schema is not None
+            else {"type": "object", "properties": {}}
+        ),
     )
 
 

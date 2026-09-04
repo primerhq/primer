@@ -32,6 +32,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 
+import jsonschema
 from mcp.server.lowlevel import Server
 from mcp.shared.exceptions import MCPError
 from mcp.types import (
@@ -87,6 +88,51 @@ current_api_token_scopes: ContextVar["list[str] | None"] = ContextVar(
 )
 
 
+async def _input_validation_error(
+    deps: ExposureDeps, name: str, arguments: dict,
+) -> str | None:
+    """Check ``arguments`` against the exposed tool's ``inputSchema``.
+
+    mcp 1.x validated tool arguments against ``inputSchema`` inside the
+    SDK before dispatch; 2.x dropped that. Primer's pydantic layer still
+    rejects malformed arguments further down (no correctness/security
+    gap -- confirmed during the #226 migration review by both the lead
+    and Dev-Backend), but the error SHAPE regressed: a caller got a deep
+    tool-execution error instead of a protocol-level one, without the
+    tool ever running. This restores that shape as an optional DX
+    polish, re-checked here rather than cached: the schema is whatever
+    ``_list`` would currently advertise for this tool, so a caller who
+    just re-fetched ``tools/list`` sees a call rejected against the
+    exact same shape.
+
+    Returns the human-readable validation message, or ``None`` when the
+    arguments are valid, the tool declares no schema, or the tool is not
+    found here at all -- an unresolvable name is ``_call``'s job to
+    reject as not-exposed (JSON-RPC method-not-found), not this
+    function's, so a lookup miss is silently treated as "nothing to
+    validate against" rather than surfaced as a validation failure.
+    """
+    for tool, _provider in await list_exposed_tools(deps):
+        if tool_scoped_id(tool) != name:
+            continue
+        schema = tool.args_schema
+        if not schema:
+            return None
+        try:
+            jsonschema.validate(instance=arguments, schema=schema)
+        except jsonschema.exceptions.ValidationError as exc:
+            return exc.message
+        except jsonschema.exceptions.SchemaError:
+            # The tool's own advertised schema is malformed -- a
+            # provider bug, not the caller's fault. Do not block every
+            # call to this tool on it; proceed as if there were no
+            # schema to check (dispatch's own pydantic layer is still
+            # the real backstop either way).
+            return None
+        return None
+    return None
+
+
 def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
     """Construct a :class:`Server` instance with primer's handlers attached.
 
@@ -129,6 +175,8 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
         * :class:`NotExposed` → JSON-RPC ``method-not-found`` so the
           client treats the tool name as unknown. Operators see the
           rich ``reason`` only in the audit log.
+        * A malformed argument shape → protocol-level ``isError=True``
+          BEFORE dispatch (see :func:`_input_validation_error` below).
         * Any other exception from the dispatcher / provider → returned
           as an MCP-level ``isError=True`` result, which is the SDK's
           convention for tool-execution failures the client should
@@ -147,6 +195,16 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
         ok = False
         try:
             try:
+                bad_input = await _input_validation_error(deps, name, arguments)
+                if bad_input is not None:
+                    error_code = "invalid_arguments"
+                    return CallToolResult(
+                        isError=True,
+                        content=[TextContent(
+                            type="text",
+                            text=f"Input validation error: {bad_input}",
+                        )],
+                    )
                 result = await invoke_exposed(
                     scoped_id=name,
                     arguments=arguments,

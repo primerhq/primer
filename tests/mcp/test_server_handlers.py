@@ -10,13 +10,16 @@ business-logic contract that those handlers depend on.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 
 from primer.mcp.dispatch import NotExposed, invoke_exposed, list_exposed_tools
 from primer.mcp.exposure import ExposureDeps, update_exposure
 from primer.mcp.server import (
+    _input_validation_error,
     build_mcp_server,
+    current_actor,
     current_api_token_id,
     current_api_token_scopes,
     current_principal,
@@ -460,6 +463,229 @@ async def test_invoke_no_policy_runs_with_resolver(
     )
     assert isinstance(result, ToolCallResult)
     assert result.is_error is False
+
+
+# ---- _input_validation_error (01a068d7) -------------------------------
+#
+# mcp 1.x validated tool arguments against inputSchema inside the SDK
+# before dispatch; 2.x dropped that. This restores a protocol-level
+# pre-check at the top of _call, before invoke_exposed ever runs.
+
+
+def _registry_with_schema(schema: dict) -> Any:
+    """A registry exposing one tool, ``misc__strict``, whose
+    ``args_schema`` is the caller-supplied ``schema`` -- the fixture
+    tools every other test in this file uses all carry the same
+    permissive empty schema, which cannot exercise a validation
+    FAILURE at all.
+    """
+    from tests.mcp.conftest import FakeProviderRegistry, FakeToolsetProvider, _make_tool
+
+    tool = _make_tool("misc", "strict", args_schema=schema)
+    provider = FakeToolsetProvider("misc", [tool])
+    return FakeProviderRegistry({"misc": provider})
+
+
+@pytest.mark.asyncio
+async def test_input_validation_error_none_for_valid_arguments(
+    fake_storage_provider,
+) -> None:
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
+    registry = _registry_with_schema(schema)
+    deps = _deps(fake_storage_provider, registry)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__strict"],
+        updated_by="alice", deps=deps,
+    )
+
+    msg = await _input_validation_error(deps, "misc__strict", {"n": 1})
+
+    assert msg is None
+
+
+@pytest.mark.asyncio
+async def test_input_validation_error_reports_missing_required_field(
+    fake_storage_provider,
+) -> None:
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
+    registry = _registry_with_schema(schema)
+    deps = _deps(fake_storage_provider, registry)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__strict"],
+        updated_by="alice", deps=deps,
+    )
+
+    msg = await _input_validation_error(deps, "misc__strict", {})
+
+    assert msg is not None
+    assert "n" in msg
+
+
+@pytest.mark.asyncio
+async def test_input_validation_error_reports_wrong_type(
+    fake_storage_provider,
+) -> None:
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
+    registry = _registry_with_schema(schema)
+    deps = _deps(fake_storage_provider, registry)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__strict"],
+        updated_by="alice", deps=deps,
+    )
+
+    msg = await _input_validation_error(deps, "misc__strict", {"n": "not-an-int"})
+
+    assert msg is not None
+
+
+@pytest.mark.asyncio
+async def test_input_validation_error_none_when_schema_is_empty(
+    fake_storage_provider, fake_provider_registry_with_tools,
+) -> None:
+    """The default fixture tools all carry the permissive empty schema
+    ({"type": "object", "properties": {}}) -- nothing to reject."""
+    deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+
+    msg = await _input_validation_error(
+        deps, "misc__uuid_v4", {"anything": "goes"},
+    )
+
+    assert msg is None
+
+
+@pytest.mark.asyncio
+async def test_input_validation_error_none_when_tool_not_found(
+    fake_storage_provider, fake_provider_registry_with_tools,
+) -> None:
+    """A name that resolves to nothing here is _call's NotExposed job to
+    reject, not this function's -- must not be mistaken for a
+    validation failure."""
+    deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+
+    msg = await _input_validation_error(deps, "misc__does_not_exist", {})
+
+    assert msg is None
+
+
+@pytest.mark.asyncio
+async def test_input_validation_error_none_when_schema_itself_is_malformed(
+    fake_storage_provider,
+) -> None:
+    """A provider bug (an invalid JSON Schema advertised as the tool's
+    own inputSchema) must not block every call to that tool -- dispatch
+    proceeds as if there were nothing to check."""
+    # "type": "not-a-real-type" is not a valid JSON Schema type keyword
+    # value, so jsonschema.validate raises SchemaError before it even
+    # gets to checking the instance.
+    schema = {"type": "not-a-real-type"}
+    registry = _registry_with_schema(schema)
+    deps = _deps(fake_storage_provider, registry)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__strict"],
+        updated_by="alice", deps=deps,
+    )
+
+    msg = await _input_validation_error(deps, "misc__strict", {})
+
+    assert msg is None
+
+
+@pytest.mark.asyncio
+async def test_call_returns_isError_for_invalid_arguments_before_dispatch(
+    fake_storage_provider,
+) -> None:
+    """Integration: _call itself (not just the helper) rejects malformed
+    arguments with a protocol-level isError result, and the tool never
+    runs."""
+    from mcp.types import CallToolRequestParams
+
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
+    registry = _registry_with_schema(schema)
+    deps = _deps(fake_storage_provider, registry)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__strict"],
+        updated_by="alice", deps=deps,
+    )
+    server = build_mcp_server(lambda: deps)
+    # get_request_handler returns a HandlerEntry wrapper (.handler is the
+    # bare on_call_tool callable passed to the Server constructor, i.e.
+    # _call itself), not something directly callable on its own.
+    handler = server.get_request_handler("tools/call").handler
+
+    result = await handler(
+        None,
+        CallToolRequestParams(name="misc__strict", arguments={}),
+    )
+
+    assert result.is_error is True
+    assert "Input validation error" in result.content[0].text
+    provider = await registry.get_toolset("misc")
+    assert provider.calls == [], "the tool must never have been dispatched"
+
+
+@pytest.mark.asyncio
+async def test_call_dispatches_normally_when_arguments_are_valid(
+    fake_storage_provider, system_actor,
+) -> None:
+    """The no-false-positive case: a tool WITH a real schema still runs
+    end to end when the arguments actually satisfy it -- pre-validation
+    must not become a second, stricter gate that blocks legitimate
+    calls."""
+    from mcp.types import CallToolRequestParams
+
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
+    registry = _registry_with_schema(schema)
+    deps = _deps(fake_storage_provider, registry)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__strict"],
+        updated_by="alice", deps=deps,
+    )
+    server = build_mcp_server(lambda: deps)
+    handler = server.get_request_handler("tools/call").handler
+
+    actor_tok = current_actor.set(system_actor)
+    try:
+        result = await handler(
+            None,
+            CallToolRequestParams(name="misc__strict", arguments={"n": 7}),
+        )
+    finally:
+        current_actor.reset(actor_tok)
+
+    assert result.is_error is False
+    provider = await registry.get_toolset("misc")
+    assert provider.calls == [{
+        "tool_name": "strict", "arguments": {"n": 7},
+        "principal": None, "ctx": None,
+    }], "the tool must have been dispatched exactly once with the real arguments"
 
 
 # ---- build_mcp_server smoke ------------------------------------------------
