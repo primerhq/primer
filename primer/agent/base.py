@@ -117,6 +117,7 @@ class _BaseAgentExecutor(ABC):
         compaction: CompactionStrategy | None = None,
         principal: str | None = None,
         artifact_storage: "ArtifactStorage | None" = None,
+        turn_no: int | None = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -128,6 +129,13 @@ class _BaseAgentExecutor(ABC):
         # document attachments) resolve to inline bytes before the LLM
         # sees them. None is a no-op -- see hydrate_prompt_parts.
         self._artifact_storage = artifact_storage
+        # 01a0518b: the enclosing session turn's own turn number, set
+        # once per executor instance (a fresh executor is built per turn,
+        # same lifetime scope as artifact_storage above) and forwarded to
+        # run_agent_turn so the tool-dispatch seam can scope any
+        # ToolCallTask rows it creates. None is a no-op for callers that
+        # haven't opted into tool_calls_as_claims.
+        self._turn_no = turn_no
         # Ambient run context exposed to the system prompt as ``ctx``. Base is
         # surface-agnostic -> memory default; subclasses override with the real
         # surface (AgentExecutor -> "chat", WorkspaceAgentExecutor -> "workspace").
@@ -337,6 +345,7 @@ class _BaseAgentExecutor(ABC):
                 messages_out=full_turn_messages,
                 last_input_tokens_out=last_input_tokens_holder,
                 artifact_storage=self._artifact_storage,
+                turn_no=self._turn_no,
             ):
                 await self._emit(event)
                 yield event

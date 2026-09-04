@@ -135,6 +135,7 @@ class ToolExecutionManager:
         external_tools: "list | None" = None,
         external_call_storage: "Any | None" = None,
         event_recorder: "Any | None" = None,
+        turn_no: int | None = None,
     ) -> None:
         # Optional platform event recorder: when wired (worker executor
         # builds), every dispatched call lands a ``tool.called`` event.
@@ -170,6 +171,13 @@ class ToolExecutionManager:
         # child session (``create_workspace_session``) can propagate it —
         # see ``ToolContext.initiated_by``.
         self._initiated_by = initiated_by
+        # 01a0518b: the enclosing session turn's own turn number, stamped
+        # onto every ToolContext this manager builds (mirrors
+        # initiated_by's propagation) so nested subagent calls
+        # (system__invoke_agent) can read it straight off ctx and thread
+        # it into their own run_agent_turn call unchanged - a nested call
+        # belongs to the OUTER turn, not a freshly-minted one.
+        self._turn_no = turn_no
         self._inform_sink: "Callable[[str], Awaitable[int]] | None" = None
         # The agent's scoped-tool surface. Filters list_tools() to just
         # the listed ids and execute() rejects calls for anything else.
@@ -257,6 +265,7 @@ class ToolExecutionManager:
         external_tools: "list | None" = None,
         external_call_storage: "Any | None" = None,
         event_recorder: "Any | None" = None,
+        turn_no: int | None = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -268,7 +277,9 @@ class ToolExecutionManager:
         so the dispatched tool can run a child graph in this session.
         ``initiated_by`` (when supplied) is the enclosing session's own
         attribution, propagated onto every ``ToolContext`` this manager
-        builds — see ``ToolContext.initiated_by``.
+        builds — see ``ToolContext.initiated_by``. ``turn_no`` (when
+        supplied) is the enclosing session's own turn number, propagated
+        the same way — see ``ToolContext.turn_no``.
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
         return cls(
@@ -283,6 +294,7 @@ class ToolExecutionManager:
             initiated_by=initiated_by,
             external_tools=external_tools,
             external_call_storage=external_call_storage,
+            turn_no=turn_no,
         )
 
     def rebind_workspace(
@@ -314,6 +326,7 @@ class ToolExecutionManager:
             ),
             graph_invocation_services=self._graph_services,
             initiated_by=initiated_by or self._initiated_by,
+            turn_no=self._turn_no,
         )
 
     async def list_tools(
@@ -726,6 +739,7 @@ class ToolExecutionManager:
                 inform=self._inform_sink,
                 graph_services=self._graph_services,
                 initiated_by=self._initiated_by,
+                turn_no=self._turn_no,
             )
         elif self._chat_id is not None:
             ctx = ToolContext(
@@ -735,6 +749,7 @@ class ToolExecutionManager:
                 chat_id=self._chat_id,
                 inform=self._inform_sink,
                 initiated_by=self._initiated_by,
+                turn_no=self._turn_no,
             )
         try:
             result = await provider.call(

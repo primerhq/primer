@@ -187,6 +187,7 @@ class _BaseGraphExecutor(
         principal: str | None = None,
         max_parallel_nodes: int = DEFAULT_MAX_PARALLEL_NODES,
         artifact_storage: "ArtifactStorage | None" = None,
+        turn_no: int | None = None,
     ) -> None:
         self._graph = graph
         self._agent_resolver = agent_resolver
@@ -202,6 +203,11 @@ class _BaseGraphExecutor(
         # parts resolve to inline bytes before the LLM sees them. None is a
         # no-op -- see hydrate_prompt_parts.
         self._artifact_storage = artifact_storage
+        # 01a0518b: the enclosing session turn's own turn number, forwarded
+        # to run_agent_turn by _AgentNodeMixin so the tool-dispatch seam can
+        # scope any ToolCallTask rows it creates. None is a no-op for
+        # callers that haven't opted into tool_calls_as_claims.
+        self._turn_no = turn_no
         # Ambient run context exposed to node templates as ``ctx``. The base
         # executor is surface-agnostic, so default to an in-memory context;
         # WorkspaceGraphExecutor overrides this with real workspace ids.

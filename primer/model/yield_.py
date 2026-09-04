@@ -219,6 +219,18 @@ class ToolContext:
         ``None`` outside a workspace-session tool dispatch, in which
         case the MCP session-create handler falls back to the system
         principal rather than fabricating a ``user`` attribution.
+    turn_no
+        The enclosing session turn's own turn number (01a0518b). Set by
+        :class:`ToolExecutionManager` from the value its own caller
+        threaded in at construction time. Unlike ``initiated_by`` this is
+        NOT re-derived per nested call: ``system__invoke_agent`` reads it
+        straight off this context and passes it verbatim into the
+        subagent's own ``run_agent_turn`` call rather than minting a
+        fresh one -- a nested subagent call belongs to the OUTER turn, so
+        scoping it under a different turn_no would orphan its tool-call
+        scoped ids from the record they need to pair against. ``None``
+        outside a dispatch that resolved one (e.g. chat-only invocations,
+        or before the caller opted into tool_calls_as_claims).
     """
 
     tool_call_id: str
@@ -229,6 +241,7 @@ class ToolContext:
     inform: Callable[[str], Awaitable[int]] | None = None
     graph_services: Any | None = None
     initiated_by: PrincipalRef | None = None
+    turn_no: int | None = None
 
 
 # ===========================================================================

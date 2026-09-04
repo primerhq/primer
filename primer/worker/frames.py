@@ -77,6 +77,12 @@ class AgentResumeContext:
         it and its RBAC tool floor stays authorised across the park/resume
         boundary. ``None`` on frames parked before this field existed ->
         the manager builder falls back to the system principal.
+    turn_no
+        The enclosing session turn's own turn number (01a0518b), threaded
+        so a resumed subagent turn's tool dispatch stamps the SAME turn_no
+        it started with, not a freshly-minted one - a nested call belongs
+        to the OUTER turn. ``None`` on frames parked before this field
+        existed, or when the enclosing dispatch never resolved one.
     """
 
     session_id: str
@@ -85,6 +91,7 @@ class AgentResumeContext:
     principal: str
     tools: list[str]
     initiated_by: "PrincipalRef | None" = None
+    turn_no: int | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Render to a JSON-safe dict."""
@@ -99,6 +106,7 @@ class AgentResumeContext:
                 if self.initiated_by is not None
                 else None
             ),
+            "turn_no": self.turn_no,
         }
 
     @classmethod
@@ -115,6 +123,7 @@ class AgentResumeContext:
                 if raw_initiated_by is not None
                 else None
             ),
+            turn_no=data.get("turn_no"),
         )
 
 

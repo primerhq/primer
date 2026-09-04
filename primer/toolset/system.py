@@ -716,6 +716,7 @@ def build_system_toolset(
                     chat_id=getattr(ctx, "chat_id", None),
                     invoke_tool_call_id=getattr(ctx, "tool_call_id", None),
                     identity=getattr(ctx, "initiated_by", None),
+                    turn_no=getattr(ctx, "turn_no", None),
                 )
         except InvocationDepthExceeded as exc:
             return _err(
