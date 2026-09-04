@@ -227,17 +227,37 @@ class TestResolveModelAggregated:
 
 
 class _FakeProviderRegistry:
-    """Minimal get_llm stand-in: returns a distinct sentinel per provider
-    id so a test can assert identity without a real adapter."""
+    """Minimal get_llm/get_aggregated_llm stand-in.
+
+    get_llm returns a distinct sentinel per provider id so a test can
+    assert identity without a real adapter. get_aggregated_llm mirrors
+    the real ProviderRegistry's cache-per-profile-id semantics (same
+    instance on every call for the same profile id) since that identity
+    IS the behaviour under test here -- a fresh instance per call would
+    silently reset AggregatedLLM's round-robin cursor (the exact
+    regression this cache exists to prevent).
+    """
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.aggregated_calls: list[str] = []
+        self._aggregated_cache: dict[str, object] = {}
 
     async def get_llm(self, provider_id: str):
         self.calls.append(provider_id)
         if provider_id is None:
             raise NotFoundError("get_llm called with provider_id=None")
         return f"llm:{provider_id}"
+
+    async def get_aggregated_llm(self, profile, *, resolve_member):
+        self.aggregated_calls.append(profile.id)
+        cached = self._aggregated_cache.get(profile.id)
+        if cached is not None:
+            return cached
+        from primer.llm.aggregated import AggregatedLLM
+        adapter = AggregatedLLM(profile, resolve_member=resolve_member)
+        self._aggregated_cache[profile.id] = adapter
+        return adapter
 
 
 class TestResolveLlmSingle:
@@ -305,3 +325,25 @@ class TestResolveLlmAggregated:
         assert member_llm == "llm:prov-leaf-a"
         assert member_resolved.model_name == "model-leaf-a"
         assert registry.calls == ["prov-leaf-a"]
+
+    async def test_repeated_calls_return_the_same_cached_instance(
+        self, sp: StorageProvider
+    ) -> None:
+        """01a067c4 gate finding #2 (ROUND_ROBIN rotation lost): resolve_llm
+        must delegate instance construction to provider_registry.
+        get_aggregated_llm, NOT build a fresh AggregatedLLM per call --
+        a fresh instance every call would reset AggregatedLLM._cursor to
+        0 each time, so ROUND_ROBIN would never rotate past member[0].
+        This pins the delegation itself (object identity across two
+        separate resolve_llm calls for the same profile id), independent
+        of ProviderRegistry's own cache tests (which cover the cache
+        slot's lock/generation-guard/invalidation machinery directly).
+        """
+        await _seed_aggregated(
+            sp, id="agg-1", members=[("leaf-a", 4096), ("leaf-b", 8192)],
+        )
+        registry = _FakeProviderRegistry()
+        llm1, _ = await resolve_llm(sp, registry, default_profile_id="agg-1")
+        llm2, _ = await resolve_llm(sp, registry, default_profile_id="agg-1")
+        assert llm1 is llm2
+        assert registry.aggregated_calls == ["agg-1", "agg-1"]

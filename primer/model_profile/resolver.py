@@ -142,12 +142,19 @@ async def resolve_llm(
     """Resolve both the adapter and the model facts for one turn.
 
     ``kind == "single"`` delegates to ``provider_registry.get_llm(
-    profile.provider_id)``. ``kind == "aggregated"`` constructs the SAME
-    :class:`~primer.llm.aggregated.AggregatedLLM` class the old
-    ``aggregated`` LLMProvider used, unchanged (lazy per-stream member
-    resolution preserved) -- its ``resolve_member`` now recurses by
-    member PROFILE id through this same function, rather than by
-    provider id through ``provider_registry.get_llm`` directly.
+    profile.provider_id)``. ``kind == "aggregated"`` delegates to
+    ``provider_registry.get_aggregated_llm(row, ...)``, which returns
+    the SAME :class:`~primer.llm.aggregated.AggregatedLLM` instance on
+    every call for a given profile id (cached, keyed by profile id) --
+    NOT a fresh one per call. A fresh instance every call would reset
+    ``AggregatedLLM._cursor`` to 0 each time, so ROUND_ROBIN routing
+    would never actually rotate past member[0] (SEQUENTIAL is
+    unaffected -- it always starts at members[0] by design). This
+    matches the old ``aggregated`` LLMProvider's own behaviour, where
+    ``ProviderRegistry._llm_cache`` made the instance process-wide.
+    ``resolve_member`` recurses by member PROFILE id through this same
+    function, rather than by provider id through
+    ``provider_registry.get_llm`` directly.
     """
     profile_id = override_profile_id or default_profile_id
     storage = storage_provider.get_storage(ModelProfile)
@@ -159,14 +166,14 @@ async def resolve_llm(
         llm = await provider_registry.get_llm(row.provider_id)
         return llm, resolved
 
-    from primer.llm.aggregated import AggregatedLLM
-
     async def _resolve_member(member_id: str) -> tuple["LLM", ResolvedModel]:
         return await resolve_llm(
             storage_provider, provider_registry, default_profile_id=member_id,
         )
 
-    llm = AggregatedLLM(row, resolve_member=_resolve_member)
+    llm = await provider_registry.get_aggregated_llm(
+        row, resolve_member=_resolve_member,
+    )
     return llm, resolved
 
 
