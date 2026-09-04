@@ -836,6 +836,44 @@ async def test_executor_error_transitions_to_ended_failed(
 
 
 @pytest.mark.asyncio
+async def test_executor_error_mirrors_ended_onto_agent_session_slot(
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """01a06bc1: the executor-error branch's _transition_session_status
+    call omitted executor=executor, unlike the cancel and clean-completion
+    branches right below it - so the mirror onto the on-disk AgentSession
+    slot silently no-op'd for every executor-raised failure (a missing
+    set_status, not an exception, since _sync_agent_session_ended treats
+    a None executor as "nothing to mirror onto"). The scheduler row still
+    transitioned to ENDED/failed (test_executor_error_transitions_to_ended_
+    failed pins that), so this gap was invisible to every existing test -
+    none of them used an executor exposing a `.session` slot on this path.
+    Mirrors test_clean_completion_mirrors_ended_onto_agent_session_slot's
+    shape, applied to the error branch instead of the happy path.
+    """
+    session = await _seed_session(fake_storage_provider, autonomous=True)
+    slot = _RecordingSlotSession()
+    fake_executor = _ExecutorWithSession([RuntimeError("kaboom")], slot)
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    outcome = await run_one_session_turn(_make_lease(session.id), deps)
+    assert outcome.success is False
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    assert (await storage.get(session.id)).status == SessionStatus.ENDED
+    assert slot.calls == [(SessionStatus.ENDED, "failed")]
+
+
+@pytest.mark.asyncio
 async def test_executor_error_plus_write_failure_still_ends_session(
     seeded_session: WorkspaceSession,
     fake_event_bus: InMemoryEventBus,
