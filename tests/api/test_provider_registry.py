@@ -11,6 +11,7 @@ from pydantic import SecretStr
 
 from primer.api.registries.provider_registry import ProviderRegistry
 from primer.model.except_ import ConfigError, NotFoundError
+from primer.model.model_profile import ModelProfile, RoutingStrategy
 from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderModel,
@@ -110,6 +111,18 @@ def _make_cross_encoder_provider() -> CrossEncoderProvider:
     )
 
 
+def _make_aggregated_profile(
+    *, strategy: RoutingStrategy = RoutingStrategy.SEQUENTIAL,
+) -> ModelProfile:
+    return ModelProfile(
+        id="agg-1",
+        description="aggregated profile",
+        kind="aggregated",
+        members=["m1", "m2"],
+        strategy=strategy,
+    )
+
+
 class TestLLMResolution:
     @pytest.mark.asyncio
     async def test_lookup_constructs_and_caches(self) -> None:
@@ -153,6 +166,75 @@ class TestLLMResolution:
         sp = _FakeStorageProvider()
         registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
         await registry.invalidate_llm("never-cached")
+
+
+class TestAggregatedLLMResolution:
+    """AggregatedLLM must be cached per profile id, not rebuilt per call --
+    otherwise its round-robin _cursor resets every time and ROUND_ROBIN
+    routing never actually rotates past member[0]."""
+
+    @staticmethod
+    async def _resolve_member(member_id: str) -> tuple[Any, Any]:
+        return MagicMock(), MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_lookup_constructs_and_caches(self) -> None:
+        sp = _FakeStorageProvider()
+        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
+        profile = _make_aggregated_profile()
+
+        first = await registry.get_aggregated_llm(
+            profile, resolve_member=self._resolve_member,
+        )
+        second = await registry.get_aggregated_llm(
+            profile, resolve_member=self._resolve_member,
+        )
+        assert first is second
+
+    @pytest.mark.asyncio
+    async def test_round_robin_cursor_persists_across_calls(self) -> None:
+        """The regression this cache exists to fix: a fresh AggregatedLLM
+        built on every call would reset _cursor to 0 every time, so
+        ROUND_ROBIN's start position would never advance past member[0]."""
+        sp = _FakeStorageProvider()
+        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
+        profile = _make_aggregated_profile(strategy=RoutingStrategy.ROUND_ROBIN)
+
+        llm1 = await registry.get_aggregated_llm(
+            profile, resolve_member=self._resolve_member,
+        )
+        order1 = await llm1._member_order()
+        llm2 = await registry.get_aggregated_llm(
+            profile, resolve_member=self._resolve_member,
+        )
+        order2 = await llm2._member_order()
+
+        assert llm1 is llm2
+        assert order1 != order2, (
+            "cursor did not advance across calls - round-robin would "
+            "always start at the same member"
+        )
+
+    @pytest.mark.asyncio
+    async def test_invalidate_drops_cache(self) -> None:
+        sp = _FakeStorageProvider()
+        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
+        profile = _make_aggregated_profile()
+
+        first = await registry.get_aggregated_llm(
+            profile, resolve_member=self._resolve_member,
+        )
+        await registry.invalidate_aggregated_llm(profile.id)
+        second = await registry.get_aggregated_llm(
+            profile, resolve_member=self._resolve_member,
+        )
+        assert first is not second
+
+    @pytest.mark.asyncio
+    async def test_invalidate_unknown_id_is_noop(self) -> None:
+        sp = _FakeStorageProvider()
+        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
+        await registry.invalidate_aggregated_llm("never-cached")
 
 
 class TestEmbedderResolution:
