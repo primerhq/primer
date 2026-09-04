@@ -372,19 +372,31 @@ async def test_t0865_resume_after_on_disk_ended_clears_park(
         # 01a06bc1: parked_status clears as soon as the resume
         # machinery injects the tool result and converts the park
         # back into a normal turn - BEFORE that turn's own LLM call
-        # (the one that hits the bogus URL) actually runs and fails.
+        # (the one that hits the bogus URL) actually runs and settles.
         # Racing straight into cycle 2's inject after only the above
         # assertions meant the defensive branch this test exists to
         # pin could go unexercised while the test still passed: 5/5
         # live runs (Dev-Backend, 2026-09-04) showed cycle 2's inject
         # winning that race every time, with the bogus-URL turn never
-        # having run yet. Block on the row actually reaching its
-        # terminal ENDED/failed state before cycle 2 touches it, so
-        # the on-disk-ENDED edge case this test is named for is
-        # guaranteed to exist by the time cycle 2 fires.
+        # having run yet. Block on the row actually reaching ENDED
+        # before cycle 2 touches it, so the on-disk-ENDED edge case
+        # this test is named for is guaranteed to exist by the time
+        # cycle 2 fires.
+        #
+        # Only status is asserted here, not ended_reason: a connect
+        # failure against the bogus URL surfaces as an in-band Error
+        # stream event, not a raised exception - run_agent_turn's
+        # output_to_message raises ValueError on the resulting
+        # error-only stream, which is caught and returns quietly
+        # (no assistant content to persist), so the turn settles as
+        # ended_reason="completed", not "failed" (live-traced
+        # 2026-09-04). _sync_agent_session_ended mirrors ENDED onto
+        # the on-disk AgentSession slot for EITHER ended_reason, so
+        # the edge case this test pins - DB row reset to running by
+        # cycle 2 while the on-disk slot is still ENDED - is created
+        # either way; only the terminal status matters for this gate.
         body1b = await wait_terminal(client, sid, timeout_s=20.0)
         assert body1b.get("status") == "ended", body1b
-        assert body1b.get("ended_reason") == "failed", body1b
 
         # ----- Cycle 2: inject onto post-fatal row ---------------
         # The on-disk AgentSession is now ENDED (cycle 1's fatal
