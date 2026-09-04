@@ -109,4 +109,5 @@ async def test_create_and_steer_land_on_the_event_log(client, app) -> None:
     assert steered.session_id == sid
     assert steered.payload == {
         "has_instruction": True, "has_tool_results": False,
+        "has_attachments": False,
     }
