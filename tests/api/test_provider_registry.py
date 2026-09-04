@@ -180,16 +180,26 @@ class TestAggregatedLLMResolution:
     @pytest.mark.asyncio
     async def test_lookup_constructs_and_caches(self) -> None:
         sp = _FakeStorageProvider()
-        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
         profile = _make_aggregated_profile()
+        await sp.get_storage(ModelProfile).create(profile)
+        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
 
         first = await registry.get_aggregated_llm(
-            profile, resolve_member=self._resolve_member,
+            profile.id, resolve_member=self._resolve_member,
         )
         second = await registry.get_aggregated_llm(
-            profile, resolve_member=self._resolve_member,
+            profile.id, resolve_member=self._resolve_member,
         )
         assert first is second
+
+    @pytest.mark.asyncio
+    async def test_missing_profile_raises_not_found(self) -> None:
+        sp = _FakeStorageProvider()
+        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
+        with pytest.raises(NotFoundError, match="agg-1"):
+            await registry.get_aggregated_llm(
+                "agg-1", resolve_member=self._resolve_member,
+            )
 
     @pytest.mark.asyncio
     async def test_round_robin_cursor_persists_across_calls(self) -> None:
@@ -197,15 +207,16 @@ class TestAggregatedLLMResolution:
         built on every call would reset _cursor to 0 every time, so
         ROUND_ROBIN's start position would never advance past member[0]."""
         sp = _FakeStorageProvider()
-        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
         profile = _make_aggregated_profile(strategy=RoutingStrategy.ROUND_ROBIN)
+        await sp.get_storage(ModelProfile).create(profile)
+        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
 
         llm1 = await registry.get_aggregated_llm(
-            profile, resolve_member=self._resolve_member,
+            profile.id, resolve_member=self._resolve_member,
         )
         order1 = await llm1._member_order()
         llm2 = await registry.get_aggregated_llm(
-            profile, resolve_member=self._resolve_member,
+            profile.id, resolve_member=self._resolve_member,
         )
         order2 = await llm2._member_order()
 
@@ -218,15 +229,16 @@ class TestAggregatedLLMResolution:
     @pytest.mark.asyncio
     async def test_invalidate_drops_cache(self) -> None:
         sp = _FakeStorageProvider()
-        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
         profile = _make_aggregated_profile()
+        await sp.get_storage(ModelProfile).create(profile)
+        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
 
         first = await registry.get_aggregated_llm(
-            profile, resolve_member=self._resolve_member,
+            profile.id, resolve_member=self._resolve_member,
         )
         await registry.invalidate_aggregated_llm(profile.id)
         second = await registry.get_aggregated_llm(
-            profile, resolve_member=self._resolve_member,
+            profile.id, resolve_member=self._resolve_member,
         )
         assert first is not second
 
@@ -235,6 +247,69 @@ class TestAggregatedLLMResolution:
         sp = _FakeStorageProvider()
         registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
         await registry.invalidate_aggregated_llm("never-cached")
+
+    @pytest.mark.asyncio
+    async def test_flush_mid_lookup_is_not_resurrected(self) -> None:
+        """01a067c4 gate MAJOR: get_aggregated_llm used to take an
+        already-fetched row instead of re-fetching inside its own lock,
+        so its _cache_generation sample was vacuous - zero awaits stood
+        between the sample and the cache insert, and the real race span
+        (the CALLER's row fetch, entirely outside this method and its
+        lock) was uncovered. A stale flush/invalidation landing there
+        would leave a permanently stale AggregatedLLM (old
+        members/strategy) cached forever.
+
+        Single-key invalidate_aggregated_llm can't actually race this
+        method at all post-fix: both it and get_aggregated_llm hold the
+        SAME asyncio.Lock for their entire bodies, including the row
+        fetch, so they're mutually exclusive by construction (same as
+        get_llm/invalidate_llm already were). The genuine race is
+        against _flush_caches_local - the ONE lock-free path (it must
+        run synchronously from the bus-reconnect hook, per its own
+        docstring) - landing while THIS call's in-lock row fetch is
+        still in flight. This pins that: the generation-guard must
+        refuse to cache the adapter built from what is now a stale
+        generation.
+        """
+        sp = _FakeStorageProvider()
+        profile = _make_aggregated_profile()
+        await sp.get_storage(ModelProfile).create(profile)
+        registry = ProviderRegistry(sp, llm_factory=lambda p: MagicMock())
+
+        storage = sp.get_storage(ModelProfile)
+        real_get = storage.get
+
+        async def _get_then_flush(id: str):
+            row = await real_get(id)
+            # Simulate _flush_caches_local landing while THIS call's own
+            # row fetch (inside the lock) is still in flight - the exact
+            # window the generation-guard exists to cover.
+            registry._flush_caches_local()
+            return row
+
+        storage.get = _get_then_flush  # type: ignore[method-assign]
+
+        adapter = await registry.get_aggregated_llm(
+            profile.id, resolve_member=self._resolve_member,
+        )
+
+        assert profile.id not in registry._aggregated_llm_cache, (
+            "an adapter built during an in-flight flush must not be "
+            "cached - it would stay stale forever"
+        )
+        # The call itself must still succeed and return a real adapter --
+        # only the CACHING is refused, not the lookup.
+        from primer.llm.aggregated import AggregatedLLM
+        assert isinstance(adapter, AggregatedLLM)
+
+        # A subsequent call rebuilds (cache miss) rather than returning
+        # the never-cached, now-stale adapter from above.
+        storage.get = real_get
+        second = await registry.get_aggregated_llm(
+            profile.id, resolve_member=self._resolve_member,
+        )
+        assert second is not adapter
+        assert profile.id in registry._aggregated_llm_cache
 
 
 class TestEmbedderResolution:
