@@ -455,6 +455,7 @@ def _make_lifespan(config: AppConfig):
             claim_engine = _ClaimEngineFactory.create(
                 storage_provider=storage_provider,
                 event_bus=event_bus,
+                workspace_registry=workspace_registry,
             )
             logger.info("lifespan: claim engine constructed (%s)", type(claim_engine).__name__)
             await provider_registry.bind_invalidation_bus(coordinator.invalidation_bus)
