@@ -202,6 +202,77 @@ async def test_tool_approval_respond_flips_row_without_listener(app, client):
 
 
 @pytest.mark.asyncio
+async def test_tool_approval_respond_writes_a_durable_record_immediately(
+    app, client,
+):
+    """01a068da: the ONE write site used to be the eventual resume
+    (session_resume_coordinator.py, best-effort) - a crash between this
+    respond and that resume lost the audit record entirely. Now the
+    respond route itself writes it durably, before this test's session
+    has been resumed at all (nothing here drives a resume)."""
+    from primer.model.storage import OffsetPage
+    from primer.model.tool_approval import ToolApprovalRecord
+
+    sess = _make_approval_parked_session(
+        session_id="d-rec1", tool_call_id="call-rec1",
+    )
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+
+    resp = await client.post(
+        "/v1/sessions/d-rec1/tool_approval/respond",
+        json={"tool_call_id": "call-rec1", "decision": "approved"},
+    )
+    assert resp.status_code == 202
+
+    records = app.state.storage_provider.get_storage(ToolApprovalRecord)
+    page = await records.list(OffsetPage(offset=0, length=50))
+    matches = [r for r in page.items if r.session_id == "d-rec1"]
+    assert len(matches) == 1
+    rec = matches[0]
+    assert rec.decision == "approved"
+    assert rec.tool_name == "delete_workspace"
+    assert rec.tool_call_id == "call-rec1"
+    assert rec.session_id == "d-rec1"
+    assert rec.agent_id == "agt"
+    # Stamped by the respond route's approver-routing (fixture client's
+    # auto-registered first user is the admin, same as the payload
+    # assertion above).
+    assert rec.decided_by == "testuser"
+    assert rec.gate_event_key == "tool_approval:d-rec1:call-rec1"
+
+
+@pytest.mark.asyncio
+async def test_tool_approval_respond_reject_writes_a_record_with_the_reason(
+    app, client,
+):
+    from primer.model.storage import OffsetPage
+    from primer.model.tool_approval import ToolApprovalRecord
+
+    sess = _make_approval_parked_session(
+        session_id="d-rec2", tool_call_id="call-rec2",
+    )
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+
+    resp = await client.post(
+        "/v1/sessions/d-rec2/tool_approval/respond",
+        json={
+            "tool_call_id": "call-rec2", "decision": "rejected",
+            "reason": "too risky",
+        },
+    )
+    assert resp.status_code == 202
+
+    records = app.state.storage_provider.get_storage(ToolApprovalRecord)
+    page = await records.list(OffsetPage(offset=0, length=50))
+    matches = [r for r in page.items if r.session_id == "d-rec2"]
+    assert len(matches) == 1
+    assert matches[0].decision == "rejected"
+    assert matches[0].reason == "too risky"
+
+
+@pytest.mark.asyncio
 async def test_second_listener_style_flip_is_idempotent(app, client):
     """After the handler's durable flip, a second (listener-style) flip of
     the same single-event park is a guard-rejected no-op - it must not

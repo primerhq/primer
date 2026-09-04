@@ -173,11 +173,32 @@ ApprovalDecision = Literal["approved", "rejected", "timeout", "cancelled"]
 class ToolApprovalRecord(Identifiable):
     """One durable, resolved tool-approval decision.
 
-    Written exactly once at the moment an approval gate is finalized
-    (operator approved/rejected, or a yield timeout/cancel synthesised a
-    decision) by every resume path: agent sessions, graph sessions, and
-    chats. The Approvals records view reads these back to show resolved
-    history alongside the live (still-parked) pending calls.
+    01a068da: written at RESPOND-TIME (the moment the operator's decision
+    actually arrives - ``tool_approval.py``'s ``_publish_decision``, the
+    single-park agent-session respond path) for approved/rejected
+    verdicts, with a resume-time write as a FALLBACK for verdicts that
+    never go through respond at all (a synthesised timeout/cancel) and as
+    crash recovery (a process that dies between the respond-time write
+    attempt and its confirmation still gets the record written when the
+    session is eventually resumed). ``gate_event_key`` carries a UNIQUE
+    index (see ``primer.storage.postgres._HOT_FIELD_INDEXES`` /
+    ``primer.storage.sqlite._SQLITE_HOT_FIELD_INDEXES``, NULL-tolerant so
+    pre-migration rows are unaffected) so the two write sites cannot both
+    land a row for the SAME gate: whichever writes second hits the unique
+    constraint and is treated as an expected no-op, not a failure. Before
+    this fix the ONLY write happened at resume-time, best-effort, so a
+    crash between respond and resume lost the audit record entirely - see
+    the git history on this docstring for the prior, less accurate,
+    claim ("written exactly once... by every resume path").
+
+    This durability upgrade covers the single-park agent-session respond
+    path specifically (``/sessions/{id}/tool_approval/respond``). The
+    graph engine's multi-concurrent-node approval resolution
+    (``primer.worker.graph_resume_coordinator.write_approval_record_for_
+    graph``, matched by ``tool_call_id`` rather than a single
+    session-level ``event_key``) is a distinct mechanism this change does
+    NOT extend to a respond-time write - it keeps its existing
+    resume-time-only, best-effort behaviour and its own analogous gap.
 
     Fields are captured from the parked ``resume_metadata`` blob being
     resolved: ``original_call`` carries the gated ``(id, name, arguments)``
@@ -202,6 +223,16 @@ class ToolApprovalRecord(Identifiable):
     tool_call_id: str | None = Field(
         default=None,
         description="Id of the gated tool call this decision resolves.",
+    )
+    gate_event_key: str | None = Field(
+        default=None,
+        description=(
+            "The park's own event_key (ParkedState.yielded.event_key) - "
+            "None for records written before this field existed. Carries "
+            "a NULL-tolerant unique index, so a record is queryable by "
+            "gate and the respond-time + resume-time write sites cannot "
+            "both land a row for the same gate."
+        ),
     )
     agent_id: str | None = Field(
         default=None,

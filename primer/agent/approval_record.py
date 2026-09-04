@@ -43,6 +43,7 @@ def record_from_parked_blob(
     requested_at: datetime | None = None,
     decided_at: datetime | None = None,
     decided_by: str | None = None,
+    gate_event_key: str | None = None,
 ) -> ToolApprovalRecord:
     """Build a record from a session/graph ``parked_state`` blob.
 
@@ -50,6 +51,12 @@ def record_from_parked_blob(
     gated ``id``/``name``/``arguments``) plus ``policy_id`` /
     ``approval_type`` / ``gate_reason`` and, for ``call_tool`` meta-dispatch,
     ``via_call_tool`` (inner toolset id + principal).
+
+    ``gate_event_key`` defaults to None (backward/forward compatible with
+    every existing caller); a caller with a real ``ParkedState.yielded.
+    event_key`` in hand should pass it explicitly (01a068da) so the
+    respond-time and resume-time write sites can dedupe against the same
+    gate via ``ToolApprovalRecord``'s unique index.
     """
     yielded: dict = blob.get("yielded") or {}
     metadata: dict = yielded.get("resume_metadata") or {}
@@ -60,6 +67,7 @@ def record_from_parked_blob(
         tool_name=original.get("name") or "",
         arguments=original.get("arguments") or {},
         tool_call_id=original.get("id") or blob.get("tool_call_id"),
+        gate_event_key=gate_event_key,
         agent_id=agent_id,
         session_id=session_id,
         chat_id=chat_id,
@@ -119,13 +127,31 @@ async def write_approval_record(
 ) -> None:
     """Persist a record best-effort. Never raises.
 
-    A failure here must not block or fail an in-progress resume, so any
-    exception (including a missing storage) is logged and swallowed.
+    A failure here must not block or fail an in-progress resume (or a
+    respond request), so any exception (including a missing storage) is
+    logged and swallowed.
+
+    01a068da: a record with a non-None ``gate_event_key`` can legitimately
+    lose a race against the OTHER write site for the same gate (respond-
+    time vs. the resume-time fallback) - ``ToolApprovalRecord``'s unique
+    index on that field turns the loser's insert into a
+    :class:`~primer.model.except_.ConflictError`. That is the mechanism
+    working as intended, not a failure: log it at DEBUG (still visible if
+    someone is looking, not noise on the normal path) rather than the
+    ERROR-level ``logger.exception`` a genuine write failure gets.
     """
     if storage is None:
         return
+    from primer.model.except_ import ConflictError
+
     try:
         await storage.create(record)
+    except ConflictError:
+        logger.debug(
+            "approval-record: gate_event_key=%r already has a record "
+            "(the other write site won the race) - skipping",
+            record.gate_event_key,
+        )
     except Exception:  # noqa: BLE001 - best-effort; resume must not fail
         logger.exception(
             "approval-record: failed to persist record for tool %r",

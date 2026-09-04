@@ -56,9 +56,20 @@ async def write_approval_record_for_session(
 ) -> None:
     """Persist the resolved approval decision for a session park.
 
+    01a068da: this used to be the ONLY write site (a crash between an
+    operator's respond and this eventual resume lost the audit record
+    entirely). The respond route (tool_approval.py's _publish_decision)
+    now writes the SAME record durably at the moment the decision
+    arrives, keyed by gate_event_key, so this call is a FALLBACK: it
+    still fires unconditionally on every resume (a synthesised timeout/
+    cancel verdict never goes through respond at all, so this remains
+    the ONLY write site for those), but when the respond-time write
+    already landed, gate_event_key's unique index turns this insert into
+    an expected no-op rather than a duplicate row (see
+    write_approval_record's own docstring).
+
     Best-effort: a write failure is logged and swallowed so the resume
-    proceeds. Shared by the agent and graph resume paths via the same
-    parked-state blob shape.
+    proceeds.
     """
     from primer.agent.approval_record import (
         record_from_parked_blob,
@@ -67,6 +78,7 @@ async def write_approval_record_for_session(
     from primer.model.tool_approval import ToolApprovalRecord
 
     decision, reason = classify_approval_payload(payload)
+    yielded: dict = blob.get("yielded") or {}
     record = record_from_parked_blob(
         blob=blob,
         decision=decision,
@@ -79,6 +91,7 @@ async def write_approval_record_for_session(
         decided_by=(
             payload.get("decided_by") if isinstance(payload, dict) else None
         ),
+        gate_event_key=yielded.get("event_key"),
     )
     storage = (
         pool._storage.get_storage(ToolApprovalRecord)
