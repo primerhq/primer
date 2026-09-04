@@ -8,6 +8,7 @@ clean exits all run its finally).
 from __future__ import annotations
 
 import inspect
+import textwrap
 
 import primer.session.dispatch as dispatch
 
@@ -20,11 +21,28 @@ def test_gauge_is_incremented_before_the_stream_and_decremented_after():
 
 
 def test_gauge_decrements_inside_a_finally():
+    # Structural (AST) check, not source-text slicing: the old version
+    # looked for "finally:" within a fixed character window before the
+    # dec() call, which broke the moment an unrelated addition to the
+    # SAME finally (e2e8ecfb's turn_events.aclose() block) pushed the
+    # keyword out of the window - a false failure on correct code. Walk
+    # the function's Try nodes instead and assert the dec lives in a
+    # finalbody, alongside the cancel-watcher teardown it must share
+    # cleanup with.
+    import ast
+
     src = inspect.getsource(dispatch.run_one_session_turn)
-    tail = src[src.index("sessions_active.labels(session.workspace_id).dec()"):]
-    head = src[: src.index("sessions_active.labels(session.workspace_id).dec()")]
-    assert head.rstrip().endswith("finally:") or "finally:" in head[-400:]
-    assert "cancel_task.cancel()" in tail, (
+    tree = ast.parse(textwrap.dedent(src))
+    finals_with_dec = [
+        ast.unparse(ast.Module(body=t.finalbody, type_ignores=[]))
+        for t in ast.walk(tree)
+        if isinstance(t, ast.Try) and t.finalbody
+        and "sessions_active" in ast.unparse(
+            ast.Module(body=t.finalbody, type_ignores=[])
+        )
+    ]
+    assert finals_with_dec, "sessions_active dec() must sit inside a finally"
+    assert any("cancel_task.cancel()" in f for f in finals_with_dec), (
         "the dec belongs in the existing cancel-watcher finally"
     )
 
