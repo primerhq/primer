@@ -665,11 +665,23 @@ class _BaseGraphExecutor(
             token = set_current_graph_node_id(ay.node_id)
             try:
                 try:
-                    out = await self._resume_agent_node(
+                    # 01a06933: _resume_agent_node is an async generator
+                    # (forwards the resumed turn's own events instead of
+                    # discarding them) -- its final NodeOutput can't ride
+                    # its own `return`, so it lands in out_holder once the
+                    # generator is fully drained. Forwarding each event on
+                    # via our own `yield` here is what lets 01a0690a's
+                    # resume-drain tap (worker/graph_resume.py) actually
+                    # see them; they were never reachable at all before.
+                    out_holder: dict = {}
+                    async for _ev in self._resume_agent_node(
                         ay, agent_tool_result if agent_tool_result is not None
                         else Message(role="tool", parts=[
                             ToolResultPart(id=ay.tool_call_id, output="")]),
-                    )
+                        out_holder,
+                    ):
+                        yield _ev
+                    out = out_holder["output"]
                 except Exception as exc:  # noqa: BLE001 -- map to node failure
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],

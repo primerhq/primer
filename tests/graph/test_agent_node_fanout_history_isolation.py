@@ -145,7 +145,12 @@ async def test_resume_agent_node_persists_history_under_the_instance_id() -> Non
         role="tool", parts=[ToolResultPart(id="tc-1", output="yes")],
     )
 
-    await executor._resume_agent_node(pending, tool_result_msg)
+    # 01a06933: _resume_agent_node is an async generator now (forwards the
+    # resumed turn's own events instead of discarding them) - drain it;
+    # the final NodeOutput isn't this test's concern (out_holder unused).
+    out_holder: dict = {}
+    async for _ev in executor._resume_agent_node(pending, tool_result_msg, out_holder):
+        pass
 
     persisted_node_ids = {m.node_id for m in message_storage._data.values()}
     assert persisted_node_ids == {"worker[0]", "worker[1]"}, (
