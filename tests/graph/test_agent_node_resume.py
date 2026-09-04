@@ -6,7 +6,8 @@ import pytest
 from primer.graph.workspace_executor import WorkspaceGraphExecutor
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
-    Done, Message, StreamEvent, TextDelta, TextPart, ToolResultPart,
+    Done, ExtendedEvent, Message, StreamEvent, TextDelta, TextPart,
+    ToolResultPart, _GraphNodeEvent,
 )
 from primer.model.graph import (
     Graph, _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge,
@@ -96,6 +97,45 @@ async def test_agent_node_park_then_resume_completes(tmp_path):
     assert state["status"] == "ended"
     assert state["ended_reason"] == "completed"
     assert state["node_states"]["A"]["status"] == "ended"
+
+
+@pytest.mark.asyncio
+async def test_resumed_node_continuation_events_reach_the_caller(tmp_path):
+    """01a06933: _resume_agent_node's own `async for _event in
+    run_agent_turn(...): pass` used to discard everything the resumed
+    node's CONTINUING turn produced -- an awaited call has no way to
+    yield through resume_from_checkpoint's own generator, so 01a0690a's
+    resume-drain tap (which taps resume_from_checkpoint's yielded events
+    for the durable record) had nothing to see for this specific case,
+    even after that fix landed. Assert the events the continuation LLM
+    actually streams (TextDelta + Done, via _ContinuationLLM) now come
+    out of resume_from_checkpoint itself, wrapped for node "A" the same
+    way the live _stream_agent_node path tags its own forwarded events."""
+    ex1 = await _build(tmp_path, _YieldingLLM(), "gsid-r3")
+    raised = await _drain_until_yield(ex1.invoke([]))
+    assert raised is not None and raised.graph_checkpoint is not None
+    checkpoint = raised.graph_checkpoint
+
+    ex2 = await _build(tmp_path, _ContinuationLLM(), "gsid-r3")
+    tool_result = Message(role="tool",
+                          parts=[ToolResultPart(id="tc1", output="blue")])
+    events: list[StreamEvent] = []
+    async for ev in ex2.resume_from_checkpoint(
+        checkpoint, resumed_tcid="tc1", agent_tool_result=tool_result):
+        events.append(ev)
+
+    node_a_events = [
+        ev for ev in events
+        if isinstance(ev, ExtendedEvent) and isinstance(ev.extended, _GraphNodeEvent)
+        and ev.extended.node_id == "A"
+    ]
+    assert node_a_events, (
+        "the resumed node's own continuation produced no events at all - "
+        "pre-fix, _resume_agent_node discarded every one of them"
+    )
+    inner_types = {ev.extended.inner_type for ev in node_a_events}
+    assert "text_delta" in inner_types
+    assert "done" in inner_types
 
 
 class _CountingYieldLLM:
