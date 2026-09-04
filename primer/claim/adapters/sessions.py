@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -7,7 +8,11 @@ from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
 from primer.int.storage import Storage
 
 if TYPE_CHECKING:
-    from primer.session.persistence import WorkspaceIO
+    from primer.api.registries.workspace_registry import WorkspaceRegistry
+    from primer.int.event_bus import EventBus
+    from primer.model.workspace_session import WorkspaceSession
+
+logger = logging.getLogger(__name__)
 
 
 class SessionClaimAdapter(ClaimAdapter):
@@ -18,10 +23,18 @@ class SessionClaimAdapter(ClaimAdapter):
         self,
         *,
         session_storage: Storage | None,
-        workspace_io: "WorkspaceIO | None" = None,
+        workspace_registry: "WorkspaceRegistry | None" = None,
+        event_bus: "EventBus | None" = None,
     ) -> None:
         self._storage = session_storage
-        self._workspace_io = workspace_io
+        # 01a068ea: a workspace's I/O handle is resolved per-session (each
+        # session belongs to its own workspace), so this adapter -- a
+        # process-wide singleton spanning every workspace -- needs the
+        # REGISTRY, not one fixed WorkspaceIO. Resolved lazily in
+        # _write_terminal_record, mirroring
+        # WorkerPool._load_workspace_for_persist's own per-call resolution.
+        self._workspace_registry = workspace_registry
+        self._event_bus = event_bus
 
     def eligibility_sql(self) -> str:
         # parked_status lives inside the entity's JSONB ``data`` column, not as
@@ -132,15 +145,24 @@ class SessionClaimAdapter(ClaimAdapter):
 
         # Write a terminal error record to messages.jsonl when the release
         # is a failure (reclaim, worker crash, or any other engine error).
-        if not outcome.success and self._workspace_io is not None:
-            await self._write_terminal_record(entity_id, outcome)
+        # This is the ONLY durable error record for a crash/reclaim failure
+        # mode: dispatch.py's own except-block write can't run if the
+        # worker process that would run it is the thing that died.
+        if not outcome.success and self._workspace_registry is not None:
+            await self._write_terminal_record(sess, outcome)
 
     async def _write_terminal_record(
-        self, session_id: str, outcome: ReleaseOutcome
+        self, session: "WorkspaceSession", outcome: ReleaseOutcome,
     ) -> None:
         """Append a synthetic error-kind SessionMessageRecord to messages.jsonl."""
         from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
         from primer.session.persistence import WorkspaceMessageWriter
+
+        workspace_io = await self._workspace_registry.get_workspace(
+            session.workspace_id,
+        )
+        if workspace_io is None:
+            return
 
         reason = outcome.last_error or "unknown"
         record = SessionMessageRecord(
@@ -150,8 +172,27 @@ class SessionClaimAdapter(ClaimAdapter):
             created_at=datetime.now(timezone.utc),
         )
         writer = WorkspaceMessageWriter(
-            workspace_io=self._workspace_io,
-            session_id=session_id,
+            workspace_io=workspace_io,
+            session_id=session.id,
+            # 01a068ea: seed past the row's existing history. The default
+            # start_seq=0 landed this record at seq=1, silently OVERWRITING
+            # whatever real message already held that seq on any session
+            # that errors out after messages exist (pool.py:596's pattern).
+            start_seq=session.last_seq,
         )
-        await writer.append(record)
+        new_seq = await writer.append(record)
         await writer.flush()
+        # 01a068ea: a durable-but-unticked write is invisible to a live
+        # client until its next poll -- same advisory doctrine as every
+        # other tick publish in this codebase (best-effort, never fails
+        # the write it's reporting on).
+        if self._event_bus is not None:
+            try:
+                await self._event_bus.publish(
+                    f"session:{session.id}:tick", {"seq": new_seq},
+                )
+            except Exception:  # noqa: BLE001 - advisory
+                logger.exception(
+                    "on_release: tick publish failed for session %s",
+                    session.id,
+                )
