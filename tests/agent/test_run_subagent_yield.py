@@ -66,6 +66,10 @@ class _GatedToolsetProvider:
 
     def __init__(self) -> None:
         self.last_principal: str | None = None
+        # Captured ToolContext from the most recent call() - lets a test
+        # inspect what the manager actually stamped onto it (e.g. turn_no)
+        # without needing a real yield/park to inspect anything.
+        self.last_ctx: Any = None
 
     async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
         yield Tool(
@@ -89,6 +93,7 @@ class _GatedToolsetProvider:
     async def call(
         self, *, tool_name, arguments, principal=None, ctx=None
     ) -> ToolCallResult:  # noqa: ANN001
+        self.last_ctx = ctx
         return ToolCallResult(output="done", is_error=False)
 
 
@@ -269,6 +274,7 @@ async def test_run_subagent_approval_gate_pushes_agent_frame():
             workspace_id="ws-parent",
             chat_id=None,
             invoke_tool_call_id="parent-tcid",
+            turn_no=42,
         )
 
     yld = ei.value
@@ -290,6 +296,64 @@ async def test_run_subagent_approval_gate_pushes_agent_frame():
     assert frame.context.workspace_id == "ws-parent"
     assert frame.context.principal == "user-1"
     assert "t1__do_it" in frame.context.tools
+    # 01a0518b: the enclosing turn's own turn_no is carried through
+    # unchanged - a nested subagent call belongs to the outer turn.
+    assert frame.context.turn_no == 42
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_threads_turn_no_into_nested_tool_context():
+    """01a0518b: turn_no reaches the subagent's OWN ToolContext unchanged.
+
+    Deeper than the AgentFrame assertion above - this is the invariant
+    the eventual tool-dispatch seam actually reads from at claim-scoping
+    time. A nested subagent call belongs to the outer turn, so its own
+    tool dispatch must stamp the SAME turn_no, not a fresh/absent one.
+    """
+    from primer.agent.invoke import run_subagent
+
+    agent = _agent(tools=["t1__do_it"])
+
+    class _OneRoundLLM:
+        """Calls the tool once, then ends the turn cleanly on the next
+        round - a plain _FakeLLM would replay the SAME tool call forever
+        (no round-tracking), infinite-looping run_agent_turn."""
+
+        def __init__(self) -> None:
+            self._round = 0
+
+        def stream(self, *, model, messages, **kwargs):  # noqa: ANN001
+            self._round += 1
+            round_no = self._round
+
+            async def _gen():
+                if round_no == 1:
+                    for ev in _tool_call_script("t1__do_it", "call-1"):
+                        yield ev
+                else:
+                    yield Done(stop_reason="stop", raw_reason="stop")
+
+            return _gen()
+
+    llm = _OneRoundLLM()
+    toolset = _GatedToolsetProvider()
+    storage = _StorageProvider(agent=agent, provider_row=_provider_row())
+    registry = _ProviderRegistry(llm=llm, toolset=toolset)
+
+    await run_subagent(
+        agent_id="agent-sub",
+        prompt="please do it",
+        storage_provider=storage,
+        provider_registry=registry,
+        principal="user-1",
+        session_id="sess-parent",
+        workspace_id="ws-parent",
+        invoke_tool_call_id="parent-tcid",
+        turn_no=7,
+    )
+
+    assert toolset.last_ctx is not None, "do_it was never dispatched"
+    assert toolset.last_ctx.turn_no == 7
 
 
 @pytest.mark.asyncio

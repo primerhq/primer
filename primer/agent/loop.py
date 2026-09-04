@@ -137,6 +137,7 @@ async def run_agent_turn(
     messages_out: list[Message] | None = None,
     last_input_tokens_out: list[int | None] | None = None,
     artifact_storage: "ArtifactStorage | None" = None,
+    turn_no: int | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -177,6 +178,17 @@ async def run_agent_turn(
         produces mid-turn is hydrated too, not just the turn's
         starting prompt. ``None`` (the default) is a no-op: callers
         that never resolve a store keep today's behaviour exactly.
+    turn_no
+        The enclosing session turn's own turn number (01a0518b), read
+        by the tool-dispatch seam to scope any ``ToolCallTask`` rows it
+        creates when ``tool_calls_as_claims`` is enabled -- see
+        ``_dispatch_tool_calls``. A NESTED subagent call
+        (``system__invoke_agent``) threads the SAME value through
+        unchanged rather than minting its own: it belongs to the outer
+        turn, not a fresh one, and scoping it differently would orphan
+        its own tool-call scoped ids from the record they need to pair
+        against. ``None`` (the default) is a no-op for callers that
+        haven't opted into the feature.
 
     Raises
     ------
