@@ -373,3 +373,46 @@ def test_routing_line_names_the_spec_and_qualification() -> None:
         'SH_routingLine({approvers: {kind: "roles", roles: ["ops"]}}, '
         '{username: "usman", role: "engineer"})'
     ) == "who may decide: ops"
+
+
+def test_two_concurrent_gates_on_the_same_session_both_surface() -> None:
+    """01a06c94: a graph fan-out can park TWO approval gates on the SAME
+    session at once - list_session_pending_yields now returns one item
+    per gate instead of just the primary. SH_toAttentionItems must keep
+    both, each with a distinct id keyed on tool_call_id: that id is the
+    React key nv-session-doc.jsx's gateItems.map uses, so an id collision
+    here would silently drop one DecisionCard even though the backend
+    sent both.
+    """
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toAttentionItems({
+          pending: [
+            {
+              session_id: "sess-fanout", tool_call_id: "call-0",
+              kind: "approval", prompt: "delete_workspace",
+              parked_at: "2026-09-04T00:00:00+00:00", approvers: null,
+              resume_metadata: {
+                original_call: {id: "call-0", name: "delete_workspace", arguments: {}},
+                response_schema: null
+              }
+            },
+            {
+              session_id: "sess-fanout", tool_call_id: "call-1",
+              kind: "approval", prompt: "delete_workspace",
+              parked_at: "2026-09-04T00:00:01+00:00", approvers: null,
+              resume_metadata: {
+                original_call: {id: "call-1", name: "delete_workspace", arguments: {}},
+                response_schema: null
+              }
+            }
+          ],
+          records: []
+        }).map(function (i) { return [i.id, i.toolCallId, i.sessionId]; }))
+        """
+    ))
+    assert len(out) == 2, out
+    assert {row[0] for row in out} == {"pending:call-0", "pending:call-1"}
+    assert {row[1] for row in out} == {"call-0", "call-1"}
+    assert all(row[2] == "sess-fanout" for row in out)

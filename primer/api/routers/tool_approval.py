@@ -25,6 +25,7 @@ from primer.api.routers._crud import make_crud_router
 from primer.int.claim import ClaimEngine
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
 from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
@@ -201,8 +202,15 @@ class ToolApprovalRespondBody(BaseModel):
     reason: str | None = Field(default=None, max_length=1024)
 
 
-def _enforce_approvers(blob: dict, user: Any) -> None:
-    """403 ``approver_mismatch`` unless the caller may decide this park.
+def _enforce_approvers(metadata: dict, user: Any) -> None:
+    """403 ``approver_mismatch`` unless the caller may decide this gate.
+
+    ``metadata`` is the SPECIFIC pending gate's ``resume_metadata``
+    (from :func:`~primer.session.pending_gates.resolve_pending_gate`),
+    not necessarily the session's primary/top-level one -- a graph park
+    can have several pending approval gates at once, each with its own
+    resolved spec, so enforcement must check the gate actually being
+    decided rather than whichever one happens to be projected first.
 
     The spec was resolved and stamped at park time (policy row default,
     or the evaluator's per-call override). No spec means anyone.
@@ -211,9 +219,6 @@ def _enforce_approvers(blob: dict, user: Any) -> None:
     """
     if user is None:  # WS scope / auth-disabled synthetic admin absent
         return
-    metadata: dict = (
-        (blob.get("yielded") or {}).get("resume_metadata") or {}
-    )
     raw = metadata.get("approvers")
     if not raw:
         return
@@ -233,20 +238,31 @@ def _enforce_approvers(blob: dict, user: Any) -> None:
 
 
 def _approval_blob_or_404(sess: Any, id_str: str) -> dict:
-    """Return parked_state blob when the row is parked on _approval.
+    """Return parked_state blob when the row has a pending _approval gate.
 
     Raises :class:`NotFoundError` if:
     * the row is None (doesn't exist),
     * it isn't in a parked/resumable state, or
-    * it's parked on a different tool.
+    * none of its pending entries is an approval gate.
+
+    Checks every pending entry via
+    :func:`~primer.session.pending_gates.enumerate_pending_gates`, not
+    just the top-level ``yielded`` projection: a graph park's outer
+    ``yielded.tool_name`` is hardcoded ``"_approval"`` for ANY graph
+    park regardless of what's actually primary (see
+    ``_CheckpointMixin._build_pending_park_yield``), so the old
+    top-level-only check could both false-positive (primary is really an
+    ask_user agent yield) and false-negative (an _approval gate is
+    pending but isn't the primary entry).
     """
     if sess is None:
         raise NotFoundError(f"{id_str!r} does not exist")
     if sess.parked_status not in ("parked", "resumable"):
         raise NotFoundError(f"{id_str!r} has no pending tool_approval")
     blob: dict = sess.parked_state or {}
-    yielded: dict = blob.get("yielded") or {}
-    if yielded.get("tool_name") != "_approval":
+    if not any(
+        gate["kind"] == "_approval" for gate in enumerate_pending_gates(blob)
+    ):
         raise NotFoundError(f"{id_str!r} is parked on a different tool")
     return blob
 
@@ -254,10 +270,24 @@ def _approval_blob_or_404(sess: Any, id_str: str) -> dict:
 def _build_pending_response(
     blob: dict, sess: Any
 ) -> ToolApprovalPendingResponse:
-    """Construct the pending-response envelope from parked_state."""
-    yielded: dict = blob.get("yielded") or {}
-    metadata: dict = yielded.get("resume_metadata") or {}
+    """Construct the pending-response envelope for ONE approval gate.
+
+    This endpoint's response shape is singular (predates multi-gate
+    graph parks), so a session with several pending approval gates at
+    once surfaces only the first found here -- callers that need every
+    pending gate use ``GET .../yields/pending`` (workspaces.py) instead,
+    which returns all of them via the same shared resolver.
+    """
+    gate = next(
+        (g for g in enumerate_pending_gates(blob) if g["kind"] == "_approval"),
+        None,
+    )
+    metadata: dict = (gate or {}).get("resume_metadata") or {}
     original: dict = metadata.get("original_call") or {}
+    # Graph pending-toolcall entries never carry a timeout (the checkpoint's
+    # _PendingToolCall has no such field); this stays None for every graph
+    # park, same as before this fix.
+    yielded: dict = blob.get("yielded") or {}
     timeout = yielded.get("timeout")
     timeout_at_iso: str | None = None
     if timeout is not None and sess.parked_at is not None:
@@ -265,7 +295,7 @@ def _build_pending_response(
             sess.parked_at + timedelta(seconds=float(timeout))
         ).isoformat()
     return ToolApprovalPendingResponse(
-        tool_call_id=original.get("id") or blob.get("tool_call_id", ""),
+        tool_call_id=original.get("id") or (gate or {}).get("tool_call_id") or "",
         tool_name=original.get("name", ""),
         arguments=original.get("arguments") or {},
         policy_id=metadata.get("policy_id"),
@@ -286,13 +316,21 @@ async def _publish_decision(
     sess: Any,
     id_str: str,
     body: ToolApprovalRespondBody,
+    gate: dict[str, Any],
     event_bus: EventBus,
     session_storage,
     engine: ClaimEngine | None,
     storage_provider=None,
     decided_by: str | None = None,
 ) -> bool:
-    """Validate the decision, durably flip the row, then wake the bus.
+    """Durably flip the row on ``gate``'s own event_key, then wake the bus.
+
+    ``gate`` is the SPECIFIC pending entry ``body.tool_call_id`` resolved
+    to (see :func:`~primer.session.pending_gates.resolve_pending_gate`),
+    not necessarily the session's primary one -- a graph park can have
+    several pending approval gates open at once, each waking on its own
+    event_key, so publishing the top-level/primary key here would answer
+    the wrong gate (or 404) for every non-primary one.
 
     D-C2 fix: the operator decision is stamped onto the session row
     (``resume_event_payload`` + ``parked_status='resumable'`` + the claim
@@ -307,16 +345,7 @@ async def _publish_decision(
     repairs the row rather than accepting a decision the claim loop can never
     act on. Returns True when this call advanced the row.
     """
-    blob = _approval_blob_or_404(sess, id_str)
-    yielded: dict = blob.get("yielded") or {}
-    original: dict = (yielded.get("resume_metadata") or {}).get("original_call") or {}
-    expected = original.get("id") or blob.get("tool_call_id")
-    if expected != body.tool_call_id:
-        raise NotFoundError(
-            f"No pending tool_approval with tool_call_id "
-            f"{body.tool_call_id!r} on {id_str!r}"
-        )
-    event_key: str | None = yielded.get("event_key")
+    event_key: str | None = gate.get("event_key")
     if not event_key:
         raise NotFoundError(f"{id_str!r} park is missing event_key")
     payload = {
@@ -355,8 +384,15 @@ async def _publish_decision(
         from primer.worker.yield_runtime import classify_approval_payload
 
         decision, reason = classify_approval_payload(payload)
+        # record_from_parked_blob reads a ``{"yielded": {"resume_metadata":
+        # ...}}``-shaped blob; project the resolved gate into that shape
+        # rather than passing the session's raw parked_state, which would
+        # describe the PRIMARY entry, not necessarily this one.
         record = record_from_parked_blob(
-            blob=blob,
+            blob={
+                "tool_call_id": gate.get("tool_call_id"),
+                "yielded": {"resume_metadata": gate.get("resume_metadata") or {}},
+            },
             decision=decision,
             reason=reason,
             agent_id=getattr(sess.binding, "agent_id", None),
@@ -471,15 +507,27 @@ def make_tool_approval_ops_router() -> APIRouter:
         user=Depends(require_user),
     ) -> dict[str, str]:
         sess = await session_storage.get(session_id)
+        blob = _approval_blob_or_404(sess, session_id)
+        # Resolve the SPECIFIC gate body.tool_call_id names -- a graph park
+        # can have several pending approval gates open at once, and only
+        # the primary one is projected onto the top-level `yielded` blob
+        # (see primer.session.pending_gates). Mirrors yields.py's
+        # _graph_ask_user_dispatch pattern for the ask_user case.
+        gate = resolve_pending_gate(blob, tool_call_id=body.tool_call_id, kind="_approval")
+        if gate is None:
+            raise NotFoundError(
+                f"No pending tool_approval with tool_call_id "
+                f"{body.tool_call_id!r} on {session_id!r}"
+            )
         # Approver routing (P6): 403 approver_mismatch before any state
         # moves; decided_by rides the wake payload into the durable
         # record the resume coordinator writes.
-        blob = _approval_blob_or_404(sess, session_id)
-        _enforce_approvers(blob, user)
+        _enforce_approvers(gate.get("resume_metadata") or {}, user)
         await _publish_decision(
             sess=sess,
             id_str=session_id,
             body=body,
+            gate=gate,
             event_bus=event_bus,
             session_storage=session_storage,
             engine=engine,
