@@ -786,6 +786,7 @@ async def run_one_session_turn(
                 session,
                 new_status=SessionStatus.ENDED,
                 ended_reason="failed",
+                executor=executor,
                 expected_epoch=session.binding_epoch,
             )
             await _clear_interrupt_requested(session_storage, session_id)
