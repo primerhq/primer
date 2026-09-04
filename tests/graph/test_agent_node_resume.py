@@ -13,6 +13,9 @@ from primer.model.graph import (
     Graph, _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge,
 )
 from primer.model.yield_ import Yielded, YieldToWorker
+from primer.worker.frames import (
+    AgentFrame, AgentResumeContext, frames_from_jsonable,
+)
 
 from tests.graph.test_workspace_executor import _make_state_repo
 from primer.model_profile import ResolvedModel
@@ -205,6 +208,88 @@ async def test_resume_agent_node_reyield_reparks_not_fails(tmp_path):
     assert state3["status"] == "ended"
     assert state3["ended_reason"] == "completed"
     assert state3["node_states"]["A"]["status"] == "ended"
+
+
+_NESTED_INVOKE_TCID = "invoke-tc2"
+_NESTED_LEAF_TCID = "leaf-tc2"
+
+
+def _subagent_frame() -> AgentFrame:
+    return AgentFrame(
+        agent_id="sub",
+        llm_messages=[{"role": "assistant", "parts": []}],
+        tool_call_id=_NESTED_INVOKE_TCID,
+        depth=0,
+        context=AgentResumeContext(
+            session_id="s", workspace_id="w", chat_id=None,
+            principal="p", tools=["misc__ask_user"],
+        ),
+    )
+
+
+class _NestedReAskingContinuationLLM:
+    """01a06ca4 follow-up: the resumed turn's continuation makes a FRESH
+    nested invoke_agent call whose subagent itself yields (mirrors
+    test_graph_node_subagent_yield.py's _NestedYieldLLM, applied to the
+    RESUME path instead of first dispatch) - the re-park must preserve
+    yld.frames/leaf, not just the leaf tool_call_id."""
+    async def list_models(self): return ["m"]
+    def stream(self, **kw) -> AsyncIterator[StreamEvent]:
+        async def _g():
+            yld = YieldToWorker(
+                Yielded(tool_name="ask_user",
+                        event_key=f"ask_user:s:{_NESTED_LEAF_TCID}",
+                        resume_metadata={"prompt": "nested?"}),
+                tool_call_id=_NESTED_LEAF_TCID,
+                llm_messages=[Message(role="assistant",
+                                      parts=[TextPart(text="(calling invoke_agent)")]).model_dump(mode="json")])
+            yld.frames = [_subagent_frame()]
+            raise yld
+            yield  # pragma: no cover
+        return _g()
+
+
+@pytest.mark.asyncio
+async def test_resume_agent_node_reyield_preserves_nested_frames(tmp_path):
+    """Lead-flagged gap on f1dc8b4: the re-park branch's _PendingAgentYield
+    must mirror _node_dispatch.py's first-park constructor's frames/leaf
+    handling byte-for-byte, or a resumed turn's fresh nested invoke_agent
+    yield gets its subagent chain silently dropped on re-park - the NEXT
+    resume would then skip the continuation walk and splice the answer
+    straight into the outer turn as the invoke_agent result."""
+    ex1 = await _build(tmp_path, _YieldingLLM(), "gsid-r6")
+    raised = await _drain_until_yield(ex1.invoke([]))
+    assert raised is not None and raised.graph_checkpoint is not None
+    checkpoint = raised.graph_checkpoint
+
+    ex2 = await _build(tmp_path, _NestedReAskingContinuationLLM(), "gsid-r6")
+    tool_result = Message(role="tool",
+                          parts=[ToolResultPart(id="tc1", output="blue")])
+    repark = await _drain_until_yield(ex2.resume_from_checkpoint(
+        checkpoint, resumed_tcid="tc1", agent_tool_result=tool_result))
+
+    assert repark is not None, "nested subagent yield must still re-park"
+    assert len(ex2._pending_agent_yields) == 1
+    p = ex2._pending_agent_yields[0]
+    assert p.tool_call_id == _NESTED_LEAF_TCID
+    assert p.event_key == f"ask_user:s:{_NESTED_LEAF_TCID}"
+    assert p.leaf is not None and p.leaf["tool_name"] == "ask_user"
+    assert len(p.frames) == 1
+    restored_frames = frames_from_jsonable(p.frames)
+    assert isinstance(restored_frames[0], AgentFrame)
+    assert restored_frames[0].agent_id == "sub"
+    assert restored_frames[0].tool_call_id == _NESTED_INVOKE_TCID
+
+    # Checkpoint round-trip: the fresh park this re-yield produced must
+    # carry the frames/leaf through snapshot_state/restore_state too.
+    ck = ex2.snapshot_state()
+    import json
+    json.dumps(ck)  # must be JSON-able
+    ex3 = await _build(tmp_path, _NestedReAskingContinuationLLM(), "gsid-r6")
+    ex3.restore_state(ck)
+    p2 = ex3._pending_agent_yields[0]
+    assert len(p2.frames) == 1
+    assert p2.leaf is not None and p2.leaf["tool_name"] == "ask_user"
 
 
 class _CountingYieldLLM:
