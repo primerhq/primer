@@ -199,6 +199,7 @@ class _AgentNodeMixin:
                 messages_out=produced_messages,
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
+                tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
             ):
                 # 01a0518f: current_graph_node_id() is the fan-out-
                 # instance-qualified id (_stream_node sets it before
@@ -314,6 +315,7 @@ class _AgentNodeMixin:
                 messages_out=produced_messages,
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
+                tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
             ):
                 yield self._wrap_event(event, pending.node_id, pending.iteration)
         except YieldToWorker as yld:
