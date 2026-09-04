@@ -682,6 +682,43 @@ class _BaseGraphExecutor(
                     ):
                         yield _ev
                     out = out_holder["output"]
+                except YieldToWorker as yld:
+                    # 01a06ca4: two-phase park, agent-node flavor (mirrors
+                    # the tc_pending branch above for _ToolCallNode) - the
+                    # resumed node's OWN continuation yielded AGAIN (e.g. a
+                    # second ask_user, or a fresh approval gate) before
+                    # finishing. Re-record it as a pending agent yield on
+                    # the NEW event key so the drain-until-empty check
+                    # below re-parks via _build_pending_park_yield() - built
+                    # from THIS executor's live _pending_agent_yields, not
+                    # the checkpoint this resume started from (already
+                    # consumed by restore_state() at the top of this
+                    # method; the live in-memory lists are the source of
+                    # truth for the rest of this drain). Must come before
+                    # `except Exception` below - YieldToWorker IS an
+                    # Exception subclass, and without this branch it fell
+                    # into that one, silently turning a legitimate re-park
+                    # into a node FAILURE.
+                    #
+                    # scoped_tool_call_id is left unset here deliberately:
+                    # worker/graph_resume.py's own repark catch
+                    # (stash_graph_scoped_ids) backfills it from the SAME
+                    # resume-drain _CoalesceState that already minted it
+                    # when this yield's ToolCallStart streamed past the tap
+                    # a moment ago, above (01a0690a's stash-don't-recompute
+                    # doctrine, unchanged by this fix).
+                    self._pending_agent_yields.append(
+                        _PendingAgentYield(
+                            node_id=ay.node_id,
+                            tool_call_id=yld.tool_call_id,
+                            event_key=yld.yielded.event_key,
+                            tool_name=yld.yielded.tool_name,
+                            resume_metadata=dict(yld.yielded.resume_metadata or {}),
+                            llm_messages=list(yld.llm_messages or []),
+                            iteration=ay.iteration,
+                        )
+                    )
+                    continue
                 except Exception as exc:  # noqa: BLE001 -- map to node failure
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],

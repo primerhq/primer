@@ -293,18 +293,41 @@ class _AgentNodeMixin:
         prompt.append(tool_result_msg)
 
         produced_messages: list[Message] = []
-        async for event in run_agent_turn(
-            agent=agent,
-            llm=llm,
-            llm_model=llm_model,
-            tool_manager=tool_manager,
-            prompt=prompt,
-            response_format=node.response_format,
-            principal=self._principal,
-            messages_out=produced_messages,
-            artifact_storage=self._artifact_storage,
-        ):
-            yield self._wrap_event(event, pending.node_id, pending.iteration)
+        try:
+            async for event in run_agent_turn(
+                agent=agent,
+                llm=llm,
+                llm_model=llm_model,
+                tool_manager=tool_manager,
+                prompt=prompt,
+                response_format=node.response_format,
+                principal=self._principal,
+                messages_out=produced_messages,
+                artifact_storage=self._artifact_storage,
+            ):
+                yield self._wrap_event(event, pending.node_id, pending.iteration)
+        except YieldToWorker as yld:
+            # 01a06ca4: the resumed turn's OWN continuation yielded again
+            # (e.g. a second ask_user, or a fresh approval gate) before
+            # finishing - mirrors _stream_agent_node's own "stamp the in-
+            # progress turn onto the exception" handling, so
+            # graph/base.py's caller can rebuild a correct
+            # _PendingAgentYield for a THIRD resume. Unlike
+            # _stream_agent_node's first-ever dispatch (where
+            # produced_messages alone IS the whole in-progress turn), a
+            # resume's prompt already carries a PREFIX -- new_user_msg +
+            # the PRIOR park's rehydrated_assistant + THIS resume's own
+            # tool_result_msg -- that must be included too, or a third
+            # resume would silently lose everything before this
+            # continuation's own new messages.
+            if not yld.llm_messages:
+                yld.llm_messages = [
+                    m.model_dump(mode="json") for m in (
+                        [new_user_msg, *rehydrated_assistant, tool_result_msg]
+                        + produced_messages
+                    )
+                ]
+            raise
 
         all_new = [new_user_msg, *rehydrated_assistant, tool_result_msg, *produced_messages]
         await self._persist_node_turn(pending.node_id, pending.iteration, all_new)
