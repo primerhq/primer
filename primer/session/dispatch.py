@@ -48,7 +48,7 @@ from primer.model.turn_log import (
     TurnLogStarted,
     TurnLogYielded,
 )
-from primer.model.yield_ import YieldToWorker
+from primer.model.yield_ import ToolWaitPark, YieldToWorker
 from primer.session.autonomy import session_is_autonomous
 from primer.session.enqueue import SessionWakeDeps
 from primer.session.delegation import (
@@ -415,6 +415,20 @@ async def run_one_session_turn(
     # ------------------------------------------------------------------
     coalesce_state = _CoalesceState()
 
+    # 01a0518b (seam-split summit): bind the per-turn scoped-call resolver
+    # now that coalesce_state exists - this is why the resolver can't be
+    # constructor-injected like turn_no/artifact_storage/the flag (see
+    # primer.agent.base._BaseAgentExecutor's own comment on
+    # self._resolve_scoped_call). Defensive getattr: only the agent
+    # executor has this method today (chat/workspace surface, boundary
+    # (c)); the graph surface (boundary (d)) is deferred, so a graph
+    # session's executor simply has no such attribute and this is a no-op
+    # for it, exactly as if tool_calls_as_claims_enabled were never
+    # threaded there at all.
+    _bind_resolver = getattr(executor, "bind_scoped_call_resolver", None)
+    if _bind_resolver is not None:
+        _bind_resolver(_make_scoped_call_resolver(coalesce_state))
+
     # Subagent runs execute inline in this turn with no writer of
     # their own, so the recorder is published here and picked up by
     # the invoke loops through a contextvar. Without it a delegated
@@ -509,6 +523,9 @@ async def run_one_session_turn(
                     # from a DIFFERENT PROCESS, so unflushed bytes are
                     # invisible to it. Durable means flushed, always.
                     coalesce_state.tool_call_record_seq[rec.payload["id"]] = seq
+                    coalesce_state.tool_call_record_name[rec.payload["id"]] = (
+                        rec.payload.get("name") or "unknown"
+                    )
                     await writer.flush()
                 await deps.event_bus.publish(
                     f"session:{session_id}:tick", {"seq": seq}
@@ -730,6 +747,151 @@ async def run_one_session_turn(
                 parked_state=parked_state.to_jsonable(),
                 parked_event_key=yielded.event_key,
                 parked_event_keys=getattr(yielded, "event_keys", None),
+                parked_until=parked_until,
+                parked_at=parked_at,
+            ),
+        )
+
+    except ToolWaitPark as tool_wait:
+        # ------------------------------------------------------------------
+        # 5b. Tool-wait batch park (Phase 3 stage 7a, 01a0518b) - the seam
+        # split turned this turn's tool-call batch into independently-
+        # claimable ToolCallTask rows instead of running them in-process.
+        # Mirrors the YieldToWorker branch above at BATCH granularity:
+        # write the turn-log + "waiting" phase signal, persist one
+        # ToolCallTask row per outstanding/notifying call, write the
+        # tool_wait-shaped parked_state, and return a park outcome. No
+        # channel dispatch here - a tool_wait park is not a human-facing
+        # gate itself (an individual task going GATED later is handled by
+        # ToolCallClaimAdapter.on_release, task-granular, not here).
+        # ------------------------------------------------------------------
+        from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+        from primer.worker.yield_runtime import ToolWaitParkedState
+
+        await _safe_turn_log(turn_log, TurnLogYielded(
+            seq=0,
+            ts=_now(),
+            turn_no=session.turn_no,
+            yield_kind="tool_wait",
+            event_key=tool_wait.event_key,
+        ))
+        if _agent_phase != "waiting":
+            _agent_phase = "waiting"
+            await _write_agent_phase(
+                session_storage, session_id, session.turn_no, _agent_phase,
+            )
+            if deps.event_bus is not None:
+                await publish_phase_frame(
+                    deps.event_bus.publish, session_id=session_id,
+                    phase=_agent_phase, turn_no=session.turn_no,
+                )
+            await _safe_turn_log(turn_log, TurnLogPhase(
+                seq=0, ts=_now(), turn_no=session.turn_no,
+                phase=_agent_phase,
+            ))
+
+        rec = _tool_wait_yielded_record(tool_wait)
+        seq = await writer.append(rec)
+        await writer.flush()
+        await deps.event_bus.publish(
+            f"session:{session_id}:tick", {"seq": seq}
+        )
+        await _event_recorder(deps).emit(
+            "session.parked",
+            workspace_id=session.workspace_id,
+            session_id=session_id,
+            payload={
+                "event_key": tool_wait.event_key,
+                "outstanding_task_count": len(tool_wait.outstanding_task_ids),
+                "notifying_task_count": len(tool_wait.notifying_results),
+            },
+        )
+        await turn_log.aclose()
+
+        parked_at = _now()
+        # No per-batch timeout sentinel exists yet on ToolWaitPark - fall
+        # back to the same global yield cap the YieldToWorker branch uses.
+        timeout = 3600.0
+        parked_until = parked_at + timedelta(seconds=timeout)
+
+        task_storage = deps.storage_provider.get_storage(ToolCallTask)
+
+        for scoped_id in tool_wait.outstanding_task_ids:
+            record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+            tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+            if record_seq is None or tool_name is None:
+                raise RuntimeError(
+                    f"session {session_id} ToolWaitPark outstanding task "
+                    f"{scoped_id!r} has no matching TOOL_CALL record in "
+                    "this turn's coalesce_state - the durable-append-"
+                    "before-claimable invariant broke"
+                )
+            await task_storage.create(ToolCallTask(
+                id=scoped_id,
+                session_id=session_id,
+                turn_no=session.turn_no,
+                tool_name=tool_name,
+                state=ToolCallTaskState.QUEUED,
+                record_seq=record_seq,
+                created_at=parked_at,
+            ))
+            if deps.claim_engine is not None:
+                await deps.claim_engine.upsert(ClaimKind.TOOL_CALL, scoped_id)
+
+        notifying_task_ids: list[str] = []
+        for scoped_id, result in tool_wait.notifying_results:
+            record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+            tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+            if record_seq is None or tool_name is None:
+                raise RuntimeError(
+                    f"session {session_id} ToolWaitPark notifying result "
+                    f"{scoped_id!r} has no matching TOOL_CALL record in "
+                    "this turn's coalesce_state - the durable-append-"
+                    "before-claimable invariant broke"
+                )
+            await task_storage.create(ToolCallTask(
+                id=scoped_id,
+                session_id=session_id,
+                turn_no=session.turn_no,
+                tool_name=tool_name,
+                state=ToolCallTaskState.DONE,
+                record_seq=record_seq,
+                created_at=parked_at,
+                finished_at=parked_at,
+                result_state=result.model_dump(mode="json"),
+            ))
+            notifying_task_ids.append(scoped_id)
+
+        captured_messages = tool_wait.llm_messages or []
+        llm_message_dicts = [m.model_dump(mode="json") for m in captured_messages]
+
+        parked_state = ToolWaitParkedState(
+            outstanding_task_ids=list(tool_wait.outstanding_task_ids),
+            notifying_task_ids=notifying_task_ids,
+            event_key=tool_wait.event_key,
+            llm_messages=llm_message_dicts,
+            turn_no=session.turn_no,
+            started_at=_turn_started_at,
+        )
+
+        logger.info(
+            "session %s parking on tool_wait batch (%d claimable, %d "
+            "notifying, event_key=%r)",
+            session_id, len(tool_wait.outstanding_task_ids),
+            len(notifying_task_ids), tool_wait.event_key,
+        )
+
+        async with session_lifecycle_lock().acquire(session_id):
+            await _clear_interrupt_requested(session_storage, session_id)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq)
+
+        _observe_turn(session, "parked", _turn_started_at)
+        return ReleaseOutcome(
+            success=True,
+            drop_lease=True,
+            park=ParkRequest(
+                parked_state=parked_state.to_jsonable(),
+                parked_event_key=tool_wait.event_key,
                 parked_until=parked_until,
                 parked_at=parked_at,
             ),
@@ -1106,6 +1268,42 @@ def _classify_yield_kind(park: YieldToWorker) -> str:
     return "subscribe_to_trigger"
 
 
+def _make_scoped_call_resolver(
+    coalesce_state: _CoalesceState,
+) -> "Callable[[str], tuple[str, int]]":
+    """Build the per-turn resolver the claim-based dispatch seam uses to
+    turn a raw provider tool-call id into ``(scoped_id, record_seq)``.
+
+    Two-step lookup against THIS turn's ``coalesce_state``:
+    ``scoped_call_ids`` (raw id -> scoped id, minted at ``ToolCallStart``)
+    then ``tool_call_record_seq`` (scoped id -> the durable TOOL_CALL
+    record's own seq, populated by the append loop above right after the
+    record is flushed). A miss on either means the ordering invariant the
+    whole design depends on - the TOOL_CALL record is durable BEFORE its
+    scoped id is ever resolvable through this callable - broke somewhere
+    upstream. Raise loudly rather than silently degrading into a
+    malformed ``ToolCallTask``; a successful return is itself the "this
+    call's record is durable" proof the ``except ToolWaitPark`` handler
+    relies on (see ``_dispatch_as_claims``'s own docstring).
+    """
+    def _resolve(raw_call_id: str) -> tuple[str, int]:
+        scoped_id = coalesce_state.scoped_call_ids.get((None, raw_call_id))
+        if scoped_id is None:
+            raise RuntimeError(
+                f"resolve_scoped_call: no scoped id for raw tool-call id "
+                f"{raw_call_id!r} - ToolCallStart never minted one this turn"
+            )
+        record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+        if record_seq is None:
+            raise RuntimeError(
+                f"resolve_scoped_call: scoped id {scoped_id!r} has no "
+                "durable TOOL_CALL record_seq yet - the durable-append-"
+                "before-claimable invariant broke"
+            )
+        return scoped_id, record_seq
+    return _resolve
+
+
 def _yielded_record(park: YieldToWorker) -> SessionMessageRecord:
     """Build a YIELDED SessionMessageRecord from a YieldToWorker exception."""
     return SessionMessageRecord(
@@ -1115,6 +1313,29 @@ def _yielded_record(park: YieldToWorker) -> SessionMessageRecord:
             "event_key": park.yielded.event_key,
             "tool_name": park.yielded.tool_name,
             "tool_call_id": park.tool_call_id,
+        },
+        created_at=_now(),
+    )
+
+
+def _tool_wait_yielded_record(tool_wait: ToolWaitPark) -> SessionMessageRecord:
+    """Build a YIELDED SessionMessageRecord for a tool_wait batch park.
+
+    Batch-shaped counterpart to ``_yielded_record`` above: there is no
+    single ``tool_name``/``tool_call_id`` to report (the park spans N
+    independently-claimable tasks), so the payload carries the task id
+    lists instead.
+    """
+    return SessionMessageRecord(
+        seq=1,
+        kind=SessionMessageKind.YIELDED,
+        payload={
+            "event_key": tool_wait.event_key,
+            "kind": "tool_wait",
+            "outstanding_task_ids": list(tool_wait.outstanding_task_ids),
+            "notifying_task_ids": [
+                scoped_id for scoped_id, _ in tool_wait.notifying_results
+            ],
         },
         created_at=_now(),
     )

@@ -274,6 +274,86 @@ class ParkedState:
 
 
 # ===========================================================================
+# Tool-wait batch park state (Phase 3 stage 7a, 01a0518b)
+# ===========================================================================
+
+
+TOOL_WAIT_PARKED_STATE_KIND = "tool_wait"
+
+
+@dataclass(frozen=True)
+class ToolWaitParkedState:
+    """Structured view of a tool_wait park's ``parked_state`` blob.
+
+    Written by ``primer.session.dispatch``'s ``except ToolWaitPark``
+    branch; read by ``primer.worker.tool_wait_resume_coordinator`` once
+    every sibling ``ToolCallTask`` for ``(session_id, turn_no)`` has gone
+    terminal (the last one's ``on_release`` is what re-arms the session's
+    lease in the first place -- ruling 2). Deliberately a SEPARATE
+    dataclass from :class:`ParkedState`, not a subclass or variant: a
+    tool_wait park has no ``Yielded`` sentinel at all (see
+    :class:`~primer.model.yield_.ToolWaitPark`'s own docstring for why a
+    batch park across N tasks is not ``Yielded``-shaped), so sharing the
+    shape would mean fake/sentinel field values instead of an honestly
+    different blob.
+
+    ``outstanding_task_ids`` / ``notifying_task_ids`` are stored
+    separately (rather than a single combined list, or a live
+    ``(session_id, turn_no)`` storage query at resume time) so the
+    resume coordinator can fetch every sibling task by direct ``id``
+    lookup -- no new predicate/find query needed, and the split itself
+    records which half of the batch was ever actually claimable versus
+    answered inline, which is useful for debugging independent of the
+    read path.
+
+    ``llm_messages`` mirrors ``ParkedState.llm_messages`` exactly, same
+    reasoning: the in-progress turn's assistant message (carrying the
+    tool_use parts every sibling task answers) is not yet
+    ``_persist_turn``'d when the park fires, and the resume coordinator
+    needs it to reconstruct ``[assistant_tool_use, tool_result...]``
+    history.
+    """
+
+    outstanding_task_ids: list[str]
+    notifying_task_ids: list[str]
+    event_key: str
+    llm_messages: list[dict[str, Any]]
+    turn_no: int
+    started_at: datetime
+
+    def to_jsonable(self) -> dict[str, Any]:
+        return {
+            "kind": TOOL_WAIT_PARKED_STATE_KIND,
+            "outstanding_task_ids": list(self.outstanding_task_ids),
+            "notifying_task_ids": list(self.notifying_task_ids),
+            "event_key": self.event_key,
+            "llm_messages": list(self.llm_messages),
+            "turn_no": self.turn_no,
+            "started_at": self.started_at.isoformat(),
+        }
+
+    @classmethod
+    def from_jsonable(cls, data: dict[str, Any]) -> "ToolWaitParkedState":
+        if data.get("kind") != TOOL_WAIT_PARKED_STATE_KIND:
+            raise ValueError(
+                f"not a tool_wait parked_state blob: kind={data.get('kind')!r}"
+            )
+        missing = {"outstanding_task_ids", "event_key", "llm_messages", "turn_no", "started_at"} - set(data)
+        if missing:
+            raise ValueError(
+                f"tool_wait parked_state blob missing required keys: {sorted(missing)}"
+            )
+        return cls(
+            outstanding_task_ids=list(data["outstanding_task_ids"]),
+            notifying_task_ids=list(data.get("notifying_task_ids") or []),
+            event_key=data["event_key"],
+            llm_messages=list(data["llm_messages"]),
+            turn_no=int(data["turn_no"]),
+            started_at=_parse_iso(data["started_at"]),
+        )
+
+
+# ===========================================================================
 # Resume payload classification
 # ===========================================================================
 
@@ -820,6 +900,8 @@ __all__ = [
     "ParkedState",
     "PARKED_STATE_SCHEMA_VERSION",
     "ResumePayload",
+    "TOOL_WAIT_PARKED_STATE_KIND",
+    "ToolWaitParkedState",
     "_dispatch_to_channels",
     "_dispatch_to_channels_multi",
     "_resume_tool_approval",

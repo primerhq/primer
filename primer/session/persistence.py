@@ -281,6 +281,16 @@ class _CoalesceState:
     # bounded to this _CoalesceState's lifetime (one turn) like every
     # other field here.
     tool_call_record_seq: dict[str, int] = field(default_factory=dict)
+    # 01a0518b (seam-split summit): scoped tool-call id -> the durable
+    # TOOL_CALL record's own tool name (payload["name"]), populated in the
+    # SAME dispatch-loop append site as tool_call_record_seq above. The
+    # except-ToolWaitPark branch needs a tool_name to construct each
+    # ToolCallTask row (a required field), but ToolWaitPark itself only
+    # carries scoped ids (see that exception's own docstring on staying
+    # additive-only) - resolving it from the record already written here
+    # avoids widening the exception's approved shape for data the
+    # append loop already has in hand.
+    tool_call_record_name: dict[str, str] = field(default_factory=dict)
     # (turn_no, coalesced text) of the most recent ASSISTANT_TOKEN record
     # actually written to the log, whichever node produced it — a plain
     # global tracker, not per-node, because "the immediately preceding
