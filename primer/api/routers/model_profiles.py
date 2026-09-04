@@ -44,6 +44,7 @@ from primer.api.deps import (
 )
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
+from primer.api.routers.providers import _make_invalidator
 from primer.model.agent import Agent
 from primer.model.graph import Graph
 from primer.model.model_profile import ModelProfile
@@ -298,6 +299,17 @@ def _model_profile_storage_from_request(request: Request):
     return request.app.state.storage_provider.get_storage(ModelProfile)
 
 
+# Drops ProviderRegistry's cached AggregatedLLM for this profile id (a
+# no-op if it was never cached, e.g. a "single" profile, or an
+# "aggregated" one no turn has resolved yet) so the NEXT resolve_llm()
+# call rebuilds it against the row's current shape rather than serving a
+# stale member list / routing policy. Safe to wire unconditionally on
+# every update/delete, single or aggregated -- no need to branch on
+# entity.kind here (mirrors providers.py:203-206's _invalidate_llm
+# pattern for the LLMProvider-layer cache).
+_invalidate_aggregated_llm = _make_invalidator("invalidate_aggregated_llm")
+
+
 model_profile_router = make_crud_router(
     model_cls=ModelProfile,
     storage_dep=get_model_profile_storage,
@@ -307,6 +319,8 @@ model_profile_router = make_crud_router(
     search_fields=["id", "description", "model_name"],
     on_pre_create=_on_pre_create,
     on_pre_update=_on_pre_update,
+    on_update=_invalidate_aggregated_llm,
+    on_delete=_invalidate_aggregated_llm,
     references=[
         ReferenceCheck(
             child_kind="agent",
