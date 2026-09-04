@@ -32,6 +32,9 @@ from primer.model.provider import (
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
+    from primer.llm.aggregated import AggregatedLLM
+    from primer.model.model_profile import ModelProfile
+    from primer.model_profile.resolver import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -386,6 +389,14 @@ class ProviderRegistry:
         self._embedder_cache: dict[str, Embedder] = {}
         self._cross_encoder_cache: dict[str, CrossEncoder] = {}
         self._toolset_cache: dict[str, ToolsetProvider] = {}
+        # Keyed by ModelProfile id (kind="aggregated"), not LLMProvider id
+        # -- aggregation moved to the model-profile layer, so this is a
+        # SEPARATE cache from _llm_cache, not a reuse of it. Exists so
+        # AggregatedLLM's round-robin _cursor persists across calls: a
+        # fresh instance per resolve_llm() call (the alternative) would
+        # reset the cursor every time, so RANDOM/ROUND_ROBIN routing would
+        # never actually rotate past member[0]. See get_aggregated_llm.
+        self._aggregated_llm_cache: dict[str, "AggregatedLLM"] = {}
         self._lock = asyncio.Lock()
         # Bumped by every cache flush. Each ``get_*`` samples it before the
         # storage await and refuses to cache the adapter it built if the
@@ -413,6 +424,44 @@ class ProviderRegistry:
             adapter = self._llm_factory(row)
             if self._cache_generation == generation:
                 self._llm_cache[provider_id] = adapter
+            return adapter
+
+    async def get_aggregated_llm(
+        self,
+        profile: "ModelProfile",
+        *,
+        resolve_member: "Callable[[str], Any]",
+    ) -> "AggregatedLLM":
+        """Return the cached :class:`AggregatedLLM` for ``profile``.
+
+        Keyed by ``profile.id`` (a ModelProfile row, ``kind="aggregated"``)
+        in a cache SEPARATE from :attr:`_llm_cache` -- aggregation lives at
+        the model-profile layer, not the LLMProvider layer, so there is no
+        provider row to key on. Exists so :attr:`AggregatedLLM._cursor`
+        (round-robin rotation state) persists across calls: without this,
+        a caller that builds a fresh ``AggregatedLLM`` on every
+        ``resolve_llm()`` call would reset the cursor every time, and
+        ROUND_ROBIN routing would never rotate past member[0].
+
+        The caller (:func:`primer.model_profile.resolve_llm`) already has
+        the profile row in hand -- unlike :meth:`get_llm`, this method
+        does not re-fetch it, since the caller's own fetch is what told it
+        which branch (single vs aggregated) to take in the first place.
+        ``resolve_member`` is only consulted on a cache MISS: a cache hit
+        reuses the instance (and its closure) built on the FIRST call for
+        this profile id, matching :meth:`get_llm`'s own precedent of
+        ignoring anything about the calling context beyond the id once
+        cached.
+        """
+        async with self._lock:
+            cached = self._aggregated_llm_cache.get(profile.id)
+            if cached is not None:
+                return cached
+            generation = self._cache_generation
+            from primer.llm.aggregated import AggregatedLLM
+            adapter = AggregatedLLM(profile, resolve_member=resolve_member)
+            if self._cache_generation == generation:
+                self._aggregated_llm_cache[profile.id] = adapter
             return adapter
 
     async def get_embedder(self, provider_id: str) -> Embedder:
@@ -545,6 +594,19 @@ class ProviderRegistry:
                     exc,
                 )
 
+    async def _invalidate_aggregated_llm_local(self, profile_id: str) -> None:
+        async with self._lock:
+            adapter = self._aggregated_llm_cache.pop(profile_id, None)
+        if adapter is not None:
+            try:
+                await adapter.aclose()
+            except Exception as exc:  # noqa: BLE001 -- best-effort
+                logger.warning(
+                    "ProviderRegistry: aclose failed on AggregatedLLM %r: %s",
+                    profile_id,
+                    exc,
+                )
+
     async def _invalidate_embedder_local(self, provider_id: str) -> None:
         async with self._lock:
             adapter = self._embedder_cache.pop(provider_id, None)
@@ -610,6 +672,15 @@ class ProviderRegistry:
             )
         else:
             await self._invalidate_llm_local(provider_id)
+
+    async def invalidate_aggregated_llm(self, profile_id: str) -> None:
+        if self._invalidation_bus is not None:
+            from primer.int.coordinator import InvalidationTopic
+            await self._invalidation_bus.publish(
+                InvalidationTopic.AGGREGATED_MODEL_PROFILE, profile_id,
+            )
+        else:
+            await self._invalidate_aggregated_llm_local(profile_id)
 
     async def invalidate_embedder(self, provider_id: str) -> None:
         if self._invalidation_bus is not None:
@@ -680,6 +751,7 @@ class ProviderRegistry:
         """
         self._cache_generation += 1
         self._llm_cache.clear()
+        self._aggregated_llm_cache.clear()
         self._embedder_cache.clear()
         self._cross_encoder_cache.clear()
         self._toolset_cache.clear()
@@ -694,6 +766,9 @@ class ProviderRegistry:
 
         async def _llm(key: str) -> None:
             await self._invalidate_llm_local(key)
+
+        async def _agg_llm(key: str) -> None:
+            await self._invalidate_aggregated_llm_local(key)
 
         async def _embed(key: str) -> None:
             await self._invalidate_embedder_local(key)
@@ -712,6 +787,12 @@ class ProviderRegistry:
         self._invalidation_subs.append(
             await bus.subscribe(
                 InvalidationTopic.LLM_PROVIDER, _llm,
+                on_reconnect=self._flush_caches_local,
+            )
+        )
+        self._invalidation_subs.append(
+            await bus.subscribe(
+                InvalidationTopic.AGGREGATED_MODEL_PROFILE, _agg_llm,
                 on_reconnect=self._flush_caches_local,
             )
         )
@@ -747,11 +828,13 @@ class ProviderRegistry:
         async with self._lock:
             adapters: list[Any] = (
                 list(self._llm_cache.values())
+                + list(self._aggregated_llm_cache.values())
                 + list(self._embedder_cache.values())
                 + list(self._cross_encoder_cache.values())
                 + list(self._toolset_cache.values())
             )
             self._llm_cache.clear()
+            self._aggregated_llm_cache.clear()
             self._embedder_cache.clear()
             self._cross_encoder_cache.clear()
             self._toolset_cache.clear()
