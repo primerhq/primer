@@ -19,6 +19,7 @@ from primer.int.embedder import Embedder
 from primer.int.llm import LLM
 from primer.int.toolset import ToolsetProvider
 from primer.model.except_ import ConfigError, NotFoundError
+from primer.model.model_profile import ModelProfile
 from primer.model.provider import (
     CrossEncoderProvider,
     CrossEncoderProviderType,
@@ -33,8 +34,6 @@ from primer.model.provider import (
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
     from primer.llm.aggregated import AggregatedLLM
-    from primer.model.model_profile import ModelProfile
-    from primer.model_profile.resolver import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -428,25 +427,38 @@ class ProviderRegistry:
 
     async def get_aggregated_llm(
         self,
-        profile: "ModelProfile",
+        profile_id: str,
         *,
         resolve_member: "Callable[[str], Any]",
     ) -> "AggregatedLLM":
-        """Return the cached :class:`AggregatedLLM` for ``profile``.
+        """Return the cached :class:`AggregatedLLM` for ``profile_id``.
 
-        Keyed by ``profile.id`` (a ModelProfile row, ``kind="aggregated"``)
-        in a cache SEPARATE from :attr:`_llm_cache` -- aggregation lives at
-        the model-profile layer, not the LLMProvider layer, so there is no
+        Keyed by ModelProfile id (``kind="aggregated"``) in a cache
+        SEPARATE from :attr:`_llm_cache` -- aggregation lives at the
+        model-profile layer, not the LLMProvider layer, so there is no
         provider row to key on. Exists so :attr:`AggregatedLLM._cursor`
         (round-robin rotation state) persists across calls: without this,
         a caller that builds a fresh ``AggregatedLLM`` on every
         ``resolve_llm()`` call would reset the cursor every time, and
         ROUND_ROBIN routing would never rotate past member[0].
 
-        The caller (:func:`primer.model_profile.resolve_llm`) already has
-        the profile row in hand -- unlike :meth:`get_llm`, this method
-        does not re-fetch it, since the caller's own fetch is what told it
-        which branch (single vs aggregated) to take in the first place.
+        Takes an id and re-fetches the row itself, INSIDE the lock,
+        exactly mirroring :meth:`get_llm` -- an earlier version took the
+        caller's (:func:`primer.model_profile.resolve_llm`) already-fetched
+        row instead, on the reasoning that the caller's own fetch already
+        told it which branch to take. That was a real bug, not a style
+        choice: the caller's fetch happens OUTSIDE this lock, across a
+        multi-await window (its own row fetch plus per-member fetches in
+        ``_flatten``), so an invalidation landing in that window was
+        invisible here -- the generation sample below had zero awaits
+        between it and the cache insert, so it could never observe a
+        flush that happened before this method was even entered. Caching
+        is what introduces the race (a fresh-construction-per-call design
+        could never go stale); re-fetching in-lock is what closes it, the
+        same way it's already closed for every other cache in this class.
+        One redundant read per cache-miss is negligible at
+        once-per-turn-build call frequency.
+
         ``resolve_member`` is only consulted on a cache MISS: a cache hit
         reuses the instance (and its closure) built on the FIRST call for
         this profile id, matching :meth:`get_llm`'s own precedent of
@@ -454,14 +466,19 @@ class ProviderRegistry:
         cached.
         """
         async with self._lock:
-            cached = self._aggregated_llm_cache.get(profile.id)
+            cached = self._aggregated_llm_cache.get(profile_id)
             if cached is not None:
                 return cached
             generation = self._cache_generation
+            row = await self._sp.get_storage(ModelProfile).get(profile_id)
+            if row is None:
+                raise NotFoundError(
+                    f"ModelProfile {profile_id!r} does not exist"
+                )
             from primer.llm.aggregated import AggregatedLLM
-            adapter = AggregatedLLM(profile, resolve_member=resolve_member)
+            adapter = AggregatedLLM(row, resolve_member=resolve_member)
             if self._cache_generation == generation:
-                self._aggregated_llm_cache[profile.id] = adapter
+                self._aggregated_llm_cache[profile_id] = adapter
             return adapter
 
     async def get_embedder(self, provider_id: str) -> Embedder:
