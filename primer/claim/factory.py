@@ -21,6 +21,7 @@ from primer.int.claim import ClaimKind
 from primer.int.event_bus import EventBus
 
 if TYPE_CHECKING:
+    from primer.api.registries.workspace_registry import WorkspaceRegistry
     from primer.int.claim import ClaimEngine
     from primer.int.storage_provider import StorageProvider
 
@@ -31,6 +32,7 @@ class ClaimEngineFactory:
         *,
         storage_provider: "StorageProvider",
         event_bus: EventBus,
+        workspace_registry: "WorkspaceRegistry | None" = None,
     ) -> "ClaimEngine":
         """Build a ClaimEngine + the three standard adapters.
 
@@ -43,6 +45,14 @@ class ClaimEngineFactory:
         Adapters are constructed here so callers do not need to know about the
         individual adapter constructors.  Each adapter receives the
         ``Storage[T]`` handle from *storage_provider*.
+
+        ``workspace_registry`` (01a068ea) activates
+        :class:`SessionClaimAdapter`'s terminal-error write: every real
+        caller already builds a registry for its own turn-execution path,
+        so this is always the SAME registry, not a second one. Optional
+        (``None`` degrades exactly like the pre-01a068ea default: no
+        terminal-error write) so callers that only exercise the
+        harness/trigger adapters don't need one.
         """
         from primer.model.workspace_session import WorkspaceSession
         from primer.model.harness import Harness
@@ -52,6 +62,8 @@ class ClaimEngineFactory:
         adapters = {
             ClaimKind.SESSION: SessionClaimAdapter(
                 session_storage=storage_provider.get_storage(WorkspaceSession),
+                workspace_registry=workspace_registry,
+                event_bus=event_bus,
             ),
             ClaimKind.HARNESS: HarnessClaimAdapter(
                 harness_storage=storage_provider.get_storage(Harness),

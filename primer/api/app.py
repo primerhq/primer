@@ -367,6 +367,7 @@ def create_test_app(
         _claim_engine = _CEF.create(
             storage_provider=storage_provider,
             event_bus=_test_event_bus,
+            workspace_registry=workspace_registry,
         )
         _pool = _WorkerPool(
             config=_pool_config,
