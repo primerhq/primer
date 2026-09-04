@@ -92,6 +92,39 @@ async def test_providers_subtree_tracks_registry_state(sp):
     assert "llm-1--qwen" in profiles.body
 
 
+async def test_aggregated_profile_renders_its_pool_not_none_on_none(sp):
+    """01a067c4 gate finding #4: an aggregated profile has no model_name/
+    provider_id/context_length -- the single-profile label used to
+    render this literally as "None on None, context None"."""
+    await sp.get_storage(ModelProfile).create(
+        ModelProfile(
+            id="leaf-a", description="leaf a",
+            provider_id="llm-1", model_name="qwen", context_length=32000,
+        )
+    )
+    await sp.get_storage(ModelProfile).create(
+        ModelProfile(
+            id="leaf-b", description="leaf b",
+            provider_id="llm-1", model_name="qwen-fast", context_length=8000,
+        )
+    )
+    await sp.get_storage(ModelProfile).create(
+        ModelProfile(
+            id="agg-pool", description="a pool", kind="aggregated",
+            members=["leaf-a", "leaf-b"],
+        )
+    )
+    await regenerate_system_collection(sp, toolset_providers={})
+    tree = DocumentTreeService(sp)
+    profiles = await tree.read(
+        collection_id=SYSTEM_COLLECTION_ID, path="providers/model-profiles",
+    )
+    assert "None on None" not in profiles.body
+    assert "agg-pool" in profiles.body
+    assert "leaf-a" in profiles.body
+    assert "leaf-b" in profiles.body
+
+
 async def test_how_to_guides_are_written(sp):
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)

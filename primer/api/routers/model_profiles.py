@@ -48,7 +48,15 @@ from primer.model.agent import Agent
 from primer.model.graph import Graph
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
-from primer.model.storage import CursorPageResponse, Op, OffsetPage, OffsetPageResponse
+from primer.model.storage import (
+    CursorPageResponse,
+    FieldRef,
+    Op,
+    OffsetPage,
+    OffsetPageResponse,
+    Predicate,
+    Value,
+)
 
 _REF_COUNT_PAGE_SIZE = 200
 
@@ -226,6 +234,43 @@ async def _check_aggregation_valid(entity: ModelProfile, request: Request) -> No
             )
 
 
+async def _check_not_a_member_becoming_aggregated(
+    entity: ModelProfile, request: Request,
+) -> None:
+    """422 when an UPDATE turns a profile into ``kind="aggregated"``
+    while it is currently named as a member of some OTHER aggregate.
+
+    _check_aggregation_valid only validates an aggregate's OWN members at
+    ITS OWN write time -- it has no reason to re-check every aggregate
+    that might reference THIS profile as a member. Without this guard,
+    PUT'ing member profile A to kind="aggregated" passes every existing
+    hook cleanly, silently leaving the containing aggregate G in
+    violation of "every member must be kind=single" -- a nested
+    aggregation G never agreed to, discovered only later at resolve time
+    with an error that misattributes the problem to G instead of A.
+    Same CONTAINS lookup ReferenceCheck already uses to block deleting a
+    member out from under its aggregate (primer/api/routers/
+    _references.py) -- this is that same relationship, checked on the
+    OTHER kind of mutation (an in-place shape change, not a delete).
+    """
+    if entity.kind != "aggregated":
+        return
+    storage = request.app.state.storage_provider.get_storage(ModelProfile)
+    predicate = Predicate(
+        left=FieldRef(name="members"), op=Op.CONTAINS, right=Value(value=entity.id),
+    )
+    page = await storage.find(predicate, OffsetPage(offset=0, length=1))
+    if page.items:
+        raise _aggregation_error(
+            "member_of_another_aggregate",
+            "kind",
+            f"profile {entity.id!r} is a member of aggregate "
+            f"{page.items[0].id!r} and cannot become kind='aggregated' "
+            "itself (nested aggregation is not supported); remove it "
+            "from that aggregate's members first",
+        )
+
+
 async def _on_pre_create(entity: ModelProfile, request: Request) -> None:
     await _check_provider_exists(entity, request)
     await _check_aggregation_valid(entity, request)
@@ -237,6 +282,7 @@ async def _on_pre_update(
     del existing  # both checks validate the incoming shape only
     await _check_provider_exists(entity, request)
     await _check_aggregation_valid(entity, request)
+    await _check_not_a_member_becoming_aggregated(entity, request)
 
 
 def _agent_storage_from_request(request: Request):

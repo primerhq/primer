@@ -419,9 +419,10 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
         type("R", (), {"get_toolset": staticmethod(_get_toolset)})(),
     )
     # build_agent_executor now goes through resolve_llm_and_model, which
-    # routes via pool._resolve_llm (the pair, not the old two-step of
-    # pool._resolve_llm_model + a separate _provider_registry.get_llm) --
-    # see executor_builders.resolve_llm_and_model / pool._resolve_llm.
+    # routes via pool._resolve_llm (the pair) -- see
+    # executor_builders.resolve_llm_and_model / pool._resolve_llm. The
+    # old two-step (pool._resolve_llm_model + a separate
+    # _provider_registry.get_llm) is gone, dead-code eliminated.
     monkeypatch.setattr(pool, "_resolve_llm", _resolve_llm)
 
     driver = await pool._build_executor(session, workspace)

@@ -124,6 +124,101 @@ class TestAgentStatus:
         assert resp.json() == {"ok": True, "issues": []}
 
 
+class TestAgentStatusAggregatedProfile:
+    """01a067c4 gate finding #3: an aggregated profile has no provider_id
+    of its own, so the plain single-profile chain check
+    (llm_providers.get(profile.provider_id)) phantom-fails every
+    aggregated agent with "LLMProvider None does not exist". Covers the
+    kind-gated chain walk that replaced it."""
+
+    async def _seed_provider(self, fake_storage_provider, provider_id: str) -> None:
+        from primer.model.provider import (
+            AnthropicConfig, Limits, LLMProvider, LLMProviderType,
+        )
+        await fake_storage_provider.get_storage(LLMProvider).create(
+            LLMProvider(
+                id=provider_id,
+                provider=LLMProviderType.ANTHROPIC,
+                config=AnthropicConfig(api_key=SecretStr("x")),
+                limits=Limits(max_concurrency=4),
+            )
+        )
+
+    async def _seed_member(
+        self, fake_storage_provider, member_id: str, provider_id: str,
+    ) -> None:
+        from primer.model.model_profile import ModelProfile
+        await fake_storage_provider.get_storage(ModelProfile).create(
+            ModelProfile(
+                id=member_id, description="member", provider_id=provider_id,
+                model_name="m", context_length=8192,
+            )
+        )
+
+    async def _seed_aggregate(
+        self, fake_storage_provider, agg_id: str, members: list[str],
+    ) -> None:
+        from primer.model.model_profile import ModelProfile
+        await fake_storage_provider.get_storage(ModelProfile).create(
+            ModelProfile(
+                id=agg_id, description="aggregate", kind="aggregated",
+                members=members,
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_status_ok_when_every_member_chain_resolves(
+        self, client, fake_storage_provider,
+    ) -> None:
+        await self._seed_provider(fake_storage_provider, "agg-prov-1")
+        await self._seed_provider(fake_storage_provider, "agg-prov-2")
+        await self._seed_member(fake_storage_provider, "agg-mem-1", "agg-prov-1")
+        await self._seed_member(fake_storage_provider, "agg-mem-2", "agg-prov-2")
+        await self._seed_aggregate(
+            fake_storage_provider, "agg-status-1", ["agg-mem-1", "agg-mem-2"],
+        )
+        body = _agent(model=AgentModel(profile_id="agg-status-1")).model_dump(mode="json")
+        await client.post("/v1/agents", json=body)
+
+        resp = await client.get("/v1/agents/agt-1/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "issues": []}
+
+    @pytest.mark.asyncio
+    async def test_status_flags_missing_member(
+        self, client, fake_storage_provider,
+    ) -> None:
+        await self._seed_provider(fake_storage_provider, "agg-prov-3")
+        await self._seed_member(fake_storage_provider, "agg-mem-3", "agg-prov-3")
+        await self._seed_aggregate(
+            fake_storage_provider, "agg-status-2", ["agg-mem-3", "ghost-member"],
+        )
+        body = _agent(model=AgentModel(profile_id="agg-status-2")).model_dump(mode="json")
+        await client.post("/v1/agents", json=body)
+
+        resp = await client.get("/v1/agents/agt-1/status")
+        result = resp.json()
+        assert result["ok"] is False
+        assert any("ghost-member" in i for i in result["issues"])
+
+    @pytest.mark.asyncio
+    async def test_status_flags_member_with_missing_provider(
+        self, client, fake_storage_provider,
+    ) -> None:
+        await self._seed_member(fake_storage_provider, "agg-mem-4", "ghost-provider")
+        await self._seed_member(fake_storage_provider, "agg-mem-5", "ghost-provider")
+        await self._seed_aggregate(
+            fake_storage_provider, "agg-status-3", ["agg-mem-4", "agg-mem-5"],
+        )
+        body = _agent(model=AgentModel(profile_id="agg-status-3")).model_dump(mode="json")
+        await client.post("/v1/agents", json=body)
+
+        resp = await client.get("/v1/agents/agt-1/status")
+        result = resp.json()
+        assert result["ok"] is False
+        assert any("LLMProvider" in i and "ghost-provider" in i for i in result["issues"])
+
+
 class TestAgentSearch:
     """`GET /v1/agents?q=` case-insensitive substring search over the
     entity's search_fields (id + description), same {items,total} shape."""

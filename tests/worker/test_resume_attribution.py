@@ -94,8 +94,9 @@ def _build_pool(storage_provider: _FakeStorageProvider) -> WorkerPool:
         },
     )()
     # See test_pool.py's matching comment: build_agent_executor now routes
-    # through pool._resolve_llm (the pair), not pool._resolve_llm_model
-    # plus a separate _provider_registry.get_llm.
+    # through pool._resolve_llm (the pair). The old two-step
+    # (pool._resolve_llm_model + a separate _provider_registry.get_llm)
+    # is gone, dead-code eliminated.
     pool._resolve_llm = _resolve_llm
     return pool
 

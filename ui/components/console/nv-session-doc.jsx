@@ -1139,8 +1139,16 @@ function NV_TraceRow(props) {
       {open && n.kind === "llm_call" ? (
         <pre className="nv-trace-args">
           {JSON.stringify({
-            model: n.model, profile_id: n.profile_id,
-            provider_id: n.provider_id, input_tokens: n.input_tokens,
+            // model/provider_id are null for a call resolved under an
+            // aggregated profile (01a067c4) -- there is no single
+            // provider/model to report, only the pool's own profile_id.
+            // WHICH member actually served this call is not tracked yet
+            // (winning-member trace wiring is a filed follow-up); fall
+            // back to the profile id rather than show a bare null.
+            model: n.model || ("aggregated pool: " + n.profile_id),
+            profile_id: n.profile_id,
+            provider_id: n.provider_id || ("aggregated pool: " + n.profile_id),
+            input_tokens: n.input_tokens,
             output_tokens: n.output_tokens,
           }, null, 2)}
         </pre>
