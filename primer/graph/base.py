@@ -707,6 +707,20 @@ class _BaseGraphExecutor(
                     # when this yield's ToolCallStart streamed past the tap
                     # a moment ago, above (01a0690a's stash-don't-recompute
                     # doctrine, unchanged by this fix).
+                    #
+                    # frames/leaf: mirrors _node_dispatch.py's first-park
+                    # constructor byte-for-byte. The resumed outer turn can
+                    # make a FRESH nested invoke_agent call that itself
+                    # yields - the tool engine attaches yld.frames the same
+                    # way regardless of dispatch-vs-resume - so dropping
+                    # them here would silently truncate the subagent chain
+                    # on the NEXT resume: the worker would skip the
+                    # continuation walk and splice the answer straight into
+                    # the outer turn as the invoke_agent result. Empty
+                    # frames (the node's own ask_user / approval gate) keep
+                    # this identical to the pre-fix park.
+                    from primer.worker.frames import frames_to_jsonable
+                    nested_frames = list(getattr(yld, "frames", None) or [])
                     self._pending_agent_yields.append(
                         _PendingAgentYield(
                             node_id=ay.node_id,
@@ -716,6 +730,8 @@ class _BaseGraphExecutor(
                             resume_metadata=dict(yld.yielded.resume_metadata or {}),
                             llm_messages=list(yld.llm_messages or []),
                             iteration=ay.iteration,
+                            frames=frames_to_jsonable(nested_frames) if nested_frames else [],
+                            leaf=yld.yielded.to_jsonable() if nested_frames else None,
                         )
                     )
                     continue
