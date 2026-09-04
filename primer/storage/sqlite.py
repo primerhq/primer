@@ -92,6 +92,17 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "(json_extract(data,'$.provider_id'), json_extract(data,'$.subject'))",
         ),
     ],
+    "toolapprovalrecord": [
+        # Mirrors postgres._HOT_FIELD_INDEXES' toolapprovalrecord entry --
+        # see its comment. SQLite's UNIQUE index treats NULL the same way
+        # (distinct from every other NULL), so pre-migration rows with no
+        # gate_event_key do not collide.
+        (
+            "gate_event_key_uniq",
+            True,
+            "(json_extract(data,'$.gate_event_key'))",
+        ),
+    ],
 }
 
 

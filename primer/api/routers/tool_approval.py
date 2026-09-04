@@ -332,6 +332,43 @@ async def _publish_decision(
         engine=engine,
     )
     if storage_provider is not None:
+        # 01a068da: write the durable ToolApprovalRecord HERE, at the
+        # moment the decision actually arrives, rather than waiting for
+        # the resume coordinator to get around to it (session_resume_
+        # coordinator.py's write_approval_record_for_session, which used
+        # to be the ONLY write site - a crash between this respond and
+        # that eventual resume lost the audit record entirely). Attempted
+        # unconditionally, not gated on `did`: a retry after a half-
+        # applied first attempt (row already resumable, but that earlier
+        # call's record write itself failed for some unrelated reason)
+        # still gets a fresh try, and gate_event_key's unique index makes
+        # a genuine duplicate attempt a safe no-op either way (see
+        # write_approval_record's own docstring). classify_approval_
+        # payload is the SAME classifier the resume path uses on this
+        # SAME payload shape, so the record's verdict cannot drift from
+        # whatever the eventual resume computes.
+        from primer.agent.approval_record import (
+            record_from_parked_blob,
+            write_approval_record,
+        )
+        from primer.model.tool_approval import ToolApprovalRecord
+        from primer.worker.yield_runtime import classify_approval_payload
+
+        decision, reason = classify_approval_payload(payload)
+        record = record_from_parked_blob(
+            blob=blob,
+            decision=decision,
+            reason=reason,
+            agent_id=getattr(sess.binding, "agent_id", None),
+            session_id=id_str,
+            requested_at=sess.parked_at,
+            decided_by=decided_by,
+            gate_event_key=event_key,
+        )
+        await write_approval_record(
+            storage_provider.get_storage(ToolApprovalRecord), record,
+        )
+
         from primer.events.wake import emit_session_wake
 
         await emit_session_wake(storage_provider, event_bus, event_key, payload)
@@ -489,25 +526,42 @@ def make_tool_approval_ops_router() -> APIRouter:
                 ),
             ),
         ] = None,
+        gate_event_key: Annotated[
+            str | None,
+            Query(
+                description=(
+                    "Look up the record for one specific gate "
+                    "(ParkedState.yielded.event_key). 01a068da: the field "
+                    "carries a unique index, so this narrows to at most "
+                    "one record - useful for a caller that has the event "
+                    "key in hand (e.g. confirming a just-submitted "
+                    "decision landed) and does not want to page through "
+                    "session_id history to find it."
+                ),
+            ),
+        ] = None,
         offset: Annotated[int, Query(ge=0)] = 0,
         length: Annotated[int, Query(ge=1, le=200)] = 50,
     ) -> OffsetPageResponse[ToolApprovalRecord]:
         """List resolved approval decisions, newest first.
 
         ``status`` filters by decision (``all`` = no filter). ``session_id``
-        optionally scopes to one session. Ordered by ``decided_at``
-        descending so the most recent decisions lead, mirroring the
-        records view's default sort.
+        optionally scopes to one session; ``gate_event_key`` optionally
+        narrows to one gate. Ordered by ``decided_at`` descending so the
+        most recent decisions lead, mirroring the records view's default
+        sort.
         """
         sp = get_storage_provider(request)
         storage = sp.get_storage(ToolApprovalRecord)
         page = OffsetPage(offset=offset, length=length)
         order = [OrderBy(field="decided_at", direction="desc")]
-        if status == "all" and session_id is None:
+        if status == "all" and session_id is None and gate_event_key is None:
             return await storage.list(page, order_by=order)
         query = Q(ToolApprovalRecord)
         if session_id is not None:
             query = query.where("session_id", session_id)
+        if gate_event_key is not None:
+            query = query.where("gate_event_key", gate_event_key)
         if status != "all":
             query = query.where("decision", status)
         return await storage.find(query.build(), page, order_by=order)

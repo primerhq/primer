@@ -11,6 +11,7 @@ from primer.agent.approval_record import (
     record_from_parked_blob,
     write_approval_record,
 )
+from primer.model.except_ import ConflictError
 from primer.model.tool_approval import ToolApprovalRecord
 
 
@@ -57,6 +58,21 @@ def test_record_from_parked_blob_captures_fields():
     assert rec.requested_at == now
     assert rec.decided_at is not None
     assert rec.id.startswith("tool-approval-record-")
+
+
+def test_record_from_parked_blob_gate_event_key_defaults_to_none():
+    """01a068da: every pre-existing caller omits the new kwarg -- must
+    not become required and must not silently invent a value."""
+    rec = record_from_parked_blob(blob=_blob(), decision="approved", reason=None)
+    assert rec.gate_event_key is None
+
+
+def test_record_from_parked_blob_carries_gate_event_key_through():
+    rec = record_from_parked_blob(
+        blob=_blob(), decision="approved", reason=None,
+        gate_event_key="approval:sess-1:c1",
+    )
+    assert rec.gate_event_key == "approval:sess-1:c1"
 
 
 def test_record_from_parked_blob_via_call_tool_principal():
@@ -138,3 +154,48 @@ async def test_write_approval_record_persists_once():
     await write_approval_record(_Storage(), rec)
     assert len(created) == 1
     assert created[0] is rec
+
+
+@pytest.mark.asyncio
+async def test_write_approval_record_swallows_a_gate_key_conflict(caplog):
+    """01a068da: a ConflictError means the OTHER write site (respond-time
+    vs. the resume-time fallback) already won the race for this
+    gate_event_key -- ToolApprovalRecord's unique index working exactly
+    as intended, not a failure. Must not raise, and should log quietly
+    (DEBUG) rather than as an error."""
+    import logging
+
+    class _AlreadyThere:
+        async def create(self, _entity):
+            raise ConflictError("ToolApprovalRecord with id 'x' already exists")
+
+    rec = ToolApprovalRecord(
+        tool_name="x", decided_at=datetime.now(UTC), decision="approved",
+        gate_event_key="approval:sess-1:c1",
+    )
+    with caplog.at_level(logging.DEBUG, logger="primer.agent.approval_record"):
+        await write_approval_record(_AlreadyThere(), rec)
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any(
+        "gate_event_key" in r.getMessage() and "approval:sess-1:c1" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_approval_record_still_logs_a_real_failure_as_an_error(caplog):
+    """A non-conflict exception is a genuine write failure and must stay
+    at ERROR level (via logger.exception) -- only the specific,
+    known-benign duplicate-gate race gets the quieter treatment."""
+    import logging
+
+    class _Boom:
+        async def create(self, _entity):
+            raise RuntimeError("backend down")
+
+    rec = ToolApprovalRecord(
+        tool_name="x", decided_at=datetime.now(UTC), decision="approved",
+    )
+    with caplog.at_level(logging.DEBUG, logger="primer.agent.approval_record"):
+        await write_approval_record(_Boom(), rec)
+    assert any(r.levelno >= logging.ERROR for r in caplog.records)

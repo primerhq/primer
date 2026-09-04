@@ -154,6 +154,10 @@ async def test_resume_approved_writes_record(monkeypatch):
     assert rec.approval_type == "required"
     assert rec.gate_reason == "always-on"
     assert rec.requested_at is not None
+    # 01a068da: threaded from ParkedState.yielded.event_key so a respond-
+    # time write and this resume-time fallback dedupe against the same
+    # gate via the field's unique index.
+    assert rec.gate_event_key == "tool_approval:sess-rec-approve:tc1"
 
 
 @pytest.mark.asyncio
@@ -189,3 +193,98 @@ async def test_resume_writes_record_exactly_once(monkeypatch):
     )
     items = await _drive(monkeypatch, sess)
     assert len(items) == 1
+
+
+async def _drive_with_preseeded_storage(monkeypatch, sess, storage_provider):
+    """Variant of ``_drive`` that takes an already-built storage provider
+    (so the caller can pre-seed a record before the resume runs) rather
+    than building a fresh one."""
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = InMemoryClaimEngine(
+        adapters={ClaimKind.SESSION: SessionClaimAdapter(session_storage=session_storage)},
+    )
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=None,                  # type: ignore[arg-type]
+        storage=storage_provider,
+        workspace_registry=None,         # type: ignore[arg-type]
+        provider_registry=None,          # type: ignore[arg-type]
+        engine=engine,
+    )
+    pool._worker_id = "wrk-approval-record"
+    await session_storage.create(sess)
+    fake_executor = _RecordingExecutor(tool_manager=_FakeToolManager())
+    monkeypatch.setattr(
+        pool, "_load_workspace_for_persist",
+        lambda _ws_id: _async_return(_NoopPersist()),
+    )
+    monkeypatch.setattr(
+        pool, "_build_agent_executor",
+        lambda _s, _w: _async_return(fake_executor),
+    )
+    await engine.mark_resumable(ClaimKind.SESSION, sess.id)
+    leases = await engine.claim_due("wrk-approval-record", max_count=10)
+    lease = next(
+        ln for ln in leases
+        if ln.kind == ClaimKind.SESSION and ln.entity_id == sess.id
+    )
+    await pool._run_engine_session(lease)
+    records = await storage_provider.get_storage(ToolApprovalRecord).list(
+        OffsetPage(offset=0, length=50)
+    )
+    return records.items
+
+
+@pytest.mark.asyncio
+async def test_resume_skips_the_write_when_respond_time_already_recorded_it(
+    monkeypatch, tmp_path,
+):
+    """01a068da's core idempotency guarantee: if the respond route
+    already wrote the durable record for this gate (the normal case now
+    -- this resume-time write is a FALLBACK, not the primary write site
+    any more), the resume must not add a second row for the same
+    decision. gate_event_key's unique index is what makes this provably
+    true rather than merely likely: a duplicate insert attempt raises
+    ConflictError, which write_approval_record swallows as an expected
+    no-op (see tests/agent/test_approval_record.py).
+
+    Uses a REAL SqliteStorageProvider, not the shared _FakeStorageProvider
+    every other test in this file uses: the fake only enforces uniqueness
+    on the primary key (a plain id-keyed dict), it has no concept of a
+    hot-field unique index at all, so it would silently let a second
+    gate_event_key through and this test would prove nothing.
+    """
+    from primer.model.provider import SqliteConfig
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    sid, tcid = "sess-rec-dedupe", "tc5"
+    gate_key = f"tool_approval:{sid}:{tcid}"
+    sess = _approval_session(sid, tcid=tcid, resume_payload={"decision": "approved"})
+
+    storage_provider = SqliteStorageProvider(
+        SqliteConfig(path=str(tmp_path / "dedupe.sqlite"))
+    )
+    await storage_provider.initialize()
+    try:
+        # Simulate the respond-time write having already landed, BEFORE
+        # the resume runs at all.
+        preseeded = ToolApprovalRecord(
+            tool_name="delete_workspace",
+            arguments={"id": "ws-1"},
+            tool_call_id=tcid,
+            session_id=sid,
+            agent_id="ag-1",
+            decided_at=datetime.now(timezone.utc),
+            decision="approved",
+            gate_event_key=gate_key,
+        )
+        await storage_provider.get_storage(ToolApprovalRecord).create(preseeded)
+
+        items = await _drive_with_preseeded_storage(
+            monkeypatch, sess, storage_provider,
+        )
+        assert len(items) == 1
+        assert items[0].id == preseeded.id
+        assert items[0].gate_event_key == gate_key
+    finally:
+        await storage_provider.aclose()

@@ -564,6 +564,19 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # scan, but a retention/prune policy is still owed as a follow-up.
         ("status", False, "((data->>'status'))"),
     ],
+    "toolapprovalrecord": [
+        # 01a068da: makes a decision queryable by the gate that produced
+        # it, and -- the reason this is UNIQUE, not a plain lookup index --
+        # is the mechanism that lets the respond-time write and the
+        # resume-time fallback write both target the same gate without
+        # ever landing two rows for it: whichever insert loses the race
+        # hits this constraint and is treated as an expected no-op (see
+        # ToolApprovalRecord's own docstring). Postgres treats NULL as
+        # distinct from every other NULL under a unique index, so the
+        # many pre-migration records with no gate_event_key at all do not
+        # collide with each other or with anything else.
+        ("gate_event_key_uniq", True, "((data->>'gate_event_key'))"),
+    ],
 }
 
 

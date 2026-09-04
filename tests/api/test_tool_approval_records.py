@@ -10,7 +10,12 @@ from primer.model.tool_approval import ToolApprovalRecord
 
 
 def _rec(
-    *, id_: str, decision: str, decided_at: datetime, session_id: str = "sess-1",
+    *,
+    id_: str,
+    decision: str,
+    decided_at: datetime,
+    session_id: str = "sess-1",
+    gate_event_key: str | None = None,
 ) -> ToolApprovalRecord:
     return ToolApprovalRecord(
         id=id_,
@@ -23,6 +28,7 @@ def _rec(
         decision=decision,  # type: ignore[arg-type]
         policy_id="p1",
         approval_type="required",
+        gate_event_key=gate_event_key,
     )
 
 
@@ -135,5 +141,51 @@ async def test_records_list_filter_by_session_id_and_status(client, app):
 async def test_records_list_filter_by_session_id_no_match(client, app):
     await _seed(app)
     r = await client.get("/v1/tool_approval/records?session_id=sess-nope")
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_records_list_filter_by_gate_event_key(client, app):
+    """01a068da: a caller that has the event key in hand (e.g.
+    confirming a just-submitted decision landed) can look it up directly
+    rather than paging through session_id history to find it."""
+    await _seed(app)
+    storage = app.state.storage_provider.get_storage(ToolApprovalRecord)
+    await storage.create(_rec(
+        id_="r5", decision="approved",
+        decided_at=datetime(2026, 6, 14, 9, 20, tzinfo=UTC),
+        gate_event_key="tool_approval:sess-1:call-r5",
+    ))
+    r = await client.get(
+        "/v1/tool_approval/records?gate_event_key=tool_approval:sess-1:call-r5",
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [it["id"] for it in body["items"]] == ["r5"]
+    assert body["items"][0]["gate_event_key"] == "tool_approval:sess-1:call-r5"
+
+
+@pytest.mark.asyncio
+async def test_records_list_filter_by_gate_event_key_no_match(client, app):
+    await _seed(app)
+    r = await client.get("/v1/tool_approval/records?gate_event_key=does-not-exist")
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_records_list_filter_by_gate_event_key_and_status(client, app):
+    await _seed(app)
+    storage = app.state.storage_provider.get_storage(ToolApprovalRecord)
+    await storage.create(_rec(
+        id_="r5", decision="rejected",
+        decided_at=datetime(2026, 6, 14, 9, 20, tzinfo=UTC),
+        gate_event_key="tool_approval:sess-1:call-r5",
+    ))
+    r = await client.get(
+        "/v1/tool_approval/records"
+        "?gate_event_key=tool_approval:sess-1:call-r5&status=approved",
+    )
     assert r.status_code == 200, r.text
     assert r.json()["items"] == []
