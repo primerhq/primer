@@ -214,6 +214,37 @@ class TestUpdateValidation:
         assert r.json()["kind"] == "aggregated"
         assert r.json()["provider_id"] is None
 
+    @pytest.mark.asyncio
+    async def test_update_a_member_to_aggregated_is_blocked(self, client) -> None:
+        """01a067c4 gate finding #5: PUT'ing a profile that is currently a
+        MEMBER of some other aggregate to kind="aggregated" itself must
+        be rejected -- it would leave the containing aggregate silently
+        violating "every member must be kind=single" (nested
+        aggregation), discovered only later at resolve time with an
+        error that misattributes the problem to the containing aggregate
+        instead of this update."""
+        await _seed_provider(client, "magg-prov-upd-f")
+        m1 = await seed_profile(client, "magg-prov-upd-f", "model-1")
+        m2 = await seed_profile(client, "magg-prov-upd-f", "model-2")
+        r = await client.post(
+            "/v1/model_profiles", json=_aggregated_body("magg-containing", [m1, m2]),
+        )
+        assert r.status_code in (200, 201), r.text
+
+        # m1 is a member of magg-containing; try to convert it in place.
+        other1 = await seed_profile(client, "magg-prov-upd-f", "other-1")
+        other2 = await seed_profile(client, "magg-prov-upd-f", "other-2")
+        r = await client.put(
+            f"/v1/model_profiles/{m1}",
+            json=_aggregated_body(m1, [other1, other2]),
+        )
+        assert r.status_code == 422, r.text
+        assert r.json()["extensions"]["error"] == "member_of_another_aggregate"
+
+        # m1 itself is unchanged -- still a single profile.
+        got = await client.get(f"/v1/model_profiles/{m1}")
+        assert got.json()["kind"] == "single"
+
 
 class TestReferenceIntegrity:
     @pytest.mark.asyncio

@@ -50,12 +50,25 @@ def _model() -> ResolvedModel:
     )
 
 
-async def _drain(llm) -> list:
+def _aggregated_model() -> ResolvedModel:
+    """The flat view resolve_model/resolve_llm produce for a kind=
+    "aggregated" profile (01a067c4, ruling 5): no single provider/model
+    to report."""
+    return ResolvedModel(
+        profile_id="agg-1",
+        provider_id=None,
+        model_name=None,
+        context_length=1000,
+        config=ModelProfileConfig(),
+    )
+
+
+async def _drain(llm, *, llm_model: ResolvedModel | None = None) -> list:
     out = []
     async for ev in run_agent_turn(
         agent=Agent(id="ag-1", description="d", model={"profile_id": "prof-1"}),
         llm=llm,
-        llm_model=_model(),
+        llm_model=llm_model or _model(),
         tool_manager=ToolExecutionManager(toolset_providers={}, tools=[]),
         prompt=[Message(role="user", parts=[TextPart(text="hi")])],
     ):
@@ -129,3 +142,37 @@ async def test_missing_usage_yields_null_token_counts():
     call = _llm_calls(events)[0]
     assert call.input_tokens is None
     assert call.output_tokens is None
+
+
+async def test_aggregated_resolved_model_does_not_crash_the_seam():
+    """01a067c4 gate finding (BLOCKER): run_agent_turn is the ONE
+    model-call seam every executor shares, and it unconditionally builds
+    an _LlmCall with provider_id/model straight off llm_model. Before
+    this fix, those fields were required non-optional str on _LlmCall,
+    so ruling 5's deliberate Nones for an aggregated ResolvedModel made
+    Pydantic raise here -- every aggregated-profile turn crashed, in the
+    one path the whole migration exists to make work. No prior test
+    reached this seam with an aggregated ResolvedModel at all
+    (test_aggregated_runtime.py stops at _resolve_agent_runtime, one
+    layer up) -- this is the missing end-to-end coverage.
+    """
+    events = await _drain(
+        _ScriptedLLM([[
+            TextDelta(text="hello", index=0),
+            Usage(input_tokens=11, output_tokens=7, cumulative=False),
+            Done(stop_reason="stop", raw_reason="stop"),
+        ]]),
+        llm_model=_aggregated_model(),
+    )
+    calls = _llm_calls(events)
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.profile_id == "agg-1"
+    # No single provider/model to report (ResolvedModel's own docstring) --
+    # the seam must carry these through as None, not crash constructing
+    # the event.
+    assert call.provider_id is None
+    assert call.model is None
+    assert call.status == "ok"
+    # The turn itself completed normally past the llm_call event.
+    assert isinstance(events[-1], Done)
