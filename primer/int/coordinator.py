@@ -33,6 +33,7 @@ class InvalidationTopic(str, Enum):
     """
 
     LLM_PROVIDER = "llm_provider"
+    AGGREGATED_MODEL_PROFILE = "aggregated_model_profile"
     EMBEDDING_PROVIDER = "embedding_provider"
     CROSS_ENCODER_PROVIDER = "cross_encoder_provider"
     TOOLSET = "toolset"
