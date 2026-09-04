@@ -47,6 +47,15 @@
 // untouched (backend-facing, unrelated to display order/labels).
 const PROVIDER_CLASSES = [
   { key: "llm", label: "LLM", plural: "llm_providers", form: "crud", profiles: true, invalidate: true },
+  // 01a067c4 (approved IA ruling): a provider-agnostic browse/create/edit
+  // surface for EVERY model profile, single and aggregated. An aggregated
+  // profile has no provider_id of its own, so it can never appear in the
+  // "llm" class's per-provider profiles panel above -- this class chip is
+  // its only home. Same form:"panel" precedent as ssp/workspace/channel
+  // below, not a novel pattern; no `detail` -- MP_AllProfilesPanel's own
+  // modal is the only drill-down this class needs.
+  { key: "model_profile", label: "Model profiles", plural: "model_profiles", form: "panel",
+    panel: () => window.MP_AllProfilesPanel },
   { key: "embedding", label: "Embedding", plural: "embedding_providers", form: "crud", invalidate: true },
   { key: "tts", label: "TTS", plural: "tts_providers", form: "crud" },
   { key: "stt", label: "ASR", plural: "stt_providers", form: "crud" },
