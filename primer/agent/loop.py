@@ -354,6 +354,37 @@ async def run_agent_turn(
         prompt = prompt + [assistant_msg, *tool_result_msgs]
 
 
+def _partition_notifying(
+    calls: list[ToolCallPart], tool_manager: ToolExecutionManager,
+) -> tuple[list[ToolCallPart], list[ToolCallPart]]:
+    """Split a tool-call batch into ``(notifying, claimable)``.
+
+    Each subset keeps its calls in their original relative order from
+    ``calls``.
+
+    01a0518b: the eventual tool-dispatch seam needs exactly this
+    partition to know which calls in a batch it may ever schedule as
+    independent ``ToolCallTask`` rows (``claimable``) versus which it
+    must always answer inline, regardless of ``tool_calls_as_claims`` -
+    a notifying call (S3 spec section 3: the runner answers it itself
+    with a synthetic success, the park machinery is never entered) has
+    nothing to park ON in the first place, so routing it through the
+    claim machinery would be pure overhead for zero behavioural
+    difference. Extracted as its own pure function, ahead of
+    ``_dispatch_tool_calls`` actually consuming it, so the partition
+    logic is independently testable before the dispatch loop itself is
+    rewritten to branch on it.
+    """
+    notifying: list[ToolCallPart] = []
+    claimable: list[ToolCallPart] = []
+    for call in calls:
+        if tool_manager.is_notifying(call.name):
+            notifying.append(call)
+        else:
+            claimable.append(call)
+    return notifying, claimable
+
+
 async def _dispatch_tool_calls(
     calls: list[ToolCallPart],
     *,
@@ -370,6 +401,8 @@ async def _dispatch_tool_calls(
     """
     result_parts: list[ToolResultPart] = []
     for call in calls:
+        # See _partition_notifying's docstring for why a notifying call
+        # (checked the same way here) can never become a ToolCallTask row.
         if tool_manager.is_notifying(call.name):
             actions_out.append(
                 _ClientAction(
