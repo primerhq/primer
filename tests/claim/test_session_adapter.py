@@ -60,7 +60,7 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _make_session(session_id: str) -> WorkspaceSession:
+def _make_session(session_id: str, *, last_seq: int = 0) -> WorkspaceSession:
     return WorkspaceSession(
         id=session_id,
         workspace_id="w1",
@@ -68,6 +68,7 @@ def _make_session(session_id: str) -> WorkspaceSession:
         status=SessionStatus.RUNNING,
         created_at=_now(),
         turn_no=0,
+        last_seq=last_seq,
     )
 
 
@@ -97,6 +98,27 @@ class FakeWorkspaceIO:
         return [ln for ln in raw.decode().splitlines() if ln.strip()]
 
 
+class FakeWorkspaceRegistry:
+    """01a068ea: the adapter resolves I/O per-session via a registry (a
+    workspace's I/O is not a single process-wide value) -- this fake mirrors
+    WorkspaceRegistry.get_workspace's shape (one FakeWorkspaceIO per
+    workspace_id, lazily created)."""
+
+    def __init__(self) -> None:
+        self.workspaces: dict[str, FakeWorkspaceIO] = {}
+
+    async def get_workspace(self, workspace_id: str) -> FakeWorkspaceIO:
+        return self.workspaces.setdefault(workspace_id, FakeWorkspaceIO())
+
+
+class FakeEventBus:
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict]] = []
+
+    async def publish(self, key: str, payload: dict) -> None:
+        self.published.append((key, payload))
+
+
 # ---------------------------------------------------------------------------
 # on_release tests
 # ---------------------------------------------------------------------------
@@ -107,16 +129,16 @@ async def test_on_release_writes_terminal_record_on_reclaim() -> None:
     """A reclaim failure writes an error-kind record to messages.jsonl."""
     sess = _make_session("s1")
     fake_storage = FakeStorage(sess)
-    fake_io = FakeWorkspaceIO()
+    registry = FakeWorkspaceRegistry()
 
-    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_io=fake_io)
+    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_registry=registry)
     await adapter.on_release(
         conn=None,
         entity_id="s1",
         outcome=ReleaseOutcome(success=False, last_error="reclaim", drop_lease=True),
     )
 
-    lines = fake_io.read_lines("s1", "messages.jsonl")
+    lines = registry.workspaces[sess.workspace_id].read_lines("s1", "messages.jsonl")
     assert lines, "Expected at least one record in messages.jsonl"
     assert any(json.loads(ln)["kind"] == "error" for ln in lines)
 
@@ -126,16 +148,16 @@ async def test_on_release_writes_error_record_on_generic_failure() -> None:
     """Any failure outcome writes an error-kind record."""
     sess = _make_session("s2")
     fake_storage = FakeStorage(sess)
-    fake_io = FakeWorkspaceIO()
+    registry = FakeWorkspaceRegistry()
 
-    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_io=fake_io)
+    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_registry=registry)
     await adapter.on_release(
         conn=None,
         entity_id="s2",
         outcome=ReleaseOutcome(success=False, last_error="worker_crash"),
     )
 
-    lines = fake_io.read_lines("s2", "messages.jsonl")
+    lines = registry.workspaces[sess.workspace_id].read_lines("s2", "messages.jsonl")
     assert lines, "Expected at least one record in messages.jsonl"
     record = json.loads(lines[0])
     assert record["kind"] == "error"
@@ -147,27 +169,26 @@ async def test_on_release_no_record_on_success() -> None:
     """A successful release does NOT write any message record."""
     sess = _make_session("s3")
     fake_storage = FakeStorage(sess)
-    fake_io = FakeWorkspaceIO()
+    registry = FakeWorkspaceRegistry()
 
-    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_io=fake_io)
+    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_registry=registry)
     await adapter.on_release(
         conn=None,
         entity_id="s3",
         outcome=ReleaseOutcome(success=True),
     )
 
-    lines = fake_io.read_lines("s3", "messages.jsonl")
-    assert lines == [], "No records expected on successful release"
+    assert registry.workspaces == {}, "No workspace should even be resolved on success"
 
 
 @pytest.mark.asyncio
-async def test_on_release_no_workspace_io_still_updates_storage() -> None:
-    """When workspace_io is None, storage is still updated (graceful degradation)."""
+async def test_on_release_no_workspace_registry_still_updates_storage() -> None:
+    """When workspace_registry is None, storage is still updated (graceful degradation)."""
     sess = _make_session("s4")
     fake_storage = FakeStorage(sess)
 
-    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_io=None)
-    # Should NOT raise even without workspace_io
+    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_registry=None)
+    # Should NOT raise even without workspace_registry
     await adapter.on_release(
         conn=None,
         entity_id="s4",
@@ -217,3 +238,78 @@ async def test_on_release_failure_does_not_bump_turn_no() -> None:
     assert updated.last_turn_at is None, "last_turn_at must NOT be stamped on failure"
     # Park / worker fields still cleared — that's bookkeeping, not turn accounting.
     assert updated.last_worker_id is None
+
+
+@pytest.mark.asyncio
+async def test_terminal_record_seeds_past_existing_history() -> None:
+    """01a068ea: the default start_seq=0 landed the terminal error record at
+    seq=1, silently overwriting whatever real message already held that seq
+    on a session that errors out after messages exist. Pre-seed a real
+    seq-1 line, then trigger a failure release and assert the error record
+    landed at seq=2 -- the pre-existing line is untouched."""
+    sess = _make_session("s7", last_seq=1)
+    fake_storage = FakeStorage(sess)
+    registry = FakeWorkspaceRegistry()
+    fake_io = await registry.get_workspace(sess.workspace_id)
+    await fake_io.append_message_line(
+        "s7", (json.dumps({"seq": 1, "kind": "user_input"}) + "\n").encode(),
+    )
+
+    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_registry=registry)
+    await adapter.on_release(
+        conn=None,
+        entity_id="s7",
+        outcome=ReleaseOutcome(success=False, last_error="worker_crash"),
+    )
+
+    lines = [json.loads(ln) for ln in fake_io.read_lines("s7", "messages.jsonl")]
+    assert len(lines) == 2, "the pre-existing seq-1 line must survive, not be overwritten"
+    assert lines[0] == {"seq": 1, "kind": "user_input"}
+    assert lines[1]["seq"] == 2
+    assert lines[1]["kind"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_terminal_record_publishes_tick() -> None:
+    """01a068ea: a durable-but-unticked write is invisible to a live client
+    until its next poll -- the terminal-error write needs the same tick
+    publish every other durable append in this codebase gets."""
+    sess = _make_session("s8")
+    fake_storage = FakeStorage(sess)
+    registry = FakeWorkspaceRegistry()
+    event_bus = FakeEventBus()
+
+    adapter = SessionClaimAdapter(
+        session_storage=fake_storage, workspace_registry=registry, event_bus=event_bus,
+    )
+    await adapter.on_release(
+        conn=None,
+        entity_id="s8",
+        outcome=ReleaseOutcome(success=False, last_error="worker_crash"),
+    )
+
+    assert len(event_bus.published) == 1
+    key, payload = event_bus.published[0]
+    assert key == "session:s8:tick"
+    assert "seq" in payload
+
+
+@pytest.mark.asyncio
+async def test_terminal_record_no_event_bus_still_writes() -> None:
+    """A None event_bus (graceful degradation, mirrors the no-registry
+    case) must not block the write itself."""
+    sess = _make_session("s9")
+    fake_storage = FakeStorage(sess)
+    registry = FakeWorkspaceRegistry()
+
+    adapter = SessionClaimAdapter(
+        session_storage=fake_storage, workspace_registry=registry, event_bus=None,
+    )
+    await adapter.on_release(
+        conn=None,
+        entity_id="s9",
+        outcome=ReleaseOutcome(success=False, last_error="worker_crash"),
+    )
+
+    lines = registry.workspaces[sess.workspace_id].read_lines("s9", "messages.jsonl")
+    assert lines, "the write must still land even without an event bus"
