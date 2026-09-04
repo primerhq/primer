@@ -143,18 +143,21 @@ async def resolve_llm(
 
     ``kind == "single"`` delegates to ``provider_registry.get_llm(
     profile.provider_id)``. ``kind == "aggregated"`` delegates to
-    ``provider_registry.get_aggregated_llm(row, ...)``, which returns
-    the SAME :class:`~primer.llm.aggregated.AggregatedLLM` instance on
-    every call for a given profile id (cached, keyed by profile id) --
-    NOT a fresh one per call. A fresh instance every call would reset
-    ``AggregatedLLM._cursor`` to 0 each time, so ROUND_ROBIN routing
-    would never actually rotate past member[0] (SEQUENTIAL is
-    unaffected -- it always starts at members[0] by design). This
-    matches the old ``aggregated`` LLMProvider's own behaviour, where
-    ``ProviderRegistry._llm_cache`` made the instance process-wide.
-    ``resolve_member`` recurses by member PROFILE id through this same
-    function, rather than by provider id through
-    ``provider_registry.get_llm`` directly.
+    ``provider_registry.get_aggregated_llm(profile_id, ...)``, which
+    returns the SAME :class:`~primer.llm.aggregated.AggregatedLLM`
+    instance on every call for a given profile id (cached, keyed by
+    profile id, re-fetched by the registry itself INSIDE its lock -- not
+    the row this function already fetched above, which is a separate,
+    outside-the-lock read; see get_aggregated_llm's own docstring for why
+    that distinction is load-bearing) -- NOT a fresh one per call. A
+    fresh instance every call would reset ``AggregatedLLM._cursor`` to 0
+    each time, so ROUND_ROBIN routing would never actually rotate past
+    member[0] (SEQUENTIAL is unaffected -- it always starts at
+    members[0] by design). This matches the old ``aggregated``
+    LLMProvider's own behaviour, where ``ProviderRegistry._llm_cache``
+    made the instance process-wide. ``resolve_member`` recurses by
+    member PROFILE id through this same function, rather than by
+    provider id through ``provider_registry.get_llm`` directly.
     """
     profile_id = override_profile_id or default_profile_id
     storage = storage_provider.get_storage(ModelProfile)
@@ -172,7 +175,7 @@ async def resolve_llm(
         )
 
     llm = await provider_registry.get_aggregated_llm(
-        row, resolve_member=_resolve_member,
+        profile_id, resolve_member=_resolve_member,
     )
     return llm, resolved
 

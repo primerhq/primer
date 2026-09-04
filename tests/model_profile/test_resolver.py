@@ -235,10 +235,15 @@ class _FakeProviderRegistry:
     instance on every call for the same profile id) since that identity
     IS the behaviour under test here -- a fresh instance per call would
     silently reset AggregatedLLM's round-robin cursor (the exact
-    regression this cache exists to prevent).
+    regression this cache exists to prevent). Takes an id and re-fetches
+    the row itself (via the SAME storage_provider resolve_llm uses),
+    mirroring the real registry's own in-lock re-fetch -- see
+    ProviderRegistry.get_aggregated_llm's docstring for why taking an
+    already-fetched row instead was a real race, not a style choice.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, storage_provider: StorageProvider) -> None:
+        self._sp = storage_provider
         self.calls: list[str] = []
         self.aggregated_calls: list[str] = []
         self._aggregated_cache: dict[str, object] = {}
@@ -249,14 +254,17 @@ class _FakeProviderRegistry:
             raise NotFoundError("get_llm called with provider_id=None")
         return f"llm:{provider_id}"
 
-    async def get_aggregated_llm(self, profile, *, resolve_member):
-        self.aggregated_calls.append(profile.id)
-        cached = self._aggregated_cache.get(profile.id)
+    async def get_aggregated_llm(self, profile_id: str, *, resolve_member):
+        self.aggregated_calls.append(profile_id)
+        cached = self._aggregated_cache.get(profile_id)
         if cached is not None:
             return cached
+        row = await self._sp.get_storage(ModelProfile).get(profile_id)
+        if row is None:
+            raise NotFoundError(f"ModelProfile {profile_id!r} does not exist")
         from primer.llm.aggregated import AggregatedLLM
-        adapter = AggregatedLLM(profile, resolve_member=resolve_member)
-        self._aggregated_cache[profile.id] = adapter
+        adapter = AggregatedLLM(row, resolve_member=resolve_member)
+        self._aggregated_cache[profile_id] = adapter
         return adapter
 
 
@@ -264,7 +272,7 @@ class TestResolveLlmSingle:
     async def test_delegates_to_provider_registry_get_llm(
         self, sp: StorageProvider
     ) -> None:
-        registry = _FakeProviderRegistry()
+        registry = _FakeProviderRegistry(sp)
         llm, resolved = await resolve_llm(
             sp, registry, default_profile_id="gx10-qwen-fast",
         )
@@ -274,7 +282,7 @@ class TestResolveLlmSingle:
         assert resolved.provider_id == "gx10"
 
     async def test_override_wins(self, sp: StorageProvider) -> None:
-        registry = _FakeProviderRegistry()
+        registry = _FakeProviderRegistry(sp)
         llm, resolved = await resolve_llm(
             sp, registry,
             default_profile_id="gx10-qwen-fast",
@@ -285,7 +293,7 @@ class TestResolveLlmSingle:
     async def test_missing_profile_raises_not_found(
         self, sp: StorageProvider
     ) -> None:
-        registry = _FakeProviderRegistry()
+        registry = _FakeProviderRegistry(sp)
         with pytest.raises(NotFoundError, match="nope"):
             await resolve_llm(sp, registry, default_profile_id="nope")
 
@@ -297,7 +305,7 @@ class TestResolveLlmAggregated:
         await _seed_aggregated(
             sp, id="agg-1", members=[("leaf-a", 4096), ("leaf-b", 8192)],
         )
-        registry = _FakeProviderRegistry()
+        registry = _FakeProviderRegistry(sp)
         llm, resolved = await resolve_llm(sp, registry, default_profile_id="agg-1")
         assert isinstance(llm, AggregatedLLM)
         # Building the aggregated adapter itself does not call get_llm --
@@ -319,7 +327,7 @@ class TestResolveLlmAggregated:
         await _seed_aggregated(
             sp, id="agg-1", members=[("leaf-a", 4096), ("leaf-b", 8192)],
         )
-        registry = _FakeProviderRegistry()
+        registry = _FakeProviderRegistry(sp)
         llm, _resolved = await resolve_llm(sp, registry, default_profile_id="agg-1")
         member_llm, member_resolved = await llm._resolve("leaf-a")
         assert member_llm == "llm:prov-leaf-a"
@@ -342,7 +350,7 @@ class TestResolveLlmAggregated:
         await _seed_aggregated(
             sp, id="agg-1", members=[("leaf-a", 4096), ("leaf-b", 8192)],
         )
-        registry = _FakeProviderRegistry()
+        registry = _FakeProviderRegistry(sp)
         llm1, _ = await resolve_llm(sp, registry, default_profile_id="agg-1")
         llm2, _ = await resolve_llm(sp, registry, default_profile_id="agg-1")
         assert llm1 is llm2
