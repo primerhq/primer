@@ -351,6 +351,65 @@ async def test_standard_calls_emit_no_delivery_event() -> None:
     assert msgs and msgs[0].parts[0].output == "ran"
 
 
+async def test_partition_notifying_splits_a_mixed_batch() -> None:
+    """01a0518b: _partition_notifying is the building block the eventual
+    tool-dispatch seam uses to decide which calls in a batch may ever
+    become independent ToolCallTask rows (claimable) versus which must
+    always dispatch inline regardless of tool_calls_as_claims
+    (notifying - zero ToolCallTask rows for it, ever). Each subset
+    preserves the original batch's relative order.
+    """
+    from primer.agent.loop import _partition_notifying
+
+    mgr = _manager(
+        {
+            "notify_a": (_tool("notify_a", tool_class="notifying"), _plain_handler),
+            "do_it": (_tool("do_it"), _plain_handler),
+            "notify_b": (_tool("notify_b", tool_class="notifying"), _plain_handler),
+            "do_other": (_tool("do_other"), _plain_handler),
+        }
+    )
+    await mgr.list_tools()
+    calls = [
+        ToolCallPart(id="tc-1", name="t1__notify_a", arguments={}),
+        ToolCallPart(id="tc-2", name="t1__do_it", arguments={}),
+        ToolCallPart(id="tc-3", name="t1__notify_b", arguments={}),
+        ToolCallPart(id="tc-4", name="t1__do_other", arguments={}),
+    ]
+
+    notifying, claimable = _partition_notifying(calls, mgr)
+
+    assert [c.id for c in notifying] == ["tc-1", "tc-3"]
+    assert [c.id for c in claimable] == ["tc-2", "tc-4"]
+
+
+async def test_partition_notifying_empty_batch() -> None:
+    from primer.agent.loop import _partition_notifying
+
+    mgr = _manager({"do_it": (_tool("do_it"), _plain_handler)})
+    await mgr.list_tools()
+
+    notifying, claimable = _partition_notifying([], mgr)
+
+    assert notifying == []
+    assert claimable == []
+
+
+async def test_partition_notifying_all_notifying() -> None:
+    from primer.agent.loop import _partition_notifying
+
+    mgr = _manager(
+        {"notify_a": (_tool("notify_a", tool_class="notifying"), _plain_handler)}
+    )
+    await mgr.list_tools()
+    calls = [ToolCallPart(id="tc-1", name="t1__notify_a", arguments={})]
+
+    notifying, claimable = _partition_notifying(calls, mgr)
+
+    assert [c.id for c in notifying] == ["tc-1"]
+    assert claimable == []
+
+
 async def test_api_caller_external_tools_are_never_notifying() -> None:
     """Spec section 7 regression pin, scoped to S1's epoch-fenced park path.
 
