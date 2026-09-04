@@ -732,6 +732,97 @@ function NV_ResolvedDecisionCard(props) {
   );
 }
 
+// 01a06622 (Phase-2c resolved-cards finding, second half): an answered
+// ask_user call used to render as a bare generic NV_ToolBlock (raw JSON
+// arguments/result behind a collapsed chevron) - the question and the
+// operator's own answer were both there, just never surfaced as a line
+// anyone would read. Same fix shape as NV_ResolvedDecisionCard above, but
+// simpler: no dedicated entity/endpoint exists for this (unlike an
+// approval decision) - the answer IS the ordinary TOOL_RESULT
+// SessionMessageRecord already paired to this call by resultsByCallId /
+// resultFor(row), so there is nothing new to fetch.
+//
+// TOOL_RESULT.output is a JSON STRING (ask_user_resume's own shape,
+// primer/toolset/_system_tools.py) parsing to exactly one of three
+// terminal forms: {response} | {timed_out, elapsed_seconds} |
+// {cancelled, reason, elapsed_seconds}.
+function NV_askAnsweredLine(output) {
+  var parsed;
+  try {
+    parsed = typeof output === "string" ? JSON.parse(output) : output;
+  } catch (_e) {
+    parsed = null;
+  }
+  if (parsed && typeof parsed === "object") {
+    if (parsed.response !== undefined) {
+      return { status: "answered", title: "Answered", text: String(parsed.response) };
+    }
+    if (parsed.timed_out) {
+      var secs = parsed.elapsed_seconds != null ? Math.round(parsed.elapsed_seconds) : null;
+      return {
+        status: "timed_out", title: "Timed out",
+        text: "No answer arrived" + (secs != null ? " (" + secs + "s)" : ""),
+      };
+    }
+    if (parsed.cancelled) {
+      return {
+        status: "cancelled", title: "Cancelled",
+        text: parsed.reason ? String(parsed.reason) : "Cancelled before it was answered",
+      };
+    }
+  }
+  // Malformed/unrecognised output shape - still show SOMETHING rather
+  // than silently falling back to the generic tool block, since that is
+  // exactly the "no answer" regression this card exists to fix.
+  return {
+    status: "unknown", title: "Resolved",
+    text: output != null ? String(output) : "(no answer recorded)",
+  };
+}
+
+function NV_AnsweredAskCard(props) {
+  var row = props.row;
+  var result = props.result;
+  var args = (row.payload && row.payload.arguments) || {};
+  var question = args.prompt || "";
+  var rp = (result && result.payload) || {};
+  var line = NV_askAnsweredLine(rp.output);
+  var idForTestid = (row.payload && (row.payload.id || row.payload.tool_call_id)) || row.seq;
+  return (
+    <div className="nv-card" data-kind="ask-answered" data-status={line.status}
+      data-testid={"nv-ask-answered:" + idForTestid}>
+      <div className="nv-card-head">
+        <span className="nv-dot-resolved" />
+        <span className="nv-card-title">{line.title}</span>
+        <span className="nv-card-tool">ask_user</span>
+        <span style={{ flex: 1 }} />
+        <span className="nv-card-routing">
+          {result && result.createdAt ? NV_approvalAt(result.createdAt) : ""}
+        </span>
+      </div>
+      <div className="nv-card-body">
+        {question ? <div className="nv-ask-prompt">{question}</div> : null}
+        <span className="nv-card-note" data-testid="nv-ask-answered-line">
+          {line.text}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Shared by every tool_call render site (main transcript, sectioned
+// turns, subagent children): an answered ask_user call gets the card
+// above; everything else (including a STILL-PENDING ask_user, which has
+// no `result` yet - the live "attention" surface owns that state via
+// NV_AskCard/gateItems, not this row) keeps the generic tool block.
+function NV_toolCallElement(row, result, running) {
+  var isAnsweredAsk = !!(row.payload && row.payload.name === "system__ask_user")
+    && result != null;
+  return isAnsweredAsk
+    ? <NV_AnsweredAskCard key={row.seq} row={row} result={result} />
+    : <NV_ToolBlock key={row.seq} row={row} result={result} running={running} />;
+}
+
 function NV_AskCard(props) {
   var con = NV_useConsole();
   var item = props.item;
@@ -2245,10 +2336,7 @@ function NV_SessionDoc(props) {
           <div className="nv-turn-sections">
             {(row.rows || []).map(function (child) {
               if (child.kind === "tool_call") {
-                return (
-                  <NV_ToolBlock key={child.seq} row={child}
-                    result={resultFor(child)} running={shownActive} />
-                );
+                return NV_toolCallElement(child, resultFor(child), shownActive);
               }
               if (child.kind === "reasoning") {
                 return <NV_Thought key={child.seq} row={child} />;
@@ -2339,9 +2427,7 @@ function NV_SessionDoc(props) {
     // Tool traffic in the LIVE turn: same expandable block as folded
     // sections use, so a call reads identically mid-run and after.
     if (row.kind === "tool_call") {
-      return (
-        <NV_ToolBlock key={row.seq} row={row} result={resultFor(row)} running={shownActive} />
-      );
+      return NV_toolCallElement(row, resultFor(row), shownActive);
     }
     if (row.kind === "tool_result") return null;
     // Lifecycle markers: a slim muted line, not a full agent block. The
@@ -2469,7 +2555,7 @@ function NV_SessionDoc(props) {
                         || "subagent"}
                     </span>
                   </div>
-                  <NV_ToolBlock row={child} result={resultFor(child)} running={shownActive} />
+                  {NV_toolCallElement(child, resultFor(child), shownActive)}
                 </div>
               );
             }

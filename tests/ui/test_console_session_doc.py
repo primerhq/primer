@@ -1513,3 +1513,107 @@ def test_records_endpoint_gained_a_session_filter_not_a_client_side_one():
     )
     assert "session_id" in api
     assert 'query = query.where("session_id", session_id)' in api
+
+
+# ---------------------------------------------------------------------------
+# 01a06622 (Phase-2c resolved-cards finding, second half): the answered
+# ask_user card. Same shape as the NV_ResolvedDecisionCard section above:
+# these pin the WIRING (real transcript rows reach the card, the right
+# component renders instead of the generic tool block, and it reuses the
+# EXISTING resultsByCallId/resultFor pairing rather than a new fetch -
+# unlike NV_ResolvedDecisionCard, there is no dedicated entity/endpoint
+# here to wire at all).
+# ---------------------------------------------------------------------------
+
+
+def test_answered_ask_routes_through_a_dedicated_dispatcher_at_every_call_site():
+    # All three tool_call render sites (main transcript, sectioned turns,
+    # subagent children) must go through NV_toolCallElement - a raw
+    # <NV_ToolBlock ...> at any of them would silently regress that one
+    # surface back to the bare generic block for an answered ask_user.
+    assert DOC.count("NV_toolCallElement(") >= 3
+    assert 'if (row.kind === "tool_call") {\n      return NV_toolCallElement(' in DOC
+    assert 'if (child.kind === "tool_call") {\n                return NV_toolCallElement(' in DOC
+    assert "{NV_toolCallElement(child, resultFor(child), shownActive)}" in DOC
+
+
+def test_dispatcher_only_diverts_answered_ask_user_everything_else_is_the_generic_block():
+    dispatcher = DOC[DOC.index("function NV_toolCallElement"):
+                      DOC.index("function NV_AskCard")]
+    assert 'row.payload.name === "system__ask_user"' in dispatcher
+    assert "result != null" in dispatcher
+    assert "<NV_AnsweredAskCard" in dispatcher
+    assert "<NV_ToolBlock" in dispatcher, (
+        "a still-pending ask_user (no result yet) or any other tool call "
+        "must still fall through to the generic block"
+    )
+
+
+def test_answered_ask_card_reuses_the_paired_result_not_a_new_fetch():
+    card = DOC[DOC.index("function NV_AnsweredAskCard"):
+               DOC.index("function NV_toolCallElement")]
+    # The answer comes in as props.result (resultFor(row), already fetched
+    # as part of the ordinary transcript pull) - no SH_api.* call of its
+    # own, unlike NV_ResolvedDecisionCard's dedicated records endpoint.
+    assert "props.result" in card
+    assert "SH_api." not in card
+    # Visual pattern copied from NV_ResolvedDecisionCard verbatim.
+    assert '<div className="nv-card"' in card
+    assert '<span className="nv-dot-resolved"' in card
+    assert '<div className="nv-card-head">' in card
+    assert '<div className="nv-card-body">' in card
+    assert "NV_approvalAt(result.createdAt)" in card
+    assert 'data-testid={"nv-ask-answered:"' in card
+
+
+def test_answered_ask_card_registers_no_new_css_debt():
+    card = DOC[DOC.index("function NV_AnsweredAskCard"):
+               DOC.index("function NV_toolCallElement")]
+    classes = set(re.findall(r'className="([^"{]+)"', card))
+    for cls_group in classes:
+        for cls in cls_group.split():
+            assert ("." + cls) in STYLES, cls
+
+
+def test_ask_answered_line_via_mini_racer():
+    """The three terminal shapes ask_user_resume can produce
+    (primer/toolset/_system_tools.py), plus the malformed/unrecognised
+    fallback - each must reach the transcript as an actual sentence, not
+    "no answer recorded" or a silent blank line."""
+    from py_mini_racer import MiniRacer
+
+    start = DOC.index("function NV_askAnsweredLine")
+    end = DOC.index("\n}\n", start) + len("\n}\n")
+    ctx = MiniRacer()
+    ctx.eval(DOC[start:end])
+
+    answered = ctx.call("NV_askAnsweredLine", '{"response": "yes, go ahead"}')
+    assert answered["status"] == "answered"
+    assert answered["text"] == "yes, go ahead"
+
+    timed_out = ctx.call(
+        "NV_askAnsweredLine", '{"timed_out": true, "elapsed_seconds": 125.4}',
+    )
+    assert timed_out["status"] == "timed_out"
+    assert "125" in timed_out["text"]
+
+    cancelled = ctx.call(
+        "NV_askAnsweredLine",
+        '{"cancelled": true, "reason": "operator dismissed", "elapsed_seconds": 3}',
+    )
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["text"] == "operator dismissed"
+
+    cancelled_no_reason = ctx.call("NV_askAnsweredLine", '{"cancelled": true}')
+    assert cancelled_no_reason["status"] == "cancelled"
+    assert cancelled_no_reason["text"]
+
+    # Malformed / unrecognised output: still SOMETHING, not a silent blank
+    # (the exact regression this card exists to fix).
+    garbage = ctx.call("NV_askAnsweredLine", "not json at all")
+    assert garbage["status"] == "unknown"
+    assert garbage["text"]
+
+    empty = ctx.call("NV_askAnsweredLine", None)
+    assert empty["status"] == "unknown"
+    assert "no answer" in empty["text"].lower()
