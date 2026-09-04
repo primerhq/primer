@@ -1187,6 +1187,29 @@ function NV_StatusStrip(props) {
   );
 }
 
+// 01a052d9: which uploaded files the composer folds as true vision/document
+// input (SteerBody.attachments -> ImagePart/DocumentPart, primer.channel.
+// media.media_from_workspace_files) rather than the legacy plain-text
+// "Attached file: {path}" line. Deliberately NARROWER than the server's own
+// MediaConfig.allowed_prefixes/allowed_exact (primer/channel/media.py),
+// which also takes audio/video/text/json for the ask_user/inform_user
+// outbound-file pipeline that same function serves - this composer only
+// ever offers "vision/document input" (per SteerBody.attachments' own
+// docstring), so audio/video/text/code stay on the existing convention the
+// agent's file tools already handle; there is no benefit to hydrating a
+// text file's bytes into the prompt when the agent can just read it.
+var NV_VISION_DOC_EXACT_TYPES = {
+  "application/pdf": true,
+  "application/msword": true,
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
+  "application/vnd.ms-excel": true,
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": true,
+};
+function NV_isVisionDocAttachment(mimeType) {
+  var mt = (mimeType || "").toLowerCase();
+  return mt.indexOf("image/") === 0 || !!NV_VISION_DOC_EXACT_TYPES[mt];
+}
+
 // ---------------------------------------------------------------------------
 // Composer (status strip + input row + mic + stop + send)
 // ---------------------------------------------------------------------------
@@ -1275,7 +1298,9 @@ function NV_Composer(props) {
       var token = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
       var dest = "uploads/" + token + "-" + f.name;
       setAttachments(function (prev) {
-        return prev.concat([{ id: token, name: f.name, path: dest, status: "uploading" }]);
+        return prev.concat([{
+          id: token, name: f.name, path: dest, status: "uploading", type: f.type,
+        }]);
       });
       function setStatus(status) {
         setAttachments(function (prev) {
@@ -1318,12 +1343,23 @@ function NV_Composer(props) {
     if ((!text && !readyAttachments.length) || sending || attachmentsPending) {
       return;
     }
-    // Attachment references are plain text, folded in here rather than
-    // a new message-part type - see the attachState comment above.
-    var attachLines = readyAttachments.map(function (a) {
+    // Fold-split (01a052d9): vision/document-eligible files ride as true
+    // multimodal input (steerAttachments, below); everything else keeps the
+    // legacy plain-text "Attached file: {path}" line folded into the
+    // message text - see NV_isVisionDocAttachment's comment above.
+    var visionAttachments = readyAttachments.filter(function (a) {
+      return NV_isVisionDocAttachment(a.type);
+    });
+    var textAttachments = readyAttachments.filter(function (a) {
+      return !NV_isVisionDocAttachment(a.type);
+    });
+    var attachLines = textAttachments.map(function (a) {
       return "Attached file: " + a.path;
     }).join("\n");
     var fullText = attachLines ? (text ? text + "\n\n" + attachLines : attachLines) : text;
+    var steerAttachments = visionAttachments.length
+      ? visionAttachments.map(function (a) { return { path: a.path }; })
+      : undefined;
     setSending(true);
     setSendErr(null);
     // The store owns the optimistic row and the steer POST; it removes the
@@ -1331,8 +1367,8 @@ function NV_Composer(props) {
     // text + shows the inline error (P0 send-failure behaviour).
     var clientId = "steer-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
     var promise = typeof props.onSend === "function"
-      ? props.onSend(fullText, clientId)
-      : SH_api.steer(con.wid, props.sid, fullText);
+      ? props.onSend(fullText, clientId, steerAttachments)
+      : SH_api.steer(con.wid, props.sid, fullText, steerAttachments);
     promise.then(function () {
       setVal("");
       // Clear only on success - a failed send restores the typed text
@@ -2604,8 +2640,8 @@ function NV_SessionDoc(props) {
         onInterrupt={function () {
           NV_doInterrupt(con.wid, sid, refetchAll, con.toast);
         }}
-        onSend={function (text, clientId) {
-          return window.SS_sendUserMessage(store, text, clientId);
+        onSend={function (text, clientId, attachments) {
+          return window.SS_sendUserMessage(store, text, clientId, attachments);
         }}
         onSendStarted={function () {
           setOptimistic(Date.now());
