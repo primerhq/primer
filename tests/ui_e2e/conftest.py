@@ -339,10 +339,19 @@ def page(
 
     def _on_pageerror(err: BaseException) -> None:
         # pageerror events fire on uncaught exceptions; treat as error.
+        # Playwright's Error carries the JS stack on .stack — without it,
+        # a bare "Cannot read properties of null" message is nearly
+        # useless for tracking down the throw site (every pageerror
+        # investigation used to re-derive this the hard way via static
+        # grepping across the whole ui/ tree). Truncated defensively:
+        # a pathological stack (recursion, minified bundle) should not
+        # blow up the artifact.
+        stack = getattr(err, "stack", None)
         console_messages.append({
             "level": "pageerror",
             "text": str(err),
             "location": None,
+            "stack": stack[:4000] if isinstance(stack, str) else None,
         })
 
     def _on_requestfailed(req) -> None:
@@ -448,7 +457,11 @@ def pytest_runtest_makereport(
         pass
     if console is not None:
         (artifacts / "console.log").write_text(
-            "\n".join(f"[{m['level']}] {m['text']}" for m in console),
+            "\n".join(
+                f"[{m['level']}] {m['text']}"
+                + (f"\n{m['stack']}" if m.get("stack") else "")
+                for m in console
+            ),
             encoding="utf-8",
         )
     failed = getattr(item, "_primer_failed_requests", None)
