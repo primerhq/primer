@@ -229,9 +229,16 @@ async def _live_llm_provider_check(storage_provider) -> tuple[bool, str | None]:
         )
     except BadRequestError as exc:
         if "live model discovery is not supported" in str(exc):
-            # Not every provider type exposes a list-models probe (e.g.
-            # aggregated); no live signal either way, so this falls
-            # back to "configured" rather than reading as a failure.
+            # 01a06918: unreachable today -- every current LLMProviderType
+            # member has a live probe (_probe_llm_models' dispatch, see
+            # its own comment on the analogous else branch). The old
+            # reachable case was "aggregated" (a provider type with no
+            # probe of its own); it moved off LLMProvider entirely onto
+            # ModelProfile (01a067c4). Kept as a forward-looking fallback
+            # for the same reason _probe_llm_models keeps its match: a
+            # future provider type added without a live-probe path should
+            # read as "configured, no live signal either way" here rather
+            # than fail the setup gate outright.
             return True, None
         return False, str(exc)
     return True, None

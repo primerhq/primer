@@ -768,6 +768,23 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
             ) from exc
         result = {"models": catalogue}
     else:
+        # 01a06918: unreachable today. _build_stub_provider above already
+        # validated `provider` against LLMProvider's own LLMProviderType
+        # field, so by this point it is one of the 6 current members --
+        # ollama/openresponses/openchat/openrouter/anthropic/gemini --
+        # every one of which has its own elif above. The old reachable
+        # case was "aggregated" (an LLMProviderType member with no live
+        # probe of its own); it moved off LLMProvider entirely onto
+        # ModelProfile (01a067c4) and no longer exists as a value this
+        # function can even receive.
+        #
+        # Kept anyway as a dispatch-completeness guard: a FUTURE
+        # LLMProviderType member added without a matching elif here would
+        # otherwise fall through to an UnboundLocalError on `result`
+        # below instead of a clean 400. setup.py's _live_llm_provider_check
+        # matches this exact message string for the same "provider type
+        # with no live probe" case -- if this branch is ever removed,
+        # that fallback needs revisiting too.
         raise BadRequestError(
             f"live model discovery is not supported for provider "
             f"{provider!r}; populate the models list manually or "
