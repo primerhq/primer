@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
 import primer.observability.metrics as _metrics
@@ -47,6 +47,7 @@ from primer.model.chat import (
     _LlmCall,
 )
 from primer.model.except_ import AuthRequiredError, PrimerError
+from primer.model.yield_ import ToolWaitPark
 
 
 if TYPE_CHECKING:
@@ -139,6 +140,7 @@ async def run_agent_turn(
     artifact_storage: "ArtifactStorage | None" = None,
     turn_no: int | None = None,
     tool_calls_as_claims_enabled: bool = False,
+    resolve_scoped_call: "Callable[[str], tuple[str, int]] | None" = None,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -205,6 +207,26 @@ async def run_agent_turn(
         that exact surface. A nested batch always dispatches in-process,
         regardless of the enclosing turn's own setting. ``False`` (the
         default) is today's in-process behaviour, unchanged.
+    resolve_scoped_call
+        Maps a call's RAW provider id (``ToolCallPart.id``, e.g.
+        ``"call_0"`` -- the only id the dispatch layer has ever had) to
+        ``(scoped_call_id, record_seq)`` -- the ``node:tool:turn_no:seq``
+        id the durable ``TOOL_CALL`` record actually carries, and that
+        record's own ``messages.jsonl`` seq (01a0518b). The tool-dispatch
+        seam cannot construct a ``ToolCallTask`` (or park state
+        referencing one) without it: the scoped id does not otherwise
+        reach this layer at all (see the 01a0518b ground-truth remap),
+        and it must be the SAME string the transcript's own TOOL_CALL
+        record carries or the two are never joinable. A successful
+        return is also the proof this call's record is durable
+        (flushed, not just appended) -- see ``dispatch.py``'s
+        ``except ToolWaitPark`` branch and the CoalesceState
+        ``tool_call_record_seq`` map it reads from; a caller must never
+        raise ``ToolWaitPark`` for a call this failed to resolve.
+        ``None`` (the default) is required for the notifying/claimable
+        split to ever fire when ``tool_calls_as_claims_enabled`` is
+        True; nested subagent calls never receive one, matching the
+        flag's own scope-cut.
 
     Raises
     ------
@@ -330,6 +352,8 @@ async def run_agent_turn(
             tool_manager=tool_manager,
             principal=principal,
             actions_out=client_actions,
+            tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
+            resolve_scoped_call=resolve_scoped_call,
         )
         # Delivery frames go out BEFORE the results so the session log
         # reads tool_call -> client_action -> tool_result, matching the
@@ -391,6 +415,8 @@ async def _dispatch_tool_calls(
     tool_manager: ToolExecutionManager,
     principal: str | None,
     actions_out: list[_ClientAction],
+    tool_calls_as_claims_enabled: bool = False,
+    resolve_scoped_call: "Callable[[str], tuple[str, int]] | None" = None,
 ) -> list[Message]:
     """Dispatch tool calls; return tool-role messages to feed back to the LLM.
 
@@ -398,7 +424,27 @@ async def _dispatch_tool_calls(
     :class:`PrimerError` instances are converted to
     ``ToolResultPart(error=True)`` by the manager itself; the
     defensive catch here is belt-and-braces for adapter bugs.
+
+    When ``tool_calls_as_claims_enabled`` and the batch has at least one
+    CLAIMABLE call (see :func:`_partition_notifying`), routes to
+    :func:`_dispatch_as_claims` instead, which never returns normally --
+    it raises :class:`~primer.model.yield_.ToolWaitPark`. Any other
+    combination (flag off, or a batch that turns out to be entirely
+    notifying once partitioned) falls through to today's in-process
+    loop unchanged.
     """
+    if tool_calls_as_claims_enabled and resolve_scoped_call is not None:
+        notifying_calls, claimable_calls = _partition_notifying(calls, tool_manager)
+        if claimable_calls:
+            return await _dispatch_as_claims(
+                notifying_calls,
+                claimable_calls,
+                tool_manager=tool_manager,
+                principal=principal,
+                actions_out=actions_out,
+                resolve_scoped_call=resolve_scoped_call,
+            )
+
     result_parts: list[ToolResultPart] = []
     for call in calls:
         # See _partition_notifying's docstring for why a notifying call
@@ -428,6 +474,69 @@ async def _dispatch_tool_calls(
     if not result_parts:
         return []
     return [Message(role="tool", parts=list(result_parts))]
+
+
+async def _dispatch_as_claims(
+    notifying_calls: list[ToolCallPart],
+    claimable_calls: list[ToolCallPart],
+    *,
+    tool_manager: ToolExecutionManager,
+    principal: str | None,
+    actions_out: list[_ClientAction],
+    resolve_scoped_call: "Callable[[str], tuple[str, int]]",
+) -> list[Message]:
+    """Answer notifying calls inline, then park the claimable batch.
+
+    Never returns normally -- always raises
+    :class:`~primer.model.yield_.ToolWaitPark`. ``notifying_calls`` are
+    answered synchronously first (S3 spec section 3, unchanged from the
+    in-process path: they have nothing to park on), but since raising
+    discards this function's own return value, their results ride on
+    the exception's ``notifying_results`` field rather than a normal
+    ``[Message]`` return -- see ``ToolWaitPark``'s own docstring for why
+    that keeps "every sibling ``ToolCallTask`` row" the single
+    reassembly truth instead of a second, parallel one.
+
+    01a0518b: ``resolve_scoped_call`` is called for EVERY call in this
+    batch, notifying and claimable alike -- not just to learn the
+    scoped id, but because a successful return is itself the "this
+    call's TOOL_CALL record is durable" proof (see
+    ``run_agent_turn``'s own docstring on the parameter). This function
+    intentionally does nothing with the ``record_seq`` half of the
+    pair beyond that check: the ``except ToolWaitPark`` handler that
+    actually constructs ``ToolCallTask`` rows already has direct
+    ``_CoalesceState`` access and re-derives it there, so nothing here
+    needs to carry it across the exception boundary too.
+    """
+    notifying_results: list[tuple[str, ToolResultPart]] = []
+    for call in notifying_calls:
+        actions_out.append(
+            _ClientAction(
+                call_id=call.id,
+                name=call.name,
+                arguments=dict(call.arguments or {}),
+            )
+        )
+        rp = await tool_manager.deliver_notifying(call, principal=principal)
+        scoped_id, _record_seq = resolve_scoped_call(call.id)
+        notifying_results.append((scoped_id, rp))
+
+    outstanding_task_ids: list[str] = []
+    for call in claimable_calls:
+        scoped_id, _record_seq = resolve_scoped_call(call.id)
+        outstanding_task_ids.append(scoped_id)
+
+    # Synthetic, non-pub/sub identifier (ToolWaitPark's own docstring) --
+    # keyed on the first outstanding task so it is at least deterministic
+    # and traceable back to this batch, not that anything ever looks it
+    # up by value.
+    event_key = f"tool_wait:{outstanding_task_ids[0]}"
+
+    raise ToolWaitPark(
+        outstanding_task_ids=outstanding_task_ids,
+        event_key=event_key,
+        notifying_results=notifying_results,
+    )
 
 
 __all__ = ["run_agent_turn"]

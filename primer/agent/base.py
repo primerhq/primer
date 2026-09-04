@@ -71,6 +71,8 @@ from primer.model.graph import build_execution_context
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from primer.int.artifact_storage import ArtifactStorage
     from primer.int.llm import LLM
     from primer.model.agent import Agent
@@ -145,6 +147,20 @@ class _BaseAgentExecutor(ABC):
         # artifact_storage's own cut for that surface - see
         # run_agent_turn's docstring for the full reasoning.
         self._tool_calls_as_claims_enabled = tool_calls_as_claims_enabled
+        # 01a0518b (seam-split summit): the per-turn closure that resolves a
+        # raw provider tool-call id into (scoped_id, record_seq) for the
+        # claim-based dispatch seam. Unlike turn_no/artifact_storage/the
+        # flag above, this CANNOT be constructor-injected: it closes over
+        # the dispatch loop's _CoalesceState, which does not exist yet at
+        # executor-build time (primer.session.dispatch builds the executor,
+        # THEN creates coalesce_state, THEN starts streaming - see that
+        # module's own ordering). None is the correct default for every
+        # caller that hasn't opted into tool_calls_as_claims; set via
+        # bind_scoped_call_resolver once the caller has a coalesce_state in
+        # hand.
+        self._resolve_scoped_call: (
+            "Callable[[str], tuple[str, int]] | None"
+        ) = None
         # Ambient run context exposed to the system prompt as ``ctx``. Base is
         # surface-agnostic -> memory default; subclasses override with the real
         # surface (AgentExecutor -> "chat", WorkspaceAgentExecutor -> "workspace").
@@ -311,6 +327,20 @@ class _BaseAgentExecutor(ABC):
             ):
                 yield ev
 
+    def bind_scoped_call_resolver(
+        self, resolver: "Callable[[str], tuple[str, int]] | None",
+    ) -> None:
+        """Bind the per-turn scoped-tool-call-id resolver (01a0518b).
+
+        Post-construction setter, deliberately not a constructor param
+        (see ``self._resolve_scoped_call``'s own comment): the caller
+        (``primer.session.dispatch``) only has a ``_CoalesceState`` to
+        close over AFTER the executor already exists. Callers that never
+        opted into ``tool_calls_as_claims`` simply never call this, and
+        ``_run_loop`` passes the ``None`` default through unchanged.
+        """
+        self._resolve_scoped_call = resolver
+
     def subscribe(self, subscriber: AgentEventSubscriber) -> Subscription:
         """Register a streaming-tap subscriber. Returns the subscription handle."""
         sub_id = f"sub-{uuid.uuid4().hex[:12]}"
@@ -341,7 +371,7 @@ class _BaseAgentExecutor(ABC):
         # directly into ``full_turn_messages`` for end-of-turn
         # persistence below.
         last_input_tokens_holder: list[int | None] = []
-        from primer.model.yield_ import YieldToWorker
+        from primer.model.yield_ import ToolWaitPark, YieldToWorker
         try:
             async for event in run_agent_turn(
                 agent=self._agent,
@@ -356,6 +386,7 @@ class _BaseAgentExecutor(ABC):
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
                 tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
+                resolve_scoped_call=self._resolve_scoped_call,
             ):
                 await self._emit(event)
                 yield event
@@ -373,6 +404,16 @@ class _BaseAgentExecutor(ABC):
             # The slice strips ``new_messages`` (which the executor's
             # caller already has) so the stamp is just what this turn
             # accumulated up to the yield point.
+            exc.llm_messages = list(full_turn_messages[len(new_messages):])
+            raise
+        except ToolWaitPark as exc:
+            # 01a0518b: same stamp, same reasoning, as the YieldToWorker
+            # arm above -- ToolWaitPark is deliberately NOT a
+            # YieldToWorker subclass (see its own docstring), so it needs
+            # its own explicit arm here too. Minimal raise-time contract
+            # (loop.py's _dispatch_as_claims leaves llm_messages unset);
+            # this is the "one layer up" that stamps it, mirroring
+            # YieldToWorker's precedent exactly.
             exc.llm_messages = list(full_turn_messages[len(new_messages):])
             raise
 

@@ -73,7 +73,11 @@ class TurnLogFailed(_TurnLogBase):
 
 class TurnLogYielded(_TurnLogBase):
     kind: Literal[TurnLogKind.YIELDED] = TurnLogKind.YIELDED
-    yield_kind: Literal["ask_user", "subscribe_to_trigger", "approval"]
+    # "tool_wait" (01a0518b): a batch park across N independently-
+    # claimable ToolCallTask rows, not a single Yielded sentinel - see
+    # primer.model.yield_.ToolWaitPark's own docstring for why it is
+    # structurally distinct from the other three kinds.
+    yield_kind: Literal["ask_user", "subscribe_to_trigger", "approval", "tool_wait"]
     event_key: str
 
 
