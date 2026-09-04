@@ -39,9 +39,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from primer.model.principal import PrincipalRef
+
+
+if TYPE_CHECKING:
+    from primer.model.chat import ToolResultPart
 
 
 # ===========================================================================
@@ -340,6 +344,22 @@ class ToolWaitPark(Exception):
     ``[assistant_tool_use, tool_result...]`` history correctly. Callers
     that raise this directly may leave ``llm_messages`` unset; the
     executor stamps it on the way out, same as ``YieldToWorker``.
+
+    ``notifying_results`` (01a0518b, added when the dispatch seam
+    landed): a notifying call in the SAME batch as a claimable one is
+    answered inline as always (S3 spec section 3 — it never becomes a
+    ``ToolCallTask``, it has nothing to park ON), but its result still
+    needs a durable home the resume coordinator can find. Rather than a
+    second, session-log-spelunking assembly path alongside the
+    ``ToolCallTask`` rows, the ``except ToolWaitPark`` handler creates a
+    terminal (``state=DONE``, ``result_state`` pre-populated) row for
+    each notifying result too — so "read every sibling ``ToolCallTask``
+    row for ``(session_id, turn_no)``" stays the SINGLE reassembly
+    truth, notifying and claimable alike, rather than a split-brain
+    between two sources. Each entry is ``(scoped_call_id,
+    ToolResultPart)`` — the scoped id because that is what the
+    resulting row's ``id`` must be, matching every other
+    ``ToolCallTask`` in the batch.
     """
 
     def __init__(
@@ -348,6 +368,7 @@ class ToolWaitPark(Exception):
         outstanding_task_ids: list[str],
         event_key: str,
         llm_messages: list | None = None,
+        notifying_results: "list[tuple[str, ToolResultPart]] | None" = None,
     ) -> None:
         super().__init__(
             f"tool batch parked as {len(outstanding_task_ids)} "
@@ -357,6 +378,9 @@ class ToolWaitPark(Exception):
         self.event_key = event_key
         self.llm_messages: list | None = llm_messages
         self.frames: list = []
+        self.notifying_results: "list[tuple[str, ToolResultPart]]" = (
+            notifying_results or []
+        )
 
 
 __all__ = [
