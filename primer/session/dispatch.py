@@ -441,8 +441,20 @@ async def run_one_session_turn(
     if delta_buffer is not None:
         await delta_buffer.start()
 
+    # 01a0692f: held so the finally below can explicitly aclose() it on
+    # every exit path (break, exception, or normal exhaustion - aclose()
+    # on an already-finished generator is a no-op). A bare `break` alone
+    # leaves the generator suspended mid-yield; for a graph session that
+    # generator is `_run_superstep_loop`, whose own node-task-cancellation
+    # cleanup lives in ITS `finally`, reached only once this generator is
+    # actually closed. Without an explicit aclose(), Python still closes
+    # it eventually via the asyncgen finalizer hook when this local's
+    # refcount drops - but that runs on a LATER event-loop tick, not
+    # in-line, so a mid-turn cancel on a wide fan-out could leave sibling
+    # node tasks running in the background for a tick or few.
+    turn_events = executor.invoke([])
     try:
-        async for event in executor.invoke([]):
+        async for event in turn_events:
             # agent_phase (01a04d91-a7a0): inspect the RAW event, before
             # translate_stream_event's coalescing, so "responding"/
             # "executing" are true the instant the tokens/tool call start
@@ -789,6 +801,19 @@ async def run_one_session_turn(
         return ReleaseOutcome(success=False, drop_lease=True)
 
     finally:
+        # 01a0692f: close the turn's event stream explicitly and first -
+        # a graph session's generator chain (_run_superstep_loop) cancels
+        # any still-in-flight fan-out node tasks in ITS OWN finally, which
+        # only runs once this aclose() actually reaches it. See turn_events'
+        # own comment above for why relying on implicit GC-driven closure
+        # instead would only delay that cleanup, not skip it.
+        try:
+            await turn_events.aclose()
+        except Exception:  # noqa: BLE001 - best-effort, never blocks release
+            logger.exception(
+                "session %s: turn_events.aclose() raised during cleanup",
+                session_id,
+            )
         _metrics.sessions_active.labels(session.workspace_id).dec()
         reset_delegation_sink(_delegation_token)
         cancel_task.cancel()

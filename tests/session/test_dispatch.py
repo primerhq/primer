@@ -281,6 +281,73 @@ async def test_cancel_mid_stream_writes_cancelled_and_breaks(
 
 
 @pytest.mark.asyncio
+async def test_cancel_mid_stream_closes_the_executor_generator(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """01a0692f: a mid-turn cancel's `break` must aclose() the executor's
+    generator explicitly and synchronously (by the time run_one_session_turn
+    returns), not rely on CPython's asyncgen finalizer to get to it on some
+    later event-loop tick. For a graph session, that generator's own
+    finally is what cancels any still-in-flight fan-out node tasks - a
+    bare break alone would leave that cleanup pending indefinitely (well
+    past this function's return), not skipped, but pending is still a
+    real gap on a wide fan-out.
+    """
+    gate = asyncio.Event()
+    closed = False
+
+    class _SlowExecutor:
+        async def invoke(self, messages: list[Any], **kwargs: Any):
+            nonlocal closed
+            try:
+                yield TextDelta(text="starting…", index=0)
+                await gate.wait()
+                yield TextDelta(text="should-not-persist", index=0)
+            finally:
+                closed = True
+
+    async def _build_executor(session: WorkspaceSession):
+        return _SlowExecutor()
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+
+    turn_task = asyncio.create_task(run_one_session_turn(lease, deps))
+
+    # Let the executor emit the first TextDelta, then fire cancel - same
+    # choreography as test_cancel_mid_stream_writes_cancelled_and_breaks.
+    await asyncio.sleep(0.05)
+    await fake_event_bus.publish(f"session:{seeded_session.id}:cancel", {})
+    await asyncio.sleep(0.05)
+
+    # The generator is parked at `await gate.wait()`, cancel is flagged
+    # but not yet actable - the dispatch loop's own cancel-check only
+    # runs in the loop BODY, after an event is received, so it can't fire
+    # until the generator yields again. Not closed yet.
+    assert not closed
+    gate.set()
+    # Opening the gate lets the generator yield its second event; the
+    # loop body then sees cancel_event.is_set() and breaks - leaving the
+    # generator suspended mid-yield, exactly the case aclose() must cover.
+
+    outcome = await asyncio.wait_for(turn_task, timeout=2.0)
+    assert outcome.drop_lease is True
+    assert closed, (
+        "run_one_session_turn returned without closing the executor's "
+        "generator - its own cleanup (cancelling any in-flight fan-out "
+        "node tasks, for a graph session) never ran"
+    )
+
+
+@pytest.mark.asyncio
 async def test_turn_status_reads_running_for_the_whole_streaming_window(
     seeded_session: WorkspaceSession,
     fake_workspace_io: FakeWorkspaceIO,
