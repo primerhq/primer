@@ -199,3 +199,114 @@ async def test_write_approval_record_still_logs_a_real_failure_as_an_error(caplo
     with caplog.at_level(logging.DEBUG, logger="primer.agent.approval_record"):
         await write_approval_record(_Boom(), rec)
     assert any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
+class _StorageWithExistingRecord:
+    """Fake storage: create() always loses the gate_event_key race
+    (ConflictError), find() returns the ONE record that won it."""
+
+    def __init__(self, existing: ToolApprovalRecord) -> None:
+        self._existing = existing
+
+    async def create(self, _entity):
+        raise ConflictError("ToolApprovalRecord with id 'x' already exists")
+
+    async def find(self, _predicate, page, order_by=None):
+        from primer.model.storage import OffsetPageResponse
+
+        return OffsetPageResponse(
+            offset=page.offset, length=1, total=1, items=[self._existing],
+        )
+
+
+@pytest.mark.asyncio
+async def test_write_approval_record_warns_loudly_on_a_real_disagreement(caplog):
+    """01a06b82 gate-review R1: warn_on_decision_mismatch=True is what a
+    resume-time TERMINAL synthesis (timeout/cancel) passes. If the record
+    that already won the gate_event_key race disagrees with the true
+    terminal outcome computed here, that is NOT an ordinary benign dedup
+    race (a channel reply's "approved" write whose publish never actually
+    landed, followed by the gate genuinely timing out) -- it must be
+    logged loudly (ERROR, both values) rather than silently swallowed at
+    DEBUG like an everyday duplicate."""
+    import logging
+
+    existing = ToolApprovalRecord(
+        tool_name="x", decided_at=datetime.now(UTC), decision="approved",
+        gate_event_key="tool_approval:sess-1:c1",
+    )
+    rec = ToolApprovalRecord(
+        tool_name="x", decided_at=datetime.now(UTC), decision="rejected",
+        reason="timed-out", gate_event_key="tool_approval:sess-1:c1",
+    )
+    with caplog.at_level(logging.DEBUG, logger="primer.agent.approval_record"):
+        await write_approval_record(
+            _StorageWithExistingRecord(existing), rec,
+            warn_on_decision_mismatch=True,
+        )
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(error_records) == 1
+    message = error_records[0].getMessage()
+    assert "disagreement" in message
+    assert "approved" in message
+    assert "rejected" in message
+    assert "timed-out" in message
+
+
+@pytest.mark.asyncio
+async def test_write_approval_record_stays_quiet_when_the_winning_decision_agrees(
+    caplog,
+):
+    """Even with warn_on_decision_mismatch=True, a race where both writers
+    agree (the common, ordinary case -- e.g. the same real operator
+    decision written twice) is still just a benign dedup no-op at DEBUG,
+    not a disagreement."""
+    import logging
+
+    existing = ToolApprovalRecord(
+        tool_name="x", decided_at=datetime.now(UTC), decision="approved",
+        gate_event_key="tool_approval:sess-1:c1",
+    )
+    rec = ToolApprovalRecord(
+        tool_name="x", decided_at=datetime.now(UTC), decision="approved",
+        gate_event_key="tool_approval:sess-1:c1",
+    )
+    with caplog.at_level(logging.DEBUG, logger="primer.agent.approval_record"):
+        await write_approval_record(
+            _StorageWithExistingRecord(existing), rec,
+            warn_on_decision_mismatch=True,
+        )
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("gate_event_key" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_write_approval_record_disagreement_check_read_failure_stays_diagnostic(
+    caplog,
+):
+    """A failure reading the winning record for the disagreement check
+    must not crash the write (still best-effort) and must not CLAIM a
+    disagreement it never actually confirmed."""
+    import logging
+
+    class _FindBoom:
+        async def create(self, _entity):
+            raise ConflictError("dup")
+
+        async def find(self, _predicate, _page, order_by=None):
+            raise RuntimeError("read backend down")
+
+    rec = ToolApprovalRecord(
+        tool_name="x", decided_at=datetime.now(UTC), decision="rejected",
+        reason="timed-out", gate_event_key="tool_approval:sess-1:c1",
+    )
+    with caplog.at_level(logging.DEBUG, logger="primer.agent.approval_record"):
+        await write_approval_record(
+            _FindBoom(), rec, warn_on_decision_mismatch=True,
+        )
+    # "the disagreement check itself failed" is fine (diagnostic); an
+    # actual "audit disagreement:" claim would not be, since nothing here
+    # confirmed one.
+    assert not any(
+        "audit disagreement" in r.getMessage() for r in caplog.records
+    )

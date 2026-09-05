@@ -457,6 +457,32 @@ def classify_approval_payload(
     return "rejected", "malformed approval payload (non-dict)"
 
 
+def is_terminal_synthesis_payload(payload: Any) -> bool:
+    """True when ``payload`` is a synthesised timeout/cancel outcome
+    rather than a real, direct operator decision.
+
+    01a06b82 gate-review R1: callers writing a resume-time
+    ToolApprovalRecord pass this to :func:`~primer.agent.approval_record.
+    write_approval_record`'s ``warn_on_decision_mismatch`` so a
+    ConflictError on THIS write (the one case that isn't an ordinary
+    benign dedup race - see that function's docstring) gets checked for
+    an actual disagreement instead of silently swallowed.
+
+    Handles both shapes a resume drain can see: the single-event path's
+    already-classified ``YieldTimeout``/``YieldCancelled`` instance (via
+    :func:`classify_resume_payload`), and the multi-event graph drain's
+    raw marker dict (``resume_event_payloads`` entries are stored and
+    replayed as plain JSON, never converted to a typed instance).
+    """
+    if isinstance(payload, (YieldTimeout, YieldCancelled)):
+        return True
+    if isinstance(payload, dict):
+        return bool(
+            payload.get(_YIELD_TIMEOUT_KEY) or payload.get(_YIELD_CANCELLED_KEY)
+        )
+    return False
+
+
 async def _resume_tool_approval(
     *,
     blob: dict,

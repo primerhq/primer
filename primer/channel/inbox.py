@@ -126,9 +126,23 @@ class ChannelInbox:
             "event_key=%s",
             env.kind, env.session_id, env.tool_call_id, event_key,
         )
+        # 01a06b82 gate-review R1: publish FIRST, record AFTER. Writing
+        # the record before the publish landed meant a publish that
+        # raised (or a listener that never actually advanced the park)
+        # left a permanently WRONG "decided" record on the books: the
+        # gate then genuinely times out, the resume-time synthesis tries
+        # to write the TRUE ("rejected", "timed-out") verdict, loses the
+        # gate_event_key race to this earlier wrong write, and that
+        # ConflictError used to be swallowed as an ordinary benign dedup
+        # no-op. Publishing first means a raise here skips the record
+        # entirely (no decision reached the system, nothing to record);
+        # write_approval_record's warn_on_decision_mismatch on the
+        # resume-time write is the remaining safety net for the case
+        # where publish() itself succeeds but the listener still never
+        # advances the park.
+        await self._event_bus.publish(event_key, payload)
         if env.kind == "tool_approval":
             await self._record_decision_best_effort(env, event_key=event_key)
-        await self._event_bus.publish(event_key, payload)
 
     async def _record_decision_best_effort(
         self, env: ResponseEnvelope, *, event_key: str,
@@ -151,10 +165,15 @@ class ChannelInbox:
         dispatcher). So there is no natural place to hang a hard failure
         off: ANY problem here (no storage_provider wired, the session
         lookup failing, the gate not resolving, or the write itself
-        failing) is logged and swallowed, and must NEVER block or delay
-        the wake publish that follows this call. A missed record here is
-        recoverable (the resume-time write is still a backstop); a missed
-        or delayed wake is not.
+        failing) is logged and swallowed. Called AFTER the publish
+        (R1): writing this BEFORE the publish used to mean a publish
+        that raised (or a listener that never actually advanced the
+        park) left a permanently wrong "decided" record on the books
+        with nothing to correct it. A missed record here is recoverable
+        (the resume-time write is still a backstop, now with its own
+        disagreement check for exactly this residual race - see
+        write_approval_record's warn_on_decision_mismatch); a missed or
+        delayed wake would not have been.
         """
         if self._storage_provider is None:
             return
