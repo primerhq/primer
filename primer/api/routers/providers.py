@@ -768,6 +768,17 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
             ) from exc
         result = {"models": catalogue}
     else:
+        # 01a06918: currently unreachable - LLMProviderType (6 members,
+        # since `aggregated` left the enum for a ModelProfile kind
+        # instead) has an explicit if/elif branch above for every live
+        # value, and _build_stub_provider's own validation above already
+        # rejects any `provider` string outside the enum before dispatch
+        # gets here. Kept anyway as the exhaustiveness fallback: a future
+        # LLMProviderType member added without a matching probe branch
+        # would pass that validation (it's a real enum value) and land
+        # here, getting a clean 400 instead of an UnboundLocalError from
+        # `result` never being assigned when control falls off the end
+        # of the if/elif chain.
         raise BadRequestError(
             f"live model discovery is not supported for provider "
             f"{provider!r}; populate the models list manually or "

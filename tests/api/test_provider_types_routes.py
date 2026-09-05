@@ -95,6 +95,30 @@ async def test_discoverable_flag_matches_the_probe_helper(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_probe_dispatch_falls_back_cleanly_for_an_unknown_kind(
+    monkeypatch,
+) -> None:
+    """01a06918: _probe_llm_models' final else (no probe branch matched)
+    is currently unreachable through any real caller - LLMProviderType's
+    6 members (aggregated left the enum for a ModelProfile kind instead)
+    each have an explicit if/elif branch, and _build_stub_provider's own
+    validation rejects any `provider` string outside the enum before
+    dispatch ever runs. Bypass that validation directly to prove the
+    fallback itself still behaves - it's kept as the exhaustiveness
+    net for a future LLMProviderType member added without a matching
+    probe branch, so it must still raise a clean 400 rather than
+    silently doing nothing."""
+    from primer.api.routers import providers as providers_router
+    from primer.model.except_ import BadRequestError
+
+    monkeypatch.setattr(
+        providers_router, "_build_stub_provider", lambda *a, **kw: None,
+    )
+    with pytest.raises(BadRequestError, match="not supported for provider"):
+        await providers_router._probe_llm_models("some-future-kind", {})
+
+
+@pytest.mark.asyncio
 async def test_llm_rows_declare_no_models_field(client) -> None:
     """models[] left LLMProvider when ModelProfile became the registry of
     what a provider serves (primer/model/providers/llm.py:317-322)."""
