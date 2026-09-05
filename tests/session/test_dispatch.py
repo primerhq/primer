@@ -93,6 +93,21 @@ class FakeExecutor:
             yield ev
 
 
+class _GraphLikeFakeExecutor(FakeExecutor):
+    """FakeExecutor + bind_coalesce_state, standing in for a graph
+    session's executor (01a0518b boundary d) - bind_scoped_call_resolver
+    is deliberately absent, mirroring a real WorkspaceGraphExecutor,
+    which has bind_coalesce_state but not the agent-only resolver
+    setter."""
+
+    def __init__(self, events: list[Any]) -> None:
+        super().__init__(events)
+        self.bound_coalesce_state: Any = "unbound"
+
+    def bind_coalesce_state(self, coalesce_state: Any) -> None:
+        self.bound_coalesce_state = coalesce_state
+
+
 # ---------------------------------------------------------------------------
 # Session seeding helper
 # ---------------------------------------------------------------------------
@@ -588,6 +603,38 @@ async def test_tool_call_record_flushes_immediately(
     # the DONE record's — proof the flush happened at TOOL_CALL append
     # time rather than being deferred to the end-of-turn flush.
     assert fake_workspace_io.append_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_bind_coalesce_state_fires_for_graph_executor(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """01a0518b (graph-surface boundary d): dispatch.py's SECOND
+    defensive-getattr bind fires bind_coalesce_state with the turn's own
+    coalesce_state when the executor exposes it (a graph session) - the
+    FIRST bind (bind_scoped_call_resolver, agent-only) must stay a no-op
+    since this fake deliberately has no such method."""
+    fake_executor = _GraphLikeFakeExecutor([
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    await run_one_session_turn(lease, deps)
+
+    assert fake_executor.bound_coalesce_state != "unbound"
+    assert fake_executor.bound_coalesce_state is not None
 
 
 @pytest.mark.asyncio

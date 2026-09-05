@@ -47,6 +47,36 @@ tracked as a follow-up in the same arc, not a silent gap: a GATED
 sibling reaching this function today would simply have no
 ``result_state`` to assemble from, which the guard below turns into a
 loud failure rather than a malformed tool_result.
+
+REQUIRED INVARIANT FOR THE FUTURE CLAIM-BASED TOOL-CALL WORKER (design
+note, 01a0518b review — pin now so it can't get lost before that
+worker is built): ``primer.session.dispatch``'s crash-retry doctrine
+(``_create_tool_call_task_idempotent``) only covers a BYTE-IDENTICAL
+replay — the crashed attempt's re-run mints the same scoped ids
+because the LLM re-emits the same tool calls in the same order. LLM
+non-determinism means this is not guaranteed: a re-run can legitimately
+emit a DIFFERENT batch, in which case the crashed attempt's own
+QUEUED ``ToolCallTask`` rows (+ their claim-engine leases) never get
+referenced by the NEW attempt's park at all — they become orphans, a
+different failure mode from the mismatch case
+``_create_tool_call_task_idempotent`` already raises loudly on (that
+one fires when a NEW id collides with an old one under a different
+record_seq; an orphan is the reverse — an OLD id nothing ever
+references again). This coordinator's own read-by-id-from-the-blob
+design makes it immune (an orphaned id simply never appears in
+``outstanding_task_ids``/``notifying_task_ids`` here), but the
+claim-based worker that eventually claims and executes QUEUED
+``ToolCallTask`` rows is NOT immune by construction — it must not
+blindly execute whatever it dequeues:
+
+    Before executing a claimed ``ToolCallTask``, the worker MUST
+    verify the task's id is still referenced by the OWNING session's
+    live ``tool_wait`` ``parked_state`` (or an equivalent liveness
+    check). An id that is no longer referenced is an orphan from a
+    since-abandoned turn attempt — mark it terminal/orphaned (never
+    QUEUED again) and never execute its tool call. Executing an
+    orphan means running a tool call the session never actually
+    committed to for its CURRENT turn.
 """
 
 from __future__ import annotations
