@@ -649,7 +649,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         streams.
         """
         sub_gsid = f"{self._graph_session_id}__{parent_node.id}{instance_suffix}"
-        return WorkspaceGraphExecutor(
+        child = WorkspaceGraphExecutor(
             graph=sub_graph,
             agent_resolver=self._raw_agent_resolver,
             llm_resolver=self._llm_resolver,
@@ -676,6 +676,12 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             turn_no=self._turn_no,
             tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
         )
+        # bind_coalesce_state (boundary d) is post-construction, not a
+        # constructor param - same coalesce_state as the parent, same
+        # reasoning as turn_no/the flag above: the child shares this
+        # session turn, not a fresh one of its own.
+        child.bind_coalesce_state(self._coalesce_state)
+        return child
 
     # ---- Public helpers --------------------------------------------------
 
