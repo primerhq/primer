@@ -42,6 +42,7 @@ from primer.worker.yield_runtime import (
     _resume_tool_approval,
     classify_approval_payload,
     classify_resume_payload,
+    is_terminal_synthesis_payload,
     ParkedState,
 )
 
@@ -98,7 +99,10 @@ async def write_approval_record_for_session(
         if pool._storage is not None
         else None
     )
-    await write_approval_record(storage, record)
+    await write_approval_record(
+        storage, record,
+        warn_on_decision_mismatch=is_terminal_synthesis_payload(payload),
+    )
 
 
 async def resume_engine_session(pool: "WorkerPool", engine_lease, session):

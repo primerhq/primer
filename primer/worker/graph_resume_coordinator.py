@@ -29,6 +29,7 @@ from primer.worker.yield_resume_registry import get_resume_hook
 from primer.worker.yield_runtime import (
     classify_approval_payload,
     classify_resume_payload,
+    is_terminal_synthesis_payload,
     ParkedState,
 )
 
@@ -103,7 +104,10 @@ async def write_approval_record_for_graph(
         if pool._storage is not None
         else None
     )
-    await write_approval_record(storage, record)
+    await write_approval_record(
+        storage, record,
+        warn_on_decision_mismatch=is_terminal_synthesis_payload(payload),
+    )
 
 
 async def resume_graph_engine(pool: "WorkerPool", session, parked):

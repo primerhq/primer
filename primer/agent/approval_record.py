@@ -124,6 +124,8 @@ def record_from_chat_pending(
 async def write_approval_record(
     storage: Any | None,
     record: ToolApprovalRecord,
+    *,
+    warn_on_decision_mismatch: bool = False,
 ) -> None:
     """Persist a record best-effort. Never raises.
 
@@ -139,6 +141,22 @@ async def write_approval_record(
     working as intended, not a failure: log it at DEBUG (still visible if
     someone is looking, not noise on the normal path) rather than the
     ERROR-level ``logger.exception`` a genuine write failure gets.
+
+    ``warn_on_decision_mismatch`` (01a06b82 gate-review R1): set this when
+    ``record`` is a resume-time synthesised timeout/cancel verdict -- the
+    ONE case where a losing ConflictError is NOT automatically benign. A
+    channel reply can legitimately write "approved" and then have its
+    publish never actually land (the bus listener down, or the publish
+    call itself raising); the gate then genuinely times out, and this
+    synthesis computes the TRUE terminal outcome ("rejected"/"timed-out").
+    Silently dropping that as an ordinary dedup no-op would leave the
+    audit trail claiming a decision that never actually happened, forever
+    -- append-only means the wrong row is never corrected. When set, a
+    ConflictError triggers an extra read of the record that won the race;
+    if its decision disagrees with this one, that disagreement is logged
+    at ERROR with both values so it is loud rather than silently
+    swallowed. The wrong row is still never overwritten (append-only
+    holds) -- this only makes the suppression visible.
     """
     if storage is None:
         return
@@ -147,15 +165,63 @@ async def write_approval_record(
     try:
         await storage.create(record)
     except ConflictError:
-        logger.debug(
-            "approval-record: gate_event_key=%r already has a record "
-            "(the other write site won the race) - skipping",
-            record.gate_event_key,
-        )
+        if warn_on_decision_mismatch:
+            await _warn_if_decision_disagrees(storage, record)
+        else:
+            logger.debug(
+                "approval-record: gate_event_key=%r already has a record "
+                "(the other write site won the race) - skipping",
+                record.gate_event_key,
+            )
     except Exception:  # noqa: BLE001 - best-effort; resume must not fail
         logger.exception(
             "approval-record: failed to persist record for tool %r",
             record.tool_name,
+        )
+
+
+async def _warn_if_decision_disagrees(
+    storage: Any, record: ToolApprovalRecord,
+) -> None:
+    """Read the record that won the ``gate_event_key`` race and compare.
+
+    Best-effort and diagnostic only: never raises, never writes anything.
+    A read failure degrades to the ordinary DEBUG no-op log (it cannot
+    prove a disagreement, so it must not claim one).
+    """
+    from primer.model.storage import OffsetPage
+    from primer.model.tool_approval import ToolApprovalRecord
+    from primer.storage.q import Q
+
+    try:
+        page = await storage.find(
+            Q(ToolApprovalRecord)
+            .where("gate_event_key", record.gate_event_key)
+            .build(),
+            OffsetPage(offset=0, length=1),
+        )
+        existing = page.items[0] if page.items else None
+    except Exception:  # noqa: BLE001 - diagnostic only
+        logger.exception(
+            "approval-record: gate_event_key=%r conflict but reading the "
+            "winning record for the disagreement check itself failed",
+            record.gate_event_key,
+        )
+        return
+    if existing is not None and existing.decision != record.decision:
+        logger.error(
+            "approval-record audit disagreement: gate_event_key=%r already "
+            "recorded decision=%r, but the terminal outcome computed here "
+            "is decision=%r (reason=%r) - the persisted record does not "
+            "reflect what actually happened to this gate",
+            record.gate_event_key, existing.decision,
+            record.decision, record.reason,
+        )
+    else:
+        logger.debug(
+            "approval-record: gate_event_key=%r already has a record "
+            "(the other write site won the race) - skipping",
+            record.gate_event_key,
         )
 
 
