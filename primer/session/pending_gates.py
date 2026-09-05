@@ -33,6 +33,14 @@ the ability to reconstruct the unscoped key by convention). REST needs
 the real stored event_key (a graph fan-out gate's key may be
 node-scoped) plus the full metadata for approver enforcement and the
 audit record, so this module goes straight to the source fields instead.
+
+Known, accepted gap: a checkpoint written before 575c9b1d can carry a
+``pending_toolcalls``/``pending_agent_yields`` entry whose own
+``resume_metadata`` lacks ``original_call`` (main's top-level
+``yielded``-projection read had its own reconstruction for that legacy
+shape, which this module does not reproduce) -- verified real but not
+worth a fallback here: that pre-575c9b1d window was brief and no park
+from it survived into this deployment.
 """
 
 from __future__ import annotations
