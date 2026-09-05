@@ -44,9 +44,15 @@ def _two_gate_graph_parked_session(
         return {
             "node_id": node_id,
             "tool_call_id": tool_call_id,
-            "parked_event_key": (
-                f"tool_approval:{session_id}:{node_id}:{tool_call_id}"
-            ),
+            # UNSCOPED: node-scoping (current_graph_node_id) only wraps
+            # agent/subgraph node dispatch (_node_dispatch.py), never a
+            # ToolCall node's own dispatch, so a ToolCall-node approval
+            # gate's key never folds in node_id - its tool_call_id is
+            # always a fresh uuid4 the graph engine mints itself, never
+            # provider-raw/collision-prone, so scoping was never needed
+            # for this gate type (see primer.channel.inbox._matching_
+            # event_keys's own comment on this exact invariant).
+            "parked_event_key": f"tool_approval:{session_id}:{tool_call_id}",
             "arguments": {"id": f"ws-{node_id}"},
             "tool_name": "_approval",
             "resume_metadata": {
@@ -153,12 +159,12 @@ async def test_respond_to_second_of_two_concurrent_graph_approvals(app, client):
     assert entry["payload"] == {
         "decision": "approved", "reason": "sibling ok", "decided_by": "testuser",
     }
-    assert entry["event_key"] == "tool_approval:g-multi2:worker[1]:call-1"
+    assert entry["event_key"] == "tool_approval:g-multi2:call-1"
     # The singular "last fired" hint still gets stamped too, per
     # durably_mark_session_resumable's contract.
     assert (
         row.parked_state["resume_event_key"]
-        == "tool_approval:g-multi2:worker[1]:call-1"
+        == "tool_approval:g-multi2:call-1"
     )
 
     records = app.state.storage_provider.get_storage(ToolApprovalRecord)
@@ -168,7 +174,7 @@ async def test_respond_to_second_of_two_concurrent_graph_approvals(app, client):
     rec = matches[0]
     assert rec.tool_call_id == "call-1"
     assert rec.decision == "approved"
-    assert rec.gate_event_key == "tool_approval:g-multi2:worker[1]:call-1"
+    assert rec.gate_event_key == "tool_approval:g-multi2:call-1"
 
 
 @pytest.mark.asyncio

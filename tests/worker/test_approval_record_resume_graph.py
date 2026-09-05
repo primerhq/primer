@@ -37,9 +37,10 @@ def _two_gate_checkpoint(session_id: str) -> dict:
         return {
             "node_id": node_id,
             "tool_call_id": tool_call_id,
-            "parked_event_key": (
-                f"tool_approval:{session_id}:{node_id}:{tool_call_id}"
-            ),
+            # UNSCOPED: see tests/api/test_tool_approval_graph_routing.py's
+            # _two_gate_graph_parked_session._entry for why a ToolCall-node
+            # gate's key never folds in node_id.
+            "parked_event_key": f"tool_approval:{session_id}:{tool_call_id}",
             "arguments": {"id": f"ws-{node_id}"},
             "tool_name": "_approval",
             "resume_metadata": {
@@ -114,7 +115,7 @@ async def test_resume_record_for_second_of_two_concurrent_gates_is_scoped_correc
     assert rec.policy_id == "pol-fanout"
     assert rec.approval_type == "required"
     assert rec.gate_reason == "matched policy"
-    assert rec.gate_event_key == f"tool_approval:{session_id}:worker[1]:call-1"
+    assert rec.gate_event_key == f"tool_approval:{session_id}:call-1"
 
 
 @pytest.mark.asyncio
@@ -192,7 +193,7 @@ async def test_resume_record_dedupes_against_a_respond_time_write_for_the_same_g
 
     session_id = "graph-rec-dedupe"
     checkpoint = _two_gate_checkpoint(session_id)
-    gate_key = f"tool_approval:{session_id}:worker[1]:call-1"
+    gate_key = f"tool_approval:{session_id}:call-1"
 
     storage_provider = SqliteStorageProvider(
         SqliteConfig(path=str(tmp_path / "dedupe.sqlite")),
@@ -216,16 +217,6 @@ async def test_resume_record_dedupes_against_a_respond_time_write_for_the_same_g
             pool, session=_session(session_id), checkpoint=checkpoint,
             tcid="call-1", payload={"decision": "approved"},
         )
-        # Workaround for 01a06cb3 (filed, not yet fixed): the duplicate
-        # create() above hits the UNIQUE gate_event_key violation, which
-        # sqlite.py's create() catches -> ConflictError without rolling
-        # back the implicit transaction the failed INSERT opened. Nothing
-        # else touches this connection before the read below, so -- unlike
-        # the full pool-resume-loop drive in test_approval_record_resume.py,
-        # where a later unrelated write's own commit() incidentally clears
-        # it -- the dangling transaction survives to wedge the very next
-        # read_snapshot() BEGIN. Remove this rollback once 01a06cb3 lands.
-        await storage_provider.connection.rollback()
 
         items = await _records_for(storage_provider)
         assert len(items) == 1
