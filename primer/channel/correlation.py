@@ -115,6 +115,7 @@ class CorrelationStore:
             )
             async with self._sp.pool.acquire() as conn:
                 await conn.execute(sql)
+            self._unique_index_ensured = True
         elif backend == "sqlite":
             sql = (
                 f'CREATE UNIQUE INDEX IF NOT EXISTS "{_UNIQUE_INDEX}" '
@@ -122,9 +123,26 @@ class CorrelationStore:
                 "(json_extract(data, '$.channel_id'), "
                 "json_extract(data, '$.anchor'))"
             )
-            await self._sp.connection.execute(sql)
-            await self._sp.connection.commit()
-        self._unique_index_ensured = True
+            # _write_guard is taken for lock discipline AND correctness:
+            # SQLite DDL is NOT immune to an already-open enclosing
+            # transaction() - once that block's manual BEGIN is in effect,
+            # this CREATE INDEX participates in it like any other statement
+            # and rolls back with it. Mirrors _ensure_table's own pattern
+            # (primer/storage/sqlite.py).
+            async with self._sp._write_guard() as should_commit:  # noqa: SLF001
+                await self._sp.connection.execute(sql)
+                if should_commit:
+                    await self._sp.connection.commit()
+            # Only cache "ensured" when the DDL was actually COMMITTED, not
+            # merely executed. Caching True on a deferred (should_commit=
+            # False) run would skip re-creating the index the next time
+            # this store is used, if the enclosing transaction() then rolls
+            # back - the next upsert's INSERT...ON CONFLICT (unique-index
+            # expression) fails outright since the index never actually
+            # exists ("does not match any... constraint"; live-caught by
+            # test_atomic_upsert_inside_a_rolled_back_transaction_is_undone).
+            if should_commit:
+                self._unique_index_ensured = True
 
     def _to_row(self, record: ChannelCorrelation) -> tuple[str, str]:
         """Dump a record to ``(id, data_json)`` -- mirrors the storage
@@ -168,9 +186,11 @@ class CorrelationStore:
             "DO UPDATE SET data = excluded.data, updated_at = datetime('now') "
             "RETURNING id, data"
         )
-        cur = await self._sp.connection.execute(sql, (entity_id, data_json))
-        row = await cur.fetchone()
-        await self._sp.connection.commit()
+        async with self._sp._write_guard() as should_commit:  # noqa: SLF001
+            cur = await self._sp.connection.execute(sql, (entity_id, data_json))
+            row = await cur.fetchone()
+            if should_commit:
+                await self._sp.connection.commit()
         data = json.loads(row[1])
         data["id"] = row[0]
         return ChannelCorrelation.model_validate(data)

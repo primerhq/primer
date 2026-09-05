@@ -472,11 +472,13 @@ class SqliteStorageProvider(StorageProvider):
 
     async def set_default_agent_id(self, agent_id: str | None) -> None:
         """Set (or clear, with None) the system default agent."""
-        await self.connection.execute(
-            "UPDATE system_state SET default_agent_id = ? WHERE id = ?",
-            (agent_id, "singleton"),
-        )
-        await self.connection.commit()
+        async with self._write_guard() as should_commit:
+            await self.connection.execute(
+                "UPDATE system_state SET default_agent_id = ? WHERE id = ?",
+                (agent_id, "singleton"),
+            )
+            if should_commit:
+                await self.connection.commit()
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         """Stamp ``bootstrap_completed_at`` on the singleton row."""
@@ -485,8 +487,10 @@ class SqliteStorageProvider(StorageProvider):
         sql = (
             "UPDATE system_state SET bootstrap_completed_at = ? WHERE id = ?"
         )
-        await self.connection.execute(sql, (ts_str, "singleton"))
-        await self.connection.commit()
+        async with self._write_guard() as should_commit:
+            await self.connection.execute(sql, (ts_str, "singleton"))
+            if should_commit:
+                await self.connection.commit()
 
     async def set_schema_version(
         self, version: int, *, migrated_at: datetime | None = None,
@@ -497,8 +501,10 @@ class SqliteStorageProvider(StorageProvider):
             "UPDATE system_state SET schema_version = ?, last_migration_at = ? "
             "WHERE id = ?"
         )
-        await self.connection.execute(sql, (version, ts, "singleton"))
-        await self.connection.commit()
+        async with self._write_guard() as should_commit:
+            await self.connection.execute(sql, (version, ts, "singleton"))
+            if should_commit:
+                await self.connection.commit()
 
     async def set_session_secret(self, secret: str) -> None:
         """Persist the cookie-signing HMAC secret on the singleton row.
@@ -506,27 +512,33 @@ class SqliteStorageProvider(StorageProvider):
         Called by the auth layer the first time it needs a secret and
         ``PRIMER_SESSION_SECRET`` env var is not set.
         """
-        await self.connection.execute(
-            "UPDATE system_state SET session_secret = ? WHERE id = ?",
-            (secret, "singleton"),
-        )
-        await self.connection.commit()
+        async with self._write_guard() as should_commit:
+            await self.connection.execute(
+                "UPDATE system_state SET session_secret = ? WHERE id = ?",
+                (secret, "singleton"),
+            )
+            if should_commit:
+                await self.connection.commit()
 
     async def set_sso_jit_enabled(self, enabled: bool) -> None:
         """Persist whether SSO just-in-time user provisioning is enabled."""
-        await self.connection.execute(
-            "UPDATE system_state SET sso_jit_enabled = ? WHERE id = ?",
-            (enabled, "singleton"),
-        )
-        await self.connection.commit()
+        async with self._write_guard() as should_commit:
+            await self.connection.execute(
+                "UPDATE system_state SET sso_jit_enabled = ? WHERE id = ?",
+                (enabled, "singleton"),
+            )
+            if should_commit:
+                await self.connection.commit()
 
     async def set_sso_default_access(self, access: str | None) -> None:
         """Persist the default access level granted to JIT-provisioned users."""
-        await self.connection.execute(
-            "UPDATE system_state SET sso_default_access = ? WHERE id = ?",
-            (access, "singleton"),
-        )
-        await self.connection.commit()
+        async with self._write_guard() as should_commit:
+            await self.connection.execute(
+                "UPDATE system_state SET sso_default_access = ? WHERE id = ?",
+                (access, "singleton"),
+            )
+            if should_commit:
+                await self.connection.commit()
 
     def get_content_store(self) -> "SqliteDocumentContentStore":
         """Return the document-body store bound to this provider's connection."""
