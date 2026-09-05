@@ -229,6 +229,12 @@ class SqliteStorageProvider(StorageProvider):
             try:
                 yield True
             except BaseException:
+                # This only protects writers that actually enter here.
+                # Known bypassers (this module's own system_state setters,
+                # e.g. set_default_agent_id, and primer.channel.
+                # correlation's raw upsert) execute + commit directly on
+                # the connection and can wedge it by the same mechanism.
+                # Routing them through this guard is its own PR: 01a070ea.
                 await self.connection.rollback()
                 raise
 

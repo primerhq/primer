@@ -103,6 +103,80 @@ def _parked_session(
     )
 
 
+def _two_gate_graph_session_with_different_approvers(
+    *, session_id: str,
+) -> WorkspaceSession:
+    """Two concurrent fan-out approval gates with DIFFERENT approver
+    specs each: gate 1 (call-0) routed to alice, gate 2 (call-1) routed
+    to bob.
+
+    01a06b82 gate-review R3: per-gate approver enforcement was unpinned
+    -- every other fixture in this branch used ``approvers=None``, so a
+    regression that enforced the PRIMARY gate's spec against a
+    non-primary respond would pass the whole suite silently.
+    """
+    now = datetime.now(UTC)
+
+    def _entry(node_id: str, tool_call_id: str, approvers: dict) -> dict:
+        return {
+            "node_id": node_id,
+            "tool_call_id": tool_call_id,
+            "parked_event_key": f"tool_approval:{session_id}:{tool_call_id}",
+            "arguments": {"id": f"ws-{node_id}"},
+            "tool_name": "_approval",
+            "resume_metadata": {
+                "policy_id": "pol-fanout",
+                "approval_type": "required",
+                "gate_reason": "matched policy",
+                "approvers": approvers,
+                "original_call": {
+                    "id": tool_call_id, "name": "delete_workspace",
+                    "arguments": {"id": f"ws-{node_id}"},
+                },
+            },
+            "scoped_tool_call_id": None,
+        }
+
+    entries = [
+        _entry("worker[0]", "call-0", {"kind": "users", "users": ["alice"]}),
+        _entry("worker[1]", "call-1", {"kind": "users", "users": ["bob"]}),
+    ]
+    all_keys = [e["parked_event_key"] for e in entries]
+    primary = entries[0]
+    return WorkspaceSession(
+        id=session_id, workspace_id="ws",
+        binding=AgentSessionBinding(kind="agent", agent_id="agt"),
+        status=SessionStatus.RUNNING, created_at=now,
+        parked_status="parked", parked_at=now,
+        parked_event_key=primary["parked_event_key"],
+        parked_event_keys=all_keys,
+        parked_state={
+            "tool_call_id": primary["tool_call_id"],
+            "yielded": {
+                "tool_name": "_approval",
+                "event_key": primary["parked_event_key"],
+                "resume_metadata": primary["resume_metadata"],
+                "event_keys": all_keys,
+            },
+            "graph_checkpoint": {
+                "pending_toolcalls": entries,
+                "pending_agent_yields": [],
+                "pending_dispatch": [
+                    {
+                        "kind": "_approval",
+                        "node_id": e["node_id"],
+                        "tool_call_id": e["tool_call_id"],
+                        "resume_metadata": {
+                            "original_call": e["resume_metadata"]["original_call"],
+                        },
+                    }
+                    for e in entries
+                ],
+            },
+        },
+    )
+
+
 async def _register_admin(client) -> None:
     reg = await client.post(
         "/v1/auth/register",
@@ -194,3 +268,36 @@ async def test_users_can_decide_unrouted_parks_but_not_edit_policies(
         },
     )
     assert denied.status_code == 403, denied.text
+
+
+@pytest.mark.asyncio
+async def test_per_gate_approvers_are_enforced_independently(client, app) -> None:
+    """01a06b82 gate-review R3: responding to gate 2 (routed to bob) must
+    be judged against GATE 2's OWN approver spec, not gate 1's (the
+    checkpoint's primary, routed to alice) -- a bug that enforced the
+    primary gate's spec against every respond would let alice decide
+    bob's gate (or block bob from deciding his own), and every OTHER
+    test in this file uses approvers=None so none of them would catch
+    it."""
+    await _register_admin(client)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_two_gate_graph_session_with_different_approvers(
+        session_id="ar-graph-1",
+    ))
+
+    # alice is routed to gate 1, not gate 2: refused on gate 2.
+    await _login_user(client, app, "alice")
+    refused = await client.post(
+        "/v1/sessions/ar-graph-1/tool_approval/respond",
+        json={"tool_call_id": "call-1", "decision": "approved"},
+    )
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["extensions"]["error"] == "approver_mismatch"
+
+    # bob IS routed to gate 2: succeeds.
+    await _login_user(client, app, "bob")
+    ok = await client.post(
+        "/v1/sessions/ar-graph-1/tool_approval/respond",
+        json={"tool_call_id": "call-1", "decision": "approved"},
+    )
+    assert ok.status_code == 202, ok.text

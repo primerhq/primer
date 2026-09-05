@@ -113,6 +113,128 @@ def _two_gate_graph_parked_session(
     )
 
 
+def _mixed_checkpoint_session(
+    *, session_id: str, workspace_id: str,
+) -> WorkspaceSession:
+    """One ToolCall-node approval gate (pending_toolcalls) + one agent-node
+    ask_user yield (pending_agent_yields) pending at once.
+
+    01a06b82 gate-review R2: the pending_agent_yields arm of
+    enumerate_pending_gates -- which maps its own ``event_key`` field,
+    distinct from pending_toolcalls's ``parked_event_key`` -- had zero
+    test coverage; every other fixture in this branch hardcoded it to
+    ``[]``. This is the mixed case the routing-fix commit's own
+    docstring claims to handle.
+    """
+    now = datetime.now(UTC)
+    approval_key = f"tool_approval:{session_id}:call-approve"
+    ask_key = f"ask_user:{session_id}:worker[1]:call-ask"
+    approval_entry = {
+        "node_id": "worker[0]",
+        "tool_call_id": "call-approve",
+        "parked_event_key": approval_key,
+        "arguments": {"id": "ws-worker[0]"},
+        "tool_name": "_approval",
+        "resume_metadata": {
+            "policy_id": "pol-mixed",
+            "approval_type": "required",
+            "gate_reason": "matched policy",
+            "approvers": None,
+            "original_call": {
+                "id": "call-approve", "name": "delete_workspace",
+                "arguments": {"id": "ws-worker[0]"},
+            },
+        },
+        "scoped_tool_call_id": None,
+    }
+    ask_entry = {
+        "node_id": "worker[1]",
+        "tool_call_id": "call-ask",
+        "event_key": ask_key,
+        "tool_name": "ask_user",
+        "resume_metadata": {
+            "prompt": "Which currency?", "response_schema": None,
+        },
+        "llm_messages": [],
+        "iteration": 0,
+    }
+    return WorkspaceSession(
+        id=session_id,
+        workspace_id=workspace_id,
+        binding=AgentSessionBinding(kind="agent", agent_id="agt"),
+        status=SessionStatus.RUNNING,
+        created_at=now,
+        parked_status="parked",
+        parked_at=now,
+        parked_event_key=approval_key,
+        parked_event_keys=[approval_key, ask_key],
+        parked_state={
+            "tool_call_id": "call-approve",
+            "yielded": {
+                "tool_name": "_approval",
+                "event_key": approval_key,
+                "resume_metadata": approval_entry["resume_metadata"],
+                "event_keys": [approval_key, ask_key],
+            },
+            "graph_checkpoint": {
+                "pending_toolcalls": [approval_entry],
+                "pending_agent_yields": [ask_entry],
+                "pending_dispatch": [
+                    {
+                        "kind": "_approval",
+                        "node_id": approval_entry["node_id"],
+                        "tool_call_id": approval_entry["tool_call_id"],
+                        "resume_metadata": {
+                            "original_call": (
+                                approval_entry["resume_metadata"]["original_call"]
+                            ),
+                        },
+                    },
+                ],
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_pending_yields_lists_mixed_approval_and_ask_user_gates(
+    app, client,
+):
+    """The lister (workspaces.py) must return BOTH gate kinds from the
+    SAME mixed checkpoint, proving enumerate_pending_gates's two arms
+    (pending_toolcalls + pending_agent_yields) combine correctly."""
+    sess = _mixed_checkpoint_session(session_id="g-mixed1", workspace_id="ws-g")
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+
+    resp = await client.get("/v1/workspaces/ws-g/sessions/g-mixed1/yields/pending")
+    assert resp.status_code == 200, resp.text
+    items = {i["tool_call_id"]: i for i in resp.json()["items"]}
+    assert set(items) == {"call-approve", "call-ask"}
+    assert items["call-approve"]["kind"] == "approval"
+    assert items["call-ask"]["kind"] == "ask_user"
+    assert items["call-ask"]["prompt"] == "Which currency?"
+
+
+@pytest.mark.asyncio
+async def test_tool_approval_pending_finds_the_gate_in_a_mixed_checkpoint(
+    app, client,
+):
+    """tool_approval.py's OWN GET /pending must find the _approval-kind
+    entry regardless of a coexisting ask_user yield in the SAME
+    checkpoint, and never surface the ask_user entry (this endpoint is
+    approval-only)."""
+    sess = _mixed_checkpoint_session(session_id="g-mixed2", workspace_id="ws-g")
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+
+    resp = await client.get("/v1/sessions/g-mixed2/tool_approval/pending")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["tool_call_id"] == "call-approve"
+    assert body["tool_name"] == "delete_workspace"
+
+
 @pytest.mark.asyncio
 async def test_session_pending_yields_lists_every_concurrent_approval_gate(
     app, client,

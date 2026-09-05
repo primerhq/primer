@@ -77,6 +77,54 @@ def _two_gate_checkpoint(session_id: str) -> dict:
     }
 
 
+def _mixed_agent_yields_checkpoint(session_id: str) -> dict:
+    """An AGENT node's own approval gate (``tool_name="_approval"``) and
+    an AGENT node's ask_user yield, BOTH in ``pending_agent_yields``,
+    nothing in ``pending_toolcalls``.
+
+    01a06b82 gate-review R2: the ``pending_agent_yields`` arm of
+    ``enumerate_pending_gates`` (which maps its own ``event_key`` field)
+    had zero test coverage -- every fixture elsewhere in this branch put
+    its approval gate in ``pending_toolcalls`` instead. An agent node's
+    OWN gated tool call lands here (tool_manager.py fires the identical
+    approval yield whether the caller is a graph ToolCall node or an
+    agent node's own LLM-driven tool call), and this gate type DOES get
+    a node-scoped key (agent-node dispatch is wrapped in
+    ``set_current_graph_node_id``, unlike a ToolCall node's).
+    """
+    approval_key = f"tool_approval:{session_id}:worker[0]:call-approve"
+    ask_key = f"ask_user:{session_id}:worker[1]:call-ask"
+    return {
+        "pending_toolcalls": [],
+        "pending_agent_yields": [
+            {
+                "node_id": "worker[0]",
+                "tool_call_id": "call-approve",
+                "event_key": approval_key,
+                "tool_name": "_approval",
+                "resume_metadata": {
+                    "policy_id": "pol-agent",
+                    "approval_type": "required",
+                    "gate_reason": "matched policy",
+                    "approvers": None,
+                    "original_call": {
+                        "id": "call-approve", "name": "delete_workspace",
+                        "arguments": {"id": "ws-x"},
+                    },
+                },
+            },
+            {
+                "node_id": "worker[1]",
+                "tool_call_id": "call-ask",
+                "event_key": ask_key,
+                "tool_name": "ask_user",
+                "resume_metadata": {"prompt": "color?"},
+            },
+        ],
+        "pending_dispatch": [],
+    }
+
+
 def _session(session_id: str) -> SimpleNamespace:
     return SimpleNamespace(
         id=session_id,
@@ -90,6 +138,49 @@ async def _records_for(storage_provider) -> list:
         OffsetPage(offset=0, length=50),
     )
     return page.items
+
+
+@pytest.mark.asyncio
+async def test_resume_record_resolves_an_approval_gate_from_pending_agent_yields():
+    """01a06b82 gate-review R2: an approval gate living in
+    pending_agent_yields (not pending_toolcalls) must resolve correctly,
+    with its own event_key and full policy metadata."""
+    storage_provider = _FakeStorageProvider()
+    pool = SimpleNamespace(_storage=storage_provider)
+    session_id = "graph-rec-mixed"
+    checkpoint = _mixed_agent_yields_checkpoint(session_id)
+
+    await write_approval_record_for_graph(
+        pool, session=_session(session_id), checkpoint=checkpoint,
+        tcid="call-approve", payload={"decision": "approved"},
+    )
+
+    items = await _records_for(storage_provider)
+    assert len(items) == 1
+    rec = items[0]
+    assert rec.tool_call_id == "call-approve"
+    assert rec.decision == "approved"
+    assert rec.policy_id == "pol-agent"
+    assert rec.gate_event_key == f"tool_approval:{session_id}:worker[0]:call-approve"
+
+
+@pytest.mark.asyncio
+async def test_resume_record_skipped_for_the_ask_user_tcid_in_a_mixed_checkpoint():
+    """write_approval_record_for_graph must never write an approval
+    record for an ask_user-kind entry, even when its tcid resolves to
+    something in the checkpoint (the coexisting pending_agent_yields
+    entry) -- the kind="_approval" filter must hold across both arms."""
+    storage_provider = _FakeStorageProvider()
+    pool = SimpleNamespace(_storage=storage_provider)
+    session_id = "graph-rec-mixed2"
+    checkpoint = _mixed_agent_yields_checkpoint(session_id)
+
+    await write_approval_record_for_graph(
+        pool, session=_session(session_id), checkpoint=checkpoint,
+        tcid="call-ask", payload={"decision": "approved"},
+    )
+
+    assert await _records_for(storage_provider) == []
 
 
 @pytest.mark.asyncio
