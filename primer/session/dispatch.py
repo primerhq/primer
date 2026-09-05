@@ -523,9 +523,19 @@ async def run_one_session_turn(
                     # from a DIFFERENT PROCESS, so unflushed bytes are
                     # invisible to it. Durable means flushed, always.
                     coalesce_state.tool_call_record_seq[rec.payload["id"]] = seq
-                    coalesce_state.tool_call_record_name[rec.payload["id"]] = (
-                        rec.payload.get("name") or "unknown"
-                    )
+                    # No "or 'unknown'" fallback (01a0518b review): a
+                    # missing name must surface as a MISSING dict entry, not
+                    # a fabricated string, so the except-ToolWaitPark
+                    # branch's own `tool_name is None` invariant check
+                    # actually has teeth - a silent "unknown" placeholder
+                    # would create an unexecutable ToolCallTask row instead
+                    # of failing loudly at the point that can still name
+                    # the record.
+                    _tool_call_name = rec.payload.get("name")
+                    if _tool_call_name is not None:
+                        coalesce_state.tool_call_record_name[rec.payload["id"]] = (
+                            _tool_call_name
+                        )
                     await writer.flush()
                 await deps.event_bus.publish(
                     f"session:{session_id}:tick", {"seq": seq}
@@ -826,15 +836,19 @@ async def run_one_session_turn(
                     "this turn's coalesce_state - the durable-append-"
                     "before-claimable invariant broke"
                 )
-            await task_storage.create(ToolCallTask(
-                id=scoped_id,
+            await _create_tool_call_task_idempotent(
+                task_storage,
+                ToolCallTask(
+                    id=scoped_id,
+                    session_id=session_id,
+                    turn_no=session.turn_no,
+                    tool_name=tool_name,
+                    state=ToolCallTaskState.QUEUED,
+                    record_seq=record_seq,
+                    created_at=parked_at,
+                ),
                 session_id=session_id,
-                turn_no=session.turn_no,
-                tool_name=tool_name,
-                state=ToolCallTaskState.QUEUED,
-                record_seq=record_seq,
-                created_at=parked_at,
-            ))
+            )
             if deps.claim_engine is not None:
                 await deps.claim_engine.upsert(ClaimKind.TOOL_CALL, scoped_id)
 
@@ -849,17 +863,21 @@ async def run_one_session_turn(
                     "this turn's coalesce_state - the durable-append-"
                     "before-claimable invariant broke"
                 )
-            await task_storage.create(ToolCallTask(
-                id=scoped_id,
+            await _create_tool_call_task_idempotent(
+                task_storage,
+                ToolCallTask(
+                    id=scoped_id,
+                    session_id=session_id,
+                    turn_no=session.turn_no,
+                    tool_name=tool_name,
+                    state=ToolCallTaskState.DONE,
+                    record_seq=record_seq,
+                    created_at=parked_at,
+                    finished_at=parked_at,
+                    result_state=result.model_dump(mode="json"),
+                ),
                 session_id=session_id,
-                turn_no=session.turn_no,
-                tool_name=tool_name,
-                state=ToolCallTaskState.DONE,
-                record_seq=record_seq,
-                created_at=parked_at,
-                finished_at=parked_at,
-                result_state=result.model_dump(mode="json"),
-            ))
+            )
             notifying_task_ids.append(scoped_id)
 
         captured_messages = tool_wait.llm_messages or []
@@ -1302,6 +1320,67 @@ def _make_scoped_call_resolver(
             )
         return scoped_id, record_seq
     return _resolve
+
+
+async def _create_tool_call_task_idempotent(
+    task_storage, task: "ToolCallTask", *, session_id: str,
+) -> None:
+    """Create ``task``, tolerating a crash-and-retry replay of the SAME
+    scoped id (01a0518b review: the crash-window doctrine).
+
+    Crash window: a worker can crash AFTER the ``except ToolWaitPark``
+    branch has created every ``ToolCallTask`` row (+ upserted the
+    claimable ones' leases) but BEFORE the ``ParkRequest`` this turn
+    returns is ever applied by ``on_release`` (that write happens in
+    the CALLER, one layer above ``run_one_session_turn``). The
+    session's lease then simply expires (never released) and the turn
+    re-runs from scratch.
+
+    That re-run mints the IDENTICAL scoped ids and record_seq values
+    as the crashed attempt, deterministically, for two independent
+    reasons: (1) ``seed_seq`` above is read from ``session.last_seq``,
+    which the crashed attempt never advanced (``_persist_last_seq``
+    only runs on the branches AFTER this one) -- so the re-run's fresh
+    ``WorkspaceMessageWriter`` starts counting from the SAME base and
+    produces the SAME seq for the same append order; (2) a park never
+    reaches ``_persist_turn`` (the assistant/tool_use message lives
+    only in the exception's ``llm_messages``, lost with the crash), so
+    the re-run's LLM prompt is byte-identical to the crashed attempt's
+    -- if the LLM replays the same tool calls in the same order (the
+    expected case), a fresh ``_CoalesceState`` mints identical scoped
+    ids from turn_no + positional seq alone.
+
+    So a ``ConflictError`` here on retry, with the existing row's
+    ``record_seq`` matching what THIS attempt just computed, is proof
+    of exactly that replay -- not a real collision -- and is treated as
+    a no-op. A MISMATCHED ``record_seq`` means something else entirely
+    created this id (the LLM did not replay identically, or a genuine
+    bug), which is not safe to paper over: raise loudly rather than
+    silently resurrecting or overwriting scheduling state a worker
+    might already be running against.
+    """
+    from primer.model.except_ import ConflictError
+
+    try:
+        await task_storage.create(task)
+    except ConflictError:
+        existing = await task_storage.get(task.id)
+        if existing is not None and existing.record_seq == task.record_seq:
+            logger.info(
+                "session %s ToolCallTask %r already exists with matching "
+                "record_seq %d - crash-and-retry replay, treating as a "
+                "no-op",
+                session_id, task.id, task.record_seq,
+            )
+            return
+        raise RuntimeError(
+            f"session {session_id} ToolCallTask {task.id!r} already exists "
+            "with record_seq="
+            f"{existing.record_seq if existing is not None else '<gone>'} "
+            f"but this attempt computed record_seq={task.record_seq} - not "
+            "a crash-retry replay (record_seq must match for that); "
+            "something else created a conflicting row"
+        ) from None
 
 
 def _yielded_record(park: YieldToWorker) -> SessionMessageRecord:

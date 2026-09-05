@@ -289,7 +289,12 @@ class _CoalesceState:
     # carries scoped ids (see that exception's own docstring on staying
     # additive-only) - resolving it from the record already written here
     # avoids widening the exception's approved shape for data the
-    # append loop already has in hand.
+    # append loop already has in hand. NO ENTRY (not a fabricated
+    # placeholder string) when the record's own payload["name"] is
+    # missing (review fix, 01a0518b): the except-ToolWaitPark branch's
+    # ``tool_name is None`` check must see a genuine miss, not an
+    # "unknown" string that would silently produce an unexecutable
+    # ToolCallTask row.
     tool_call_record_name: dict[str, str] = field(default_factory=dict)
     # (turn_no, coalesced text) of the most recent ASSISTANT_TOKEN record
     # actually written to the log, whichever node produced it — a plain
