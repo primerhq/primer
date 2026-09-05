@@ -255,3 +255,179 @@ async def test_offset_count_and_page_are_one_snapshot(
     after = await things.list(OffsetPage(offset=0, length=100))
     assert after.total == 7
     assert after.length == 7
+
+
+# ===========================================================================
+# 01a06cb3: a failed standalone write must not leave an implicit
+# transaction open on the shared connection.
+#
+# aiosqlite's default isolation_level opens an IMPLICIT transaction on the
+# first DML statement. _write_guard's standalone branch used to yield the
+# caller straight through with no except: a write that failed before its
+# own commit() (a UNIQUE violation -> the expected ConflictError dedup
+# path, a plain bug, or a CancelledError landing between execute and
+# commit) left that implicit transaction open, untracked by _txn_task
+# (only transaction()/read_snapshot() set that). The very next
+# read_snapshot -- ANY unrelated paginated read on the shared connection,
+# not just a retry of the same write -- then failed its own BEGIN with
+# "cannot start a transaction within a transaction".
+# ===========================================================================
+
+
+async def test_duplicate_create_conflict_does_not_wedge_the_connection(
+    provider: SqliteStorageProvider,
+) -> None:
+    """A standalone create() that fails with the expected ConflictError
+    (e.g. a raced gate_event_key dedup write) must not wedge the shared
+    connection for the very next read."""
+    from primer.model.except_ import ConflictError
+
+    things = provider.get_storage(_Thing)
+    await things.create(_Thing(id="dup", value="first"))
+
+    with pytest.raises(ConflictError):
+        await things.create(_Thing(id="dup", value="second"))
+
+    # Before the fix: this read_snapshot's own BEGIN raised "cannot start
+    # a transaction within a transaction".
+    page = await things.list(OffsetPage(offset=0, length=50))
+    assert {t.id for t in page.items} == {"dup"}
+
+    # The connection is genuinely usable again, not just readable.
+    await things.create(_Thing(id="after-conflict", value="ok"))
+    assert (await things.get("after-conflict")) is not None
+
+
+async def test_failing_update_does_not_wedge_the_connection(
+    provider: SqliteStorageProvider,
+) -> None:
+    """Same shape as the create() case, for update() -- proves the fix
+    lives at the _write_guard level (every standalone write method), not
+    a create()-specific patch. Simulates a generic failure (update()'s
+    own SQL has no natural UNIQUE trigger to reach for), matching the
+    fix's BaseException scope: ANY failure, not just IntegrityError.
+
+    The wrapper calls through to the REAL execute() first, so the
+    UPDATE's implicit transaction genuinely opens on the real
+    connection, and only THEN raises -- a wrapper that raises without
+    ever reaching the real driver never opens a transaction in the first
+    place, so it would prove nothing (the failure has to land AFTER real
+    DML, same as a driver error between execute and commit would).
+    """
+    import sqlite3
+
+    things = provider.get_storage(_Thing)
+    await things.create(_Thing(id="upd", value="before"))
+
+    real_conn = provider._conn  # noqa: SLF001
+
+    class _FailAfterRealUpdate:
+        def __init__(self, real: Any) -> None:
+            self._real = real
+
+        async def execute(self, sql: str, *args: Any, **kwargs: Any):  # noqa: ANN201
+            cur = await self._real.execute(sql, *args, **kwargs)
+            if sql.strip().upper().startswith("UPDATE"):
+                raise sqlite3.OperationalError(
+                    "simulated failure after the real write landed"
+                )
+            return cur
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    provider._conn = _FailAfterRealUpdate(real_conn)  # noqa: SLF001
+    try:
+        with pytest.raises(Exception):
+            await things.update(_Thing(id="upd", value="after"))
+    finally:
+        provider._conn = real_conn  # noqa: SLF001
+
+    # Before the fix: this read_snapshot's own BEGIN raised "cannot start
+    # a transaction within a transaction".
+    page = await things.list(OffsetPage(offset=0, length=50))
+    assert page.items[0].value == "before"  # the update never committed
+
+
+async def test_failing_create_inside_transaction_rolls_back_cleanly(
+    provider: SqliteStorageProvider,
+) -> None:
+    """A create() that fails INSIDE an explicit transaction() block, when
+    the failure PROPAGATES out of the block, still rolls back the whole
+    unit and leaves the connection usable afterward.
+
+    This does NOT by itself prove the reentrant branch stayed untouched:
+    once the exception escapes transaction()'s own body, transaction()'s
+    existing rollback fires regardless of whether _write_guard's
+    reentrant branch wrongly rolled back too -- the observable end state
+    here is identical either way. See
+    test_txn_catch_and_continue_keeps_the_prior_write_in_the_same_unit
+    below for the case that actually discriminates the two (the failure
+    caught and handled INSIDE the transaction, which only a wrongly-
+    reentrant guard rollback can corrupt).
+    """
+    from primer.model.except_ import ConflictError
+
+    things = provider.get_storage(_Thing)
+    # A write from BEFORE the doomed transaction: proves only the
+    # transaction's own writes are lost, unrelated prior data is not.
+    await things.create(_Thing(id="before-txn", value="prior"))
+
+    with pytest.raises(ConflictError):
+        async with provider.transaction() as conn:
+            await things.create(_Thing(id="txn-ok", value="a"), conn=conn)
+            # Fails at the SQL level (duplicate id) INSIDE the transaction.
+            await things.create(_Thing(id="txn-ok", value="b"), conn=conn)
+
+    # The whole transaction rolled back -- including the FIRST write, even
+    # though it succeeded on its own, since it's part of the same atomic
+    # unit as the one that failed.
+    assert (await things.get("txn-ok")) is None
+    # The prior, unrelated write is untouched -- it committed BEFORE this
+    # transaction ever opened, not because anything here was caught.
+    assert (await things.get("before-txn")) is not None
+
+    # The connection is not wedged: both a read and a fresh write work.
+    page = await things.list(OffsetPage(offset=0, length=50))
+    assert {t.id for t in page.items} == {"before-txn"}
+    await things.create(_Thing(id="after-txn-fail", value="ok"))
+    assert (await things.get("after-txn-fail")) is not None
+
+
+async def test_txn_catch_and_continue_keeps_the_prior_write_in_the_same_unit(
+    provider: SqliteStorageProvider,
+) -> None:
+    """Discriminates a CORRECT guard-level fix from a WRONG one that also
+    rolls back in the reentrant branch.
+
+    The previous test (exception propagates out of the whole
+    transaction() block) can't tell the two apart: either way the
+    transaction rolls back once the exception escapes it, so both an
+    unscoped fix and a wrongly-reentrant one produce the same observable
+    result there. This test instead CATCHES the failing create()'s
+    ConflictError INSIDE the transaction body and continues -- exactly
+    the shape a caller doing conditional/idempotent writes inside one
+    atomic unit would use. If _write_guard's reentrant (yield False)
+    branch wrongly rolled back on its own, write A would be silently
+    destroyed the instant create() B fails, before the caller's except
+    even runs -- and the subsequent commit() would only ever have B to
+    commit. The correct fix leaves the reentrant branch untouched: the
+    failed statement's error surfaces to the caller, who decides what to
+    do with it, and the transaction commits whatever is left in it.
+    """
+    from primer.model.except_ import ConflictError
+
+    things = provider.get_storage(_Thing)
+
+    async with provider.transaction() as conn:
+        await things.create(_Thing(id="txn-a", value="a"), conn=conn)
+        try:
+            await things.create(_Thing(id="txn-a", value="dup"), conn=conn)
+        except ConflictError:
+            pass
+        await things.create(_Thing(id="txn-b", value="b"), conn=conn)
+
+    a = await things.get("txn-a")
+    b = await things.get("txn-b")
+    assert a is not None and a.value == "a"
+    assert b is not None and b.value == "b"
