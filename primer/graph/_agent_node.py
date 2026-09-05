@@ -21,6 +21,7 @@ executor via the MRO.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,7 @@ from primer.graph._node_refs import (
     _NodeDone,
     _PendingAgentYield,
     _ToolDispatchBarrier,
+    await_tool_dispatch_barrier,
 )
 from primer.graph.template import render_input_template
 from primer.model.chat import Message, StreamEvent, TextPart
@@ -41,7 +43,50 @@ from primer.model.yield_ import YieldToWorker
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from primer.model.agent import Agent
+    from primer.session.persistence import _CoalesceState
+
+
+def _make_node_scoped_call_resolver(
+    coalesce_state: "_CoalesceState", node_id: str,
+) -> "Callable[[str], tuple[str, int]]":
+    """Build the NODE-QUALIFIED resolver a graph node's tool-dispatch seam
+    uses to turn a raw provider tool-call id into ``(scoped_id, record_seq)``.
+
+    Graph-surface sibling of ``primer.session.dispatch._make_scoped_call_
+    resolver``: SAME two-step lookup (``scoped_call_ids`` then
+    ``tool_call_record_seq``), but keyed ``(node_id, raw_id)`` instead of
+    ``(None, raw_id)`` -- concurrent fan-out siblings of the SAME base node
+    reuse raw provider ids, so ``node_id`` (already the fan-out-instance-
+    qualified id, e.g. ``"worker[0]"`` -- see ``current_graph_node_id``)
+    disambiguates them exactly like every other per-node lookup on this
+    surface (tool_names, scoped_call_ids itself). A PURE lookup, same as
+    the chat/workspace version -- the graph surface's own ordering concern
+    (the live fan-out queue race) is handled separately by
+    ``await_dispatch_barrier``, never folded in here (01a0518b review
+    ruling on fork (b)). Built FRESH at every dispatch call, never cached
+    across turns or nodes -- ``coalesce_state`` is re-bound each turn and
+    a node's own identity can change between dispatches (fan-out).
+    """
+    def _resolve(raw_call_id: str) -> tuple[str, int]:
+        scoped_id = coalesce_state.scoped_call_ids.get((node_id, raw_call_id))
+        if scoped_id is None:
+            raise RuntimeError(
+                f"resolve_scoped_call: no scoped id for node {node_id!r} "
+                f"raw tool-call id {raw_call_id!r} - ToolCallStart never "
+                "minted one this turn"
+            )
+        record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+        if record_seq is None:
+            raise RuntimeError(
+                f"resolve_scoped_call: scoped id {scoped_id!r} (node "
+                f"{node_id!r}) has no durable TOOL_CALL record_seq yet - "
+                "the durable-append-before-claimable invariant broke"
+            )
+        return scoped_id, record_seq
+    return _resolve
 
 
 def _strip_json_fences(text: str) -> str:
@@ -182,6 +227,26 @@ class _AgentNodeMixin:
         prompt.extend(history)
         prompt.append(new_user_msg)
 
+        # 01a0518b (graph-surface boundary d): built FRESH for this
+        # dispatch, never cached - history_node_id is THIS call's fan-out-
+        # instance-qualified identity (same value the event-tagging line
+        # below uses), and coalesce_state is re-bound every turn. None
+        # when the executor never opted in (bind_coalesce_state was never
+        # called), which keeps _dispatch_tool_calls's own gate a no-op -
+        # byte-identical to today's in-process behaviour.
+        resolve_scoped_call = None
+        await_dispatch_barrier = None
+        if self._coalesce_state is not None:
+            resolve_scoped_call = _make_node_scoped_call_resolver(
+                self._coalesce_state, history_node_id,
+            )
+            # Live fan-out: this node's own queue.put() calls above race
+            # the drainer, unlike a pull-chain - see await_tool_dispatch_
+            # barrier's own docstring.
+            await_dispatch_barrier = functools.partial(
+                await_tool_dispatch_barrier, queue,
+            )
+
         # Delegate to the shared agent loop. Tool dispatch (multi-turn
         # if the LLM emits ToolCallParts) happens transparently here --
         # graph nodes get the same behaviour as standalone agents.
@@ -199,6 +264,8 @@ class _AgentNodeMixin:
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
                 tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
+                resolve_scoped_call=resolve_scoped_call,
+                await_dispatch_barrier=await_dispatch_barrier,
             ):
                 # 01a0518f: current_graph_node_id() is the fan-out-
                 # instance-qualified id (_stream_node sets it before
@@ -281,6 +348,20 @@ class _AgentNodeMixin:
         prompt.extend(rehydrated_assistant)
         prompt.append(tool_result_msg)
 
+        # 01a0518b (graph-surface boundary d): node-qualified via
+        # pending.node_id (the (None, raw_id) key must never appear on
+        # this surface, review ruling condition 3) even though this path
+        # needs NO barrier - unlike _stream_agent_node this method is
+        # called from the executor's own direct resume generator (graph/
+        # base.py's resume_from_checkpoint), not the live fan-out queue:
+        # no concurrent sibling shares a queue with it, so it has the
+        # same pull-chain guarantee as the chat/workspace surface.
+        resolve_scoped_call = None
+        if self._coalesce_state is not None:
+            resolve_scoped_call = _make_node_scoped_call_resolver(
+                self._coalesce_state, pending.node_id,
+            )
+
         produced_messages: list[Message] = []
         async for _event in run_agent_turn(
             agent=agent,
@@ -294,6 +375,7 @@ class _AgentNodeMixin:
             artifact_storage=self._artifact_storage,
             turn_no=self._turn_no,
             tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
+            resolve_scoped_call=resolve_scoped_call,
         ):
             pass
 

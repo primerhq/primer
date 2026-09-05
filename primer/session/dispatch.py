@@ -420,14 +420,25 @@ async def run_one_session_turn(
     # constructor-injected like turn_no/artifact_storage/the flag (see
     # primer.agent.base._BaseAgentExecutor's own comment on
     # self._resolve_scoped_call). Defensive getattr: only the agent
-    # executor has this method today (chat/workspace surface, boundary
-    # (c)); the graph surface (boundary (d)) is deferred, so a graph
-    # session's executor simply has no such attribute and this is a no-op
+    # executor has this method (chat/workspace surface, boundary (c)) - a
+    # graph session's executor has no such attribute and this is a no-op
     # for it, exactly as if tool_calls_as_claims_enabled were never
     # threaded there at all.
     _bind_resolver = getattr(executor, "bind_scoped_call_resolver", None)
     if _bind_resolver is not None:
         _bind_resolver(_make_scoped_call_resolver(coalesce_state))
+
+    # 01a0518b (graph-surface boundary d): the graph executor needs the
+    # RAW coalesce_state, not a finished resolver - _agent_node.py's mixin
+    # builds a NODE-QUALIFIED resolver fresh at each node dispatch (the
+    # (None, raw_id) keying above is chat/workspace-only; the graph
+    # surface's coalesce_state.scoped_call_ids is keyed (node_id, raw_id)
+    # since concurrent fan-out siblings reuse raw provider ids). Separate
+    # defensive getattr, same reasoning: only the graph executor has this
+    # method, so an agent session's executor is unaffected.
+    _bind_coalesce = getattr(executor, "bind_coalesce_state", None)
+    if _bind_coalesce is not None:
+        _bind_coalesce(coalesce_state)
 
     # Subagent runs execute inline in this turn with no writer of
     # their own, so the recorder is published here and picked up by
@@ -1358,6 +1369,14 @@ async def _create_tool_call_task_idempotent(
     bug), which is not safe to paper over: raise loudly rather than
     silently resurrecting or overwriting scheduling state a worker
     might already be running against.
+
+    This doctrine only covers a BYTE-IDENTICAL replay. If the re-run's
+    LLM instead emits a genuinely DIFFERENT batch, the crashed
+    attempt's OWN rows (never referenced by the new attempt at all)
+    become orphans -- see
+    ``primer.worker.tool_wait_resume_coordinator``'s module docstring
+    for the required liveness check the future claim-based tool-call
+    worker must perform before executing one.
     """
     from primer.model.except_ import ConflictError
 

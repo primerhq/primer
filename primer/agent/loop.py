@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import primer.observability.metrics as _metrics
@@ -141,6 +141,7 @@ async def run_agent_turn(
     turn_no: int | None = None,
     tool_calls_as_claims_enabled: bool = False,
     resolve_scoped_call: "Callable[[str], tuple[str, int]] | None" = None,
+    await_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -228,7 +229,27 @@ async def run_agent_turn(
         is True -- see ``_dispatch_tool_calls``'s own gate; ``None``
         (the default) falls through to today's in-process behaviour
         unchanged. Nested subagent calls never receive one, matching
-        the flag's own scope-cut.
+        the flag's own scope-cut. A PURE lookup -- no ordering
+        side-effect belongs inside it (see ``await_dispatch_barrier``
+        below for where a surface's own ordering concern goes instead).
+    await_dispatch_barrier
+        Optional, additive (01a0518b, graph-surface boundary): awaited
+        ONCE at the top of ``_dispatch_as_claims``, before resolving any
+        call in the batch. The chat/workspace surface is a single
+        pull-chain (no concurrent producer -- events are consumed the
+        instant they're yielded), so ``resolve_scoped_call`` alone is
+        always safe there and this stays ``None``. The graph surface's
+        live fan-out is NOT a pull-chain: concurrent sibling node tasks
+        share one queue, so a node's own tool-dispatch code can race
+        ahead of the drainer that populates the very state
+        ``resolve_scoped_call`` reads. A graph node binds this to
+        ``primer.graph._node_refs.await_tool_dispatch_barrier`` (already
+        built for this purpose) so every event IT queued before dispatch
+        ran is guaranteed drained first. Once per BATCH, not once per
+        call: the whole batch was queued before dispatch runs, so one
+        barrier covers every call in it, and it is a pure ordering
+        concern -- not a durability proof, unlike ``resolve_scoped_call``
+        -- so it must never be folded into that callable's own contract.
 
     Raises
     ------
@@ -356,6 +377,7 @@ async def run_agent_turn(
             actions_out=client_actions,
             tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
             resolve_scoped_call=resolve_scoped_call,
+            await_dispatch_barrier=await_dispatch_barrier,
         )
         # Delivery frames go out BEFORE the results so the session log
         # reads tool_call -> client_action -> tool_result, matching the
@@ -419,6 +441,7 @@ async def _dispatch_tool_calls(
     actions_out: list[_ClientAction],
     tool_calls_as_claims_enabled: bool = False,
     resolve_scoped_call: "Callable[[str], tuple[str, int]] | None" = None,
+    await_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None,
 ) -> list[Message]:
     """Dispatch tool calls; return tool-role messages to feed back to the LLM.
 
@@ -445,6 +468,7 @@ async def _dispatch_tool_calls(
                 principal=principal,
                 actions_out=actions_out,
                 resolve_scoped_call=resolve_scoped_call,
+                await_dispatch_barrier=await_dispatch_barrier,
             )
 
     result_parts: list[ToolResultPart] = []
@@ -486,6 +510,7 @@ async def _dispatch_as_claims(
     principal: str | None,
     actions_out: list[_ClientAction],
     resolve_scoped_call: "Callable[[str], tuple[str, int]]",
+    await_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None,
 ) -> list[Message]:
     """Answer notifying calls inline, then park the claimable batch.
 
@@ -509,7 +534,18 @@ async def _dispatch_as_claims(
     actually constructs ``ToolCallTask`` rows already has direct
     ``_CoalesceState`` access and re-derives it there, so nothing here
     needs to carry it across the exception boundary too.
+
+    ``await_dispatch_barrier`` (graph surface only) is awaited ONCE
+    here, before resolving ANY call in the batch -- notifying and
+    claimable alike need the drainer caught up, and the whole batch was
+    already queued before this function ever runs, so one await covers
+    it (see ``run_agent_turn``'s own docstring for the full reasoning
+    on why this is separate from ``resolve_scoped_call``'s pure-lookup
+    contract).
     """
+    if await_dispatch_barrier is not None:
+        await await_dispatch_barrier()
+
     notifying_results: list[tuple[str, ToolResultPart]] = []
     for call in notifying_calls:
         actions_out.append(

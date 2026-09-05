@@ -1703,3 +1703,67 @@ async def test_build_sub_executor_inherits_tool_calls_as_claims_flag(
     child = await parent._build_sub_executor(sub_node, sub_graph)
 
     assert child._tool_calls_as_claims_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_bind_coalesce_state_default_none_and_settable(tmp_path: Path) -> None:
+    """01a0518b (graph-surface boundary d): default None (no-op for every
+    caller that hasn't opted in), settable via the public setter, and
+    re-bindable (dispatch.py calls this fresh every turn)."""
+    from primer.session.persistence import _CoalesceState
+
+    repo = await _make_state_repo(tmp_path)
+    executor = await _build_executor(
+        graph=Graph(id="g", description="d", nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
+                    edges=[_StaticEdge(from_node="begin", to_node="end")]),
+        llm=_FakeLLM(scripts=[]),
+        state_repo=repo,
+        graph_session_id="gsid-bind",
+    )
+    assert executor._coalesce_state is None
+
+    cs1 = _CoalesceState()
+    executor.bind_coalesce_state(cs1)
+    assert executor._coalesce_state is cs1
+
+    cs2 = _CoalesceState()
+    executor.bind_coalesce_state(cs2)
+    assert executor._coalesce_state is cs2
+
+
+@pytest.mark.asyncio
+async def test_build_sub_executor_inherits_coalesce_state(tmp_path: Path) -> None:
+    """A subgraph node's child executor inherits the SAME coalesce_state
+    object as its parent (not a copy, not a fresh one) - same reasoning
+    as turn_no/the flag: the child runs within the same session turn."""
+    from primer.session.persistence import _CoalesceState
+
+    sub_node = _GraphNodeRef(id="SUB", graph_id="inner")
+    parent_graph = Graph(
+        id="g-parent2",
+        description="begin -> sub -> end",
+        nodes=[_BeginNode(id="begin"), sub_node, _EndNode(id="end")],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="SUB"),
+            _StaticEdge(from_node="SUB", to_node="end"),
+        ],
+    )
+    sub_graph = Graph(
+        id="g-inner2",
+        description="begin -> end",
+        nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="end")],
+    )
+    repo = await _make_state_repo(tmp_path)
+    parent = await _build_executor(
+        graph=parent_graph,
+        llm=_FakeLLM(scripts=[]),
+        state_repo=repo,
+        graph_session_id="gsid-parent2",
+    )
+    cs = _CoalesceState()
+    parent.bind_coalesce_state(cs)
+
+    child = await parent._build_sub_executor(sub_node, sub_graph)
+
+    assert child._coalesce_state is cs

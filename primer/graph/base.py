@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     from primer.model.chat import ToolResultPart
     from primer.model_profile import ResolvedModel
     from primer.model.yield_ import YieldCancelled, YieldTimeout
+    from primer.session.persistence import _CoalesceState
 
 
 logger = logging.getLogger(__name__)
@@ -217,6 +218,17 @@ class _BaseGraphExecutor(
         # reasoning (same scope-cut class as artifact_storage's own cut
         # for that surface).
         self._tool_calls_as_claims_enabled = tool_calls_as_claims_enabled
+        # 01a0518b (graph-surface boundary d): the per-turn _CoalesceState
+        # _agent_node.py's mixin needs to build a NODE-QUALIFIED
+        # resolve_scoped_call closure fresh at each dispatch (unlike the
+        # chat/workspace surface's single turn-wide resolver, keyed
+        # (None, raw_id), the graph surface's coalesce_state.scoped_call_ids
+        # is keyed (node_id, raw_id) - concurrent fan-out siblings reuse raw
+        # provider ids). Bound post-construction via bind_coalesce_state, same
+        # lifecycle/reasoning as _BaseAgentExecutor.bind_scoped_call_resolver
+        # (dispatch.py builds coalesce_state AFTER the executor already
+        # exists). None is a no-op for callers that haven't opted in.
+        self._coalesce_state: "_CoalesceState | None" = None
         # Ambient run context exposed to node templates as ``ctx``. The base
         # executor is surface-agnostic, so default to an in-memory context;
         # WorkspaceGraphExecutor overrides this with real workspace ids.
@@ -324,6 +336,24 @@ class _BaseGraphExecutor(
         # Set by `_run_superstep_loop` at each iteration boundary so
         # `_stream_node` can stamp the active superstep on its events.
         self._current_superstep_id: str | None = None
+
+    def bind_coalesce_state(self, coalesce_state: "_CoalesceState | None") -> None:
+        """Bind the per-turn ``_CoalesceState`` (01a0518b, graph boundary d).
+
+        Post-construction setter, same lifecycle and reasoning as
+        :meth:`primer.agent.base._BaseAgentExecutor.bind_scoped_call_resolver`:
+        ``primer.session.dispatch`` builds this executor BEFORE its own
+        ``coalesce_state`` exists, so it cannot be constructor-injected.
+        Re-bound EVERY turn (dispatch.py calls this once per
+        ``run_one_session_turn`` invocation, right after its own fresh
+        ``coalesce_state`` is created) -- never cached across turns.
+        ``_agent_node.py``'s mixin reads ``self._coalesce_state`` to build
+        a NODE-QUALIFIED resolver fresh at each node dispatch (never
+        cached across nodes either -- see ``_stream_agent_node`` /
+        ``_resume_agent_node``). ``None`` is the correct default for
+        every caller that hasn't opted into ``tool_calls_as_claims``.
+        """
+        self._coalesce_state = coalesce_state
 
     @property
     def graph(self) -> Graph:
