@@ -309,3 +309,183 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
     assert by_id["x:tool:0:1"].output == "result A"
     assert by_id["x:tool:0:2"].output == "result B"
     assert by_id["x:tool:0:3"].output == "notified ok"
+
+
+@pytest.mark.asyncio
+async def test_crash_retry_replay_with_matching_record_seq_is_a_noop() -> None:
+    """01a0518b review: a worker can crash AFTER this turn's ToolCallTask
+    rows are created (+ upserted) but BEFORE the ParkRequest is ever
+    applied - the lease then simply expires and the turn re-runs from
+    session.last_seq unchanged, deterministically re-minting the SAME
+    scoped ids and record_seq values (see
+    _create_tool_call_task_idempotent's own docstring for the full
+    argument). The re-run's create() collides with the crashed attempt's
+    own row; this is a genuine replay, not a conflict, and must be
+    tolerated as a no-op rather than failing the turn."""
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    task_storage = storage_provider.get_storage(ToolCallTask)
+
+    session = WorkspaceSession(
+        id="s-tool-wait-crash-replay",
+        workspace_id="w1",
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=SessionStatus.RUNNING,
+        created_at=_now(),
+        turn_status="running",
+    )
+    await session_storage.create(session)
+
+    # Simulate the crashed attempt's own already-durable row: the first
+    # claimable call's record_seq is deterministically 1 for a fresh
+    # session's first TOOL_CALL append (start_seq=0, "the first record
+    # gets start_seq + 1").
+    await task_storage.create(ToolCallTask(
+        id="x:tool:0:1",
+        session_id=session.id,
+        turn_no=0,
+        tool_name="tool_a",
+        state=ToolCallTaskState.QUEUED,
+        record_seq=1,
+        created_at=_now(),
+    ))
+
+    notify_result = ToolResultPart(id="x:tool:0:3", output="notified ok", error=False)
+    park = ToolWaitPark(
+        outstanding_task_ids=["x:tool:0:1", "x:tool:0:2"],
+        event_key="tool_wait:x:tool:0:1",
+        notifying_results=[("x:tool:0:3", notify_result)],
+    )
+    fake_io = _FakeWorkspaceIO()
+    fake_bus = _FakeEventBus()
+    claim_engine = _RecordingClaimEngine()
+
+    async def _build_executor(_session: WorkspaceSession):
+        return _ToolWaitExecutor(park)
+
+    deps = SessionDispatchDeps(
+        storage_provider=storage_provider,
+        workspace_io=fake_io,
+        event_bus=fake_bus,
+        build_executor=_build_executor,
+        claim_engine=claim_engine,
+    )
+    outcome = await run_one_session_turn(_make_lease(session.id), deps)
+
+    assert outcome.success is True
+    assert outcome.drop_lease is True
+
+    # The pre-existing row survives untouched (no-op, not overwritten);
+    # the claim engine still gets an upsert call for it - idempotent
+    # registration is always safe to repeat, unlike the row create.
+    task_a = await task_storage.get("x:tool:0:1")
+    assert task_a.state == ToolCallTaskState.QUEUED
+    assert task_a.record_seq == 1
+    assert (ClaimKind.TOOL_CALL, "x:tool:0:1") in claim_engine.upserted
+
+    task_b = await task_storage.get("x:tool:0:2")
+    assert task_b is not None
+    assert task_b.state == ToolCallTaskState.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_crash_retry_with_mismatched_record_seq_fails_loudly() -> None:
+    """The mirror case: an existing row with the SAME id but a DIFFERENT
+    record_seq is not a valid crash-retry replay (the two attempts did
+    not mint the same durable TOOL_CALL record) - something else created
+    this id, and that must fail loudly rather than silently resurrect or
+    overwrite scheduling state a worker might already be running
+    against."""
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    task_storage = storage_provider.get_storage(ToolCallTask)
+
+    session = WorkspaceSession(
+        id="s-tool-wait-crash-mismatch",
+        workspace_id="w1",
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=SessionStatus.RUNNING,
+        created_at=_now(),
+        turn_status="running",
+    )
+    await session_storage.create(session)
+
+    await task_storage.create(ToolCallTask(
+        id="x:tool:0:1",
+        session_id=session.id,
+        turn_no=0,
+        tool_name="tool_a",
+        state=ToolCallTaskState.QUEUED,
+        record_seq=999,  # deliberately NOT what this turn will compute (1)
+        created_at=_now(),
+    ))
+
+    notify_result = ToolResultPart(id="x:tool:0:3", output="notified ok", error=False)
+    park = ToolWaitPark(
+        outstanding_task_ids=["x:tool:0:1", "x:tool:0:2"],
+        event_key="tool_wait:x:tool:0:1",
+        notifying_results=[("x:tool:0:3", notify_result)],
+    )
+    fake_io = _FakeWorkspaceIO()
+    fake_bus = _FakeEventBus()
+    claim_engine = _RecordingClaimEngine()
+
+    async def _build_executor(_session: WorkspaceSession):
+        return _ToolWaitExecutor(park)
+
+    deps = SessionDispatchDeps(
+        storage_provider=storage_provider,
+        workspace_io=fake_io,
+        event_bus=fake_bus,
+        build_executor=_build_executor,
+        claim_engine=claim_engine,
+    )
+    with pytest.raises(RuntimeError, match="not a crash-retry replay"):
+        await run_one_session_turn(_make_lease(session.id), deps)
+
+
+@pytest.mark.asyncio
+async def test_missing_tool_name_fails_loudly_not_unknown() -> None:
+    """01a0518b review: a TOOL_CALL record with no name (ToolCallEnd
+    fired without a preceding ToolCallStart - malformed adapter output,
+    so state.tool_names has no entry) must not silently become
+    tool_name="unknown" - that would produce an unexecutable
+    ToolCallTask row. It must surface as a missing dict entry so the
+    except-ToolWaitPark branch's own ``tool_name is None`` check fails
+    loudly instead."""
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+
+    session = WorkspaceSession(
+        id="s-tool-wait-missing-name",
+        workspace_id="w1",
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=SessionStatus.RUNNING,
+        created_at=_now(),
+        turn_status="running",
+    )
+    await session_storage.create(session)
+
+    class _NoStartExecutor:
+        async def invoke(self, messages, **kwargs):
+            # No preceding ToolCallStart -> scoped_call_ids has no entry
+            # either, so the durable record's own id falls back to the
+            # RAW provider id ("call_a").
+            yield ToolCallEnd(id="call_a", arguments={}, index=0)
+            raise ToolWaitPark(
+                outstanding_task_ids=["call_a"],
+                event_key="tool_wait:call_a",
+            )
+            yield  # pragma: no cover - generator marker, unreachable
+
+    async def _build_executor(_session: WorkspaceSession):
+        return _NoStartExecutor()
+
+    deps = SessionDispatchDeps(
+        storage_provider=storage_provider,
+        workspace_io=_FakeWorkspaceIO(),
+        event_bus=_FakeEventBus(),
+        build_executor=_build_executor,
+    )
+    with pytest.raises(RuntimeError, match="no matching TOOL_CALL record"):
+        await run_one_session_turn(_make_lease(session.id), deps)

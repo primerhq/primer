@@ -223,10 +223,12 @@ async def run_agent_turn(
         ``except ToolWaitPark`` branch and the CoalesceState
         ``tool_call_record_seq`` map it reads from; a caller must never
         raise ``ToolWaitPark`` for a call this failed to resolve.
-        ``None`` (the default) is required for the notifying/claimable
-        split to ever fire when ``tool_calls_as_claims_enabled`` is
-        True; nested subagent calls never receive one, matching the
-        flag's own scope-cut.
+        A NON-``None`` resolver is required for the notifying/claimable
+        split to ever fire, even when ``tool_calls_as_claims_enabled``
+        is True -- see ``_dispatch_tool_calls``'s own gate; ``None``
+        (the default) falls through to today's in-process behaviour
+        unchanged. Nested subagent calls never receive one, matching
+        the flag's own scope-cut.
 
     Raises
     ------
