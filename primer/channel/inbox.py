@@ -126,7 +126,101 @@ class ChannelInbox:
             "event_key=%s",
             env.kind, env.session_id, env.tool_call_id, event_key,
         )
+        # 01a06b82 gate-review R1: publish FIRST, record AFTER. Writing
+        # the record before the publish landed meant a publish that
+        # raised (or a listener that never actually advanced the park)
+        # left a permanently WRONG "decided" record on the books: the
+        # gate then genuinely times out, the resume-time synthesis tries
+        # to write the TRUE ("rejected", "timed-out") verdict, loses the
+        # gate_event_key race to this earlier wrong write, and that
+        # ConflictError used to be swallowed as an ordinary benign dedup
+        # no-op. Publishing first means a raise here skips the record
+        # entirely (no decision reached the system, nothing to record);
+        # write_approval_record's warn_on_decision_mismatch on the
+        # resume-time write is the remaining safety net for the case
+        # where publish() itself succeeds but the listener still never
+        # advances the park.
         await self._event_bus.publish(event_key, payload)
+        if env.kind == "tool_approval":
+            await self._record_decision_best_effort(env, event_key=event_key)
+
+    async def _record_decision_best_effort(
+        self, env: ResponseEnvelope, *, event_key: str,
+    ) -> None:
+        """Persist a durable ToolApprovalRecord for a channel-answered gate.
+
+        01a06b82: the REST respond route (tool_approval.py's
+        _publish_decision) has written this record at decision time since
+        01a068da; the channel surface never did, so a decision answered
+        through Slack/Discord/etc. had no durable record unless the
+        session later happened to resume (the resume-time fallback,
+        write_approval_record_for_graph / the agent-path equivalent).
+
+        This is advisory ONLY, unlike the REST route's write: that route
+        stamps parked_status durably (the guarded parked -> resumable
+        flip) BEFORE writing the record, so it always has a confirmed-real
+        park to describe. handle_response has no equivalent durable step
+        of its own -- it publishes straight onto the event bus, and the
+        durable flip happens elsewhere (the bus listener / durable event
+        dispatcher). So there is no natural place to hang a hard failure
+        off: ANY problem here (no storage_provider wired, the session
+        lookup failing, the gate not resolving, or the write itself
+        failing) is logged and swallowed. Called AFTER the publish
+        (R1): writing this BEFORE the publish used to mean a publish
+        that raised (or a listener that never actually advanced the
+        park) left a permanently wrong "decided" record on the books
+        with nothing to correct it. A missed record here is recoverable
+        (the resume-time write is still a backstop, now with its own
+        disagreement check for exactly this residual race - see
+        write_approval_record's warn_on_decision_mismatch); a missed or
+        delayed wake would not have been.
+        """
+        if self._storage_provider is None:
+            return
+        try:
+            from primer.agent.approval_record import (
+                record_from_parked_blob,
+                write_approval_record,
+            )
+            from primer.model.tool_approval import ToolApprovalRecord
+            from primer.model.workspace_session import WorkspaceSession
+            from primer.session.pending_gates import resolve_pending_gate
+            from primer.worker.yield_runtime import classify_approval_payload
+
+            row = await self._storage_provider.get_storage(
+                WorkspaceSession,
+            ).get(env.session_id)
+            if row is None:
+                return
+            blob = getattr(row, "parked_state", None) or {}
+            gate = resolve_pending_gate(
+                blob, tool_call_id=env.tool_call_id, kind="_approval",
+            )
+            if gate is None:
+                return
+            decision, reason = classify_approval_payload(
+                {"decision": env.decision, "reason": env.reason},
+            )
+            record = record_from_parked_blob(
+                blob={
+                    "tool_call_id": env.tool_call_id,
+                    "yielded": {"resume_metadata": gate.get("resume_metadata") or {}},
+                },
+                decision=decision,
+                reason=reason,
+                agent_id=getattr(row.binding, "agent_id", None),
+                session_id=env.session_id,
+                requested_at=getattr(row, "parked_at", None),
+                gate_event_key=gate.get("event_key") or event_key,
+            )
+            await write_approval_record(
+                self._storage_provider.get_storage(ToolApprovalRecord), record,
+            )
+        except Exception:  # noqa: BLE001 -- advisory; must never block the wake publish
+            logger.exception(
+                "channel inbox: best-effort approval record write failed "
+                "for session=%s tool_call=%s", env.session_id, env.tool_call_id,
+            )
 
     async def _resolve_event_key(self, env: ResponseEnvelope) -> str:
         """The event_key to publish for ``env``.

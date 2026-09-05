@@ -665,11 +665,76 @@ class _BaseGraphExecutor(
             token = set_current_graph_node_id(ay.node_id)
             try:
                 try:
-                    out = await self._resume_agent_node(
+                    # 01a06933: _resume_agent_node is an async generator
+                    # (forwards the resumed turn's own events instead of
+                    # discarding them) -- its final NodeOutput can't ride
+                    # its own `return`, so it lands in out_holder once the
+                    # generator is fully drained. Forwarding each event on
+                    # via our own `yield` here is what lets 01a0690a's
+                    # resume-drain tap (worker/graph_resume.py) actually
+                    # see them; they were never reachable at all before.
+                    out_holder: dict = {}
+                    async for _ev in self._resume_agent_node(
                         ay, agent_tool_result if agent_tool_result is not None
                         else Message(role="tool", parts=[
                             ToolResultPart(id=ay.tool_call_id, output="")]),
+                        out_holder,
+                    ):
+                        yield _ev
+                    out = out_holder["output"]
+                except YieldToWorker as yld:
+                    # 01a06ca4: two-phase park, agent-node flavor (mirrors
+                    # the tc_pending branch above for _ToolCallNode) - the
+                    # resumed node's OWN continuation yielded AGAIN (e.g. a
+                    # second ask_user, or a fresh approval gate) before
+                    # finishing. Re-record it as a pending agent yield on
+                    # the NEW event key so the drain-until-empty check
+                    # below re-parks via _build_pending_park_yield() - built
+                    # from THIS executor's live _pending_agent_yields, not
+                    # the checkpoint this resume started from (already
+                    # consumed by restore_state() at the top of this
+                    # method; the live in-memory lists are the source of
+                    # truth for the rest of this drain). Must come before
+                    # `except Exception` below - YieldToWorker IS an
+                    # Exception subclass, and without this branch it fell
+                    # into that one, silently turning a legitimate re-park
+                    # into a node FAILURE.
+                    #
+                    # scoped_tool_call_id is left unset here deliberately:
+                    # worker/graph_resume.py's own repark catch
+                    # (stash_graph_scoped_ids) backfills it from the SAME
+                    # resume-drain _CoalesceState that already minted it
+                    # when this yield's ToolCallStart streamed past the tap
+                    # a moment ago, above (01a0690a's stash-don't-recompute
+                    # doctrine, unchanged by this fix).
+                    #
+                    # frames/leaf: mirrors _node_dispatch.py's first-park
+                    # constructor byte-for-byte. The resumed outer turn can
+                    # make a FRESH nested invoke_agent call that itself
+                    # yields - the tool engine attaches yld.frames the same
+                    # way regardless of dispatch-vs-resume - so dropping
+                    # them here would silently truncate the subagent chain
+                    # on the NEXT resume: the worker would skip the
+                    # continuation walk and splice the answer straight into
+                    # the outer turn as the invoke_agent result. Empty
+                    # frames (the node's own ask_user / approval gate) keep
+                    # this identical to the pre-fix park.
+                    from primer.worker.frames import frames_to_jsonable
+                    nested_frames = list(getattr(yld, "frames", None) or [])
+                    self._pending_agent_yields.append(
+                        _PendingAgentYield(
+                            node_id=ay.node_id,
+                            tool_call_id=yld.tool_call_id,
+                            event_key=yld.yielded.event_key,
+                            tool_name=yld.yielded.tool_name,
+                            resume_metadata=dict(yld.yielded.resume_metadata or {}),
+                            llm_messages=list(yld.llm_messages or []),
+                            iteration=ay.iteration,
+                            frames=frames_to_jsonable(nested_frames) if nested_frames else [],
+                            leaf=yld.yielded.to_jsonable() if nested_frames else None,
+                        )
                     )
+                    continue
                 except Exception as exc:  # noqa: BLE001 -- map to node failure
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],

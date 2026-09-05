@@ -374,6 +374,80 @@ class TestAskUserRespond:
         # multi-event accumulation map carries the reply
         assert row.parked_state["resume_event_payloads"]["tc-g"]["payload"] == {"response": "blue"}
 
+    async def test_respond_to_ask_user_entry_in_a_mixed_checkpoint(
+        self, app, client,
+    ):
+        """01a06b82 gate-review R2: a checkpoint with an agent-node
+        ask_user yield (pending_agent_yields) AND a ToolCall-node
+        approval gate (pending_toolcalls) pending at the SAME time --
+        the mixed case commit 1 headline-claims (enumerate_pending_gates
+        combines both arms) but that had zero coverage. Answering the
+        ask_user entry must still work exactly as
+        test_respond_accepts_graph_park_via_checkpoint proves alone, with
+        the coexisting approval gate present and untouched.
+        """
+        now = datetime.now(timezone.utc)
+        ask_key = "ask_user:sess-mixed:tc-ask"
+        approval_key = "tool_approval:sess-mixed:call-approve"
+        sess = WorkspaceSession(
+            id="sess-mixed", workspace_id="ws-x",
+            binding=GraphSessionBinding(graph_id="g-x"),
+            status=SessionStatus.RUNNING, created_at=now,
+        )
+        sess.parked_status = "parked"
+        sess.parked_event_key = approval_key
+        sess.parked_event_keys = [approval_key, ask_key]
+        sess.parked_at = now
+        sess.parked_until = now + timedelta(seconds=600)
+        sess.parked_state = {
+            "schema_version": 1,
+            "tool_call_id": "call-approve",
+            "yielded": {
+                "tool_name": "_approval", "event_key": approval_key,
+                "timeout": 600.0, "resume_metadata": {},
+                "event_keys": [approval_key, ask_key],
+            },
+            "llm_messages": [], "turn_no": 1, "started_at": now.isoformat(),
+            "resume_event_payload": None,
+            "graph_checkpoint": {
+                "pending_toolcalls": [{
+                    "node_id": "worker[0]", "tool_call_id": "call-approve",
+                    "parked_event_key": approval_key,
+                    "arguments": {"id": "ws-x"}, "tool_name": "_approval",
+                    "resume_metadata": {
+                        "original_call": {
+                            "id": "call-approve", "name": "delete_workspace",
+                            "arguments": {"id": "ws-x"},
+                        },
+                    },
+                }],
+                "pending_agent_yields": [{
+                    "node_id": "worker[1]", "tool_call_id": "tc-ask",
+                    "event_key": ask_key, "tool_name": "ask_user",
+                    "resume_metadata": {"prompt": "color?"},
+                    "llm_messages": [], "iteration": 1,
+                }],
+            },
+        }
+        await _seed_session(app, sess)
+        resp = await client.post(
+            "/v1/sessions/sess-mixed/ask_user/respond",
+            json={"tool_call_id": "tc-ask", "response": "blue"},
+        )
+        assert resp.status_code == 202
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            row = await storage.get("sess-mixed")
+            if row is not None and row.parked_status == "resumable":
+                break
+        assert row is not None and row.parked_status == "resumable"
+        assert (
+            row.parked_state["resume_event_payloads"]["tc-ask"]["payload"]
+            == {"response": "blue"}
+        )
+
     async def test_respond_accepts_graph_toolcall_ask_user_park(
         self, app, client,
     ):

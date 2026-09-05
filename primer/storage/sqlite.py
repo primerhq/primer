@@ -193,14 +193,50 @@ class SqliteStorageProvider(StorageProvider):
         transaction (which holds the lock for the whole BEGIN..COMMIT). Yields
         ``True`` when the caller should commit its own statement (standalone
         write), ``False`` when it must defer to the enclosing transaction.
+
+        01a06cb3: the standalone branch rolls back on ANY exception raised
+        by the caller's body (a failed ``execute`` -- e.g. a UNIQUE
+        violation surfaced as the expected ``ConflictError`` dedup path, or
+        a plain bug -- or a ``CancelledError`` landing between ``execute``
+        and ``commit``). aiosqlite's default isolation_level opens an
+        IMPLICIT transaction on the first DML statement; without this
+        rollback that transaction is left open on the shared connection
+        with nothing tracking it (``_txn_task`` is only set by
+        :meth:`transaction`/:meth:`read_snapshot`), so the very next
+        ``read_snapshot`` -- any unrelated ``list``/paged read on the same
+        connection, possibly by a different caller entirely -- fails its
+        own ``BEGIN`` with "cannot start a transaction within a
+        transaction". ``BaseException``, not ``Exception``, matching
+        :meth:`transaction`'s own pattern: a plain ``except Exception``
+        would let a cancellation slip through and wedge the connection by
+        the identical mechanism, just a sneakier trigger to hit.
+
+        The reentrant branch above (already-open outer :meth:`transaction`)
+        is deliberately untouched: a statement that fails there belongs to
+        the OUTER transaction, whose own ``except BaseException: rollback``
+        already owns it. Rolling back HERE too would discard whatever the
+        enclosing transaction had already written before this statement,
+        not just this statement's own (nonexistent, since it never
+        committed) effect.
         """
         if self._in_own_transaction():
             # Reentrant write from inside the held transaction: the lock is
-            # already held by this task and the transaction owns the commit.
+            # already held by this task and the transaction owns the commit
+            # AND the rollback -- see the docstring above.
             yield False
             return
         async with self._write_lock:
-            yield True
+            try:
+                yield True
+            except BaseException:
+                # This only protects writers that actually enter here.
+                # Known bypassers (this module's own system_state setters,
+                # e.g. set_default_agent_id, and primer.channel.
+                # correlation's raw upsert) execute + commit directly on
+                # the connection and can wedge it by the same mechanism.
+                # Routing them through this guard is its own PR: 01a070ea.
+                await self.connection.rollback()
+                raise
 
     @asynccontextmanager
     async def transaction(self):

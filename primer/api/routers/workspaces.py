@@ -90,6 +90,7 @@ from primer.model.workspace import (
 )
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.session.pending_gates import enumerate_pending_gates
 
 
 logger = logging.getLogger(__name__)
@@ -2769,6 +2770,14 @@ async def list_session_pending_yields(
     but scoped to one session, so the run-view can render Approve/Deny /
     respond affordances inline in the stream while the right sidebar keeps
     the global Action-Required list (studio-agents-interact §5.4 / §4.5).
+
+    01a06c94: a graph superstep can park on SEVERAL nodes at once (e.g. a
+    fan-out with concurrent approval gates) - this is the console's actual
+    DecisionCard data source (nv-session-doc.jsx's `gates` resource), so
+    every pending entry is returned now via the shared
+    ``primer.session.pending_gates`` resolver, not just the primary one
+    the old single-``yielded``-blob read projected. Non-primary gates were
+    previously invisible here and therefore unanswerable in the console.
     """
     sess = await session_storage.get(session_id)
     if sess is None or sess.workspace_id != workspace_id:
@@ -2779,27 +2788,27 @@ async def list_session_pending_yields(
     items: list[dict] = []
     if sess.parked_status == "parked":
         blob: dict = sess.parked_state or {}
-        yielded_blob: dict = blob.get("yielded") or {}
-        tool_name: str = yielded_blob.get("tool_name") or ""
-        metadata: dict = yielded_blob.get("resume_metadata") or {}
-        items.append({
-            "session_id": sess.id,
-            "kind": _extract_yield_kind(tool_name),
-            "prompt": _extract_yield_prompt(tool_name, metadata),
-            "tool_call_id": _tool_call_id_from_blob(blob),
-            "parked_at": (
-                sess.parked_at.isoformat()
-                if sess.parked_at is not None else None
-            ),
-            # Who may decide (P6 approver routing); None = anyone.
-            "approvers": metadata.get("approvers"),
-            # The literal gated call (see the aggregated route above).
-            "resume_metadata": {
-                "original_call": metadata.get("original_call"),
-                # UX reconcile wave 5 - see the aggregated route above.
-                "response_schema": metadata.get("response_schema"),
-            },
-        })
+        for gate in enumerate_pending_gates(blob):
+            tool_name = gate["kind"]
+            metadata: dict = gate["resume_metadata"]
+            items.append({
+                "session_id": sess.id,
+                "kind": _extract_yield_kind(tool_name),
+                "prompt": _extract_yield_prompt(tool_name, metadata),
+                "tool_call_id": gate["tool_call_id"],
+                "parked_at": (
+                    sess.parked_at.isoformat()
+                    if sess.parked_at is not None else None
+                ),
+                # Who may decide (P6 approver routing); None = anyone.
+                "approvers": metadata.get("approvers"),
+                # The literal gated call (see the aggregated route above).
+                "resume_metadata": {
+                    "original_call": metadata.get("original_call"),
+                    # UX reconcile wave 5 - see the aggregated route above.
+                    "response_schema": metadata.get("response_schema"),
+                },
+            })
     return {"items": items}
 
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.loop import run_agent_turn
@@ -228,15 +229,35 @@ class _AgentNodeMixin:
         self,
         pending: "_PendingAgentYield",
         tool_result_msg: Message,
-    ) -> NodeOutput:
+        out_holder: dict,
+    ) -> AsyncIterator[StreamEvent]:
         """Continue a parked agent node's turn with the injected tool result.
 
         Rebuilds the prompt from: system + persisted node history +
         re-rendered input_template (deterministic against the restored
         context) + the rehydrated in-progress assistant turn + the
         ``tool_result_msg`` (the human's ask_user answer / approval
-        verdict), then continues ``run_agent_turn`` to completion and
-        returns the node's NodeOutput.
+        verdict), then continues ``run_agent_turn`` to completion.
+
+        01a06933: an async GENERATOR, not an awaited coroutine — forwards
+        every event the continued ``run_agent_turn`` call produces
+        (``_wrap_event``-tagged with ``pending.node_id``, the SAME node-
+        tagging the live ``_stream_agent_node`` path's own queue-forwarding
+        applies) instead of discarding them. Before this fix, a resumed
+        node's OWN continuing turn — e.g. an ask_user answer triggering
+        more tool calls before the node finishes — never reached
+        ``resume_from_checkpoint``'s generator at all (an awaited call
+        can't yield through its caller), so 01a0690a's resume-drain tap
+        had nothing to see: those tool calls vanished from the durable
+        record even after that fix landed.
+
+        An async generator's own ``return`` cannot carry a value back to
+        the caller the way a coroutine's can, so the final ``NodeOutput``
+        goes into ``out_holder["output"]`` instead, set once the generator
+        is fully drained — mirrors ``run_agent_turn``'s own
+        ``messages_out`` out-parameter idiom (a caller-owned mutable
+        container the callee fills as a side effect) rather than
+        inventing a second convention for the same problem.
         """
         node = self._resolve_node_def(pending.node_id)
         assert isinstance(node, _AgentNodeRef)
@@ -272,23 +293,46 @@ class _AgentNodeMixin:
         prompt.append(tool_result_msg)
 
         produced_messages: list[Message] = []
-        async for _event in run_agent_turn(
-            agent=agent,
-            llm=llm,
-            llm_model=llm_model,
-            tool_manager=tool_manager,
-            prompt=prompt,
-            response_format=node.response_format,
-            principal=self._principal,
-            messages_out=produced_messages,
-            artifact_storage=self._artifact_storage,
-        ):
-            pass
+        try:
+            async for event in run_agent_turn(
+                agent=agent,
+                llm=llm,
+                llm_model=llm_model,
+                tool_manager=tool_manager,
+                prompt=prompt,
+                response_format=node.response_format,
+                principal=self._principal,
+                messages_out=produced_messages,
+                artifact_storage=self._artifact_storage,
+            ):
+                yield self._wrap_event(event, pending.node_id, pending.iteration)
+        except YieldToWorker as yld:
+            # 01a06ca4: the resumed turn's OWN continuation yielded again
+            # (e.g. a second ask_user, or a fresh approval gate) before
+            # finishing - mirrors _stream_agent_node's own "stamp the in-
+            # progress turn onto the exception" handling, so
+            # graph/base.py's caller can rebuild a correct
+            # _PendingAgentYield for a THIRD resume. Unlike
+            # _stream_agent_node's first-ever dispatch (where
+            # produced_messages alone IS the whole in-progress turn), a
+            # resume's prompt already carries a PREFIX -- new_user_msg +
+            # the PRIOR park's rehydrated_assistant + THIS resume's own
+            # tool_result_msg -- that must be included too, or a third
+            # resume would silently lose everything before this
+            # continuation's own new messages.
+            if not yld.llm_messages:
+                yld.llm_messages = [
+                    m.model_dump(mode="json") for m in (
+                        [new_user_msg, *rehydrated_assistant, tool_result_msg]
+                        + produced_messages
+                    )
+                ]
+            raise
 
         all_new = [new_user_msg, *rehydrated_assistant, tool_result_msg, *produced_messages]
         await self._persist_node_turn(pending.node_id, pending.iteration, all_new)
 
-        return self._agent_node_output(
+        out_holder["output"] = self._agent_node_output(
             produced_messages, node.response_format,
             history + all_new, pending.iteration,
         )

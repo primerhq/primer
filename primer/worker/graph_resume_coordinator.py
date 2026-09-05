@@ -29,6 +29,7 @@ from primer.worker.yield_resume_registry import get_resume_hook
 from primer.worker.yield_runtime import (
     classify_approval_payload,
     classify_resume_payload,
+    is_terminal_synthesis_payload,
     ParkedState,
 )
 
@@ -43,63 +44,46 @@ async def write_approval_record_for_graph(
 ) -> None:
     """Persist the resolved approval decision for a graph tool-call gate.
 
-    The gated call's metadata lives on the checkpoint's
-    ``pending_agent_yields`` entry for ``tcid``. We reshape it into the
-    ``parked_state`` blob form so the shared builder applies. Best-effort:
-    a missing entry or write failure is logged + swallowed.
+    Resolves the SPECIFIC pending entry ``tcid`` names via
+    :func:`primer.session.pending_gates.resolve_pending_gate` -- the same
+    shared helper the REST respond-time write (``tool_approval.py``'s
+    ``_publish_decision``) uses -- so the resume-time and respond-time
+    writes for the same gate can never disagree about which entry's
+    metadata a decision describes, and both now carry the gate's real
+    ``event_key`` into ``gate_event_key`` for idempotent dedup (01a068da).
+
+    This also picks up a real bugfix: an approval gate raised by a
+    ToolCall NODE (as opposed to an agent-node's own tool call) used to
+    resolve through ``pending_dispatch``, a denormalised channel-prompt
+    view that only ever carried ``original_call`` -- ``policy_id`` /
+    ``approval_type`` / ``gate_reason`` / ``approvers`` were silently
+    dropped from every such record. Resolving via ``pending_toolcalls``
+    (the raw checkpoint field the shared helper reads) carries the full
+    metadata tool_manager.py originally stamped.
+
+    A tcid that resolves to nothing (not an approval gate, or the legacy
+    single-event drain-all with no tcid) is skipped. Best-effort: a
+    missing entry or write failure is logged + swallowed
+    (``write_approval_record``'s own contract).
     """
     from primer.agent.approval_record import (
         record_from_parked_blob,
         write_approval_record,
     )
     from primer.model.tool_approval import ToolApprovalRecord
+    from primer.session.pending_gates import resolve_pending_gate
 
-    # Two gate shapes resolve here. An agent-node ``_approval`` yield lives
-    # in ``pending_agent_yields`` and carries its own resume_metadata. A
-    # tool-call-node gate lives in ``pending_toolcalls`` and its
-    # ``original_call`` (tool_id + arguments) is denormalised into
-    # ``pending_dispatch``. Either way, reshape into the parked_state blob
-    # form the shared builder expects. A tcid that matches neither (or no
-    # tcid at all -> legacy drain) is skipped.
-    resume_metadata: dict | None = None
-    ay_matches = [
-        e for e in (checkpoint.get("pending_agent_yields") or [])
-        if e.get("tool_call_id") == tcid
-    ]
-    if len(ay_matches) > 1:
-        # 01a0518f: two concurrent fan-out siblings can share a raw
-        # provider tool_call_id; the resume payload only ever carries
-        # tool_call_id, so first-match is the same ambiguity the resume
-        # path already has - logged so a real collision is visible.
-        logger.warning(
-            "write_approval_record_for_graph: %d pending_agent_yields "
-            "share tool_call_id=%r on session %s; resolving the first",
-            len(ay_matches), tcid, session.id,
-        )
-    entry = ay_matches[0] if ay_matches else None
-    if entry is not None and entry.get("tool_name") == "_approval":
-        resume_metadata = entry.get("resume_metadata") or {}
-    else:
-        disp_matches = [
-            d for d in (checkpoint.get("pending_dispatch") or [])
-            if d.get("tool_call_id") == tcid
-        ]
-        if len(disp_matches) > 1:
-            logger.warning(
-                "write_approval_record_for_graph: %d pending_dispatch "
-                "entries share tool_call_id=%r on session %s; resolving "
-                "the first",
-                len(disp_matches), tcid, session.id,
-            )
-        disp = disp_matches[0] if disp_matches else None
-        if disp is not None:
-            resume_metadata = disp.get("resume_metadata") or {}
-    if resume_metadata is None:
+    if not tcid:
+        return
+    gate = resolve_pending_gate(
+        {"graph_checkpoint": checkpoint}, tool_call_id=tcid, kind="_approval",
+    )
+    if gate is None:
         return
     decision, reason = classify_approval_payload(payload)
     blob = {
         "tool_call_id": tcid,
-        "yielded": {"resume_metadata": resume_metadata},
+        "yielded": {"resume_metadata": gate.get("resume_metadata") or {}},
     }
     record = record_from_parked_blob(
         blob=blob,
@@ -113,13 +97,17 @@ async def write_approval_record_for_graph(
         decided_by=(
             payload.get("decided_by") if isinstance(payload, dict) else None
         ),
+        gate_event_key=gate.get("event_key"),
     )
     storage = (
         pool._storage.get_storage(ToolApprovalRecord)
         if pool._storage is not None
         else None
     )
-    await write_approval_record(storage, record)
+    await write_approval_record(
+        storage, record,
+        warn_on_decision_mismatch=is_terminal_synthesis_payload(payload),
+    )
 
 
 async def resume_graph_engine(pool: "WorkerPool", session, parked):
