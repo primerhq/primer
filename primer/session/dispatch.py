@@ -315,6 +315,11 @@ async def run_one_session_turn(
                 session,
                 new_status=SessionStatus.ENDED,
                 ended_reason="failed",
+                # 01a06cbc: no executor was ever built (that's what just
+                # raised), so the AgentSession-slot mirror has nothing to
+                # unwrap via .session -- workspace_registry lets it fall
+                # back to loading the slot independently instead.
+                workspace_registry=deps.workspace_registry,
             )
             await _clear_interrupt_requested(session_storage, session_id)
             await _clear_turn_running(session_storage, session_id)
@@ -1635,6 +1640,7 @@ async def _transition_session_status(
     ended_reason: str | None = None,
     executor=None,
     expected_epoch: int | None = None,
+    workspace_registry: Any | None = None,
 ) -> None:
     """Update the WorkspaceSession row in storage. Idempotent on no-op.
 
@@ -1651,6 +1657,12 @@ async def _transition_session_status(
     ``LocalWorkspace.get_session``) -- report a terminated session as
     permanently ``running``, because the worker ran in a different process
     (or workspace-cache instance) than the one those reads resolve.
+
+    ``workspace_registry`` (01a06cbc) is the fallback for the one caller
+    that has no ``executor`` at all -- a ``build_executor`` failure, which
+    means no executor object was ever created. See
+    :func:`_sync_agent_session_ended`'s docstring for why the slot is
+    still reachable in that case.
     """
     # Re-read the current row so we don't overwrite concurrent changes.
     fresh = await session_storage.get(session.id)
@@ -1684,10 +1696,19 @@ async def _transition_session_status(
             session.id, new_status.value,
         )
     if new_status == SessionStatus.ENDED:
-        await _sync_agent_session_ended(executor, ended_reason)
+        await _sync_agent_session_ended(
+            executor, ended_reason,
+            session=session, workspace_registry=workspace_registry,
+        )
 
 
-async def _sync_agent_session_ended(executor, ended_reason: str | None) -> None:
+async def _sync_agent_session_ended(
+    executor,
+    ended_reason: str | None,
+    *,
+    session: WorkspaceSession | None = None,
+    workspace_registry: Any | None = None,
+) -> None:
     """Mirror a terminal ENDED transition onto the on-disk AgentSession slot.
 
     Commits ``session.json`` (status=ENDED) so the workspace-side reads
@@ -1697,8 +1718,39 @@ async def _sync_agent_session_ended(executor, ended_reason: str | None) -> None:
     log. ``ended_reason`` is constrained to the three terminal reasons the
     AgentSession transition table accepts; an unknown value falls back to
     ``"completed"`` so the on-disk slot still reaches a terminal state.
+
+    01a06cbc: when a ``build_executor`` failure means no executor was ever
+    created, there is no ``.session`` to unwrap -- but the on-disk slot
+    itself isn't a build_executor artifact at all. It was allocated by the
+    REST API at session-creation time (``Workspace.start_session(...,
+    id=sid)``); both ``build_agent_executor`` / ``build_graph_executor``
+    just LOAD it mid-build, after the steps that actually fail (agent/LLM/
+    toolset resolution, or graph/state_repo resolution). So its existence
+    doesn't depend on the rest of the build succeeding, and it can be
+    re-resolved independently from nothing but ``(workspace_id, session_id)``
+    via ``workspace_registry`` -- the SAME primitive
+    (``workspace.get_session(session.id)``) the builders already call.
+    Only attempted when the executor path found nothing (so the three
+    existing callers that already pass a real executor are unaffected). A
+    graph-bound session predating holder allocation can have no slot at
+    all (``get_session`` returns ``None``) -- that's a normal no-op here,
+    same tolerance a missing executor already gets.
     """
     inner = getattr(executor, "session", None) if executor is not None else None
+    if inner is None and workspace_registry is not None and session is not None:
+        try:
+            workspace = await workspace_registry.get_workspace(session.workspace_id)
+            inner = (
+                await workspace.get_session(session.id)
+                if workspace is not None else None
+            )
+        except Exception:  # noqa: BLE001 -- advisory; never block release
+            logger.warning(
+                "dispatch: failed to load the on-disk AgentSession slot "
+                "for %s while mirroring ENDED (no executor was built)",
+                session.id, exc_info=True,
+            )
+            return
     set_status = getattr(inner, "set_status", None)
     if set_status is None:
         return
