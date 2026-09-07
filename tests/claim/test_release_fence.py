@@ -204,6 +204,156 @@ async def test_in_memory_release_skips_hook_when_signal_is_none():
     assert hook_calls == []
 
 
+class _SpyTxnConn:
+    """asyncpg-conn stand-in that records the ORDER of transaction
+    enter/exit against on_release, without a live database - proves the
+    exact ordering PostReleaseWake's own docstring promises for the
+    Postgres arm (the InMemory engine has no real transaction to prove
+    this against at all)."""
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+        self.in_transaction = False
+
+    def transaction(self):
+        conn = self
+
+        class _TxnCtx:
+            async def __aenter__(self_inner):
+                conn.in_transaction = True
+                conn._events.append("txn_enter")
+                return conn
+
+            async def __aexit__(self_inner, *exc):
+                conn._events.append("txn_exit")
+                conn.in_transaction = False
+                return False
+
+        return _TxnCtx()
+
+    async def fetchval(self, query, *args):
+        # The lease-ownership fence check inside release() (DELETE ...
+        # RETURNING 1 / UPDATE ... RETURNING 1) - always "owned" here,
+        # unrelated to what this test proves.
+        return 1
+
+
+class _SpyPool:
+    def __init__(self, conn: _SpyTxnConn) -> None:
+        self._conn = conn
+
+    def acquire(self):
+        conn = self._conn
+
+        class _Ctx:
+            async def __aenter__(self_inner):
+                return conn
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+        return _Ctx()
+
+
+class _SpyStorageProvider:
+    def __init__(self, conn: _SpyTxnConn) -> None:
+        self.pool = _SpyPool(conn)
+        self.leases_table = '"primer"."leases"'
+        self.schema = "primer"
+
+
+@pytest.mark.asyncio
+async def test_postgres_release_fires_post_release_hook_after_transaction_exits():
+    """01a0518b review, required test (the Postgres arm - PostReleaseWake's
+    own docstring is written specifically about this engine's hazard, and
+    it had no test at all): the bound hook must fire strictly AFTER
+    `async with conn.transaction()` has exited, never from inside it -
+    that is the entire reason PostReleaseWake exists instead of an
+    adapter calling the wake code directly from inside on_release. Proven
+    by having both on_release and the hook record conn.in_transaction at
+    the moment they run, plus the raw event order."""
+    from primer.claim.postgres import PostgresClaimEngine
+
+    events: list[str] = []
+    in_transaction_at: dict[str, bool] = {}
+    conn = _SpyTxnConn(events)
+
+    class _Adapter:
+        kind = ClaimKind.TOOL_CALL
+        entity_table = "toolcalltask"
+
+        def eligibility_sql(self) -> str:
+            return "true"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            events.append("on_release")
+            in_transaction_at["on_release"] = conn.in_transaction
+            return PostReleaseWake(
+                session_id="s1", event_key="tool_wait:s1:0",
+                payload={"tool_wait_ready": True},
+            )
+
+    engine = PostgresClaimEngine(
+        storage_provider=_SpyStorageProvider(conn),
+        adapters={ClaimKind.TOOL_CALL: _Adapter()},
+    )
+
+    async def _hook(signal: PostReleaseWake) -> None:
+        events.append("hook")
+        in_transaction_at["hook"] = conn.in_transaction
+
+    engine.bind_post_release_hook(_hook)
+
+    from primer.int.claim import Lease
+
+    lease = Lease(
+        kind=ClaimKind.TOOL_CALL, entity_id="t1", claimed_by="worker-A",
+        claimed_at=_now(), expires_at=_now(), attempt_count=0, last_error=None,
+    )
+    await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+    assert events == ["txn_enter", "on_release", "txn_exit", "hook"]
+    assert in_transaction_at == {"on_release": True, "hook": False}
+
+
+@pytest.mark.asyncio
+async def test_postgres_release_skips_hook_when_signal_is_none():
+    """Mirrors the InMemory sibling: every OTHER adapter (and this one,
+    absent a batch) returns None - the hook must never fire, and no
+    transaction-exit-then-fire ordering claim even arises."""
+    from primer.claim.postgres import PostgresClaimEngine
+    from primer.int.claim import Lease
+
+    events: list[str] = []
+    conn = _SpyTxnConn(events)
+
+    class _Adapter:
+        kind = ClaimKind.TOOL_CALL
+        entity_table = "toolcalltask"
+
+        def eligibility_sql(self) -> str:
+            return "true"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            return None
+
+    engine = PostgresClaimEngine(
+        storage_provider=_SpyStorageProvider(conn),
+        adapters={ClaimKind.TOOL_CALL: _Adapter()},
+    )
+    hook_calls: list[PostReleaseWake] = []
+    engine.bind_post_release_hook(lambda signal: hook_calls.append(signal))
+
+    lease = Lease(
+        kind=ClaimKind.TOOL_CALL, entity_id="t1", claimed_by="worker-A",
+        claimed_at=_now(), expires_at=_now(), attempt_count=0, last_error=None,
+    )
+    await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+    assert hook_calls == []
+    assert events == ["txn_enter", "txn_exit"]
+
+
 @pytest.mark.asyncio
 async def test_triggers_adapter_forwards_conn():
     from primer.claim.adapters.triggers import TriggerClaimAdapter
