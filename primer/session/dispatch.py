@@ -720,6 +720,20 @@ async def run_one_session_turn(
         # {}/None for an agent-bound park (graph_checkpoint is None).
         node_tool_call_seq = stash_graph_scoped_ids(graph_checkpoint, coalesce_state)
 
+        # 01a0518b (mixed-park wake seam): a co-pending tool_wait batch
+        # (one or more graph nodes independently dispatched claims in the
+        # SAME superstep as this gate) rides along in graph_checkpoint -
+        # materialize its ToolCallTask rows here, exactly like the pure
+        # except-ToolWaitPark branch below does, and extend this park's
+        # OWN event_keys so durably_mark_session_resumable's multi-event
+        # accumulation recognizes each batch's wake key too. {} for an
+        # agent-bound park or a graph park with no co-pending tool_wait -
+        # a no-op, byte-identical to before this arc.
+        extra_wake_keys = await _materialize_pending_tool_wait_rows(
+            deps, session, coalesce_state, parked_at,
+            (graph_checkpoint or {}).get("pending_tool_waits") or [],
+        )
+
         # A yield raised inside a NESTED invoke_agent invocation arrives with
         # ``park.frames`` already populated (run_subagent/resume_subagent
         # prepended one AgentFrame per in-flight caller). Persist that stack so
@@ -766,13 +780,22 @@ async def run_one_session_turn(
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
 
         _observe_turn(session, "parked", _turn_started_at)
+        # 01a0518b: fold any co-pending tool_wait batches' own wake keys
+        # into event_keys so the multi-event accumulation mechanism
+        # recognizes them too - see the materialization step above. An
+        # existing single-key park (no event_keys at all) gains a real
+        # multi-event list the FIRST time this fires, which is correct:
+        # a tool_wait batch existing at all means there is now genuinely
+        # more than one thing this session can wake on.
+        combined_event_keys = list(getattr(yielded, "event_keys", None) or [])
+        combined_event_keys.extend(extra_wake_keys)
         return ReleaseOutcome(
             success=True,
             drop_lease=True,
             park=ParkRequest(
                 parked_state=parked_state.to_jsonable(),
                 parked_event_key=yielded.event_key,
-                parked_event_keys=getattr(yielded, "event_keys", None),
+                parked_event_keys=combined_event_keys or None,
                 parked_until=parked_until,
                 parked_at=parked_at,
             ),
@@ -795,19 +818,22 @@ async def run_one_session_turn(
         from primer.session.yields import tool_wait_event_key
         from primer.worker.yield_runtime import ToolWaitParkedState
 
-        # 01a0518b (mixed-park wake seam review): the FUNCTIONAL wake key -
-        # a pure function of session_id + turn_no, stamped on every row in
-        # the batch as batch_task_ids (not itself, to avoid the
-        # denormalized-projection shape a stored copy would repeat) so
-        # ToolCallClaimAdapter.on_release's last-sibling branch can
-        # recompute it identically with no session-row read. Distinct from
-        # tool_wait.event_key (observability-only, used below only for the
-        # turn log / audit emit, never for parked_event_key).
-        wake_key = tool_wait_event_key(session_id, session.turn_no)
         all_batch_ids = [
             *tool_wait.outstanding_task_ids,
             *(scoped_id for scoped_id, _ in tool_wait.notifying_results),
         ]
+        # 01a0518b (mixed-park wake seam review): the FUNCTIONAL wake key -
+        # a pure function of session_id + turn_no + the batch's own node
+        # segment (see tool_wait_event_key's own docstring), stamped on
+        # every row in the batch as batch_task_ids (not itself, to avoid
+        # the denormalized-projection shape a stored copy would repeat)
+        # so ToolCallClaimAdapter.on_release's last-sibling branch can
+        # recompute it identically with no session-row read. Distinct
+        # from tool_wait.event_key (observability-only, used below only
+        # for the turn log / audit emit, never for parked_event_key).
+        wake_key = tool_wait_event_key(
+            session_id, session.turn_no, scoped_task_id=all_batch_ids[0],
+        )
 
         await _safe_turn_log(turn_log, TurnLogYielded(
             seq=0,
@@ -855,64 +881,90 @@ async def run_one_session_turn(
         timeout = 3600.0
         parked_until = parked_at + timedelta(seconds=timeout)
 
-        task_storage = deps.storage_provider.get_storage(ToolCallTask)
-
-        for scoped_id in tool_wait.outstanding_task_ids:
-            record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
-            tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
-            if record_seq is None or tool_name is None:
-                raise RuntimeError(
-                    f"session {session_id} ToolWaitPark outstanding task "
-                    f"{scoped_id!r} has no matching TOOL_CALL record in "
-                    "this turn's coalesce_state - the durable-append-"
-                    "before-claimable invariant broke"
-                )
-            await _create_tool_call_task_idempotent(
-                task_storage,
-                ToolCallTask(
-                    id=scoped_id,
-                    session_id=session_id,
-                    turn_no=session.turn_no,
-                    tool_name=tool_name,
-                    state=ToolCallTaskState.QUEUED,
-                    record_seq=record_seq,
-                    created_at=parked_at,
-                    batch_task_ids=all_batch_ids,
-                ),
-                session_id=session_id,
+        # 01a0518b (graph-surface boundary d): a graph-bound park carries
+        # its own executor snapshot (see _build_pending_tool_wait_park) -
+        # when present, row creation reads the PER-NODE breakdown from
+        # graph_checkpoint['pending_tool_waits'] via the SAME shared
+        # helper the mixed (except-YieldToWorker) branch uses, rather
+        # than tool_wait's own flattened fields, which would otherwise
+        # combine every node's batch_task_ids/wake key into one - see
+        # _materialize_pending_tool_wait_rows' own docstring. An
+        # agent-bound park (graph_checkpoint is None) keeps the original
+        # flat-field loop unchanged.
+        graph_checkpoint = getattr(tool_wait, "graph_checkpoint", None)
+        node_tool_call_seq: dict[str, int] | None = None
+        if graph_checkpoint is not None:
+            per_node_wake_keys = await _materialize_pending_tool_wait_rows(
+                deps, session, coalesce_state, parked_at,
+                graph_checkpoint.get("pending_tool_waits") or [],
             )
-            if deps.claim_engine is not None:
-                await deps.claim_engine.upsert(ClaimKind.TOOL_CALL, scoped_id)
-
-        notifying_task_ids: list[str] = []
-        for scoped_id, result in tool_wait.notifying_results:
-            record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
-            tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
-            if record_seq is None or tool_name is None:
-                raise RuntimeError(
-                    f"session {session_id} ToolWaitPark notifying result "
-                    f"{scoped_id!r} has no matching TOOL_CALL record in "
-                    "this turn's coalesce_state - the durable-append-"
-                    "before-claimable invariant broke"
-                )
-            await _create_tool_call_task_idempotent(
-                task_storage,
-                ToolCallTask(
-                    id=scoped_id,
-                    session_id=session_id,
-                    turn_no=session.turn_no,
-                    tool_name=tool_name,
-                    state=ToolCallTaskState.DONE,
-                    record_seq=record_seq,
-                    created_at=parked_at,
-                    finished_at=parked_at,
-                    result_state=result.model_dump(mode="json"),
-                    batch_task_ids=all_batch_ids,
-                ),
-                session_id=session_id,
+            # 01a0518b boundary d: mirrors the mixed (except-YieldToWorker)
+            # branch's own stash - a resumed node that dispatches a
+            # FURTHER tool_calls_as_claims round before finishing must not
+            # re-mint a scoped id THIS turn already used (see
+            # ToolWaitParkedState.node_tool_call_seq's own docstring).
+            node_tool_call_seq = stash_graph_scoped_ids(
+                graph_checkpoint, coalesce_state,
             )
-            notifying_task_ids.append(scoped_id)
+        else:
+            per_node_wake_keys = []
+            task_storage = deps.storage_provider.get_storage(ToolCallTask)
+            for scoped_id in tool_wait.outstanding_task_ids:
+                record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+                tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+                if record_seq is None or tool_name is None:
+                    raise RuntimeError(
+                        f"session {session_id} ToolWaitPark outstanding task "
+                        f"{scoped_id!r} has no matching TOOL_CALL record in "
+                        "this turn's coalesce_state - the durable-append-"
+                        "before-claimable invariant broke"
+                    )
+                await _create_tool_call_task_idempotent(
+                    task_storage,
+                    ToolCallTask(
+                        id=scoped_id,
+                        session_id=session_id,
+                        turn_no=session.turn_no,
+                        tool_name=tool_name,
+                        state=ToolCallTaskState.QUEUED,
+                        record_seq=record_seq,
+                        created_at=parked_at,
+                        batch_task_ids=all_batch_ids,
+                    ),
+                    session_id=session_id,
+                )
+                if deps.claim_engine is not None:
+                    await deps.claim_engine.upsert(ClaimKind.TOOL_CALL, scoped_id)
+            for scoped_id, result in tool_wait.notifying_results:
+                record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+                tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+                if record_seq is None or tool_name is None:
+                    raise RuntimeError(
+                        f"session {session_id} ToolWaitPark notifying result "
+                        f"{scoped_id!r} has no matching TOOL_CALL record in "
+                        "this turn's coalesce_state - the durable-append-"
+                        "before-claimable invariant broke"
+                    )
+                await _create_tool_call_task_idempotent(
+                    task_storage,
+                    ToolCallTask(
+                        id=scoped_id,
+                        session_id=session_id,
+                        turn_no=session.turn_no,
+                        tool_name=tool_name,
+                        state=ToolCallTaskState.DONE,
+                        record_seq=record_seq,
+                        created_at=parked_at,
+                        finished_at=parked_at,
+                        result_state=result.model_dump(mode="json"),
+                        batch_task_ids=all_batch_ids,
+                    ),
+                    session_id=session_id,
+                )
 
+        notifying_task_ids = [
+            scoped_id for scoped_id, _ in tool_wait.notifying_results
+        ]
         captured_messages = tool_wait.llm_messages or []
         llm_message_dicts = [m.model_dump(mode="json") for m in captured_messages]
 
@@ -923,6 +975,8 @@ async def run_one_session_turn(
             llm_messages=llm_message_dicts,
             turn_no=session.turn_no,
             started_at=_turn_started_at,
+            graph_checkpoint=graph_checkpoint,
+            node_tool_call_seq=node_tool_call_seq,
         )
 
         logger.info(
@@ -943,6 +997,7 @@ async def run_one_session_turn(
             park=ParkRequest(
                 parked_state=parked_state.to_jsonable(),
                 parked_event_key=wake_key,
+                parked_event_keys=per_node_wake_keys or None,
                 parked_until=parked_until,
                 parked_at=parked_at,
             ),
@@ -1423,6 +1478,109 @@ async def _create_tool_call_task_idempotent(
             "a crash-retry replay (record_seq must match for that); "
             "something else created a conflicting row"
         ) from None
+
+
+async def _materialize_pending_tool_wait_rows(
+    deps: SessionDispatchDeps,
+    session: WorkspaceSession,
+    coalesce_state: _CoalesceState,
+    parked_at: datetime,
+    pending_tool_waits: "list[dict[str, Any]]",
+) -> list[str]:
+    """Materialize ``ToolCallTask`` rows for every co-pending tool_wait
+    batch found in a graph checkpoint's own ``pending_tool_waits`` list
+    (01a0518b, graph-surface boundary d) - one independent batch per
+    graph node that raised its own ``ToolWaitPark`` in the same
+    superstep. Returns each batch's own wake key (see
+    ``tool_wait_event_key``), for the caller to fold into its own
+    ``event_keys``/``parked_event_keys``.
+
+    Shared by BOTH graph park paths: the classic ``except YieldToWorker``
+    branch (a co-pending human gate rides alongside one or more tool_wait
+    batches) and the pure ``except ToolWaitPark`` branch (no co-pending
+    gate) both read this SAME ``graph_checkpoint['pending_tool_waits']``
+    shape, rather than the pure branch's own FLATTENED
+    ``ToolWaitPark.outstanding_task_ids``/``notifying_results`` fields -
+    flattening across nodes would lose the per-node grouping
+    ``batch_task_ids``/the wake key both need to keep "one gated call's
+    siblings don't block another node's siblings" true for tool_wait
+    batches too, not just human gates (see ``_PendingToolWait``'s own
+    docstring). ``[]`` for an agent-bound park, or a graph park with no
+    co-pending tool_wait batch at all - a no-op.
+    """
+    from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+    from primer.session.yields import tool_wait_event_key
+
+    if not pending_tool_waits:
+        return []
+    task_storage = deps.storage_provider.get_storage(ToolCallTask)
+    session_id = session.id
+    wake_keys: list[str] = []
+    for pw in pending_tool_waits:
+        node_batch_ids = [
+            *pw["outstanding_task_ids"],
+            *(scoped_id for scoped_id, _ in pw["notifying_results"]),
+        ]
+        for scoped_id in pw["outstanding_task_ids"]:
+            record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+            tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+            if record_seq is None or tool_name is None:
+                raise RuntimeError(
+                    f"session {session_id} pending tool_wait node "
+                    f"{pw['node_id']!r} outstanding task {scoped_id!r} has "
+                    "no matching TOOL_CALL record in this turn's "
+                    "coalesce_state - the durable-append-before-claimable "
+                    "invariant broke"
+                )
+            await _create_tool_call_task_idempotent(
+                task_storage,
+                ToolCallTask(
+                    id=scoped_id,
+                    session_id=session_id,
+                    turn_no=session.turn_no,
+                    tool_name=tool_name,
+                    state=ToolCallTaskState.QUEUED,
+                    record_seq=record_seq,
+                    created_at=parked_at,
+                    batch_task_ids=node_batch_ids,
+                ),
+                session_id=session_id,
+            )
+            if deps.claim_engine is not None:
+                await deps.claim_engine.upsert(ClaimKind.TOOL_CALL, scoped_id)
+        for scoped_id, result_dict in pw["notifying_results"]:
+            record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+            tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+            if record_seq is None or tool_name is None:
+                raise RuntimeError(
+                    f"session {session_id} pending tool_wait node "
+                    f"{pw['node_id']!r} notifying result {scoped_id!r} has "
+                    "no matching TOOL_CALL record in this turn's "
+                    "coalesce_state - the durable-append-before-claimable "
+                    "invariant broke"
+                )
+            await _create_tool_call_task_idempotent(
+                task_storage,
+                ToolCallTask(
+                    id=scoped_id,
+                    session_id=session_id,
+                    turn_no=session.turn_no,
+                    tool_name=tool_name,
+                    state=ToolCallTaskState.DONE,
+                    record_seq=record_seq,
+                    created_at=parked_at,
+                    finished_at=parked_at,
+                    result_state=dict(result_dict),
+                    batch_task_ids=node_batch_ids,
+                ),
+                session_id=session_id,
+            )
+        wake_keys.append(
+            tool_wait_event_key(
+                session_id, session.turn_no, scoped_task_id=node_batch_ids[0],
+            )
+        )
+    return wake_keys
 
 
 def _yielded_record(park: YieldToWorker) -> SessionMessageRecord:

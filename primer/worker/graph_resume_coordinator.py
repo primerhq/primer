@@ -126,11 +126,35 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
 
     Adapted from the (dead) _handle_graph_resume: always terminal (graph
     sessions run to completion in one resume), so this returns a drop-lease
-    outcome with ENDED status written to the row."""
+    outcome with ENDED status written to the row.
+
+    01a0518b boundary d (graph third-list): a tool_wait batch can be
+    co-pending alongside the human gate this function exists to resume -
+    its own reply carries NO information about tool_wait readiness (an
+    approval/ask_user reply's tcid never matches a tool_wait batch's own
+    node-qualified wake key), so this independently re-checks EVERY
+    co-pending batch via :func:`resolve_ready_graph_tool_waits` on each
+    drain cycle rather than assuming none are ready. Covers "tools finish
+    before the gate is answered": the human gate is still what routes the
+    resume here (a tool_wait-only wake for a PURE park routes through
+    :func:`primer.worker.tool_wait_resume_coordinator.resume_graph_tool_wait`
+    instead - see that module's own kind-based dispatch), but a co-pending
+    batch that ALSO went terminal in the meantime must not be left
+    stranded until some LATER unrelated reply happens to drain it.
+    """
+    from primer.model.tool_call_task import ToolCallTask
     from primer.worker.graph_resume import resume_graph_from_checkpoint
+    from primer.worker.tool_wait_resume_coordinator import (
+        persist_resume_tool_result_records,
+        resolve_ready_graph_tool_waits,
+    )
 
     sid = session.id
     assert parked.graph_checkpoint is not None
+    task_storage = (
+        pool._storage.get_storage(ToolCallTask)
+        if pool._storage is not None else None
+    )
 
     if session.parked_at is None:
         logger.error(
@@ -248,6 +272,12 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 session=session, checkpoint=ck, tcid=tcid,
                 agent_tool_result=agent_tool_result,
             )
+        resolved_tool_wait: dict = {}
+        resolved_tasks: dict = {}
+        if task_storage is not None:
+            resolved_tool_wait, resolved_tasks = await resolve_ready_graph_tool_waits(
+                task_storage, ck.get("pending_tool_waits") or [],
+            )
         try:
             _decision, repark, node_tool_call_seq = await resume_graph_from_checkpoint(
                 executor=executor,
@@ -262,6 +292,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 # replies resume through this same loop, and each drain's
                 # own mints must not collide with the ones before it.
                 node_tool_call_seq=node_tool_call_seq,
+                resolved_tool_wait=resolved_tool_wait,
             )
         except Exception:
             logger.exception(
@@ -269,6 +300,18 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 " resume drain - ending failed", sid,
             )
             return await pool._end_session(session, reason="failed")
+        if resolved_tasks:
+            node_id_by_task_id = {
+                task.id: node_id
+                for node_id, tasks in resolved_tasks.items() for task in tasks
+            }
+            all_resolved_tasks = [
+                t for tasks in resolved_tasks.values() for t in tasks
+            ]
+            await persist_resume_tool_result_records(
+                pool, session, all_resolved_tasks,
+                node_id_by_task_id=node_id_by_task_id,
+            )
         if repark is None:
             break  # graph drained to completion
         ck = repark.graph_checkpoint  # resume the next reply from here
@@ -583,6 +626,30 @@ def repark_graph_outcome(
     pool: "WorkerPool", session, repark, *, node_tool_call_seq=None,
 ):
     """Build a ReleaseOutcome that re-parks a graph session on the
+    remaining pending set after one reply / tool_wait batch was resumed.
+
+    ``repark`` is whatever :func:`primer.worker.graph_resume.
+    resume_graph_from_checkpoint` caught: a ``YieldToWorker`` (a
+    co-pending human gate remains - the classic shape) or a
+    ``ToolWaitPark`` (01a0518b boundary d - only tool_wait batches remain,
+    no human gate). Dispatches on type since the two exceptions carry
+    unrelated field shapes (``.yielded``/``.tool_call_id`` vs
+    ``.outstanding_task_ids``/``.notifying_results``) - see each helper's
+    own docstring.
+    """
+    from primer.model.yield_ import ToolWaitPark
+
+    if isinstance(repark, ToolWaitPark):
+        return _repark_graph_tool_wait_outcome(
+            session, repark, node_tool_call_seq=node_tool_call_seq,
+        )
+    return _repark_graph_yield_outcome(
+        session, repark, node_tool_call_seq=node_tool_call_seq,
+    )
+
+
+def _repark_graph_yield_outcome(session, repark, *, node_tool_call_seq=None):
+    """Build a ReleaseOutcome that re-parks a graph session on the
     remaining human-interaction keys after one reply was resumed.
 
     ``node_tool_call_seq`` (01a0690a piece 3): the resume drain's own
@@ -611,6 +678,66 @@ def repark_graph_outcome(
             parked_state=parked_state.to_jsonable(),
             parked_event_key=repark.yielded.event_key,
             parked_event_keys=repark.yielded.event_keys,
+            parked_until=now + timedelta(seconds=timeout),
+            parked_at=now,
+        ),
+    )
+
+
+def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None):
+    """Build a ReleaseOutcome that re-parks a graph session on the
+    remaining tool_wait batch(es) after a co-pending human gate resumed
+    and left ``_pending_tool_waits`` non-empty (01a0518b boundary d).
+
+    Pure re-write, no new ``ToolCallTask`` rows: every batch still in
+    ``repark.graph_checkpoint['pending_tool_waits']`` was already
+    materialized (rows + claim-engine upserts) at the ORIGINAL park time
+    - the classic ``except YieldToWorker`` branch in dispatch.py runs
+    ``_materialize_pending_tool_wait_rows`` for exactly this reason, even
+    though a human gate was ALSO pending then. This just recomputes each
+    batch's wake key (a pure function - see ``tool_wait_event_key``) and
+    writes a fresh ``ParkRequest`` pointing at the same already-claimable
+    rows. ``node_tool_call_seq`` is threaded through unchanged for the
+    same reason ``_repark_graph_yield_outcome`` does - a FURTHER resume
+    of this repark (a node's own next dispatch round) must not re-mint a
+    colliding scoped id.
+    """
+    from datetime import timedelta
+    from primer.int.claim import ParkRequest, ReleaseOutcome
+    from primer.session.yields import tool_wait_event_key
+    from primer.worker.yield_runtime import ToolWaitParkedState
+
+    graph_checkpoint = repark.graph_checkpoint
+    pending_tool_waits = list((graph_checkpoint or {}).get("pending_tool_waits") or [])
+    wake_keys = [
+        tool_wait_event_key(
+            session.id, session.turn_no,
+            scoped_task_id=(
+                list(pw["outstanding_task_ids"])
+                + [sid for sid, _ in pw["notifying_results"]]
+            )[0],
+        )
+        for pw in pending_tool_waits
+    ]
+    now = datetime.now(timezone.utc)
+    timeout = 3600.0
+    parked_state = ToolWaitParkedState(
+        outstanding_task_ids=list(repark.outstanding_task_ids),
+        notifying_task_ids=[sid for sid, _ in repark.notifying_results],
+        event_key=wake_keys[0] if wake_keys else repark.event_key,
+        llm_messages=list(repark.llm_messages or []),
+        turn_no=session.turn_no,
+        started_at=now,
+        graph_checkpoint=graph_checkpoint,
+        node_tool_call_seq=node_tool_call_seq or None,
+    )
+    return ReleaseOutcome(
+        success=True,
+        drop_lease=True,
+        park=ParkRequest(
+            parked_state=parked_state.to_jsonable(),
+            parked_event_key=wake_keys[0] if wake_keys else repark.event_key,
+            parked_event_keys=wake_keys or None,
             parked_until=now + timedelta(seconds=timeout),
             parked_at=now,
         ),

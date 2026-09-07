@@ -173,7 +173,9 @@ class ToolCallClaimAdapter(ClaimAdapter):
 
         return PostReleaseWake(
             session_id=task.session_id,
-            event_key=tool_wait_event_key(task.session_id, task.turn_no),
+            event_key=tool_wait_event_key(
+                task.session_id, task.turn_no, scoped_task_id=task.id,
+            ),
             payload={"tool_wait_ready": True},
         )
 

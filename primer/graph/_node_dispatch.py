@@ -45,6 +45,7 @@ from primer.graph._node_refs import (
     _NodeDone,
     _PendingAgentYield,
     _PendingToolCall,
+    _PendingToolWait,
     _ToolDispatchBarrier,
     _map_toolcall_result,
     _materialise_begin_output,
@@ -68,7 +69,7 @@ from primer.model.graph import (
     _GraphNodeRef,
     _ToolCallNode,
 )
-from primer.model.yield_ import YieldToWorker
+from primer.model.yield_ import ToolWaitPark, YieldToWorker
 
 
 class _SubgraphFailed(Exception):
@@ -467,6 +468,46 @@ class _NodeDispatchMixin:
             await queue.put(
                 _NodeDone(node_id=node_id, output=None, error=yld)
             )
+        except ToolWaitPark as twp:
+            # 01a0518b boundary (d): the graph-surface sibling of the
+            # YieldToWorker arm above. ToolWaitPark only ever originates
+            # from _stream_agent_node's own run_agent_turn call - a
+            # _ToolCallNode/_GraphNodeRef dispatch above can never raise
+            # it (see the isinstance check ToolWaitPark's own docstring
+            # already establishes for the chat/workspace surface; the
+            # graph surface mirrors it). Deliberately NOT caught by the
+            # `except YieldToWorker` arm above (it's not a subclass, see
+            # that class's own docstring on why) - an UNWIRED catch site
+            # falls through to `except BaseException` below and would
+            # record this batch as a plain node FAILURE, which is why
+            # boundary (d)'s safety-gap fix hardcodes the flag off at
+            # both run_agent_turn call sites until this arm existed.
+            if not isinstance(node, _AgentNodeRef):
+                raise RuntimeError(
+                    f"ToolWaitPark raised from a non-agent node {node_id!r} "
+                    f"({type(node).__name__}) - structurally impossible, "
+                    "tool_calls_as_claims only ever threads into agent-node "
+                    "dispatch"
+                ) from twp
+            self._pending_tool_waits.append(
+                _PendingToolWait(
+                    node_id=node_id,
+                    outstanding_task_ids=list(twp.outstanding_task_ids),
+                    notifying_results=[
+                        (scoped_id, result.model_dump(mode="json"))
+                        for scoped_id, result in twp.notifying_results
+                    ],
+                    llm_messages=list(twp.llm_messages or []),
+                    iteration=context.iteration,
+                )
+            )
+            await queue.put(
+                _NodeDone(
+                    node_id=node_id, output=None, error=None,
+                    ended_detail=None, suspended=True,
+                )
+            )
+            return
         except BaseException as exc:
             await queue.put(
                 _NodeDone(node_id=node_id, output=None, error=exc)

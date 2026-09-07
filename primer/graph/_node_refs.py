@@ -56,6 +56,7 @@ __all__ = [
     "_NodeDone",
     "_PendingToolCall",
     "_PendingAgentYield",
+    "_PendingToolWait",
     "_ToolDispatchBarrier",
     "await_tool_dispatch_barrier",
 ]
@@ -876,4 +877,38 @@ class _PendingAgentYield:
     # 01a0690a: same doctrine as _PendingToolCall.scoped_tool_call_id above
     # -- the id the paired durable TOOL_CALL record actually carries.
     scoped_tool_call_id: str | None = None
+
+
+@dataclass
+class _PendingToolWait:
+    """One agent node's tool-call batch parked via
+    :class:`~primer.model.yield_.ToolWaitPark` (Phase 3 stage 7a,
+    01a0518b boundary d) instead of a single ``Yielded`` sentinel - the
+    graph-surface sibling of :class:`_PendingToolCall` /
+    :class:`_PendingAgentYield`.
+
+    Captured when ``ToolWaitPark`` bubbles up from ``_stream_agent_node``;
+    accumulated alongside the other two pending lists so a superstep can
+    suspend on ANY MIX of the three (ordinary tool-call approval gates,
+    agent-node yields, and claim-based tool_wait batches - one entry per
+    fan-out sibling node that dispatched a batch as claims, independently
+    of what any OTHER node in the same superstep did).
+
+    ``outstanding_task_ids`` / ``notifying_results`` mirror
+    ``ToolWaitPark``'s own fields exactly (see that class's docstring for
+    why notifying results ride along here rather than through a second
+    assembly path). ``primer.session.dispatch``'s except-branch (whichever
+    fires - the classic ``YieldToWorker`` one when this coexists with a
+    pending gate, or the flattened ``ToolWaitPark`` one when it doesn't)
+    reads these to materialize ``ToolCallTask`` rows, so this dataclass
+    stays JSON-able end to end (``notifying_results``' payload half is
+    already a plain dict, not a typed ``ToolResultPart`` - the checkpoint
+    round-trip needs it JSON-able either way).
+    """
+
+    node_id: str
+    outstanding_task_ids: list[str]
+    notifying_results: list[tuple[str, dict[str, Any]]]
+    llm_messages: list[dict[str, Any]]
+    iteration: int
 

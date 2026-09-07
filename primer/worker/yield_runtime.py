@@ -312,6 +312,14 @@ class ToolWaitParkedState:
     ``_persist_turn``'d when the park fires, and the resume coordinator
     needs it to reconstruct ``[assistant_tool_use, tool_result...]``
     history.
+
+    ``graph_checkpoint`` (01a0518b boundary d): the mid-flight graph
+    executor snapshot, present ONLY for a graph-bound park (``None`` for
+    the chat/workspace surface, mirroring ``ParkedState.graph_checkpoint``
+    itself). The pure agent-only resume path (``resume_engine_tool_wait``)
+    never reads it; the graph-bound resume path rebuilds the WHOLE
+    executor from it via ``restore_state`` before it can even know which
+    node(s) each terminal sibling belongs to.
     """
 
     outstanding_task_ids: list[str]
@@ -320,6 +328,14 @@ class ToolWaitParkedState:
     llm_messages: list[dict[str, Any]]
     turn_no: int
     started_at: datetime
+    graph_checkpoint: dict[str, Any] | None = None
+    # 01a0518b boundary d: mirrors ParkedState.node_tool_call_seq exactly
+    # (01a0690a piece 3) - a resumed node that dispatches a FURTHER
+    # tool_calls_as_claims round before finishing must not re-mint a
+    # scoped id the pre-park turn already used for this turn_no. None
+    # (chat/workspace surface, or a graph park with no prior mints) skips
+    # seeding, same as the classic field's own default.
+    node_tool_call_seq: dict[str, int] | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -330,6 +346,14 @@ class ToolWaitParkedState:
             "llm_messages": list(self.llm_messages),
             "turn_no": self.turn_no,
             "started_at": self.started_at.isoformat(),
+            "graph_checkpoint": (
+                dict(self.graph_checkpoint)
+                if self.graph_checkpoint is not None else None
+            ),
+            "node_tool_call_seq": (
+                dict(self.node_tool_call_seq)
+                if self.node_tool_call_seq is not None else None
+            ),
         }
 
     @classmethod
@@ -350,6 +374,14 @@ class ToolWaitParkedState:
             llm_messages=list(data["llm_messages"]),
             turn_no=int(data["turn_no"]),
             started_at=_parse_iso(data["started_at"]),
+            graph_checkpoint=(
+                dict(data["graph_checkpoint"])
+                if data.get("graph_checkpoint") is not None else None
+            ),
+            node_tool_call_seq=(
+                dict(data["node_tool_call_seq"])
+                if data.get("node_tool_call_seq") is not None else None
+            ),
         )
 
 

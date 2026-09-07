@@ -96,6 +96,31 @@ class PostReleaseWake:
     Recovery-boot reconciliation (re-arming any tool_wait park whose
     siblings are ALL already terminal) is a deliberate follow-up, not
     built here.
+
+    Why not just thread ``conn`` into ``durably_mark_session_resumable``
+    instead of this signal split (the option considered and rejected
+    before this shape landed): that only fixes HALF the hazard. Even
+    with the row-flip conn-scoped into the release's own transaction,
+    ``ClaimEngine.mark_resumable`` (the lease re-arm) has NO ``conn``
+    parameter on Postgres at all - it always acquires a fresh connection
+    and each statement auto-commits outside any transaction. That means
+    the lease could still be armed and immediately claimable WHILE the
+    release's own transaction (containing the row-flip) is still open.
+    Traced concretely: a worker claiming that lease reads the session
+    row fresh: if the flip hasn't committed yet, ``parked_status`` still
+    reads ``"parked"``, ``WorkerPool``'s claim-dispatch (pool.py
+    ~654-680) falls through its ``else`` branch and runs an ORDINARY,
+    FRESH turn via ``run_one_session_turn`` - for a graph session this
+    means restarting the WHOLE GRAPH FROM ITS BEGIN NODE while the real
+    park-write is still mid-flight. Not a benign no-op-and-repoll; an
+    active correctness risk, worse than a plain lost wake. Extending
+    ``conn`` all the way into ``mark_resumable`` too (making the ENTIRE
+    wake fully transactional) was also considered and rejected: it buys
+    nothing this post-commit-signal design doesn't already have (zero
+    exposure to the hazard, by construction - nothing runs until after
+    the release's transaction has already committed), at real added
+    plumbing cost (a new engine-level API on the Postgres connection
+    surface, for both engines).
     """
 
     session_id: str

@@ -94,6 +94,77 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def resolve_ready_graph_tool_waits(
+    task_storage, pending_tool_waits: "list[dict]",
+) -> "tuple[dict[str, list], dict[str, list[ToolCallTask]]]":
+    """Check readiness PER NODE for a graph checkpoint's co-pending
+    tool_wait batches (01a0518b boundary d, graph third-list).
+
+    Shared by BOTH graph resume entry points: :func:`resume_graph_tool_wait`
+    (the PURE case, no co-pending human gate) and
+    :func:`primer.worker.graph_resume_coordinator.resume_graph_engine`
+    (the MIXED case - a human gate answered while a tool_wait batch was
+    ALSO co-pending; that gate's own reply carries no information about
+    tool_wait readiness at all, so the classic resume must independently
+    re-check every co-pending batch on each drain cycle rather than
+    assume none are ready).
+
+    An entry with EVERY one of its ``outstanding_task_ids`` +
+    ``notifying_results`` ids terminal (``DONE``/``FAILED``) is ready;
+    a missing id or one still in flight leaves that node OUT of the
+    returned dicts entirely (the caller's own ``_pending_tool_waits``
+    keeps it pending for a later drain - partial wake, see
+    ``resume_from_checkpoint``'s own ``resolved_tool_wait`` docstring).
+
+    Returns ``(node_id -> ToolResultPart list, node_id -> ToolCallTask
+    list)`` - the first for injection (``resume_from_checkpoint``'s
+    ``resolved_tool_wait`` param), the second for the caller's own
+    TOOL_RESULT persistence write. Both empty when nothing is ready yet.
+    """
+    from primer.model.chat import ToolResultPart
+    from primer.model.tool_call_task import ToolCallTaskState
+
+    resolved_tasks: dict[str, list[ToolCallTask]] = {}
+    resolved_tool_wait: dict[str, list[ToolResultPart]] = {}
+    for pw in pending_tool_waits:
+        node_id = pw["node_id"]
+        all_ids = [
+            *pw["outstanding_task_ids"],
+            *(scoped_id for scoped_id, _ in pw["notifying_results"]),
+        ]
+        tasks: list[ToolCallTask] = []
+        ready = True
+        for task_id in all_ids:
+            task = await task_storage.get(task_id)
+            if task is None or task.state not in (
+                ToolCallTaskState.DONE, ToolCallTaskState.FAILED,
+            ):
+                ready = False
+                break
+            tasks.append(task)
+        if not ready:
+            continue
+        result_parts: list[ToolResultPart] = []
+        for task in tasks:
+            if task.result_state is not None:
+                result_parts.append(
+                    ToolResultPart.model_validate(task.result_state)
+                )
+            else:
+                # A FAILED task with no result_state (a poisoned claim
+                # that never ran) still owes the LLM a tool_result for
+                # its tool_use - synthesise an error one, mirroring the
+                # agent-only path's own identical guard.
+                result_parts.append(ToolResultPart(
+                    id=task.id,
+                    output=task.last_error or "tool call failed",
+                    error=True,
+                ))
+        resolved_tasks[node_id] = tasks
+        resolved_tool_wait[node_id] = result_parts
+    return resolved_tool_wait, resolved_tasks
+
+
 async def resume_engine_tool_wait(
     pool: "WorkerPool", engine_lease: "ClaimLease", session: "WorkspaceSession",
 ):
@@ -131,6 +202,18 @@ async def resume_engine_tool_wait(
             sid,
         )
         return await pool._end_session(session, reason="failed")
+
+    if parked.graph_checkpoint is not None:
+        # 01a0518b boundary d: a graph-bound park's flattened
+        # outstanding_task_ids/notifying_task_ids span EVERY co-pending
+        # node's batch (see _build_pending_tool_wait_park) - "every
+        # sibling is terminal by construction" does NOT hold here the way
+        # it does for the agent-only path below: a fan-out sibling node's
+        # last-task wake can fire while a DIFFERENT node's batch is still
+        # mid-flight (partial wake). Route to the dedicated graph
+        # coordinator, which checks readiness PER NODE from
+        # graph_checkpoint['pending_tool_waits'] instead.
+        return await resume_graph_tool_wait(pool, session, parked)
 
     task_storage = pool._storage.get_storage(ToolCallTask)
     all_ids = [*parked.outstanding_task_ids, *parked.notifying_task_ids]
@@ -189,13 +272,125 @@ async def resume_engine_tool_wait(
         )
         return await pool._end_session(session, reason="failed")
 
-    await _persist_resume_tool_result_records(pool, session, tasks)
+    await persist_resume_tool_result_records(pool, session, tasks)
 
     return ReleaseOutcome(success=True, drop_lease=False)
 
 
-async def _persist_resume_tool_result_records(
+async def resume_graph_tool_wait(
+    pool: "WorkerPool", session: "WorkspaceSession", parked: "ToolWaitParkedState",
+):
+    """Graph-bound sibling of :func:`resume_engine_tool_wait`'s agent-only
+    path (01a0518b boundary d, graph third-list).
+
+    Readiness is checked PER NODE from ``parked.graph_checkpoint[
+    'pending_tool_waits']`` (never the flattened
+    ``outstanding_task_ids``/``notifying_task_ids`` fields, which
+    conflate every co-pending node's ids into one list) - a fan-out
+    sibling node's last-task wake can fire while a DIFFERENT node's batch
+    is still mid-flight, so "every pending entry is ready" is not a valid
+    assumption here the way it is for the agent-only path. A node with no
+    ready entries at all is a structural surprise (nothing should have
+    woken the session otherwise) and fails the session, mirroring
+    ``resume_engine_tool_wait``'s own fail-closed posture.
+
+    Delegates the actual injection + superstep continuation to
+    ``primer.worker.graph_resume.resume_graph_from_checkpoint`` (the
+    SAME driver the classic ToolCall-approval graph resume uses) via its
+    ``resolved_tool_wait`` parameter - deliberately NOT
+    ``primer.worker.graph_resume_coordinator.resume_graph_engine``
+    itself, whose nested-yield-continuation / approval-record / rejection
+    machinery has nothing to do with a tool_wait batch (no approval
+    decision to classify here, just "inject already-computed tool
+    results into ready node(s) and continue").
+    """
+    from primer.model.tool_call_task import ToolCallTask
+    from primer.worker.graph_resume import resume_graph_from_checkpoint
+
+    sid = session.id
+    graph_checkpoint = parked.graph_checkpoint
+    task_storage = pool._storage.get_storage(ToolCallTask)  # type: ignore[union-attr]
+    pending_tool_waits = list(graph_checkpoint.get("pending_tool_waits") or [])
+    if not pending_tool_waits:
+        logger.error(
+            "resume_graph_tool_wait: session %s graph_checkpoint has no"
+            " pending_tool_waits entries - ending failed",
+            sid,
+        )
+        return await pool._end_session(session, reason="failed")
+
+    resolved_tool_wait, resolved_tasks = await resolve_ready_graph_tool_waits(
+        task_storage, pending_tool_waits,
+    )
+
+    if not resolved_tool_wait:
+        logger.error(
+            "resume_graph_tool_wait: session %s woke with NO node's batch"
+            " (of %d pending) fully terminal - ending failed",
+            sid, len(pending_tool_waits),
+        )
+        return await pool._end_session(session, reason="failed")
+
+    workspace = await pool._load_workspace_for_persist(session.workspace_id)
+    try:
+        executor_or_driver = await pool._build_graph_executor(session, workspace)
+    except Exception:
+        logger.exception(
+            "resume_graph_tool_wait: failed to build graph executor for"
+            " session %s - ending failed",
+            sid,
+        )
+        return await pool._end_session(session, reason="failed")
+    executor = getattr(executor_or_driver, "_executor", executor_or_driver)
+
+    try:
+        _decision, repark, node_tool_call_seq = await resume_graph_from_checkpoint(
+            executor=executor,
+            checkpoint=graph_checkpoint,
+            # No ToolCall-approval gate is involved in a pure tool_wait
+            # resume (resumed_tcid=None keeps value_yield_toolcall False,
+            # since that check is gated on resumed_tcid is not None) - an
+            # explicit "approved" payload avoids
+            # classify_approval_payload's fail-closed-to-rejected default
+            # spuriously monkeypatching _dispatch_toolcall_with_bypass,
+            # even though tc_pending is structurally empty here (a pure
+            # tool_wait park has no _PendingToolCall/_PendingAgentYield
+            # at all).
+            payload={"decision": "approved"},
+            resumed_tcid=None,
+            agent_tool_result=None,
+            pool=pool,
+            session=session,
+            node_tool_call_seq=dict(parked.node_tool_call_seq or {}),
+            resolved_tool_wait=resolved_tool_wait,
+        )
+    except Exception:
+        logger.exception(
+            "resume_graph_tool_wait: graph executor for session %s raised"
+            " during resume drain - ending failed",
+            sid,
+        )
+        return await pool._end_session(session, reason="failed")
+
+    node_id_by_task_id = {
+        task.id: node_id
+        for node_id, tasks in resolved_tasks.items() for task in tasks
+    }
+    all_resumed_tasks = [t for tasks in resolved_tasks.values() for t in tasks]
+    await persist_resume_tool_result_records(
+        pool, session, all_resumed_tasks, node_id_by_task_id=node_id_by_task_id,
+    )
+
+    if repark is not None:
+        return pool._repark_graph_outcome(
+            session, repark, node_tool_call_seq=node_tool_call_seq,
+        )
+    return await pool._end_session(session, reason="completed")
+
+
+async def persist_resume_tool_result_records(
     pool: "WorkerPool", session: "WorkspaceSession", tasks: "list[ToolCallTask]",
+    *, node_id_by_task_id: "dict[str, str] | None" = None,
 ) -> None:
     """Write the modern TOOL_RESULT counterpart for every resumed task.
 
@@ -206,6 +401,13 @@ async def _persist_resume_tool_result_records(
     record per sibling task instead of one for a single park.
     Best-effort: a write failure here is logged and swallowed, exactly
     as the single-task version does.
+
+    ``node_id_by_task_id`` (01a0518b boundary d): the graph-bound caller's
+    task-id -> owning-node-id map, so each record carries ``node_id``
+    like the classic graph resume's own
+    ``persist_resume_tool_result_record_for_graph`` does. ``None`` for
+    the agent-only caller (no node concept), which leaves every record's
+    ``node_id`` unset, byte-identical to before this parameter existed.
     """
     if pool._storage is None:
         return
@@ -232,6 +434,7 @@ async def _persist_resume_tool_result_records(
                     "output": result.get("output", task.last_error),
                     "error": result.get("error", task.state == "failed"),
                 },
+                node_id=(node_id_by_task_id or {}).get(task.id),
                 created_at=datetime.now(timezone.utc),
             ))
         await writer.flush()
@@ -256,4 +459,7 @@ async def _persist_resume_tool_result_records(
         )
 
 
-__all__ = ["resume_engine_tool_wait"]
+__all__ = [
+    "resume_engine_tool_wait", "resume_graph_tool_wait",
+    "resolve_ready_graph_tool_waits",
+]
