@@ -17,7 +17,11 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
-from primer.session.yields import RespondToYieldDeps, respond_to_yield
+from primer.session.yields import (
+    RespondToYieldDeps,
+    respond_to_yield,
+    tool_wait_event_key,
+)
 
 
 class _FakeEventBus:
@@ -152,3 +156,49 @@ async def test_respond_accepts_resumable_state(fake_storage_provider):
         result={"ok": True}, deps=deps,
     )
     assert len(bus.published) == 1
+
+
+# ---------------------------------------------------------------------------
+# tool_wait_event_key (01a0518b review, mixed-park wake seam)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_wait_event_key_chat_workspace_surface() -> None:
+    """The chat/workspace surface's scoped ids all carry the "x" node
+    segment (node_id=None convention) - collapses to one key per turn."""
+    assert (
+        tool_wait_event_key("s1", 3, scoped_task_id="x:tool:3:1")
+        == "tool_wait:s1:3:x"
+    )
+
+
+def test_tool_wait_event_key_graph_surface_is_node_qualified() -> None:
+    """A real graph node id (not "x") produces a DIFFERENT key - two
+    concurrent fan-out siblings' batches must never collide."""
+    assert (
+        tool_wait_event_key("s1", 3, scoped_task_id="workerNode:tool:3:2")
+        == "tool_wait:s1:3:workerNode"
+    )
+    assert (
+        tool_wait_event_key("s1", 3, scoped_task_id="A:tool:3:1")
+        != tool_wait_event_key("s1", 3, scoped_task_id="B:tool:3:1")
+    )
+
+
+def test_tool_wait_event_key_fanout_instance_id_preserved() -> None:
+    """A fan-out instance id ("worker[0]") is not itself colon-delimited,
+    so splitting on the FIRST colon correctly keeps it whole."""
+    assert (
+        tool_wait_event_key("s1", 0, scoped_task_id="worker[0]:tool:0:1")
+        == "tool_wait:s1:0:worker[0]"
+    )
+
+
+def test_tool_wait_event_key_same_batch_same_key() -> None:
+    """Every id in the SAME batch shares the same node segment - any
+    sibling can reconstruct the identical key, matching
+    ToolCallTask.batch_task_ids' own "same value on every row" shape."""
+    assert (
+        tool_wait_event_key("s1", 0, scoped_task_id="A:tool:0:1")
+        == tool_wait_event_key("s1", 0, scoped_task_id="A:tool:0:2")
+    )

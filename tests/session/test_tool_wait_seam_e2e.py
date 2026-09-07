@@ -216,9 +216,10 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
     assert outcome.drop_lease is True
     assert outcome.park is not None
     # 01a0518b review: parked_event_key is the FUNCTIONAL wake key (a pure
-    # function of session_id/turn_no), not ToolWaitPark's own synthetic
-    # observability-only event_key.
-    assert outcome.park.parked_event_key == "tool_wait:s-tool-wait-1:0"
+    # function of session_id/turn_no/the batch's own node segment - "x"
+    # here, the chat/workspace surface's node_id=None convention), not
+    # ToolWaitPark's own synthetic observability-only event_key.
+    assert outcome.park.parked_event_key == "tool_wait:s-tool-wait-1:0:x"
 
     # The notifying call's DONE row exists, result_state populated -
     # answered inline, durable home for the resume coordinator to read.
@@ -625,7 +626,7 @@ async def test_last_sibling_on_release_wakes_session_and_resume_continues(
     row = await session_storage.get("s-wake-1")
     assert row.parked_status == "resumable"
     assert row.parked_state["resume_event_payload"] == {"tool_wait_ready": True}
-    assert row.parked_state["resume_event_key"] == "tool_wait:s-wake-1:0"
+    assert row.parked_state["resume_event_key"] == "tool_wait:s-wake-1:0:x"
 
     pool = _build_pool(storage_provider)
     assert pool._select_resume_handler(row) == pool._resume_engine_tool_wait
@@ -686,4 +687,4 @@ async def test_concurrent_last_two_siblings_wake_idempotently() -> None:
     row = await session_storage.get("s-wake-2")
     assert row.parked_status == "resumable"
     assert row.parked_state["resume_event_payload"] == {"tool_wait_ready": True}
-    assert row.parked_state["resume_event_key"] == "tool_wait:s-wake-2:0"
+    assert row.parked_state["resume_event_key"] == "tool_wait:s-wake-2:0:x"

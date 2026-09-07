@@ -309,9 +309,11 @@ async def test_on_release_returns_wake_signal_when_last_sibling() -> None:
         conn=None, entity_id="b:tool:0:1",
         outcome=ReleaseOutcome(success=True, drop_lease=True),
     )
+    # event_key's node segment ("b") comes from the releasing task's own
+    # scoped id ("b:tool:0:1") - see tool_wait_event_key's own docstring.
     assert result == PostReleaseWake(
         session_id="sess-1",
-        event_key="tool_wait:sess-1:0",
+        event_key="tool_wait:sess-1:0:b",
         payload={"tool_wait_ready": True},
     )
 

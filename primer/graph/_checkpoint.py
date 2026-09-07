@@ -24,14 +24,16 @@ from primer.graph._node_refs import (
     _FanoutInstance,
     _PendingAgentYield,
     _PendingToolCall,
+    _PendingToolWait,
 )
+from primer.model.chat import ToolResultPart
 from primer.model.graph import (
     FanOutSpec,
     GraphContext,
     NodeOutput,
     NodeRuntimeState,
 )
-from primer.model.yield_ import Yielded, YieldToWorker
+from primer.model.yield_ import ToolWaitPark, Yielded, YieldToWorker
 
 
 class _CheckpointMixin:
@@ -88,6 +90,61 @@ class _CheckpointMixin:
         )
         yld.graph_checkpoint = self.snapshot_state()  # type: ignore[attr-defined]
         return yld
+
+    def _build_pending_tool_wait_park(self) -> "ToolWaitPark":
+        """Build the flattened ``ToolWaitPark`` for the current pending
+        set (01a0518b boundary d) - used ONLY when ``_pending_tool_waits``
+        is non-empty and BOTH ``_pending_toolcalls``/``_pending_agent_
+        yields`` are empty. A co-pending human gate always takes the
+        classic ``_build_pending_park_yield`` path instead (see
+        ``_run_superstep_loop``'s own park-choice) - that path's
+        ``snapshot_state()`` call already carries this SAME
+        ``pending_tool_waits`` list along for the mixed case, so nothing
+        here needs to special-case it.
+
+        Flattened across every pending node - no structural change to
+        ``ToolWaitPark.outstanding_task_ids``/``notifying_results``
+        needed: each scoped id already self-describes its own node via
+        the ``node_id:tool:turn_no:seq`` format, so per-node grouping
+        isn't lost by combining them into one batch. ``llm_messages``
+        stays empty here (unlike the agent-only surface's own use of
+        this field) - a graph resume rebuilds each node's own
+        continuation from ITS OWN entry's ``llm_messages`` inside
+        ``graph_checkpoint['pending_tool_waits']``, not from a single
+        flat session-level list.
+        """
+        outstanding: list[str] = []
+        notifying: list[tuple[str, ToolResultPart]] = []
+        for p in self._pending_tool_waits:
+            outstanding.extend(p.outstanding_task_ids)
+            for scoped_id, result_dict in p.notifying_results:
+                notifying.append(
+                    (scoped_id, ToolResultPart.model_validate(result_dict))
+                )
+        park = ToolWaitPark(
+            outstanding_task_ids=outstanding,
+            event_key=f"tool_wait:{outstanding[0]}",
+            notifying_results=notifying,
+        )
+        park.graph_checkpoint = self.snapshot_state()  # type: ignore[attr-defined]
+        return park
+
+    def _build_pending_park_exception(self) -> "YieldToWorker | ToolWaitPark":
+        """Choose which outer exception to raise for the current pending
+        mix (01a0518b boundary d, mixed-superstep ruling): a co-pending
+        human gate (tool-call approval OR agent-node yield) always wins -
+        the classic ``YieldToWorker`` path, whose own ``snapshot_state()``
+        call already carries ``pending_tool_waits`` along, so the mixed
+        case is never lost - just deferred to the resume drain-tail's own
+        handling once the gate resolves (see ``resume_from_checkpoint``).
+        Only when NEITHER kind of human gate is pending does a
+        tool_wait-only batch raise ``ToolWaitPark`` directly. Both
+        callers of this method already guard on "at least one of the
+        three pending lists is non-empty" before calling it.
+        """
+        if self._pending_toolcalls or self._pending_agent_yields:
+            return self._build_pending_park_yield()
+        return self._build_pending_tool_wait_park()
 
     # ---- Checkpoint payload (Phase 6 / Spec B §2.3 step 3) --------------
 
@@ -201,6 +258,19 @@ class _CheckpointMixin:
                     "scoped_tool_call_id": p.scoped_tool_call_id,
                 }
                 for p in self._pending_agent_yields
+            ],
+            "pending_tool_waits": [
+                {
+                    "node_id": p.node_id,
+                    "outstanding_task_ids": list(p.outstanding_task_ids),
+                    "notifying_results": [
+                        [scoped_id, dict(result)]
+                        for scoped_id, result in p.notifying_results
+                    ],
+                    "llm_messages": list(p.llm_messages),
+                    "iteration": p.iteration,
+                }
+                for p in self._pending_tool_waits
             ],
             # Denormalised per-node dispatch info for tool-call nodes ONLY:
             # each bakes the graph node's tool_id into ``original_call``,
@@ -345,4 +415,17 @@ class _CheckpointMixin:
                 scoped_tool_call_id=raw.get("scoped_tool_call_id"),
             )
             for raw in (payload.get("pending_agent_yields") or [])
+        ]
+        self._pending_tool_waits = [
+            _PendingToolWait(
+                node_id=raw["node_id"],
+                outstanding_task_ids=list(raw.get("outstanding_task_ids") or []),
+                notifying_results=[
+                    (scoped_id, dict(result))
+                    for scoped_id, result in (raw.get("notifying_results") or [])
+                ],
+                llm_messages=list(raw.get("llm_messages") or []),
+                iteration=raw["iteration"],
+            )
+            for raw in (payload.get("pending_tool_waits") or [])
         ]

@@ -78,33 +78,57 @@ def _dispatch_key_for(event_key: str, *, session_id: str) -> str:
     return event_key
 
 
-def tool_wait_event_key(session_id: str, turn_no: int) -> str:
-    """The wake key for a session's tool_wait park (01a0518b review).
+def tool_wait_event_key(
+    session_id: str, turn_no: int, *, scoped_task_id: str,
+) -> str:
+    """The wake key for a tool_wait batch's park (01a0518b review).
 
     A PURE function of fields every ``ToolCallTask`` row already carries
-    (``session_id``/``turn_no``) - deliberately NOT a stored field on the
-    row (an earlier draft stamped it at creation time; review flagged
-    that as the same denormalized-projection shape that caused the
-    ``pending_dispatch`` disease elsewhere - two sites carrying what must
-    be one truth). Both dispatch.py's park write (``ParkRequest.
-    parked_event_key`` / the multi-event ``parked_event_keys`` list) and
+    - deliberately NOT a stored field on the row (an earlier draft
+    stamped it at creation time; review flagged that as the same
+    denormalized-projection shape that caused the ``pending_dispatch``
+    disease elsewhere - two sites carrying what must be one truth). Both
+    dispatch.py's park write (``ParkRequest.parked_event_key`` / the
+    multi-event ``parked_event_keys`` list) and
     ``ToolCallClaimAdapter.on_release``'s last-sibling flip call THIS
     function so there is exactly one place the shape can drift from.
+
+    ``scoped_task_id``: any ``ToolCallTask.id`` belonging to the batch
+    (all of a batch's ids share the same node segment). The key's tail
+    node segment is derived from it (``scoped_id.split(":", 1)[0]`` -
+    the ``node_id`` half of the ``node_id:tool:turn_no:seq`` scoped-id
+    shape :func:`primer.tap.delta.scoped_tool_call_id` mints - ``"x"``
+    for the chat/workspace surface's own ``node_id=None`` convention,
+    the real graph node id otherwise) rather than taking a separate
+    ``node_id`` parameter, so BOTH surfaces compute this key from
+    exactly the same source data instead of two independently-maintained
+    formats that could drift.
+
+    The graph surface can have SEVERAL concurrent fan-out siblings each
+    raise their OWN ``ToolWaitPark`` in the SAME superstep (same
+    ``turn_no``) - mirroring how a human approval gate is already
+    addressed per-``tool_call_id`` (see ``_PendingToolCall``/
+    ``_PendingAgentYield``), each node's batch needs its own
+    independently-derivable key so "one gated call's siblings don't
+    block another node's siblings" holds for tool_wait batches too, not
+    just human gates. The chat/workspace surface's own scoped ids all
+    share the SAME ``"x"`` node segment (only one batch can ever be
+    pending per turn there - a fresh turn always mints a fresh
+    ``_CoalesceState``), so this collapses to one key per turn exactly
+    as before.
 
     Shaped like every other event_key producer
     (``"<kind>:<session_id>:<tail>"``) so :func:`_dispatch_key_for`'s
     prefix-strip works unchanged for the mixed (multi-event) graph park
-    case; ``turn_no`` is the tail since a session can only ever have ONE
-    tool_wait batch pending per turn (a fresh turn always mints a fresh
-    ``_CoalesceState``, so a turn_no collision across two DIFFERENT
-    batches cannot happen).
+    case.
 
     Distinct from ``ToolWaitPark.event_key`` (observability-only,
     ``f"tool_wait:{outstanding_task_ids[0]}"`` - never looked up by
     anything, see that class's own docstring) - this is the FUNCTIONAL
     key the wake mechanism actually keys on.
     """
-    return f"tool_wait:{session_id}:{turn_no}"
+    node_segment = scoped_task_id.split(":", 1)[0]
+    return f"tool_wait:{session_id}:{turn_no}:{node_segment}"
 
 
 async def durably_mark_session_resumable(

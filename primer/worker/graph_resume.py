@@ -52,6 +52,7 @@ async def resume_graph_from_checkpoint(
     pool: "WorkerPool | None" = None,
     session: "Any | None" = None,
     node_tool_call_seq: dict[str, int] | None = None,
+    resolved_tool_wait: "dict[str, list] | None" = None,
 ) -> "tuple[str, Any | None, dict[str, int]]":
     """Drive a graph executor's resume stream to completion.
 
@@ -99,17 +100,25 @@ async def resume_graph_from_checkpoint(
 
     ``resumed_tcid`` (multi-event park) selects which pending node the
     human replied to; ``agent_tool_result`` is the tool-result Message for
-    a resumed agent-node yield (ask_user answer). When the resume leaves
-    other human-interaction nodes pending the executor re-raises
-    :class:`YieldToWorker`; this function catches it and returns it so the
-    worker can re-park on the remaining keys.
+    a resumed agent-node yield (ask_user answer). ``resolved_tool_wait``
+    (01a0518b boundary d, graph third-list) is the tool_wait-batch
+    sibling of those two: a ``node_id -> ToolResultPart list`` map for
+    every co-pending tool_wait batch the CALLER has already determined is
+    fully terminal, threaded straight through to
+    :meth:`WorkspaceGraphExecutor.resume_from_checkpoint`'s own
+    identically-named parameter. When the resume leaves other
+    human-interaction nodes OR tool_wait batches pending, the executor
+    re-raises :class:`YieldToWorker` (a co-pending human gate) or
+    :class:`ToolWaitPark` (tool_wait-only remainder); this function
+    catches EITHER and returns it so the worker can re-park on the
+    remaining keys.
 
     Returns
     -------
-    tuple[str, YieldToWorker | None, dict[str, int]]
+    tuple[str, YieldToWorker | ToolWaitPark | None, dict[str, int]]
         ``(decision, repark, node_tool_call_seq)``. ``decision`` is
         ``"approved"`` / ``"rejected"``. ``repark`` is the re-park
-        ``YieldToWorker`` when nodes remain pending, else ``None`` (graph
+        exception when nodes/batches remain pending, else ``None`` (graph
         drained to completion). ``node_tool_call_seq`` is the tap's
         (possibly advanced, if pool/session were given) per-node mint-seq
         snapshot — the caller threads it into the repark's own
@@ -120,7 +129,7 @@ async def resume_graph_from_checkpoint(
     # worker pool imports it lazily inside _handle_resume.
     from primer.graph._node_refs import _is_value_yield_toolcall
     from primer.graph.base import _ToolApprovalRejected, _PendingToolCall
-    from primer.model.yield_ import YieldToWorker
+    from primer.model.yield_ import ToolWaitPark, YieldToWorker
 
     decision, reason = _decision_from_payload(payload)
 
@@ -158,25 +167,33 @@ async def resume_graph_from_checkpoint(
             pool, session, node_tool_call_seq=node_tool_call_seq,
         )
 
-    repark: YieldToWorker | None = None
+    repark: "YieldToWorker | ToolWaitPark | None" = None
     try:
         async for ev in executor.resume_from_checkpoint(
             checkpoint,
             resumed_tcid=resumed_tcid,
             agent_tool_result=agent_tool_result,
             toolcall_payload=payload if value_yield_toolcall else None,
+            resolved_tool_wait=resolved_tool_wait,
         ):
             if tap is not None:
                 await tap.observe(ev)
-    except YieldToWorker as yld:
-        repark = yld
-        if tap is not None and yld.graph_checkpoint is not None:
+    except (YieldToWorker, ToolWaitPark) as repark_exc:
+        # 01a0518b boundary d: a co-pending human gate always wins the
+        # executor's own re-park choice (YieldToWorker); a tool_wait-only
+        # remainder re-parks as ToolWaitPark instead (see
+        # _build_pending_park_exception) - both carry a dynamically-set
+        # ``graph_checkpoint`` (YieldToWorker's own long-standing
+        # convention, extended to ToolWaitPark for this same purpose), so
+        # one arm handles either shape identically from here on.
+        repark = repark_exc
+        if tap is not None and repark.graph_checkpoint is not None:
             # 01a0690a: the SAME stash the original park uses
             # (dispatch.py's catch) -- this repark never goes through
             # dispatch.py, so any NEW pending entry this drain just
             # produced gets its scoped id stashed here instead.
             from primer.session.persistence import stash_graph_scoped_ids
-            stash_graph_scoped_ids(yld.graph_checkpoint, tap.coalesce_state)
+            stash_graph_scoped_ids(repark.graph_checkpoint, tap.coalesce_state)
 
     out_node_tool_call_seq = (
         dict(tap.coalesce_state.tool_call_seq) if tap is not None else {}

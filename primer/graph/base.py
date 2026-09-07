@@ -85,7 +85,7 @@ from primer.model.turn_log import (
     TurnLogSuperstepStarted,
 )
 from primer.model.workspace_session import SessionStatus
-from primer.model.yield_ import YieldToWorker
+from primer.model.yield_ import ToolWaitPark, YieldToWorker
 from primer.observability.turn_log_writer import (
     NoopTurnLogWriter,
     TurnLogWriter,
@@ -123,6 +123,7 @@ from primer.graph._node_refs import (  # noqa: E402
     _NodeDone,
     _PendingAgentYield,
     _PendingToolCall,
+    _PendingToolWait,
     _RoutingFailed,
     _ToolApprovalRejected,
     _ToolCallOutputResult,
@@ -297,6 +298,14 @@ class _BaseGraphExecutor(
         # resumed by rebuilding the node's agent turn (see
         # ``_resume_agent_node``).
         self._pending_agent_yields: list[_PendingAgentYield] = []
+        # ``_pending_tool_waits`` accumulates agent nodes that raised
+        # :class:`~primer.model.yield_.ToolWaitPark` during a superstep -
+        # the graph-surface sibling of the two lists above (01a0518b
+        # boundary d). A superstep can suspend on ANY MIX of all three;
+        # see ``_build_pending_park_yield``/the tool_wait-only park path
+        # in ``_checkpoint.py`` for how the mix decides which outer
+        # exception the executor raises.
+        self._pending_tool_waits: list[_PendingToolWait] = []
         # ``_context`` and ``_ready_set`` are populated by :meth:`invoke`
         # at the top of each superstep and kept on the executor so
         # :meth:`snapshot_state` can serialise them mid-flight. ``None``
@@ -366,6 +375,7 @@ class _BaseGraphExecutor(
         resumed_tcid: str | None = None,
         agent_tool_result: "Message | None" = None,
         toolcall_payload: "dict[str, Any] | YieldTimeout | YieldCancelled | None" = None,
+        resolved_tool_wait: "dict[str, list[ToolResultPart]] | None" = None,
     ) -> AsyncIterator[StreamEvent]:
         """Restore from a checkpoint and continue graph execution.
 
@@ -399,6 +409,22 @@ class _BaseGraphExecutor(
         re-raise as a domain exception the resume drain knows about —
         Phase 6 Task 6.4 handles this via the synthetic
         :class:`ToolApprovalRejected` exception.
+
+        ``resolved_tool_wait`` (01a0518b boundary d, graph third-list):
+        maps a pending tool_wait entry's ``node_id`` to its assembled
+        ``ToolResultPart`` list, for every batch the CALLER has already
+        determined is fully terminal. The executor cannot check readiness
+        itself (no storage access to ``ToolCallTask`` rows) — the worker-
+        layer resume coordinator reads ``graph_checkpoint['pending_tool_
+        waits']`` directly (before this method's own :meth:`restore_state`
+        call even runs) to build this dict, one entry per ready node. A
+        node with SEVERAL concurrent fan-out siblings each parked on their
+        own ``ToolWaitPark`` in the same superstep can wake PARTIALLY —
+        node A's last sibling fires while node B's batch is still
+        mid-flight — so an absent key is not an error, it just means that
+        node's entry stays in ``self._pending_tool_waits`` for the
+        drain-until-empty re-park below, exactly like an un-replied
+        ``_PendingAgentYield``.
         """
         self.restore_state(checkpoint)
 
@@ -415,16 +441,24 @@ class _BaseGraphExecutor(
         # matching tcid; the rest stay pending for the re-park below.
         tc_all = list(self._pending_toolcalls)
         ay_all = list(self._pending_agent_yields)
+        tw_all = list(self._pending_tool_waits)
         if resumed_tcid is None:
             tc_pending = tc_all
             ay_pending = ay_all
         else:
             tc_pending = [e for e in tc_all if e.tool_call_id == resumed_tcid]
             ay_pending = [e for e in ay_all if e.tool_call_id == resumed_tcid]
+        # tool_wait selection is readiness-based (resolved_tool_wait), not
+        # resumed_tcid-based — a batch has no single "replying tcid", it
+        # has N sibling task ids. See the docstring above.
+        tw_pending = [
+            e for e in tw_all if e.node_id in (resolved_tool_wait or {})
+        ]
         # Remove the resumed entries; keep the rest on the executor so the
         # re-park snapshot still carries them.
         self._pending_toolcalls = [e for e in tc_all if e not in tc_pending]
         self._pending_agent_yields = [e for e in ay_all if e not in ay_pending]
+        self._pending_tool_waits = [e for e in tw_all if e not in tw_pending]
         completed_ids: list[str] = []
         for entry in tc_pending:
             node_def = self._resolve_node_def(entry.node_id)
@@ -782,6 +816,33 @@ class _BaseGraphExecutor(
                         )
                     )
                     continue
+                except ToolWaitPark as twp:
+                    # 01a0518b boundary d (graph third-list): the resumed
+                    # human-gate node's OWN continuation dispatched a
+                    # claims batch before finishing (tool_calls_as_claims
+                    # is on for this executor) - must come before `except
+                    # Exception` below for the same loud-over-silent
+                    # reason as the YieldToWorker arm above: ToolWaitPark
+                    # is a plain Exception subclass (deliberately not a
+                    # YieldToWorker one), so an unwired catch site here
+                    # would silently record this as a node FAILURE instead
+                    # of a legitimate re-park. Mirrors the tw_pending
+                    # loop's own identical arm below.
+                    self._pending_tool_waits.append(
+                        _PendingToolWait(
+                            node_id=ay.node_id,
+                            outstanding_task_ids=list(
+                                twp.outstanding_task_ids
+                            ),
+                            notifying_results=[
+                                (scoped_id, result.model_dump(mode="json"))
+                                for scoped_id, result in twp.notifying_results
+                            ],
+                            llm_messages=list(twp.llm_messages or []),
+                            iteration=ay.iteration,
+                        )
+                    )
+                    continue
                 except Exception as exc:  # noqa: BLE001 -- map to node failure
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],
@@ -824,6 +885,122 @@ class _BaseGraphExecutor(
             finally:
                 reset_current_graph_node_id(token)
 
+        # Resume the selected tool_wait entries (01a0518b boundary d,
+        # graph third-list): continue each ready node's turn with its
+        # assembled batch results injected as the tool-role message.
+        # _resume_agent_node only ever reads .node_id / .llm_messages /
+        # .iteration off its ``pending`` argument (confirmed by close
+        # reading of that method's body) - a ``_PendingToolWait`` duck-
+        # types into it directly, no dedicated resume method needed.
+        for tw in tw_pending:
+            token = set_current_graph_node_id(tw.node_id)
+            try:
+                try:
+                    out_holder = {}
+                    tool_result_msg = Message(
+                        role="tool",
+                        parts=list((resolved_tool_wait or {})[tw.node_id]),
+                    )
+                    async for _ev in self._resume_agent_node(
+                        tw, tool_result_msg, out_holder,
+                    ):
+                        yield _ev
+                    out = out_holder["output"]
+                except YieldToWorker as yld:
+                    # The resumed node's own continuation hit a HUMAN gate
+                    # (approval / ask_user) - mirrors the ay_pending loop's
+                    # own YieldToWorker handling above. Re-record as a
+                    # pending agent yield (not tool_wait): a co-pending
+                    # human gate always wins the re-park choice below
+                    # (_build_pending_park_exception), same as a first
+                    # dispatch.
+                    from primer.worker.frames import frames_to_jsonable
+                    nested_frames = list(getattr(yld, "frames", None) or [])
+                    self._pending_agent_yields.append(
+                        _PendingAgentYield(
+                            node_id=tw.node_id,
+                            tool_call_id=yld.tool_call_id,
+                            event_key=yld.yielded.event_key,
+                            tool_name=yld.yielded.tool_name,
+                            resume_metadata=dict(
+                                yld.yielded.resume_metadata or {}
+                            ),
+                            llm_messages=list(yld.llm_messages or []),
+                            iteration=tw.iteration,
+                            frames=(
+                                frames_to_jsonable(nested_frames)
+                                if nested_frames else []
+                            ),
+                            leaf=(
+                                yld.yielded.to_jsonable()
+                                if nested_frames else None
+                            ),
+                        )
+                    )
+                    continue
+                except ToolWaitPark as twp:
+                    # The resumed node's own continuation dispatched
+                    # ANOTHER claims batch before finishing (a second
+                    # tool-calling round in the same multi-turn node) -
+                    # re-record as a pending tool_wait so the
+                    # drain-until-empty check below re-parks on it; row
+                    # creation for this NEW batch happens the same way a
+                    # first-park ToolWaitPark's does, driven by the
+                    # worker-layer coordinator once it re-parks.
+                    self._pending_tool_waits.append(
+                        _PendingToolWait(
+                            node_id=tw.node_id,
+                            outstanding_task_ids=list(
+                                twp.outstanding_task_ids
+                            ),
+                            notifying_results=[
+                                (scoped_id, result.model_dump(mode="json"))
+                                for scoped_id, result in twp.notifying_results
+                            ],
+                            llm_messages=list(twp.llm_messages or []),
+                            iteration=tw.iteration,
+                        )
+                    )
+                    continue
+                except Exception as exc:  # noqa: BLE001 -- map to node failure
+                    fail_out = NodeOutput(
+                        text="", parsed=None, history=[],
+                        iteration=context.iteration, error=str(exc),
+                        ended_detail="tool_execution_failed",
+                    )
+                    context.nodes[tw.node_id] = fail_out
+                    node_states[tw.node_id] = NodeRuntimeState(
+                        status=NodeRuntimeStatus.FAILED,
+                        last_run_iteration=context.iteration,
+                        last_run_at=datetime.now(timezone.utc),
+                        error=str(exc),
+                    )
+                    yield _GraphErrorEvent(  # type: ignore[misc]
+                        code="tool_execution_failed", message=str(exc),
+                        node_id=tw.node_id,
+                    )
+                    yield _GraphTransitionEvent(  # type: ignore[misc]
+                        node_id=tw.node_id,
+                        node_kind=self._node_kind_for(tw.node_id),
+                        phase="exit",
+                        status="failed",
+                    )
+                    await self._save_state(
+                        iteration=context.iteration, node_states=node_states,
+                        status=SessionStatus.ENDED, ended_reason="failed",
+                        ended_detail="tool_execution_failed",
+                    )
+                    return
+                context.nodes[tw.node_id] = out
+                node_states[tw.node_id] = NodeRuntimeState(
+                    status=NodeRuntimeStatus.ENDED,
+                    last_run_iteration=context.iteration,
+                    last_run_at=datetime.now(timezone.utc),
+                )
+                completed_ids.append(tw.node_id)
+            finally:
+                reset_current_graph_node_id(token)
+
         # graph_transition EXIT for each resumed node that finished this
         # cycle. The superstep loop SKIPS the exit emit when a node parks
         # (``if item.suspended: continue``, ~base.py:982) with the comment
@@ -850,16 +1027,21 @@ class _BaseGraphExecutor(
                 status=_status,
             )
 
-        # Full concurrency: if other human-interaction nodes are still
-        # pending (the human has only replied to some), re-park on the
-        # remaining keys instead of advancing the graph.
-        if self._pending_toolcalls or self._pending_agent_yields:
+        # Full concurrency: if other human-interaction nodes OR tool_wait
+        # batches (01a0518b boundary d - a fan-out sibling's batch can
+        # still be mid-flight after a PARTIAL wake) are still pending,
+        # re-park on the remaining keys instead of advancing the graph.
+        if (
+            self._pending_toolcalls
+            or self._pending_agent_yields
+            or self._pending_tool_waits
+        ):
             await self._save_state(
                 iteration=context.iteration,
                 node_states=node_states,
                 status=SessionStatus.WAITING,
             )
-            raise self._build_pending_park_yield()
+            raise self._build_pending_park_exception()
 
         # Persist the drained-state snapshot so observers can see the
         # ToolCalls finished before the next superstep starts.
@@ -1553,7 +1735,11 @@ class _BaseGraphExecutor(
             # the resume path. ``_save_state`` is called with
             # ``SessionStatus.WAITING`` so the persisted state reflects
             # the paused world.
-            if self._pending_toolcalls or self._pending_agent_yields:
+            if (
+                self._pending_toolcalls
+                or self._pending_agent_yields
+                or self._pending_tool_waits
+            ):
                 # Keep ready set / context up to date on the executor for
                 # the snapshot.
                 self._ready_set = set(ready_ordered)
@@ -1564,10 +1750,14 @@ class _BaseGraphExecutor(
                     node_states=node_states,
                     status=SessionStatus.WAITING,
                 )
-                # Park on the full human-interaction set (tool_call
-                # approvals + agent-node yields). Any one firing wakes the
-                # session, which resumes that node and re-parks on the rest.
-                raise self._build_pending_park_yield()
+                # Park on the full pending set (tool_call approvals +
+                # agent-node yields + tool_wait batches, 01a0518b boundary
+                # d). A co-pending human gate always wins the choice below
+                # (_build_pending_park_exception); a tool_wait-only mix
+                # parks as a flattened ToolWaitPark instead. Any one key
+                # firing wakes the session, which resumes that node/batch
+                # and re-parks on the rest.
+                raise self._build_pending_park_exception()
 
             if any_failed:
                 # ended_reason / ended_detail may already be set by the
