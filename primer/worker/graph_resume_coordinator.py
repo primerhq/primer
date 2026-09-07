@@ -29,7 +29,6 @@ from primer.worker.yield_resume_registry import get_resume_hook
 from primer.worker.yield_runtime import (
     classify_approval_payload,
     classify_resume_payload,
-    is_terminal_synthesis_payload,
     ParkedState,
 )
 
@@ -65,6 +64,19 @@ async def write_approval_record_for_graph(
     single-event drain-all with no tcid) is skipped. Best-effort: a
     missing entry or write failure is logged + swallowed
     (``write_approval_record``'s own contract).
+
+    01a07be5 gate-review-2 finding 2: always passes
+    ``warn_on_decision_mismatch=True``, not just for a synthesised
+    timeout/cancel. The flip-winner (whichever publish actually advanced
+    this park) and the record-winner (whichever write_approval_record
+    call wins the gate_event_key race) are INDEPENDENT races -- a
+    respond-time writer can lose the flip but still win the record race
+    with a DIFFERENT decision than the one that actually resumed the
+    park. This resume-time write is the one place that knows the TRUE
+    resumed decision (``payload``, whatever actually flipped the row),
+    so it is always worth checking a losing ConflictError against: an
+    agreeing race (the overwhelming common case, one operator, one
+    decision) stays quiet at DEBUG either way.
     """
     from primer.agent.approval_record import (
         record_from_parked_blob,
@@ -105,8 +117,7 @@ async def write_approval_record_for_graph(
         else None
     )
     await write_approval_record(
-        storage, record,
-        warn_on_decision_mismatch=is_terminal_synthesis_payload(payload),
+        storage, record, warn_on_decision_mismatch=True,
     )
 
 
@@ -190,6 +201,24 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
         if nested is not None:
             cont = await pool._resume_graph_continuation(
                 session, parked, ck, nested, payload, workspace, executor,
+            )
+            # 01a07be5 gate-review-2 finding 1: the leaf this nested
+            # entry unwinds can itself be an approval gate. write_
+            # approval_record_for_graph already resolves via checkpoint
+            # + tcid regardless of nesting -- pending_agent_yields'
+            # top-level tool_name/event_key/resume_metadata are always
+            # the LEAF's own values (frames/leaf are additive bookkeeping
+            # for the continuation walk, not a different identity), and
+            # the function no-ops internally for a non-"_approval" kind
+            # -- so this call is safe unconditionally. Before this fix,
+            # taking this branch skipped the write entirely: real
+            # decisions AND terminal synthesis for a nested approval gate
+            # left no audit record at all, silently. Written BEFORE the
+            # repark_outcome check: tcid's own decision is settled by
+            # payload regardless of whether the chain reparks deeper
+            # afterward on a DIFFERENT, unrelated gate.
+            await pool._write_approval_record_for_graph(
+                session=session, checkpoint=ck, tcid=tcid, payload=payload,
             )
             if cont.repark_outcome is not None:
                 return cont.repark_outcome

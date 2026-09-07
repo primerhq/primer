@@ -314,3 +314,150 @@ async def test_resume_record_dedupes_against_a_respond_time_write_for_the_same_g
         assert items[0].id == preseeded.id
     finally:
         await storage_provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resume_record_warns_on_a_real_vs_real_decision_disagreement(
+    tmp_path, caplog,
+):
+    """01a07be5 gate-review-2 finding 2: warn_on_decision_mismatch is now
+    unconditional, not just for a synthesised timeout/cancel. The
+    flip-winner (whichever publish actually resumed this park) and the
+    record-winner (whichever write_approval_record call wins the
+    gate_event_key race) are independent races even for two REAL operator
+    decisions -- a respond-time writer can lose the flip but still win
+    the record race with a DIFFERENT decision than the one that actually
+    resumed the park. This resume-time write knows the TRUE resumed
+    decision (the payload it was actually called with), so a losing
+    ConflictError against a DISAGREEING real decision must be loud now,
+    not silently swallowed at DEBUG the way it would have been when the
+    check only fired for terminal synthesis.
+    """
+    import logging
+
+    from primer.model.provider import SqliteConfig
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    session_id = "graph-rec-real-disagree"
+    checkpoint = _two_gate_checkpoint(session_id)
+    gate_key = f"tool_approval:{session_id}:call-1"
+
+    storage_provider = SqliteStorageProvider(
+        SqliteConfig(path=str(tmp_path / "real-disagree.sqlite")),
+    )
+    await storage_provider.initialize()
+    try:
+        # A DIFFERENT writer already recorded "rejected" for this gate.
+        preseeded = ToolApprovalRecord(
+            tool_name="delete_workspace",
+            arguments={"id": "ws-worker[1]"},
+            tool_call_id="call-1",
+            session_id=session_id,
+            agent_id="agt-graph",
+            decided_at=datetime.now(timezone.utc),
+            decision="rejected",
+            gate_event_key=gate_key,
+        )
+        await storage_provider.get_storage(ToolApprovalRecord).create(preseeded)
+
+        pool = SimpleNamespace(_storage=storage_provider)
+        # This resume-time write reflects the REAL decision that actually
+        # resumed the park -- "approved" -- a genuine disagreement with
+        # the preseeded "rejected", NOT a terminal synthesis.
+        with caplog.at_level(
+            logging.DEBUG, logger="primer.agent.approval_record",
+        ):
+            await write_approval_record_for_graph(
+                pool, session=_session(session_id), checkpoint=checkpoint,
+                tcid="call-1", payload={"decision": "approved"},
+            )
+
+        # Append-only still holds: the preseeded row is untouched.
+        items = await _records_for(storage_provider)
+        assert len(items) == 1
+        assert items[0].id == preseeded.id
+        assert items[0].decision == "rejected"
+
+        error_records = [
+            r for r in caplog.records if r.levelno >= logging.ERROR
+        ]
+        assert len(error_records) == 1
+        message = error_records[0].getMessage()
+        assert "audit disagreement" in message
+        assert "rejected" in message
+        assert "approved" in message
+    finally:
+        await storage_provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resume_record_resolves_a_nested_approval_leaf_with_frames_populated():
+    """01a07be5 gate-review-2 finding 1: the pending_agent_yields arm's
+    resolution must be identical whether or not the entry carries a
+    nested continuation frames/leaf stack -- resolve_pending_gate never
+    inspects those fields, only the entry's own top-level tool_name/
+    tool_call_id/event_key/resume_metadata (which are always the LEAF's
+    own values regardless of nesting, per _node_dispatch.py's
+    construction). This is the exact entry shape resume_graph_engine's
+    nested branch now writes a record for, which nothing exercised
+    before this round.
+    """
+    from primer.worker.frames import frames_to_jsonable
+    from primer.worker.frames import AgentFrame, AgentResumeContext
+
+    session_id = "graph-rec-nested"
+    tcid = "call-nested"
+    event_key = f"tool_approval:{session_id}:worker[0]:{tcid}"
+    resume_metadata = {
+        "policy_id": "pol-nested",
+        "approval_type": "required",
+        "gate_reason": "matched policy",
+        "approvers": None,
+        "original_call": {
+            "id": tcid, "name": "delete_workspace", "arguments": {},
+        },
+    }
+    frame = AgentFrame(
+        agent_id="sub",
+        llm_messages=[{"role": "assistant", "parts": []}],
+        tool_call_id="invoke-tc",
+        depth=0,
+        context=AgentResumeContext(
+            session_id=session_id, workspace_id="w", chat_id=None,
+            principal="p", tools=["misc__gated_tool"],
+        ),
+    )
+    checkpoint = {
+        "pending_toolcalls": [],
+        "pending_agent_yields": [{
+            "node_id": "worker[0]",
+            "tool_call_id": tcid,
+            "event_key": event_key,
+            "tool_name": "_approval",
+            "resume_metadata": resume_metadata,
+            "llm_messages": [],
+            "iteration": 0,
+            "frames": frames_to_jsonable([frame]),
+            "leaf": {
+                "tool_name": "_approval", "event_key": event_key,
+                "resume_metadata": resume_metadata,
+            },
+        }],
+        "pending_dispatch": [],
+    }
+
+    storage_provider = _FakeStorageProvider()
+    pool = SimpleNamespace(_storage=storage_provider)
+
+    await write_approval_record_for_graph(
+        pool, session=_session(session_id), checkpoint=checkpoint,
+        tcid=tcid, payload={"decision": "approved"},
+    )
+
+    items = await _records_for(storage_provider)
+    assert len(items) == 1
+    rec = items[0]
+    assert rec.tool_call_id == tcid
+    assert rec.decision == "approved"
+    assert rec.policy_id == "pol-nested"
+    assert rec.gate_event_key == event_key
