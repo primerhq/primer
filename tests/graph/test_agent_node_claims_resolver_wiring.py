@@ -291,8 +291,14 @@ async def test_resume_agent_node_threads_node_qualified_resolver_no_barrier(
     monkeypatch.setattr(agent_node_mod, "run_agent_turn", _spy)
 
     tool_result_msg = Message(role="tool", parts=[ToolResultPart(id="tc1", output="blue")])
+    out_holder: dict = {}
     try:
-        await ex._resume_agent_node(pending, tool_result_msg)
+        # 01a06933: _resume_agent_node is an async generator (forwards
+        # events + reports its NodeOutput via out_holder instead of a
+        # return value) - drain it the same way graph/base.py's own
+        # caller does.
+        async for _ev in ex._resume_agent_node(pending, tool_result_msg, out_holder):
+            pass
     except YieldToWorker:
         # _YieldingLLM re-yields on the resumed call too - irrelevant to
         # this test, which only cares about the kwargs threaded through
