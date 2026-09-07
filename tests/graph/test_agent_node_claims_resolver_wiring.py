@@ -191,6 +191,39 @@ async def test_stream_agent_node_threads_node_qualified_resolver_and_barrier(
 
 
 @pytest.mark.asyncio
+async def test_stream_agent_node_forces_flag_off_even_if_set(monkeypatch) -> None:
+    """01a0518b boundary (d) SAFETY GAP (review): the graph-side
+    ToolWaitPark park-write path does not exist yet, so
+    tool_calls_as_claims_enabled must reach run_agent_turn as False
+    UNCONDITIONALLY on this surface - even if the executor's own flag is
+    True (e.g. inherited by a subgraph, or flipped ahead of the
+    park-write path landing) - since nothing here catches ToolWaitPark
+    and it would otherwise fall into _node_dispatch.py's `except
+    BaseException` catch-all as a silent node failure."""
+    ex = await _mk_executor(_graph(), _SimpleLLM())
+    ex._tool_calls_as_claims_enabled = True
+    cs = _make_coalesce_state("A", "call-1", "A:tool:0:1", 7)
+    ex.bind_coalesce_state(cs)
+
+    captured: dict = {}
+    import primer.graph._agent_node as agent_node_mod
+    real_run_agent_turn = agent_node_mod.run_agent_turn
+
+    async def _spy(**kwargs):
+        captured["tool_calls_as_claims_enabled"] = kwargs.get(
+            "tool_calls_as_claims_enabled"
+        )
+        async for ev in real_run_agent_turn(**kwargs):
+            yield ev
+
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", _spy)
+
+    [ev async for ev in ex.invoke([])]
+
+    assert captured["tool_calls_as_claims_enabled"] is False
+
+
+@pytest.mark.asyncio
 async def test_stream_agent_node_resolver_is_none_without_bind(monkeypatch) -> None:
     """bind_coalesce_state was never called (today's default, every
     existing graph session) - both hooks must stay None, byte-identical
@@ -237,6 +270,10 @@ async def test_resume_agent_node_threads_node_qualified_resolver_no_barrier(
 
     cs = _make_coalesce_state("A", "call-x", "A:tool:0:9", 3)
     ex.bind_coalesce_state(cs)
+    # 01a0518b boundary (d) SAFETY GAP: forced on to prove the flag still
+    # reaches run_agent_turn as False regardless (see the matching
+    # assertion below).
+    ex._tool_calls_as_claims_enabled = True
 
     captured: dict = {}
     import primer.graph._agent_node as agent_node_mod
@@ -244,6 +281,9 @@ async def test_resume_agent_node_threads_node_qualified_resolver_no_barrier(
 
     async def _spy(**kwargs):
         captured["resolve_scoped_call"] = kwargs.get("resolve_scoped_call")
+        captured["tool_calls_as_claims_enabled"] = kwargs.get(
+            "tool_calls_as_claims_enabled"
+        )
         assert "await_dispatch_barrier" not in kwargs or kwargs["await_dispatch_barrier"] is None
         async for ev in real_run_agent_turn(**kwargs):
             yield ev
@@ -262,3 +302,4 @@ async def test_resume_agent_node_threads_node_qualified_resolver_no_barrier(
     resolver = captured["resolve_scoped_call"]
     assert resolver is not None
     assert resolver("call-x") == ("A:tool:0:9", 3)
+    assert captured["tool_calls_as_claims_enabled"] is False

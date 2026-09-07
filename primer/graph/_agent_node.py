@@ -264,7 +264,19 @@ class _AgentNodeMixin:
                 messages_out=produced_messages,
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
-                tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
+                # 01a0518b boundary (d) SAFETY GAP (review): the graph-side
+                # ToolWaitPark park-write path does not exist yet - if this
+                # ever passed self._tool_calls_as_claims_enabled, a flag
+                # flip on a graph session would let _dispatch_as_claims
+                # raise ToolWaitPark, which nothing on this surface catches
+                # (only YieldToWorker is handled above/below) - it would
+                # fall into _node_dispatch.py's `except BaseException`
+                # catch-all and record a SILENT node FAILURE instead of a
+                # loud error. Hardcoded False makes this structurally safe
+                # regardless of config, not merely safe-by-convention;
+                # flip to self._tool_calls_as_claims_enabled once the
+                # park-write path lands.
+                tool_calls_as_claims_enabled=False,
                 resolve_scoped_call=resolve_scoped_call,
                 await_dispatch_barrier=await_dispatch_barrier,
             ):
@@ -396,7 +408,15 @@ class _AgentNodeMixin:
                 messages_out=produced_messages,
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
-                tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
+                # 01a0518b boundary (d) SAFETY GAP (review) - see the
+                # matching comment in _stream_agent_node: the graph-side
+                # ToolWaitPark park-write path does not exist yet, so this
+                # must not be self._tool_calls_as_claims_enabled - a stray
+                # ToolWaitPark here would fall into graph/base.py's resume
+                # branch's `except Exception` and record a SILENT node
+                # failure instead of a loud error. Flip once the
+                # park-write path lands.
+                tool_calls_as_claims_enabled=False,
                 resolve_scoped_call=resolve_scoped_call,
             ):
                 yield self._wrap_event(event, pending.node_id, pending.iteration)
