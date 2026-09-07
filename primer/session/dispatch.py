@@ -792,7 +792,22 @@ async def run_one_session_turn(
         # ToolCallClaimAdapter.on_release, task-granular, not here).
         # ------------------------------------------------------------------
         from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+        from primer.session.yields import tool_wait_event_key
         from primer.worker.yield_runtime import ToolWaitParkedState
+
+        # 01a0518b (mixed-park wake seam review): the FUNCTIONAL wake key -
+        # a pure function of session_id + turn_no, stamped on every row in
+        # the batch as batch_task_ids (not itself, to avoid the
+        # denormalized-projection shape a stored copy would repeat) so
+        # ToolCallClaimAdapter.on_release's last-sibling branch can
+        # recompute it identically with no session-row read. Distinct from
+        # tool_wait.event_key (observability-only, used below only for the
+        # turn log / audit emit, never for parked_event_key).
+        wake_key = tool_wait_event_key(session_id, session.turn_no)
+        all_batch_ids = [
+            *tool_wait.outstanding_task_ids,
+            *(scoped_id for scoped_id, _ in tool_wait.notifying_results),
+        ]
 
         await _safe_turn_log(turn_log, TurnLogYielded(
             seq=0,
@@ -862,6 +877,7 @@ async def run_one_session_turn(
                     state=ToolCallTaskState.QUEUED,
                     record_seq=record_seq,
                     created_at=parked_at,
+                    batch_task_ids=all_batch_ids,
                 ),
                 session_id=session_id,
             )
@@ -891,6 +907,7 @@ async def run_one_session_turn(
                     created_at=parked_at,
                     finished_at=parked_at,
                     result_state=result.model_dump(mode="json"),
+                    batch_task_ids=all_batch_ids,
                 ),
                 session_id=session_id,
             )
@@ -902,7 +919,7 @@ async def run_one_session_turn(
         parked_state = ToolWaitParkedState(
             outstanding_task_ids=list(tool_wait.outstanding_task_ids),
             notifying_task_ids=notifying_task_ids,
-            event_key=tool_wait.event_key,
+            event_key=wake_key,
             llm_messages=llm_message_dicts,
             turn_no=session.turn_no,
             started_at=_turn_started_at,
@@ -910,9 +927,9 @@ async def run_one_session_turn(
 
         logger.info(
             "session %s parking on tool_wait batch (%d claimable, %d "
-            "notifying, event_key=%r)",
+            "notifying, wake_key=%r)",
             session_id, len(tool_wait.outstanding_task_ids),
-            len(notifying_task_ids), tool_wait.event_key,
+            len(notifying_task_ids), wake_key,
         )
 
         async with session_lifecycle_lock().acquire(session_id):
@@ -925,7 +942,7 @@ async def run_one_session_turn(
             drop_lease=True,
             park=ParkRequest(
                 parked_state=parked_state.to_jsonable(),
-                parked_event_key=tool_wait.event_key,
+                parked_event_key=wake_key,
                 parked_until=parked_until,
                 parked_at=parked_at,
             ),

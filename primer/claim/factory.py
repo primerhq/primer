@@ -77,11 +77,37 @@ class ClaimEngineFactory:
         }
 
         if isinstance(event_bus, InMemoryEventBus):
-            return InMemoryClaimEngine(adapters=adapters)
+            engine: "ClaimEngine" = InMemoryClaimEngine(adapters=adapters)
+        else:
+            from primer.claim.postgres import PostgresClaimEngine
 
-        from primer.claim.postgres import PostgresClaimEngine
+            engine = PostgresClaimEngine(
+                storage_provider=storage_provider,
+                adapters=adapters,
+            )
 
-        return PostgresClaimEngine(
-            storage_provider=storage_provider,
-            adapters=adapters,
-        )
+        # 01a0518b (mixed-park wake seam, hazard-fix ruling): the engine
+        # itself never imports worker-layer code (durably_mark_session_
+        # resumable lives in primer.session.yields) - the factory closes
+        # over the session storage + this SAME engine and hands the
+        # engine only a plain callable, invoked strictly AFTER a
+        # release's own transaction commits (see PostReleaseWake's own
+        # docstring for why an adapter can't call this directly).
+        session_storage = storage_provider.get_storage(WorkspaceSession)
+
+        async def _wake_session_on_tool_wait_ready(signal) -> None:
+            from primer.session.yields import durably_mark_session_resumable
+
+            session = await session_storage.get(signal.session_id)
+            if session is None:
+                return
+            await durably_mark_session_resumable(
+                session,
+                event_key=signal.event_key,
+                payload=signal.payload,
+                session_storage=session_storage,
+                engine=engine,
+            )
+
+        engine.bind_post_release_hook(_wake_session_on_tool_wait_ready)
+        return engine
