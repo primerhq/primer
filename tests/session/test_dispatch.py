@@ -972,6 +972,132 @@ async def test_build_executor_notfound_converges_to_ended_failed(
     assert row.turn_started_at is None
 
 
+class _SlotWorkspace:
+    """Minimal Workspace stand-in exposing only get_session, for the
+    build-executor-failure mirror fallback (no executor was ever built,
+    so there's nothing else this path needs)."""
+
+    def __init__(self, slot) -> None:
+        self._slot = slot
+
+    async def get_session(self, session_id: str):
+        return self._slot
+
+
+class _SlotWorkspaceRegistry:
+    def __init__(self, workspace) -> None:
+        self._workspace = workspace
+
+    async def get_workspace(self, workspace_id: str):
+        return self._workspace
+
+
+@pytest.mark.asyncio
+async def test_build_executor_failure_mirrors_ended_onto_agent_session_slot(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """01a06cbc: build_executor raising means no executor object was ever
+    created, so the .session-unwrap mirror path has nothing to work with
+    -- unlike test_executor_error_mirrors_ended_onto_agent_session_slot's
+    branch (executor exists, just wasn't threaded through). The on-disk
+    AgentSession slot isn't a build_executor artifact though: it was
+    allocated by the REST API at session-creation time and merely LOADED
+    mid-build (after the steps that actually fail), so it's reachable
+    from workspace_registry alone, independent of the failed build.
+    """
+    from primer.model.except_ import NotFoundError
+
+    slot = _RecordingSlotSession()
+    registry = _SlotWorkspaceRegistry(_SlotWorkspace(slot))
+
+    async def _build_executor(session: WorkspaceSession):
+        raise NotFoundError(f"Graph 'g-gone' not found for session {session.id!r}")
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+        workspace_registry=registry,
+    )
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+    assert outcome.success is False
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    assert (await storage.get(seeded_session.id)).status == SessionStatus.ENDED
+    assert slot.calls == [(SessionStatus.ENDED, "failed")]
+
+
+@pytest.mark.asyncio
+async def test_build_executor_failure_with_no_slot_does_not_crash(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """A graph-bound session predating holder allocation can have NO
+    on-disk slot at all (get_session returns None) -- the mirror fallback
+    must treat that as a normal no-op, same tolerance a missing executor
+    already gets, and the row must still converge to ENDED/failed."""
+    from primer.model.except_ import NotFoundError
+
+    registry = _SlotWorkspaceRegistry(_SlotWorkspace(None))
+
+    async def _build_executor(session: WorkspaceSession):
+        raise NotFoundError(f"Graph 'g-gone' not found for session {session.id!r}")
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+        workspace_registry=registry,
+    )
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+    assert outcome.success is False
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "failed"
+
+
+@pytest.mark.asyncio
+async def test_build_executor_failure_without_workspace_registry_does_not_crash(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """workspace_registry is optional on SessionDispatchDeps (older/other
+    call paths that never thread it) -- when it's None (the default,
+    unset here), the mirror fallback must skip cleanly rather than
+    attempting a lookup, same as before this fix existed. The row must
+    still converge to ENDED/failed regardless."""
+    from primer.model.except_ import NotFoundError
+
+    async def _build_executor(session: WorkspaceSession):
+        raise NotFoundError(f"Graph 'g-gone' not found for session {session.id!r}")
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+        # workspace_registry intentionally omitted -> defaults to None.
+    )
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+    assert outcome.success is False
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "failed"
+
+
 # ---------------------------------------------------------------------------
 # Task 9 — Stop (interrupt) stays alive: WAITING, not ENDED
 # ---------------------------------------------------------------------------
