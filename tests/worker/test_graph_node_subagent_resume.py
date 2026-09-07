@@ -97,6 +97,49 @@ def test_nested_agent_yield_detected_only_with_frames():
     assert pool._graph_nested_agent_yield(_checkpoint_with_nested_entry(), "nope") is None
 
 
+def test_nested_agent_yield_detected_for_an_approval_leaf_too():
+    """01a07be5 gate-review-2 finding 1: the leaf a frames stack unwinds
+    can itself be an approval gate (a tool call somewhere inside a nested
+    invoke_agent chain that was gated), not just ask_user. The nested-
+    yield DETECTION is tool_name-agnostic -- it keys on frames alone --
+    so resume_graph_engine's nested branch is reachable for this case
+    exactly like the ask_user one, which is why that branch skipping
+    write_approval_record_for_graph entirely was a real, reachable gap."""
+    pool = _bare_pool()
+    ck = {
+        "pending_agent_yields": [
+            {
+                "node_id": "A",
+                "tool_call_id": _LEAF_TCID,
+                "event_key": f"tool_approval:s:{_LEAF_TCID}",
+                "tool_name": "_approval",
+                "resume_metadata": {
+                    "policy_id": "p1", "approval_type": "required",
+                    "gate_reason": "always-on", "approvers": None,
+                    "original_call": {
+                        "id": _LEAF_TCID, "name": "delete_workspace",
+                        "arguments": {},
+                    },
+                },
+                "llm_messages": [{"role": "assistant", "parts": []}],
+                "iteration": 0,
+                "frames": frames_to_jsonable([_frame()]),
+                "leaf": Yielded(
+                    tool_name="_approval",
+                    event_key=f"tool_approval:s:{_LEAF_TCID}",
+                    resume_metadata={
+                        "original_call": {
+                            "id": _LEAF_TCID, "name": "delete_workspace",
+                            "arguments": {},
+                        },
+                    },
+                ).to_jsonable(),
+            }
+        ],
+    }
+    assert pool._graph_nested_agent_yield(ck, _LEAF_TCID) is not None
+
+
 # ---------------------------------------------------------------------------
 # Deliver: the continuation result becomes the node's agent_tool_result
 # ---------------------------------------------------------------------------

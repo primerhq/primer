@@ -15,6 +15,7 @@ from primer.model.yield_ import YieldCancelled, YieldTimeout, Yielded
 from primer.worker.yield_runtime import (
     PARKED_STATE_SCHEMA_VERSION,
     ParkedState,
+    classify_approval_payload,
     classify_resume_payload,
     make_cancelled_payload,
     make_timeout_payload,
@@ -310,3 +311,78 @@ class TestPublisherHelpers:
         # tz-aware datetime.
         parsed = datetime.fromisoformat(payload["cancelled_at"])
         assert parsed.tzinfo is not None
+
+
+# ===========================================================================
+# classify_approval_payload
+# ===========================================================================
+
+
+class TestClassifyApprovalPayload:
+    """01a07be5 gate-review-2 finding 3: classify_approval_payload must
+    recognise the RAW __yield_timeout__/__yield_cancelled__ marker dict
+    shape, not just the already-classified YieldTimeout/YieldCancelled
+    instances classify_resume_payload builds for the single-event resume
+    path. The multi-event graph drain (resume_graph_engine's
+    payloads_map branch) replays resume_event_payloads entries as plain
+    JSON dicts, never converting them to typed instances first -- before
+    this fix, a genuine multi-event timeout/cancel classified here as
+    "malformed approval payload (missing decision)", landing the wrong
+    reason in the durable audit record.
+    """
+
+    def test_typed_yield_timeout_instance(self):
+        assert classify_approval_payload(YieldTimeout(elapsed_seconds=5)) == (
+            "rejected", "timed-out",
+        )
+
+    def test_typed_yield_cancelled_instance_with_reason(self, t0: datetime):
+        result = classify_approval_payload(
+            YieldCancelled(reason="user closed", cancelled_at=t0, elapsed_seconds=1),
+        )
+        assert result == ("rejected", "user closed")
+
+    def test_typed_yield_cancelled_instance_defaults_reason(self, t0: datetime):
+        result = classify_approval_payload(
+            YieldCancelled(reason=None, cancelled_at=t0, elapsed_seconds=1),
+        )
+        assert result == ("rejected", "cancelled")
+
+    def test_raw_timeout_marker_dict(self):
+        """The multi-event graph drain's shape: a raw marker dict, never
+        converted to a YieldTimeout instance."""
+        assert classify_approval_payload({"__yield_timeout__": True}) == (
+            "rejected", "timed-out",
+        )
+
+    def test_raw_cancelled_marker_dict_with_reason(self):
+        assert classify_approval_payload({
+            "__yield_cancelled__": True, "reason": "user closed",
+            "cancelled_at": "2026-01-01T00:00:00+00:00",
+        }) == ("rejected", "user closed")
+
+    def test_raw_cancelled_marker_dict_defaults_reason(self):
+        assert classify_approval_payload({
+            "__yield_cancelled__": True,
+            "cancelled_at": "2026-01-01T00:00:00+00:00",
+        }) == ("rejected", "cancelled")
+
+    def test_real_approved_decision(self):
+        assert classify_approval_payload(
+            {"decision": "approved", "reason": "fine"},
+        ) == ("approved", "fine")
+
+    def test_real_rejected_decision(self):
+        assert classify_approval_payload(
+            {"decision": "rejected", "reason": "no"},
+        ) == ("rejected", "no")
+
+    def test_malformed_dict_missing_decision(self):
+        assert classify_approval_payload({"reason": "huh"}) == (
+            "rejected", "malformed approval payload (missing decision)",
+        )
+
+    def test_malformed_non_dict(self):
+        assert classify_approval_payload("not a payload") == (
+            "rejected", "malformed approval payload (non-dict)",
+        )

@@ -563,6 +563,24 @@ async def test_subagent_approval_gate_approve_redispatches_and_delivers(monkeypa
     assert row.parked_status is None  # park cleared on release
     assert row.status != SessionStatus.ENDED
 
+    # 01a07be5 gate-review-2 finding 1: the leaf gate here is an approval
+    # gate raised INSIDE a nested invoke_agent chain, resumed through the
+    # `if parked.frames:` continuation branch -- before this fix, that
+    # branch never called write_approval_record_for_session at all, so a
+    # nested approval gate left no audit record no matter how it
+    # resolved (approve, reject, or a synthesised timeout/cancel).
+    from primer.model.storage import OffsetPage
+    from primer.model.tool_approval import ToolApprovalRecord
+
+    records = await base.get_storage(ToolApprovalRecord).list(
+        OffsetPage(offset=0, length=50),
+    )
+    matches = [r for r in records.items if r.session_id == sid]
+    assert len(matches) == 1
+    assert matches[0].tool_call_id == gated_call_id
+    assert matches[0].decision == "approved"
+    assert matches[0].tool_name == "t1__do_it"
+
 
 @pytest.mark.asyncio
 async def test_subagent_approval_gate_reject_clean_error_tool_never_runs(monkeypatch):
@@ -630,6 +648,20 @@ async def test_subagent_approval_gate_reject_clean_error_tool_never_runs(monkeyp
     # exploding toolset proves it), and the subagent's own completion is clean.
     part = _injected_tool_result(executor, invoke_tcid)
     assert json.loads(part.output) == {"output": "ok it was rejected"}
+
+    # 01a07be5 gate-review-2 finding 1: same audit-record gap as the
+    # approve variant above, for a rejection this time.
+    from primer.model.storage import OffsetPage
+    from primer.model.tool_approval import ToolApprovalRecord
+
+    records = await base.get_storage(ToolApprovalRecord).list(
+        OffsetPage(offset=0, length=50),
+    )
+    matches = [r for r in records.items if r.session_id == sid]
+    assert len(matches) == 1
+    assert matches[0].tool_call_id == gated_call_id
+    assert matches[0].decision == "rejected"
+    assert matches[0].reason == "no thanks"
 
 
 # ===========================================================================

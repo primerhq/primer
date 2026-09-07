@@ -441,12 +441,28 @@ def classify_approval_payload(
     resume (:func:`_resume_tool_approval`) and the graph resume adapter
     (:func:`primer.worker.graph_resume._decision_from_payload`) call this so
     the two paths cannot drift.
+
+    01a07be5 gate-review-2 finding 3: recognises the RAW
+    ``__yield_timeout__``/``__yield_cancelled__`` marker dict shape, not
+    just the already-classified ``YieldTimeout``/``YieldCancelled``
+    instances :func:`classify_resume_payload` builds for the single-event
+    resume path. The multi-event graph drain (``resume_graph_engine``'s
+    ``payloads_map`` branch) replays ``resume_event_payloads`` entries as
+    plain JSON dicts, never converting them to typed instances -- a
+    genuine multi-event timeout/cancel used to classify here as
+    "malformed approval payload (missing decision)" instead of
+    "timed-out"/"cancelled", landing that wrong reason in the durable
+    audit record.
     """
     if isinstance(payload, YieldTimeout):
         return "rejected", "timed-out"
     if isinstance(payload, YieldCancelled):
         return "rejected", payload.reason or "cancelled"
     if isinstance(payload, dict):
+        if payload.get(_YIELD_TIMEOUT_KEY):
+            return "rejected", "timed-out"
+        if payload.get(_YIELD_CANCELLED_KEY):
+            return "rejected", payload.get("reason") or "cancelled"
         raw = payload.get("decision")
         reason = payload.get("reason")
         if raw == "approved":
@@ -455,32 +471,6 @@ def classify_approval_payload(
             return "rejected", reason
         return "rejected", "malformed approval payload (missing decision)"
     return "rejected", "malformed approval payload (non-dict)"
-
-
-def is_terminal_synthesis_payload(payload: Any) -> bool:
-    """True when ``payload`` is a synthesised timeout/cancel outcome
-    rather than a real, direct operator decision.
-
-    01a06b82 gate-review R1: callers writing a resume-time
-    ToolApprovalRecord pass this to :func:`~primer.agent.approval_record.
-    write_approval_record`'s ``warn_on_decision_mismatch`` so a
-    ConflictError on THIS write (the one case that isn't an ordinary
-    benign dedup race - see that function's docstring) gets checked for
-    an actual disagreement instead of silently swallowed.
-
-    Handles both shapes a resume drain can see: the single-event path's
-    already-classified ``YieldTimeout``/``YieldCancelled`` instance (via
-    :func:`classify_resume_payload`), and the multi-event graph drain's
-    raw marker dict (``resume_event_payloads`` entries are stored and
-    replayed as plain JSON, never converted to a typed instance).
-    """
-    if isinstance(payload, (YieldTimeout, YieldCancelled)):
-        return True
-    if isinstance(payload, dict):
-        return bool(
-            payload.get(_YIELD_TIMEOUT_KEY) or payload.get(_YIELD_CANCELLED_KEY)
-        )
-    return False
 
 
 async def _resume_tool_approval(

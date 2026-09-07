@@ -42,7 +42,6 @@ from primer.worker.yield_runtime import (
     _resume_tool_approval,
     classify_approval_payload,
     classify_resume_payload,
-    is_terminal_synthesis_payload,
     ParkedState,
 )
 
@@ -71,6 +70,14 @@ async def write_approval_record_for_session(
 
     Best-effort: a write failure is logged and swallowed so the resume
     proceeds.
+
+    01a07be5 gate-review-2 finding 2: always passes
+    ``warn_on_decision_mismatch=True`` -- see
+    ``write_approval_record_for_graph``'s matching docstring note. The
+    flip-winner and record-winner are independent races even for a real
+    operator decision (not just a synthesised timeout/cancel), and this
+    write is the one place that knows the decision that ACTUALLY resumed
+    the park.
     """
     from primer.agent.approval_record import (
         record_from_parked_blob,
@@ -100,8 +107,7 @@ async def write_approval_record_for_session(
         else None
     )
     await write_approval_record(
-        storage, record,
-        warn_on_decision_mismatch=is_terminal_synthesis_payload(payload),
+        storage, record, warn_on_decision_mismatch=True,
     )
 
 
@@ -204,6 +210,19 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
         services = pool._build_invocation_services(
             session, workspace, executor, tool_manager,
         )
+        # 01a07be5 gate-review-2 finding 1: the leaf gate this frames
+        # stack unwinds can itself be an approval gate (a tool call
+        # somewhere inside a nested invoke_agent chain that was gated).
+        # parked.yielded IS that leaf here -- frames/leaf bookkeeping is
+        # orthogonal identity plumbing, not a different object -- so the
+        # SAME write the non-nested branch below uses applies unchanged.
+        # Before this fix, taking this branch skipped the write entirely:
+        # real decisions AND terminal synthesis for a nested approval
+        # gate left no audit record at all, silently.
+        if parked.yielded.tool_name == "_approval":
+            await pool._write_approval_record_for_session(
+                session=session, blob=blob, payload=resume_payload.payload,
+            )
         try:
             outcome = await resume_continuation(
                 parked.frames,
