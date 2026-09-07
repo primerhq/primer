@@ -121,6 +121,18 @@ class ChannelInbox:
             {"response": env.response} if env.kind == "ask_user"
             else {"decision": env.decision, "reason": env.reason}
         )
+        # 01a07be5 gate-review-2 finding 4: capture the gate's data BEFORE
+        # publish, not after. A post-publish re-read can resolve a
+        # SUCCESSOR gate re-parked under the same tool_call_id (e.g. a
+        # nested continuation minting a fresh pending entry that reuses
+        # this raw id once the park has already advanced) if the publish
+        # is processed synchronously within this same tick. Capturing
+        # first guarantees the record describes the gate actually being
+        # decided right now, not whatever is pending by the time we look.
+        captured = (
+            await self._capture_gate_for_record(env)
+            if env.kind == "tool_approval" else None
+        )
         logger.info(
             "channel inbox publishing %s for session=%s tool_call=%s "
             "event_key=%s",
@@ -141,13 +153,56 @@ class ChannelInbox:
         # where publish() itself succeeds but the listener still never
         # advances the park.
         await self._event_bus.publish(event_key, payload)
-        if env.kind == "tool_approval":
-            await self._record_decision_best_effort(env, event_key=event_key)
+        if captured is not None:
+            await self._write_captured_record(
+                env, captured, event_key=event_key,
+            )
 
-    async def _record_decision_best_effort(
-        self, env: ResponseEnvelope, *, event_key: str,
+    async def _capture_gate_for_record(
+        self, env: ResponseEnvelope,
+    ) -> "dict | None":
+        """Resolve the SPECIFIC pending gate ``env`` answers, read BEFORE
+        the publish (finding 4 above). Returns ``None`` on any problem
+        (no storage_provider wired, session lookup failing, or the gate
+        not resolving) -- the caller then simply skips the record, same
+        as the old single-function version did.
+        """
+        if self._storage_provider is None:
+            return None
+        try:
+            from primer.model.workspace_session import WorkspaceSession
+            from primer.session.pending_gates import resolve_pending_gate
+
+            row = await self._storage_provider.get_storage(
+                WorkspaceSession,
+            ).get(env.session_id)
+            if row is None:
+                return None
+            blob = getattr(row, "parked_state", None) or {}
+            gate = resolve_pending_gate(
+                blob, tool_call_id=env.tool_call_id, kind="_approval",
+            )
+            if gate is None:
+                return None
+            return {
+                "gate": gate,
+                "agent_id": getattr(row.binding, "agent_id", None),
+                "parked_at": getattr(row, "parked_at", None),
+            }
+        except Exception:  # noqa: BLE001 -- advisory; must never block the publish
+            logger.exception(
+                "channel inbox: failed to capture gate data before "
+                "publish for session=%s tool_call=%s",
+                env.session_id, env.tool_call_id,
+            )
+            return None
+
+    async def _write_captured_record(
+        self, env: ResponseEnvelope, captured: dict, *, event_key: str,
     ) -> None:
-        """Persist a durable ToolApprovalRecord for a channel-answered gate.
+        """Persist a durable ToolApprovalRecord for a channel-answered gate,
+        using data captured BEFORE the publish (see
+        :meth:`_capture_gate_for_record`).
 
         01a06b82: the REST respond route (tool_approval.py's
         _publish_decision) has written this record at decision time since
@@ -163,41 +218,25 @@ class ChannelInbox:
         of its own -- it publishes straight onto the event bus, and the
         durable flip happens elsewhere (the bus listener / durable event
         dispatcher). So there is no natural place to hang a hard failure
-        off: ANY problem here (no storage_provider wired, the session
-        lookup failing, the gate not resolving, or the write itself
-        failing) is logged and swallowed. Called AFTER the publish
-        (R1): writing this BEFORE the publish used to mean a publish
-        that raised (or a listener that never actually advanced the
-        park) left a permanently wrong "decided" record on the books
+        off: ANY problem here is logged and swallowed. Called AFTER the
+        publish (R1): writing this BEFORE the publish used to mean a
+        publish that raised (or a listener that never actually advanced
+        the park) left a permanently wrong "decided" record on the books
         with nothing to correct it. A missed record here is recoverable
         (the resume-time write is still a backstop, now with its own
         disagreement check for exactly this residual race - see
         write_approval_record's warn_on_decision_mismatch); a missed or
         delayed wake would not have been.
         """
-        if self._storage_provider is None:
-            return
         try:
             from primer.agent.approval_record import (
                 record_from_parked_blob,
                 write_approval_record,
             )
             from primer.model.tool_approval import ToolApprovalRecord
-            from primer.model.workspace_session import WorkspaceSession
-            from primer.session.pending_gates import resolve_pending_gate
             from primer.worker.yield_runtime import classify_approval_payload
 
-            row = await self._storage_provider.get_storage(
-                WorkspaceSession,
-            ).get(env.session_id)
-            if row is None:
-                return
-            blob = getattr(row, "parked_state", None) or {}
-            gate = resolve_pending_gate(
-                blob, tool_call_id=env.tool_call_id, kind="_approval",
-            )
-            if gate is None:
-                return
+            gate = captured["gate"]
             decision, reason = classify_approval_payload(
                 {"decision": env.decision, "reason": env.reason},
             )
@@ -208,9 +247,9 @@ class ChannelInbox:
                 },
                 decision=decision,
                 reason=reason,
-                agent_id=getattr(row.binding, "agent_id", None),
+                agent_id=captured["agent_id"],
                 session_id=env.session_id,
-                requested_at=getattr(row, "parked_at", None),
+                requested_at=captured["parked_at"],
                 gate_event_key=gate.get("event_key") or event_key,
             )
             await write_approval_record(

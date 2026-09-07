@@ -508,7 +508,12 @@ async def test_record_write_failure_does_not_block_the_publish(monkeypatch, capl
     delay the wake publish. Breaks the session lookup the record write
     depends on (storage_provider present but raising) and asserts the
     event still publishes via _resolve_event_key's own independent
-    fallback, while this function logs and swallows its own failure."""
+    fallback, while this function logs and swallows its own failure.
+
+    01a07be5 finding 4: the gate is now captured BEFORE the publish, so
+    a broken session lookup fails in _capture_gate_for_record (not the
+    post-publish write) -- same "never blocks the publish" property,
+    different failure point."""
     from tests.conftest import _FakeStorageProvider
 
     sp = _FakeStorageProvider()
@@ -559,8 +564,91 @@ async def test_record_write_failure_does_not_block_the_publish(monkeypatch, capl
         # already-tested fallback: reconstructs the key and still publishes.
         assert event.event_key == "tool_approval:s-rec-3:tc-3"
         assert any(
-            "best-effort approval record write failed" in r.message
+            "failed to capture gate data before publish" in r.message
             for r in caplog.records
         )
     finally:
         await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gate_captured_before_publish_survives_a_reparked_successor(
+    monkeypatch,
+):
+    """01a07be5 finding 4: a post-publish re-read can resolve a SUCCESSOR
+    gate re-parked under the same tool_call_id if the park has already
+    advanced by the time anything reads again. Simulates the race
+    directly: publish() triggers (standing in for a listener that
+    processes it synchronously) the row being reparked under a DIFFERENT
+    gate's metadata for the identical tool_call_id, before the record
+    write runs. The persisted record must still describe the ORIGINAL
+    gate actually decided (captured before publish), not the successor.
+    """
+    from primer.model.storage import OffsetPage
+    from primer.model.tool_approval import ToolApprovalRecord
+    from tests.conftest import _FakeStorageProvider
+
+    sp = _FakeStorageProvider()
+    original_session = _session(
+        "s-race",
+        parked_state={
+            "tool_call_id": "tc-race",
+            "yielded": {
+                "tool_name": "_approval",
+                "event_key": "tool_approval:s-race:tc-race",
+                "resume_metadata": {
+                    "original_call": {
+                        "id": "tc-race", "name": "delete_workspace", "arguments": {},
+                    },
+                },
+            },
+        },
+    )
+    await sp.get_storage(WorkspaceSession).create(original_session)
+
+    successor_session = original_session.model_copy(update={
+        "parked_state": {
+            "tool_call_id": "tc-race",
+            "yielded": {
+                "tool_name": "_approval",
+                "event_key": "tool_approval:s-race:tc-race",
+                "resume_metadata": {
+                    "original_call": {
+                        "id": "tc-race", "name": "send_email", "arguments": {},
+                    },
+                },
+            },
+        },
+    })
+
+    bus = InMemoryEventBus()
+    await bus.initialize()
+    original_publish = bus.publish
+
+    async def _publish_then_reparks_a_successor(event_key, payload):
+        await original_publish(event_key, payload)
+        # By the time anything reads the row again, a DIFFERENT gate has
+        # already reparked under the identical tool_call_id.
+        await sp.get_storage(WorkspaceSession).update(successor_session)
+
+    monkeypatch.setattr(bus, "publish", _publish_then_reparks_a_successor)
+
+    try:
+        inbox = ChannelInbox(event_bus=bus, storage_provider=sp)
+        await inbox.handle_response(
+            ResponseEnvelope(
+                kind="tool_approval", workspace_id="ws-1", session_id="s-race",
+                tool_call_id="tc-race", response=None,
+                decision="approved", reason=None,
+            ),
+        )
+    finally:
+        await bus.aclose()
+
+    page = await sp.get_storage(ToolApprovalRecord).list(
+        OffsetPage(offset=0, length=50),
+    )
+    matches = [r for r in page.items if r.session_id == "s-race"]
+    assert len(matches) == 1
+    # The ORIGINAL gate's tool_name, not the reparked successor's.
+    assert matches[0].tool_name == "delete_workspace"
