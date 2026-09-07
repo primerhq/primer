@@ -40,7 +40,7 @@ from primer.graph.template import render_input_template
 from primer.model.chat import Message, StreamEvent, TextPart
 from primer.model.graph import GraphContext, NodeOutput, _AgentNodeRef
 from primer.model.principal import PrincipalRef
-from primer.model.yield_ import YieldToWorker
+from primer.model.yield_ import ToolWaitPark, YieldToWorker
 
 
 if TYPE_CHECKING:
@@ -303,6 +303,22 @@ class _AgentNodeMixin:
                     m.model_dump(mode="json") for m in produced_messages
                 ]
             raise
+        except ToolWaitPark as exc:
+            # 01a0518b boundary (d): same stamp, same reasoning, as the
+            # YieldToWorker arm above - ToolWaitPark is deliberately NOT a
+            # YieldToWorker subclass (see its own docstring), so it needs
+            # its own explicit arm here too, mirroring
+            # _BaseAgentExecutor's identical stamp for the chat/workspace
+            # surface (primer/agent/base.py). _dispatch_as_claims leaves
+            # llm_messages unset at raise time by contract - without this,
+            # a graph-live-dispatch tool_wait park would silently lose the
+            # in-progress assistant tool_use message the resume path needs
+            # to reconstruct [assistant_tool_use, tool_result] history.
+            if not exc.llm_messages:
+                exc.llm_messages = [
+                    m.model_dump(mode="json") for m in produced_messages
+                ]
+            raise
 
         # Persist the new user msg + every message produced this turn
         # (assistant + any tool result messages from the loop).
@@ -436,6 +452,24 @@ class _AgentNodeMixin:
             # continuation's own new messages.
             if not yld.llm_messages:
                 yld.llm_messages = [
+                    m.model_dump(mode="json") for m in (
+                        [new_user_msg, *rehydrated_assistant, tool_result_msg]
+                        + produced_messages
+                    )
+                ]
+            raise
+        except ToolWaitPark as exc:
+            # 01a0518b boundary (d): same stamp, same reasoning, as the
+            # YieldToWorker arm above and _stream_agent_node's own
+            # matching ToolWaitPark arm - the resumed turn's OWN
+            # continuation dispatched a NEW claims batch before finishing,
+            # so the prefix (new_user_msg + the PRIOR park's rehydrated
+            # assistant + THIS resume's own tool_result_msg) must be
+            # included, or graph/base.py's tw_pending re-park would
+            # silently lose everything before this continuation's own new
+            # messages, same as the YieldToWorker case above.
+            if not exc.llm_messages:
+                exc.llm_messages = [
                     m.model_dump(mode="json") for m in (
                         [new_user_msg, *rehydrated_assistant, tool_result_msg]
                         + produced_messages
