@@ -148,24 +148,34 @@ class InMemoryClaimEngine(ClaimEngine):
         # opened a window where a resumable session was re-claimed and its
         # resume hook ran twice, double-executing an approved tool.
         adapter = self._adapters.get(lease.kind)
+        wake_signal = None
         if adapter is not None:
-            await adapter.on_release(conn=None, entity_id=lease.entity_id, outcome=outcome)
+            wake_signal = await adapter.on_release(
+                conn=None, entity_id=lease.entity_id, outcome=outcome,
+            )
         if outcome.drop_lease:
             self._leases.pop(key, None)
-            return
-        row.claimed_by = None
-        row.claimed_at = None
-        row.last_heartbeat_at = None
-        row.expires_at = None
-        if outcome.requeue_after is not None:
-            row.next_attempt_at = datetime.now(UTC) + outcome.requeue_after
-        if not outcome.success:
-            row.attempt_count += 1
-            row.last_error = outcome.last_error
         else:
-            row.attempt_count = 0
-            row.last_error = None
-        self._wake.set()
+            row.claimed_by = None
+            row.claimed_at = None
+            row.last_heartbeat_at = None
+            row.expires_at = None
+            if outcome.requeue_after is not None:
+                row.next_attempt_at = datetime.now(UTC) + outcome.requeue_after
+            if not outcome.success:
+                row.attempt_count += 1
+                row.last_error = outcome.last_error
+            else:
+                row.attempt_count = 0
+                row.last_error = None
+            self._wake.set()
+        # 01a0518b review: no real transaction here (everything above is
+        # synchronous in-process), so "post-commit" degrades to "post
+        # mutation" - call the hook only once this lease's own state is
+        # fully settled, mirroring PostgresClaimEngine's own ordering
+        # (outside its conn.transaction() block).
+        if wake_signal is not None and self._post_release_hook is not None:
+            await self._post_release_hook(wake_signal)
 
     async def mark_resumable(self, kind: ClaimKind, entity_id: str, *, priority: int = 50) -> None:
         row = self._leases.get((kind, entity_id))

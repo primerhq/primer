@@ -20,12 +20,14 @@ Covers, in one flow:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
 import pytest
 
 from primer.claim.adapters.sessions import SessionClaimAdapter
+from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind, Lease, ReleaseOutcome
 from primer.model.chat import (
@@ -213,7 +215,10 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
     assert outcome.success is True
     assert outcome.drop_lease is True
     assert outcome.park is not None
-    assert outcome.park.parked_event_key == "tool_wait:x:tool:0:1"
+    # 01a0518b review: parked_event_key is the FUNCTIONAL wake key (a pure
+    # function of session_id/turn_no), not ToolWaitPark's own synthetic
+    # observability-only event_key.
+    assert outcome.park.parked_event_key == "tool_wait:s-tool-wait-1:0"
 
     # The notifying call's DONE row exists, result_state populated -
     # answered inline, durable home for the resume coordinator to read.
@@ -236,6 +241,13 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
         (ClaimKind.TOOL_CALL, "x:tool:0:1"),
         (ClaimKind.TOOL_CALL, "x:tool:0:2"),
     ]
+
+    # batch_task_ids is the SAME full-batch list on every row (claimable
+    # AND notifying) - what on_release's last-sibling check reads.
+    expected_batch = ["x:tool:0:1", "x:tool:0:2", "x:tool:0:3"]
+    assert task_a.batch_task_ids == expected_batch
+    assert task_b.batch_task_ids == expected_batch
+    assert notify_task.batch_task_ids == expected_batch
 
     lines = [json.loads(ln) for ln in fake_io.read_lines(session.id)]
     tool_call_lines = {
@@ -489,3 +501,189 @@ async def test_missing_tool_name_fails_loudly_not_unknown() -> None:
     )
     with pytest.raises(RuntimeError, match="no matching TOOL_CALL record"):
         await run_one_session_turn(_make_lease(session.id), deps)
+
+
+# ===========================================================================
+# Mixed-park wake seam (01a0518b review): the last-sibling re-arm mechanism,
+# driven through the REAL ToolCallClaimAdapter.on_release path.
+# ===========================================================================
+
+
+async def _dispatch_and_claim_batch(storage_provider, session_id: str):
+    """Dispatch a 2-claimable+1-notifying batch through the tool_wait park
+    branch using a REAL claim engine (SessionClaimAdapter +
+    ToolCallClaimAdapter, wired with the SAME post-release-hook shape
+    ClaimEngineFactory.create wires in production - the adapter itself
+    only returns a PostReleaseWake signal; this closure is what actually
+    calls durably_mark_session_resumable, strictly after the release's
+    own transaction/mutation completes), then claim the two QUEUED
+    tasks. Returns ``(engine, session_storage, task_storage, task_leases)``.
+    """
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    task_storage = storage_provider.get_storage(ToolCallTask)
+
+    session = WorkspaceSession(
+        id=session_id,
+        workspace_id="w1",
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=SessionStatus.RUNNING,
+        created_at=_now(),
+        turn_status="running",
+    )
+    await session_storage.create(session)
+
+    notify_result = ToolResultPart(id="x:tool:0:3", output="notified ok", error=False)
+    park = ToolWaitPark(
+        outstanding_task_ids=["x:tool:0:1", "x:tool:0:2"],
+        event_key="tool_wait:x:tool:0:1",
+        notifying_results=[("x:tool:0:3", notify_result)],
+    )
+    fake_io = _FakeWorkspaceIO()
+    fake_bus = _FakeEventBus()
+
+    engine = InMemoryClaimEngine(adapters={
+        ClaimKind.SESSION: SessionClaimAdapter(session_storage=session_storage),
+        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage),
+    })
+
+    async def _wake_session_on_tool_wait_ready(signal) -> None:
+        from primer.session.yields import durably_mark_session_resumable
+
+        woken = await session_storage.get(signal.session_id)
+        if woken is None:
+            return
+        await durably_mark_session_resumable(
+            woken, event_key=signal.event_key, payload=signal.payload,
+            session_storage=session_storage, engine=engine,
+        )
+
+    engine.bind_post_release_hook(_wake_session_on_tool_wait_ready)
+
+    async def _build_executor(_session: WorkspaceSession):
+        return _ToolWaitExecutor(park)
+
+    deps = SessionDispatchDeps(
+        storage_provider=storage_provider,
+        workspace_io=fake_io,
+        event_bus=fake_bus,
+        build_executor=_build_executor,
+        claim_engine=engine,
+    )
+    await engine.upsert(ClaimKind.SESSION, session_id)
+    session_lease = next(
+        l for l in await engine.claim_due("worker-1", max_count=10)
+        if l.entity_id == session_id
+    )
+    outcome = await run_one_session_turn(session_lease, deps)
+    await engine.release(session_lease, outcome=outcome)
+    assert outcome.park is not None
+
+    task_leases = await engine.claim_due(
+        "worker-1", max_count=10, kinds=[ClaimKind.TOOL_CALL],
+    )
+    assert len(task_leases) == 2
+    return engine, session_storage, task_storage, task_leases
+
+
+@pytest.mark.asyncio
+async def test_last_sibling_on_release_wakes_session_and_resume_continues(
+    monkeypatch,
+) -> None:
+    """01a0518b review, required test: the wake trigger fires through the
+    REAL ToolCallClaimAdapter.on_release path - no manual row flipping.
+    Releasing the first of two QUEUED siblings must NOT wake the session
+    (its sibling is still outstanding); releasing the second (the LAST)
+    must flip parked_status to resumable, and resume_engine_tool_wait
+    must then correctly route and continue the turn."""
+    storage_provider = _FakeStorageProvider()
+    engine, session_storage, task_storage, task_leases = (
+        await _dispatch_and_claim_batch(storage_provider, "s-wake-1")
+    )
+    lease_by_id = {lease.entity_id: lease for lease in task_leases}
+
+    task_a = await task_storage.get("x:tool:0:1")
+    result_a = ToolResultPart(id="x:tool:0:1", output="result A", error=False)
+    await task_storage.update(task_a.model_copy(
+        update={"result_state": result_a.model_dump(mode="json")}
+    ))
+    await engine.release(
+        lease_by_id["x:tool:0:1"], outcome=ReleaseOutcome(success=True, drop_lease=True),
+    )
+
+    row = await session_storage.get("s-wake-1")
+    assert row.parked_status == "parked"  # sibling x:tool:0:2 still QUEUED
+
+    task_b = await task_storage.get("x:tool:0:2")
+    result_b = ToolResultPart(id="x:tool:0:2", output="result B", error=False)
+    await task_storage.update(task_b.model_copy(
+        update={"result_state": result_b.model_dump(mode="json")}
+    ))
+    await engine.release(
+        lease_by_id["x:tool:0:2"], outcome=ReleaseOutcome(success=True, drop_lease=True),
+    )
+
+    row = await session_storage.get("s-wake-1")
+    assert row.parked_status == "resumable"
+    assert row.parked_state["resume_event_payload"] == {"tool_wait_ready": True}
+    assert row.parked_state["resume_event_key"] == "tool_wait:s-wake-1:0"
+
+    pool = _build_pool(storage_provider)
+    assert pool._select_resume_handler(row) == pool._resume_engine_tool_wait
+
+    fake_executor = _RecordingExecutor()
+    monkeypatch.setattr(
+        pool, "_load_workspace_for_persist", lambda _ws_id: _async_return(None),
+    )
+    monkeypatch.setattr(
+        pool, "_build_agent_executor", lambda _s, _w: _async_return(fake_executor),
+    )
+
+    resume_outcome = await resume_engine_tool_wait(pool, _make_lease(row.id), row)
+    assert resume_outcome.success is True
+    assert resume_outcome.drop_lease is False
+    assert len(fake_executor.injected) == 1
+    tool_msg = fake_executor.injected[0][-1]
+    by_id = {p.id: p for p in tool_msg.parts if isinstance(p, ToolCallPart | ToolResultPart)}
+    assert by_id["x:tool:0:1"].output == "result A"
+    assert by_id["x:tool:0:2"].output == "result B"
+    assert by_id["x:tool:0:3"].output == "notified ok"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_last_two_siblings_wake_idempotently() -> None:
+    """01a0518b review, required test: both on_release calls for the last
+    two siblings can observe "all terminal" and both call
+    durably_mark_session_resumable - must not crash, and must land on a
+    single, correct resumable state regardless of which one's write
+    lands last (both compute the SAME event_key + the SAME marker
+    payload for this batch, so a lost update between the two concurrent
+    writes is harmless - see tool_wait_event_key's own docstring)."""
+    storage_provider = _FakeStorageProvider()
+    engine, session_storage, task_storage, task_leases = (
+        await _dispatch_and_claim_batch(storage_provider, "s-wake-2")
+    )
+    lease_by_id = {lease.entity_id: lease for lease in task_leases}
+
+    for tid, output in (("x:tool:0:1", "result A"), ("x:tool:0:2", "result B")):
+        task = await task_storage.get(tid)
+        result = ToolResultPart(id=tid, output=output, error=False)
+        await task_storage.update(task.model_copy(
+            update={"result_state": result.model_dump(mode="json")}
+        ))
+
+    # Both siblings release "at the same time" - each on_release's own
+    # sibling-check may observe the OTHER as already terminal or not,
+    # exercising the real interleaving rather than a hand-picked order.
+    await asyncio.gather(
+        engine.release(
+            lease_by_id["x:tool:0:1"], outcome=ReleaseOutcome(success=True, drop_lease=True),
+        ),
+        engine.release(
+            lease_by_id["x:tool:0:2"], outcome=ReleaseOutcome(success=True, drop_lease=True),
+        ),
+    )
+
+    row = await session_storage.get("s-wake-2")
+    assert row.parked_status == "resumable"
+    assert row.parked_state["resume_event_payload"] == {"tool_wait_ready": True}
+    assert row.parked_state["resume_event_key"] == "tool_wait:s-wake-2:0"

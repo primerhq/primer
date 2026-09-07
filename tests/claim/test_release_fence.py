@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from primer.int.claim import ClaimKind, ReleaseOutcome
+from primer.int.claim import ClaimKind, PostReleaseWake, ReleaseOutcome
 
 
 def _now() -> datetime:
@@ -129,6 +129,79 @@ async def test_in_memory_release_runs_when_still_owned():
     leases = await engine.claim_due("worker-A", max_count=1)
     await engine.release(leases[0], outcome=ReleaseOutcome(success=True, drop_lease=True))
     assert calls == ["c2"]  # owned -> on_release ran
+
+
+@pytest.mark.asyncio
+async def test_in_memory_release_fires_post_release_hook_after_mutation():
+    """01a0518b review, required test: the bound hook must fire strictly
+    AFTER release()'s own lease mutation is applied - "post-commit"
+    degrades to "post-mutation" for the in-memory engine (no real
+    transaction), per PostReleaseWake's own docstring. Proven by having
+    the hook itself inspect engine state: if it ever ran BEFORE the
+    drop, the lease would still be present when it fires."""
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    class _Adapter:
+        kind = ClaimKind.TOOL_CALL
+        entity_table = "toolcalltask"
+
+        def eligibility_sql(self):
+            return "true"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            return PostReleaseWake(
+                session_id="s1", event_key="tool_wait:s1:0",
+                payload={"tool_wait_ready": True},
+            )
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: _Adapter()})
+    await engine.upsert(ClaimKind.TOOL_CALL, "t1")
+    leases = await engine.claim_due("worker-A", max_count=1)
+
+    hook_calls: list[PostReleaseWake] = []
+    lease_already_dropped: list[bool] = []
+
+    async def _hook(signal: PostReleaseWake) -> None:
+        hook_calls.append(signal)
+        lease_already_dropped.append(
+            (ClaimKind.TOOL_CALL, "t1") not in engine._leases
+        )
+
+    engine.bind_post_release_hook(_hook)
+    await engine.release(leases[0], outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+    assert hook_calls == [PostReleaseWake(
+        session_id="s1", event_key="tool_wait:s1:0",
+        payload={"tool_wait_ready": True},
+    )]
+    assert lease_already_dropped == [True]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_release_skips_hook_when_signal_is_none():
+    """Every OTHER adapter (and this one, absent a batch) returns None -
+    the hook must never fire for those."""
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    class _Adapter:
+        kind = ClaimKind.TOOL_CALL
+        entity_table = "toolcalltask"
+
+        def eligibility_sql(self):
+            return "true"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            return None
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: _Adapter()})
+    await engine.upsert(ClaimKind.TOOL_CALL, "t1")
+    leases = await engine.claim_due("worker-A", max_count=1)
+
+    hook_calls = []
+    engine.bind_post_release_hook(lambda signal: hook_calls.append(signal))
+    await engine.release(leases[0], outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+    assert hook_calls == []
 
 
 @pytest.mark.asyncio

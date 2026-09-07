@@ -74,6 +74,21 @@ class ToolCallTask(Identifiable):
     # bug worth surfacing, not papering over.
     record_seq: int = Field(..., ge=1)
 
+    # Every id (claimable + notifying) created from the SAME ToolWaitPark
+    # batch as this row, THIS row's own id included (01a0518b, mixed-park
+    # wake seam). The SAME list on every row in a batch - not a "first" /
+    # "last" pick, so this stays consistent with the no-primary-projection
+    # discipline pending_gates.py established. ToolCallClaimAdapter.
+    # on_release's terminal branch reads every id here via individual
+    # storage.get(id, conn=conn) calls (NOT Storage.find, which has no
+    # conn param and would read outside this release's own transaction)
+    # to determine "am I the last sibling to go terminal" - a genuinely
+    # NEW piece of information each row needs (which OTHER ids share its
+    # batch), unlike a wake KEY, which is a pure function of session_id +
+    # turn_no alone (see primer.session.yields.tool_wait_event_key) and
+    # is deliberately NOT stored here for exactly that reason.
+    batch_task_ids: list[str] = Field(default_factory=list)
+
     # Set only while state == GATED (approval-required or a yielding tool
     # mid-execution) — the gate's own event_key, so the resume path knows
     # which wake event to wait for. Mirrors WorkspaceSession.parked_event_key

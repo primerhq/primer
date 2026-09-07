@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
+from primer.int.claim import ClaimAdapter, ClaimKind, PostReleaseWake, ReleaseOutcome
 from primer.int.storage import Storage
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
 
@@ -56,7 +56,9 @@ class ToolCallClaimAdapter(ClaimAdapter):
             f"ON {qualified_table} ((data->>'session_id'), (data->>'turn_no'))",
         ]
 
-    async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
+    async def on_release(
+        self, conn, entity_id: str, *, outcome: ReleaseOutcome,
+    ) -> "PostReleaseWake | None":
         if self._storage is None:
             raise RuntimeError(
                 "task_storage is None - cannot run on_release without a storage backend"
@@ -107,7 +109,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 "gate_state": None,
             })
             await self._storage.update(updated, conn=conn)
-            return
+            return await self._last_sibling_wake_signal(updated, conn=conn)
 
         # Retryable branch: not gated, not terminal - a transient failure
         # (reclaim, worker crash) or an explicit requeue. Reset to QUEUED
@@ -129,6 +131,51 @@ class ToolCallClaimAdapter(ClaimAdapter):
             "result_state": None,
         })
         await self._storage.update(retried, conn=conn)
+
+    async def _last_sibling_wake_signal(
+        self, task: ToolCallTask, *, conn,
+    ) -> "PostReleaseWake | None":
+        """Ruling 2 (01a0518b): the LAST outstanding task of a tool_wait
+        batch re-arms the owning session's claim lease.
+
+        Returns a :class:`~primer.int.claim.PostReleaseWake` signal for
+        the ENGINE to act on AFTER this release's own transaction commits
+        (01a0518b review hazard fix) - this method itself never touches
+        the session row or calls worker-layer code; see that class's own
+        docstring for why the split exists.
+
+        ``task.batch_task_ids`` is empty for a ToolCallTask that never
+        went through the claim-based dispatch seam (defensive - none
+        exist in production yet, but a bare adapter unit test might
+        construct one directly) - a no-op, exactly as if this task were
+        never part of a batch at all.
+
+        Reads every sibling via individual ``storage.get(id, conn=conn)``
+        calls, NOT ``Storage.find`` (which has no ``conn`` parameter at
+        all and would therefore read from OUTSIDE this release's own
+        Postgres transaction - it could miss the very state THIS call
+        just wrote, one line above, wrongly concluding "not last" when it
+        is). Not the last sibling yet: returns ``None``, nothing to do -
+        this task's own state is already durably updated above.
+        """
+        if not task.batch_task_ids or self._storage is None:
+            return None
+        for sibling_id in task.batch_task_ids:
+            sibling = (
+                task if sibling_id == task.id
+                else await self._storage.get(sibling_id, conn=conn)
+            )
+            if sibling is None or sibling.state not in (
+                ToolCallTaskState.DONE, ToolCallTaskState.FAILED,
+            ):
+                return None
+        from primer.session.yields import tool_wait_event_key
+
+        return PostReleaseWake(
+            session_id=task.session_id,
+            event_key=tool_wait_event_key(task.session_id, task.turn_no),
+            payload={"tool_wait_ready": True},
+        )
 
 
 __all__ = ["ToolCallClaimAdapter"]

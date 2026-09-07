@@ -356,6 +356,7 @@ class PostgresClaimEngine(ClaimEngine):
             if outcome.requeue_after is not None
             else 0
         )
+        wake_signal = None
         async with self._storage.pool.acquire() as conn:
             async with conn.transaction():
                 if outcome.drop_lease:
@@ -395,9 +396,15 @@ class PostgresClaimEngine(ClaimEngine):
                     return
                 adapter = self._adapters.get(lease.kind)
                 if adapter is not None:
-                    await adapter.on_release(
+                    wake_signal = await adapter.on_release(
                         conn, lease.entity_id, outcome=outcome,
                     )
+        # 01a0518b review: fired ONLY after the `async with conn.transaction()`
+        # block above has exited (committed) - see PostReleaseWake's own
+        # docstring for why an adapter can't call the eventual wake code
+        # from inside that transaction.
+        if wake_signal is not None and self._post_release_hook is not None:
+            await self._post_release_hook(wake_signal)
 
     # ------------------------------------------------------------------
     # mark_resumable

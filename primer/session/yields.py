@@ -78,6 +78,35 @@ def _dispatch_key_for(event_key: str, *, session_id: str) -> str:
     return event_key
 
 
+def tool_wait_event_key(session_id: str, turn_no: int) -> str:
+    """The wake key for a session's tool_wait park (01a0518b review).
+
+    A PURE function of fields every ``ToolCallTask`` row already carries
+    (``session_id``/``turn_no``) - deliberately NOT a stored field on the
+    row (an earlier draft stamped it at creation time; review flagged
+    that as the same denormalized-projection shape that caused the
+    ``pending_dispatch`` disease elsewhere - two sites carrying what must
+    be one truth). Both dispatch.py's park write (``ParkRequest.
+    parked_event_key`` / the multi-event ``parked_event_keys`` list) and
+    ``ToolCallClaimAdapter.on_release``'s last-sibling flip call THIS
+    function so there is exactly one place the shape can drift from.
+
+    Shaped like every other event_key producer
+    (``"<kind>:<session_id>:<tail>"``) so :func:`_dispatch_key_for`'s
+    prefix-strip works unchanged for the mixed (multi-event) graph park
+    case; ``turn_no`` is the tail since a session can only ever have ONE
+    tool_wait batch pending per turn (a fresh turn always mints a fresh
+    ``_CoalesceState``, so a turn_no collision across two DIFFERENT
+    batches cannot happen).
+
+    Distinct from ``ToolWaitPark.event_key`` (observability-only,
+    ``f"tool_wait:{outstanding_task_ids[0]}"`` - never looked up by
+    anything, see that class's own docstring) - this is the FUNCTIONAL
+    key the wake mechanism actually keys on.
+    """
+    return f"tool_wait:{session_id}:{turn_no}"
+
+
 async def durably_mark_session_resumable(
     session: WorkspaceSession,
     *,
@@ -135,6 +164,15 @@ async def durably_mark_session_resumable(
     same ``dispatch_key`` with identical data. Returns True when the row
     was advanced/accumulated, False when the guard rejected it (including
     the ENDED race above, resolved at write time rather than read time).
+
+    ``ToolCallClaimAdapter.on_release`` (01a0518b, the mixed-park wake
+    seam) is a NEW caller, but never calls this directly from INSIDE its
+    own claim-engine transaction - see
+    :class:`primer.int.claim.PostReleaseWake`'s own docstring for why an
+    adapter calling this function mid-transaction would let a worker
+    observe a stale (pre-commit) entity row. This function is only ever
+    invoked standalone (no surrounding transaction of its own), by
+    design, from every caller including that one.
     """
     is_multi = bool(session.parked_event_keys)
     allowed = ("parked", "resumable") if is_multi else ("parked",)

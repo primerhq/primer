@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import Awaitable, AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -60,6 +60,49 @@ class ReleaseOutcome:
     preserve_park: bool = False
 
 
+@dataclass(frozen=True)
+class PostReleaseWake:
+    """Optional signal ``ClaimAdapter.on_release`` returns to ask the
+    ENGINE to wake something else AFTER this release's own transaction
+    commits (01a0518b review - the mixed-park wake seam's hazard fix).
+
+    The engine owns transaction boundaries, adapters don't: an adapter
+    has no "my transaction just committed" hook of its own to call
+    worker-layer code from. ``ToolCallClaimAdapter.on_release`` calling
+    ``primer.session.yields.durably_mark_session_resumable`` directly
+    (an earlier draft) would run that write on a SEPARATE connection
+    that could commit BEFORE the release's own surrounding
+    ``conn.transaction()`` does - a worker claiming the newly-resumable
+    session could then observe THIS release's own entity-state write in
+    a stale, pre-commit state. Returning this signal instead defers the
+    actual wake call until the engine's own transaction has fully
+    committed (see ``ClaimEngine.bind_post_release_hook``).
+
+    ``session_id`` / ``event_key`` / ``payload`` mirror
+    ``durably_mark_session_resumable``'s own parameters, minus the
+    ``session`` row itself - the bound hook re-reads it fresh, since a
+    row snapshotted INSIDE the now-committed transaction could itself
+    already be stale by the time the hook actually runs.
+
+    Every adapter OTHER than ``ToolCallClaimAdapter`` returns ``None``
+    (the default for a function with no ``return`` statement) - this is
+    purely additive, no other adapter's ``on_release`` contract changes.
+
+    Accepted crash window: if the process dies AFTER this release's
+    transaction commits but BEFORE the bound hook actually runs, the
+    task goes terminal but the session never gets woken - it degrades to
+    the EXISTING park-timeout backstop (consistent with the system's
+    at-least-once philosophy elsewhere), not a permanently stuck park.
+    Recovery-boot reconciliation (re-arming any tool_wait park whose
+    siblings are ALL already terminal) is a deliberate follow-up, not
+    built here.
+    """
+
+    session_id: str
+    event_key: str
+    payload: dict[str, Any]
+
+
 class ClaimAdapter(ABC):
     kind: ClaimKind
     entity_table: str
@@ -68,7 +111,9 @@ class ClaimAdapter(ABC):
     def eligibility_sql(self) -> str: ...
 
     @abstractmethod
-    async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None: ...
+    async def on_release(
+        self, conn, entity_id: str, *, outcome: ReleaseOutcome,
+    ) -> "PostReleaseWake | None": ...
 
     def entity_indexes(self, qualified_table: str) -> list[str]:
         """Return ``CREATE INDEX`` statements backing this adapter's queries.
@@ -85,6 +130,28 @@ class ClaimAdapter(ABC):
 
 
 class ClaimEngine(ABC):
+    # 01a0518b review: class-level default (not set in __init__) so
+    # neither concrete engine's constructor needs to change - binding is
+    # optional and post-construction, same shape as every other bind_*
+    # setter this arc introduced. The engine itself never imports the
+    # worker-layer function the hook eventually calls (durably_mark_
+    # session_resumable) - the pool/factory closes over whatever
+    # storage/engine references THAT needs and hands the engine only a
+    # plain callable, keeping this module free of worker-layer imports.
+    _post_release_hook: (
+        "Callable[[PostReleaseWake], Awaitable[None]] | None"
+    ) = None
+
+    def bind_post_release_hook(
+        self, hook: "Callable[[PostReleaseWake], Awaitable[None]] | None",
+    ) -> None:
+        """Bind the callable invoked after ``release()``'s own transaction
+        commits, when an adapter's ``on_release`` returns a
+        :class:`PostReleaseWake`. See that class's own docstring for why
+        this exists instead of an adapter calling worker code directly.
+        """
+        self._post_release_hook = hook
+
     @abstractmethod
     async def claim_due(
         self, worker_id: str, *, max_count: int, kinds: list[ClaimKind] | None = None,
