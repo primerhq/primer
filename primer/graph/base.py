@@ -211,13 +211,14 @@ class _BaseGraphExecutor(
         # scope any ToolCallTask rows it creates. None is a no-op for
         # callers that haven't opted into tool_calls_as_claims.
         self._turn_no = turn_no
-        # 01a0518b: TOP-LEVEL ONLY - a subgraph node (_GraphNodeRef) shares
-        # the SAME session row as its parent graph (see _build_sub_executor
-        # in WorkspaceGraphExecutor), so it inherits this unchanged; a
-        # nested SUBAGENT turn (system__invoke_agent) does not and is
-        # never given it - see run_agent_turn's docstring for the full
-        # reasoning (same scope-cut class as artifact_storage's own cut
-        # for that surface).
+        # 01a0518b: TOP-LEVEL ONLY - neither a subgraph node (_GraphNodeRef)
+        # nor a nested SUBAGENT turn (system__invoke_agent) inherits this;
+        # both are hardcoded off at their respective _build_sub_executor /
+        # run_agent_turn call sites (7a gate review: a subgraph child's own
+        # ToolWaitPark would otherwise propagate into the PARENT's
+        # _stream_node dispatch as an unrecognized non-agent-node park and
+        # deadlock the superstep - see WorkspaceGraphExecutor.
+        # _build_sub_executor's own comment for the full trace).
         self._tool_calls_as_claims_enabled = tool_calls_as_claims_enabled
         # 01a0518b (graph-surface boundary d): the per-turn _CoalesceState
         # _agent_node.py's mixin needs to build a NODE-QUALIFIED
@@ -1027,35 +1028,29 @@ class _BaseGraphExecutor(
                 status=_status,
             )
 
-        # Full concurrency: if other human-interaction nodes OR tool_wait
-        # batches (01a0518b boundary d - a fan-out sibling's batch can
-        # still be mid-flight after a PARTIAL wake) are still pending,
-        # re-park on the remaining keys instead of advancing the graph.
-        if (
-            self._pending_toolcalls
-            or self._pending_agent_yields
-            or self._pending_tool_waits
-        ):
-            await self._save_state(
-                iteration=context.iteration,
-                node_states=node_states,
-                status=SessionStatus.WAITING,
-            )
-            raise self._build_pending_park_exception()
-
-        # Persist the drained-state snapshot so observers can see the
-        # ToolCalls finished before the next superstep starts.
-        await self._save_state(
-            iteration=context.iteration,
-            node_states=node_states,
-            status=SessionStatus.RUNNING,
-        )
-
-        # Compute the next ready set from the now-completed pending
-        # ToolCall nodes. The ``ready`` set on the executor at the time
-        # of the yield was the set of in-flight nodes; the just-completed
-        # subset is ``completed_ids`` (the others, if any, already had
-        # their results applied before the yield fired).
+        # 7a gate review (verdict item 2): compute + fold completed_ids'
+        # successors into ``ready`` BEFORE checking whether OTHER pending
+        # entries remain and re-parking - moved ahead of that check
+        # (was previously below it, unreachable whenever a sibling
+        # re-park fired). The prior ordering meant a partial wake's
+        # already-resolved node's successors were computed on some LATER
+        # resume that never revisits this node (already removed from its
+        # own pending list here) - silently dropping its entire
+        # downstream branch forever; the graph would then "complete"
+        # without ever having run it.
+        #
+        # ``ready = (ready - completed_ids) | next_ready``, not a bare
+        # assignment: ``ready`` at method entry is ``self._ready_set``,
+        # restored from the checkpoint - for a MULTI-entry partial wake
+        # this already carries whatever a PRIOR resume in this same
+        # drain-until-empty chain accumulated (e.g. sibling B's own id,
+        # still pending, plus any successor a PRIOR resolved sibling's
+        # own edge-walk already added). A bare ``ready = next_ready``
+        # would discard all of that the moment call for a NEW resolved
+        # entry runs. Removing exactly ``completed_ids`` (never anything
+        # still pending) and folding in only the fresh successors keeps
+        # every previously-accumulated target intact across however many
+        # partial resumes it takes to fully drain the pending set.
         if completed_ids:
             try:
                 next_ready = await self._compute_next_ready(
@@ -1082,8 +1077,35 @@ class _BaseGraphExecutor(
                     next_ready.add(inst.synthesized_id)
                 del self._pending_fanout[fanout_id]
             context.iteration += 1
-            ready = next_ready
+            ready = (ready - set(completed_ids)) | next_ready
             self._ready_set = ready
+
+        # Full concurrency: if other human-interaction nodes OR tool_wait
+        # batches (01a0518b boundary d - a fan-out sibling's batch can
+        # still be mid-flight after a PARTIAL wake) are still pending,
+        # re-park on the remaining keys instead of advancing the graph -
+        # by this point ``self._ready_set`` already carries any
+        # successors computed above, so the re-parked checkpoint does not
+        # lose them.
+        if (
+            self._pending_toolcalls
+            or self._pending_agent_yields
+            or self._pending_tool_waits
+        ):
+            await self._save_state(
+                iteration=context.iteration,
+                node_states=node_states,
+                status=SessionStatus.WAITING,
+            )
+            raise self._build_pending_park_exception()
+
+        # Persist the drained-state snapshot so observers can see the
+        # ToolCalls finished before the next superstep starts.
+        await self._save_state(
+            iteration=context.iteration,
+            node_states=node_states,
+            status=SessionStatus.RUNNING,
+        )
 
         async for ev in self._run_superstep_loop(
             context=context,
