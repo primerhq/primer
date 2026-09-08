@@ -570,15 +570,65 @@ async def test_tool_call_record_flushes_immediately(
     fake_event_bus: InMemoryEventBus,
     fake_storage_provider,
 ) -> None:
-    """01a0518b (seam-split A-chat/workspace surface): a TOOL_CALL record
-    is flushed to workspace_io the instant it's appended, not batched with
-    later records into the buffer's normal 16KB/100ms flush. A claim-based
+    """01a0518b (seam-split A-chat/workspace surface): when
+    tool_calls_as_claims is armed, a TOOL_CALL record is flushed to
+    workspace_io the instant it's appended, not batched with later
+    records into the buffer's normal 16KB/100ms flush. A claim-based
     worker will read messages.jsonl from a different process, so the
     record must be durable (flushed) before that worker can see it —
     without the early flush, this turn's TOOL_CALL and DONE records would
     both still fit under 16KB well within 100ms and land in a single
     combined write at turn end.
+
+    7a gate review (verdict item A): this eager flush - and the
+    coalesce_state stash it exists alongside - is now gated on
+    ``executor._tool_calls_as_claims_enabled``; neither serves any
+    purpose when the flag is off (nothing on that path can ever produce
+    a ToolWaitPark to read the stash back, and the classic in-process
+    dispatch has no different-process reader to make durable for). The
+    fake here now says so explicitly, matching what a real executor
+    dispatching a claims batch always carries; the sibling test right
+    after this one pins the flag-off (no eager flush) side of the gate.
     """
+    fake_executor = FakeExecutor([
+        ToolCallStart(id="call_0", name="my_tool", index=0),
+        ToolCallEnd(id="call_0", arguments={}, index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+    fake_executor._tool_calls_as_claims_enabled = True
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    await run_one_session_turn(lease, deps)
+
+    lines = fake_workspace_io.read_lines(seeded_session.id)
+    assert len(lines) == 2  # TOOL_CALL, DONE
+    # The TOOL_CALL record's own write must be a SEPARATE I/O call from
+    # the DONE record's — proof the flush happened at TOOL_CALL append
+    # time rather than being deferred to the end-of-turn flush.
+    assert fake_workspace_io.append_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_tool_call_record_does_not_eager_flush_when_flag_off(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """7a gate review (verdict item A): the mirror case - a flag-off
+    turn's TOOL_CALL and DONE records both fit comfortably under the
+    writer's 16KB/100ms buffer, so they land in ONE combined write at
+    turn end, not two - the eager per-tool-call flush this arc
+    introduced must not run unconditionally on the default path."""
     fake_executor = FakeExecutor([
         ToolCallStart(id="call_0", name="my_tool", index=0),
         ToolCallEnd(id="call_0", arguments={}, index=0),
@@ -599,10 +649,7 @@ async def test_tool_call_record_flushes_immediately(
 
     lines = fake_workspace_io.read_lines(seeded_session.id)
     assert len(lines) == 2  # TOOL_CALL, DONE
-    # The TOOL_CALL record's own write must be a SEPARATE I/O call from
-    # the DONE record's — proof the flush happened at TOOL_CALL append
-    # time rather than being deferred to the end-of-turn flush.
-    assert fake_workspace_io.append_calls == 2
+    assert fake_workspace_io.append_calls == 1
 
 
 @pytest.mark.asyncio
