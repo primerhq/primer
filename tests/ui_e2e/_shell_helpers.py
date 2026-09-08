@@ -113,6 +113,31 @@ def open_view(page: Page, console_url: str, wid: str, view: str,
         page.goto(f"{console_url}{fragment}")
 
 
+def open_root(page: Page, console_url: str) -> None:
+    """Navigate back to the bare console root (no workspace/overlay/view).
+
+    01a08248: shares open_view/open_overlay's same-document hash-
+    assignment fix. Once the console has resolved a default workspace,
+    its own URL-sync write effect (SH_buildUrl in shell-url.js) has
+    already rewritten the hash to "#/w/<wid>" - a caller is essentially
+    never on a genuinely hash-less URL by the time it wants "back to the
+    shell," so a raw page.goto() to "#/" is a same-document, hash-only
+    change whose hashchange/popstate firing isn't guaranteed, and
+    nv-shell.jsx's URL-sync listener only reacts to those two events.
+
+    No post-nav assertion here (unlike open_overlay) - "the shell" means
+    different things on desktop (nv-root) vs mobile (nv-mobile-shell,
+    US-014), so the caller waits on whichever applies.
+    """
+    fragment = "#/"
+    current_origin = page.url.split("#", 1)[0].rstrip("/")
+    console_origin = console_url.rstrip("/")
+    if current_origin == console_origin:
+        page.evaluate("(h) => { window.location.hash = h; }", fragment)
+    else:
+        page.goto(f"{console_url}{fragment}")
+
+
 def open_palette(page: Page) -> None:
     """Open the command palette, by its own affordance.
 
