@@ -313,22 +313,6 @@ class _BaseGraphExecutor(
         # before the first superstep / after termination.
         self._context: GraphContext | None = None
         self._ready_set: set[str] = set()
-        # ``_settled_ids`` (7a gate review, verdict R3-1/R3-2): the set of
-        # node ids that have gone terminal (ENDED or FAILED) WITHIN the
-        # superstep currently being tracked - reset once per superstep in
-        # ``_run_superstep_loop`` (see the reset's own comment for why
-        # that per-superstep boundary is load-bearing, not hygiene), and
-        # accumulated across however many partial resumes it takes to
-        # fully drain that superstep's pending set in
-        # ``resume_from_checkpoint``. Exists so the resume-dispatch
-        # exclusion set never has to infer "already ran this superstep"
-        # from ``node_states[...].status`` - a persistent, never-reset,
-        # globally-keyed field that two prior fix rounds each
-        # (independently) mistook for that proxy and were wrong in a
-        # cyclic graph, where a revisited node_id's stale status from an
-        # EARLIER superstep is indistinguishable from a genuine
-        # same-superstep completion.
-        self._settled_ids: set[str] = set()
         # Node ids that have entered the ready set at least once this run.
         # Used by ``_fanin_ready`` to decide whether a callable-router source
         # is a *live* potential upstream (admitted but not yet resolved) that
@@ -1054,29 +1038,55 @@ class _BaseGraphExecutor(
                 status=_status,
             )
 
-        # 7a gate review (verdict item 2): compute + fold completed_ids'
-        # successors into ``ready`` BEFORE checking whether OTHER pending
-        # entries remain and re-parking - moved ahead of that check
-        # (was previously below it, unreachable whenever a sibling
-        # re-park fired). The prior ordering meant a partial wake's
-        # already-resolved node's successors were computed on some LATER
-        # resume that never revisits this node (already removed from its
-        # own pending list here) - silently dropping its entire
-        # downstream branch forever; the graph would then "complete"
-        # without ever having run it.
+        # Full concurrency: if other human-interaction nodes OR tool_wait
+        # batches (01a0518b boundary d - a fan-out sibling's batch can
+        # still be mid-flight after a PARTIAL wake) are still pending,
+        # re-park on the remaining keys instead of advancing the graph.
+        if (
+            self._pending_toolcalls
+            or self._pending_agent_yields
+            or self._pending_tool_waits
+        ):
+            await self._save_state(
+                iteration=context.iteration,
+                node_states=node_states,
+                status=SessionStatus.WAITING,
+            )
+            raise self._build_pending_park_exception()
+
+        # Persist the drained-state snapshot so observers can see the
+        # ToolCalls finished before the next superstep starts.
+        await self._save_state(
+            iteration=context.iteration,
+            node_states=node_states,
+            status=SessionStatus.RUNNING,
+        )
+
+        # Compute the next ready set from the now-completed pending
+        # ToolCall nodes. The ``ready`` set on the executor at the time
+        # of the yield was the set of in-flight nodes; the just-completed
+        # subset is ``completed_ids`` (the others, if any, already had
+        # their results applied before the yield fired).
         #
-        # ``ready = (ready - completed_ids) | next_ready``, not a bare
-        # assignment: ``ready`` at method entry is ``self._ready_set``,
-        # restored from the checkpoint - for a MULTI-entry partial wake
-        # this already carries whatever a PRIOR resume in this same
-        # drain-until-empty chain accumulated (e.g. sibling B's own id,
-        # still pending, plus any successor a PRIOR resolved sibling's
-        # own edge-walk already added). A bare ``ready = next_ready``
-        # would discard all of that the moment call for a NEW resolved
-        # entry runs. Removing exactly ``completed_ids`` (never anything
-        # still pending) and folding in only the fresh successors keeps
-        # every previously-accumulated target intact across however many
-        # partial resumes it takes to fully drain the pending set.
+        # 01a0812c (FLAG-ON PREREQUISITE, alongside recovery-boot
+        # 01a07c06): resume-dispatch correctness across a MULTI-entry
+        # partial wake (a sibling that completed/failed before the park
+        # surviving into the eventual `ready = next_ready` bare
+        # assignment below) is a KNOWN GAP here, deliberately reverted
+        # off this branch rather than fixed. Four consecutive rounds
+        # patched this exact expression and each introduced a NEW bug
+        # (reorder+union -> completed-sibling re-execution; ENDED-only
+        # already_ended -> cyclic loop-back drop + FAILED-sibling hole;
+        # settled_ids -> accumulated-ready deletion + failure-swallowing
+        # past a park) - none of it needed for THIS arc's merge, since
+        # tool_calls_as_claims_enabled OFF means tw_pending is always
+        # empty and this exact bare assignment is byte-identical to
+        # main (f49bdf0d). The accumulated scenario knowledge from all
+        # four rounds is preserved as xfail tests pointing at 01a0812c,
+        # which absorbs 01a08016 (same function, same class of bug) and
+        # requires a full design (remove-on-settle instead of
+        # filter-on-resume; persist failure across a park) plus a
+        # scenario matrix before any further code here.
         if completed_ids:
             try:
                 next_ready = await self._compute_next_ready(
@@ -1102,82 +1112,9 @@ class _BaseGraphExecutor(
                     self._fanout_instances[inst.synthesized_id] = inst
                     next_ready.add(inst.synthesized_id)
                 del self._pending_fanout[fanout_id]
-            # 7a gate review (verdict R3-1/R3-2): ``ready`` at method entry
-            # is the FULL set dispatched in the ORIGINAL superstep,
-            # restored from the checkpoint - if a sibling (say N) completed
-            # normally BEFORE the park, its id survives in ``ready``
-            # untouched across every resume cycle, since N is never itself
-            # a ``completed_ids`` entry here (it finished before the park,
-            # not as part of THIS resume's own tc/ay/tw_pending loops).
-            # Left unfiltered, the FINAL resume's dispatch call below
-            # re-runs N's whole turn a second time: duplicate LLM call,
-            # duplicate tool side effects, duplicate gate prompts.
-            #
-            # Two prior fix rounds tried to exclude N via
-            # ``node_states[N].status`` (R2-2's ``already_ended`` set,
-            # ENDED-only; R3 found it also missed FAILED siblings). BOTH
-            # were wrong for the SAME underlying reason: ``node_states``
-            # is keyed by node_id GLOBALLY and never resets, so in a
-            # CYCLIC graph a node_id revisited in a LATER superstep still
-            # shows whatever status its EARLIER visit left behind - a
-            # node legitimately about to run again this superstep looks
-            # indistinguishable from N's stale completion. ``self.
-            # _settled_ids`` (reset once per superstep in
-            # ``_run_superstep_loop``, see the reset's own comment) is the
-            # correct primitive: it is written ONLY when a node settles
-            # WITHIN the superstep currently being tracked, so a
-            # cross-superstep collision on a repeated node_id is
-            # structurally impossible. ``completed_ids`` covers every
-            # tc/ay/tw_pending branch that reaches this line (every other
-            # branch in those loops returns immediately on failure,
-            # ending the drain before this code ever runs - audited in
-            # the commit introducing this fix).
-            #
-            # N's OWN successors are NOT computed here - that gap is the
-            # pre-existing 01a08016 bug, deliberately not fixed in this
-            # arc.
-            self._settled_ids.update(completed_ids)
-            ready = (ready - self._settled_ids) | next_ready
-            self._ready_set = ready
-
-        # Full concurrency: if other human-interaction nodes OR tool_wait
-        # batches (01a0518b boundary d - a fan-out sibling's batch can
-        # still be mid-flight after a PARTIAL wake) are still pending,
-        # re-park on the remaining keys instead of advancing the graph -
-        # by this point ``self._ready_set`` already carries any
-        # successors computed above, so the re-parked checkpoint does not
-        # lose them.
-        if (
-            self._pending_toolcalls
-            or self._pending_agent_yields
-            or self._pending_tool_waits
-        ):
-            await self._save_state(
-                iteration=context.iteration,
-                node_states=node_states,
-                status=SessionStatus.WAITING,
-            )
-            raise self._build_pending_park_exception()
-
-        # 7a gate review (verdict R2-4): bump iteration only now that the
-        # drain has reached a fully-resolved superstep (nothing left
-        # pending) - preserves the merge-base cadence (once per drained
-        # superstep). The ready-set fold above must still run on EVERY
-        # partial resume (item 2's fix) so a later resume's own union
-        # doesn't lose an earlier resume's accumulated successors, but
-        # the iteration COUNTER is a separate concern: bumping it on
-        # every partial wake would burn through a flag-off multi-gate
-        # graph's max_iterations budget prematurely.
-        if completed_ids:
             context.iteration += 1
-
-        # Persist the drained-state snapshot so observers can see the
-        # ToolCalls finished before the next superstep starts.
-        await self._save_state(
-            iteration=context.iteration,
-            node_states=node_states,
-            status=SessionStatus.RUNNING,
-        )
+            ready = next_ready
+            self._ready_set = ready
 
         async for ev in self._run_superstep_loop(
             context=context,
@@ -1354,19 +1291,6 @@ class _BaseGraphExecutor(
         ended_detail = ended_detail_in
 
         while ready:
-            # 7a gate review (verdict R3-1/R3-2): reset once per superstep,
-            # BEFORE this iteration's own nodes can settle - this boundary
-            # is load-bearing, not hygiene. ``ready`` here is a NEW
-            # superstep's own dispatch set (including the on_max_iterations
-            # reroute's own ``continue`` above, which starts a fresh one
-            # too); without this reset, ``_settled_ids`` would accumulate
-            # ids across EVERY superstep this executor ever runs, and a
-            # cyclic graph revisiting the same node_id in a later
-            # superstep would find it pre-marked settled from its earlier
-            # visit - reintroducing exactly the R3-1 cross-superstep
-            # collision this field exists to prevent.
-            self._settled_ids = set()
-
             # Cycle bound check. Spec §5.4 maps this to ended_reason='failed'
             # with the detail code carried separately so the public contract
             # has a single failure reason and a finite set of codes.
@@ -1681,15 +1605,6 @@ class _BaseGraphExecutor(
                 # detects pending entries and propagates YieldToWorker.
                 if done is not None and done.suspended:
                     continue
-                # 7a gate review (verdict R3-1/R3-2): every branch reached
-                # from here on settles this node ONE way or another this
-                # superstep - an ordinary FAILED, a suppressed-fanout
-                # FAILED (its own sub-branch below, which still sets
-                # node_states[nid] to FAILED before continuing), or ENDED.
-                # The suspended guard above is the ONLY branch that must
-                # NOT settle (a park, not a completion) - audited when
-                # this field was introduced.
-                self._settled_ids.add(nid)
                 if done is None or done.error is not None:
                     err_text = (
                         str(done.error) if done is not None else "no result"

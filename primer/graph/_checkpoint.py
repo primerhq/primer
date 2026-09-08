@@ -8,12 +8,11 @@ state to a JSON-able dict), and ``restore_state`` (the inverse).
 
 It is a mixin, not a standalone class: the methods read and write the
 executor's mid-flight attributes (``_context``, ``_ready_set``,
-``_settled_ids``, ``_node_states``, ``_fanout_instances``,
-``_fanout_target_expected_count``, ``_instance_to_spec``,
-``_fanout_drain_state``, ``_pending_toolcalls``, ``_pending_agent_yields``,
-``_admitted``, ``_graph``), all of which are initialised by
-``_BaseGraphExecutor.__init__``. Keeping them here keeps base.py focused
-on the superstep control flow.
+``_node_states``, ``_fanout_instances``, ``_fanout_target_expected_count``,
+``_instance_to_spec``, ``_fanout_drain_state``, ``_pending_toolcalls``,
+``_pending_agent_yields``, ``_admitted``, ``_graph``), all of which are
+initialised by ``_BaseGraphExecutor.__init__``. Keeping them here keeps
+base.py focused on the superstep control flow.
 """
 
 from __future__ import annotations
@@ -171,11 +170,6 @@ class _CheckpointMixin:
           ``{"fanout_node_id": ..., "spec": <FanOutSpec.model_dump>}``.
         * ``fanout_drain_state`` — drain_key → drain_state dict.
         * ``pending_toolcalls`` — list of pending ToolCall dicts.
-        * ``settled_ids`` — the sorted list of node ids that have already
-          gone terminal (ENDED or FAILED) WITHIN the superstep this
-          checkpoint belongs to (verdict R3-1/R3-2) — distinct from
-          ``ready_set``, which can carry ids that already settled before
-          this park.
         """
         ctx_payload: dict[str, Any] | None = None
         if self._context is not None:
@@ -289,16 +283,6 @@ class _CheckpointMixin:
                 self._toolcall_dispatch_entry(p)
                 for p in self._pending_toolcalls
             ],
-            # 7a gate review (verdict R3-1/R3-2): the CURRENT superstep's
-            # own settled (ENDED or FAILED) node ids - must round-trip
-            # through every park -> resume -> repark -> resume cycle
-            # exactly like ``ready_set`` does, or a repark's own snapshot
-            # would silently reset the exclusion set to empty and every
-            # completed sibling this superstep would become re-dispatch
-            # eligible again on the NEXT resume. See ``_settled_ids``'s
-            # own docstring in ``_BaseGraphExecutor.__init__`` for why
-            # this is a distinct concept from ``ready_set``.
-            "settled_ids": sorted(self._settled_ids),
         }
 
     def _toolcall_dispatch_entry(self, p) -> dict[str, Any]:
@@ -355,20 +339,6 @@ class _CheckpointMixin:
         else:
             self._context = GraphContext.model_validate(ctx_raw)
         self._ready_set = set(payload.get("ready_set") or [])
-        # 7a gate review (verdict R3-1/R3-2): absent -> EMPTY set, never
-        # inferred from ``node_states`` statuses. A checkpoint written
-        # before this field existed degrades to R2-2's original bug (a
-        # same-superstep completed sibling can re-dispatch) for ONE
-        # resume of that one in-flight park, then behaves correctly from
-        # its next superstep on. The tempting alternative - seed
-        # ``settled_ids`` by scanning ``node_states`` for ENDED entries -
-        # is REJECTED: that is exactly the cross-superstep status
-        # inference that caused R3-1 in the first place (a node_id
-        # revisited in a cyclic graph carries a stale ENDED from an
-        # earlier, unrelated superstep). A narrow, temporary, well-
-        # understood degradation for pre-upgrade checkpoints only is
-        # strictly better than risking that worse bug.
-        self._settled_ids = set(payload.get("settled_ids") or [])
         # Re-seed the admitted-set used by the FanIn callable-router gate.
         # The restored ready-set is the in-flight frontier; completed nodes
         # already have output (so they never block). This keeps a resumed
