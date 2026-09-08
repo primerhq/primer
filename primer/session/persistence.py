@@ -875,7 +875,7 @@ def stash_graph_scoped_ids(
 
 
 async def _create_tool_call_task_idempotent(
-    task_storage, task: "Any", *, session_id: str,
+    task_storage, task: "Any", *, session_id: str, strict: bool = True,
 ) -> None:
     """Create ``task``, tolerating a crash-and-retry replay of the SAME
     scoped id (01a0518b review: the crash-window doctrine).
@@ -917,6 +917,24 @@ async def _create_tool_call_task_idempotent(
     ``primer.worker.tool_wait_resume_coordinator``'s module docstring
     for the required liveness check the future claim-based tool-call
     worker must perform before executing one.
+
+    7a gate review (verdict R3-3): the "record_seq must match, else it's
+    not a real replay" half of this doctrine is FALSE at the graph-resume
+    repark call site (``strict=False``). Its precondition - "the seed seq
+    is read from session.last_seq, which the crashed attempt never
+    advanced" - does not hold there: on that chain,
+    ``persist_resume_tool_result_record_for_graph`` durably advances
+    ``last_seq`` BEFORE the drain runs, and a crash-then-retry re-enters
+    the SAME drain, so the retry's own record_seq for the SAME scoped id
+    is legitimately DIFFERENT from the first attempt's - not evidence of
+    "something else created a conflicting row". Comparing record_seq
+    there would turn every crash-retry into a raised RuntimeError, which
+    the caller maps to ``_end_session(failed)`` - a crash-retry KILLS the
+    session instead of replaying it. ``strict=False`` therefore treats
+    ANY existing row for this scoped id as a replay without comparing
+    record_seq at all (logged at debug, not raised); ``strict=True``
+    (the live-turn park catches, where the precondition above genuinely
+    holds) keeps the loud mismatch-raises-loudly behavior unchanged.
     """
     from primer.model.except_ import ConflictError
 
@@ -930,6 +948,16 @@ async def _create_tool_call_task_idempotent(
                 "record_seq %d - crash-and-retry replay, treating as a "
                 "no-op",
                 session_id, task.id, task.record_seq,
+            )
+            return
+        if not strict and existing is not None:
+            logger.debug(
+                "session %s ToolCallTask %r already exists with "
+                "record_seq=%d (this attempt computed %d) - treated as a "
+                "repark replay without record_seq comparison (strict=False "
+                "call site, see this function's own docstring on why "
+                "record_seq legitimately differs there)",
+                session_id, task.id, existing.record_seq, task.record_seq,
             )
             return
         raise RuntimeError(
@@ -1038,6 +1066,7 @@ async def materialize_pending_tool_wait_rows(
                     batch_task_ids=node_batch_ids,
                 ),
                 session_id=session_id,
+                strict=strict,
             )
             if claim_engine is not None:
                 await claim_engine.upsert(ClaimKind.TOOL_CALL, scoped_id)
@@ -1069,6 +1098,7 @@ async def materialize_pending_tool_wait_rows(
                     batch_task_ids=node_batch_ids,
                 ),
                 session_id=session_id,
+                strict=strict,
             )
         wake_keys.append(
             tool_wait_event_key(
