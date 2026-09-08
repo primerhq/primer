@@ -268,6 +268,22 @@ async def test_gate_answers_first_tool_wait_survives_the_reprk(monkeypatch) -> N
     assert "A:tool:0:1" in repark.outstanding_task_ids
 
 
+@pytest.mark.xfail(
+    reason=(
+        "round-4 gate ruling: reverted resume_from_checkpoint's ready-set "
+        "line (rounds 1-3: reorder, union, already_ended, settled_ids) back "
+        "to merge-base `ready = next_ready` after four consecutive fix "
+        "rounds each introduced a new bug - two of them flag-off "
+        "regressions, on code not needed for merge (flag off means "
+        "tw_pending is always empty). This test's final assertions pin "
+        "item 2's original successor-drop finding, which merge-base "
+        "semantics reintroduce for a MULTI-entry partial wake (each "
+        "resume's own edge-walk only sees its own completed_ids, and a "
+        "PRIOR resume's fold is a bare-assignment casualty of the NEXT "
+        "resume). Kept as specification, not deleted - see task 01a0812c."
+    ),
+    strict=True,
+)
 @pytest.mark.asyncio
 async def test_node_a_before_node_b_partial_wake(monkeypatch) -> None:
     """PURE park (no human gate at all): both A and B raise their own
@@ -557,6 +573,21 @@ def _cyclic_collision_graph() -> Graph:
     )
 
 
+@pytest.mark.xfail(
+    reason=(
+        "round-4 gate ruling: this test pins R3-1's own fix (settled_ids), "
+        "which was itself reverted after the gate found a BLOCKER in it - "
+        "subtracting settled_ids from the ACCUMULATED ready deletes a "
+        "loop-back target a PRIOR resume legitimately folded in, in a "
+        "same-superstep topology this test doesn't cover (X completes "
+        "ALONE in its own superstep here). resume_from_checkpoint's "
+        "ready-set line is back to merge-base `ready = next_ready` after "
+        "four rounds each introduced a new bug. Kept as specification, not "
+        "deleted - the cyclic loop-back scenario is real and becomes part "
+        "of task 01a0812c's mandatory scenario matrix."
+    ),
+    strict=True,
+)
 @pytest.mark.asyncio
 async def test_cyclic_loop_back_across_two_partial_resumes_still_dispatches(
     monkeypatch,
@@ -650,6 +681,21 @@ async def test_cyclic_loop_back_across_two_partial_resumes_still_dispatches(
     assert second_repark.outstanding_task_ids == ["X:tool:0:2"]
 
 
+@pytest.mark.xfail(
+    reason=(
+        "round-4 gate ruling: settled_ids was reverted off the branch "
+        "entirely (init, reset, population, the checkpoint field) after "
+        "the round-4 gate found a BLOCKER in its own subtraction formula - "
+        "resume_from_checkpoint's ready-set line is back to merge-base "
+        "`ready = next_ready`, and graph_checkpoint no longer carries a "
+        "'settled_ids' key at all. Kept as specification for the eventual "
+        "01a0812c redesign (which may use a differently-shaped mechanism "
+        "per the leader's own recorded direction - remove-on-settle "
+        "instead of filter-on-resume - so this exact checkpoint-field "
+        "shape may not even survive into that design), not deleted."
+    ),
+    strict=True,
+)
 @pytest.mark.asyncio
 async def test_settled_ids_round_trips_through_the_repark_snapshot(
     monkeypatch,
