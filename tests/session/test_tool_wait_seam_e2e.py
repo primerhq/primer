@@ -101,6 +101,13 @@ class _ToolWaitExecutor:
 
     def __init__(self, park: ToolWaitPark) -> None:
         self._park = park
+        # ToolWaitPark can only ever be raised when the flag is on
+        # (run_agent_turn's own routing gate) - a real executor in this
+        # exact scenario always carries this. dispatch.py's TOOL_CALL
+        # record-stash/eager-flush (7a gate review item A) is now gated
+        # on it, so a fake standing in for "the flag is on and a claims
+        # batch just parked" must say so too.
+        self._tool_calls_as_claims_enabled = True
 
     async def invoke(self, messages, **kwargs):
         yield ToolCallStart(id="call_a", name="tool_a", index=0)
@@ -480,6 +487,13 @@ async def test_missing_tool_name_fails_loudly_not_unknown() -> None:
     await session_storage.create(session)
 
     class _NoStartExecutor:
+        # See _ToolWaitExecutor's own comment (7a gate review item A) -
+        # keeps the seq stash gated-but-live here so this test still
+        # proves ITS OWN scenario (record exists, seq populated, NAME
+        # missing) rather than failing for the unrelated "flag off, whole
+        # block skipped" reason instead.
+        _tool_calls_as_claims_enabled = True
+
         async def invoke(self, messages, **kwargs):
             # No preceding ToolCallStart -> scoped_call_ids has no entry
             # either, so the durable record's own id falls back to the
