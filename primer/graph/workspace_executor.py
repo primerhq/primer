@@ -669,12 +669,28 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             # 01a0518b: a subgraph node's child graph runs WITHIN the same
             # session turn as its parent - inherit turn_no unchanged, same
             # reasoning as a nested subagent call (see run_agent_turn's
-            # own turn_no docstring). tool_calls_as_claims_enabled inherits
-            # too - unlike a subagent turn, a subgraph node has the SAME
-            # session row to park on, so the "no session to park on"
-            # scope-cut does not apply here.
+            # own turn_no docstring).
             turn_no=self._turn_no,
-            tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
+            # 7a gate review: tool_calls_as_claims_enabled is deliberately
+            # HARDCODED OFF for subgraph children, NOT inherited - a
+            # subgraph child's ToolWaitPark propagates out of its own
+            # invoke() (via _stream_subgraph_node's `async for` /
+            # `await`) into the PARENT's _stream_node's OWN `except
+            # ToolWaitPark` arm, where `node` is the _GraphNodeRef
+            # dispatching the SUBGRAPH, not an _AgentNodeRef - the arm's
+            # `isinstance(node, _AgentNodeRef)` guard raises "structurally
+            # impossible" RuntimeError from INSIDE the except block. That
+            # RuntimeError propagates out of _stream_node uncaught by any
+            # sibling except clause, killing the asyncio.Task before it
+            # ever queues a _NodeDone - the superstep's `while done_count
+            # < len(tasks)` consumer then blocks forever waiting for a
+            # sentinel that will never arrive. Scope-cut, same class as
+            # the nested-subagent turn's own exclusion above: real
+            # subgraph support needs the parent's OWN dispatch to
+            # recognize a re-raised child ToolWaitPark and thread its
+            # batch through as belonging to the SUBGRAPH node, not fail
+            # closed here first. Tracked as a follow-up, not built now.
+            tool_calls_as_claims_enabled=False,
         )
         # bind_coalesce_state (boundary d) is post-construction, not a
         # constructor param - same coalesce_state as the parent, same

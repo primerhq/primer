@@ -1661,15 +1661,22 @@ class TestIdentityPropagation:
 
 
 @pytest.mark.asyncio
-async def test_build_sub_executor_inherits_tool_calls_as_claims_flag(
+async def test_build_sub_executor_scope_cuts_tool_calls_as_claims_flag(
     tmp_path: Path,
 ) -> None:
-    """01a0518b: a subgraph node's child executor inherits the parent's
-    tool_calls_as_claims_enabled unchanged - unlike a nested subagent
-    turn (system__invoke_agent, permanently scope-cut - see
-    run_agent_turn's docstring), a subgraph node shares the SAME session
-    row as its parent, so the "no session to park a tool_wait batch on"
-    reasoning that scope-cuts the subagent surface does not apply here.
+    """7a gate review: a subgraph node's child executor does NOT inherit
+    tool_calls_as_claims_enabled - always False regardless of the
+    parent's own value. A child's ToolWaitPark would otherwise propagate
+    out of its own invoke() into the PARENT's _stream_node dispatch,
+    where the dispatching node is the _GraphNodeRef (not an
+    _AgentNodeRef) - the except-ToolWaitPark arm's isinstance guard
+    raises "structurally impossible" RuntimeError from inside the except
+    block, which kills the node's asyncio.Task before it can queue a
+    _NodeDone, deadlocking the superstep's consumer loop forever. Same
+    scope-cut class as the nested subagent turn's own permanent
+    exclusion (see run_agent_turn's docstring) - see
+    WorkspaceGraphExecutor._build_sub_executor's own comment for the
+    full trace and the real-subgraph-support follow-up.
     """
     sub_node = _GraphNodeRef(id="SUB", graph_id="inner")
     parent_graph = Graph(
@@ -1702,7 +1709,7 @@ async def test_build_sub_executor_inherits_tool_calls_as_claims_flag(
 
     child = await parent._build_sub_executor(sub_node, sub_graph)
 
-    assert child._tool_calls_as_claims_enabled is True
+    assert child._tool_calls_as_claims_enabled is False
 
 
 @pytest.mark.asyncio
