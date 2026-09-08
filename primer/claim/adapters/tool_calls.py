@@ -157,6 +157,37 @@ class ToolCallClaimAdapter(ClaimAdapter):
         just wrote, one line above, wrongly concluding "not last" when it
         is). Not the last sibling yet: returns ``None``, nothing to do -
         this task's own state is already durably updated above.
+
+        ACCEPTED LIMITATION (7a gate review, item B - pinned by a
+        transaction-spy test, no live database needed to reproduce):
+        under Postgres's default READ COMMITTED isolation, a conn-scoped
+        read only sees OTHER transactions' COMMITTED writes. If the LAST
+        TWO siblings of a batch release genuinely concurrently - both
+        transactions still open when the OTHER's sibling-check read here
+        runs - EACH one observes the OTHER as not-yet-terminal and BOTH
+        return ``None``. Neither concludes "I am last": the wake is lost
+        outright, not merely delayed or double-fired (the double-fire
+        case, where ONE sibling's transaction has already committed
+        before the other's check runs, IS handled correctly and is
+        idempotent - see the sibling test proving that). Structurally
+        NOT reachable for ``InMemoryClaimEngine``: its storage fakes have
+        no internal suspension point, so ``asyncio.gather`` always runs
+        one release to full completion before the other starts, meaning
+        one of the two always observes the other as terminal.
+
+        The real fix would move the "am I last" decision from INSIDE
+        this pre-commit read to a POST-COMMIT re-check (the same
+        post-commit timing :class:`PostReleaseWake` already uses for
+        firing the wake itself, extended to re-verifying its own
+        precondition) - an architectural change to WHEN the decision
+        happens, not a local patch, so it is deliberately NOT made here.
+        Accepted degradation: same class as the documented crash window
+        in :class:`PostReleaseWake`'s own docstring - it degrades to the
+        existing park-timeout backstop. Recovery-boot reconciliation
+        (task 01a07c06, upgraded to a flag-on prerequisite by this
+        finding) is the intended eventual fix for BOTH that crash window
+        and this concurrent-miss window; when it lands, the pinned test
+        below should flip from asserting the loss to asserting recovery.
         """
         if not task.batch_task_ids or self._storage is None:
             return None
