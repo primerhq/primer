@@ -335,3 +335,73 @@ async def test_node_a_before_node_b_partial_wake(monkeypatch) -> None:
     # by letting B's own edge to the SAME node paper over A's missing one.
     assert ex._node_states["C"].status == NodeRuntimeStatus.ENDED
     assert ex._node_states["D"].status == NodeRuntimeStatus.ENDED
+
+
+@pytest.mark.asyncio
+async def test_completed_sibling_is_not_re_executed_on_final_resume(
+    monkeypatch,
+) -> None:
+    """7a gate review (verdict R2-2, FLAG-OFF REGRESSION): a superstep
+    where node A parks (tool_wait) while sibling node B completes
+    NORMALLY in the SAME original dispatch ({A parks, N completes}).
+    f705bc5c's ready-union fix (item 2) kept ``ready`` as the FULL
+    originally-dispatched set across every resume - before the R2-2
+    exclusion fix, B's id would still be sitting in that set once the
+    drain finally completes, and the final dispatch call would re-run
+    B's WHOLE turn a second time: duplicate LLM call, duplicate tool
+    side effects, duplicate gate prompts.
+
+    B's own successor ("D") is deliberately NOT asserted here - B's
+    successor edge never getting walked when a sibling parks in the
+    SAME superstep is the separate, PRE-EXISTING 01a08016 bug, not
+    fixed in this arc.
+    """
+    call_counts: dict[str, int] = {}
+    parked_once: set[str] = set()
+    ex = await _mk_parallel_executor()
+
+    import primer.graph._agent_node as agent_node_mod
+
+    async def _spy(**kwargs):
+        agent = kwargs["agent"]
+        call_counts[agent.id] = call_counts.get(agent.id, 0) + 1
+        # Single-shot, like _patch_run_agent_turn's own consume-once
+        # behavior: A's RESUMED continuation must complete normally,
+        # not re-park forever - only its FIRST dispatch parks.
+        if agent.id == "agent-a" and agent.id not in parked_once:
+            parked_once.add(agent.id)
+            raise _tool_wait_park("A", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        return
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", _spy)
+
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    first_park = excinfo.value
+    assert first_park.graph_checkpoint is not None
+    # Both dispatched once in the original superstep: A parks, B
+    # completes normally.
+    assert call_counts == {"agent-a": 1, "agent-b": 1}
+
+    result_a = ToolResultPart(id="A:tool:0:1", output="result A", error=False)
+    drained = False
+    try:
+        async for _ev in ex.resume_from_checkpoint(
+            first_park.graph_checkpoint,
+            resolved_tool_wait={"A": [result_a]},
+        ):
+            pass
+        drained = True
+    except (ToolWaitPark, YieldToWorker):
+        drained = False
+    assert drained is True
+
+    # The whole point: B must NOT have been dispatched a second time by
+    # the final resume's own next-superstep call. A legitimately runs
+    # AGAIN here - once for its original park, once for its resumed
+    # continuation (which now completes normally) - that second call is
+    # the resume actually working, not the regression.
+    assert call_counts == {"agent-a": 2, "agent-b": 1}
