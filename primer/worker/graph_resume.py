@@ -214,6 +214,30 @@ async def resume_graph_from_checkpoint(
             from primer.session.persistence import stash_graph_scoped_ids
             stash_graph_scoped_ids(repark.graph_checkpoint, tap.coalesce_state)
 
+            # 7a gate review (verdict R2-1, BLOCKER): materialize
+            # ToolCallTask rows (+ claim-engine upserts) for THIS
+            # repark's own pending_tool_waits, using the SAME shared
+            # helper dispatch.py's own park catches use - this repark
+            # never goes through dispatch.py either, so a resumed node's
+            # own continuation dispatching a SECOND claims batch would
+            # otherwise re-park pointing at wake keys with NO backing
+            # rows, unwakeable forever. ``strict=False``: this list can
+            # be a MIX of entries carried over untouched from an EARLIER
+            # park (already materialized then; this drain's own
+            # coalesce_state never observed them, so they're silently
+            # skipped here) and genuinely NEW entries this drain's own
+            # dispatch just produced (which DOES have their record_seq
+            # stashed via observe()'s stash_and_flush_tool_call_record
+            # calls, above).
+            from datetime import datetime, timezone
+            from primer.session.persistence import materialize_pending_tool_wait_rows
+            await materialize_pending_tool_wait_rows(
+                pool._storage, pool._engine, session.id, session.turn_no,
+                tap.coalesce_state, datetime.now(timezone.utc),
+                repark.graph_checkpoint.get("pending_tool_waits") or [],
+                strict=False,
+            )
+
     out_node_tool_call_seq = (
         dict(tap.coalesce_state.tool_call_seq) if tap is not None else {}
     )
@@ -221,6 +245,37 @@ async def resume_graph_from_checkpoint(
         await tap.finish()
 
     return decision, repark, out_node_tool_call_seq
+
+
+async def fresh_session_row_and_last_seq(
+    pool: "WorkerPool", session: Any,
+) -> "tuple[Any, int]":
+    """Fresh-read a session row's ``last_seq`` (+ the row itself)
+    immediately before seeding a post-resume ``WorkspaceMessageWriter``.
+
+    01a0690a / 7a gate review (items C, R2-3): a prior piece of the SAME
+    resume chain — this module's own drain tap, or a sibling
+    TOOL_RESULT-record writer — may already have advanced ``last_seq``
+    in storage by the time a LATER piece runs; trusting the ``session``
+    object threaded down the call chain risks a seq collision (two
+    writers claiming the same seq) or a gap. Extracted as a shared
+    helper after a THIRD independent call site (R2-3) missed this exact
+    pattern, rather than three independently-maintained copies.
+
+    Returns ``(fresh_row_or_session, last_seq)`` — the first element is
+    what any caller's own ``model_copy(update=...)`` must be based on,
+    never the stale ``session`` parameter: an update based on the stale
+    row would silently roll back whatever OTHER fields the drain
+    already wrote (status, parked_state, ...) along with getting
+    last_seq right.
+    """
+    from primer.model.workspace_session import WorkspaceSession
+
+    fresh = None
+    if pool._storage is not None:
+        fresh = await pool._storage.get_storage(WorkspaceSession).get(session.id)
+    last_seq = fresh.last_seq if fresh is not None else session.last_seq
+    return (fresh or session), last_seq
 
 
 class _ResumeDrainTap:
@@ -268,16 +323,11 @@ class _ResumeDrainTap:
             # down the call chain: piece 2's write (resume_graph_engine
             # calls it immediately before this) may already have bumped
             # last_seq in storage, and starting this writer from a stale
-            # count would collide with piece 2's just-written seq.
-            from primer.model.workspace_session import WorkspaceSession
-
-            last_seq = session.last_seq
-            if pool._storage is not None:
-                fresh = await pool._storage.get_storage(WorkspaceSession).get(
-                    session.id,
-                )
-                if fresh is not None:
-                    last_seq = fresh.last_seq
+            # count would collide with piece 2's just-written seq. See
+            # fresh_session_row_and_last_seq's own docstring.
+            _fresh_row, last_seq = await fresh_session_row_and_last_seq(
+                pool, session,
+            )
             ws = await pool._load_workspace_for_persist(session.workspace_id)
             writer = WorkspaceMessageWriter(
                 workspace_io=ws, session_id=session.id, start_seq=last_seq,

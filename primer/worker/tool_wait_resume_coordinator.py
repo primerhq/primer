@@ -418,9 +418,10 @@ async def persist_resume_tool_result_records(
     is always called AFTER that drain returns. Trusting the stale
     parameter would start this writer's own counter behind the drain's,
     producing either a seq collision (two records claiming the same
-    seq) or a gap, depending on write-order luck. Mirrors
-    ``_ResumeDrainTap.create``'s own identical fresh-read fix for the
-    exact same hazard, one call earlier in the same chain.
+    seq) or a gap, depending on write-order luck. Uses the SAME shared
+    ``fresh_session_row_and_last_seq`` helper ``_ResumeDrainTap.create``
+    does for the exact same hazard, one call earlier in the same chain
+    (extracted after a third call site missed this pattern - R2-3).
     """
     if pool._storage is None:
         return
@@ -430,13 +431,10 @@ async def persist_resume_tool_result_records(
         WorkspaceSession,
     )
     from primer.session.persistence import WorkspaceMessageWriter
+    from primer.worker.graph_resume import fresh_session_row_and_last_seq
 
     try:
-        storage = pool._storage.get_storage(WorkspaceSession)
-        last_seq = session.last_seq
-        fresh = await storage.get(session.id)
-        if fresh is not None:
-            last_seq = fresh.last_seq
+        fresh, last_seq = await fresh_session_row_and_last_seq(pool, session)
         ws = await pool._load_workspace_for_persist(session.workspace_id)
         writer = WorkspaceMessageWriter(
             workspace_io=ws, session_id=session.id, start_seq=last_seq,
@@ -460,8 +458,11 @@ async def persist_resume_tool_result_records(
         # parameter - the drain may have already written OTHER fields
         # too (status, parked_state, ...); model_copy-ing from the stale
         # snapshot would silently roll those back to their pre-drain
-        # values along with getting last_seq right.
-        await storage.update((fresh or session).model_copy(update={"last_seq": new_seq}))
+        # values along with getting last_seq right. fresh_session_row_
+        # and_last_seq already falls back to `session` when no fresh row
+        # exists, so `fresh` here is never None.
+        storage = pool._storage.get_storage(WorkspaceSession)
+        await storage.update(fresh.model_copy(update={"last_seq": new_seq}))
         if pool._event_bus is not None:
             try:
                 await pool._event_bus.publish(
