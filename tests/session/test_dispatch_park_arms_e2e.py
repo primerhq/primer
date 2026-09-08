@@ -138,12 +138,23 @@ async def test_pure_graph_arm_materializes_per_node_rows_through_real_turn_loop(
     # Row created via the graph_checkpoint branch (per-node breakdown),
     # NOT the flat-field loop - if the flat loop ran instead it would
     # use the SAME scoped id here too, so this alone doesn't
-    # discriminate; the per-node wake key below does.
+    # discriminate.
     row = await task_storage.get("x:tool:0:1")
     assert row is not None
     assert row.state == ToolCallTaskState.QUEUED
     assert row.batch_task_ids == ["x:tool:0:1"]
+    # 7a gate review (verdict R2-6): the SINGLE parked_event_key below is
+    # computed identically regardless of which branch ran (a pure
+    # function of session_id/turn_no/scoped-id, evaluated BEFORE the
+    # graph_checkpoint/flat-field branch split) - it does NOT
+    # discriminate between them, despite what this comment used to
+    # claim. The MULTI-event parked_event_keys list DOES: only the
+    # graph_checkpoint branch computes per-node wake keys via
+    # materialize_pending_tool_wait_rows (the flat-field loop leaves
+    # per_node_wake_keys empty, folding parked_event_keys to None) -
+    # assert its actual per-node content.
     assert outcome.park.parked_event_key == "tool_wait:s-pure-graph:0:x"
+    assert outcome.park.parked_event_keys == ["tool_wait:s-pure-graph:0:x"]
     assert deps.claim_engine.upserted == [(ClaimKind.TOOL_CALL, "x:tool:0:1")]
 
 
@@ -176,6 +187,17 @@ async def test_mixed_arm_materializes_co_pending_tool_wait_through_real_turn_loo
             yld = YieldToWorker(
                 Yielded(
                     tool_name="ask_user", event_key="ask_user:s-mixed:call_gate",
+                    # 7a gate review (verdict R2-7): a gate with its OWN
+                    # multi-event keys (not just the single primary one),
+                    # so combined_event_keys' union with the tool_wait
+                    # batch's wake key below is exercised for real -
+                    # membership alone ("the tool_wait key is IN the
+                    # list somewhere") doesn't prove the gate's own keys
+                    # survived the fold too.
+                    event_keys=[
+                        "ask_user:s-mixed:call_gate",
+                        "ask_user:s-mixed:call_gate:alt",
+                    ],
                     resume_metadata={"prompt": "color?"},
                 ),
                 tool_call_id="call_gate",
@@ -228,8 +250,17 @@ async def test_mixed_arm_materializes_co_pending_tool_wait_through_real_turn_loo
     # gate always addresses the park); the tool_wait batch's wake key is
     # folded into the combined multi-event list alongside it.
     assert outcome.park.parked_event_key == "ask_user:s-mixed:call_gate"
-    assert outcome.park.parked_event_keys is not None
-    assert "tool_wait:s-mixed:0:x" in outcome.park.parked_event_keys
+    # 7a gate review (verdict R2-7): exact UNION content, not membership
+    # - proves the gate's OWN multi-event keys survive the fold intact
+    # (in their original order) alongside the tool_wait batch's wake
+    # key, matching dispatch.py's actual construction
+    # (``combined_event_keys = list(yielded.event_keys or []);
+    # combined_event_keys.extend(extra_wake_keys)``).
+    assert outcome.park.parked_event_keys == [
+        "ask_user:s-mixed:call_gate",
+        "ask_user:s-mixed:call_gate:alt",
+        "tool_wait:s-mixed:0:x",
+    ]
 
     parked_state = outcome.park.parked_state
     assert (

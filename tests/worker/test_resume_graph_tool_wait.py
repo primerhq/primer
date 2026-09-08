@@ -63,11 +63,20 @@ class _StorageProvider:
         return self._inner.get_storage(model_cls)
 
 
+class _NoopClaimEngine:
+    """Stands in for WorkerPool._engine - these tests exercise readiness
+    / repark routing, not row-creation content, so upserts are discarded."""
+
+    async def upsert(self, kind, entity_id: str, **kwargs) -> None:
+        return None
+
+
 class _FakePool:
     def __init__(self, *, storage, workspace_io, executor_factory) -> None:
         self._storage = storage
         self._workspace_io = workspace_io
         self._event_bus = None
+        self._engine = _NoopClaimEngine()
         self._executor_factory = executor_factory
         self.end_session_calls: list[str] = []
         self.repark_calls: list = []

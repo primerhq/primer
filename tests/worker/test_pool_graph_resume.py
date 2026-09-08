@@ -352,11 +352,21 @@ class _FakeStorage:
         return self._session_storage
 
 
+class _NoopClaimEngine:
+    """Stands in for WorkerPool._engine - these tests exercise the drain
+    tap's own persistence tapping, not row-creation content, so upserts
+    are discarded."""
+
+    async def upsert(self, kind, entity_id: str, **kwargs) -> None:
+        return None
+
+
 class _FakePool:
     def __init__(self, *, workspace_io, storage) -> None:
         self._storage = storage
         self._event_bus = None
         self._workspace_io = workspace_io
+        self._engine = _NoopClaimEngine()
 
     async def _load_workspace_for_persist(self, _workspace_id: str):
         return self._workspace_io

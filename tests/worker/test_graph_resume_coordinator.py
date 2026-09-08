@@ -52,6 +52,12 @@ class _FakeSessionStorage:
     def __init__(self) -> None:
         self.updated: list[WorkspaceSession] = []
 
+    async def get(self, session_id: str) -> "WorkspaceSession | None":
+        # No fresh row available - fresh_session_row_and_last_seq falls
+        # back to the caller's own `session` object, unchanged from
+        # before this helper existed.
+        return None
+
     async def update(self, session: WorkspaceSession) -> None:
         self.updated.append(session)
 
@@ -65,11 +71,21 @@ class _FakeStorage:
         return self._session_storage
 
 
+class _NoopClaimEngine:
+    """Stands in for WorkerPool._engine - these tests exercise resume
+    coordination routing, not row-creation content, so upserts are
+    discarded."""
+
+    async def upsert(self, kind, entity_id: str, **kwargs) -> None:
+        return None
+
+
 class _FakePool:
     def __init__(self, *, workspace_io, storage, event_bus=None) -> None:
         self._storage = storage
         self._event_bus = event_bus
         self._workspace_io = workspace_io
+        self._engine = _NoopClaimEngine()
 
     async def _load_workspace_for_persist(self, workspace_id: str):
         return self._workspace_io

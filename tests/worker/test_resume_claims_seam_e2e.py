@@ -47,6 +47,10 @@ from primer.session.persistence import (
     stash_graph_scoped_ids,
     translate_stream_event,
 )
+from primer.int.claim import ClaimKind
+from primer.worker.graph_resume_coordinator import (
+    repark_graph_outcome as _real_repark_graph_outcome,
+)
 from primer.worker.tool_wait_resume_coordinator import resume_graph_tool_wait
 from primer.worker.yield_runtime import ToolWaitParkedState
 
@@ -69,12 +73,21 @@ class _FakeWorkspaceIO:
         return None
 
 
+class _RecordingClaimEngine:
+    def __init__(self) -> None:
+        self.upserted: list[tuple] = []
+
+    async def upsert(self, kind, entity_id: str, **kwargs) -> None:
+        self.upserted.append((kind, entity_id))
+
+
 class _FakePool:
     def __init__(self, *, storage, workspace_io, executor_factory) -> None:
         self._storage = storage
         self._workspace_io = workspace_io
         self._event_bus = None
         self._executor_factory = executor_factory
+        self._engine = _RecordingClaimEngine()
         self.end_session_calls: list[str] = []
         self.repark_calls: list = []
 
@@ -89,8 +102,15 @@ class _FakePool:
         return f"ENDED:{reason}"
 
     def _repark_graph_outcome(self, session, repark, *, node_tool_call_seq=None):
+        # 7a gate review (verdict R2-5): UNSTUBBED - drives the REAL
+        # outcome builder instead of recording the raw exception and
+        # returning a sentinel. A stub here is exactly what let R2-1
+        # (the repark path creating no rows) hide behind a green test:
+        # the checkpoint-shape assertions below never touched storage.
         self.repark_calls.append(repark)
-        return "REPARKED"
+        return _real_repark_graph_outcome(
+            self, session, repark, node_tool_call_seq=node_tool_call_seq,
+        )
 
 
 @pytest.mark.asyncio
@@ -250,6 +270,28 @@ async def test_resumed_node_dispatches_second_claims_batch_through_the_real_gate
     second_pending = second_park.graph_checkpoint["pending_tool_waits"]
     assert [pw["node_id"] for pw in second_pending] == ["A"]
     assert second_pending[0]["outstanding_task_ids"] == [scoped_id_2]
+
+    # 7a gate review (verdict R2-1/R2-5): the whole point of this test -
+    # round 2's batch must have a REAL ToolCallTask row + claim-engine
+    # upsert, not just a checkpoint that POINTS at wake keys with
+    # nothing backing them (the unwakeable-park bug). Before R2-1's fix,
+    # this row simply did not exist: the repark path never called
+    # materialize_pending_tool_wait_rows at all.
+    row_2 = await task_storage.get(scoped_id_2)
+    assert row_2 is not None
+    assert row_2.state == ToolCallTaskState.QUEUED
+    assert row_2.tool_name == "fake__echo"
+    assert row_2.batch_task_ids == [scoped_id_2]
+    assert pool._engine.upserted == [(ClaimKind.TOOL_CALL, scoped_id_2)]
+
+    # The REAL repark outcome builder ran (not the old stub) - proves the
+    # full ReleaseOutcome/ParkRequest shape a real caller would consume
+    # matches the raw exception's own content.
+    assert outcome.success is True
+    assert outcome.park is not None
+    assert outcome.park.parked_state["graph_checkpoint"]["pending_tool_waits"] == (
+        second_pending
+    )
 
     # Only ONE real tool call ever executed in-process (round 2 never
     # fell through to the classic path either) - both rounds' calls were
