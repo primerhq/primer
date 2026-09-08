@@ -193,13 +193,43 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     payloads_map = raw_state.get("resume_event_payloads")
     ck = parked.graph_checkpoint
     if payloads_map:
+        # 7a gate review (verdict item 4): a co-pending tool_wait batch's
+        # OWN wake rides in this SAME accumulation dict (multi-event
+        # parks don't distinguish "human reply" from "tool_wait wake" at
+        # the session-row level - durably_mark_session_resumable
+        # accumulates whichever key fired). Feeding a tool_wait entry's
+        # {"tool_wait_ready": True} payload through classify_approval_
+        # payload fails closed to "rejected" (no "decision" key), which
+        # installs _rejecting_dispatch on the SHARED executor for the
+        # REST of this loop - silently rejecting a genuinely approved
+        # co-pending gate processed on a LATER iteration. tool_wait
+        # batches are handled ENTIRELY by the readiness re-check inside
+        # the loop below (independent of which reply fired); they must
+        # never reach the approval-decision machinery at all. Recognized
+        # by the shared tool_wait_event_key helper's own shape - the
+        # "tool_wait:" prefix is reserved to it, never produced by any
+        # human-gate event_key.
         replies = [
             (
                 (entry or {}).get("event_key", "").rsplit(":", 1)[-1] or None,
                 (entry or {}).get("payload") or {},
             )
             for entry in payloads_map.values()
+            if not (entry or {}).get("event_key", "").startswith("tool_wait:")
         ]
+        if not replies:
+            # Every accumulated reply this cycle was a tool_wait wake -
+            # no human gate has been answered yet, but the co-pending
+            # tool_wait readiness re-check below still needs to run
+            # exactly once. A sentinel tcid matching no real
+            # _PendingToolCall/_PendingAgentYield keeps this a genuine
+            # no-op on the human-gate side (never None, which would
+            # legacy-drain-all and spuriously answer the STILL-unanswered
+            # gate); "approved" avoids classify_approval_payload's
+            # fail-closed-to-rejected default installing the rejecting
+            # override for no reason - mirrors resume_graph_tool_wait's
+            # own identical convention for its no-real-approval-here case.
+            replies = [("__tool_wait_wake_only__", {"decision": "approved"})]
     else:
         resume_event_key = raw_state.get("resume_event_key")
         resumed_tcid = (

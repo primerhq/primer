@@ -408,6 +408,19 @@ async def persist_resume_tool_result_records(
     ``persist_resume_tool_result_record_for_graph`` does. ``None`` for
     the agent-only caller (no node concept), which leaves every record's
     ``node_id`` unset, byte-identical to before this parameter existed.
+
+    7a gate review (verdict item C): seeds the writer from a FRESH
+    storage read of ``last_seq``, never the ``session`` object threaded
+    down the call chain - for a graph-bound caller, ``resume_graph_from_
+    checkpoint``'s own resume-drain tap (``_ResumeDrainTap``) may ALREADY
+    have advanced ``last_seq`` in storage by the time this runs
+    (streaming the resumed node's own continuation), and this function
+    is always called AFTER that drain returns. Trusting the stale
+    parameter would start this writer's own counter behind the drain's,
+    producing either a seq collision (two records claiming the same
+    seq) or a gap, depending on write-order luck. Mirrors
+    ``_ResumeDrainTap.create``'s own identical fresh-read fix for the
+    exact same hazard, one call earlier in the same chain.
     """
     if pool._storage is None:
         return
@@ -419,11 +432,16 @@ async def persist_resume_tool_result_records(
     from primer.session.persistence import WorkspaceMessageWriter
 
     try:
+        storage = pool._storage.get_storage(WorkspaceSession)
+        last_seq = session.last_seq
+        fresh = await storage.get(session.id)
+        if fresh is not None:
+            last_seq = fresh.last_seq
         ws = await pool._load_workspace_for_persist(session.workspace_id)
         writer = WorkspaceMessageWriter(
-            workspace_io=ws, session_id=session.id, start_seq=session.last_seq,
+            workspace_io=ws, session_id=session.id, start_seq=last_seq,
         )
-        new_seq = session.last_seq
+        new_seq = last_seq
         for task in tasks:
             result = task.result_state or {}
             new_seq = await writer.append(SessionMessageRecord(
@@ -438,8 +456,12 @@ async def persist_resume_tool_result_records(
                 created_at=datetime.now(timezone.utc),
             ))
         await writer.flush()
-        storage = pool._storage.get_storage(WorkspaceSession)
-        await storage.update(session.model_copy(update={"last_seq": new_seq}))
+        # Base the update on the FRESH row, not the stale `session`
+        # parameter - the drain may have already written OTHER fields
+        # too (status, parked_state, ...); model_copy-ing from the stale
+        # snapshot would silently roll those back to their pre-drain
+        # values along with getting last_seq right.
+        await storage.update((fresh or session).model_copy(update={"last_seq": new_seq}))
         if pool._event_bus is not None:
             try:
                 await pool._event_bus.publish(
