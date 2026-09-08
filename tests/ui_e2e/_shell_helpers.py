@@ -58,8 +58,59 @@ def open_doc(page: Page, console_url: str, wid: str, kind: str, ref: str,
 
 def open_overlay(page: Page, console_url: str, wid: str, name: str,
                  *, timeout: int = 20_000) -> None:
-    page.goto(f"{console_url}#/w/{wid}?overlay={name}")
+    """Navigate to a workspace-scoped ``?overlay=`` route and wait for it
+    to actually render.
+
+    01a0823a: shares open_view's same-document hash-assignment fix — this
+    used a raw page.goto() to a hash-only URL, which is the identical
+    bug (see open_view's docstring): on a page already bootstrapped at
+    this origin, that's a same-document navigation whose hashchange/
+    popstate firing isn't guaranteed, and nv-shell.jsx's URL-sync
+    listener only reacts to those two events. Direct hash assignment is
+    the browser's own primitive that unambiguously queues a hashchange.
+    """
+    fragment = f"#/w/{wid}?overlay={name}"
+    current_origin = page.url.split("#", 1)[0].rstrip("/")
+    console_origin = console_url.rstrip("/")
+    if current_origin == console_origin:
+        page.evaluate("(h) => { window.location.hash = h; }", fragment)
+    else:
+        page.goto(f"{console_url}{fragment}")
     expect(page.get_by_test_id(f"nv-overlay:{name}")).to_be_visible(timeout=timeout)
+
+
+def open_view(page: Page, console_url: str, wid: str, view: str,
+              *, timeout: int = 20_000) -> None:
+    """Navigate to a workspace-scoped ``?view=`` route (e.g. the System
+    dashboard's ``system:dashboard``) and wait for it to actually render.
+
+    01a0823a: uses the SAME same-document hash-assignment
+    ``open_legacy_route`` already earned its 45s budget over, not a
+    fresh ``page.goto()``. Every real caller reaches this with the
+    console already loaded (the ``page`` fixture's own pre-navigation
+    guarantees it - see that fixture's docstring), so a ``page.goto()``
+    to a URL differing only by hash is a same-document navigation whose
+    ``hashchange``/``popstate`` firing is NOT guaranteed across
+    Playwright/browser navigation classification - and
+    ``nv-shell.jsx``'s URL-sync listener (the only thing that ever calls
+    ``setView``) only runs on those two events. A ``page.goto()`` here
+    that doesn't fire one leaves the console showing whatever view the
+    page was already on: the target view's content (here,
+    ``NV_WorkerFleet``) never mounts, and a caller waiting on one of its
+    test ids waits out its full timeout against a view that was never
+    going to change - indistinguishable from "still loading" without
+    reading nv-shell.jsx's own event wiring. Direct hash assignment is
+    the browser's own native primitive for this, which unambiguously
+    queues a hashchange task per spec regardless of how Playwright
+    classifies the navigation.
+    """
+    fragment = f"#/w/{wid}?view={view}"
+    current_origin = page.url.split("#", 1)[0].rstrip("/")
+    console_origin = console_url.rstrip("/")
+    if current_origin == console_origin:
+        page.evaluate("(h) => { window.location.hash = h; }", fragment)
+    else:
+        page.goto(f"{console_url}{fragment}")
 
 
 def open_palette(page: Page) -> None:

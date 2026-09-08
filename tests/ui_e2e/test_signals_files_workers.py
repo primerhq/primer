@@ -16,6 +16,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._shell_helpers import open_view
 from tests.ui_e2e._studio_helpers import open_workspace_settings, open_session_in_studio
 
 
@@ -232,14 +233,19 @@ def test_u0072_workspace_files_tab_lists_api_written_file(
 def test_u0073_worker_pill_reflects_drain_within_polling(
     page, base_url, console_url, unique_suffix,
 ) -> None:
-    """U0073 — The topbar worker-pill text is "{active}/{total}"
-    computed from /v1/workers items filtered by status=active.
-    POSTing /workers/{id}/drain on the sole worker changes its
-    status from 'active' to 'draining'; the pill polls every ~5s
-    and should update from "1/1" to "0/1" within ~10s.
+    """U0073 — A per-worker row in NV_WorkerFleet (System dashboard)
+    reflects a drain signal. POSTing /workers/{id}/drain on the sole
+    worker changes its status from 'active' to 'draining'; the row's
+    text should stop containing "active" within the fleet's ~8s
+    poll cadence.
 
-    Pins the worker-pill polling cadence + status filter in
-    primer's the console shell TopBar.
+    Pins the worker-fleet row's polling + status rendering on the
+    System dashboard.
+
+    The "worker_pill" in this test's name is historical: it predates
+    the flag-day re-point that moved this surface from a topbar pill
+    ("{active}/{total}") to the per-worker dashboard row tested here.
+    Kept for CI-history/board-task traceability rather than renamed.
     """
     # Find the registered worker via API. If no active workers
     # remain (a prior test already drained the sole worker — drain
@@ -261,30 +267,29 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
     try:
         # Re-pointed (flag day): the worker fleet lives on the System
         # dashboard now, one row per worker with its live status.
-        page.goto(f"{console_url}#/w/primer?view=system:dashboard",
-                  wait_until="domcontentloaded")
+        #
+        # 01a0823a: the u0073 recurrence after 91fcb2ae's timeout-headroom
+        # bump (30s, previously 15s) proved headroom was never the fix --
+        # the raw page.goto() below used to navigate this hash-only URL
+        # change, which is NOT guaranteed to fire the hashchange/popstate
+        # event nv-shell.jsx's URL-sync listener depends on to actually
+        # switch the rendered view (the exact same Playwright/browser
+        # navigation-classification quirk _shell_helpers.open_legacy_route
+        # was already fixed for, over in the ?overlay= grammar - see its
+        # own comment). When the event doesn't fire, the console keeps
+        # showing whichever view the `page` fixture's own initial
+        # navigation left it on: NV_WorkerFleet never mounts, and the row
+        # search below waits out its FULL timeout against a view that was
+        # never going to gain that row, no matter how long the wait is --
+        # indistinguishable from "still loading" without reading
+        # nv-shell.jsx's own hashchange wiring. open_view uses the
+        # browser's native window.location.hash assignment instead, which
+        # unambiguously queues a hashchange task per spec.
+        open_view(page, console_url, "primer", "system:dashboard")
         row = page.get_by_test_id(f"nv-worker:{worker_id}")
-        # 01a0651f (4-strike CI flake, root-caused from 3 real CI log
-        # occurrences across PR #215 and #220, evidence-first per the
-        # de-flake convention this repo already uses for the same
-        # shape - see 7d404cac/cd949f69): "domcontentloaded" only means
-        # the initial HTML loaded, not that React has mounted. This
-        # no-build app transpiles its whole JSX bundle with babel-
-        # standalone IN the browser on every load, then NV_WorkerFleet
-        # mounts and fires its FIRST /v1/workers fetch immediately (not
-        # poll-gated - confirmed in ui/foundation/use-resource.js,
-        # runFetch() runs synchronously on mount, pollMs only paces
-        # SUBSEQUENT fetches). The 15s budget covers that entire
-        # navigate -> transpile -> mount -> fetch -> render chain in
-        # ONE wait with no margin; two of the three CI failures also
-        # had OTHER, unrelated bootstrap-dependent waits fail in the
-        # same run, pointing at general CI-runner contention (shared
-        # CPU under the full ui_e2e suite) rather than anything specific
-        # to worker draining or /v1/workers itself - the API confirms
-        # the worker is genuinely active moments before this wait even
-        # starts. 30s matches this repo's existing convention for this
-        # exact flake shape (absorb runner load, not chase a phantom
-        # backend bug).
+        # With the navigation itself now reliable, this covers only the
+        # genuine remaining async chain (mount -> fetch -> render) under
+        # CI load - not a phantom "maybe the route switched" wait.
         row.wait_for(state="visible", timeout=30_000)
         assert "active" in (row.text_content() or ""), (
             f"expected an active worker row, got {row.text_content()!r}"
