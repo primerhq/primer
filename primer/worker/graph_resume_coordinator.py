@@ -589,6 +589,18 @@ async def persist_resume_tool_result_record_for_graph(
 
     Best-effort, same doctrine as the agent-path sibling: a write failure
     here must not fail an otherwise-successful resume.
+
+    7a gate review (verdict R2-3): seeds the writer from a FRESH storage
+    read of ``last_seq`` via the shared ``fresh_session_row_and_last_seq``
+    helper, never the ``session`` object threaded down the call chain -
+    this function runs in the SAME resume chain as ``resume_graph_from_
+    checkpoint``'s own resume-drain tap (``_ResumeDrainTap``), which may
+    already have advanced ``last_seq`` in storage by the time this runs.
+    A stale seed produces a seq collision or gap; a stale ``model_copy``
+    base would additionally roll back whatever OTHER fields the drain
+    already wrote. This is the exact hazard item C fixed one call site
+    over (``persist_resume_tool_result_records``) - this sibling missed
+    it originally, which is why the helper is now shared.
     """
     if pool._storage is None or agent_tool_result is None:
         return
@@ -599,6 +611,7 @@ async def persist_resume_tool_result_record_for_graph(
         WorkspaceSession,
     )
     from primer.session.persistence import WorkspaceMessageWriter
+    from primer.worker.graph_resume import fresh_session_row_and_last_seq
 
     tool_result_part = next(
         (p for p in agent_tool_result.parts if isinstance(p, ToolResultPart)),
@@ -616,9 +629,10 @@ async def persist_resume_tool_result_record_for_graph(
             break
 
     try:
+        fresh, last_seq = await fresh_session_row_and_last_seq(pool, session)
         ws = await pool._load_workspace_for_persist(session.workspace_id)
         writer = WorkspaceMessageWriter(
-            workspace_io=ws, session_id=session.id, start_seq=session.last_seq,
+            workspace_io=ws, session_id=session.id, start_seq=last_seq,
         )
         new_seq = await writer.append(SessionMessageRecord(
             seq=1,  # overwritten by the writer's monotonic counter
@@ -632,8 +646,10 @@ async def persist_resume_tool_result_record_for_graph(
             created_at=datetime.now(timezone.utc),
         ))
         await writer.flush()
+        # Base the update on the FRESH row, not the stale `session`
+        # parameter - see fresh_session_row_and_last_seq's own docstring.
         storage = pool._storage.get_storage(WorkspaceSession)
-        await storage.update(session.model_copy(update={"last_seq": new_seq}))
+        await storage.update(fresh.model_copy(update={"last_seq": new_seq}))
         if pool._event_bus is not None:
             try:
                 await pool._event_bus.publish(
@@ -719,12 +735,16 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
     remaining tool_wait batch(es) after a co-pending human gate resumed
     and left ``_pending_tool_waits`` non-empty (01a0518b boundary d).
 
-    Pure re-write, no new ``ToolCallTask`` rows: every batch still in
-    ``repark.graph_checkpoint['pending_tool_waits']`` was already
-    materialized (rows + claim-engine upserts) at the ORIGINAL park time
-    - the classic ``except YieldToWorker`` branch in dispatch.py runs
-    ``_materialize_pending_tool_wait_rows`` for exactly this reason, even
-    though a human gate was ALSO pending then. This just recomputes each
+    Itself a pure re-write, no row creation: any batch NEW to this
+    repark (a resumed node's own continuation dispatching a further
+    claims round - 7a gate review verdict R2-1) already had its
+    ``ToolCallTask`` rows + claim-engine upserts materialized upstream,
+    inside :func:`primer.worker.graph_resume.resume_graph_from_checkpoint`
+    (the SAME shared ``materialize_pending_tool_wait_rows`` helper
+    dispatch.py's own park catches use), before this function ever
+    runs. A batch already carried over from an EARLIER park was
+    materialized then, by dispatch.py's classic ``except YieldToWorker``
+    branch. This just recomputes each
     batch's wake key (a pure function - see ``tool_wait_event_key``) and
     writes a fresh ``ParkRequest`` pointing at the same already-claimable
     rows. ``node_tool_call_seq`` is threaded through unchanged for the

@@ -944,10 +944,20 @@ class _BaseGraphExecutor(
                     # ANOTHER claims batch before finishing (a second
                     # tool-calling round in the same multi-turn node) -
                     # re-record as a pending tool_wait so the
-                    # drain-until-empty check below re-parks on it; row
-                    # creation for this NEW batch happens the same way a
-                    # first-park ToolWaitPark's does, driven by the
-                    # worker-layer coordinator once it re-parks.
+                    # drain-until-empty check below re-parks on it. 7a
+                    # gate review (verdict R2-1): row creation for this
+                    # NEW batch does NOT happen "the same way a first-park
+                    # ToolWaitPark's does" on its own - that claim was
+                    # FALSE (the repark path used to be a pure re-write,
+                    # no new rows, because this arm was production-
+                    # unreachable before item 3's coalesce_state fix made
+                    # it reachable). The worker-layer resume adapter
+                    # (worker/graph_resume.py's resume_graph_from_
+                    # checkpoint) now explicitly materializes rows for
+                    # this repark's own pending_tool_waits via the SAME
+                    # shared materialize_pending_tool_wait_rows helper
+                    # dispatch.py's own park catches use, right where it
+                    # already stashes this repark's scoped ids.
                     self._pending_tool_waits.append(
                         _PendingToolWait(
                             node_id=tw.node_id,
@@ -1076,8 +1086,28 @@ class _BaseGraphExecutor(
                     self._fanout_instances[inst.synthesized_id] = inst
                     next_ready.add(inst.synthesized_id)
                 del self._pending_fanout[fanout_id]
-            context.iteration += 1
-            ready = (ready - set(completed_ids)) | next_ready
+            # 7a gate review (verdict R2-2, flag-off regression): ``ready``
+            # at method entry is the FULL set dispatched in the ORIGINAL
+            # superstep, restored from the checkpoint - if a sibling (say
+            # N) completed normally BEFORE the park, its id survives in
+            # ``ready`` untouched across every resume cycle, since N is
+            # never itself a ``completed_ids`` entry here (it finished
+            # before the park, not as part of THIS resume's own
+            # tc/ay/tw_pending loops). Left unfiltered, the FINAL resume's
+            # dispatch call below re-runs N's whole turn a second time:
+            # duplicate LLM call, duplicate tool side effects, duplicate
+            # gate prompts. Excluding already-ENDED nodes drops exactly
+            # N and nothing else - a freshly-computed successor in
+            # ``next_ready`` is never ENDED yet, so this can't drop a
+            # legitimate fresh target. N's OWN successors are NOT
+            # computed here - that gap is the pre-existing 01a08016 bug,
+            # deliberately not fixed in this arc.
+            already_ended = {
+                nid for nid in ready
+                if (rt := node_states.get(nid)) is not None
+                and rt.status == NodeRuntimeStatus.ENDED
+            }
+            ready = (ready - set(completed_ids) - already_ended) | next_ready
             self._ready_set = ready
 
         # Full concurrency: if other human-interaction nodes OR tool_wait
@@ -1098,6 +1128,18 @@ class _BaseGraphExecutor(
                 status=SessionStatus.WAITING,
             )
             raise self._build_pending_park_exception()
+
+        # 7a gate review (verdict R2-4): bump iteration only now that the
+        # drain has reached a fully-resolved superstep (nothing left
+        # pending) - preserves the merge-base cadence (once per drained
+        # superstep). The ready-set fold above must still run on EVERY
+        # partial resume (item 2's fix) so a later resume's own union
+        # doesn't lose an earlier resume's accumulated successors, but
+        # the iteration COUNTER is a separate concern: bumping it on
+        # every partial wake would burn through a flag-off multi-gate
+        # graph's max_iterations budget prematurely.
+        if completed_ids:
+            context.iteration += 1
 
         # Persist the drained-state snapshot so observers can see the
         # ToolCalls finished before the next superstep starts.

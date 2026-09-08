@@ -21,6 +21,7 @@ so the stored value is authoritative.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -52,6 +53,8 @@ from primer.tap.delta import (
     part_id,
     scoped_tool_call_id,
 )
+
+logger = logging.getLogger(__name__)
 
 # Reusable validator for the discriminated ``StreamEvent`` union.  Used to
 # reconstruct the inner StreamEvent carried by a forwarded ``_GraphNodeEvent``
@@ -869,6 +872,210 @@ def stash_graph_scoped_ids(
             if sid is not None:
                 entry["scoped_tool_call_id"] = sid
     return dict(coalesce_state.tool_call_seq)
+
+
+async def _create_tool_call_task_idempotent(
+    task_storage, task: "Any", *, session_id: str,
+) -> None:
+    """Create ``task``, tolerating a crash-and-retry replay of the SAME
+    scoped id (01a0518b review: the crash-window doctrine).
+
+    Crash window: a worker can crash AFTER a park branch has created
+    every ``ToolCallTask`` row (+ upserted the claimable ones' leases)
+    but BEFORE the ``ParkRequest`` this turn returns is ever applied by
+    ``on_release`` (that write happens in the CALLER, one layer above).
+    The session's lease then simply expires (never released) and the
+    turn re-runs from scratch.
+
+    That re-run mints the IDENTICAL scoped ids and record_seq values
+    as the crashed attempt, deterministically, for two independent
+    reasons: (1) the seed seq is read from ``session.last_seq``, which
+    the crashed attempt never advanced (the durable append only
+    completes AFTER this) -- so the re-run's fresh writer starts
+    counting from the SAME base and produces the SAME seq for the same
+    append order; (2) a park never reaches the normal turn-persist step
+    (the assistant/tool_use message lives only in the exception's
+    ``llm_messages``, lost with the crash), so the re-run's LLM prompt
+    is byte-identical to the crashed attempt's -- if the LLM replays the
+    same tool calls in the same order (the expected case), a fresh
+    coalesce state mints identical scoped ids from turn_no + positional
+    seq alone.
+
+    So a ``ConflictError`` here on retry, with the existing row's
+    ``record_seq`` matching what THIS attempt just computed, is proof
+    of exactly that replay -- not a real collision -- and is treated as
+    a no-op. A MISMATCHED ``record_seq`` means something else entirely
+    created this id (the LLM did not replay identically, or a genuine
+    bug), which is not safe to paper over: raise loudly rather than
+    silently resurrecting or overwriting scheduling state a worker
+    might already be running against.
+
+    This doctrine only covers a BYTE-IDENTICAL replay. If the re-run's
+    LLM instead emits a genuinely DIFFERENT batch, the crashed
+    attempt's OWN rows (never referenced by the new attempt at all)
+    become orphans -- see
+    ``primer.worker.tool_wait_resume_coordinator``'s module docstring
+    for the required liveness check the future claim-based tool-call
+    worker must perform before executing one.
+    """
+    from primer.model.except_ import ConflictError
+
+    try:
+        await task_storage.create(task)
+    except ConflictError:
+        existing = await task_storage.get(task.id)
+        if existing is not None and existing.record_seq == task.record_seq:
+            logger.info(
+                "session %s ToolCallTask %r already exists with matching "
+                "record_seq %d - crash-and-retry replay, treating as a "
+                "no-op",
+                session_id, task.id, task.record_seq,
+            )
+            return
+        raise RuntimeError(
+            f"session {session_id} ToolCallTask {task.id!r} already exists "
+            "with record_seq="
+            f"{existing.record_seq if existing is not None else '<gone>'} "
+            f"but this attempt computed record_seq={task.record_seq} - not "
+            "a crash-retry replay (record_seq must match for that); "
+            "something else created a conflicting row"
+        ) from None
+
+
+async def materialize_pending_tool_wait_rows(
+    storage_provider: "Any",
+    claim_engine: "Any | None",
+    session_id: str,
+    turn_no: int,
+    coalesce_state: "_CoalesceState",
+    parked_at: datetime,
+    pending_tool_waits: "list[dict[str, Any]]",
+    *,
+    strict: bool = True,
+) -> list[str]:
+    """Materialize ``ToolCallTask`` rows for every co-pending tool_wait
+    batch found in a graph checkpoint's own ``pending_tool_waits`` list
+    (01a0518b, graph-surface boundary d) - one independent batch per
+    graph node that raised its own ``ToolWaitPark`` in the same
+    superstep. Returns each batch's own wake key (see
+    ``tool_wait_event_key``), for the caller to fold into its own
+    ``event_keys``/``parked_event_keys``.
+
+    7a gate review (verdict R2-1): relocated here (from
+    ``primer.session.dispatch``, where it was a private helper) so BOTH
+    dispatch.py's live-turn park catches AND the graph-resume adapter's
+    own repark path (``primer.worker.graph_resume.
+    resume_graph_from_checkpoint``) share ONE implementation - a
+    resumed node's own continuation dispatching a SECOND claims batch
+    re-parks via a repark path that, before this fix, created NO rows
+    at all for that new batch (the "pure re-write, no new rows" comment
+    it carried was true only because the claims seam was structurally
+    unreachable on resume before item 3's fix; item 3 made it reachable
+    without this row-creation half following it over).
+
+    ``strict`` distinguishes the two call shapes: dispatch.py's ORIGINAL
+    park catches pass the FULL, freshly-produced ``pending_tool_waits``
+    list, where every entry's scoped ids MUST already have a durable
+    TOOL_CALL record in ``coalesce_state`` (a miss there is a genuine
+    invariant violation - keep raising loudly, ``strict=True``, the
+    default). The repark path's ``pending_tool_waits`` can be a MIX of
+    entries carried over untouched from a PRIOR park (this resume's own
+    ``coalesce_state`` is fresh and never observed them) and genuinely
+    NEW entries this resume's own dispatch just produced (which DOES
+    know about them) - pass ``strict=False`` there so an untouched
+    entry's scoped ids are silently skipped (already materialized
+    earlier, not this call's business) rather than raising.
+
+    Shared by BOTH graph park paths: the classic ``except YieldToWorker``
+    branch (a co-pending human gate rides alongside one or more tool_wait
+    batches) and the pure ``except ToolWaitPark`` branch (no co-pending
+    gate) both read this SAME ``graph_checkpoint['pending_tool_waits']``
+    shape, rather than the pure branch's own FLATTENED
+    ``ToolWaitPark.outstanding_task_ids``/``notifying_results`` fields -
+    flattening across nodes would lose the per-node grouping
+    ``batch_task_ids``/the wake key both need to keep "one gated call's
+    siblings don't block another node's siblings" true for tool_wait
+    batches too, not just human gates (see ``_PendingToolWait``'s own
+    docstring). ``[]`` for an agent-bound park, or a graph park with no
+    co-pending tool_wait batch at all - a no-op.
+    """
+    from primer.int.claim import ClaimKind
+    from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+    from primer.session.yields import tool_wait_event_key
+
+    if not pending_tool_waits:
+        return []
+    task_storage = storage_provider.get_storage(ToolCallTask)
+    wake_keys: list[str] = []
+    for pw in pending_tool_waits:
+        node_batch_ids = [
+            *pw["outstanding_task_ids"],
+            *(scoped_id for scoped_id, _ in pw["notifying_results"]),
+        ]
+        for scoped_id in pw["outstanding_task_ids"]:
+            record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+            tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+            if record_seq is None or tool_name is None:
+                if not strict:
+                    continue
+                raise RuntimeError(
+                    f"session {session_id} pending tool_wait node "
+                    f"{pw['node_id']!r} outstanding task {scoped_id!r} has "
+                    "no matching TOOL_CALL record in this turn's "
+                    "coalesce_state - the durable-append-before-claimable "
+                    "invariant broke"
+                )
+            await _create_tool_call_task_idempotent(
+                task_storage,
+                ToolCallTask(
+                    id=scoped_id,
+                    session_id=session_id,
+                    turn_no=turn_no,
+                    tool_name=tool_name,
+                    state=ToolCallTaskState.QUEUED,
+                    record_seq=record_seq,
+                    created_at=parked_at,
+                    batch_task_ids=node_batch_ids,
+                ),
+                session_id=session_id,
+            )
+            if claim_engine is not None:
+                await claim_engine.upsert(ClaimKind.TOOL_CALL, scoped_id)
+        for scoped_id, result_dict in pw["notifying_results"]:
+            record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+            tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+            if record_seq is None or tool_name is None:
+                if not strict:
+                    continue
+                raise RuntimeError(
+                    f"session {session_id} pending tool_wait node "
+                    f"{pw['node_id']!r} notifying result {scoped_id!r} has "
+                    "no matching TOOL_CALL record in this turn's "
+                    "coalesce_state - the durable-append-before-claimable "
+                    "invariant broke"
+                )
+            await _create_tool_call_task_idempotent(
+                task_storage,
+                ToolCallTask(
+                    id=scoped_id,
+                    session_id=session_id,
+                    turn_no=turn_no,
+                    tool_name=tool_name,
+                    state=ToolCallTaskState.DONE,
+                    record_seq=record_seq,
+                    created_at=parked_at,
+                    finished_at=parked_at,
+                    result_state=dict(result_dict),
+                    batch_task_ids=node_batch_ids,
+                ),
+                session_id=session_id,
+            )
+        wake_keys.append(
+            tool_wait_event_key(
+                session_id, turn_no, scoped_task_id=node_batch_ids[0],
+            )
+        )
+    return wake_keys
 
 
 def infer_agent_phase(event: StreamEvent) -> str | None:
