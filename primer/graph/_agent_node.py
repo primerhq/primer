@@ -400,6 +400,17 @@ class _AgentNodeMixin:
         # base.py's resume_from_checkpoint), not the live fan-out queue:
         # no concurrent sibling shares a queue with it, so it has the
         # same pull-chain guarantee as the chat/workspace surface.
+        #
+        # 7a gate review (verdict item 3): this is now load-bearing, not
+        # hypothetical - self._coalesce_state can be genuinely non-None
+        # here once worker/graph_resume.py's resume_graph_from_checkpoint
+        # binds it from its own _ResumeDrainTap. The proof still holds:
+        # resume_from_checkpoint's ay_pending/tw_pending loops resume
+        # pending nodes SEQUENTIALLY, one _resume_agent_node call awaited
+        # to completion before the next starts (never two concurrently
+        # sharing this coalesce_state's own scoped_call_ids/tool_call_seq
+        # writes), so nothing here can race a sibling's own resolver call
+        # the way _stream_agent_node's live fan-out queue can.
         resolve_scoped_call = None
         if self._coalesce_state is not None:
             resolve_scoped_call = _make_node_scoped_call_resolver(

@@ -63,6 +63,7 @@ from primer.session.persistence import (
     WorkspaceMessageWriter,
     _CoalesceState,
     infer_agent_phase,
+    stash_and_flush_tool_call_record,
     stash_graph_scoped_ids,
     translate_stream_event,
 )
@@ -529,40 +530,17 @@ async def run_one_session_turn(
 
             for rec in records:
                 seq = await writer.append(rec)
-                # 7a gate review (verdict item A): gated on the flag - the
-                # stash exists ONLY so the tool-dispatch seam can look up a
-                # scoped call's durable record synchronously (see
-                # _CoalesceState.tool_call_record_seq), and the eager flush
-                # exists ONLY because a claim-based worker reads
-                # messages.jsonl from a DIFFERENT PROCESS once
-                # tool_calls_as_claims is armed - unflushed bytes are
-                # invisible to it there. Neither ToolWaitPark nor a mixed
-                # graph_checkpoint's pending_tool_waits can ever be
-                # produced on a flag-off turn (run_agent_turn's own routing
-                # gate never enters _dispatch_as_claims), so both were pure
-                # unread overhead on every flag-off turn's every tool call -
-                # a stash nothing reads, and a forced flush the normal
-                # 16KB/100ms buffered policy already covers correctly for
-                # the in-process (same-process) dispatch path.
-                if (
-                    rec.kind == SessionMessageKind.TOOL_CALL
-                    and getattr(executor, "_tool_calls_as_claims_enabled", False)
-                ):
-                    coalesce_state.tool_call_record_seq[rec.payload["id"]] = seq
-                    # No "or 'unknown'" fallback (01a0518b review): a
-                    # missing name must surface as a MISSING dict entry, not
-                    # a fabricated string, so the except-ToolWaitPark
-                    # branch's own `tool_name is None` invariant check
-                    # actually has teeth - a silent "unknown" placeholder
-                    # would create an unexecutable ToolCallTask row instead
-                    # of failing loudly at the point that can still name
-                    # the record.
-                    _tool_call_name = rec.payload.get("name")
-                    if _tool_call_name is not None:
-                        coalesce_state.tool_call_record_name[rec.payload["id"]] = (
-                            _tool_call_name
-                        )
-                    await writer.flush()
+                # 7a gate review (verdict item 3): shared with the graph
+                # resume drain's own tap (_ResumeDrainTap.observe) so the
+                # two never drift into independently-maintained copies of
+                # the same seam - see the helper's own docstring for the
+                # full stash/flush reasoning and item A's gating rationale.
+                await stash_and_flush_tool_call_record(
+                    rec, seq, coalesce_state=coalesce_state, writer=writer,
+                    tool_calls_as_claims_enabled=getattr(
+                        executor, "_tool_calls_as_claims_enabled", False,
+                    ),
+                )
                 await deps.event_bus.publish(
                     f"session:{session_id}:tick", {"seq": seq}
                 )

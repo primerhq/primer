@@ -784,6 +784,52 @@ def translate_stream_event(
     return None
 
 
+async def stash_and_flush_tool_call_record(
+    rec: SessionMessageRecord,
+    seq: int,
+    *,
+    coalesce_state: "_CoalesceState",
+    writer: WorkspaceMessageWriter,
+    tool_calls_as_claims_enabled: bool,
+) -> None:
+    """The tool-dispatch seam's per-TOOL_CALL-record durability step
+    (Phase 3 stage 7a, 01a0518b; 7a gate review item 3 - extracted as a
+    SHARED helper so the live turn loop (``primer.session.dispatch``)
+    and a graph resume drain (``primer.worker.graph_resume.
+    _ResumeDrainTap``) cannot drift into two independently-maintained
+    copies of the same seam - the exact "pending_dispatch disease" this
+    arc has repeatedly guarded against elsewhere).
+
+    A no-op unless BOTH ``rec.kind == TOOL_CALL`` and
+    ``tool_calls_as_claims_enabled`` - see 7a gate review item A: neither
+    the stash nor the flush serves any purpose when the flag is off
+    (nothing on that path can ever produce a ``ToolWaitPark`` to read the
+    stash back, and there is no different-process reader to make
+    durable for).
+
+    Stashes the record's own ``seq`` into ``coalesce_state.
+    tool_call_record_seq`` (keyed by the record's own id - the tool-
+    dispatch seam's ``except ToolWaitPark`` row-creation reads this
+    synchronously) and its ``name`` into ``tool_call_record_name`` - no
+    ``"or 'unknown'"`` fallback: a missing name must surface as a
+    MISSING dict entry, not a fabricated string, so that row-creation's
+    own ``tool_name is None`` invariant check fails loudly instead of
+    producing an unexecutable ``ToolCallTask``. Then flushes ``writer``
+    immediately, bypassing its normal 16KB/100ms buffered policy - a
+    claim-based worker reads ``messages.jsonl`` from a DIFFERENT
+    PROCESS once the seam is armed, so unflushed bytes would be
+    invisible to it; durable means flushed, always, for this one record
+    kind, on this one path.
+    """
+    if rec.kind != SessionMessageKind.TOOL_CALL or not tool_calls_as_claims_enabled:
+        return
+    coalesce_state.tool_call_record_seq[rec.payload["id"]] = seq
+    tool_call_name = rec.payload.get("name")
+    if tool_call_name is not None:
+        coalesce_state.tool_call_record_name[rec.payload["id"]] = tool_call_name
+    await writer.flush()
+
+
 def stash_graph_scoped_ids(
     graph_checkpoint: dict[str, Any] | None, coalesce_state: "_CoalesceState",
 ) -> dict[str, int]:
