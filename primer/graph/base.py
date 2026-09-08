@@ -313,6 +313,22 @@ class _BaseGraphExecutor(
         # before the first superstep / after termination.
         self._context: GraphContext | None = None
         self._ready_set: set[str] = set()
+        # ``_settled_ids`` (7a gate review, verdict R3-1/R3-2): the set of
+        # node ids that have gone terminal (ENDED or FAILED) WITHIN the
+        # superstep currently being tracked - reset once per superstep in
+        # ``_run_superstep_loop`` (see the reset's own comment for why
+        # that per-superstep boundary is load-bearing, not hygiene), and
+        # accumulated across however many partial resumes it takes to
+        # fully drain that superstep's pending set in
+        # ``resume_from_checkpoint``. Exists so the resume-dispatch
+        # exclusion set never has to infer "already ran this superstep"
+        # from ``node_states[...].status`` - a persistent, never-reset,
+        # globally-keyed field that two prior fix rounds each
+        # (independently) mistook for that proxy and were wrong in a
+        # cyclic graph, where a revisited node_id's stale status from an
+        # EARLIER superstep is indistinguishable from a genuine
+        # same-superstep completion.
+        self._settled_ids: set[str] = set()
         # Node ids that have entered the ready set at least once this run.
         # Used by ``_fanin_ready`` to decide whether a callable-router source
         # is a *live* potential upstream (admitted but not yet resolved) that
@@ -1086,28 +1102,42 @@ class _BaseGraphExecutor(
                     self._fanout_instances[inst.synthesized_id] = inst
                     next_ready.add(inst.synthesized_id)
                 del self._pending_fanout[fanout_id]
-            # 7a gate review (verdict R2-2, flag-off regression): ``ready``
-            # at method entry is the FULL set dispatched in the ORIGINAL
-            # superstep, restored from the checkpoint - if a sibling (say
-            # N) completed normally BEFORE the park, its id survives in
-            # ``ready`` untouched across every resume cycle, since N is
-            # never itself a ``completed_ids`` entry here (it finished
-            # before the park, not as part of THIS resume's own
-            # tc/ay/tw_pending loops). Left unfiltered, the FINAL resume's
-            # dispatch call below re-runs N's whole turn a second time:
-            # duplicate LLM call, duplicate tool side effects, duplicate
-            # gate prompts. Excluding already-ENDED nodes drops exactly
-            # N and nothing else - a freshly-computed successor in
-            # ``next_ready`` is never ENDED yet, so this can't drop a
-            # legitimate fresh target. N's OWN successors are NOT
-            # computed here - that gap is the pre-existing 01a08016 bug,
-            # deliberately not fixed in this arc.
-            already_ended = {
-                nid for nid in ready
-                if (rt := node_states.get(nid)) is not None
-                and rt.status == NodeRuntimeStatus.ENDED
-            }
-            ready = (ready - set(completed_ids) - already_ended) | next_ready
+            # 7a gate review (verdict R3-1/R3-2): ``ready`` at method entry
+            # is the FULL set dispatched in the ORIGINAL superstep,
+            # restored from the checkpoint - if a sibling (say N) completed
+            # normally BEFORE the park, its id survives in ``ready``
+            # untouched across every resume cycle, since N is never itself
+            # a ``completed_ids`` entry here (it finished before the park,
+            # not as part of THIS resume's own tc/ay/tw_pending loops).
+            # Left unfiltered, the FINAL resume's dispatch call below
+            # re-runs N's whole turn a second time: duplicate LLM call,
+            # duplicate tool side effects, duplicate gate prompts.
+            #
+            # Two prior fix rounds tried to exclude N via
+            # ``node_states[N].status`` (R2-2's ``already_ended`` set,
+            # ENDED-only; R3 found it also missed FAILED siblings). BOTH
+            # were wrong for the SAME underlying reason: ``node_states``
+            # is keyed by node_id GLOBALLY and never resets, so in a
+            # CYCLIC graph a node_id revisited in a LATER superstep still
+            # shows whatever status its EARLIER visit left behind - a
+            # node legitimately about to run again this superstep looks
+            # indistinguishable from N's stale completion. ``self.
+            # _settled_ids`` (reset once per superstep in
+            # ``_run_superstep_loop``, see the reset's own comment) is the
+            # correct primitive: it is written ONLY when a node settles
+            # WITHIN the superstep currently being tracked, so a
+            # cross-superstep collision on a repeated node_id is
+            # structurally impossible. ``completed_ids`` covers every
+            # tc/ay/tw_pending branch that reaches this line (every other
+            # branch in those loops returns immediately on failure,
+            # ending the drain before this code ever runs - audited in
+            # the commit introducing this fix).
+            #
+            # N's OWN successors are NOT computed here - that gap is the
+            # pre-existing 01a08016 bug, deliberately not fixed in this
+            # arc.
+            self._settled_ids.update(completed_ids)
+            ready = (ready - self._settled_ids) | next_ready
             self._ready_set = ready
 
         # Full concurrency: if other human-interaction nodes OR tool_wait
@@ -1324,6 +1354,19 @@ class _BaseGraphExecutor(
         ended_detail = ended_detail_in
 
         while ready:
+            # 7a gate review (verdict R3-1/R3-2): reset once per superstep,
+            # BEFORE this iteration's own nodes can settle - this boundary
+            # is load-bearing, not hygiene. ``ready`` here is a NEW
+            # superstep's own dispatch set (including the on_max_iterations
+            # reroute's own ``continue`` above, which starts a fresh one
+            # too); without this reset, ``_settled_ids`` would accumulate
+            # ids across EVERY superstep this executor ever runs, and a
+            # cyclic graph revisiting the same node_id in a later
+            # superstep would find it pre-marked settled from its earlier
+            # visit - reintroducing exactly the R3-1 cross-superstep
+            # collision this field exists to prevent.
+            self._settled_ids = set()
+
             # Cycle bound check. Spec §5.4 maps this to ended_reason='failed'
             # with the detail code carried separately so the public contract
             # has a single failure reason and a finite set of codes.
@@ -1638,6 +1681,15 @@ class _BaseGraphExecutor(
                 # detects pending entries and propagates YieldToWorker.
                 if done is not None and done.suspended:
                     continue
+                # 7a gate review (verdict R3-1/R3-2): every branch reached
+                # from here on settles this node ONE way or another this
+                # superstep - an ordinary FAILED, a suppressed-fanout
+                # FAILED (its own sub-branch below, which still sets
+                # node_states[nid] to FAILED before continuing), or ENDED.
+                # The suspended guard above is the ONLY branch that must
+                # NOT settle (a park, not a completion) - audited when
+                # this field was introduced.
+                self._settled_ids.add(nid)
                 if done is None or done.error is not None:
                     err_text = (
                         str(done.error) if done is not None else "no result"
