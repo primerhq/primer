@@ -49,14 +49,20 @@ class _FakeWorkspaceIO:
 
 
 class _FakeSessionStorage:
-    def __init__(self) -> None:
+    def __init__(self, *, fresh_row: "WorkspaceSession | None" = None) -> None:
         self.updated: list[WorkspaceSession] = []
+        # 7a gate review (R2-3 discriminating-coverage follow-up): the
+        # existing four tests all pass fresh_row=None deliberately - that
+        # exercises the legitimate "no fresh row available" fallback,
+        # where fresh_session_row_and_last_seq correctly falls back to
+        # the caller's own `session` object. Only the DEDICATED test
+        # below passes a real fresh row, since that's the only shape
+        # that can actually distinguish the fix from a revert of it (see
+        # that test's own docstring).
+        self._fresh_row = fresh_row
 
     async def get(self, session_id: str) -> "WorkspaceSession | None":
-        # No fresh row available - fresh_session_row_and_last_seq falls
-        # back to the caller's own `session` object, unchanged from
-        # before this helper existed.
-        return None
+        return self._fresh_row
 
     async def update(self, session: WorkspaceSession) -> None:
         self.updated.append(session)
@@ -187,6 +193,61 @@ async def test_publishes_tick():
     key, payload = event_bus.published[0]
     assert key == f"session:{session.id}:tick"
     assert "seq" in payload
+
+
+@pytest.mark.asyncio
+async def test_seeds_writer_from_fresh_row_and_bases_update_on_it():
+    """7a gate review (verdict R2-3, discriminating-coverage follow-up):
+    the other three tests above all pass ``fresh_row=None``, so they
+    exercise ONLY the legitimate no-fresh-row fallback - reverting the
+    fix (``start_seq=session.last_seq`` /
+    ``session.model_copy(update=...)``) leaves them green too, since
+    with ``fresh=None`` the fixed and unfixed paths are byte-identical.
+
+    A FRESH row with an ADVANCED ``last_seq`` (mirroring a
+    ``_ResumeDrainTap`` that already wrote during the SAME resume chain
+    - the exact hazard this fix addresses) plus a DIFFERING secondary
+    field (``status``) makes the fix's effect observable: the written
+    record's own seq must continue from the fresh last_seq (51), not
+    the stale ``session`` parameter's (6), and the update's model_copy
+    must be based on the fresh row (status WAITING survives), not the
+    stale session (status RUNNING) - either assertion flips if the fix
+    is reverted.
+    """
+    ws = _FakeWorkspaceIO()
+    stale_session = _make_graph_session(last_seq=5)
+    fresh_row = stale_session.model_copy(
+        update={"last_seq": 50, "status": SessionStatus.WAITING},
+    )
+    session_storage = _FakeSessionStorage(fresh_row=fresh_row)
+    pool = _FakePool(workspace_io=ws, storage=_FakeStorage(session_storage))
+    checkpoint = {
+        "pending_agent_yields": [
+            {
+                "node_id": "asker", "tool_call_id": "tc-raw",
+                "scoped_tool_call_id": "asker:tool:0:1",
+            },
+        ],
+    }
+
+    await graph_resume_coordinator.persist_resume_tool_result_record_for_graph(
+        pool, session=stale_session, checkpoint=checkpoint, tcid="tc-raw",
+        agent_tool_result=_make_agent_tool_result("tc-raw"),
+    )
+
+    _sid, blob = ws.lines[0]
+    record = json.loads(blob.decode().splitlines()[0])
+    # Seeded from the FRESH last_seq (50 -> 51), not the stale session's
+    # (5 -> 6).
+    assert record["seq"] == 51
+
+    assert session_storage.updated
+    updated = session_storage.updated[-1]
+    assert updated.last_seq == 51
+    # Based on the FRESH row, not the stale `session` param - a stale
+    # base would silently carry the session's OWN status (RUNNING)
+    # forward instead of the fresh row's (WAITING).
+    assert updated.status == SessionStatus.WAITING
 
 
 @pytest.mark.asyncio

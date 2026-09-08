@@ -23,7 +23,11 @@ from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
 from primer.model.workspace_session import (
     AgentSessionBinding, SessionStatus, WorkspaceSession,
 )
-from primer.session.persistence import _CoalesceState, materialize_pending_tool_wait_rows
+from primer.session.persistence import (
+    _CoalesceState,
+    _create_tool_call_task_idempotent,
+    materialize_pending_tool_wait_rows,
+)
 
 from tests.conftest import _FakeStorageProvider
 
@@ -175,3 +179,53 @@ async def test_non_strict_mode_skips_unminted_entries_instead_of_raising() -> No
     assert wake_keys == ["tool_wait:s1:0:A", "tool_wait:s1:0:B"]
     assert await task_storage.get("A:tool:0:1") is not None
     assert await task_storage.get("B:tool:0:1") is None
+
+
+def _task(*, record_seq: int) -> ToolCallTask:
+    return ToolCallTask(
+        id="A:tool:0:1", session_id="s1", turn_no=0, tool_name="t",
+        state=ToolCallTaskState.QUEUED, record_seq=record_seq,
+        created_at=datetime.now(timezone.utc), batch_task_ids=["A:tool:0:1"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_strict_true_raises_on_record_seq_mismatch() -> None:
+    """The doctrine's existing behavior, unchanged: at the live-turn park
+    catches (strict=True, the default), a crash-retry's re-run mints the
+    IDENTICAL record_seq deterministically - a MISMATCH means something
+    else created a conflicting row, and must raise loudly."""
+    storage_provider = _FakeStorageProvider()
+    task_storage = storage_provider.get_storage(ToolCallTask)
+    await task_storage.create(_task(record_seq=1))
+
+    with pytest.raises(RuntimeError, match="not a crash-retry replay"):
+        await _create_tool_call_task_idempotent(
+            task_storage, _task(record_seq=2), session_id="s1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_strict_false_treats_existing_row_as_replay_without_comparing_record_seq() -> None:
+    """7a gate review (verdict R3-3): at the graph-resume repark call site
+    (strict=False), the crash-retry doctrine's "record_seq must match"
+    precondition is FALSE - persist_resume_tool_result_record_for_graph
+    durably advances last_seq BEFORE the drain runs, so a genuine
+    crash-then-retry computes a DIFFERENT record_seq for the SAME scoped
+    id on retry. Comparing record_seq there would raise on every
+    crash-retry, and the caller maps that into _end_session(failed) - a
+    crash-retry must not kill the session. strict=False treats ANY
+    existing row for this scoped id as a replay, record_seq mismatch or
+    not."""
+    storage_provider = _FakeStorageProvider()
+    task_storage = storage_provider.get_storage(ToolCallTask)
+    await task_storage.create(_task(record_seq=1))
+
+    # Must NOT raise, despite the mismatched record_seq.
+    await _create_tool_call_task_idempotent(
+        task_storage, _task(record_seq=2), session_id="s1", strict=False,
+    )
+
+    # The original row is untouched - this is a no-op, not an update.
+    existing = await task_storage.get("A:tool:0:1")
+    assert existing.record_seq == 1

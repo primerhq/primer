@@ -338,6 +338,58 @@ async def test_node_a_before_node_b_partial_wake(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_iteration_bumps_once_per_drained_superstep_not_per_partial_resume(
+    monkeypatch,
+) -> None:
+    """7a gate review (verdict R2-4, optional test while in the file):
+    context.iteration must bump once PER DRAINED SUPERSTEP, not once per
+    partial resume - a two-batch partial wake (A, B) must NOT bump on the
+    first (still-pending) resume, and must bump exactly once for itself
+    once fully drained (a second, unrelated bump follows for the NEXT
+    superstep it hands off to). Bumping on the first partial resume too
+    would prematurely consume a flag-off multi-gate graph's
+    max_iterations budget."""
+    ex = await _mk_parallel_executor()
+    _patch_run_agent_turn(monkeypatch, {
+        "agent-a": _tool_wait_park("A", "1"),
+        "agent-b": _tool_wait_park("B", "1"),
+    })
+
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    first_park = excinfo.value
+    iteration_at_park = ex._context.iteration
+
+    # Partial resume: only A's batch is ready - iteration must NOT bump
+    # yet, since B's batch is still pending (the superstep isn't drained).
+    result_a = ToolResultPart(id="A:tool:0:1", output="result A", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo2:
+        async for _ev in ex.resume_from_checkpoint(
+            first_park.graph_checkpoint,
+            resolved_tool_wait={"A": [result_a]},
+        ):
+            pass
+    repark = excinfo2.value
+    assert ex._context.iteration == iteration_at_park
+
+    # Final resume: B's batch resolves too, the superstep fully drains -
+    # TWO bumps land here, not three: one for THIS resumed superstep
+    # (A+B) finishing (the R2-4 fix, once - not once per partial resume),
+    # and one more for the NEXT superstep (C+D, both End nodes) that
+    # resume_from_checkpoint hands off to via _run_superstep_loop's own
+    # pre-existing, unrelated per-superstep bump. A regression that fires
+    # the R2-4 bump per-partial-resume would land on +3 instead.
+    result_b = ToolResultPart(id="B:tool:0:1", output="result B", error=False)
+    async for _ev in ex.resume_from_checkpoint(
+        repark.graph_checkpoint,
+        resolved_tool_wait={"B": [result_b]},
+    ):
+        pass
+    assert ex._context.iteration == iteration_at_park + 2
+
+
+@pytest.mark.asyncio
 async def test_completed_sibling_is_not_re_executed_on_final_resume(
     monkeypatch,
 ) -> None:
