@@ -206,8 +206,21 @@ def open_workspace_settings(
     Returns the overlay body locator so callers can scope subsequent
     queries inside it (avoiding strict-mode clashes with the nested
     Link-channel / Destroy-confirm modals rendered on top).
+
+    01a08248: same same-document-navigation hazard open_overlay/open_view
+    were fixed for in _shell_helpers.py - on a page already bootstrapped
+    at the console origin, a raw page.goto() to a hash-only URL is not
+    guaranteed to fire hashchange/popstate, and nv-shell.jsx's URL-sync
+    listener only reacts to those two events. Direct hash assignment is
+    the browser's own primitive that unambiguously queues one.
     """
-    page.goto(f"{console_url}#/w/{wid}?overlay=workspaces:detail:{wid}")
+    fragment = f"#/w/{wid}?overlay=workspaces:detail:{wid}"
+    current_origin = page.url.split("#", 1)[0].rstrip("/")
+    console_origin = console_url.rstrip("/")
+    if current_origin == console_origin:
+        page.evaluate("(h) => { window.location.hash = h; }", fragment)
+    else:
+        page.goto(f"{console_url}{fragment}")
     body = page.get_by_test_id("nv-overlay-body")
     expect(body).to_be_visible(timeout=timeout)
     tab = page.get_by_test_id(f"workspace-tab:{section}")
@@ -258,6 +271,13 @@ def open_provider_catalog(
 
     ``wid`` defaults to the workspace already open, which is what a test
     that only cares about the catalog wants.
+
+    01a08248: same same-document-navigation hazard as
+    open_workspace_settings above - a raw page.goto() to a hash-only URL
+    on an already-bootstrapped page is not guaranteed to fire
+    hashchange/popstate, which is the only thing nv-shell.jsx's URL-sync
+    listener reacts to. Direct hash assignment is the browser's own
+    primitive that unambiguously queues one.
     """
     if via == "url":
         # RETARGET (IA restructure 01a04d6a): the "providers" overlay
@@ -268,10 +288,15 @@ def open_provider_catalog(
             target += ":" + cls
             if instance_id:
                 target += ":" + instance_id
-        if wid:
-            page.goto(f"{console_url}#/w/{wid}?overlay={target}")
+        fragment = (
+            f"#/w/{wid}?overlay={target}" if wid else f"#/w/?overlay={target}"
+        )
+        current_origin = page.url.split("#", 1)[0].rstrip("/")
+        console_origin = console_url.rstrip("/")
+        if current_origin == console_origin:
+            page.evaluate("(h) => { window.location.hash = h; }", fragment)
         else:
-            page.goto(f"{console_url}#/w/?overlay={target}")
+            page.goto(f"{console_url}{fragment}")
         body = page.get_by_test_id("nv-overlay-body")
         expect(body).to_be_visible(timeout=timeout)
         return body

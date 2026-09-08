@@ -24,7 +24,7 @@ from playwright.sync_api import Page  # noqa: E402
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import MOBILE_TABS, open_mobile_tab
+from tests.ui_e2e._shell_helpers import MOBILE_TABS, open_mobile_tab, open_root
 
 pytestmark = smk("SMK-UI-01", status="partial")
 
@@ -123,7 +123,12 @@ def test_the_worker_pill_stays_one_line_on_a_phone(page: Page, console_url: str)
     """Letting the pill shrink is only half the fix -- unconstrained it wraps
     'N/N workers - N in flight' mid-phrase and doubles its own height."""
     page.set_viewport_size({"width": 390, "height": 844})
-    page.goto(f"{console_url}#/")
+    # 01a08248: once the console has picked a default workspace its own
+    # URL-sync effect has already rewritten the hash to "#/w/<wid>", so
+    # this is a same-document, hash-only navigation whose hashchange may
+    # never fire (see open_root's docstring) - not the hash-less no-op
+    # it looks like at a glance.
+    open_root(page, console_url)
     page.wait_for_load_state("domcontentloaded")
     page.wait_for_timeout(1500)
 

@@ -32,7 +32,7 @@ import pytest
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
-from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
+from tests.ui_e2e._shell_helpers import open_legacy_route, open_root, wait_for_overlay_url
 pytestmark = smk("SMK-UI-02", "SMK-UI-03", "SMK-UI-04", "SMK-UI-06")
 
 
@@ -272,7 +272,11 @@ def test_multi_page_operator_journey_no_llm(
         # There is no dashboard page and no page title outside an
         # overlay, same as step 1: landing on the console lands you in a
         # workspace.
-        page.goto(f"{console_url}#/", wait_until="domcontentloaded")
+        # 01a08248: raw page.goto() to a hash-only URL here is a same-
+        # document navigation (the page is deep in the providers/llm
+        # overlay from step 8) whose hashchange/popstate firing isn't
+        # guaranteed - see open_root's docstring.
+        open_root(page, console_url)
         page.get_by_test_id("nv-root").wait_for(
             state="visible", timeout=10_000,
         )
