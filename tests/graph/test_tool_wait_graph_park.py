@@ -36,7 +36,7 @@ from primer.graph.executor import GraphExecutor
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Message, StreamEvent, ToolResultPart
 from primer.model.graph import (
-    Graph, GraphNodeMessage, GraphThread,
+    Graph, GraphNodeMessage, GraphThread, NodeRuntimeStatus,
     _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge,
 )
 from primer.model.model_profile import ModelProfileConfig
@@ -65,23 +65,31 @@ class _UnusedLLM:
 
 
 def _parallel_graph() -> Graph:
-    """begin -> {A, B} -> exit: both agent nodes become ready in the SAME
-    superstep (no edge between them), so their respective parks land in
-    one drain cycle - the mixed/partial-wake shape every test here needs.
+    """begin -> {A, B}, A -> C, B -> D: both agent nodes become ready in
+    the SAME superstep (no edge between them), so their respective parks
+    land in one drain cycle - the mixed/partial-wake shape every test
+    here needs. DIVERGENT downstreams (7a gate review, verdict item 2) -
+    a prior shared-End topology (A -> exit, B -> exit) MASKED the
+    successor-drop bug: B's own edge to the SAME node as A's meant the
+    graph still reached "exit" even when A's own edge-walk was silently
+    skipped, since firing a plain (non-FanIn) node doesn't care which
+    upstream triggered it. Separate terminals make A's own successor
+    observable independently of B's.
     """
     return Graph(
-        id="g", description="begin -> {A,B} -> exit",
+        id="g", description="begin -> {A,B}; A -> C; B -> D",
         nodes=[
             _BeginNode(id="begin"),
             _AgentNodeRef(id="A", agent_id="agent-a"),
             _AgentNodeRef(id="B", agent_id="agent-b"),
-            _EndNode(id="exit"),
+            _EndNode(id="C"),
+            _EndNode(id="D"),
         ],
         edges=[
             _StaticEdge(from_node="begin", to_node="A"),
             _StaticEdge(from_node="begin", to_node="B"),
-            _StaticEdge(from_node="A", to_node="exit"),
-            _StaticEdge(from_node="B", to_node="exit"),
+            _StaticEdge(from_node="A", to_node="C"),
+            _StaticEdge(from_node="B", to_node="D"),
         ],
     )
 
@@ -318,3 +326,12 @@ async def test_node_a_before_node_b_partial_wake(monkeypatch) -> None:
         drained = False
     assert drained is True
     assert ex._pending_tool_waits == []
+
+    # 7a gate review (verdict item 2): A's own successor "C" must have
+    # actually RUN, not just been silently dropped by the re-park firing
+    # before its edge was ever walked. Divergent downstreams (A -> C,
+    # B -> D, no shared node) make this observable independently of B's
+    # own completion - the prior shared-End topology masked exactly this
+    # by letting B's own edge to the SAME node paper over A's missing one.
+    assert ex._node_states["C"].status == NodeRuntimeStatus.ENDED
+    assert ex._node_states["D"].status == NodeRuntimeStatus.ENDED
