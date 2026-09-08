@@ -165,7 +165,26 @@ async def resume_graph_from_checkpoint(
     if pool is not None and session is not None:
         tap = await _ResumeDrainTap.create(
             pool, session, node_tool_call_seq=node_tool_call_seq,
+            tool_calls_as_claims_enabled=getattr(
+                executor, "_tool_calls_as_claims_enabled", False,
+            ),
         )
+        # 7a gate review (verdict item 3): bind the SAME coalesce_state
+        # the tap already populates (via translate_stream_event, as it
+        # observes every event this drain yields) onto the executor
+        # itself. Without this, resolve_scoped_call is always None on
+        # every resume - executor_builders.build_graph_executor never
+        # binds it, only dispatch.py's own live-turn loop does - so a
+        # resumed node's own continuation could never route a SECOND
+        # claims batch through the tool-dispatch seam at all, regardless
+        # of the flag: run_agent_turn's routing gate requires BOTH the
+        # flag AND a non-None resolver. Event ordering guarantees the
+        # tap's own translate_stream_event call for a ToolCallStart/End
+        # pair always runs (stashing into this SAME coalesce_state)
+        # before _dispatch_as_claims would ever call resolve_scoped_call
+        # for it - the LLM's own tool-call events stream out of
+        # run_agent_turn before its internal dispatch loop acts on them.
+        executor.bind_coalesce_state(tap.coalesce_state)
 
     repark: "YieldToWorker | ToolWaitPark | None" = None
     try:
@@ -215,16 +234,26 @@ class _ResumeDrainTap:
     piece 2).
     """
 
-    def __init__(self, *, pool, session, writer, coalesce_state, turn_no) -> None:
+    def __init__(
+        self, *, pool, session, writer, coalesce_state, turn_no,
+        tool_calls_as_claims_enabled: bool = False,
+    ) -> None:
         self._pool = pool
         self._session = session
         self._writer = writer
         self.coalesce_state = coalesce_state
         self._turn_no = turn_no
+        # 7a gate review (verdict item 3): threaded explicitly rather
+        # than read off the executor here - this class has no reference
+        # to it, and the caller (resume_graph_from_checkpoint) already
+        # has the executor in scope right where the tap is built.
+        self._tool_calls_as_claims_enabled = tool_calls_as_claims_enabled
 
     @classmethod
     async def create(
-        cls, pool: "WorkerPool", session, *, node_tool_call_seq: dict[str, int] | None,
+        cls, pool: "WorkerPool", session, *,
+        node_tool_call_seq: dict[str, int] | None,
+        tool_calls_as_claims_enabled: bool = False,
     ) -> "_ResumeDrainTap":
         from primer.session.persistence import _CoalesceState, WorkspaceMessageWriter
 
@@ -262,12 +291,16 @@ class _ResumeDrainTap:
         return cls(
             pool=pool, session=session, writer=writer, coalesce_state=state,
             turn_no=session.turn_no,
+            tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
         )
 
     async def observe(self, event: Any) -> None:
         if self._writer is None:
             return
-        from primer.session.persistence import translate_stream_event
+        from primer.session.persistence import (
+            stash_and_flush_tool_call_record,
+            translate_stream_event,
+        )
 
         try:
             result = translate_stream_event(
@@ -278,6 +311,22 @@ class _ResumeDrainTap:
             records = result if isinstance(result, list) else [result]
             for rec in records:
                 seq = await self._writer.append(rec)
+                # 7a gate review (verdict item 3): SAME shared helper
+                # dispatch.py's own live-turn loop calls - a resumed
+                # node's continuation dispatching a SECOND claims batch
+                # needs this drain's own tap to stash+flush its TOOL_CALL
+                # records exactly like the live path does, or
+                # resolve_scoped_call's "durable record" proof would be
+                # false and the eventual row-creation would raise loudly
+                # instead of the seam actually working. No-op when the
+                # flag is off (item A's own gating) - byte-identical to
+                # before this fix for the classic approval-gate resume
+                # path, which also uses this tap.
+                await stash_and_flush_tool_call_record(
+                    rec, seq, coalesce_state=self.coalesce_state,
+                    writer=self._writer,
+                    tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
+                )
                 if self._pool._event_bus is not None:
                     await self._pool._event_bus.publish(
                         f"session:{self._session.id}:tick", {"seq": seq},
