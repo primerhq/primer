@@ -938,6 +938,19 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
   );
   const rows = list.data?.items ?? [];
 
+  // A freshly-POSTed row, held only until the list refetch below catches
+  // up with it. onCreate bumps reloadKey to pick up the new row for the
+  // list view, but useResource keys its cache by reloadKey - a bump mints
+  // a BRAND NEW cache entry (data: undefined) rather than refreshing the
+  // old one in place, so `rows` collapses to [] for the length of that
+  // round trip. Addressing straight into the new row's detail overlay
+  // (onCreate does, below) would otherwise show nothing until the GET
+  // resolves, racing the Playwright wait in test_u0025 under CI load.
+  // The POST response already carries everything KN_CollectionDetail
+  // reads directly off `collection` (id, system) - only its OWN separate
+  // search-status fetch depends on network, unaffected by this.
+  const [justCreatedRow, setJustCreatedRow] = React.useState(null);
+
   // Which collection is open is ADDRESSED, not remembered. It used to
   // live in local state and never reach the url, so the address said
   // "collections" whichever one you were inside; navigating back to the
@@ -946,7 +959,8 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
   // renders, the same way it does for every other overlay here.
   const [localSelected, setLocalSelected] = React.useState(null);
   const addressed = selectedId
-    ? rows.find((c) => c.id === selectedId) || null
+    ? rows.find((c) => c.id === selectedId) ||
+      (justCreatedRow && justCreatedRow.id === selectedId ? justCreatedRow : null)
     : null;
   const selected = onNavigate ? addressed : localSelected;
   const select = (row) => {
@@ -963,7 +977,10 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
         sspProviders={sspProviders}
         cerProviders={cerProviders}
         pushToast={pushToast}
-        onBack={() => setSelected(null)}
+        onBack={() => {
+          setJustCreatedRow(null);
+          setSelected(null);
+        }}
       />
     );
   }
@@ -1052,6 +1069,7 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
           onClose={() => setCreateOpen(false)}
           onCreate={(row) => {
             setCreateOpen(false);
+            setJustCreatedRow(row);
             setReloadKey((k) => k + 1);
             setSelected(row);
           }}
