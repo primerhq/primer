@@ -47,6 +47,7 @@ from tests._support.runs import (
 )
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
+from tests.e2e.conftest import pgvector_ssp_config as _pgvector_dsn_cfg
 
 pytestmark = [pytest.mark.asyncio, requires("embedder", "pgvector")]
 
@@ -55,13 +56,7 @@ def _embedder_cfg() -> dict:
     return load_config()["embedder"]
 
 
-_PGVECTOR_DSN = {
-    "hostname": "localhost",
-    "port": 5432,
-    "database": "primer_e2e",
-    "username": "primer",
-    "password": "primer",
-}
+_PGVECTOR_DSN = _pgvector_dsn_cfg()
 
 # Two support docs. The queries deliberately avoid exact keyword overlap so
 # the match is semantic.

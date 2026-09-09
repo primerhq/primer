@@ -12,6 +12,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests.e2e.conftest import pgvector_ssp_body
+
 
 @pytest.mark.asyncio
 async def test_t0140_system_toolset_lists_tools(
@@ -465,20 +467,7 @@ async def test_t0247_delete_search_toolset_before_activation_clean(
     )
     assert pr_emb.status_code == 201, pr_emb.text
 
-    pr_ssp = await client.post(
-        "/v1/ssp",
-        json={
-            "id": ssp_id,
-            "provider": "pgvector",
-            "config": {
-                "hostname": "127.0.0.1",
-                "port": 5432,
-                "username": "primer",
-                "password": "primer",
-                "database": "primer_dogfood",
-            },
-        },
-    )
+    pr_ssp = await client.post("/v1/ssp", json=pgvector_ssp_body(ssp_id))
     assert pr_ssp.status_code == 201, pr_ssp.text
 
     config_created = False

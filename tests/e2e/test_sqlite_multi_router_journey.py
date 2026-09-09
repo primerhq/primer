@@ -58,6 +58,7 @@ from primer.model.scheduler import (
     SchedulerProviderType,
 )
 from tests._support.model_profiles import agent_model, seed_llm_provider
+from tests.e2e.conftest import pgvector_ssp_body
 
 
 # 60-char placeholder for DiscordChannelProviderConfig.bot_token
@@ -282,23 +283,14 @@ async def test_t0852_sqlite_multi_router_crud_journey(tmp_path: Path) -> None:
             # 7. SemanticSearchProvider — §7 surface against SQLite
             # =============================================================
             ssp_id = "t852-ssp"
-            r = await client.post(
-                "/v1/ssp",
-                json={
-                    "id": ssp_id,
-                    "provider": "pgvector",
-                    "config": {
-                        "hostname": "127.0.0.1",
-                        "port": 5432,
-                        "username": "user",
-                        "password": "pass",
-                        "database": "vectors",
-                        "embedder": {
-                            "provider_id": llm_id, "model": "fake-model",
-                        },
-                    },
-                },
+            ssp_body = pgvector_ssp_body(
+                ssp_id, hostname="127.0.0.1",
+                username="user", password="pass", database="vectors",
             )
+            ssp_body["config"]["embedder"] = {
+                "provider_id": llm_id, "model": "fake-model",
+            }
+            r = await client.post("/v1/ssp", json=ssp_body)
             assert r.status_code == 201, r.text
 
             # =============================================================

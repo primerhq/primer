@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx
 import pytest
 from tests._support.model_profiles import agent_model, seed_llm_provider
+from tests.e2e.conftest import pgvector_ssp_body
 
 
 # The lifecycle tests below need a real agent turn to converge to a terminal
@@ -6303,18 +6304,7 @@ async def test_t0754_delete_embedding_provider_referenced_by_ic_config(
     ssp_created = False
     try:
         # 1. Seed a search provider (pgvector, pointing at the e2e DB).
-        ssp = await client.post("/v1/ssp", json={
-            "id": ssp_id,
-            "provider": "pgvector",
-            "config": {
-                "hostname": "localhost",
-                "port": 5432,
-                "database": "primer_e2e",
-                "username": "primer",
-                "password": "primer",
-                "db_schema": "public",
-            },
-        })
+        ssp = await client.post("/v1/ssp", json=pgvector_ssp_body(ssp_id))
         assert ssp.status_code == 201, ssp.text
         ssp_created = True
 

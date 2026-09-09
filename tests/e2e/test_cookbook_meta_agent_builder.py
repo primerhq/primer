@@ -36,16 +36,14 @@ from tests._support.runs import (
 from tests._support.smk import smk
 from tests._support.testconfig import requires
 from tests._support.model_profiles import agent_model
+from tests.e2e.conftest import pgvector_ssp_config
 
 pytestmark = pytest.mark.asyncio
 
 
 _SSP = {
     "provider": "pgvector",
-    "config": {
-        "hostname": "localhost", "port": 5432, "database": "primer_e2e",
-        "username": "primer", "password": "primer", "db_schema": "public",
-    },
+    "config": pgvector_ssp_config(),
 }
 _EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 _EMBED = {

@@ -39,6 +39,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from tests._support.model_profiles import agent_model, seed_llm_provider
+from tests.e2e.conftest import pgvector_ssp_body as _ssp_body
 
 
 # Bootstrap is synchronous and now genuinely indexes the system
@@ -65,28 +66,6 @@ def _embedding_provider_body(entity_id: str) -> dict:
         ],
         "config": {"token": "hf-placeholder"},
         "limits": {"max_concurrency": 1},
-    }
-
-
-def _ssp_body(entity_id: str) -> dict:
-    """pgvector SemanticSearchProvider backed by the e2e postgres instance.
-
-    The internal-collections config PUT now requires a valid
-    search_provider_id that references an existing SemanticSearchProvider
-    row. This helper creates that prerequisite using the same postgres
-    DSN as the e2e bringup script (primer:primer@localhost/primer_e2e).
-    """
-    return {
-        "id": entity_id,
-        "provider": "pgvector",
-        "config": {
-            "hostname": "localhost",
-            "port": 5432,
-            "database": "primer_e2e",
-            "username": "primer",
-            "password": "primer",
-            "db_schema": "public",
-        },
     }
 
 

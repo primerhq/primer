@@ -28,6 +28,7 @@ import pytest
 
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
+from tests.e2e.conftest import pgvector_ssp_config as _pgvector_dsn_cfg
 
 pytestmark = pytest.mark.asyncio
 
@@ -43,23 +44,6 @@ def _embedder_cfg() -> dict:
 
 def _cross_encoder_cfg() -> dict:
     return load_config()["cross_encoder"]
-
-
-def _pgvector_dsn_cfg() -> dict:
-    """pgvector connection fields matching the bringup server's vector store.
-
-    The live e2e server (tests/.e2e/config.yaml) points pgvector at the
-    compose Postgres on localhost:5432, db primer_e2e, user/pass primer.
-    Reuse exactly that instance so collections created via the API are
-    visible to the same store.
-    """
-    return {
-        "hostname": "localhost",
-        "port": 5432,
-        "database": "primer_e2e",
-        "username": "primer",
-        "password": "primer",
-    }
 
 
 async def _make_real_embedder(authed_client, suffix, *, url: str | None = None) -> str:
