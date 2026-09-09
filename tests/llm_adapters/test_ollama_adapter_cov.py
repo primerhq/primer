@@ -150,17 +150,23 @@ class TestClassify:
         assert isinstance(out, AuthenticationError)
         assert out.status_code == status
         assert out.cause is exc
+        assert out.code == "auth_error"
 
     def test_rate_limit(self) -> None:
-        assert isinstance(_classify_ollama_exception(_response_error(429)), RateLimitError)
+        out = _classify_ollama_exception(_response_error(429))
+        assert isinstance(out, RateLimitError)
+        assert out.code == "rate_limit"
 
     def test_bad_request(self) -> None:
-        assert isinstance(_classify_ollama_exception(_response_error(400)), BadRequestError)
+        out = _classify_ollama_exception(_response_error(400))
+        assert isinstance(out, BadRequestError)
+        assert out.code == "bad_request"
 
     def test_server_error(self) -> None:
         out = _classify_ollama_exception(_response_error(503))
         assert isinstance(out, ServerError)
         assert out.status_code == 503
+        assert out.code == "server_error"
 
     def test_no_status_provider_error(self) -> None:
         assert isinstance(_classify_ollama_exception(_response_error(None)), ProviderError)
@@ -689,6 +695,39 @@ class TestStream:
             ):
                 pass
 
+    async def test_first_iteration_auth_error_yields_coded_chat_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """01a08598: the scenario test_pre_stream_error_reraised does NOT
+        cover, and the one that actually matters for the aggregated-pool
+        fix. The real ollama SDK's `_request(stream=True)` returns an
+        un-started async generator (`return inner()`) with zero awaits in
+        that branch - the ACTUAL HTTP call, and any 401/403 response, only
+        happens on the caller's first `__anext__()`. That means a real
+        auth failure lands here, in the mid-stream except-branch, with
+        ZERO prior content - not via client.chat() raising synchronously
+        (test_pre_stream_error_reraised's mock models a scenario the real
+        SDK's streaming path cannot actually produce for this error class).
+        code="auth_error" must reach the yielded ChatError so aggregated.py
+        and _retry.py can both correctly exclude it."""
+        llm = OllamaLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+
+        async def failing() -> AsyncIterator:
+            if False:
+                yield  # pragma: no cover - never reached; zero prior content
+            raise _response_error(401)
+
+        client.chat.return_value = failing()
+        events = [
+            e
+            async for e in llm.stream(
+                model="llama3", messages=[Message(role="user", parts=[TextPart(text="hi")])]
+            )
+        ]
+        assert isinstance(events[-1], ChatError) and events[-1].fatal is True
+        assert events[-1].code == "auth_error"
+
     async def test_mid_stream_error_yields_chat_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = OllamaLLM(_make_provider())
         client = _patched_client(monkeypatch)
@@ -706,6 +745,10 @@ class TestStream:
         ]
         assert isinstance(events[0], StreamStart)
         assert isinstance(events[-1], ChatError) and events[-1].fatal is True
+        # 01a08598: the classifier's code="rate_limit" must reach the
+        # actually-yielded ChatError, not just the classifier's own
+        # return value.
+        assert events[-1].code == "rate_limit"
 
     async def test_mid_stream_network_error_yields_coded_chat_error(
         self, monkeypatch: pytest.MonkeyPatch,

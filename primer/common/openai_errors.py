@@ -53,12 +53,14 @@ def classify_openai_exception(exc: Exception) -> PrimerError:
     if isinstance(exc, OpenAIAuthenticationError):
         return AuthenticationError(
             "OpenAI authentication failed",
+            code="auth_error",
             status_code=getattr(exc, "status_code", 401),
             cause=exc,
         )
     if isinstance(exc, OpenAIRateLimitError):
         return RateLimitError(
             "OpenAI rate limit exceeded",
+            code="rate_limit",
             status_code=getattr(exc, "status_code", 429),
             cause=exc,
         )
@@ -72,6 +74,7 @@ def classify_openai_exception(exc: Exception) -> PrimerError:
     if isinstance(exc, OpenAIInternalServerError):
         return ServerError(
             "OpenAI server error",
+            code="server_error",
             status_code=getattr(exc, "status_code", 500),
             cause=exc,
         )
@@ -80,6 +83,7 @@ def classify_openai_exception(exc: Exception) -> PrimerError:
         if status is not None and status >= 500:
             return ServerError(
                 f"OpenAI server error ({status})",
+                code="server_error",
                 status_code=status,
                 cause=exc,
             )

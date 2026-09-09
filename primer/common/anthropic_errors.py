@@ -37,12 +37,14 @@ def classify_anthropic_exception(exc: Exception) -> PrimerError:
     if isinstance(exc, (AnthropicAuthenticationError, AnthropicPermissionDeniedError)):
         return AuthenticationError(
             "Anthropic authentication failed",
+            code="auth_error",
             status_code=getattr(exc, "status_code", 401),
             cause=exc,
         )
     if isinstance(exc, AnthropicRateLimitError):
         return RateLimitError(
             "Anthropic rate limit exceeded",
+            code="rate_limit",
             status_code=getattr(exc, "status_code", 429),
             cause=exc,
         )
@@ -61,6 +63,7 @@ def classify_anthropic_exception(exc: Exception) -> PrimerError:
     if isinstance(exc, AnthropicInternalServerError):
         return ServerError(
             "Anthropic server error",
+            code="server_error",
             status_code=getattr(exc, "status_code", 500),
             cause=exc,
         )
@@ -69,6 +72,7 @@ def classify_anthropic_exception(exc: Exception) -> PrimerError:
         if status is not None and status >= 500:
             return ServerError(
                 f"Anthropic server error ({status})",
+                code="server_error",
                 status_code=status,
                 cause=exc,
             )

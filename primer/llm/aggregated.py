@@ -87,20 +87,23 @@ _CONFIG_EXC: tuple[type[BaseException], ...] = (
 # openchat.py:284, anthropic.py:760), so these never actually arrive on a
 # yielded Error today. They are matched here so the policy stays correct
 # if an adapter ever starts yielding a timeout instead of raising it.
-# "network_error" is NOT defensive: 01a082f3 gave every classifier's
-# NetworkError construction (ollama.py, anthropic_errors.py,
-# openai_errors.py, google_errors.py, mcp_errors.py) a real code where
-# it previously fell through as None, so a yielded network failure now
-# arrives with this code and must stay classified as transient-eligible
-# under either policy, exactly as the null-code case was before.
-# Rate-limit, server, AND auth still classify with code=None (see those
-# same classifier files) - unchanged by 01a082f3, still covered by the
-# `code is None` branch below.
+# "network_error", "rate_limit", and "server_error" are NOT defensive:
+# 01a082f3 gave every classifier's NetworkError construction a real code,
+# and 01a08598 did the same for RateLimitError/ServerError (ollama.py,
+# anthropic_errors.py, openai_errors.py, google_errors.py, mcp_errors.py),
+# where all three previously fell through as None. A yielded failure of
+# any of these three kinds now arrives with one of these codes and must
+# stay classified as transient-eligible under either policy, exactly as
+# the null-code case was before. Auth and bad-request DELIBERATELY do NOT
+# appear here - see _yielded_eligible's own docstring for why they're
+# excluded from this set on purpose, not merely omitted.
 _TRANSIENT_CODES: frozenset[str] = frozenset({
     "stream_timeout",
     "generation_timeout",
     "connect_timeout",
     "network_error",
+    "rate_limit",
+    "server_error",
 })
 
 
@@ -115,21 +118,47 @@ def _exc_eligible(exc: BaseException, failover_on: FailoverClasses) -> bool:
 def _yielded_eligible(code: str | None, failover_on: FailoverClasses) -> bool:
     """Best-effort eligibility for a YIELDED fatal Error, keyed on ``code``.
 
-    - a known transient code (a timeout, or "network_error" since
-      01a082f3) -> eligible under either policy.
-    - ``None`` -> eligible under either policy. Rate-limit, server, AND
-      auth all still classify with code=None in every classifier family
-      (anthropic_errors.py, ollama.py, and the OpenAI-compatible
-      classifiers), and a code-less bad-request is itself config-eligible,
-      so None is treated as eligible. NOTE: this means the yielded channel
-      CANNOT honor the TRANSIENT policy's "exclude auth" guarantee - an auth
-      error that surfaced as a yielded fatal Error would fail over even
-      under TRANSIENT. This is safe because the yielded-error failover
-      window closes before any token is emitted downstream (auth failures
-      also RAISE at connect in practice, where the class IS preserved).
-    - any other (non-null, non-transient) code appears only on bad-request
-      (provider code) or OpenAI-native mid-stream errors -> config-eligible,
-      i.e. matched only under TRANSIENT_AND_CONFIG.
+    - a known transient code (a timeout, "network_error", "rate_limit",
+      or "server_error") -> eligible under either policy.
+    - ``None`` -> eligible under either policy. Nothing in the five named
+      exception families (Network/RateLimit/Server/Authentication/
+      BadRequest) classifies as None anymore after 01a082f3 and 01a08598;
+      what still lands here is an unclassified `ProviderError` (the
+      "totally unexpected exception" catch-all every classifier falls
+      back to) or any future adapter that hasn't been taught a code yet -
+      "no more specific info" is exactly the shape this sentinel exists
+      for, so treating it as eligible is the conservative default.
+    - "auth_error" and "bad_request" -> config-eligible only, i.e.
+      matched under TRANSIENT_AND_CONFIG but NOT plain TRANSIENT. 01a08598
+      traced why this matters: every classifier's AuthenticationError/
+      BadRequestError construction used to leave code unset too, which
+      meant an auth failure that arrived as a YIELDED fatal Error (not a
+      raised exception) fell into the `code is None` branch above and
+      failed over even under the strict TRANSIENT policy - silently
+      contradicting _exc_eligible's _CONFIG_EXC exclusion for the exact
+      same error class on the RAISED path a few lines up. This was not
+      hypothetical: ollama's and google-genai's streaming SDK calls build
+      their async generator LAZILY (``return inner()`` / ``return
+      stream_generator()`` before any request is sent), so the actual
+      HTTP call - and any 401/403/400 it returns - happens on the
+      caller's first iteration, landing in the adapter's mid-stream
+      "yield a terminal Error" branch rather than the pre-stream-open
+      raise branch a reader would expect. Anthropic and the OpenAI-family
+      adapters build their request EAGERLY (the HTTP call happens inside
+      the awaited call itself, before any stream is returned), so their
+      auth/bad-request failures always raise and never reach this
+      function at all - which is why this asymmetry was invisible until
+      traced per adapter rather than assumed from one adapter's behavior.
+      Giving both codes a real, non-null, non-transient value routes them
+      through this same branch regardless of which adapter yielded them,
+      unifying the yielded path with the raised path's already-correct
+      exclusion instead of inventing a new policy.
+    - any other (non-null, non-transient) code appears only on a raw
+      provider-native bad-request code (e.g. Anthropic/OpenAI's own
+      `.code`, still passed through when present) or OpenAI-native
+      mid-stream errors -> also config-eligible, i.e. matched only under
+      TRANSIENT_AND_CONFIG - the same bucket "bad_request" now falls
+      into by construction.
     """
     if code in _TRANSIENT_CODES or code is None:
         return True

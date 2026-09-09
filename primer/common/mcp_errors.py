@@ -95,12 +95,14 @@ def classify_mcp_exception(exc: Exception) -> PrimerError:
         if status in (401, 403):
             return AuthenticationError(
                 f"MCP server rejected credentials ({status})",
+                code="auth_error",
                 status_code=status,
                 cause=exc,
             )
         if status == 429:
             return RateLimitError(
                 "MCP server rate limit exceeded",
+                code="rate_limit",
                 status_code=status,
                 cause=exc,
             )
@@ -113,6 +115,7 @@ def classify_mcp_exception(exc: Exception) -> PrimerError:
         if status >= 500:
             return ServerError(
                 f"MCP server error ({status})",
+                code="server_error",
                 status_code=status,
                 cause=exc,
             )

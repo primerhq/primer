@@ -40,12 +40,14 @@ class TestClassifyOpenaiException:
         assert isinstance(result, AuthenticationError)
         assert result.status_code == 401
         assert result.cause is sdk_exc
+        assert result.code == "auth_error"
 
     def test_rate_limit_error_maps_to_primer_rate_limit(self) -> None:
         sdk_exc = _make_openai_error(openai.RateLimitError, status_code=429)
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, RateLimitError)
         assert result.status_code == 429
+        assert result.code == "rate_limit"
 
     def test_bad_request_error_maps_to_primer_bad_request(self) -> None:
         sdk_exc = _make_openai_error(
@@ -61,12 +63,14 @@ class TestClassifyOpenaiException:
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, ServerError)
         assert result.status_code == 500
+        assert result.code == "server_error"
 
     def test_5xx_api_status_error_maps_to_primer_server(self) -> None:
         sdk_exc = _make_openai_error(openai.APIStatusError, status_code=503)
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, ServerError)
         assert result.status_code == 503
+        assert result.code == "server_error"
 
     def test_other_4xx_api_status_error_maps_to_provider_error(self) -> None:
         sdk_exc = _make_openai_error(openai.APIStatusError, status_code=404)

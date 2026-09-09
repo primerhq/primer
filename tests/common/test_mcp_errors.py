@@ -39,16 +39,19 @@ class TestHttpStatusErrorMapping:
         result = classify_mcp_exception(_http_status_error(401, lib))
         assert isinstance(result, AuthenticationError)
         assert result.status_code == 401
+        assert result.code == "auth_error"
 
     def test_403_maps_to_authentication_error(self, lib) -> None:
         result = classify_mcp_exception(_http_status_error(403, lib))
         assert isinstance(result, AuthenticationError)
         assert result.status_code == 403
+        assert result.code == "auth_error"
 
     def test_429_maps_to_rate_limit(self, lib) -> None:
         result = classify_mcp_exception(_http_status_error(429, lib))
         assert isinstance(result, RateLimitError)
         assert result.status_code == 429
+        assert result.code == "rate_limit"
 
     def test_400_maps_to_bad_request(self, lib) -> None:
         result = classify_mcp_exception(_http_status_error(400, lib))
@@ -59,6 +62,7 @@ class TestHttpStatusErrorMapping:
         result = classify_mcp_exception(_http_status_error(503, lib))
         assert isinstance(result, ServerError)
         assert result.status_code == 503
+        assert result.code == "server_error"
 
     def test_other_4xx_maps_to_provider_error(self, lib) -> None:
         result = classify_mcp_exception(_http_status_error(418, lib))

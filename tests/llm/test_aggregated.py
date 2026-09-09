@@ -159,9 +159,11 @@ async def test_connect_raise_fails_over_to_next_member():
 
 @pytest.mark.asyncio
 async def test_first_event_error_fails_over_no_tokens_emitted():
-    # Realistic: real classifiers emit code=None for a rate-limit that
-    # surfaces as a YIELDED fatal Error (anthropic_errors.py, ollama.py).
-    # code=None is eligible under either policy.
+    # Realistic: real classifiers still emit code=None for a network or
+    # auth failure that surfaces as a YIELDED fatal Error (anthropic_errors.py,
+    # ollama.py) - rate-limit and server errors got a real code in 01a08598,
+    # so this null-code case now represents network/auth specifically, not
+    # rate-limit. code=None is eligible under either policy either way.
     bad = _FakeLLM(events=[ChatError(fatal=True, code=None, message="429")])
     good = _FakeLLM(events=[StreamStart(model="m2"), TextDelta(text="ok", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
@@ -177,9 +179,12 @@ async def test_first_event_error_fails_over_no_tokens_emitted():
 
 @pytest.mark.asyncio
 async def test_first_event_error_with_hypothetical_transient_code_fails_over():
-    # Hypothetical: no current adapter emits a non-null transient code on a
-    # yielded Error, but if one did, a config-eligible code fails over under
-    # the default TRANSIENT_AND_CONFIG. Kept as the one non-null-code case.
+    # 01a08598: no longer hypothetical - every classifier now emits
+    # code="rate_limit" on a yielded fatal Error for a 429 (previously
+    # code=None). Fails over under the default TRANSIENT_AND_CONFIG here;
+    # see the dedicated strict-TRANSIENT test below for the invariant
+    # that actually mattered (a naive "give it a code" fix would have
+    # made this INELIGIBLE under the narrower policy).
     bad = _FakeLLM(events=[ChatError(fatal=True, code="rate_limit", message="429")])
     good = _FakeLLM(events=[TextDelta(text="ok", index=0),
                             Done(stop_reason="stop", raw_reason="stop")])
@@ -188,6 +193,68 @@ async def test_first_event_error_with_hypothetical_transient_code_fails_over():
         {"bad": (bad, "m1"), "good": (good, "m2")}
     ))
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    assert any(isinstance(e, TextDelta) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_first_event_rate_limit_and_server_error_fail_over_under_transient_only():
+    """01a08598: rate_limit and server_error must stay failover-eligible
+    under the STRICT TRANSIENT policy (not just the default TRANSIENT_
+    AND_CONFIG) - identically to the null-code case they replace. This
+    is the exact regression 01a082f3's network_error fix had to avoid
+    for aggregated.py; same proof, same reason, for these two codes."""
+    for code in ("rate_limit", "server_error"):
+        bad = _FakeLLM(events=[ChatError(fatal=True, code=code, message="failed")])
+        good = _FakeLLM(events=[TextDelta(text="ok", index=0),
+                                Done(stop_reason="stop", raw_reason="stop")])
+        profile = _profile(members=["bad", "good"], failover_on=FailoverClasses.TRANSIENT)
+        agg = AggregatedLLM(profile, resolve_member=_resolver(
+            {"bad": (bad, "m1"), "good": (good, "m2")}
+        ))
+        events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+        assert not any(isinstance(e, ChatError) for e in events), code
+        assert any(isinstance(e, TextDelta) for e in events), code
+
+
+@pytest.mark.asyncio
+async def test_first_event_auth_error_does_not_fail_over_under_transient_only():
+    """01a08598: the fix, end to end. A yielded fatal Error coded
+    "auth_error" (e.g. a lazily-classified ollama/gemini 401 - see
+    aggregated.py's own docstring for why those two adapters can yield
+    rather than raise an auth failure) must SURFACE, not fail over,
+    under the strict TRANSIENT policy - identically to how a RAISED
+    AuthenticationError already behaves via _exc_eligible. Before the
+    fix this incorrectly failed over (code=None fell into the
+    universally-eligible branch)."""
+    bad = _FakeLLM(events=[ChatError(fatal=True, code="auth_error", message="401")])
+    good = _FakeLLM(events=[TextDelta(text="SHOULD-NOT-APPEAR", index=0),
+                            Done(stop_reason="stop", raw_reason="stop")])
+    profile = _profile(members=["bad", "good"], failover_on=FailoverClasses.TRANSIENT)
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    assert isinstance(events[-1], ChatError)
+    assert not any(isinstance(e, TextDelta) for e in events)  # member[1] never ran
+
+
+@pytest.mark.asyncio
+async def test_first_event_auth_error_fails_over_under_transient_and_config():
+    """Companion to the strict-policy test above: under the OPT-IN
+    TRANSIENT_AND_CONFIG policy, the same yielded auth_error DOES fail
+    over - matching _exc_eligible's _CONFIG_EXC treatment of a raised
+    AuthenticationError under the same policy."""
+    bad = _FakeLLM(events=[ChatError(fatal=True, code="auth_error", message="401")])
+    good = _FakeLLM(events=[TextDelta(text="ok", index=0),
+                            Done(stop_reason="stop", raw_reason="stop")])
+    profile = _profile(
+        members=["bad", "good"], failover_on=FailoverClasses.TRANSIENT_AND_CONFIG,
+    )
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    assert not any(isinstance(e, ChatError) for e in events)
     assert any(isinstance(e, TextDelta) for e in events)
 
 
@@ -445,6 +512,34 @@ async def test_first_event_network_error_fails_over_under_transient_only():
     events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert not any(isinstance(e, ChatError) for e in events)
     assert any(isinstance(e, TextDelta) for e in events)
+
+
+def test_yielded_eligibility_rate_limit_and_server_error_match_the_null_code_case():
+    """01a08598: every classifier's RateLimitError/ServerError construction
+    now sets a real code instead of leaving it None. Both must remain
+    eligible under BOTH policies, identically to the null-code case they
+    replace - a regression here would make an aggregated-pool rate-limit
+    or server failure stop failing over under the default TRANSIENT
+    policy, the canonical case a failover pool exists for."""
+    from primer.llm.aggregated import _yielded_eligible
+    for policy in (FailoverClasses.TRANSIENT, FailoverClasses.TRANSIENT_AND_CONFIG):
+        assert _yielded_eligible("rate_limit", policy) is True
+        assert _yielded_eligible("server_error", policy) is True
+
+
+def test_yielded_eligibility_auth_and_bad_request_are_config_only():
+    """01a08598 auth-exclusion fix: unlike network/rate-limit/server,
+    "auth_error" and "bad_request" must NOT be eligible under plain
+    TRANSIENT - only under TRANSIENT_AND_CONFIG. This is what closes the
+    gap the trace found: before giving AuthenticationError/BadRequestError
+    a real code, a yielded auth/bad-request failure fell into the
+    `code is None` branch and failed over even under strict TRANSIENT,
+    contradicting _exc_eligible's _CONFIG_EXC exclusion for the SAME
+    error classes on the raised path."""
+    from primer.llm.aggregated import _yielded_eligible
+    for code in ("auth_error", "bad_request"):
+        assert _yielded_eligible(code, FailoverClasses.TRANSIENT) is False
+        assert _yielded_eligible(code, FailoverClasses.TRANSIENT_AND_CONFIG) is True
 
 
 @pytest.mark.asyncio

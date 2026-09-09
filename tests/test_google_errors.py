@@ -37,24 +37,28 @@ class TestClassifyGoogleException:
         assert isinstance(result, AuthenticationError)
         assert result.status_code == 401
         assert result.cause is sdk_exc
+        assert result.code == "auth_error"
 
     def test_403_maps_to_authentication(self) -> None:
         sdk_exc = _make_api_error(403)
         result = classify_google_exception(sdk_exc)
         assert isinstance(result, AuthenticationError)
         assert result.status_code == 403
+        assert result.code == "auth_error"
 
     def test_429_maps_to_rate_limit(self) -> None:
         sdk_exc = _make_api_error(429)
         result = classify_google_exception(sdk_exc)
         assert isinstance(result, RateLimitError)
         assert result.status_code == 429
+        assert result.code == "rate_limit"
 
     def test_400_maps_to_bad_request(self) -> None:
         sdk_exc = _make_api_error(400, message="bad argument")
         result = classify_google_exception(sdk_exc)
         assert isinstance(result, BadRequestError)
         assert result.status_code == 400
+        assert result.code == "bad_request"
 
     def test_other_4xx_maps_to_bad_request(self) -> None:
         # 404 isn't an explicit branch, falls through the 4xx default.
@@ -68,12 +72,14 @@ class TestClassifyGoogleException:
         result = classify_google_exception(sdk_exc)
         assert isinstance(result, ServerError)
         assert result.status_code == 500
+        assert result.code == "server_error"
 
     def test_503_maps_to_server_error(self) -> None:
         sdk_exc = _make_api_error(503)
         result = classify_google_exception(sdk_exc)
         assert isinstance(result, ServerError)
         assert result.status_code == 503
+        assert result.code == "server_error"
 
     def test_timeout_exception_maps_to_network_error(self) -> None:
         sdk_exc = httpx.TimeoutException("read timeout")

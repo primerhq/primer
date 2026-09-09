@@ -88,20 +88,25 @@ def _classify_ollama_exception(exc: Exception) -> PrimerError:
         if status in (401, 403):
             return AuthenticationError(
                 "Ollama authentication failed",
+                code="auth_error",
                 status_code=status,
                 cause=exc,
             )
         if status == 429:
             return RateLimitError(
                 "Ollama rate limit exceeded",
+                code="rate_limit",
                 status_code=status,
                 cause=exc,
             )
         if status is not None and 400 <= status < 500:
-            return BadRequestError(msg, status_code=status, cause=exc)
+            return BadRequestError(
+                msg, code="bad_request", status_code=status, cause=exc,
+            )
         if status is not None and status >= 500:
             return ServerError(
                 f"Ollama server error ({status})",
+                code="server_error",
                 status_code=status,
                 cause=exc,
             )
