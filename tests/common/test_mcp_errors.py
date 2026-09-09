@@ -82,11 +82,13 @@ class TestNetworkErrors:
         exc = lib.ReadTimeout("timed out")
         result = classify_mcp_exception(exc)
         assert isinstance(result, NetworkError)
+        assert result.code == "network_error"
 
     def test_network_error_maps_to_network_error(self, lib) -> None:
         exc = lib.ConnectError("refused")
         result = classify_mcp_exception(exc)
         assert isinstance(result, NetworkError)
+        assert result.code == "network_error"
 
     def test_httpx2_families_share_no_httpx_ancestry(self) -> None:
         """The premise this whole parametrization exists for: if httpx2

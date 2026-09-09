@@ -82,11 +82,13 @@ class TestClassifyOpenaiException:
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, NetworkError)
         assert result.cause is sdk_exc
+        assert result.code == "network_error"
 
     def test_timeout_error_maps_to_network_error(self) -> None:
         sdk_exc = openai.APITimeoutError(request=MagicMock())  # type: ignore[arg-type]
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, NetworkError)
+        assert result.code == "network_error"
 
     def test_unknown_exception_maps_to_provider_error(self) -> None:
         sdk_exc = RuntimeError("totally unexpected")

@@ -168,14 +168,17 @@ class TestClassify:
     def test_request_error_network(self) -> None:
         out = _classify_ollama_exception(ollama.RequestError("conn refused"))
         assert isinstance(out, NetworkError)
+        assert out.code == "network_error"
 
     def test_httpx_timeout_network(self) -> None:
-        assert isinstance(
-            _classify_ollama_exception(httpx.TimeoutException("t")), NetworkError
-        )
+        out = _classify_ollama_exception(httpx.TimeoutException("t"))
+        assert isinstance(out, NetworkError)
+        assert out.code == "network_error"
 
     def test_httpx_network_error_network(self) -> None:
-        assert isinstance(_classify_ollama_exception(httpx.NetworkError("down")), NetworkError)
+        out = _classify_ollama_exception(httpx.NetworkError("down"))
+        assert isinstance(out, NetworkError)
+        assert out.code == "network_error"
 
     def test_unknown_provider_error(self) -> None:
         exc = RuntimeError("mystery")
@@ -703,6 +706,30 @@ class TestStream:
         ]
         assert isinstance(events[0], StreamStart)
         assert isinstance(events[-1], ChatError) and events[-1].fatal is True
+
+    async def test_mid_stream_network_error_yields_coded_chat_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """01a082f3: the classifier's code="network_error" must actually
+        reach the yielded ChatError (yield ChatError(..., code=err.code,
+        ...)), not just the classifier's own return value - this is what
+        the retry/aggregated-pool/ended_detail consumers all read."""
+        llm = OllamaLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+
+        async def failing() -> AsyncIterator:
+            yield NS(model="llama3", done=False, message=NS(content="hi", thinking=None, tool_calls=None))
+            raise httpx.NetworkError("connection reset")
+
+        client.chat.return_value = failing()
+        events = [
+            e
+            async for e in llm.stream(
+                model="llama3", messages=[Message(role="user", parts=[TextPart(text="hi")])]
+            )
+        ]
+        assert isinstance(events[-1], ChatError) and events[-1].fatal is True
+        assert events[-1].code == "network_error"
 
     async def test_connect_timeout_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = OllamaLLM(_make_provider())

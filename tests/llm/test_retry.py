@@ -143,6 +143,21 @@ class TestRetryBehaviour:
         assert attempts["n"] == 2
         assert [type(e).__name__ for e in events] == ["StreamStart", "TextDelta", "Done"]
 
+    async def test_network_error_coded_terminal_error_is_still_replayed(self) -> None:
+        """01a082f3: every classifier now sets code="network_error" on a
+        yielded NetworkError instead of leaving it None - _RETRYABLE_CODES
+        already listed "network_error" before this change, so this must
+        replay identically to the null-code case above. A regression here
+        would silently stop retrying the exact failure class this
+        mechanism exists for."""
+        open_stream, attempts = _make_source([
+            [ChatError(message="dropped", fatal=True, code="network_error")],
+            _ok_events(),
+        ])
+        events = await _drain(_run(open_stream))
+        assert attempts["n"] == 2
+        assert [type(e).__name__ for e in events] == ["StreamStart", "TextDelta", "Done"]
+
     async def test_failure_after_first_event_is_not_replayed(self) -> None:
         """The consumer has already seen output; replaying would duplicate it."""
         open_stream, attempts = _make_source([
