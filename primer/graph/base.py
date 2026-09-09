@@ -2037,16 +2037,55 @@ class _BaseGraphExecutor(
                     next_ready.add(inst.synthesized_id)
                 del self._pending_fanout[fanout_id]
 
-            # 01a0812c: additive, not a bare reset - unlike the ONE site
-            # in resume_from_checkpoint that's specifically verified safe
-            # as a bare assignment (self._ready_set provably empty
-            # there), this general pattern is the one to default to for
-            # every other successor-fold site: self._ready_set has
-            # already had every settled ready_ordered member discarded
-            # above (nothing pending reaches this line - the park branch
-            # above already returned if anything were), so a bare
-            # assignment would likely be a no-op today, but the union is
-            # what stays correct if that ever stops being true.
+            # 01a0812c: additive, not a bare reset - union is the default
+            # pattern for every successor-fold site in this class (see
+            # resume_from_checkpoint's own fold, which learned the hard
+            # way that "provably empty" claims on this function don't
+            # survive contact with a real run). This ONE site is the
+            # exception: self._ready_set IS provably empty here, not just
+            # "likely" - a bare `self._ready_set = next_ready` would be
+            # exactly as correct as this union, by construction, not by
+            # inference:
+            #   1. self._ready_set has exactly ONE admission site besides
+            #      this one that can fire mid-loop: none. The full list of
+            #      every place this executor ever adds to self._ready_set
+            #      is: invoke()'s initial seed and resume_from_checkpoint's
+            #      own fold (both BEFORE this while loop is entered), the
+            #      max_iterations hard reset a few lines up (a `continue`
+            #      that restarts the loop with a completely fresh
+            #      ready_ordered snapshot next iteration, so it never
+            #      reaches this line either), and this fold itself. Grep
+            #      ``self\._ready_set`` in this file to re-verify; nothing
+            #      else ever calls .add()/|= on it.
+            #   2. ready_ordered (a few lines up) is `sorted(self._ready_set)`
+            #      taken as a snapshot - by definition it captures every
+            #      member self._ready_set has AT THAT INSTANT, regardless
+            #      of which of the sites in (1) put them there.
+            #   3. Every nid in that snapshot is discarded by the
+            #      classification loop above UNLESS it parks (the
+            #      must-not-settle guard skips the discard for a park).
+            #   4. If ANYTHING parked, the pending-park check a few lines
+            #      up already raised and returned - this line is
+            #      unreachable that iteration. So by the time control
+            #      reaches this line, every nid from the snapshot in (2)
+            #      settled and was discarded in (3); nothing from the
+            #      snapshot survives.
+            #   5. Nothing between the snapshot (2) and this line adds
+            #      anything to self._ready_set (only discards happen in
+            #      that span) - so self._ready_set is empty here, full
+            #      stop, not "probably".
+            # Kept as a union anyway (not "simplified" to a bare
+            # assignment) because a union that's empirically a no-op is
+            # free, while a bare assignment is a live footgun for the
+            # next person who adds a 7th admission site to this class and
+            # doesn't re-derive this whole proof first. See
+            # test_ready_set_is_actually_empty_at_every_loop_tail_fold
+            # in tests/graph/test_tool_wait_graph_park.py, which pins (2)-(5)
+            # empirically across a multi-resume, same-superstep-collision
+            # run (the topology round 4's BLOCKER needed) rather than
+            # leaving this proof unverified by execution - the standard
+            # this function has earned after four rounds of "provably
+            # safe" static reasoning conflicting with what actually ran.
             self._ready_set |= next_ready
             context.iteration += 1
 
