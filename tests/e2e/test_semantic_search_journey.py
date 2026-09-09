@@ -29,20 +29,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-
-def _ssp_body(sid: str) -> dict:
-    return {
-        "id": sid,
-        "provider": "pgvector",
-        "config": {
-            "hostname": "localhost",
-            "port": 5432,
-            "database": "primer_e2e",
-            "username": "primer",
-            "password": "primer",
-            "db_schema": "public",
-        },
-    }
+from tests.e2e.conftest import pgvector_ssp_body as _ssp_body
 
 
 def _emb_body(eid: str) -> dict:

@@ -23,17 +23,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests.e2e.conftest import pgvector_ssp_config
+
 
 _PGVECTOR_SSP = {
     "provider": "pgvector",
-    "config": {
-        "hostname": "localhost",
-        "port": 5432,
-        "database": "primer_e2e",
-        "username": "primer",
-        "password": "primer",
-        "db_schema": "public",
-    },
+    "config": pgvector_ssp_config(),
 }
 
 _EMBED_PROVIDER = {

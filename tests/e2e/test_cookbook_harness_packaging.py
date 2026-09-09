@@ -30,6 +30,7 @@ import pytest
 
 from tests._support.smk import smk
 from tests._support.model_profiles import agent_model, seed_llm_provider
+from tests.e2e.conftest import pgvector_ssp_config
 
 pytestmark = pytest.mark.asyncio
 
@@ -39,10 +40,7 @@ pytestmark = pytest.mark.asyncio
 # rows still exist, so a verbatim template installs cleanly.
 _PGVECTOR_SSP = {
     "provider": "pgvector",
-    "config": {
-        "hostname": "localhost", "port": 5432, "database": "primer_e2e",
-        "username": "primer", "password": "primer", "db_schema": "public",
-    },
+    "config": pgvector_ssp_config(),
 }
 _EMBED_PROVIDER = {
     "provider": "huggingface",
