@@ -99,3 +99,30 @@ async def test_invoke_agent_depth_exceeded_is_error(monkeypatch, system_provider
     )
     assert res.is_error is True
     assert "depth" in res.output.lower()
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_turn_stream_failure_is_error_not_empty_success(
+    monkeypatch, system_provider,
+):
+    """01a070d6: before this, a subagent whose LLM connection failed
+    returned "" as if it had legitimately said nothing - the parent
+    agent read a SUCCESSFUL empty tool result with no signal anywhere
+    that the subagent's own LLM call actually failed."""
+    from primer.model.chat import Error, TurnStreamFailure
+
+    async def _boom(**kwargs):
+        raise TurnStreamFailure(
+            Error(code="llm_connect_error", message="connect failed", fatal=True),
+            partial_messages=[], rounds_completed=0,
+        )
+
+    monkeypatch.setattr("primer.toolset.system.run_subagent", _boom)
+    res = await system_provider.call(
+        tool_name="invoke_agent",
+        arguments={"agent_id": "a", "prompt": "p"},
+        principal=None,
+        ctx=None,
+    )
+    assert res.is_error is True
+    assert "connect failed" in res.output

@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from primer.graph.invoke_graph import resume_invoke_graph
-from primer.model.chat import ToolCallPart, ToolResultPart
+from primer.model.chat import ToolCallPart, ToolResultPart, TurnStreamFailure
 from primer.model.principal import PrincipalRef
 from primer.model.yield_ import YieldToWorker
 from primer.worker.yield_resume_registry import (
@@ -242,6 +242,22 @@ class AgentFrame:
             )
         except YieldToWorker as yld:
             return Reparked(new_yield=yld)
+        except TurnStreamFailure as exc:
+            # 01a070d6: same reasoning as run_subagent's own first-dispatch
+            # caller (primer.toolset.system._invoke_agent_handler) - without
+            # this, a subagent continuation whose LLM connection failed
+            # resolves this frame as a SUCCESSFUL empty-string tool result,
+            # with nothing telling the parent turn the subagent's own LLM
+            # call actually failed.
+            return Completed(
+                value=ToolResultPart(
+                    id=self.tool_call_id,
+                    output=json.dumps({
+                        "error": f"subagent LLM stream failed: {exc.error.message}",
+                    }),
+                    error=True,
+                )
+            )
         return Completed(
             value=ToolResultPart(
                 id=self.tool_call_id,

@@ -55,7 +55,7 @@ from primer.graph._node_refs import (
     _resolve_toolcall_arguments,
 )
 from primer.graph.template import render_input_template
-from primer.model.chat import Message, StreamEvent, TextPart
+from primer.model.chat import Message, StreamEvent, TextPart, TurnStreamFailure
 from primer.model.except_ import ConfigError
 from primer.model.graph import (
     FanOutSpec,
@@ -509,8 +509,22 @@ class _NodeDispatchMixin:
             )
             return
         except BaseException as exc:
+            # 01a070d6: to_problem_details doesn't know TurnStreamFailure
+            # (it isn't a PrimerError), so the generic BaseException path
+            # would otherwise lose the LLM error's own code entirely -
+            # ended_detail stays None and the node's failure reads as
+            # generic. ended_detail_code always resolves to something
+            # usable, never None.
             await queue.put(
-                _NodeDone(node_id=node_id, output=None, error=exc)
+                _NodeDone(
+                    node_id=node_id,
+                    output=None,
+                    error=exc,
+                    ended_detail=(
+                        exc.ended_detail_code
+                        if isinstance(exc, TurnStreamFailure) else None
+                    ),
+                )
             )
             if isinstance(exc, asyncio.CancelledError):
                 raise

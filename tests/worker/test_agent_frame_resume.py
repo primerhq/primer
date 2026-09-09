@@ -19,6 +19,14 @@ class _ServicesReyields:
     async def resume_subagent(self, **kw):
         raise YieldToWorker(Yielded(tool_name="ask_user", event_key="ask_user:ses:n2"), tool_call_id="n2")
 
+class _ServicesStreamFails:
+    async def resume_subagent(self, **kw):
+        from primer.model.chat import Error, TurnStreamFailure
+        raise TurnStreamFailure(
+            Error(code="llm_connect_error", message="connect failed", fatal=True),
+            partial_messages=[], rounds_completed=0,
+        )
+
 @pytest.mark.asyncio
 async def test_agent_frame_resume_completes_returns_text_toolresult():
     svc = _ServicesCompletes()
@@ -35,3 +43,17 @@ async def test_agent_frame_resume_completes_returns_text_toolresult():
 async def test_agent_frame_resume_reyields_reparks():
     out = await _frame().resume(ToolResultPart(id="x", output="child", error=False), _ServicesReyields())
     assert isinstance(out, Reparked) and out.new_yield.yielded.tool_name == "ask_user"
+
+@pytest.mark.asyncio
+async def test_agent_frame_resume_turn_stream_failure_completes_as_error():
+    """01a070d6: a subagent CONTINUATION whose LLM connection failed must
+    not resolve this frame as a SUCCESSFUL empty-text tool result - the
+    parent turn needs to see the failure, not silently believe the
+    subagent finished with nothing to say."""
+    out = await _frame().resume(
+        ToolResultPart(id="x", output="child", error=False), _ServicesStreamFails(),
+    )
+    assert isinstance(out, Completed)
+    assert out.value.id == "inv-tc"
+    assert out.value.error is True
+    assert "connect failed" in json.loads(out.value.output)["error"]
