@@ -43,11 +43,19 @@
       this.requestId = envelope.extensions?.request_id ?? null;
       this.fieldErrors = envelope.extensions?.errors ?? null;
       this.envelope = envelope;
-      // Holistic 422 friendliness: any schema-violation response is
-      // presented as "Data is incomplete" + a humanized field list, so
-      // form toasts/inline errors that fall back on title/detail show
-      // something useful instead of "Validation Error".
-      if (envelope.status === 422) {
+      // Holistic 422 friendliness applies ONLY to genuine field-shaped
+      // validation errors (FastAPI's own RequestValidationError, which
+      // populates extensions.errors) - presented as "Data is incomplete"
+      // + a humanized field list, so form toasts/inline errors that fall
+      // back on title/detail show something useful instead of
+      // "Validation Error". A domain-level PrimerError mapped to 422
+      // (primer/api/errors.py's _make_primer_error_handler) never
+      // populates extensions.errors - it has no field list, but it DOES
+      // have its own specific, correct `detail` message (e.g. "seq 1 is
+      // the newest visible record; nothing to discard"), which branching
+      // on status alone used to discard in favor of the generic
+      // fallback. Branch on the shape of the payload instead.
+      if (Array.isArray(this.fieldErrors) && this.fieldErrors.length > 0) {
         this.title = "Data is incomplete";
         this.detail = _friendlyValidationDetail(this.fieldErrors);
       } else {
