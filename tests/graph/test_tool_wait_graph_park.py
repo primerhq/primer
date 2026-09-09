@@ -1120,3 +1120,107 @@ async def test_suppressed_fanout_failure_does_not_seed_run_level_failure(
     assert ex._pending_ended_reason is None
     assert ex._last_ended_reason == "completed"
 
+
+@pytest.mark.asyncio
+async def test_ready_set_is_actually_empty_at_every_loop_tail_fold(
+    monkeypatch,
+) -> None:
+    """Pins the proof in _run_superstep_loop's own tail-fold comment
+    empirically, not just on paper: self._ready_set must be genuinely
+    EMPTY every time _compute_next_ready is called from inside
+    _run_superstep_loop's own while-loop tail - as opposed to
+    resume_from_checkpoint's OWN, separate call site to the same method,
+    which is NOT provably empty (that's exactly why THAT site uses a
+    union, not a bare assignment; see its own comment). Runs the M7
+    multi-resume, same-superstep-collision topology (three parking
+    siblings + a same-superstep collision target, the exact shape the
+    round-4 BLOCKER needed) across a full invoke() + three resumes, taps
+    _compute_next_ready, and records self._ready_set's contents at the
+    moment of every call made from _run_superstep_loop specifically
+    (distinguished from resume_from_checkpoint's own calls via the
+    immediate caller's frame) - every single one must be empty. A proof
+    sketch is a hypothesis until a test executes it; this is that test.
+    """
+    import sys
+
+    call_counts: dict[str, int] = {}
+    ex = await _mk_executor_for_graph(_multi_resume_collision_graph())
+    ready_set_snapshots_from_loop_tail: list[set[str]] = []
+
+    original_compute = ex._compute_next_ready
+
+    async def tap_compute(just_ran, context):
+        caller = sys._getframe(1).f_code.co_name
+        if caller == "_run_superstep_loop":
+            ready_set_snapshots_from_loop_tail.append(set(ex._ready_set))
+        return await original_compute(just_ran, context)
+
+    ex._compute_next_ready = tap_compute  # type: ignore[method-assign]
+
+    import primer.graph._agent_node as agent_node_mod
+
+    async def _spy(**kwargs):
+        agent = kwargs["agent"]
+        call_counts[agent.id] = call_counts.get(agent.id, 0) + 1
+        if agent.id == "agent-x":
+            if call_counts["agent-x"] == 1:
+                return
+                yield  # pragma: no cover - unreachable, keeps this a generator
+            raise _tool_wait_park("X", "2")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-a" and call_counts["agent-a"] == 1:
+            raise _tool_wait_park("A", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-b" and call_counts["agent-b"] == 1:
+            raise _tool_wait_park("B", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-e" and call_counts["agent-e"] == 1:
+            raise _tool_wait_park("E", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        return
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", _spy)
+
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    first_park = excinfo.value
+
+    result_a = ToolResultPart(id="A:tool:0:1", output="result A", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo2:
+        async for _ev in ex.resume_from_checkpoint(
+            first_park.graph_checkpoint,
+            resolved_tool_wait={"A": [result_a]},
+        ):
+            pass
+    repark1 = excinfo2.value
+
+    result_b = ToolResultPart(id="B:tool:0:1", output="result B", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo3:
+        async for _ev in ex.resume_from_checkpoint(
+            repark1.graph_checkpoint,
+            resolved_tool_wait={"B": [result_b]},
+        ):
+            pass
+    repark2 = excinfo3.value
+
+    result_e = ToolResultPart(id="E:tool:0:1", output="result E", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo4:
+        async for _ev in ex.resume_from_checkpoint(
+            repark2.graph_checkpoint,
+            resolved_tool_wait={"E": [result_e]},
+        ):
+            pass
+
+    # The actual empirical proof: at least one loop-tail fold happened
+    # (the invariant would be vacuous otherwise), and EVERY one of them
+    # found self._ready_set already empty - a bare assignment at that
+    # fold site would have been byte-identical to the union, every
+    # single time, across a run specifically engineered to stress
+    # same-superstep collisions and multi-resume accumulation.
+    assert len(ready_set_snapshots_from_loop_tail) > 0
+    assert all(s == set() for s in ready_set_snapshots_from_loop_tail), (
+        ready_set_snapshots_from_loop_tail
+    )
+
