@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import asyncpg
@@ -10,24 +11,43 @@ from primer.vector.pgvector import PgVectorStoreProvider
 
 pytestmark = pytest.mark.asyncio
 
-_DSN = dict(hostname="localhost", port=5432, username="primer",
-            password="primer", database="primer_dogfood")
+# scripts/e2e/bringup.sh creates `primer_e2e` with the pgvector extension
+# already enabled (see its own docstring, step 2) and publishes postgres on
+# PRIMER_DB_PORT (default 5432) - the same variable every tests/e2e/*.py DB
+# helper reads (e.g. test_multi_cycle_resume_stability_journey.py's own
+# _pg_port()). This file used to hardcode port 5432 and a "primer_dogfood"
+# database that no bringup script anywhere creates, with no env override at
+# all - so it could only ever run by chance against a same-named database a
+# developer happened to have lying around, and _pg_up() swallowing every
+# exception meant it skipped SILENTLY everywhere else, CI included.
+_DB_NAME = "primer_e2e"
 
 
-async def _pg_up() -> bool:
+def _pg_port() -> int:
+    return int(os.environ.get("PRIMER_DB_PORT", "5432"))
+
+
+async def _pg_unreachable_reason() -> str | None:
+    """None if the e2e postgres is reachable, else a reason worth reading -
+    a bare "not reachable" skip already hid a broken host/db/port for
+    every run before this fix existed."""
     try:
         conn = await asyncpg.connect(
-            host="localhost", port=5432, user="primer",
-            password="primer", database="primer_dogfood", timeout=3,
+            host="localhost", port=_pg_port(), user="primer",
+            password="primer", database=_DB_NAME, timeout=3,
         )
         await conn.close()
-        return True
-    except Exception:
-        return False
+        return None
+    except Exception as exc:  # noqa: BLE001 - surfaced in the skip reason, not swallowed
+        return f"{type(exc).__name__}: {exc}"
 
 
 async def _provider(*, use_halfvec: bool, schema: str) -> PgVectorStoreProvider:
-    cfg = PgVectorConfig(**_DSN, db_schema=schema, use_halfvec=use_halfvec)
+    cfg = PgVectorConfig(
+        hostname="localhost", port=_pg_port(), username="primer",
+        password="primer", database=_DB_NAME,
+        db_schema=schema, use_halfvec=use_halfvec,
+    )
     p = PgVectorStoreProvider(cfg)
     await p.initialize()
     return p
@@ -35,8 +55,8 @@ async def _provider(*, use_halfvec: bool, schema: str) -> PgVectorStoreProvider:
 
 async def _drop_schema(schema: str) -> None:
     conn = await asyncpg.connect(
-        host="localhost", port=5432, user="primer",
-        password="primer", database="primer_dogfood",
+        host="localhost", port=_pg_port(), user="primer",
+        password="primer", database=_DB_NAME,
     )
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
@@ -49,8 +69,9 @@ def _vec(n: int, seed: float) -> list[float]:
 
 
 async def test_halfvec_create_put_search_3072():
-    if not await _pg_up():
-        pytest.skip("dogfood pg not reachable")
+    reason = await _pg_unreachable_reason()
+    if reason:
+        pytest.skip(f"e2e postgres not reachable on port {_pg_port()}: {reason}")
     schema = "halfvec_test_" + uuid.uuid4().hex[:8]
     p = await _provider(use_halfvec=True, schema=schema)
     try:
@@ -81,8 +102,9 @@ async def test_halfvec_create_put_search_3072():
 
 
 async def test_vector_provider_rejects_over_2000_without_halfvec():
-    if not await _pg_up():
-        pytest.skip("dogfood pg not reachable")
+    reason = await _pg_unreachable_reason()
+    if reason:
+        pytest.skip(f"e2e postgres not reachable on port {_pg_port()}: {reason}")
     schema = "halfvec_test_" + uuid.uuid4().hex[:8]
     p = await _provider(use_halfvec=False, schema=schema)
     try:
@@ -98,8 +120,9 @@ async def test_recreate_existing_halfvec_collection_ignores_flipped_flag():
     # Flag only affects NEW collections: re-creating an existing 3072-dim
     # halfvec collection through a provider whose use_halfvec was later turned
     # off must return the existing collection, not reject on the 2000 ceiling.
-    if not await _pg_up():
-        pytest.skip("dogfood pg not reachable")
+    reason = await _pg_unreachable_reason()
+    if reason:
+        pytest.skip(f"e2e postgres not reachable on port {_pg_port()}: {reason}")
     schema = "halfvec_test_" + uuid.uuid4().hex[:8]
     p1 = await _provider(use_halfvec=True, schema=schema)
     try:
@@ -117,8 +140,9 @@ async def test_recreate_existing_halfvec_collection_ignores_flipped_flag():
 
 
 async def test_standard_vector_collection_still_works():
-    if not await _pg_up():
-        pytest.skip("dogfood pg not reachable")
+    reason = await _pg_unreachable_reason()
+    if reason:
+        pytest.skip(f"e2e postgres not reachable on port {_pg_port()}: {reason}")
     schema = "halfvec_test_" + uuid.uuid4().hex[:8]
     p = await _provider(use_halfvec=False, schema=schema)
     try:
