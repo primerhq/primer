@@ -158,6 +158,49 @@ class TestRetryBehaviour:
         assert attempts["n"] == 2
         assert [type(e).__name__ for e in events] == ["StreamStart", "TextDelta", "Done"]
 
+    @pytest.mark.parametrize("code", ["rate_limit", "server_error"])
+    async def test_rate_limit_and_server_coded_terminal_error_is_still_replayed(
+        self, code: str,
+    ) -> None:
+        """01a08598: every classifier now sets a real code on a yielded
+        RateLimitError/ServerError instead of leaving it None -
+        _RETRYABLE_CODES already listed both before this change, so this
+        must replay identically to the null-code case above. A regression
+        here would silently stop retrying the exact failure classes this
+        mechanism exists for."""
+        open_stream, attempts = _make_source([
+            [ChatError(message="dropped", fatal=True, code=code)],
+            _ok_events(),
+        ])
+        events = await _drain(_run(open_stream))
+        assert attempts["n"] == 2
+        assert [type(e).__name__ for e in events] == ["StreamStart", "TextDelta", "Done"]
+
+    @pytest.mark.parametrize("code", ["auth_error", "bad_request"])
+    async def test_auth_and_bad_request_coded_terminal_error_is_not_replayed(
+        self, code: str,
+    ) -> None:
+        """01a08598: this is the sharper half of the auth-exclusion fix -
+        not just "don't fail over to another pool member" (aggregated.py)
+        but "don't retry the SAME bad credentials against the SAME
+        provider". Before AuthenticationError/BadRequestError carried a
+        real code, a lazily-classified 401/400 (ollama, google-genai -
+        see aggregated.py's docstring for why those two SDKs yield rather
+        than raise it) had code=None, which _RETRYABLE_CODES treats as
+        transport-retryable - so stream_with_retry would replay the exact
+        same request against the exact same endpoint up to max_retries
+        times. "auth_error"/"bad_request" are deliberately absent from
+        _RETRYABLE_CODES, so this must NOT replay - a single attempt,
+        the terminal error forwarded as-is."""
+        open_stream, attempts = _make_source([
+            [ChatError(message="rejected", fatal=True, code=code)],
+            _ok_events(),
+        ])
+        events = await _drain(_run(open_stream))
+        assert attempts["n"] == 1, "a coded auth/bad-request failure must not replay"
+        assert [type(e).__name__ for e in events] == ["Error"]
+        assert events[0].code == code
+
     async def test_failure_after_first_event_is_not_replayed(self) -> None:
         """The consumer has already seen output; replaying would duplicate it."""
         open_stream, attempts = _make_source([

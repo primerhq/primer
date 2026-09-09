@@ -31,16 +31,19 @@ class TestClassifyAnthropicException:
         result = classify_anthropic_exception(sdk_exc)
         assert isinstance(result, AuthenticationError)
         assert result.cause is sdk_exc
+        assert result.code == "auth_error"
 
     def test_permission_denied_maps_to_authentication(self) -> None:
         sdk_exc = _make_anthropic_error(anthropic.PermissionDeniedError, status_code=403)
         result = classify_anthropic_exception(sdk_exc)
         assert isinstance(result, AuthenticationError)
+        assert result.code == "auth_error"
 
     def test_rate_limit(self) -> None:
         sdk_exc = _make_anthropic_error(anthropic.RateLimitError, status_code=429)
         result = classify_anthropic_exception(sdk_exc)
         assert isinstance(result, RateLimitError)
+        assert result.code == "rate_limit"
 
     def test_bad_request(self) -> None:
         sdk_exc = _make_anthropic_error(anthropic.BadRequestError, status_code=400)
@@ -61,11 +64,13 @@ class TestClassifyAnthropicException:
         sdk_exc = _make_anthropic_error(anthropic.InternalServerError, status_code=500)
         result = classify_anthropic_exception(sdk_exc)
         assert isinstance(result, ServerError)
+        assert result.code == "server_error"
 
     def test_5xx_apistatus_to_server(self) -> None:
         sdk_exc = _make_anthropic_error(anthropic.APIStatusError, status_code=503)
         result = classify_anthropic_exception(sdk_exc)
         assert isinstance(result, ServerError)
+        assert result.code == "server_error"
 
     def test_other_4xx_apistatus_to_provider(self) -> None:
         sdk_exc = _make_anthropic_error(anthropic.APIStatusError, status_code=499)

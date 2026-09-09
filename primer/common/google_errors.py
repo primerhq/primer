@@ -55,24 +55,28 @@ def classify_google_exception(exc: Exception) -> PrimerError:
         if code in (401, 403):
             return AuthenticationError(
                 "Google authentication failed",
+                code="auth_error",
                 status_code=code,
                 cause=exc,
             )
         if code == 429:
             return RateLimitError(
                 "Google rate limit exceeded",
+                code="rate_limit",
                 status_code=code,
                 cause=exc,
             )
         if 400 <= code < 500:
             return BadRequestError(
                 message or "Google rejected the request",
+                code="bad_request",
                 status_code=code,
                 cause=exc,
             )
         if code >= 500:
             return ServerError(
                 f"Google server error ({code})",
+                code="server_error",
                 status_code=code,
                 cause=exc,
             )
