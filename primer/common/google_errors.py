@@ -84,6 +84,7 @@ def classify_google_exception(exc: Exception) -> PrimerError:
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
         return NetworkError(
             f"Google network failure: {type(exc).__name__}",
+            code="network_error",
             cause=exc,
         )
     return ProviderError(str(exc), cause=exc)

@@ -78,3 +78,18 @@ class TestClassifyAnthropicException:
         result = classify_anthropic_exception(sdk_exc)
         assert isinstance(result, ProviderError)
         assert "unexpected" in str(result)
+
+    def test_connection_error_maps_to_network_error(self) -> None:
+        sdk_exc = anthropic.APIConnectionError.__new__(anthropic.APIConnectionError)
+        Exception.__init__(sdk_exc, "connection failed")
+        result = classify_anthropic_exception(sdk_exc)
+        assert isinstance(result, NetworkError)
+        assert result.code == "network_error"
+        assert result.cause is sdk_exc
+
+    def test_timeout_error_maps_to_network_error(self) -> None:
+        sdk_exc = anthropic.APITimeoutError.__new__(anthropic.APITimeoutError)
+        Exception.__init__(sdk_exc, "timed out")
+        result = classify_anthropic_exception(sdk_exc)
+        assert isinstance(result, NetworkError)
+        assert result.code == "network_error"

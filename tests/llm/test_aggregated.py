@@ -417,6 +417,36 @@ def test_yielded_eligibility_policy():
     assert _yielded_eligible("invalid_request_error", FailoverClasses.TRANSIENT_AND_CONFIG) is True
 
 
+def test_yielded_eligibility_network_error_matches_the_null_code_case():
+    """01a082f3: every classifier's NetworkError construction now sets
+    code="network_error" instead of leaving it None. This must remain
+    eligible under BOTH policies, identically to the null-code case it
+    replaces - a regression here would make an aggregated-pool network
+    failure stop failing over under the default TRANSIENT policy, the
+    canonical case a failover pool exists for."""
+    from primer.llm.aggregated import _yielded_eligible
+    for policy in (FailoverClasses.TRANSIENT, FailoverClasses.TRANSIENT_AND_CONFIG):
+        assert _yielded_eligible("network_error", policy) is True
+
+
+@pytest.mark.asyncio
+async def test_first_event_network_error_fails_over_under_transient_only():
+    """01a082f3: end-to-end companion to the _yielded_eligible unit test
+    above - a yielded network_error-coded Error must still fail over to
+    the next member under the DEFAULT, narrower TRANSIENT policy (not
+    just TRANSIENT_AND_CONFIG)."""
+    bad = _FakeLLM(events=[ChatError(fatal=True, code="network_error", message="dropped")])
+    good = _FakeLLM(events=[TextDelta(text="ok", index=0),
+                            Done(stop_reason="stop", raw_reason="stop")])
+    profile = _profile(members=["bad", "good"], failover_on=FailoverClasses.TRANSIENT)
+    agg = AggregatedLLM(profile, resolve_member=_resolver(
+        {"bad": (bad, "m1"), "good": (good, "m2")}
+    ))
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    assert not any(isinstance(e, ChatError) for e in events)
+    assert any(isinstance(e, TextDelta) for e in events)
+
+
 @pytest.mark.asyncio
 async def test_round_robin_cursor_is_concurrency_safe():
     # N concurrent stream calls must each get a distinct start member (a clean

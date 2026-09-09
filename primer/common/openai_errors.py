@@ -91,6 +91,7 @@ def classify_openai_exception(exc: Exception) -> PrimerError:
     if isinstance(exc, (APIConnectionError, APITimeoutError)):
         return NetworkError(
             f"OpenAI network failure: {type(exc).__name__}",
+            code="network_error",
             cause=exc,
         )
     return ProviderError(str(exc), cause=exc)

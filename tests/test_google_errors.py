@@ -80,11 +80,13 @@ class TestClassifyGoogleException:
         result = classify_google_exception(sdk_exc)
         assert isinstance(result, NetworkError)
         assert result.cause is sdk_exc
+        assert result.code == "network_error"
 
     def test_connect_error_maps_to_network_error(self) -> None:
         sdk_exc = httpx.ConnectError("connection refused")
         result = classify_google_exception(sdk_exc)
         assert isinstance(result, NetworkError)
+        assert result.code == "network_error"
 
     def test_arbitrary_exception_maps_to_provider_error(self) -> None:
         sdk_exc = RuntimeError("totally unexpected")

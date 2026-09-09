@@ -87,6 +87,7 @@ def classify_mcp_exception(exc: Exception) -> PrimerError:
     if isinstance(exc, _CONNECT_ERRORS):
         return NetworkError(
             f"could not connect to the MCP server: {exc}",
+            code="network_error",
             cause=exc,
         )
     if isinstance(exc, _STATUS_ERRORS):
@@ -123,6 +124,7 @@ def classify_mcp_exception(exc: Exception) -> PrimerError:
     if isinstance(exc, _NETWORK_ERRORS):
         return NetworkError(
             f"MCP network failure: {type(exc).__name__}",
+            code="network_error",
             cause=exc,
         )
     if isinstance(exc, MCPError):
