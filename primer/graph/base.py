@@ -313,7 +313,33 @@ class _BaseGraphExecutor(
         # :meth:`snapshot_state` can serialise them mid-flight. ``None``
         # before the first superstep / after termination.
         self._context: GraphContext | None = None
+        # 01a0812c: the single source of truth for "nodes that still need
+        # a superstep dispatch or have an in-flight (possibly parked) turn
+        # that hasn't reached a terminal outcome yet" - maintained
+        # incrementally (add on admission, discard on settle - success or
+        # failure, never a park) rather than by set arithmetic at read
+        # time. Four prior fix rounds each patched a variant of "ready
+        # minus an accumulating exclusion set computed at read time" and
+        # each patch introduced a new bug (see the ready-set discard/add
+        # sites throughout this class + resume_from_checkpoint) - the
+        # replacement is this field having no second, separately-
+        # accumulating set that could ever go stale relative to it.
         self._ready_set: set[str] = set()
+        # 01a0812c: sticky terminal-reason fields, set once (first
+        # un-suppressed failure wins) the moment ``any_failed`` fires in
+        # _run_superstep_loop's classification loop, and round-tripped
+        # through snapshot_state/restore_state exactly like _ready_set -
+        # so a failure discovered in the same superstep as an unrelated
+        # park is not silently discarded when that park raises (any_failed
+        # itself is a pure per-call local of _run_superstep_loop and does
+        # NOT survive the exception unwind on its own). Mirrors the
+        # ended_reason/ended_detail local pair's own asymmetry exactly:
+        # reason is unconditional once a failure is un-suppressed, detail
+        # is conditional (only set when the failing node's own
+        # ``done.ended_detail`` is populated) - see the write site for why
+        # two fields, not one tuple.
+        self._pending_ended_reason: str | None = None
+        self._pending_ended_detail: str | None = None
         # Node ids that have entered the ready set at least once this run.
         # Used by ``_fanin_ready`` to decide whether a callable-router source
         # is a *live* potential upstream (admitted but not yet resolved) that
@@ -436,7 +462,6 @@ class _BaseGraphExecutor(
             # treat as a no-op completion.
             return
         node_states = self._node_states
-        ready = self._ready_set
 
         # Select which pending entries to resume this cycle. Legacy
         # (resumed_tcid None): every pending ToolCall. Per-entry: only the
@@ -477,6 +502,11 @@ class _BaseGraphExecutor(
                     ),
                 )
                 completed_ids.append(entry.node_id)
+                # 01a0812c: this node just settled (FAILED) - remove it
+                # from the live ready-set invariant now, at the write
+                # site, rather than tracking it in a second exclusion set
+                # to subtract later. See _ready_set's own docstring.
+                self._ready_set.discard(entry.node_id)
                 continue
             if _is_value_yield_toolcall(entry):
                 # Value-yielding tool_call node (e.g. ``system__ask_user``):
@@ -570,6 +600,8 @@ class _BaseGraphExecutor(
                     last_run_at=datetime.now(timezone.utc),
                 )
                 completed_ids.append(entry.node_id)
+                # 01a0812c: settled (ENDED) - see the discard above.
+                self._ready_set.discard(entry.node_id)
                 continue
             try:
                 result = await self._dispatch_toolcall_with_bypass(
@@ -735,6 +767,8 @@ class _BaseGraphExecutor(
                 last_run_at=datetime.now(timezone.utc),
             )
             completed_ids.append(entry.node_id)
+            # 01a0812c: settled (ENDED) - see the discard above.
+            self._ready_set.discard(entry.node_id)
 
         # Resume the selected agent-node yields: continue each node's turn
         # with the human's answer / decision injected as the tool result.
@@ -894,6 +928,9 @@ class _BaseGraphExecutor(
                     last_run_at=datetime.now(timezone.utc),
                 )
                 completed_ids.append(ay.node_id)
+                # 01a0812c: settled (ENDED) - see the tc_pending discards
+                # above.
+                self._ready_set.discard(ay.node_id)
             finally:
                 reset_current_graph_node_id(token)
 
@@ -1020,6 +1057,9 @@ class _BaseGraphExecutor(
                     last_run_at=datetime.now(timezone.utc),
                 )
                 completed_ids.append(tw.node_id)
+                # 01a0812c: settled (ENDED) - see the tc_pending discards
+                # above.
+                self._ready_set.discard(tw.node_id)
             finally:
                 reset_current_graph_node_id(token)
 
@@ -1049,55 +1089,24 @@ class _BaseGraphExecutor(
                 status=_status,
             )
 
-        # Full concurrency: if other human-interaction nodes OR tool_wait
-        # batches (01a0518b boundary d - a fan-out sibling's batch can
-        # still be mid-flight after a PARTIAL wake) are still pending,
-        # re-park on the remaining keys instead of advancing the graph.
-        if (
-            self._pending_toolcalls
-            or self._pending_agent_yields
-            or self._pending_tool_waits
-        ):
-            await self._save_state(
-                iteration=context.iteration,
-                node_states=node_states,
-                status=SessionStatus.WAITING,
-            )
-            raise self._build_pending_park_exception()
-
-        # Persist the drained-state snapshot so observers can see the
-        # ToolCalls finished before the next superstep starts.
-        await self._save_state(
-            iteration=context.iteration,
-            node_states=node_states,
-            status=SessionStatus.RUNNING,
-        )
-
-        # Compute the next ready set from the now-completed pending
-        # ToolCall nodes. The ``ready`` set on the executor at the time
-        # of the yield was the set of in-flight nodes; the just-completed
-        # subset is ``completed_ids`` (the others, if any, already had
-        # their results applied before the yield fired).
-        #
-        # 01a0812c (FLAG-ON PREREQUISITE, alongside recovery-boot
-        # 01a07c06): resume-dispatch correctness across a MULTI-entry
-        # partial wake (a sibling that completed/failed before the park
-        # surviving into the eventual `ready = next_ready` bare
-        # assignment below) is a KNOWN GAP here, deliberately reverted
-        # off this branch rather than fixed. Four consecutive rounds
-        # patched this exact expression and each introduced a NEW bug
-        # (reorder+union -> completed-sibling re-execution; ENDED-only
-        # already_ended -> cyclic loop-back drop + FAILED-sibling hole;
-        # settled_ids -> accumulated-ready deletion + failure-swallowing
-        # past a park) - none of it needed for THIS arc's merge, since
-        # tool_calls_as_claims_enabled OFF means tw_pending is always
-        # empty and this exact bare assignment is byte-identical to
-        # main (f49bdf0d). The accumulated scenario knowledge from all
-        # four rounds is preserved as xfail tests pointing at 01a0812c,
-        # which absorbs 01a08016 (same function, same class of bug) and
-        # requires a full design (remove-on-settle instead of
-        # filter-on-resume; persist failure across a park) plus a
-        # scenario matrix before any further code here.
+        # 01a0812c / 01a08016 (absorbed into this task): compute + fold
+        # THIS resume's own completed_ids' successors into self._ready_set
+        # BEFORE checking whether other pending entries remain and
+        # re-parking - not after. Ordering correction found live (this
+        # block used to sit after the re-park check, on this branch's
+        # merge-base): a re-park exits via `raise` immediately below, so
+        # if the edge-walk ran AFTER that check, a node's OWN successor
+        # (e.g. A resolves, A -> C, while sibling B is still pending)
+        # would never be computed at all before the function exits -
+        # A's whole downstream branch silently vanishes, invisible even
+        # to the checkpoint the re-park persists (self._ready_set would
+        # never have gained C in the first place). Each
+        # ``completed_ids.append`` above already discarded that node from
+        # ``self._ready_set`` at the moment it settled (see the discard
+        # sites in the tc/ay/tw_pending loops above) - what's left in
+        # ``self._ready_set`` at this point is exactly the
+        # parked-and-not-yet-resolved entries plus anything an EARLIER
+        # partial resume of this same drain already folded in.
         if completed_ids:
             try:
                 next_ready = await self._compute_next_ready(
@@ -1123,16 +1132,68 @@ class _BaseGraphExecutor(
                     self._fanout_instances[inst.synthesized_id] = inst
                     next_ready.add(inst.synthesized_id)
                 del self._pending_fanout[fanout_id]
+            # NOTE: context.iteration is bumped further down, only once we
+            # know this superstep is actually fully drained (past the
+            # pending-recheck below) - see the comment there. Do not move
+            # the bump up here: R2-4 (test_iteration_bumps_once_per_
+            # drained_superstep_not_per_partial_resume) requires a
+            # still-partial resume (a sibling still pending) to leave
+            # context.iteration untouched even though this resume's own
+            # completed_ids's successors get computed and folded in.
+            # Union, not replace: self._ready_set can already hold a
+            # successor folded in by an EARLIER partial resume of this
+            # same drain (e.g. C, admitted by A's own edge-walk on a
+            # PRIOR resume while sibling B was still pending) that is
+            # neither settled NOR itself tracked in any pending list -
+            # THIS resume's own next_ready (computed from THIS resume's
+            # completed_ids only) says nothing about that earlier fold,
+            # so a bare assignment would silently drop it. Do not
+            # "simplify" this to `self._ready_set = next_ready` - that
+            # exact change was tried, reviewed, ruled "provably safe",
+            # and then falsified live by test_node_a_before_node_b_
+            # partial_wake and test_cyclic_loop_back_across_two_partial_
+            # resumes_still_dispatches, both of which silently lost a
+            # node under it.
+            self._ready_set |= next_ready
+
+        # Full concurrency: if other human-interaction nodes OR tool_wait
+        # batches (01a0518b boundary d - a fan-out sibling's batch can
+        # still be mid-flight after a PARTIAL wake) are still pending,
+        # re-park on the remaining keys instead of advancing the graph -
+        # self._ready_set already carries this resume's own fold (above),
+        # so the re-parked checkpoint does not lose it.
+        if (
+            self._pending_toolcalls
+            or self._pending_agent_yields
+            or self._pending_tool_waits
+        ):
+            await self._save_state(
+                iteration=context.iteration,
+                node_states=node_states,
+                status=SessionStatus.WAITING,
+            )
+            raise self._build_pending_park_exception()
+
+        # This superstep is now confirmed fully drained (the pending-recheck
+        # above did not re-park): bump context.iteration exactly once for
+        # it here, not per partial resume - see the NOTE above the fold
+        # block for why this can't live there.
+        if completed_ids:
             context.iteration += 1
-            ready = next_ready
-            self._ready_set = ready
+
+        # Persist the drained-state snapshot so observers can see the
+        # ToolCalls finished before the next superstep starts.
+        await self._save_state(
+            iteration=context.iteration,
+            node_states=node_states,
+            status=SessionStatus.RUNNING,
+        )
 
         async for ev in self._run_superstep_loop(
             context=context,
             node_states=node_states,
-            ready=ready,
-            ended_reason_in=None,
-            ended_detail_in=None,
+            ended_reason_in=self._pending_ended_reason,
+            ended_detail_in=self._pending_ended_detail,
         ):
             yield ev
 
@@ -1263,8 +1324,6 @@ class _BaseGraphExecutor(
         ready: set[str] = {_resolve_initial_ready_node(self._graph)}
         self._admitted = set(ready)
         self._max_iter_routed = False
-        ended_reason: str | None = None
-        ended_detail: str | None = None
         # Phase 6 — expose mid-flight state on the executor so
         # :meth:`snapshot_state` can capture it the moment a ToolCall
         # yields for approval. Kept in sync after every superstep
@@ -1276,9 +1335,8 @@ class _BaseGraphExecutor(
         async for ev in self._run_superstep_loop(
             context=context,
             node_states=node_states,
-            ready=ready,
-            ended_reason_in=ended_reason,
-            ended_detail_in=ended_detail,
+            ended_reason_in=self._pending_ended_reason,
+            ended_detail_in=self._pending_ended_detail,
         ):
             yield ev
 
@@ -1287,21 +1345,61 @@ class _BaseGraphExecutor(
         *,
         context: GraphContext,
         node_states: dict[str, NodeRuntimeState],
-        ready: set[str],
         ended_reason_in: str | None,
         ended_detail_in: str | None,
     ) -> AsyncIterator[StreamEvent]:
         """Pregel superstep loop — extracted so :meth:`resume_from_checkpoint`
         can re-enter at the same point after the approval-yield round-trip.
 
-        Spec B §2.3 step 3 / Phase 6. ``ready``, ``context``, ``node_states``
-        are passed by reference (the executor's instance attrs hold the same
+        Spec B §2.3 step 3 / Phase 6. ``context``, ``node_states`` are
+        passed by reference (the executor's instance attrs hold the same
         objects) so the snapshot path always sees up-to-date state.
+        ``self._ready_set`` (not a separately-threaded parameter, 01a0812c)
+        is the same story: both callers (:meth:`invoke`, freshly-seeded;
+        :meth:`resume_from_checkpoint`, restored + discard/fold-updated)
+        already sync it before calling in, so this method reads it
+        directly rather than accepting a value that could ever diverge
+        from it.
         """
         ended_reason = ended_reason_in
         ended_detail = ended_detail_in
 
-        while ready:
+        while self._ready_set:
+            # 01a0812c (M5): a failure discovered in an EARLIER superstep
+            # (this call, or a prior resume of the SAME park) is sticky -
+            # seeded via ended_reason_in from self._pending_ended_reason.
+            # fail_fast means STOP, not just eventually-report-correctly:
+            # once seeded, do not admit self._ready_set's contents for a
+            # fresh dispatch. `break`, not `return` - a `return` would
+            # skip the post-loop tail below (self._last_ended_reason /
+            # self._last_ended_detail exposure for a parent subgraph, and
+            # the final `_save_state(status=ENDED, ...)` call), silently
+            # stranding the run in a state a parent can't observe as
+            # failed and never persisting the terminal row. This is
+            # exactly the class of silent-skip bug that produced every
+            # prior round's regression - if a future refactor reaches for
+            # `return` here as the "simpler" exit, that is the bug this
+            # comment exists to stop.
+            #
+            # Placed first, before the max_iterations check: a seeded
+            # failure always wins over a cycle-bound reroute.
+            #
+            # Scoped out of v1, deliberately: a resumed continuation can
+            # still raise a NEW park after a failure is already seeded
+            # (self._pending_ended_reason non-None) - e.g. the one
+            # pending entry resume_from_checkpoint's drain is still
+            # finishing raises YieldToWorker/ToolWaitPark again
+            # mid-continuation. This is not special-cased: the re-park
+            # proceeds normally (existing machinery, untouched) and this
+            # check simply doesn't fire again until the NEXT resume,
+            # since resume_from_checkpoint returns via the re-park branch
+            # before ever reaching this loop. Net effect: one needless
+            # round-trip (a doomed session waits on a tool call it didn't
+            # strictly need to) rather than ending failed the instant it
+            # could have - accepted, not a bug.
+            if ended_reason is not None:
+                break
+
             # Cycle bound check. Spec §5.4 maps this to ended_reason='failed'
             # with the detail code carried separately so the public contract
             # has a single failure reason and a finite set of codes.
@@ -1322,7 +1420,13 @@ class _BaseGraphExecutor(
                         "on_max_iterations=%r instead of failing",
                         self._graph.id, self._graph.max_iterations, route_to,
                     )
-                    ready = {route_to}
+                    # Deliberate hard reset, not a union: this reroute
+                    # abandons the normal graph flow entirely (whatever
+                    # was in self._ready_set before is no longer wanted)
+                    # in favour of jumping straight to one finalize node -
+                    # unlike every other self._ready_set mutation in this
+                    # method, which is additive/incremental.
+                    self._ready_set = {route_to}
                     self._admitted.add(route_to)
                     continue
                 yield _GraphErrorEvent(  # type: ignore[misc]
@@ -1341,7 +1445,7 @@ class _BaseGraphExecutor(
             # on the same append+tick path every other record uses; no extra
             # tick publisher. node_kind comes from the resolved node def's
             # ``kind`` discriminator. Sorted for deterministic stream order.
-            for nid in sorted(ready):
+            for nid in sorted(self._ready_set):
                 node_states[nid] = NodeRuntimeState(
                     status=NodeRuntimeStatus.RUNNING,
                     last_run_iteration=context.iteration,
@@ -1372,7 +1476,7 @@ class _BaseGraphExecutor(
                     ts=ss_started_at,
                     iteration=context.iteration,
                     superstep_id=superstep_id,
-                    ready_node_ids=sorted(ready),
+                    ready_node_ids=sorted(self._ready_set),
                 ),
             )
 
@@ -1387,7 +1491,16 @@ class _BaseGraphExecutor(
             # The outer loop terminates naturally when the ready set
             # drains AND no nodes are in-flight; the sort here is kept
             # purely for deterministic stream ordering.
-            ready_ordered = sorted(ready)
+            #
+            # Stable per-iteration snapshot of self._ready_set (01a0812c):
+            # this superstep's dispatch BATCH is fixed at this instant,
+            # even though self._ready_set itself keeps mutating (discard
+            # on settle, below) for the rest of this iteration - a
+            # same-superstep addition (e.g. a drained fan-out plan) must
+            # not retroactively join THIS iteration's already-spawned
+            # tasks; it lands in self._ready_set for the next `while`
+            # iteration only.
+            ready_ordered = sorted(self._ready_set)
             queue: "asyncio.Queue[StreamEvent | _NodeDone | _ToolDispatchBarrier]" = (
                 asyncio.Queue()
             )
@@ -1616,6 +1729,16 @@ class _BaseGraphExecutor(
                 # detects pending entries and propagates YieldToWorker.
                 if done is not None and done.suspended:
                     continue
+                # 01a0812c: every branch reached from here on settles this
+                # node ONE way or another this superstep - an ordinary
+                # FAILED, a suppressed-fanout FAILED (its own sub-branch
+                # below, which still sets node_states[nid] to FAILED
+                # before its own continue), or ENDED. The suspended guard
+                # above is the ONLY branch that must NOT settle (a park,
+                # not a completion). Discard at the write site instead of
+                # tracking a second exclusion set to subtract later - see
+                # self._ready_set's own docstring in __init__.
+                self._ready_set.discard(nid)
                 if done is None or done.error is not None:
                     err_text = (
                         str(done.error) if done is not None else "no result"
@@ -1702,6 +1825,28 @@ class _BaseGraphExecutor(
                                     )
                             continue
                     any_failed = True
+                    # 01a0812c: persist that an un-suppressed failure
+                    # occurred so it survives a park - any_failed and
+                    # ended_reason/ended_detail below are pure locals of
+                    # THIS call to _run_superstep_loop, discarded if a
+                    # park raises before the `if any_failed:` check
+                    # further down ever runs (the pending-park branch is
+                    # checked FIRST). Sticky: first un-suppressed failure
+                    # wins, never overwritten by a later one - mirrors
+                    # ended_reason's own `if ended_reason is None:`
+                    # pattern below. Mirrors ended_reason/ended_detail's
+                    # own conditional structure exactly, not a blanket
+                    # "set both here": reason is unconditional (matches
+                    # how the `if any_failed:` fallback below always
+                    # eventually produces SOME reason even with no
+                    # specific detail), detail is set only inside the
+                    # SAME conditional ended_detail is - setting both
+                    # unconditionally would manufacture a detail value
+                    # (e.g. coercing None) that today's code never
+                    # produces, changing observable behavior for callers
+                    # that branch on ended_detail.
+                    if self._pending_ended_reason is None:
+                        self._pending_ended_reason = "failed"
                     # When the failure carries a spec §5.4 code (e.g. End-node
                     # output validation), propagate it so the executor's
                     # final state records both reason="failed" and the code,
@@ -1709,6 +1854,8 @@ class _BaseGraphExecutor(
                     if done is not None and done.ended_detail is not None:
                         ended_reason = "failed"
                         ended_detail = done.ended_detail
+                        if self._pending_ended_detail is None:
+                            self._pending_ended_detail = done.ended_detail
                         error_events.append(
                             _GraphErrorEvent(
                                 code=done.ended_detail,
@@ -1782,9 +1929,18 @@ class _BaseGraphExecutor(
                 or self._pending_agent_yields
                 or self._pending_tool_waits
             ):
-                # Keep ready set / context up to date on the executor for
-                # the snapshot.
-                self._ready_set = set(ready_ordered)
+                # 01a0812c: NO self._ready_set reset here (deleted, not
+                # adapted - this was the round-4 BLOCKER's exact
+                # mechanism). By this point in the classification loop
+                # above, self._ready_set has ALREADY been correctly
+                # discarded-from for every node that settled THIS
+                # superstep; what remains is exactly the parked entries
+                # plus anything not yet folded in. Resetting to the raw
+                # ready_ordered snapshot here would stomp those discards
+                # and re-admit same-superstep settlers for re-dispatch on
+                # a later resume - the exact bug this design exists to
+                # eliminate. Keep context / node_states up to date on the
+                # executor for the snapshot.
                 self._context = context
                 self._node_states = node_states
                 await self._save_state(
@@ -1881,7 +2037,17 @@ class _BaseGraphExecutor(
                     next_ready.add(inst.synthesized_id)
                 del self._pending_fanout[fanout_id]
 
-            ready = next_ready
+            # 01a0812c: additive, not a bare reset - unlike the ONE site
+            # in resume_from_checkpoint that's specifically verified safe
+            # as a bare assignment (self._ready_set provably empty
+            # there), this general pattern is the one to default to for
+            # every other successor-fold site: self._ready_set has
+            # already had every settled ready_ordered member discarded
+            # above (nothing pending reaches this line - the park branch
+            # above already returned if anything were), so a bare
+            # assignment would likely be a no-op today, but the union is
+            # what stays correct if that ever stops being true.
+            self._ready_set |= next_ready
             context.iteration += 1
 
         if ended_reason is None:
