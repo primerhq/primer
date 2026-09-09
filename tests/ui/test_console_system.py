@@ -95,6 +95,19 @@ def test_worker_pool_capacity_falls_back_to_a_clean_label_not_a_bare_question_ma
     assert 'wp.capacity == null ? "n/a" : wp.capacity' in SYS
 
 
+def test_worker_pool_in_flight_renders_na_not_a_permanent_ellipsis():
+    # dogfood defect hunt: worker_pool.in_flight is documented (health.py
+    # WorkerPoolHealth) as PERMANENTLY null on an API-only pod - live
+    # per-worker load is never persisted, by design, not merely "not
+    # loaded yet". The card's main value rendered a literal "…" for this
+    # case, which reads identically to a transient loading state that
+    # will resolve - it never does, on this deployment topology. Same
+    # fallback the capacity subtitle already uses one line below (this
+    # exact file, same commit that fixed capacity's own "?" case).
+    assert 'wp.in_flight == null ? "…"' not in SYS
+    assert 'wp.in_flight == null ? "n/a" : wp.in_flight' in SYS
+
+
 def test_worker_rows_carry_turns_and_uptime():
     # notes section 4: "worker rows show ... turns + uptime". Turns come
     # from grouping /workers/stats by worker id (workers.jsx's own lane

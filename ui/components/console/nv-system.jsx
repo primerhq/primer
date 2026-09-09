@@ -100,7 +100,7 @@ function NV_HealthCards() {
       tone: schedOk ? "var(--green)" : (sched.alive ? "var(--amber)" : "var(--red)"),
     },
     {
-      k: "worker pool", v: String(wp.in_flight == null ? "…" : wp.in_flight),
+      k: "worker pool", v: String(wp.in_flight == null ? "n/a" : wp.in_flight),
       sub: "of " + (wp.capacity == null ? "n/a" : wp.capacity) + " capacity",
       tone: "var(--blue)",
     },
