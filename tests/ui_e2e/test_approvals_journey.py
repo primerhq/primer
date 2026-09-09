@@ -220,14 +220,19 @@ async def _inject_approval_park_async(
             updated_at = now()
         WHERE id = $1
     """
-    # The ui_e2e server is brought up against the `primer_e2e` DB (see
-    # tests/.e2e/config.yaml). Default to it; honour the env overrides
-    # (PRIMER_UI_E2E_DB / PRIMER_UI_E2E_DB_PORT) so an alternate bringup
-    # (e.g. the docker-compose `primer` DB on a remapped host port) still
-    # works.
+    # The ui_e2e server is brought up by scripts/e2e/bringup.sh against the
+    # `primer_e2e` DB, published on PRIMER_DB_PORT (default 5432) - the
+    # SAME variable the bringup script and every tests/e2e/*.py DB helper
+    # read (see e.g. test_multi_cycle_resume_stability_journey.py's own
+    # _pg_port()). This used to read a second, independent
+    # PRIMER_UI_E2E_DB_PORT that nothing ever set, so an alternate-port
+    # bringup silently pointed this helper at whatever else was listening
+    # on the standard port and injected a parked-approval fixture into it -
+    # a hazard, not just a portability bug (found by Dev-Prime 2026-09-09
+    # reproducing CI locally on a remapped port).
     import os
     db = os.environ.get("PRIMER_UI_E2E_DB", "primer_e2e")
-    port = int(os.environ.get("PRIMER_UI_E2E_DB_PORT", "5432"))
+    port = int(os.environ.get("PRIMER_DB_PORT", "5432"))
     conn = await asyncpg.connect(
         host="localhost", port=port,
         user="primer", password="primer", database=db,
