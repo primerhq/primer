@@ -34,6 +34,7 @@ from primer.graph.workspace_executor import WorkspaceGraphExecutor
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
     Done,
+    Error,
     Message,
     StreamEvent,
     TextDelta,
@@ -437,3 +438,55 @@ async def test_fanin_upstream_failed_reaches_session_as_error_record(
     assert state is not None
     assert state["ended_reason"] == "failed"
     assert state["ended_detail"] == "fanin_upstream_failed"
+
+
+@pytest.mark.asyncio
+async def test_llm_connect_failure_reaches_session_as_error_record(
+    tmp_path: Path,
+) -> None:
+    """01a070d6: an agent node's LLM stream ending in a terminal Error
+    (e.g. a connect failure) raises TurnStreamFailure out of
+    run_agent_turn -> _GraphErrorEvent(code=<the classifier's code>) ->
+    ERROR record. Before the fix, the generic except-BaseException path
+    left ended_detail unset for ANY exception without special handling,
+    so this specific check (`if done.ended_detail is not None`) never
+    fired at all - no _GraphErrorEvent, no code, just an undifferentiated
+    node failure."""
+    graph = Graph(
+        id="g-llm-connect-failure",
+        description="begin -> worker (agent, LLM connect fails) -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="worker", agent_id="ag"),
+            _EndNode(id="exit"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="worker"),
+            _StaticEdge(from_node="worker", to_node="exit"),
+        ],
+    )
+
+    llm = _ScriptedLLM(scripts=[[
+        Error(code="llm_connect_error", message="connect failed", fatal=True),
+    ]])
+
+    executor = await _build_test_executor(
+        graph=graph,
+        tmp_path=tmp_path,
+        graph_session_id="gsid-llm-connect-failure",
+        llm=llm,
+    )
+    events = await _drain(executor.invoke([]))
+
+    err = _terminal_error(events)
+    assert err.code == "llm_connect_error"
+
+    rec = _translate_to_record(err)
+    assert rec.kind == SessionMessageKind.ERROR
+    assert rec.payload["code"] == "llm_connect_error"
+    assert rec.payload["node_id"] == "worker"
+
+    state = await executor.load_state()
+    assert state is not None
+    assert state["ended_reason"] == "failed"
+    assert state["ended_detail"] == "llm_connect_error"

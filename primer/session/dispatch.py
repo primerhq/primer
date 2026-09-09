@@ -31,6 +31,7 @@ from primer.int.claim import ClaimKind, Lease, ParkRequest, ReleaseOutcome
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 import primer.observability.metrics as _metrics
+from primer.model.chat import TurnStreamFailure
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
@@ -1057,6 +1058,16 @@ async def run_one_session_turn(
                 session,
                 new_status=SessionStatus.ENDED,
                 ended_reason="failed",
+                # 01a070d6: a TurnStreamFailure means the LLM stream itself
+                # is why the turn failed - ended_detail_code always resolves
+                # to something usable (a real classifier code, or its own
+                # fallback), so monitoring can tell "the LLM was
+                # unreachable" apart from "some other internal error"
+                # instead of both reading as an undifferentiated "failed".
+                ended_detail=(
+                    exc.ended_detail_code
+                    if isinstance(exc, TurnStreamFailure) else None
+                ),
                 executor=executor,
                 expected_epoch=session.binding_epoch,
             )
@@ -1963,6 +1974,7 @@ async def _transition_session_status(
     *,
     new_status: SessionStatus,
     ended_reason: str | None = None,
+    ended_detail: str | None = None,
     executor=None,
     expected_epoch: int | None = None,
     workspace_registry: Any | None = None,
@@ -2013,6 +2025,8 @@ async def _transition_session_status(
         updates["ended_at"] = datetime.now(timezone.utc)
         if ended_reason is not None:
             updates["ended_reason"] = ended_reason
+        if ended_detail is not None:
+            updates["ended_detail"] = ended_detail
     try:
         await session_storage.update(fresh.model_copy(update=updates))
     except Exception:  # noqa: BLE001

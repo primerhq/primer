@@ -347,3 +347,43 @@ async def test_two_agent_yields_resume_one_reparks_on_other(tmp_path):
         checkpoint, resumed_tcid="tc0", agent_tool_result=tool_result))
     assert repark is not None, "must re-park while tc1 is still pending"
     assert repark.yielded.event_keys == ["ask_user:t:tc1"]
+
+
+class _FailingContinuationLLM:
+    """01a070d6: the resumed turn's OWN LLM call ends in a terminal
+    Error (e.g. a connect failure) with no content - run_agent_turn
+    raises TurnStreamFailure instead of quietly returning."""
+    async def list_models(self): return ["m"]
+    def stream(self, **kw) -> AsyncIterator[StreamEvent]:
+        from primer.model.chat import Error
+
+        async def _g():
+            yield Error(code="llm_connect_error", message="connect failed", fatal=True)
+        return _g()
+
+
+@pytest.mark.asyncio
+async def test_agent_node_resume_llm_failure_ends_failed_with_code(tmp_path):
+    """01a070d6: before this fix, resume_from_checkpoint's ay_pending
+    loop hardcoded ended_detail="tool_execution_failed" for EVERY
+    exception reaching its generic except-Exception branch - an actively
+    wrong label for an LLM stream failure, since nothing about a tool
+    ran. Must now carry the classifier's own code instead."""
+    ex1 = await _build(tmp_path, _YieldingLLM(), "gsid-r-fail")
+    raised = await _drain_until_yield(ex1.invoke([]))
+    assert raised is not None and raised.graph_checkpoint is not None
+    checkpoint = raised.graph_checkpoint
+
+    ex2 = await _build(tmp_path, _FailingContinuationLLM(), "gsid-r-fail")
+    tool_result = Message(role="tool",
+                          parts=[ToolResultPart(id="tc1", output="blue")])
+    async for _ev in ex2.resume_from_checkpoint(
+        checkpoint, resumed_tcid="tc1", agent_tool_result=tool_result):
+        pass
+
+    state = await ex2.load_state()
+    assert state is not None
+    assert state["status"] == "ended"
+    assert state["ended_reason"] == "failed"
+    assert state["ended_detail"] == "llm_connect_error"
+    assert state["node_states"]["A"]["status"] == "failed"

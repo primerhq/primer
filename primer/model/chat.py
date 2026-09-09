@@ -1017,6 +1017,57 @@ class Error(BaseModel):
     )
 
 
+class TurnStreamFailure(Exception):
+    """Raised when an LLM stream ends without producing a usable turn.
+
+    Carries the terminal :class:`Error` plus whatever the turn had
+    already produced before the failing call, so callers can salvage
+    partial output and construct an accurate ``ended_detail`` (e.g. the
+    error's own ``code``) instead of a generic "failed" string.
+
+    Covers two shapes, distinguished by whether ``partial_messages`` is
+    empty: a stream that produced no convertible content at all, and one
+    that produced some assistant text before the terminal error (which
+    would otherwise round-trip as a plausible-looking, silently
+    truncated answer). ``partial_messages`` is for in-memory callers
+    only — durable stream records already preserve this content
+    independently, so this is not a second copy of the record trail.
+
+    01a070d6: retry semantics are deliberately out of scope. This does
+    not carry the prompt or enough state to retry the failing call — a
+    future retry design gets to decide what state it needs; this
+    exception isn't pre-loaded to guess at it.
+    """
+
+    def __init__(
+        self,
+        error: Error,
+        *,
+        partial_messages: list[Message],
+        rounds_completed: int,
+    ) -> None:
+        super().__init__(error.message)
+        self.error = error
+        self.partial_messages = partial_messages
+        self.rounds_completed = rounds_completed
+
+    @property
+    def ended_detail_code(self) -> str:
+        """``error.code``, or a generic fallback when the classifier left it
+        unset.
+
+        Several provider error classifiers construct their
+        :class:`~primer.model.except_.PrimerError` with no ``code`` at all
+        (verified 01a070d6: every ``NetworkError`` site across ollama,
+        anthropic, openai, google, and mcp), so ``error.code`` alone cannot
+        be trusted to always carry a usable value. Every caller that wants
+        a terminal-state detail string should read THIS, not ``error.code``
+        directly, so a future classifier that forgets to set a code still
+        produces something better than ``None``.
+        """
+        return self.error.code or "llm_stream_error"
+
+
 # ---- Extended stream events (wrapped via ExtendedEvent) ---------------------
 
 

@@ -40,6 +40,7 @@ from primer.model.chat import (
     StreamEvent,
     ToolCallPart,
     ToolResultPart,
+    TurnStreamFailure,
     Usage,
     output_to_message,
     _ClientAction,
@@ -257,6 +258,12 @@ async def run_agent_turn(
         Propagated from a tool dispatch -- callers handle this
         (chat: terminal stream Error; workspace: WAITING transition;
         graph: per-node FAILED).
+    primer.model.chat.TurnStreamFailure
+        The LLM stream ended in a terminal :class:`Error` for this call
+        (e.g. a connect failure), whether or not it produced any
+        assistant content first (01a070d6). Callers must not treat an
+        unraised return from this generator as success without checking
+        for this -- see each caller's own handling.
     """
     tools = await tool_manager.list_tools(principal=principal)
 
@@ -333,9 +340,21 @@ async def run_agent_turn(
         try:
             assistant_msg = output_to_message(buffered)
         except ValueError as exc:
-            # Empty / error-only stream. The events were already emitted to
-            # subscribers, so the user sees something, but the orchestrator
-            # would otherwise treat the turn as a quiet success and tight-loop
+            if isinstance(held_done, Error):
+                # 01a070d6: an error-only stream (e.g. an LLM connect
+                # failure) used to end here quietly - the ERROR record
+                # already yielded above is durable, but nothing told the
+                # caller the TURN failed, so every caller read this as an
+                # ordinary empty completion.
+                raise TurnStreamFailure(
+                    held_done,
+                    partial_messages=[],
+                    rounds_completed=tool_round,
+                ) from exc
+            # Empty stream, no error: the LLM legitimately produced
+            # nothing. The events were already emitted to subscribers, so
+            # the user sees something, but the orchestrator would
+            # otherwise treat the turn as a quiet success and tight-loop
             # the LLM. Log enough to make the situation diagnosable from
             # production logs.
             logger.warning(
@@ -347,6 +366,20 @@ async def run_agent_turn(
 
         if messages_out is not None:
             messages_out.append(assistant_msg)
+
+        if isinstance(held_done, Error):
+            # 01a070d6: partial-content-then-error. output_to_message only
+            # raises on ZERO convertible content, so any TextDelta before
+            # the terminal error lets this succeed with a truncated-but-
+            # normal-looking assistant message - worse than the empty
+            # case, since it reads as a complete answer rather than an
+            # obviously-empty one. The ERROR record is already durable;
+            # this is what tells the turn itself it failed.
+            raise TurnStreamFailure(
+                held_done,
+                partial_messages=[assistant_msg],
+                rounds_completed=tool_round,
+            )
 
         tool_calls = [
             p for p in assistant_msg.parts if isinstance(p, ToolCallPart)

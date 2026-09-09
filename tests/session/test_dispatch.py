@@ -19,7 +19,14 @@ import pytest
 
 from primer.bus.in_memory import InMemoryEventBus
 from primer.int.claim import ClaimKind, Lease, ReleaseOutcome
-from primer.model.chat import Done, Error, TextDelta, ToolCallEnd, ToolCallStart
+from primer.model.chat import (
+    Done,
+    Error,
+    TextDelta,
+    ToolCallEnd,
+    ToolCallStart,
+    TurnStreamFailure,
+)
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionMessageKind,
@@ -975,6 +982,78 @@ async def test_executor_error_transitions_to_ended_failed(
     # to idle on every exit the try/except covers, including this one.
     assert row.turn_status == "idle"
     assert row.turn_started_at is None
+
+
+@pytest.mark.asyncio
+async def test_turn_stream_failure_ended_detail_carries_the_error_code(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """01a070d6: a TurnStreamFailure means the LLM stream itself is why
+    the turn failed - ended_detail must carry that classifier code (not
+    a generic "failed"/exception-class string) so monitoring can tell
+    "the LLM was unreachable" apart from any other internal error."""
+    fake_executor = FakeExecutor([
+        TurnStreamFailure(
+            Error(code="llm_connect_error", message="connect failed", fatal=True),
+            partial_messages=[], rounds_completed=0,
+        ),
+    ])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+
+    assert outcome.success is False
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "failed"
+    assert row.ended_detail == "llm_connect_error"
+
+
+@pytest.mark.asyncio
+async def test_turn_stream_failure_ended_detail_falls_back_when_code_unset(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """01a070d6: several provider classifiers (NetworkError across ollama,
+    anthropic, openai, google, mcp) leave Error.code unset - ended_detail
+    must still resolve to something usable rather than None."""
+    fake_executor = FakeExecutor([
+        TurnStreamFailure(
+            Error(code=None, message="connection refused", fatal=True),
+            partial_messages=[], rounds_completed=0,
+        ),
+    ])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+
+    assert outcome.success is False
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row.ended_reason == "failed"
+    assert row.ended_detail == "llm_stream_error"
 
 
 @pytest.mark.asyncio

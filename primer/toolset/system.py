@@ -77,7 +77,7 @@ from primer.agent.invoke import (
 )
 from primer.model.agent import Agent
 from primer.model.model_profile import ModelProfile
-from primer.model.chat import Tool, ToolCallResult, ToolExample
+from primer.model.chat import Tool, ToolCallResult, ToolExample, TurnStreamFailure
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.collection import Collection, Document
@@ -724,6 +724,16 @@ def build_system_toolset(
             )
         except ValueError as exc:
             return _err(str(exc), error_type="bad-request")
+        except TurnStreamFailure as exc:
+            # 01a070d6: without this, a subagent whose LLM connection
+            # failed returned "" as if it had legitimately said nothing -
+            # the parent agent saw a SUCCESSFUL tool result with no signal
+            # anywhere that the subagent's LLM call actually failed.
+            return _err(
+                f"subagent {args.agent_id!r} LLM stream failed: "
+                f"{exc.error.message}",
+                error_type="provider-error",
+            )
         return _ok({"output": text})
 
     registry["invoke_agent"] = (

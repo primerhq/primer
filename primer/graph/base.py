@@ -58,6 +58,7 @@ from primer.model.chat import (
     Message,
     StreamEvent,
     ToolResultPart,
+    TurnStreamFailure,
     _GraphNodeEvent,
 )
 from primer.model.except_ import ConfigError
@@ -845,10 +846,20 @@ class _BaseGraphExecutor(
                     )
                     continue
                 except Exception as exc:  # noqa: BLE001 -- map to node failure
+                    # 01a070d6: a TurnStreamFailure means the LLM stream
+                    # itself is why this resumed turn failed - "tool_
+                    # execution_failed" would be an actively wrong label
+                    # for it (nothing about a tool ran), and ended_detail_
+                    # code always resolves to something usable, never None.
+                    detail = (
+                        exc.ended_detail_code
+                        if isinstance(exc, TurnStreamFailure)
+                        else "tool_execution_failed"
+                    )
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],
                         iteration=context.iteration, error=str(exc),
-                        ended_detail="tool_execution_failed",
+                        ended_detail=detail,
                     )
                     context.nodes[ay.node_id] = fail_out
                     node_states[ay.node_id] = NodeRuntimeState(
@@ -858,7 +869,7 @@ class _BaseGraphExecutor(
                         error=str(exc),
                     )
                     yield _GraphErrorEvent(  # type: ignore[misc]
-                        code="tool_execution_failed", message=str(exc),
+                        code=detail, message=str(exc),
                         node_id=ay.node_id,
                     )
                     # Balanced exit for this resumed agent-yield node (parked →
@@ -873,7 +884,7 @@ class _BaseGraphExecutor(
                     await self._save_state(
                         iteration=context.iteration, node_states=node_states,
                         status=SessionStatus.ENDED, ended_reason="failed",
-                        ended_detail="tool_execution_failed",
+                        ended_detail=detail,
                     )
                     return
                 context.nodes[ay.node_id] = out
