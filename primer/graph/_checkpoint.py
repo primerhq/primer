@@ -170,6 +170,11 @@ class _CheckpointMixin:
           ``{"fanout_node_id": ..., "spec": <FanOutSpec.model_dump>}``.
         * ``fanout_drain_state`` — drain_key → drain_state dict.
         * ``pending_toolcalls`` — list of pending ToolCall dicts.
+        * ``pending_ended_reason`` / ``pending_ended_detail`` (01a0812c) —
+          a sticky, un-suppressed node failure discovered before a park,
+          so the eventual terminal outcome doesn't silently downgrade to
+          "completed" once the park resolves. ``None`` when no failure
+          has been discovered yet.
         """
         ctx_payload: dict[str, Any] | None = None
         if self._context is not None:
@@ -177,6 +182,8 @@ class _CheckpointMixin:
         return {
             "context": ctx_payload,
             "ready_set": sorted(self._ready_set),
+            "pending_ended_reason": self._pending_ended_reason,
+            "pending_ended_detail": self._pending_ended_detail,
             "node_states": {
                 nid: ns.model_dump(mode="json")
                 for nid, ns in self._node_states.items()
@@ -339,6 +346,15 @@ class _CheckpointMixin:
         else:
             self._context = GraphContext.model_validate(ctx_raw)
         self._ready_set = set(payload.get("ready_set") or [])
+        # 01a0812c: absent -> None (no failure discovered yet), same
+        # degrade-gracefully policy as every other new-field-on-old-
+        # checkpoint case in this codebase - a checkpoint written before
+        # this field existed simply resumes as if nothing had failed,
+        # which is the correct behaviour for a checkpoint that predates
+        # this field's existence (it could not have discovered a failure
+        # this field didn't exist yet to record).
+        self._pending_ended_reason = payload.get("pending_ended_reason")
+        self._pending_ended_detail = payload.get("pending_ended_detail")
         # Re-seed the admitted-set used by the FanIn callable-router gate.
         # The restored ready-set is the in-flight frontier; completed nodes
         # already have output (so they never block). This keeps a resumed

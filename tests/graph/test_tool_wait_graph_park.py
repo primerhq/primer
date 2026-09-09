@@ -36,8 +36,8 @@ from primer.graph.executor import GraphExecutor
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Message, StreamEvent, ToolResultPart
 from primer.model.graph import (
-    Graph, GraphNodeMessage, GraphThread, NodeRuntimeStatus,
-    _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge,
+    FanOutSpec, Graph, GraphNodeMessage, GraphThread, NodeRuntimeStatus,
+    _AgentNodeRef, _BeginNode, _EndNode, _FanOutNode, _StaticEdge,
 )
 from primer.model.model_profile import ModelProfileConfig
 from primer.model.yield_ import ToolWaitPark, Yielded, YieldToWorker
@@ -268,22 +268,6 @@ async def test_gate_answers_first_tool_wait_survives_the_reprk(monkeypatch) -> N
     assert "A:tool:0:1" in repark.outstanding_task_ids
 
 
-@pytest.mark.xfail(
-    reason=(
-        "round-4 gate ruling: reverted resume_from_checkpoint's ready-set "
-        "line (rounds 1-3: reorder, union, already_ended, settled_ids) back "
-        "to merge-base `ready = next_ready` after four consecutive fix "
-        "rounds each introduced a new bug - two of them flag-off "
-        "regressions, on code not needed for merge (flag off means "
-        "tw_pending is always empty). This test's final assertions pin "
-        "item 2's original successor-drop finding, which merge-base "
-        "semantics reintroduce for a MULTI-entry partial wake (each "
-        "resume's own edge-walk only sees its own completed_ids, and a "
-        "PRIOR resume's fold is a bare-assignment casualty of the NEXT "
-        "resume). Kept as specification, not deleted - see task 01a0812c."
-    ),
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_node_a_before_node_b_partial_wake(monkeypatch) -> None:
     """PURE park (no human gate at all): both A and B raise their own
@@ -539,6 +523,14 @@ async def test_failed_sibling_is_not_re_executed_and_stays_failed(
     assert ex._node_states["B"].status == NodeRuntimeStatus.FAILED
     assert ex._node_states["B"].error == b_error_at_park
 
+    # 01a0812c matrix item M2: the run-level verdict must survive A's own
+    # park too, not just B's per-node FAILED status - round 4's own MAJOR
+    # finding was that fail_fast's run-level verdict got discarded by the
+    # exact re-park exception unwind this drain took (any_failed/
+    # ended_reason are pure locals of _run_superstep_loop, never
+    # checkpointed). self._pending_ended_reason is what survives instead.
+    assert ex._last_ended_reason == "failed"
+
 
 def _cyclic_collision_graph() -> Graph:
     """begin -> X -> {A, B}; A -> X (the cycle); B -> D.
@@ -573,21 +565,6 @@ def _cyclic_collision_graph() -> Graph:
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "round-4 gate ruling: this test pins R3-1's own fix (settled_ids), "
-        "which was itself reverted after the gate found a BLOCKER in it - "
-        "subtracting settled_ids from the ACCUMULATED ready deletes a "
-        "loop-back target a PRIOR resume legitimately folded in, in a "
-        "same-superstep topology this test doesn't cover (X completes "
-        "ALONE in its own superstep here). resume_from_checkpoint's "
-        "ready-set line is back to merge-base `ready = next_ready` after "
-        "four rounds each introduced a new bug. Kept as specification, not "
-        "deleted - the cyclic loop-back scenario is real and becomes part "
-        "of task 01a0812c's mandatory scenario matrix."
-    ),
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_cyclic_loop_back_across_two_partial_resumes_still_dispatches(
     monkeypatch,
@@ -679,4 +656,467 @@ async def test_cyclic_loop_back_across_two_partial_resumes_still_dispatches(
     # and re-parking for real, on the SAME node_id.
     assert call_counts["agent-x"] == 2
     assert second_repark.outstanding_task_ids == ["X:tool:0:2"]
+
+
+def _same_superstep_collision_graph() -> Graph:
+    """begin -> {A, B, X} (ALL THREE together, one superstep); A -> X (the
+    cycle-collision edge); B -> D. Unlike ``_cyclic_collision_graph``, X is
+    NOT dispatched alone in its own earlier superstep - it settles in the
+    SAME superstep A and B park in, which is the exact round-4 BLOCKER
+    topology (design doc §2): a per-superstep reset can't save X here
+    since there IS no superstep boundary between X's original settle and
+    its re-admission via A's cycle edge - both happen within the same
+    nominal superstep, across two separate resumes of it.
+    """
+    return Graph(
+        id="g-same-superstep-collision",
+        description="begin -> {A,B,X}; A -> X; B -> D",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="A", agent_id="agent-a"),
+            _AgentNodeRef(id="B", agent_id="agent-b"),
+            _AgentNodeRef(id="X", agent_id="agent-x"),
+            _EndNode(id="D"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="A"),
+            _StaticEdge(from_node="begin", to_node="B"),
+            _StaticEdge(from_node="begin", to_node="X"),
+            _StaticEdge(from_node="A", to_node="X"),
+            _StaticEdge(from_node="B", to_node="D"),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_superstep_settle_survives_two_resumes_via_cycle_fold(
+    monkeypatch,
+) -> None:
+    """Test matrix item M3 - the exact round-4 BLOCKER topology (design doc
+    §2), distinct from M4's earlier-separate-superstep cyclic case: {A, B,
+    X} dispatch TOGETHER in one superstep. X completes normally (no park).
+    A parks with edge A -> X (cycles back to the SAME-superstep sibling
+    that already finished). B parks with an unrelated edge B -> D. A
+    resolves first (folding X back into self._ready_set via A's own
+    next_ready); B resolves second, with a next_ready that says nothing
+    about X at all.
+
+    X must survive BOTH resumes and dispatch for real - round 3's
+    ``settled_ids`` formula deleted X here specifically because it
+    subtracted from the ACCUMULATED ready set using a same-superstep
+    exclusion set that still (validly) remembered X's ORIGINAL, unrelated
+    settle; B's own, unrelated resume had no next_ready mention of X to
+    union it back in a second time.
+    """
+    call_counts: dict[str, int] = {}
+    ex = await _mk_executor_for_graph(_same_superstep_collision_graph())
+
+    import primer.graph._agent_node as agent_node_mod
+
+    async def _spy(**kwargs):
+        agent = kwargs["agent"]
+        call_counts[agent.id] = call_counts.get(agent.id, 0) + 1
+        if agent.id == "agent-x":
+            if call_counts["agent-x"] == 1:
+                # X's FIRST visit: completes normally, in the SAME
+                # superstep A and B park in.
+                return
+                yield  # pragma: no cover - unreachable, keeps this a generator
+            # X's SECOND visit (via A's cycle edge): park again so the
+            # test can observe the dispatch happened for real.
+            raise _tool_wait_park("X", "2")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-a" and call_counts["agent-a"] == 1:
+            raise _tool_wait_park("A", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-b" and call_counts["agent-b"] == 1:
+            raise _tool_wait_park("B", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        return
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", _spy)
+
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    first_park = excinfo.value
+    assert ex._node_states["X"].status == NodeRuntimeStatus.ENDED
+    assert call_counts == {"agent-x": 1, "agent-a": 1, "agent-b": 1}
+
+    # Resume 1: A resolves. A's own edge (A -> X) folds X back into
+    # self._ready_set. B is still pending -> re-park.
+    result_a = ToolResultPart(id="A:tool:0:1", output="result A", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo2:
+        async for _ev in ex.resume_from_checkpoint(
+            first_park.graph_checkpoint,
+            resolved_tool_wait={"A": [result_a]},
+        ):
+            pass
+    repark = excinfo2.value
+
+    # Resume 2: B resolves. B's own next_ready says nothing about X - this
+    # is the exact resume the round-4 BLOCKER's stale exclusion-set
+    # formula deleted X on.
+    result_b = ToolResultPart(id="B:tool:0:1", output="result B", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo3:
+        async for _ev in ex.resume_from_checkpoint(
+            repark.graph_checkpoint,
+            resolved_tool_wait={"B": [result_b]},
+        ):
+            pass
+    second_repark = excinfo3.value
+
+    # X actually dispatched a second time.
+    assert call_counts["agent-x"] == 2
+    assert second_repark.outstanding_task_ids == ["X:tool:0:2"]
+    assert ex._node_states["D"].status == NodeRuntimeStatus.ENDED
+
+
+def _fail_fast_with_own_successor_graph() -> Graph:
+    """begin -> {A, F}; A -> C. A parks (possibly more than once); F fails
+    immediately, un-suppressed (no fan-out spec at all - an ordinary node
+    failure is inherently fail-fast, no on_failure config to read). A's
+    own successor C is exactly the 'more ready work' a naive resume would
+    dispatch despite the seeded failure (design doc §4b, matrix item M5).
+    """
+    return Graph(
+        id="g-seeded-failure", description="begin -> {A,F}; A -> C",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="A", agent_id="agent-a"),
+            _AgentNodeRef(id="F", agent_id="agent-f"),
+            _EndNode(id="C"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="A"),
+            _StaticEdge(from_node="begin", to_node="F"),
+            _StaticEdge(from_node="A", to_node="C"),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_seeded_failure_stops_admitting_new_work_but_lets_a_resumed_park_through(
+    monkeypatch,
+) -> None:
+    """Test matrix items M5 + M5b (design doc §4b, §7 item 2 - the single
+    highest-risk piece of this design). {A parks, F fails un-suppressed}
+    in one superstep.
+
+    M5b first: A's FIRST park resolves into a SECOND park (a resumed
+    continuation raising a NEW park after the failure is already seeded)
+    - explicitly scoped OUT of special-casing (§4b): the re-park proceeds
+    normally, the seeded failure is picked up on the NEXT resume instead
+    of ending immediately. One needless round-trip, not a bug.
+
+    M5 second: A's SECOND park resolves and genuinely completes. The
+    drain is now fully clear, so ``_run_superstep_loop`` runs with
+    ``ended_reason_in="failed"`` already seeded - it must NOT dispatch A's
+    own successor (C) for fresh work despite C being folded into
+    self._ready_set by this same resume's edge-walk, and must still reach
+    the post-loop tail (break, not return) so ``_last_ended_reason`` and
+    the final ENDED ``_save_state`` both fire.
+    """
+    call_counts: dict[str, int] = {}
+    ex = await _mk_executor_for_graph(_fail_fast_with_own_successor_graph())
+
+    import primer.graph._agent_node as agent_node_mod
+
+    async def _spy(**kwargs):
+        agent = kwargs["agent"]
+        call_counts[agent.id] = call_counts.get(agent.id, 0) + 1
+        if agent.id == "agent-a":
+            if call_counts["agent-a"] == 1:
+                raise _tool_wait_park("A", "1")
+                yield  # pragma: no cover - unreachable, keeps this a generator
+            if call_counts["agent-a"] == 2:
+                # M5b: the resumed continuation parks AGAIN, after the
+                # failure below has already been seeded.
+                raise _tool_wait_park("A", "2")
+                yield  # pragma: no cover - unreachable, keeps this a generator
+            return
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-f":
+            raise RuntimeError("agent-f boom")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        return
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", _spy)
+
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    first_park = excinfo.value
+    assert ex._node_states["F"].status == NodeRuntimeStatus.FAILED
+    # The seeded failure survives the park immediately - set the moment F
+    # fails, in the SAME original dispatch A parks in.
+    assert ex._pending_ended_reason == "failed"
+
+    # M5b: resolve A's first park; its resumed continuation parks AGAIN.
+    # This must re-park normally, NOT end the run immediately even though
+    # a failure is already seeded.
+    result_a1 = ToolResultPart(id="A:tool:0:1", output="result A", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo2:
+        async for _ev in ex.resume_from_checkpoint(
+            first_park.graph_checkpoint,
+            resolved_tool_wait={"A": [result_a1]},
+        ):
+            pass
+    repark = excinfo2.value
+    assert call_counts["agent-a"] == 2
+    # Not ended yet - the seeded failure did not short-circuit this park.
+    assert getattr(ex, "_last_ended_reason", None) is None
+    # The seeded failure itself survives this re-park's own checkpoint
+    # round-trip untouched.
+    assert repark.graph_checkpoint is not None
+    assert repark.graph_checkpoint.get("pending_ended_reason") == "failed"
+
+    # M5: resolve A's second park. A completes for real this time - the
+    # drain is now fully clear, so the seeded failure finally takes over.
+    result_a2 = ToolResultPart(id="A:tool:0:2", output="result A2", error=False)
+    drained = False
+    try:
+        async for _ev in ex.resume_from_checkpoint(
+            repark.graph_checkpoint,
+            resolved_tool_wait={"A": [result_a2]},
+        ):
+            pass
+        drained = True
+    except (ToolWaitPark, YieldToWorker):
+        drained = False
+    assert drained is True
+
+    # A's own successor (C) was folded into self._ready_set by this
+    # resume's edge-walk (same mechanism M3/M8 rely on) but must NOT have
+    # been dispatched - the seeded failure stopped admission of new work
+    # as the very first statement of the next _run_superstep_loop
+    # iteration, before C was ever classified.
+    assert ex._node_states["C"].status == NodeRuntimeStatus.PENDING
+    # The post-loop tail still ran (break, not return): the terminal
+    # outcome is exposed for a parent subgraph to read.
+    assert ex._last_ended_reason == "failed"
+
+
+def _multi_resume_collision_graph() -> Graph:
+    """begin -> {A, B, E, X}; A -> X (cycle-collision, M3-style); B -> D1;
+    E -> D2. Same-superstep collision (X settles immediately) extended to
+    THREE parking siblings resolved across three SEPARATE resumes, per
+    matrix item M7 - correctness must not depend on resume count/order.
+    """
+    return Graph(
+        id="g-multi-resume-collision",
+        description="begin -> {A,B,E,X}; A -> X; B -> D1; E -> D2",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="A", agent_id="agent-a"),
+            _AgentNodeRef(id="B", agent_id="agent-b"),
+            _AgentNodeRef(id="E", agent_id="agent-e"),
+            _AgentNodeRef(id="X", agent_id="agent-x"),
+            _EndNode(id="D1"),
+            _EndNode(id="D2"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="A"),
+            _StaticEdge(from_node="begin", to_node="B"),
+            _StaticEdge(from_node="begin", to_node="E"),
+            _StaticEdge(from_node="begin", to_node="X"),
+            _StaticEdge(from_node="A", to_node="X"),
+            _StaticEdge(from_node="B", to_node="D1"),
+            _StaticEdge(from_node="E", to_node="D2"),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_multi_resume_accumulation_survives_three_separate_resumes(
+    monkeypatch,
+) -> None:
+    """Test matrix item M7: extends M3's same-superstep collision to
+    THREE parking siblings (A, B, E), each resolved via its own SEPARATE
+    ``resume_from_checkpoint`` call, with X (the collision target) folded
+    in by the FIRST of the three (A) and never touched by the other two's
+    own (unrelated) next_ready. self._ready_set's discard/add invariant
+    makes correctness independent of resume count and ordering by
+    construction - each mutation is a local, atomic edit, not part of a
+    running tally whose correctness depends on which resume observes it.
+    """
+    call_counts: dict[str, int] = {}
+    ex = await _mk_executor_for_graph(_multi_resume_collision_graph())
+
+    import primer.graph._agent_node as agent_node_mod
+
+    async def _spy(**kwargs):
+        agent = kwargs["agent"]
+        call_counts[agent.id] = call_counts.get(agent.id, 0) + 1
+        if agent.id == "agent-x":
+            if call_counts["agent-x"] == 1:
+                return
+                yield  # pragma: no cover - unreachable, keeps this a generator
+            raise _tool_wait_park("X", "2")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-a" and call_counts["agent-a"] == 1:
+            raise _tool_wait_park("A", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-b" and call_counts["agent-b"] == 1:
+            raise _tool_wait_park("B", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-e" and call_counts["agent-e"] == 1:
+            raise _tool_wait_park("E", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        return
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", _spy)
+
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    first_park = excinfo.value
+    assert ex._node_states["X"].status == NodeRuntimeStatus.ENDED
+    assert call_counts == {
+        "agent-x": 1, "agent-a": 1, "agent-b": 1, "agent-e": 1,
+    }
+
+    # Resume 1: A resolves, folding X in. B and E still pending -> re-park.
+    result_a = ToolResultPart(id="A:tool:0:1", output="result A", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo2:
+        async for _ev in ex.resume_from_checkpoint(
+            first_park.graph_checkpoint,
+            resolved_tool_wait={"A": [result_a]},
+        ):
+            pass
+    repark1 = excinfo2.value
+
+    # Resume 2: B resolves (own edge to D1, unrelated to X). E still
+    # pending -> re-park.
+    result_b = ToolResultPart(id="B:tool:0:1", output="result B", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo3:
+        async for _ev in ex.resume_from_checkpoint(
+            repark1.graph_checkpoint,
+            resolved_tool_wait={"B": [result_b]},
+        ):
+            pass
+    repark2 = excinfo3.value
+
+    # Resume 3: E resolves (own edge to D2, unrelated to X). Nothing
+    # pending now - the drain proceeds and dispatches everything folded
+    # so far: D1, D2, and X (still surviving from resume 1, two resumes
+    # after its own fold and none of which mentioned it again).
+    result_e = ToolResultPart(id="E:tool:0:1", output="result E", error=False)
+    with pytest.raises(ToolWaitPark) as excinfo4:
+        async for _ev in ex.resume_from_checkpoint(
+            repark2.graph_checkpoint,
+            resolved_tool_wait={"E": [result_e]},
+        ):
+            pass
+    third_repark = excinfo4.value
+
+    assert call_counts["agent-x"] == 2
+    assert third_repark.outstanding_task_ids == ["X:tool:0:2"]
+    assert ex._node_states["D1"].status == NodeRuntimeStatus.ENDED
+    assert ex._node_states["D2"].status == NodeRuntimeStatus.ENDED
+
+
+def _suppressed_fanout_plus_park_graph() -> Graph:
+    """begin -> fan(FanOut with TWO specs run concurrently, Spec B §1.1):
+    a broadcast(worker, count=1, on_failure="collect") AND a
+    tee(park_node) - both specs' instances land in the SAME next
+    superstep. worker[0] fails (suppressed by collect); park_node parks
+    independently, in that SAME superstep, per matrix item M6.
+    """
+    return Graph(
+        id="g-suppressed-fanout-plus-park",
+        description="begin -> fan({worker collect} + {park_node tee})",
+        nodes=[
+            _BeginNode(id="begin"),
+            _FanOutNode(
+                id="fan",
+                specs=[
+                    FanOutSpec(
+                        kind="broadcast", target_node_id="worker",
+                        count=1, on_failure="collect",
+                    ),
+                    FanOutSpec(kind="tee", target_node_ids=["park_node"]),
+                ],
+            ),
+            _AgentNodeRef(id="worker", agent_id="agent-worker"),
+            _AgentNodeRef(id="park_node", agent_id="agent-park"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="fan"),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_suppressed_fanout_failure_does_not_seed_run_level_failure(
+    monkeypatch,
+) -> None:
+    """Test matrix item M6: a FAILED fan-out instance with a SUPPRESSED
+    on_failure policy (``collect``), in the SAME superstep as an unrelated
+    park, must NOT set self._pending_ended_reason - the suppressed branch
+    ``continue``s (base.py, right after stamping NodeOutput.error) before
+    ever reaching the ``any_failed = True`` / _pending_ended_reason write
+    site, so it structurally can't seed a run-level failure. The run must
+    NOT end failed, must NOT stop admitting new work, and the co-pending
+    park must resolve completely normally.
+    """
+    ex = await _mk_executor_for_graph(_suppressed_fanout_plus_park_graph())
+    parked_once: set[str] = set()
+
+    import primer.graph._agent_node as agent_node_mod
+
+    async def _spy(**kwargs):
+        agent = kwargs["agent"]
+        if agent.id == "agent-worker":
+            raise RuntimeError("collect boom")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        if agent.id == "agent-park" and agent.id not in parked_once:
+            parked_once.add(agent.id)
+            raise _tool_wait_park("park_node", "1")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+        return
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", _spy)
+
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    first_park = excinfo.value
+
+    # The suppressed failure was recorded (collect stamps the error)...
+    assert ex._node_states["worker[0]"].status == NodeRuntimeStatus.FAILED
+    worker_output = ex._context.nodes.get("worker[0]")
+    assert worker_output is not None and worker_output.error is not None
+    assert ex._fanout_drain_state["fan__worker"].any_failed is True
+    # ...but it must NOT have seeded a run-level failure - the suppressed
+    # branch continues before ever reaching that write site.
+    assert ex._pending_ended_reason is None
+
+    # The co-pending park is untouched by the suppressed failure.
+    assert len(ex._pending_tool_waits) == 1
+    assert ex._pending_tool_waits[0].node_id == "park_node"
+    assert first_park.graph_checkpoint is not None
+    assert first_park.graph_checkpoint.get("pending_ended_reason") is None
+
+    # Resolve the park - the run must drain to genuine completion, not
+    # end failed, proving the suppressed failure never stopped admitting
+    # new work either.
+    result = ToolResultPart(id="park_node:tool:0:1", output="ok", error=False)
+    drained = False
+    try:
+        async for _ev in ex.resume_from_checkpoint(
+            first_park.graph_checkpoint,
+            resolved_tool_wait={"park_node": [result]},
+        ):
+            pass
+        drained = True
+    except (ToolWaitPark, YieldToWorker):
+        drained = False
+    assert drained is True
+    assert ex._pending_ended_reason is None
+    assert ex._last_ended_reason == "completed"
 

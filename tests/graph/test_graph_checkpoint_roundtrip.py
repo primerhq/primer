@@ -212,3 +212,106 @@ async def test_snapshot_and_restore_preserves_state() -> None:
     assert p.parked_event_key == "tool_approval:gsid-1:tc-abc"
     assert p.arguments == {"q": "x", "limit": 10}
     assert p.scoped_tool_call_id == "worker[1]:tool:3:1"
+
+
+def _minimal_begin_end_graph() -> Graph:
+    return Graph(
+        id="g-cp-minimal",
+        description="checkpoint round-trip - minimal begin -> end",
+        nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="end")],
+    )
+
+
+async def _mk_roundtrip_pair(graph: Graph):
+    """Build two independent executors (fresh, distinct threads) sharing
+    one thread_storage - the same "genuine checkpoint round-trip, not one
+    in-memory object reused" discipline every test in this file applies.
+    Returns (executor1, build_executor2) where build_executor2() lazily
+    constructs the second, freshly-open-threaded executor on demand.
+    """
+
+    async def agent_resolver(agent_id: str) -> Agent:
+        raise KeyError(agent_id)
+
+    async def llm_resolver(agent):  # pragma: no cover -- not used
+        raise NotImplementedError
+
+    thread_storage: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
+    message_storage: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
+    thread1 = await GraphExecutor.open_thread(
+        graph=graph, thread_storage=thread_storage,  # type: ignore[arg-type]
+    )
+    executor1 = GraphExecutor(
+        graph=graph,
+        agent_resolver=agent_resolver,
+        llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        thread_storage=thread_storage,  # type: ignore[arg-type]
+        message_storage=message_storage,  # type: ignore[arg-type]
+        graph_thread_id=thread1.id,
+    )
+
+    async def build_executor2() -> _BaseGraphExecutor:
+        thread2 = await GraphExecutor.open_thread(
+            graph=graph, thread_storage=thread_storage,  # type: ignore[arg-type]
+        )
+        return GraphExecutor(
+            graph=graph,
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            thread_storage=thread_storage,  # type: ignore[arg-type]
+            message_storage=message_storage,  # type: ignore[arg-type]
+            graph_thread_id=thread2.id,
+        )
+
+    return executor1, build_executor2
+
+
+@pytest.mark.asyncio
+async def test_snapshot_and_restore_preserves_a_real_pending_failure() -> None:
+    """01a0812c matrix item M9b: _pending_ended_reason/_pending_ended_detail
+    must round-trip through a genuine checkpoint (fresh executor,
+    snapshot -> restore), carrying a REAL (non-None) failure - not just
+    tolerate their absence (M10's separate, different proof). A field
+    that only round-trips correctly when empty isn't proven to round-trip
+    at all.
+    """
+    executor, build_executor2 = await _mk_roundtrip_pair(_minimal_begin_end_graph())
+    executor._pending_ended_reason = "failed"
+    executor._pending_ended_detail = "routing_failed"
+
+    payload = executor.snapshot_state()
+    import json
+
+    json.dumps(payload)
+    assert payload["pending_ended_reason"] == "failed"
+    assert payload["pending_ended_detail"] == "routing_failed"
+
+    executor2 = await build_executor2()
+    executor2.restore_state(payload)
+
+    assert executor2._pending_ended_reason == "failed"
+    assert executor2._pending_ended_detail == "routing_failed"
+
+
+@pytest.mark.asyncio
+async def test_restore_tolerates_a_stale_round3_checkpoint() -> None:
+    """01a0812c matrix item M10: a checkpoint written by round-3 code
+    (``settled_ids`` key present, no ``pending_ended_reason`` /
+    ``pending_ended_detail`` keys at all - they did not exist yet) must
+    still restore cleanly under the redesigned code. ``settled_ids`` is
+    simply no longer read (dead key, ignored); the new fields degrade to
+    their documented one-resume-only fallback (None), exactly like every
+    other new-field-on-old-checkpoint case in this codebase.
+    """
+    executor, build_executor2 = await _mk_roundtrip_pair(_minimal_begin_end_graph())
+    payload = executor.snapshot_state()
+    payload["settled_ids"] = ["some-stale-node-id"]
+    payload.pop("pending_ended_reason", None)
+    payload.pop("pending_ended_detail", None)
+
+    executor2 = await build_executor2()
+    executor2.restore_state(payload)  # must not raise
+
+    assert executor2._pending_ended_reason is None
+    assert executor2._pending_ended_detail is None
