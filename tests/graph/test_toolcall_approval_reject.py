@@ -5,7 +5,10 @@ approval timed out), the resume-path dispatcher raises
 :class:`_ToolApprovalRejected`. The graph executor:
 
 * stamps a failure NodeOutput onto ``context.nodes[node_id]`` with
-  ``ended_detail='tool_execution_failed'``
+  ``ended_detail=rej.ended_detail_code`` (01a08be8: previously the
+  generic ``'tool_execution_failed'`` regardless of cause; now
+  distinguishes a human rejection/timeout/cancellation from an actual
+  tool crash)
 * emits a terminal :class:`_GraphErrorEvent` so taps see the rejection
 * terminates the graph ``failed``
 """
@@ -51,7 +54,7 @@ async def _drain_until_yield(
 
 
 @pytest.mark.asyncio
-async def test_resume_with_rejection_marks_tool_execution_failed() -> None:
+async def test_resume_with_rejection_marks_tool_approval_rejected() -> None:
     """Resume path's dispatcher raises rejection → graph terminates failed."""
     graph = Graph(
         id="g-reject",
@@ -119,10 +122,12 @@ async def test_resume_with_rejection_marks_tool_execution_failed() -> None:
     )
     resume_events = await _drain(executor2.resume_from_checkpoint(payload))
 
-    # Terminal error event surfaces tool_execution_failed for the rejected node.
+    # Terminal error event surfaces the rejection's own ended_detail_code
+    # (no `kind` passed to the constructor here, so it resolves to the
+    # generic rejected value, not a crash label).
     errs = [e for e in resume_events if isinstance(e, _GraphErrorEvent)]
     assert len(errs) == 1
-    assert errs[0].code == "tool_execution_failed"
+    assert errs[0].code == "tool_approval_rejected"
     assert errs[0].node_id == "t"
 
     # context.nodes['t'] carries the failure NodeOutput.
@@ -133,14 +138,14 @@ async def test_resume_with_rejection_marks_tool_execution_failed() -> None:
     from primer.model.graph import NodeOutput
 
     assert isinstance(node_out, NodeOutput)
-    assert node_out.ended_detail == "tool_execution_failed"
+    assert node_out.ended_detail == "tool_approval_rejected"
     assert "rejected" in (node_out.error or "")
 
     # Graph thread state ended as failed.
     loaded = await thread_storage.get(thread.id)
     assert loaded is not None
     assert loaded.ended_reason == "failed"
-    assert loaded.ended_detail == "tool_execution_failed"
+    assert loaded.ended_detail == "tool_approval_rejected"
 
 
 @pytest.mark.asyncio
@@ -156,9 +161,12 @@ async def test_resume_rejection_inside_fanout_collect_does_not_terminate() -> No
     the synthetic rejection surfaces identically.
     """
     # We exercise the simpler claim: a rejection raised by the resume
-    # dispatcher surfaces NodeOutput.ended_detail='tool_execution_failed'
+    # dispatcher surfaces NodeOutput.ended_detail=rej.ended_detail_code
     # — the same shape Phase 5's collect path expects from any
-    # ended_detail-bearing node failure.
+    # ended_detail-bearing node failure. This constructor doesn't pass
+    # `kind`, so it resolves to the generic rejected value even though
+    # the reason string below says "timed out" — kind classification
+    # happens upstream of this exception's construction.
     from primer.model.graph import NodeOutput
 
     graph = Graph(
@@ -222,5 +230,5 @@ async def test_resume_rejection_inside_fanout_collect_does_not_terminate() -> No
     assert executor2._context is not None
     node_out = executor2._context.nodes.get("t")
     assert isinstance(node_out, NodeOutput)
-    assert node_out.ended_detail == "tool_execution_failed"
+    assert node_out.ended_detail == "tool_approval_rejected"
     assert "timed out" in (node_out.error or "")
