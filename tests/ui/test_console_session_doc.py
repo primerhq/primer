@@ -118,9 +118,45 @@ def test_composer_never_locks_and_dictation_never_sends():
     # the R3 review's mic-unmount-cleanup fix added a prose comment that
     # also happens to say "onstop", which an unscoped search landed on
     # instead of the real handler.
-    m = re.search(r"rec\.onstop = function[\s\S]{0,700}", DOC)
+    m = re.search(r"rec\.onstop = function[\s\S]{0,1100}", DOC)
     assert m and "setVal" in m.group(0) and "send()" not in m.group(0), (
         "dictation lands as editable text, never auto-sends"
+    )
+
+
+def test_dictation_upload_checks_response_status_and_surfaces_the_real_error():
+    """UI/API-response sweep (2026-09-10): the transcription upload used a
+    bare `fetch(...).then(r => r.json())` with no `r.ok` check, so a non-
+    2xx response carrying this app's own RFC7807 body (title/detail, no
+    `text` field) resolved into the SUCCESS branch, `out.text` was
+    undefined, and the handler did nothing at all - no toast, no banner,
+    no console line. The better-formed the server's error, the more
+    completely it disappeared.
+
+    apiFetch (ui/foundation/api.js) already does exactly what this call
+    site needs: it checks res.ok, throws ApiError on any non-2xx (so a
+    bad response can no longer land in the success .then), and ApiError
+    already carries the real title/detail pulled from the backend's own
+    RFC7807 envelope. Reusing it here closes both the silent-no-op AND
+    the generic-string-in-catch defects in one change - no bespoke status
+    check needed.
+    """
+    onstop = re.search(r"rec\.onstop = function[\s\S]{0,1150}", DOC).group(0)
+    assert "window.primerApi.apiFetch(\"POST\", \"/audio/transcriptions\", form)" in onstop, (
+        "must go through apiFetch, not a bare fetch() with no status check"
+    )
+    assert re.search(r'fetch\(\s*"/v1/audio/transcriptions"', onstop) is None, (
+        "the bare fetch() that skipped the res.ok check must be gone"
+    )
+    catch_block = onstop[onstop.index(".catch(function"):]
+    assert re.match(r"\.catch\(function \(\)", catch_block) is None, (
+        "the catch handler must read its error argument, not discard it "
+        "with a no-parameter function"
+    )
+    assert "err.detail || err.title || err.message" in catch_block
+    assert '"Transcription failed"' in catch_block, (
+        "still falls back to a labelled generic string when the error "
+        "carries no detail/title/message of its own"
     )
 
 

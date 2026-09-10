@@ -1497,8 +1497,10 @@ function NV_Composer(props) {
         var blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
         var form = new FormData();
         form.append("file", blob, "dictation.webm");
-        fetch("/v1/audio/transcriptions", { method: "POST", body: form })
-          .then(function (r) { return r.json(); })
+        // apiFetch (not a bare fetch) so a non-2xx response is thrown as
+        // an ApiError instead of landing in this .then as JSON with no
+        // `.text` field - silently doing nothing was the actual bug.
+        window.primerApi.apiFetch("POST", "/audio/transcriptions", form)
           .then(function (out) {
             // Dictation ALWAYS lands as editable text; never auto-sends.
             if (out && out.text) {
@@ -1507,7 +1509,10 @@ function NV_Composer(props) {
               });
             }
           })
-          .catch(function () { con.toast("Transcription failed"); });
+          .catch(function (err) {
+            var msg = (err && (err.detail || err.title || err.message)) || "Transcription failed";
+            con.toast("Transcription failed: " + msg);
+          });
       };
       rec.start();
       recRef.current = rec;
