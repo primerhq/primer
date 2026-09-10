@@ -9,8 +9,9 @@ yielding tool, the park is two-phase:
   resume drain must NOT swallow this second :class:`YieldToWorker` as a
   node failure - it must RE-PARK on the new event key.
 
-A REJECT still short-circuits to ``tool_execution_failed`` (the tool
-never runs), which :mod:`tests.graph.test_toolcall_approval_reject`
+A REJECT still short-circuits to a failure (the tool never runs, and
+``ended_detail`` resolves via ``rej.ended_detail_code`` rather than a
+generic crash label), which :mod:`tests.graph.test_toolcall_approval_reject`
 already covers; we re-assert it here for the yielding-tool shape.
 """
 
@@ -162,7 +163,7 @@ async def test_approved_yielding_toolcall_reparks_on_real_event() -> None:
 
 @pytest.mark.asyncio
 async def test_rejected_yielding_toolcall_short_circuits_to_failure() -> None:
-    """Reject the approval on a yielding tool -> tool_execution_failed; the
+    """Reject the approval on a yielding tool -> tool_approval_rejected; the
     real tool never runs."""
     graph = _build_graph()
 
@@ -212,7 +213,7 @@ async def test_rejected_yielding_toolcall_short_circuits_to_failure() -> None:
 
     errs = [e for e in resume_events if isinstance(e, _GraphErrorEvent)]
     assert len(errs) == 1
-    assert errs[0].code == "tool_execution_failed"
+    assert errs[0].code == "tool_approval_rejected"
     node_out = executor2._context.nodes.get("t") if executor2._context else None
     assert isinstance(node_out, NodeOutput)
-    assert node_out.ended_detail == "tool_execution_failed"
+    assert node_out.ended_detail == "tool_approval_rejected"

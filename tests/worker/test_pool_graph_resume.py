@@ -460,7 +460,7 @@ async def test_resume_graph_from_checkpoint_taps_drain_into_durable_records() ->
 
 
 # ===========================================================================
-# Adapter: rejected path stamps tool_execution_failed
+# Adapter: rejected/timeout path stamps the specific ended_detail_code
 # ===========================================================================
 
 
@@ -526,15 +526,18 @@ async def test_resume_graph_from_checkpoint_rejected_terminates_failed() -> None
     )
     assert decision == "rejected"
 
+    # classify_approval_payload resolves an explicit "rejected" decision
+    # to kind="rejected", whose ended_detail_code is the generic
+    # tool_approval_rejected (not the "timeout"/"cancelled" specifics).
     errs = [e for e in captured if isinstance(e, _GraphErrorEvent)]
     assert len(errs) == 1
-    assert errs[0].code == "tool_execution_failed"
+    assert errs[0].code == "tool_approval_rejected"
     assert errs[0].node_id == "t"
 
     loaded = await thread_storage.get(thread.id)
     assert loaded is not None
     assert loaded.ended_reason == "failed"
-    assert loaded.ended_detail == "tool_execution_failed"
+    assert loaded.ended_detail == "tool_approval_rejected"
 
 
 @pytest.mark.asyncio
@@ -586,7 +589,9 @@ async def test_resume_graph_from_checkpoint_timeout_terminates_failed() -> None:
     )
     assert decision == "rejected"
 
+    # classify_approval_payload resolves YieldTimeout to kind="timeout",
+    # whose ended_detail_code is the timeout-specific value.
     loaded = await thread_storage.get(thread.id)
     assert loaded is not None
     assert loaded.ended_reason == "failed"
-    assert loaded.ended_detail == "tool_execution_failed"
+    assert loaded.ended_detail == "tool_approval_timeout"
