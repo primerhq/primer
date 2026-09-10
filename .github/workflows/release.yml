@@ -92,9 +92,25 @@ jobs:
       - name: Smoke - boot the packaged app
         run: |
           uv run primer api --config tests/.e2e/config.yaml > tests/.e2e/logs/server.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf http://localhost:8765/v1/health && break; sleep 1; done
-          if ! curl -sf http://localhost:8765/v1/health; then
+          body=""
+          for i in $(seq 1 60); do
+            body="$(curl -sf http://localhost:8765/v1/health)" && break
+            sleep 1
+          done
+          if [ -z "$body" ]; then
             echo "server did not become healthy; last 80 log lines:" >&2
+            tail -n 80 tests/.e2e/logs/server.log >&2 || true
+            exit 1
+          fi
+          # curl -f only checks the HTTP status. /v1/health's status field
+          # is a fixed Literal["ok"] and the route always returns 200 -
+          # even with a dead (alive=false) or degraded (in-memory scheduler
+          # under a multi-process runtime_mode) scheduler - so the status
+          # code alone certifies nothing about whether it is safe to route
+          # traffic here. Assert on the body instead.
+          if ! echo "$body" | jq -e '.scheduler.alive == true and .scheduler.degraded == false' > /dev/null; then
+            echo "server responded but its scheduler is not healthy (alive=false or degraded=true):" >&2
+            echo "$body" >&2
             tail -n 80 tests/.e2e/logs/server.log >&2 || true
             exit 1
           fi
