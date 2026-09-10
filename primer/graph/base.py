@@ -889,6 +889,19 @@ class _BaseGraphExecutor(
                     # execution_failed" would be an actively wrong label
                     # for it (nothing about a tool ran), and ended_detail_
                     # code always resolves to something usable, never None.
+                    #
+                    # 01a08be8: deliberately no _ToolApprovalRejected branch
+                    # here - it cannot reach this loop. The only two raise
+                    # sites (invoke_graph.py, worker/graph_resume.py) both
+                    # gate on `agent_tool_result is None` before monkey-
+                    # patching _dispatch_toolcall_with_bypass, which is
+                    # called ONLY by the tc_pending loop above. An agent-node
+                    # yield's rejection is instead fed in as a normal
+                    # tool-result Message via `agent_tool_result` (see the
+                    # `async for _ev in self._resume_agent_node(...)` call
+                    # above) - _resume_agent_node never calls
+                    # _dispatch_toolcall_with_bypass, so it has no path to
+                    # raise this exception.
                     detail = (
                         exc.ended_detail_code
                         if isinstance(exc, TurnStreamFailure)
@@ -1030,6 +1043,16 @@ class _BaseGraphExecutor(
                     # TurnStreamFailure-aware resolution above — a
                     # TurnStreamFailure means the LLM stream itself is why
                     # this resumed tool_wait node failed, not a tool.
+                    #
+                    # Also deliberately no _ToolApprovalRejected branch,
+                    # same reason as ay_pending above: this loop resumes via
+                    # _resume_agent_node (fed by resolved_tool_wait), which
+                    # never calls _dispatch_toolcall_with_bypass — the only
+                    # method the two _rejecting_dispatch monkeypatches
+                    # (invoke_graph.py, worker/graph_resume.py) ever
+                    # replace, and both gate that patch on
+                    # `agent_tool_result is None`, which does not apply to
+                    # a tool_wait batch's resolution path either.
                     detail = (
                         exc.ended_detail_code
                         if isinstance(exc, TurnStreamFailure)
