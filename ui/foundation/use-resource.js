@@ -41,6 +41,34 @@
     };
   }
 
+  // Collapse a useResource snapshot into the three states an operator-
+  // facing consumer actually needs to distinguish (2026-09-10 audit: 0 of
+  // 192 call sites read `degraded`, so every one of them shows its loading
+  // affordance forever on sustained failure - this is the shared fix).
+  //
+  //   "ready"   - data has arrived at least once. Render it. Stale-while-
+  //               error means this stays "ready" even while a later poll
+  //               is failing in the background (raw `error`/`degraded` on
+  //               the snapshot are still there for a consumer that wants
+  //               to layer a subtler "may be stale" indicator on top).
+  //   "stuck"   - no data yet AND `degraded` (>= MAX_ERRORS consecutive
+  //               failures, backed off, still polling). This is the state
+  //               a bare `data == null` check cannot tell apart from
+  //               "loading" - and the one that never resolves on its own
+  //               within human-observable time, so showing the loading
+  //               affordance for it is a permanent lie.
+  //   "loading" - no data yet, not (yet) degraded. Genuinely transient:
+  //               either the first fetch is in flight, or it has failed
+  //               fewer than MAX_ERRORS times and is still retrying fast.
+  //
+  // Takes any object with this shape - the hook's own snapshot, or a
+  // hand-built one in a test - not just a live useResource() return value.
+  function resourceState(snap) {
+    if (snap && snap.data != null) return "ready";
+    if (snap && snap.degraded) return "stuck";
+    return "loading";
+  }
+
   // Reference + structural equality. Used to skip re-renders when a
   // poll returns identical data. The serialise-then-compare path is
   // good-enough for the JSON shapes the API returns; we deliberately
@@ -179,7 +207,6 @@
     const effectiveKey = composeKey(cacheKey, deps);
 
     const [snap, setSnap] = useState(() => {
-      if (!effectiveKey) return { data: undefined, error: null, loading: false, degraded: false };
       const entry = cache.get(effectiveKey);
       return entry
         ? snapshotOf(entry)
@@ -194,16 +221,6 @@
     ignoreIdleRef.current = ignoreIdle;
 
     useEffect(() => {
-      // A falsy cacheKey (the `cond ? key : null` pattern every caller
-      // uses to gate an optional resource) means "disabled" -- fetching
-      // anyway would poll a bogus URL built from the caller's own
-      // "not ready yet" value (e.g. graph-builder.jsx's runStates firing
-      // GB_api.nodeStates with an undefined runId, landing a 404 on
-      // .../runs/undefined/node_states), AND it registers a `null`-keyed
-      // cache entry that a LATER invalidation's findKeys (called from
-      // useMutation's `invalidates` handling) would crash on:
-      // `null.startsWith(...)` when it iterates cache.keys(). U0107.
-      if (!effectiveKey) return;
       ensureVisibility();
       const entry = getOrCreate(effectiveKey);
       // Latest-wins: every render refreshes the entry's behaviour hooks
@@ -333,6 +350,7 @@
 
   const ns = (window.primerApi = window.primerApi || {});
   ns.useResource = useResource;
+  ns.resourceState = resourceState;
   ns._resource = { findKeys, peekData, replaceData, refetchKey };
   ns._refetchAll = refetchAll;
 })();

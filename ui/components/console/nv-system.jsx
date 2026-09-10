@@ -90,31 +90,51 @@ function NV_HealthCards() {
   var schedOk = sched.alive === true && !sched.degraded;
   var attnTotal = attention.data && attention.data.total != null
     ? attention.data.total : null;
+  // Three-state read on each card's OWN backing resource (2026-09-10):
+  // "ready" (data has arrived - render it, even if a later poll is
+  // currently failing in the background), "stuck" (no data AND
+  // resourceState's debounced `degraded` signal - genuinely not
+  // resolving, not a blip), "loading" (no data yet, not degraded - the
+  // honest transient case). scheduler + worker pool share `health`, so
+  // both go "stuck" together when the SAME fetch is the one failing.
+  var healthState = window.primerApi.resourceState(health);
+  var sessionsState = window.primerApi.resourceState(activeSessions);
+  var attentionState = window.primerApi.resourceState(attention);
   var cards = [
     {
       k: "scheduler",
-      v: sched.alive == null ? "…"
+      v: healthState === "stuck" ? "unreachable"
+        : healthState === "loading" ? "…"
         : (!sched.alive ? "down" : (sched.degraded ? "degraded" : "alive")),
-      sub: sched.degraded ? (sched.degraded_reason || "degraded")
+      sub: healthState === "stuck" ? "health check failing"
+        : sched.degraded ? (sched.degraded_reason || "degraded")
         : (sched.alive ? "healthy" : "no scheduler attached"),
-      tone: schedOk ? "var(--green)" : (sched.alive ? "var(--amber)" : "var(--red)"),
+      tone: healthState === "stuck" ? "var(--red)"
+        : (schedOk ? "var(--green)" : (sched.alive ? "var(--amber)" : "var(--red)")),
     },
     {
-      k: "worker pool", v: String(wp.in_flight == null ? "n/a" : wp.in_flight),
-      sub: "of " + (wp.capacity == null ? "n/a" : wp.capacity) + " capacity",
-      tone: "var(--blue)",
+      k: "worker pool",
+      v: healthState === "stuck" ? "unreachable"
+        : String(wp.in_flight == null ? "n/a" : wp.in_flight),
+      sub: healthState === "stuck" ? "health check failing"
+        : "of " + (wp.capacity == null ? "n/a" : wp.capacity) + " capacity",
+      tone: healthState === "stuck" ? "var(--red)" : "var(--blue)",
     },
     {
       k: "sessions active",
-      v: String(activeSessions.data && activeSessions.data.total != null
-        ? activeSessions.data.total : "…"),
-      sub: "running now",
-      tone: "var(--violet)",
+      v: sessionsState === "stuck" ? "unreachable"
+        : String(activeSessions.data && activeSessions.data.total != null
+          ? activeSessions.data.total : "…"),
+      sub: sessionsState === "stuck" ? "list failing" : "running now",
+      tone: sessionsState === "stuck" ? "var(--red)" : "var(--violet)",
     },
     {
-      k: "attention", v: String(attnTotal == null ? "…" : attnTotal),
-      sub: "needs a human",
-      tone: attnTotal ? "var(--attention)" : "var(--text-4)",
+      k: "attention",
+      v: attentionState === "stuck" ? "unreachable"
+        : String(attnTotal == null ? "…" : attnTotal),
+      sub: attentionState === "stuck" ? "aggregate failing" : "needs a human",
+      tone: attentionState === "stuck" ? "var(--red)"
+        : (attnTotal ? "var(--attention)" : "var(--text-4)"),
     },
   ];
   return (
@@ -161,6 +181,7 @@ function NV_WorkerFleet() {
     turnsByWorker[wid] = (turnsByWorker[wid] || 0) + (lane.tasks || 0);
   });
   var rows = (workers.data && workers.data.items) || [];
+  var workersState = window.primerApi.resourceState(workers);
   function drain(id) {
     apiFetch("POST", "/workers/" + encodeURIComponent(id) + "/drain").then(
       function () { con.toast("Draining " + id); workers.refetch(); },
@@ -217,7 +238,13 @@ function NV_WorkerFleet() {
             </div>
           );
         })}
-        {!rows.length ? (
+        {!rows.length && workersState === "stuck" ? (
+          <div className="nv-bind-empty" style={{ color: "var(--red)" }}>
+            Couldn't load workers — the list keeps failing (retrying).
+          </div>
+        ) : !rows.length && workersState === "loading" ? (
+          <div className="nv-bind-empty">Loading…</div>
+        ) : !rows.length ? (
           <div className="nv-bind-empty">No workers registered.</div>
         ) : null}
       </div>
@@ -256,6 +283,7 @@ function NV_AttentionEverywhere() {
     { pollMs: 10000, deps: [wids.join(",")] }
   );
   var items = (pending.data && pending.data.items) || [];
+  var pendingState = window.primerApi.resourceState(pending);
   function wsName(row) {
     if (row.workspace_name) return row.workspace_name;
     var ws = (con.workspaces || []).find(function (w) {
@@ -279,7 +307,13 @@ function NV_AttentionEverywhere() {
       <div className="nv-sys-subtitle nv-sys-attn-title">
         Needs a human — every workspace
       </div>
-      {!items.length ? (
+      {pendingState === "stuck" ? (
+        <div className="nv-bind-empty" style={{ color: "var(--red)" }}>
+          Couldn't load — the aggregate keeps failing (retrying).
+        </div>
+      ) : !items.length && pendingState === "loading" ? (
+        <div className="nv-bind-empty">Loading…</div>
+      ) : !items.length ? (
         <div className="nv-bind-empty">Nothing is waiting on a person.</div>
       ) : (
         <div className="nv-attn-list">

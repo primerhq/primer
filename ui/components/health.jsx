@@ -1,13 +1,18 @@
 /* global React, Icon, Btn, Sparkline */
 
 function HealthPage({ sessions }) {
-  const { useResource, useViewport, apiFetch } = window.primerApi;
+  const { useResource, useViewport, apiFetch, resourceState } = window.primerApi;
   const { isMobile } = useViewport();
   const health = useResource(
     "health:root",
     (signal) => apiFetch("GET", "/health", null, { signal }),
     { pollMs: 5000 }
   );
+  // "stuck" (debounced - MAX_ERRORS consecutive failures) rather than raw
+  // `health.error` (flips on the FIRST failure) for the top status line:
+  // a single transient blip the poller's own backoff would recover from
+  // in seconds used to flash "Health probe failed" here.
+  const healthState = resourceState(health);
 
   const data = health.data || {};
   const wp = data.worker_pool || {};
@@ -67,7 +72,7 @@ function HealthPage({ sessions }) {
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em" }}>
-              {ok ? "All systems operational" : (health.data ? "Degraded" : (health.error ? "Health probe failed" : "Reading /v1/health…"))}
+              {ok ? "All systems operational" : (health.data ? "Degraded" : (healthState === "stuck" ? "Health probe failing" : "Reading /v1/health…"))}
             </div>
             <div className="muted text-sm" style={{ marginTop: 2 }}>
               <span className="mono">GET /v1/health</span>
