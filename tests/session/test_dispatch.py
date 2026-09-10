@@ -859,6 +859,74 @@ async def test_clean_completion_transitions_to_ended_completed(
 
 
 @pytest.mark.asyncio
+async def test_clean_completion_storage_failure_propagates_not_swallowed(
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """01a08bf0: before this fix, _transition_session_status swallowed a
+    session_storage.update() failure with a bare except+log and returned
+    normally, so run_one_session_turn still reported
+    ReleaseOutcome(success=True, ...) and _publish_terminal still announced
+    the caller-supplied status as settled fact -- even though the row never
+    actually changed. Now the write's exception must propagate: the row
+    stays at its pre-turn status (not silently ENDED), and the caller-side
+    safety net (proven in tests/worker/test_pool.py's
+    test_run_engine_session_survives_a_raised_terminal_write_failure) is
+    what turns this into an honest success=False release instead of a
+    stranded lease."""
+    session = await _seed_session(fake_storage_provider, autonomous=True)
+    fake_executor = FakeExecutor([
+        TextDelta(text="4", index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    orig_update = storage.update
+
+    async def _failing_update(entity, *, conn=None):
+        if entity.status == SessionStatus.ENDED:
+            raise RuntimeError("simulated storage failure")
+        return await orig_update(entity, conn=conn)
+
+    storage.update = _failing_update
+
+    published: list[tuple[str, dict]] = []
+    orig_publish = fake_event_bus.publish
+
+    async def _capture_publish(topic, payload):
+        published.append((topic, payload))
+        return await orig_publish(topic, payload)
+
+    fake_event_bus.publish = _capture_publish
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(session.id)
+    with pytest.raises(RuntimeError, match="simulated storage failure"):
+        await run_one_session_turn(lease, deps)
+
+    # The row must still show its pre-failure state -- never silently ENDED.
+    row = await storage.get(session.id)
+    assert row.status == SessionStatus.RUNNING
+    assert row.ended_reason is None
+    # And no terminal event went out for a status we never actually
+    # persisted -- publishing an unpersisted reason is the actual defect
+    # this fix closes (01a08bf0 Q2).
+    terminal_events = [p for p in published if p[0] == f"session:{session.id}:terminal"]
+    assert terminal_events == [], (
+        "must not publish a terminal status the write never persisted"
+    )
+
+
+@pytest.mark.asyncio
 async def test_clean_completion_ends_for_interactive_session(
     fake_workspace_io: FakeWorkspaceIO,
     fake_event_bus: InMemoryEventBus,

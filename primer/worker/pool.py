@@ -828,6 +828,20 @@ class WorkerPool:
             })
             await storage.update(ended)
         else:
+            # 01a08bf0: "vanished because something else already ended it"
+            # and "vanished unexpectedly" are genuinely indistinguishable
+            # here -- fresh is None carries no reason. success=True is left
+            # as-is deliberately rather than hardened, because it is
+            # observably inert: SessionClaimAdapter.on_release does its OWN
+            # independent re-fetch of this row and returns immediately if
+            # that ALSO finds nothing (primer/claim/adapters/sessions.py
+            # :87-89), so a genuinely-gone row never reaches the
+            # outcome.success branch that would otherwise write a terminal
+            # error record or bump turn_no. This is a COINCIDENTAL property
+            # of on_release's re-check, not a designed guarantee -- see
+            # test_end_session_vanished_row_mislabel_is_inert_via_on_release_recheck
+            # in tests/worker/test_pool.py, which would need updating if
+            # on_release's re-check ever changes.
             logger.warning(
                 "end_session: row %s vanished before terminal write (reason=%r)",
                 session.id, reason,
@@ -850,6 +864,10 @@ class WorkerPool:
             paused = fresh.model_copy(update={"status": SessionStatus.PAUSED})
             await storage.update(paused)
         else:
+            # 01a08bf0: same reasoning as _end_session's vanished-row branch
+            # above -- success=True is left as-is; on_release's own re-fetch
+            # (primer/claim/adapters/sessions.py:87-89) makes this inert
+            # today, coincidentally rather than by design.
             logger.warning(
                 "pause_session: row %s vanished before pause write", session.id,
             )
