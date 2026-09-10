@@ -1,8 +1,26 @@
 """Knowledge Collections create-modal flow.
 
 Covers:
-* U0025 — New-collection modal creates row, success toast appears,
-  list refreshes with the new row visible.
+* U0025 — New-collection modal creates row, success toast appears, the
+  detail overlay for the new collection opens.
+
+01a08b77: this test used to bind `page.locator(".modal").first` before
+clicking Create, then wait for it to become hidden. Playwright locators
+are lazy - `.first` re-resolves at every poll, it is not pinned to the
+DOM node that existed when the variable was assigned. Creating a
+collection closes the create modal AND immediately opens the detail
+overlay, which renders through the SAME shared `Modal` component
+(ui/components/shared.jsx) with the SAME unconditional `className=
+"modal"`. So the locator was structurally incapable of distinguishing
+"the create modal closed" from "a different, legitimate modal is now
+open" - it just sees `.modal` continuously satisfied by two different,
+both-correct elements in quick succession. Confirmed via two
+independent CI failure screenshots (both showed the detail overlay
+correctly open with the right collection id, no create modal in sight,
+moments after the "still visible" timeout fired) - the create modal was
+never stuck; the test could never observe it closing. Scope any new
+`.modal` assertion in this file (or written against it) to the specific
+modal's own content (e.g. `has_text=`), not the bare class.
 """
 
 from __future__ import annotations
@@ -41,17 +59,21 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
     fill the ID + pick the seeded provider+model, submit.
 
     Priority 1 — mutation feedback for the collection-create flow.
-    Per knowledge.jsx:91-101 the modal's onCreate handler closes
-    the modal, fires a success toast ("Collection created"), and
-    refetches the collections list — there is no navigate-away
-    (this page uses inline row-selection, not a separate detail
-    route, so the new row should appear in the table after the
-    refetch lands).
+    Creating a collection closes the create modal, fires a success
+    toast ("Collection created"), and addresses straight into the new
+    collection's detail overlay (there is no "stay on the list" path -
+    the overlay leaves the list and shows the document browser).
 
     Assertions:
-    * modal closes,
+    * the CREATE modal specifically closes (01a08b77: scoped by its own
+      title text, not a bare `.modal` locator - the detail overlay this
+      flow opens next renders through the SAME shared Modal component
+      with the SAME `.modal` class, so an unscoped locator is
+      structurally unable to tell "the create modal closed" from "a
+      different, legitimate modal is now open"; see the module-level
+      comment above for the full mechanism),
     * "Collection created" toast visible,
-    * the new collection's row appears in the list table,
+    * the detail overlay opens showing the new collection's id,
     * collection landed in storage (defence).
     """
     provider_id = f"emb-u0025-{unique_suffix}"
@@ -79,9 +101,14 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
             state="visible", timeout=10_000,
         )
 
-        # Open the New collection modal.
+        # Open the New collection modal. Scoped by its own title text, not
+        # a bare `.modal` class - the detail overlay this flow opens next
+        # (right after submit) renders through the SAME shared Modal
+        # component with the SAME class (see the module docstring above),
+        # so an unscoped locator would resolve to whichever modal is
+        # currently in the DOM, not specifically this one.
         page.get_by_role("button", name="New collection").first.click()
-        modal = page.locator(".modal").first
+        modal = page.locator(".modal", has_text="New collection")
         modal.wait_for(state="visible", timeout=5_000)
 
         # Fill the ID input — first input. Description is required
@@ -99,7 +126,11 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
         # Submit.
         modal.get_by_role("button", name="Create").first.click()
 
-        # Modal closes.
+        # The CREATE modal specifically closes. Scoped by has_text=
+        # above, so this stays true even though a DIFFERENT modal (the
+        # detail overlay, asserted below) opens right after - it never
+        # contains "New collection" text, so it can't satisfy this
+        # locator and mask the create modal's own closing.
         modal.wait_for(state="hidden", timeout=10_000)
 
         # Success toast.
