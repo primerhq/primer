@@ -1,13 +1,19 @@
 """The surviving renderers live under shared/ (S1 P6 Task 32).
 
-Transcript, Composer, SchemaPanel and the coalescing helpers were never
-chat-specific; they were only ever stored there. Sessions are becoming
-the sole conversational surface, so they move out before P7 deletes the
-chat directory around them.
+Transcript and the coalescing helpers were never chat-specific; they
+were only ever stored there. Sessions are becoming the sole
+conversational surface, so they move out before P7 deletes the chat
+directory around them.
 
 THE WINDOW GLOBALS ARE THE CONTRACT. Only the paths moved, which is why
 this test pins paths: a later spec editing the old location would
 otherwise fail silently at bundle time rather than here.
+
+Composer and SchemaPanel were moved in the same batch but never found a
+new host after P7 deleted conversation.jsx/chats.jsx (git cc7acf76) -
+nv-session-doc.jsx's NV_Composer superseded them. Deleted along with
+their tests (chore/delete-orphaned-composer-shells) rather than pinned
+here; see that commit for the reachability evidence.
 """
 
 from pathlib import Path
@@ -15,8 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 SHARED = UI / "components" / "shared"
-MOVED = ("transcript.jsx", "composer.jsx", "schema-panel.jsx",
-         "use-transcript.js")
+MOVED = ("transcript.jsx", "use-transcript.js")
 
 
 def test_all_four_live_under_shared():
