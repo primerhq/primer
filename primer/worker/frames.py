@@ -538,7 +538,7 @@ async def apply_leaf(
             name=original_raw.get("name", "unknown"),
             arguments=original_raw.get("arguments") or {},
         )
-        decision, reason = classify_approval_payload(payload)
+        decision, reason, _kind = classify_approval_payload(payload)
         if decision == "approved":
             tool_manager = await services.build_subagent_toolmanager(
                 inner_frame.context

@@ -383,7 +383,7 @@ async def _publish_decision(
         from primer.model.tool_approval import ToolApprovalRecord
         from primer.worker.yield_runtime import classify_approval_payload
 
-        decision, reason = classify_approval_payload(payload)
+        decision, reason, _kind = classify_approval_payload(payload)
         # record_from_parked_blob reads a ``{"yielded": {"resume_metadata":
         # ...}}``-shaped blob; project the resolved gate into that shape
         # rather than passing the session's raw parked_state, which would

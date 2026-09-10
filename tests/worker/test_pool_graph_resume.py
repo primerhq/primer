@@ -105,31 +105,37 @@ async def _llm_resolver(agent):
 
 
 def test_decision_from_payload_approved_dict() -> None:
-    decision, reason = _decision_from_payload({"decision": "approved"})
+    decision, reason, kind = _decision_from_payload({"decision": "approved"})
     assert decision == "approved"
     assert reason is None
+    assert kind is None
 
 
 def test_decision_from_payload_approved_with_reason() -> None:
-    decision, reason = _decision_from_payload(
+    decision, reason, kind = _decision_from_payload(
         {"decision": "approved", "reason": "ok"}
     )
     assert decision == "approved"
     assert reason == "ok"
+    assert kind is None
 
 
 def test_decision_from_payload_rejected_dict() -> None:
-    decision, reason = _decision_from_payload(
+    # 01a08be8: kind distinguishes WHY decision=="rejected" - an explicit
+    # human "no" here, not a timeout or cancellation.
+    decision, reason, kind = _decision_from_payload(
         {"decision": "rejected", "reason": "no thanks"}
     )
     assert decision == "rejected"
     assert reason == "no thanks"
+    assert kind == "rejected"
 
 
 def test_decision_from_payload_yield_timeout() -> None:
-    decision, reason = _decision_from_payload(YieldTimeout(elapsed_seconds=3600))
+    decision, reason, kind = _decision_from_payload(YieldTimeout(elapsed_seconds=3600))
     assert decision == "rejected"
     assert reason == "timed-out"
+    assert kind == "timeout"
 
 
 def test_decision_from_payload_yield_cancelled() -> None:
@@ -138,21 +144,26 @@ def test_decision_from_payload_yield_cancelled() -> None:
         cancelled_at=datetime.now(timezone.utc),
         elapsed_seconds=12.0,
     )
-    decision, reason = _decision_from_payload(payload)
+    decision, reason, kind = _decision_from_payload(payload)
     assert decision == "rejected"
     assert reason == "changed-my-mind"
+    assert kind == "cancelled"
 
 
 def test_decision_from_payload_malformed() -> None:
-    decision, reason = _decision_from_payload({"foo": "bar"})
+    # 01a08be8: malformed payloads fail closed to kind="rejected" (the
+    # same bucket an explicit rejection produces), not a 4th kind.
+    decision, reason, kind = _decision_from_payload({"foo": "bar"})
     assert decision == "rejected"
     assert reason and "missing decision" in reason
+    assert kind == "rejected"
 
 
 def test_decision_from_payload_non_dict() -> None:
-    decision, reason = _decision_from_payload("not-a-dict")
+    decision, reason, kind = _decision_from_payload("not-a-dict")
     assert decision == "rejected"
     assert reason and "non-dict" in reason
+    assert kind == "rejected"
 
 
 # ===========================================================================

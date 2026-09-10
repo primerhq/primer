@@ -237,7 +237,7 @@ class ChannelInbox:
             from primer.worker.yield_runtime import classify_approval_payload
 
             gate = captured["gate"]
-            decision, reason = classify_approval_payload(
+            decision, reason, _kind = classify_approval_payload(
                 {"decision": env.decision, "reason": env.reason},
             )
             record = record_from_parked_blob(

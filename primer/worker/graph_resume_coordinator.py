@@ -92,7 +92,7 @@ async def write_approval_record_for_graph(
     )
     if gate is None:
         return
-    decision, reason = classify_approval_payload(payload)
+    decision, reason, _kind = classify_approval_payload(payload)
     blob = {
         "tool_call_id": tcid,
         "yielded": {"resume_metadata": gate.get("resume_metadata") or {}},

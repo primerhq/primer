@@ -131,7 +131,7 @@ async def resume_graph_from_checkpoint(
     from primer.graph.base import _ToolApprovalRejected, _PendingToolCall
     from primer.model.yield_ import ToolWaitPark, YieldToWorker
 
-    decision, reason = _decision_from_payload(payload)
+    decision, reason, kind = _decision_from_payload(payload)
 
     # A value-yielding tool_call node (e.g. ``system__ask_user``) does NOT
     # gate on an approve/reject decision: its node result IS the operator's
@@ -157,7 +157,7 @@ async def resume_graph_from_checkpoint(
         rejection_reason = reason or "rejected"
 
         async def _rejecting_dispatch(node, arguments):  # type: ignore[no-untyped-def]
-            raise _ToolApprovalRejected(rejection_reason)
+            raise _ToolApprovalRejected(rejection_reason, kind=kind)
 
         executor._dispatch_toolcall_with_bypass = _rejecting_dispatch  # type: ignore[assignment]
 
