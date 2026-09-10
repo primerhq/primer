@@ -136,6 +136,7 @@ async def test_created_session_is_invoked_and_claimable():
         workspace_id="ws-1",
         session_id="sess-1",
         instruction="hello",
+        human_intent=True,
         deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
@@ -153,6 +154,7 @@ async def test_running_session_is_steered_without_status_change():
         workspace_id="ws-1",
         session_id="sess-1",
         instruction="steer me",
+        human_intent=True,
         deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
@@ -173,6 +175,7 @@ async def test_extra_parts_forwarded_to_append_instruction():
         session_id="sess-1",
         instruction="look",
         extra_parts=[image],
+        human_intent=True,
         deps=deps,
     )
     assert slot.appended == ["look"]
@@ -190,6 +193,7 @@ async def test_extra_payload_merges_into_user_input_record():
         instruction="look",
         extra_parts=["unused-marker"],  # only extra_payload is asserted here
         extra_payload={"attachments": ["uploads/pic.png"]},
+        human_intent=True,
         deps=deps,
     )
     records = _decode_records(ws)
@@ -206,7 +210,8 @@ async def test_no_extra_parts_or_payload_is_unchanged():
     deps, slot, sched, eng = _deps(row)
     ws = deps.workspace_registry._ws
     await wake_session(
-        workspace_id="ws-1", session_id="sess-1", instruction="hello", deps=deps,
+        workspace_id="ws-1", session_id="sess-1", instruction="hello",
+        human_intent=True, deps=deps,
     )
     assert slot.appended_extra_parts == [None]
     records = _decode_records(ws)
@@ -219,15 +224,102 @@ async def test_paused_session_resumes_and_clears_pause():
     row = _row(SessionStatus.PAUSED)
     row.pause_requested = True
     deps, slot, sched, eng = _deps(row)
+    ws = deps.workspace_registry._ws
     out = await wake_session(
         workspace_id="ws-1",
         session_id="sess-1",
         instruction=None,
+        human_intent=True,
         deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
     assert out.pause_requested is False
     assert slot.appended == []  # no instruction supplied
+    assert sched.enqueued == ["sess-1"]
+    # 01a08c08: clearing a real pause must never be silent, even for the
+    # human-intent case where clearing is the right call.
+    records = _decode_records(ws)
+    superseded = [r for r in records if r["kind"] == "pause_superseded"]
+    assert len(superseded) == 1
+    assert superseded[0]["payload"]["action"] == "cleared"
+
+
+@pytest.mark.asyncio
+async def test_paused_session_non_human_wake_queues_and_holds_pause():
+    """01a08c08 ruling: a non-human wake (trigger fire, agent-to-agent
+    steer, a queued message's own replay) must NOT clear an operator's
+    pause. The instruction is queued as a PendingSessionMessage instead,
+    and the row is left completely untouched."""
+    row = _row(SessionStatus.PAUSED)
+    row.pause_requested = True
+    deps, slot, sched, eng = _deps(row)
+    ws = deps.workspace_registry._ws
+
+    queued: list[dict] = []
+
+    async def _fake_store_pending_steer(**kw):
+        from primer.model.workspace_session import PendingSessionMessage
+
+        queued.append(kw)
+        return PendingSessionMessage(
+            id="pending-1", session_id=kw["session"].id,
+            parts=[{"type": "text", "text": kw["text"]}],
+            enqueued_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
+        )
+
+    import primer.session.pending_messages as pm
+    import unittest.mock
+
+    with unittest.mock.patch.object(
+        pm, "store_pending_steer", _fake_store_pending_steer,
+    ):
+        out = await wake_session(
+            workspace_id="ws-1",
+            session_id="sess-1",
+            instruction="fire while paused",
+            human_intent=False,
+            deps=deps,
+        )
+
+    # The row is untouched: still paused, no claimable flip, no status
+    # advance, no scheduler/claim-engine pulse.
+    assert out.status == SessionStatus.PAUSED
+    assert out.pause_requested is True
+    assert out.turn_status != "claimable"
+    assert slot.appended == [], "must not append to the FIFO -- it's queued, not delivered"
+    assert sched.enqueued == []
+    assert eng.upserts == []
+
+    # The instruction was queued, not lost.
+    assert len(queued) == 1
+    assert queued[0]["text"] == "fire while paused"
+
+    # And it's observable: a PAUSE_SUPERSEDED record with the pending id.
+    records = _decode_records(ws)
+    superseded = [r for r in records if r["kind"] == "pause_superseded"]
+    assert len(superseded) == 1
+    assert superseded[0]["payload"]["action"] == "queued"
+    assert superseded[0]["payload"]["pending_id"] == "pending-1"
+
+
+@pytest.mark.asyncio
+async def test_non_human_wake_of_an_unpaused_session_is_unaffected():
+    """human_intent=False only changes behaviour when pause_requested is
+    actually set -- an automated wake of an ordinary RUNNING/CREATED
+    session must behave exactly as the human-intent path does."""
+    row = _row(SessionStatus.CREATED)
+    deps, slot, sched, eng = _deps(row)
+    out = await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="trigger fired",
+        human_intent=False,
+        deps=deps,
+    )
+    assert out.status == SessionStatus.RUNNING
+    assert out.turn_status == "claimable"
+    assert slot.appended == ["trigger fired"]
     assert sched.enqueued == ["sess-1"]
 
 
@@ -257,6 +349,7 @@ async def test_ended_restartable_session_reopens_and_runs():
         workspace_id="ws-1",
         session_id="sess-1",
         instruction="again",
+        human_intent=True,
         deps=deps,
     )
 
@@ -291,6 +384,7 @@ async def test_ended_non_restartable_raises_conflict():
             workspace_id="ws-1",
             session_id="sess-1",
             instruction="x",
+            human_intent=True,
             deps=deps,
         )
     assert slot.reopened is False
@@ -311,6 +405,7 @@ async def test_ended_workspace_lost_reopens_once_workspace_healed():
         workspace_id="ws-1",
         session_id="sess-1",
         instruction="x",
+        human_intent=True,
         deps=deps,
     )
     assert out.status == SessionStatus.RUNNING
@@ -326,5 +421,6 @@ async def test_missing_session_raises_not_found():
             workspace_id="ws-1",
             session_id="sess-1",
             instruction="x",
+            human_intent=True,
             deps=deps,
         )

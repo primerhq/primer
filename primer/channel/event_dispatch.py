@@ -159,6 +159,9 @@ class ChannelEventRouter:
                             fire_id=event.event_id,
                         ),
                         parallelism="queue",
+                        # 01a08c08: an ended-session reopen from an inbound
+                        # channel reply is still a person on the other end.
+                        human_intent=True,
                         storage_provider=self._sp,
                         scheduler=self._fire_deps.scheduler,
                         claim_engine=self._fire_deps.claim_engine,
@@ -207,6 +210,8 @@ class ChannelEventRouter:
                         fire_id=event.event_id,
                     ),
                     parallelism="queue",
+                    # 01a08c08: a thread-mapped reply is a human conversation.
+                    human_intent=True,
                     storage_provider=self._sp,
                     scheduler=self._fire_deps.scheduler,
                     claim_engine=self._fire_deps.claim_engine,

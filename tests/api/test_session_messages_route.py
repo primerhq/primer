@@ -303,6 +303,7 @@ async def test_wake_persists_one_user_input_retrievable_via_endpoint(
         workspace_id="ws-1",
         session_id="s-wake",
         instruction="do the thing",
+        human_intent=True,
         deps=SessionWakeDeps(
             storage_provider=fake_storage_provider,
             scheduler=_NoopScheduler(),

@@ -169,6 +169,8 @@ async def test_ended_gate_target_reopens_via_deliver_steer(monkeypatch):
     assert outcome.session_id == "s1"
     assert captured["session_id"] == "s1"
     assert captured["text"] == "yes"
+    # 01a08c08: a channel reply is a human on the other end.
+    assert captured["human_intent"] is True
     # The dead resume key must never be published onto - nothing that
     # matters is listening for an ENDED session's ask_user gate.
     assert bus.published == []

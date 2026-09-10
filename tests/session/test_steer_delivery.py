@@ -62,11 +62,30 @@ async def test_idle_session_is_woken(monkeypatch):
 
     monkeypatch.setattr(sd, "wake_session", _fake_wake)
     out = await deliver_steer(
-        session_id="s1", text="go", parallelism="queue", **_kw(sp)
+        session_id="s1", text="go", parallelism="queue", human_intent=True, **_kw(sp)
     )
     assert out.outcome == DELIVERED_WOKEN
     assert out.session_id == "s1"
     assert woken == ["go"]
+
+
+async def test_human_intent_is_forwarded_to_wake_session(monkeypatch):
+    """01a08c08: deliver_steer must forward its caller's human_intent
+    verbatim, not decide it -- the trigger subscription and the channel
+    reply pass different values through the SAME function on purpose."""
+    sp = _FakeStorageProvider()
+    await _seed(sp, _row())
+    forwarded = []
+
+    async def _fake_wake(**kw):
+        forwarded.append(kw["human_intent"])
+
+    monkeypatch.setattr(sd, "wake_session", _fake_wake)
+    await deliver_steer(
+        session_id="s1", text="go", parallelism="queue",
+        human_intent=False, **_kw(sp),
+    )
+    assert forwarded == [False]
 
 
 async def test_busy_session_queues_under_queue_parallelism(monkeypatch):
@@ -79,7 +98,7 @@ async def test_busy_session_queues_under_queue_parallelism(monkeypatch):
 
     monkeypatch.setattr(sd, "store_pending_steer", _fake_store)
     out = await deliver_steer(
-        session_id="s1", text="later", parallelism="queue", **_kw(sp)
+        session_id="s1", text="later", parallelism="queue", human_intent=True, **_kw(sp)
     )
     assert out.outcome == DELIVERED_QUEUED
     assert queued == ["later"]
@@ -95,7 +114,7 @@ async def test_busy_session_is_dropped_under_skip_parallelism(monkeypatch):
     monkeypatch.setattr(sd, "store_pending_steer", _must_not_run)
     monkeypatch.setattr(sd, "wake_session", _must_not_run)
     out = await deliver_steer(
-        session_id="s1", text="drop me", parallelism="skip", **_kw(sp)
+        session_id="s1", text="drop me", parallelism="skip", human_intent=True, **_kw(sp)
     )
     assert out.outcome == DELIVERED_SKIPPED_BUSY
 
@@ -103,7 +122,7 @@ async def test_busy_session_is_dropped_under_skip_parallelism(monkeypatch):
 async def test_missing_session_reports_missing():
     sp = _FakeStorageProvider()
     out = await deliver_steer(
-        session_id="nope", text="x", parallelism="queue", **_kw(sp)
+        session_id="nope", text="x", parallelism="queue", human_intent=True, **_kw(sp)
     )
     assert out.outcome == DELIVERED_MISSING
 
@@ -126,6 +145,6 @@ async def test_unusable_session_reports_missing(monkeypatch):
 
     monkeypatch.setattr(sd, "wake_session", _boom)
     out = await deliver_steer(
-        session_id="s1", text="x", parallelism="queue", **_kw(sp)
+        session_id="s1", text="x", parallelism="queue", human_intent=True, **_kw(sp)
     )
     assert out.outcome == DELIVERED_MISSING

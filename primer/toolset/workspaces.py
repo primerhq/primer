@@ -1431,6 +1431,10 @@ def build_workspaces_toolset(
                 workspace_id=args.workspace_id,
                 session_id=args.session_id,
                 instruction=args.instruction,
+                # 01a08c08: this is an agent's tool call steering ANOTHER
+                # session -- no human is behind it. Must not silently
+                # clear an operator's pause on the target session.
+                human_intent=False,
                 deps=deps,
             )
         except NotFoundError as exc:
@@ -1485,6 +1489,7 @@ def build_workspaces_toolset(
                 workspace_id=args.workspace_id,
                 session_id=args.session_id,
                 instruction=args.input,
+                human_intent=False,  # 01a08c08: an agent's tool call
                 reset_deps=SessionResetDeps(
                     storage_provider=storage_provider,
                     workspace_registry=workspace_registry,
