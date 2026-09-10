@@ -373,6 +373,20 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
     branch - a single ``respond`` input backs every ask_user park - so this
     now pins purely the server-error-renders-inline half of the old
     contract, which is the operator-facing invariant that survived.)
+
+    The mocked envelope below carries no ``extensions.errors`` - it's the
+    domain-PrimerError shape (see primer/api/errors.py's
+    _make_primer_error_handler), not FastAPI's own field-validation shape.
+    ui/foundation/api.js's ApiError constructor branches on that shape, not
+    on the 422 status alone: with no field list, it takes the domain-detail
+    branch and surfaces ``envelope.detail`` verbatim rather than the
+    generic "Some required fields are missing or invalid." fallback that
+    branch is reserved for. This test used to assert that generic fallback
+    text was correct here - it was pinning the bug that fix used to have,
+    not the intended behaviour. Do not revert the assertion below to the
+    generic text without first checking whether the mocked envelope has
+    grown an ``extensions.errors`` field; if it hasn't, the specific detail
+    is the right thing to render.
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
@@ -408,13 +422,17 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
         respond.fill("something")
         respond.press("Enter")
 
-        # Inline error text renders on the item; the friendly 422 summary the
-        # API client builds surfaces (ui/foundation/api.js
-        # ``_friendlyValidationDetail``). It is inline, not a toast.
+        # Inline error text renders on the item: the mocked envelope's own
+        # `detail` (no extensions.errors on this envelope, so ApiError
+        # surfaces the domain detail verbatim rather than the generic
+        # field-validation summary). Matching the stable prefix rather
+        # than the full string keeps this test from being brittle to an
+        # unrelated wording tweak on the mocked message's suffix. It is
+        # inline, not a toast.
         expect(card).to_contain_text(
-            "required fields are missing or invalid", timeout=5_000,
+            "response failed schema validation", timeout=5_000,
         )
-        assert page.locator(".toast").filter(has_text="required fields").count() == 0, (
+        assert page.locator(".toast").filter(has_text="response failed schema validation").count() == 0, (
             "422 should render inline on the decision card, not as a toast"
         )
         # The card stays put so the operator can retry.
