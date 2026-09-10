@@ -231,6 +231,46 @@ def test_saved_test_connect_result_renders_ok_or_error() -> None:
     assert 'data-testid="ssp-test-connect-saved-error"' in detail
 
 
+def test_delete_safety_claim_never_fires_on_an_unresolved_collections_check() -> None:
+    """UI/API-response sweep (2026-09-10): the delete-confirmation modal
+    rendered "No collections reference this provider. Deletion is safe."
+    and enabled the destructive button whenever `referencingCollections`
+    (derived from `collections.data?.items ?? []`) was empty - which is
+    indistinguishable from the /collections fetch still loading,
+    degraded, or having failed outright. An affirmative safety claim
+    produced by a check that may never have completed.
+
+    resourceState() (ui/foundation/use-resource.js, landed for the same
+    class of bug in nv-system.jsx/health.jsx) collapses that ambiguity
+    correctly: "ready" only once collections.data has genuinely arrived,
+    so an empty array only reads as a real zero once the fetch actually
+    resolved. Not a data-loss risk either way - the file's own comment
+    notes the backend independently enforces a 409 cascade-block - but
+    the UI must stop asserting "verified safe" for a check it never ran.
+    """
+    detail = _detail_src()
+    assert "resourceState(collections)" in detail, (
+        "the collections resource must be run through resourceState(), "
+        "not read as a bare data == null / array-length check"
+    )
+
+    # The delete button must be disabled whenever collectionsState isn't
+    # "ready" - not just when referencingCollections.length > 0.
+    btn_start = detail.index('kind="danger"\n                icon="trash"')
+    btn_disabled = detail[btn_start:detail.index("onClick=", btn_start)]
+    assert 'collectionsState !== "ready"' in btn_disabled
+
+    # The modal body must branch on collectionsState BEFORE it ever
+    # reaches the "no collections -> Deletion is safe" copy, so that
+    # copy can only render once the check has actually resolved.
+    modal_start = detail.index('title={`Delete ${sspId}?`}')
+    modal_body = detail[modal_start:detail.index("Deletion is safe", modal_start)]
+    assert 'collectionsState === "stuck"' in modal_body
+    assert 'collectionsState !== "ready"' in modal_body
+    assert 'data-testid="ssp-delete-collections-unknown"' in modal_body
+    assert 'data-testid="ssp-delete-collections-loading"' in modal_body
+
+
 def test_bundle_transpiles_with_semantic_search_p4() -> None:
     from primer.api._jsx_bundle import build_jsx_bundle
 

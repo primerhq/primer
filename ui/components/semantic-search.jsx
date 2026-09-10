@@ -747,6 +747,12 @@ function SSPDetail({ sspId, pushToast }) {
     (signal) => apiFetch("GET", "/collections?limit=200", null, { signal }),
     { deps: [sspId] }
   );
+  // "ready" means the fetch genuinely completed at least once, so an
+  // empty referencingCollections is a real zero - not "loading" or
+  // "stuck" (>= MAX_ERRORS failures) silently read as the same zero.
+  // The delete-confirmation modal's "Deletion is safe" claim below must
+  // never fire on a check that hasn't actually resolved.
+  const collectionsState = window.primerApi.resourceState(collections);
   const referencingCollections = React.useMemo(() => {
     const items = collections.data?.items ?? [];
     return items.filter((c) => c.search_provider_id === sspId);
@@ -929,7 +935,7 @@ function SSPDetail({ sspId, pushToast }) {
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={referencingCollections.length > 0 || del.loading}
+                disabled={collectionsState !== "ready" || referencingCollections.length > 0 || del.loading}
                 onClick={() => del.mutate().catch(() => { /* onError handled */ })}
               >
                 {del.loading ? "Deleting…" : "Delete provider"}
@@ -941,6 +947,16 @@ function SSPDetail({ sspId, pushToast }) {
             <>
               <strong style={{ color: "var(--red)" }}>409 Conflict</strong> — {deleteError}
             </>
+          ) : collectionsState === "stuck" ? (
+            <div data-testid="ssp-delete-collections-unknown">
+              Couldn't check whether any collections reference this provider — the check has
+              failed repeatedly. Deletion is disabled until this is confirmed.{" "}
+              <Btn size="sm" icon="refresh" onClick={collections.refetch}>Retry</Btn>
+            </div>
+          ) : collectionsState !== "ready" ? (
+            <div data-testid="ssp-delete-collections-loading" className="muted text-sm">
+              Checking for collections that reference this provider…
+            </div>
           ) : referencingCollections.length > 0 ? (
             <>
               <strong style={{ color: "var(--red)" }}>409 Conflict</strong> — this provider is referenced by{" "}
