@@ -1617,3 +1617,17 @@ def test_ask_answered_line_via_mini_racer():
     empty = ctx.call("NV_askAnsweredLine", None)
     assert empty["status"] == "unknown"
     assert "no answer" in empty["text"].lower()
+
+
+def test_the_compaction_boundary_sentinel_is_gone():
+    """Relocated from test_session_history_controls.py (deleted along
+    with ui/components/shared/session-history-controls.jsx - dead code,
+    orphaned when conversation.jsx/chats.jsx were removed in cc7acf76
+    with nothing ever re-hosting it - see that deletion's own commit
+    for the reachability evidence). This one assertion doesn't belong
+    to that file's subject at all: it's a regression guard on THIS
+    file, not on the thing being deleted, so it survives the move.
+
+    Real compaction_marker rows are in the transcript now, so the
+    client no longer guesses where the boundary is."""
+    assert "compactionBoundarySeq" not in DOC
