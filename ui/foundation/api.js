@@ -17,10 +17,9 @@
   }
 
   // Build the friendly 422 summary: "Missing or invalid: a, b (max 4)".
+  // Callers must guarantee a non-empty array (ApiError's constructor,
+  // the only caller, checks `fieldErrors.length > 0` before calling).
   function _friendlyValidationDetail(fieldErrors) {
-    if (!Array.isArray(fieldErrors) || fieldErrors.length === 0) {
-      return "Some required fields are missing or invalid.";
-    }
     const seen = new Set();
     const labels = [];
     for (const fe of fieldErrors) {
