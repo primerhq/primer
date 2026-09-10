@@ -33,6 +33,7 @@ first bootstrap. The pytest timeouts are sized accordingly.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import httpx
 import pytest
@@ -271,16 +272,34 @@ def _agent_body(entity_id: str, *, provider_id: str, description: str) -> dict:
     }
 
 
-async def _bootstrap_subsystem(
+@contextlib.asynccontextmanager
+async def bootstrapped_subsystem(
     client: httpx.AsyncClient,
     embedder_id: str,
     ssp_id: str,
-) -> None:
-    """DELETE any active config, PUT a fresh one, then bootstrap.
+):
+    """Activate the internal-collections subsystem for the `async with`
+    block's duration; guarantees deactivation on every exit - success,
+    an assertion failure inside the block, OR a `pytest.skip` raised by
+    `_wait_bootstrap` while reading back bootstrap's terminal status
+    (the common local exit: see that function's own docstring - no
+    `huggingface` extra installed means a real bootstrap attempt fails
+    and skips here on nearly every call in this environment).
 
-    Used by many tests. The DELETE is what makes re-configuration legal:
-    S2 freezes the vector-space fields while the subsystem is active, so
-    a PUT naming different providers 409s until it is deactivated.
+    Structural fix for a real bug (2026-09-10): the previous shape had
+    9 call sites doing
+        await _bootstrap_subsystem(...)
+        config_created = True
+    which left `config_created` False whenever the skip inside that
+    helper fired - the PUT below had already activated the subsystem
+    for real, but the flag meant to gate cleanup never got set, so the
+    calling test's own `finally:` silently skipped its DELETE. That
+    leaked, genuinely-active config then made every later test assuming
+    a clean start fail with 409 subsystem_active. A context manager
+    removes the flag entirely: the DELETE below is unconditional on any
+    exit from the `try:`, which starts immediately after the PUT
+    succeeds - there is no longer a window where "the subsystem is
+    active" and "nothing will clean it up" can coexist.
     """
     # Idempotent: 404 when nothing is configured yet, which is fine.
     await client.delete("/v1/internal_collections/config")
@@ -289,15 +308,92 @@ async def _bootstrap_subsystem(
         json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
     )
     assert put.status_code == 200, put.text
-    boot = await client.post(
-        "/v1/internal_collections/bootstrap",
-        timeout=_BOOTSTRAP_TIMEOUT,
+    # The subsystem is genuinely active from here on - cleanup is now
+    # unconditional on every exit path out of this try, including a
+    # skip raised before `yield` is ever reached.
+    try:
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=_BOOTSTRAP_TIMEOUT,
+        )
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
+            f"{boot.status_code}: {boot.text}"
+        )
+        row = await _wait_bootstrap(client)
+        yield row
+    finally:
+        await client.delete("/v1/internal_collections/config")
+
+
+# ============================================================================
+# Guard — bootstrapped_subsystem deactivates even if _wait_bootstrap skips
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_bootstrapped_subsystem_deactivates_even_when_wait_bootstrap_skips(
+    client: httpx.AsyncClient, unique_suffix: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard (2026-09-10) for the actual bug this file had:
+    9 call sites used to do
+        await _bootstrap_subsystem(...)
+        config_created = True
+    and a `pytest.skip` raised by `_wait_bootstrap` (routinely, on any
+    host missing the `huggingface` extra - see that function's own
+    docstring) unwound past the flag assignment, so the caller's
+    `finally:` never ran its cleanup DELETE even though the PUT moments
+    earlier had genuinely activated the subsystem. That leaked, real
+    config then made every subsequent test assuming a clean start fail
+    with 409 subsystem_active.
+
+    This bug is STRUCTURALLY INVISIBLE to the rest of this file's own
+    tests in CI: `.github/workflows/e2e.yml` runs `uv sync --all-extras`,
+    so bootstrap always succeeds there, `_wait_bootstrap` never skips,
+    and the leak never happens - CI would stay green forever even if the
+    flag-timing bug were reintroduced. This test forces the skip
+    directly (monkeypatching `_wait_bootstrap`, not relying on the
+    environment lacking an extra) so it exercises the failure path in
+    EVERY environment, extras or not, and fails if `bootstrapped_subsystem`
+    (or whatever replaces it) is ever changed to leave a window where the
+    subsystem is active but nothing is registered to deactivate it.
+    """
+    embedder_id = f"emb-guard-{unique_suffix}"
+    ssp_id = f"ssp-guard-{unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
     )
-    assert boot.status_code == 200, (
-        f"bootstrap should return 200 with its outcome; got "
-        f"{boot.status_code}: {boot.text}"
-    )
-    await _wait_bootstrap(client)
+    assert pr.status_code == 201, pr.text
+
+    async def _fake_wait_bootstrap(_client: httpx.AsyncClient) -> dict:
+        pytest.skip("simulated: forcing bootstrapped_subsystem's skip-mid-call exit path")
+
+    monkeypatch.setattr(f"{__name__}._wait_bootstrap", _fake_wait_bootstrap)
+
+    try:
+        with pytest.raises(pytest.skip.Exception):
+            async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+                pytest.fail(
+                    "unreachable: the faked _wait_bootstrap must skip before "
+                    "yield, so the async-with body must never run"
+                )
+
+        # The skip propagated out of the `async with` entirely - now prove
+        # cleanup still ran despite it: the config must be gone.
+        got = await client.get("/v1/internal_collections/config")
+        assert got.status_code == 404, (
+            "bootstrapped_subsystem must deactivate the subsystem on every "
+            f"exit, including a skip inside it; GET returned "
+            f"{got.status_code}: {got.text}"
+        )
+    finally:
+        # Idempotent: 404 if the assertion above already proved it gone.
+        await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 @pytest.mark.asyncio
@@ -323,51 +419,46 @@ async def test_t0062_search_top_k_caps_result_count(
     )
     assert pr.status_code == 201, pr.text
 
-    config_created = False
     llm_created = False
     created_agents: list[str] = []
     try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
+        async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+            llm = await seed_llm_provider(client, _llm_body(llm_id))
+            assert llm.status_code == 201, llm.text
+            llm_created = True
 
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
+            # Three agents sharing the same description marker so all three
+            # would qualify on lexical match alone.
+            for aid in agent_ids:
+                ag = await client.post(
+                    "/v1/agents",
+                    json=_agent_body(
+                        aid, provider_id=llm_id, description=shared_marker,
+                    ),
+                )
+                assert ag.status_code == 201, ag.text
+                created_agents.append(aid)
 
-        # Three agents sharing the same description marker so all three
-        # would qualify on lexical match alone.
-        for aid in agent_ids:
-            ag = await client.post(
-                "/v1/agents",
-                json=_agent_body(
-                    aid, provider_id=llm_id, description=shared_marker,
-                ),
+            # No wait for indexing: CDC no longer feeds this surface, so the
+            # three agents never reach it. The cap is what is under test and
+            # it holds whether the index has three matches or none.
+
+            # top_k=1 must cap the response, even though multiple match.
+            resp = await client.post(
+                "/v1/agents/search",
+                json={"query": shared_marker, "top_k": 1},
             )
-            assert ag.status_code == 201, ag.text
-            created_agents.append(aid)
-
-        # No wait for indexing: CDC no longer feeds this surface, so the
-        # three agents never reach it. The cap is what is under test and
-        # it holds whether the index has three matches or none.
-
-        # top_k=1 must cap the response, even though multiple match.
-        resp = await client.post(
-            "/v1/agents/search",
-            json={"query": shared_marker, "top_k": 1},
-        )
-        assert resp.status_code == 200, resp.text
-        hits = resp.json()["hits"]
-        assert len(hits) <= 1, (
-            f"top_k=1 was not honoured; got {len(hits)} hits: "
-            f"{[h['document_id'] for h in hits]!r}"
-        )
+            assert resp.status_code == 200, resp.text
+            hits = resp.json()["hits"]
+            assert len(hits) <= 1, (
+                f"top_k=1 was not honoured; got {len(hits)} hits: "
+                f"{[h['document_id'] for h in hits]!r}"
+            )
     finally:
         for aid in created_agents:
             await client.delete(f"/v1/agents/{aid}")
         if llm_created:
             await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
 
@@ -424,28 +515,23 @@ async def test_t0165_tools_search_returns_200_after_bootstrap(
     )
     assert pr.status_code == 201, pr.text
 
-    config_created = False
     try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        # /v1/tools/search must return 200 with a SearchResponse envelope.
-        # Built-in tool descriptions like "exec" or "list files" should
-        # at least produce some hits (or zero hits, but not 5xx) for a
-        # well-known generic query.
-        search = await client.post(
-            "/v1/tools/search",
-            json={"query": "execute shell command", "top_k": 5},
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        assert search.status_code == 200, search.text
-        body = search.json()
-        assert "hits" in body, f"missing 'hits' key: {body!r}"
-        # hits is a list (possibly empty if no built-in matched)
-        assert isinstance(body["hits"], list), body
+        async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+            # /v1/tools/search must return 200 with a SearchResponse envelope.
+            # Built-in tool descriptions like "exec" or "list files" should
+            # at least produce some hits (or zero hits, but not 5xx) for a
+            # well-known generic query.
+            search = await client.post(
+                "/v1/tools/search",
+                json={"query": "execute shell command", "top_k": 5},
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+            assert search.status_code == 200, search.text
+            body = search.json()
+            assert "hits" in body, f"missing 'hits' key: {body!r}"
+            # hits is a list (possibly empty if no built-in matched)
+            assert isinstance(body["hits"], list), body
     finally:
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
 
@@ -481,34 +567,29 @@ async def test_t0167_bootstrap_is_idempotent(
     )
     assert pr.status_code == 201, pr.text
 
-    config_created = False
     try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
+        async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+            # First call already happened in bootstrapped_subsystem. Second call:
+            boot2 = await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=_BOOTSTRAP_TIMEOUT,
+            )
+            assert boot2.status_code == 200, (
+                f"second bootstrap should be idempotent and return 200; got "
+                f"{boot2.status_code}: {boot2.text}"
+            )
+            if boot2.status_code == 200:
+                await _wait_bootstrap(client)
+            body = boot2.json()
+            assert isinstance(body, dict), body
 
-        # First call already happened in _bootstrap_subsystem. Second call:
-        boot2 = await client.post(
-            "/v1/internal_collections/bootstrap",
-            timeout=_BOOTSTRAP_TIMEOUT,
-        )
-        assert boot2.status_code == 200, (
-            f"second bootstrap should be idempotent and return 200; got "
-            f"{boot2.status_code}: {boot2.text}"
-        )
-        if boot2.status_code == 200:
-            await _wait_bootstrap(client)
-        body = boot2.json()
-        assert isinstance(body, dict), body
-
-        # Search route still works after the second bootstrap (no stale
-        # registry leak).
-        s = await client.post(
-            "/v1/agents/search", json={"query": "anything", "top_k": 3},
-        )
-        assert s.status_code == 200, s.text
+            # Search route still works after the second bootstrap (no stale
+            # registry leak).
+            s = await client.post(
+                "/v1/agents/search", json={"query": "anything", "top_k": 3},
+            )
+            assert s.status_code == 200, s.text
     finally:
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
 
@@ -609,44 +690,39 @@ async def test_t0169_put_config_reconfigure_embedder_works(
     )
     assert pr_b.status_code == 201, pr_b.text
 
-    config_created = False
     try:
-        await _bootstrap_subsystem(client, embedder_a, ssp_id)
-        config_created = True
+        async with bootstrapped_subsystem(client, embedder_a, ssp_id):
+            # After activation, changing embedding_provider_id is frozen --
+            # the API must return 409 with frozen_fields in the response.
+            put_b = await client.put(
+                "/v1/internal_collections/config",
+                json=_ic_config_body(embedder_id=embedder_b, ssp_id=ssp_id),
+            )
+            assert put_b.status_code == 409, (
+                f"reconfigure PUT after activation should return 409 "
+                f"(frozen fields); got {put_b.status_code}: {put_b.text}"
+            )
+            # The problem+json error contract renders an HTTPException dict detail
+            # as a string ``detail`` (the human message) with the machine keys
+            # (frozen_fields, error) carried verbatim in ``extensions``.
+            body_json = put_b.json()
+            extensions = body_json.get("extensions", {})
+            frozen = extensions.get("frozen_fields", [])
+            assert "embedding_provider_id" in frozen, (
+                f"expected 'embedding_provider_id' in extensions.frozen_fields; "
+                f"got: {body_json!r}"
+            )
 
-        # After activation, changing embedding_provider_id is frozen --
-        # the API must return 409 with frozen_fields in the response.
-        put_b = await client.put(
-            "/v1/internal_collections/config",
-            json=_ic_config_body(embedder_id=embedder_b, ssp_id=ssp_id),
-        )
-        assert put_b.status_code == 409, (
-            f"reconfigure PUT after activation should return 409 "
-            f"(frozen fields); got {put_b.status_code}: {put_b.text}"
-        )
-        # The problem+json error contract renders an HTTPException dict detail
-        # as a string ``detail`` (the human message) with the machine keys
-        # (frozen_fields, error) carried verbatim in ``extensions``.
-        body_json = put_b.json()
-        extensions = body_json.get("extensions", {})
-        frozen = extensions.get("frozen_fields", [])
-        assert "embedding_provider_id" in frozen, (
-            f"expected 'embedding_provider_id' in extensions.frozen_fields; "
-            f"got: {body_json!r}"
-        )
-
-        # Search route still responds cleanly on the ORIGINAL embedder
-        # (the failed PUT did not corrupt the subsystem state).
-        s = await client.post(
-            "/v1/agents/search", json={"query": "anything", "top_k": 3},
-        )
-        assert s.status_code == 200, (
-            f"search should still work after a rejected reconfigure "
-            f"PUT; got {s.status_code}: {s.text}"
-        )
+            # Search route still responds cleanly on the ORIGINAL embedder
+            # (the failed PUT did not corrupt the subsystem state).
+            s = await client.post(
+                "/v1/agents/search", json={"query": "anything", "top_k": 3},
+            )
+            assert s.status_code == 200, (
+                f"search should still work after a rejected reconfigure "
+                f"PUT; got {s.status_code}: {s.text}"
+            )
     finally:
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_a}")
         await client.delete(f"/v1/embedding_providers/{embedder_b}")
         await client.delete(f"/v1/ssp/{ssp_id}")
@@ -678,26 +754,21 @@ async def test_t0202_search_empty_query_clean_envelope(
     )
     assert pr.status_code == 201, pr.text
 
-    config_created = False
     try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        resp = await client.post(
-            "/v1/agents/search",
-            json={"query": "", "top_k": 5},
-        )
-        assert resp.status_code != 500, resp.text
-        if resp.status_code == 200:
-            assert isinstance(resp.json().get("hits"), list), resp.json()
-        else:
-            assert 400 <= resp.status_code < 500, resp.text
-            envelope = resp.json()
-            assert envelope["type"].startswith("/errors/"), envelope
-            assert envelope["type"] != "/errors/internal", envelope
+        async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+            resp = await client.post(
+                "/v1/agents/search",
+                json={"query": "", "top_k": 5},
+            )
+            assert resp.status_code != 500, resp.text
+            if resp.status_code == 200:
+                assert isinstance(resp.json().get("hits"), list), resp.json()
+            else:
+                assert 400 <= resp.status_code < 500, resp.text
+                envelope = resp.json()
+                assert envelope["type"].startswith("/errors/"), envelope
+                assert envelope["type"] != "/errors/internal", envelope
     finally:
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
 
@@ -1266,69 +1337,64 @@ async def test_t0289_concurrent_cdc_ingest_and_search_clean(
     )
     assert pr.status_code == 201, pr.text
 
-    config_created = False
     llm_created = False
     agents_created: list[str] = []
     try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
+        async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+            llm = await seed_llm_provider(client, _llm_body(llm_id))
+            assert llm.status_code == 201, llm.text
+            llm_created = True
 
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
+            async def _post(i: int) -> httpx.Response:
+                return await client.post(
+                    "/v1/agents",
+                    json=_agent_body(
+                        agent_ids[i], provider_id=llm_id,
+                        description=f"{common_marker}-{i}",
+                    ),
+                )
 
-        async def _post(i: int) -> httpx.Response:
-            return await client.post(
-                "/v1/agents",
-                json=_agent_body(
-                    agent_ids[i], provider_id=llm_id,
-                    description=f"{common_marker}-{i}",
-                ),
+            async def _search() -> httpx.Response:
+                return await client.post(
+                    "/v1/agents/search",
+                    json={"query": common_marker, "top_k": 10},
+                )
+
+            tasks: list = []
+            for i in range(5):
+                tasks.append(asyncio.create_task(_post(i)))
+            for _ in range(5):
+                tasks.append(asyncio.create_task(_search()))
+
+            results = await asyncio.gather(*tasks)
+            for i, r in enumerate(results):
+                envelope = r.json() if r.content else {}
+                assert envelope.get("type") != "/errors/internal", (
+                    f"task {i} returned /errors/internal: {r.text}"
+                )
+
+            for i in range(5):
+                if results[i].status_code == 201:
+                    agents_created.append(agent_ids[i])
+
+            assert len(agents_created) == 5, (
+                f"only {len(agents_created)}/5 agent POSTs succeeded: "
+                f"{agents_created!r}"
             )
 
-        async def _search() -> httpx.Response:
-            return await client.post(
+            # The subsystem still answers cleanly after the concurrent load,
+            # which is what the race is here to check.
+            s = await client.post(
                 "/v1/agents/search",
                 json={"query": common_marker, "top_k": 10},
             )
-
-        tasks: list = []
-        for i in range(5):
-            tasks.append(asyncio.create_task(_post(i)))
-        for _ in range(5):
-            tasks.append(asyncio.create_task(_search()))
-
-        results = await asyncio.gather(*tasks)
-        for i, r in enumerate(results):
-            envelope = r.json() if r.content else {}
-            assert envelope.get("type") != "/errors/internal", (
-                f"task {i} returned /errors/internal: {r.text}"
-            )
-
-        for i in range(5):
-            if results[i].status_code == 201:
-                agents_created.append(agent_ids[i])
-
-        assert len(agents_created) == 5, (
-            f"only {len(agents_created)}/5 agent POSTs succeeded: "
-            f"{agents_created!r}"
-        )
-
-        # The subsystem still answers cleanly after the concurrent load,
-        # which is what the race is here to check.
-        s = await client.post(
-            "/v1/agents/search",
-            json={"query": common_marker, "top_k": 10},
-        )
-        assert s.status_code == 200, s.text
-        assert isinstance(s.json()["hits"], list), s.text
+            assert s.status_code == 200, s.text
+            assert isinstance(s.json()["hits"], list), s.text
     finally:
         for aid in agents_created:
             await client.delete(f"/v1/agents/{aid}")
         if llm_created:
             await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
 
@@ -1370,50 +1436,45 @@ async def test_t0346_search_after_embedder_delete_clean_envelope(
     )
     assert pr.status_code == 201, pr.text
 
-    config_created = False
     coll_created = False
     embedder_deleted = False
     try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
+        async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+            coll = await client.post(
+                "/v1/collections",
+                json={
+                    "id": coll_id,
+                    "description": f"T0346-{unique_suffix}",
+                },
+            )
+            assert coll.status_code in (200, 201), coll.text
+            coll_created = True
 
-        coll = await client.post(
-            "/v1/collections",
-            json={
-                "id": coll_id,
-                "description": f"T0346-{unique_suffix}",
-            },
-        )
-        assert coll.status_code in (200, 201), coll.text
-        coll_created = True
+            # Wait briefly for indexing
+            await asyncio.sleep(1.0)
 
-        # Wait briefly for indexing
-        await asyncio.sleep(1.0)
+            # DELETE the embedder while subsystem references it
+            rm = await client.delete(f"/v1/embedding_providers/{embedder_id}")
+            # The DELETE might fail if the subsystem holds a reference;
+            # accept either 204 or clean 4xx
+            assert rm.status_code < 500, rm.text
+            if rm.status_code == 204:
+                embedder_deleted = True
 
-        # DELETE the embedder while subsystem references it
-        rm = await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        # The DELETE might fail if the subsystem holds a reference;
-        # accept either 204 or clean 4xx
-        assert rm.status_code < 500, rm.text
-        if rm.status_code == 204:
-            embedder_deleted = True
-
-        # Search must produce a clean envelope
-        s = await client.post(
-            "/v1/collections/search",
-            json={"query": "anything", "top_k": 3},
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        envelope = s.json() if s.content else {}
-        assert envelope.get("type") != "/errors/internal", (
-            f"search after embedder DELETE leaked /errors/internal: "
-            f"{s.text}"
-        )
+            # Search must produce a clean envelope
+            s = await client.post(
+                "/v1/collections/search",
+                json={"query": "anything", "top_k": 3},
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+            envelope = s.json() if s.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"search after embedder DELETE leaked /errors/internal: "
+                f"{s.text}"
+            )
     finally:
         if coll_created:
             await client.delete(f"/v1/collections/{coll_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
         if not embedder_deleted:
             await client.delete(f"/v1/embedding_providers/{embedder_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
@@ -1522,46 +1583,41 @@ async def test_t0303_bootstrap_concurrent_with_search_clean(
     )
     assert pr.status_code == 201, pr.text
 
-    config_created = False
     try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        async def _bootstrap() -> httpx.Response:
-            return await client.post(
-                "/v1/internal_collections/bootstrap",
-                timeout=_BOOTSTRAP_TIMEOUT,
-            )
-
-        async def _search() -> httpx.Response:
-            return await client.post(
-                "/v1/agents/search",
-                json={"query": "anything", "top_k": 3},
-            )
-
-        tasks = [asyncio.create_task(_bootstrap())]
-        for _ in range(5):
-            tasks.append(asyncio.create_task(_search()))
-        results = await asyncio.gather(*tasks)
-        for i, r in enumerate(results):
-            envelope = r.json() if r.content else {}
-            assert envelope.get("type") != "/errors/internal", (
-                f"task {i} returned /errors/internal: {r.text}"
-            )
-            # Bootstrap result is at index 0 — must be 200
-            # or 409 (already running from the first bootstrap)
-            if i == 0:
-                assert r.status_code == 200, (
-                    f"concurrent bootstrap unexpected status: {r.text}"
+        async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+            async def _bootstrap() -> httpx.Response:
+                return await client.post(
+                    "/v1/internal_collections/bootstrap",
+                    timeout=_BOOTSTRAP_TIMEOUT,
                 )
-            else:
-                # Search results -- 200 or 503 (subsystem-inactive)
-                assert r.status_code in (200, 503), (
-                    f"search task {i} unexpected status: {r.text}"
+
+            async def _search() -> httpx.Response:
+                return await client.post(
+                    "/v1/agents/search",
+                    json={"query": "anything", "top_k": 3},
                 )
+
+            tasks = [asyncio.create_task(_bootstrap())]
+            for _ in range(5):
+                tasks.append(asyncio.create_task(_search()))
+            results = await asyncio.gather(*tasks)
+            for i, r in enumerate(results):
+                envelope = r.json() if r.content else {}
+                assert envelope.get("type") != "/errors/internal", (
+                    f"task {i} returned /errors/internal: {r.text}"
+                )
+                # Bootstrap result is at index 0 — must be 200
+                # or 409 (already running from the first bootstrap)
+                if i == 0:
+                    assert r.status_code == 200, (
+                        f"concurrent bootstrap unexpected status: {r.text}"
+                    )
+                else:
+                    # Search results -- 200 or 503 (subsystem-inactive)
+                    assert r.status_code in (200, 503), (
+                        f"search task {i} unexpected status: {r.text}"
+                    )
     finally:
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
 
@@ -2913,54 +2969,52 @@ async def test_new_agent_is_searchable_through_the_system_collection(
     agent_created = False
     llm_created = False
     try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
+        async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+            llm = await seed_llm_provider(client, _llm_body(llm_id))
+            assert llm.status_code == 201, llm.text
+            llm_created = True
 
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                agent_id, provider_id=llm_id, description=distinctive,
-            ),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        # The page converges via the event-log dispatcher (bounded by
-        # its poll interval), not inline with the POST.
-        await _wait_for_system_page(
-            client, f"agents/{agent_id}", distinctive,
-        )
-
-        # And it is searchable, without bootstrapping a second time.
-        found = False
-        last: dict = {}
-        for _ in range(20):
-            search = await client.post(
-                f"/v1/collections/{_SYSTEM_COLLECTION_ID}/search",
-                json={"query": distinctive, "top_k": 5},
-                timeout=httpx.Timeout(60.0, connect=10.0),
+            ag = await client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    agent_id, provider_id=llm_id, description=distinctive,
+                ),
             )
-            assert search.status_code == 200, search.text
-            last = search.json()
-            if any(
-                f"agents/{agent_id}" == h.get("meta", {}).get("path")
-                for h in last["hits"]
-            ):
-                found = True
-                break
-            await asyncio.sleep(0.5)
-        assert found, (
-            f"agent {agent_id!r} was not searchable through the system "
-            f"collection; last response: {last!r}"
-        )
+            assert ag.status_code == 201, ag.text
+            agent_created = True
+
+            # The page converges via the event-log dispatcher (bounded by
+            # its poll interval), not inline with the POST.
+            await _wait_for_system_page(
+                client, f"agents/{agent_id}", distinctive,
+            )
+
+            # And it is searchable, without bootstrapping a second time.
+            found = False
+            last: dict = {}
+            for _ in range(20):
+                search = await client.post(
+                    f"/v1/collections/{_SYSTEM_COLLECTION_ID}/search",
+                    json={"query": distinctive, "top_k": 5},
+                    timeout=httpx.Timeout(60.0, connect=10.0),
+                )
+                assert search.status_code == 200, search.text
+                last = search.json()
+                if any(
+                    f"agents/{agent_id}" == h.get("meta", {}).get("path")
+                    for h in last["hits"]
+                ):
+                    found = True
+                    break
+                await asyncio.sleep(0.5)
+            assert found, (
+                f"agent {agent_id!r} was not searchable through the system "
+                f"collection; last response: {last!r}"
+            )
     finally:
         if agent_created:
             await client.delete(f"/v1/agents/{agent_id}")
         if llm_created:
             await client.delete(f"/v1/llm_providers/{llm_id}")
-        await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
