@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from primer.model.chat import Message
 from primer.model.graph import (
@@ -479,17 +479,53 @@ class _ToolApprovalRejected(Exception):
     """Raised on the resume path when the operator rejected the approval.
 
     Spec B §4.8 / Phase 6 Task 6.4 — the synthetic exception the resume
-    drain catches and translates into a node-level
-    ``ended_detail='tool_execution_failed'``. The worker's resume hook
-    (or a test stub for the storage-backed executor) raises this when
-    it sees a ``rejected`` / ``cancelled`` / ``timeout`` decision on the
-    parked-state event, instead of re-dispatching the original tool.
+    drain catches and translates into a node-level failure. The worker's
+    resume hook (or a test stub for the storage-backed executor) raises
+    this when it sees a ``rejected`` / ``cancelled`` / ``timeout``
+    decision on the parked-state event, instead of re-dispatching the
+    original tool.
+
+    01a08be8: a deliberate human "no", an approval timeout, and a
+    cancellation used to be indistinguishable once this exception was
+    raised - the catch site had only ``reason`` (freeform prose) to work
+    with, so every case stamped the same ``ended_detail=
+    "tool_execution_failed"`` a genuine tool crash would also produce.
+    ``kind`` carries the structured distinction through; ``reason``
+    keeps meaning exactly what it always did (the human-readable text
+    that survives into ``NodeOutput.error`` / ``_GraphErrorEvent.message``
+    via ``str(exc)``, untouched by this change).
     """
 
-    def __init__(self, reason: str | None = None, *, tool_call_id: str | None = None) -> None:
+    def __init__(
+        self,
+        reason: str | None = None,
+        *,
+        tool_call_id: str | None = None,
+        kind: Literal["rejected", "timeout", "cancelled"] | None = None,
+    ) -> None:
         super().__init__(reason or "tool approval rejected")
         self.reason = reason
         self.tool_call_id = tool_call_id
+        self.kind = kind
+
+    @property
+    def ended_detail_code(self) -> str:
+        """Structured terminal-state code for the catch site to consult.
+
+        Mirrors :attr:`primer.model.chat.TurnStreamFailure.ended_detail_code`
+        (same shape, same reason: a caught exception resolves its own
+        code via a property with a safe fallback, instead of the catch
+        site hardcoding one string for every case it might see).
+        ``kind=None`` — an explicit rejection, or a caller not yet
+        updated to pass ``kind`` — falls back to the same
+        ``"tool_approval_rejected"`` an explicit rejection produces, not
+        to the generic tool-crash code; a raiser that doesn't say why
+        is assumed to mean "no", the fail-closed reading, not "crashed".
+        """
+        return {
+            "timeout": "tool_approval_timeout",
+            "cancelled": "tool_approval_cancelled",
+        }.get(self.kind, "tool_approval_rejected")
 
 
 class _RoutingFailed(Exception):
