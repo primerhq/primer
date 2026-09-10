@@ -17,7 +17,6 @@ CHAT_DIR = UI / "components" / "chat"
 SHARED_DIR = UI / "components" / "shared"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
 TRANSCRIPT = SHARED_DIR / "transcript.jsx"
-COMPOSER = SHARED_DIR / "composer.jsx"
 
 
 def _src(path: Path) -> str:

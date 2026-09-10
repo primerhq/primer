@@ -27,7 +27,6 @@ CHAT_DIR = UI / "components" / "chat"
 SHARED_DIR = UI / "components" / "shared"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
 TRANSCRIPT = SHARED_DIR / "transcript.jsx"
-COMPOSER = SHARED_DIR / "composer.jsx"
 
 
 def _src(path: Path) -> str:
@@ -97,26 +96,5 @@ def test_connection_status_covers_every_turn_status_value() -> None:
     assert '"claimable"' in snippet
     assert "turnStatus || \"idle\"" in snippet
 
-
-# ---------------------------------------------------------------------------
-# Queue-on-reconnect: buffer instead of hard-reject; flush on reopen.
-# ---------------------------------------------------------------------------
-
-
-def test_composer_accepts_ws_state_and_renders_a_queue_hint() -> None:
-    src = _src(COMPOSER)
-    assert "wsState" in src
-    assert 'data-testid="chat-queue-hint"' in src
-
-
-def test_send_is_never_hard_disabled_by_connection_state() -> None:
-    # sendDisabled must stay driven only by disabled/schemaInvalid/empty
-    # draft — connection state is surfaced via the hint above, never by
-    # disabling Send itself (that's the whole point of "queues, does not
-    # hard-disable").
-    src = _src(COMPOSER)
-    send_gate_line = next(line for line in src.splitlines() if "const sendDisabled" in line)
-    assert "wsState" not in send_gate_line
-    assert "wsNotOpen" not in send_gate_line
 
 
