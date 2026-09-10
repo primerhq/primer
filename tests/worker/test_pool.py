@@ -942,6 +942,196 @@ async def test_run_engine_session_releases_engine_lease_on_success(
     assert released[0][1].success is True
 
 
+async def test_run_engine_session_survives_a_raised_terminal_write_failure(
+    scheduler, engine, monkeypatch,
+):
+    """01a08bf0: the safety-net claim, proven at the layer that matters.
+
+    dispatch.py's _transition_session_status now lets a genuine storage
+    write failure propagate instead of swallowing it (see
+    tests/session/test_dispatch.py's
+    test_clean_completion_storage_failure_propagates_not_swallowed for that
+    half). This is the OTHER half: proving the exception does not strand
+    the lease when it reaches run_one_session_turn's single production
+    caller. Simulates the propagated failure directly (raising out of
+    run_one_session_turn) rather than re-deriving it from a real storage
+    double, since that trace already lives in test_dispatch.py — this test
+    is only responsible for what _run_engine_session does with it."""
+    sid = "sess-raise-1"
+    scheduler.register_session_for_test(sid, status=SessionStatus.RUNNING)
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=scheduler,
+        storage=None,               # type: ignore[arg-type]
+        workspace_registry=None,    # type: ignore[arg-type]
+        provider_registry=None,     # type: ignore[arg-type]
+        engine=engine,
+        event_bus=None,
+    )
+    pool._worker_id = "wrk-test"
+
+    fake_session = WorkspaceSession(
+        id=sid, workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=0,
+    )
+    monkeypatch.setattr(pool, "_load_session",
+                        lambda _sid: _async_return(fake_session))
+
+    released: list = []
+    orig_release = engine.release
+
+    async def _capture_release(lease, *, outcome):
+        released.append((lease, outcome))
+        return await orig_release(lease, outcome=outcome)
+
+    monkeypatch.setattr(engine, "release", _capture_release)
+
+    await engine.upsert(ClaimKind.SESSION, sid, priority=100)
+    [engine_lease] = await engine.claim_due("wrk-test", max_count=1)
+    assert engine_lease.entity_id == sid
+    assert await engine.has_live_lease(ClaimKind.SESSION, sid) is True
+
+    with patch(
+        "primer.worker.pool.run_one_session_turn",
+        side_effect=RuntimeError("simulated propagated storage failure"),
+    ):
+        # _run_engine_session must NOT let this escape -- it's caught by
+        # its own generic except and converted into a safe release.
+        await pool._run_engine_session(engine_lease)
+
+    assert len(released) == 1, "release must still run despite the raise"
+    released_lease, outcome = released[0]
+    assert released_lease.entity_id == sid
+    assert outcome.success is False, (
+        "an unhandled exception must never be reported as success"
+    )
+    assert outcome.drop_lease is True, (
+        "the lease must still be dropped, not left claimed forever"
+    )
+    # The lease is actually gone afterward -- not merely marked
+    # drop_lease=True in an outcome nobody consumed.
+    assert await engine.has_live_lease(ClaimKind.SESSION, sid) is False
+
+
+async def test_end_session_genuine_write_failure_already_propagates():
+    """01a08bf0 Site B — unlike the vanished-row branch, _end_session's
+    storage.update() call has no try/except today: a real write failure
+    (row exists, write itself errors) already propagates uncaught. This
+    was true before this task and needed no code change, but was
+    UNTESTED -- pinning it now since the whole "propagate is safe" design
+    for Site B rests on this being what actually happens, not an
+    assumption. Safety is the same claim proven for Site A: this raises
+    inside run_one_session_turn's sibling caller path, which shares the
+    identical WorkerPool._run_engine_session safety net (see
+    test_run_engine_session_survives_a_raised_terminal_write_failure)."""
+    from tests.conftest import _FakeStorageProvider
+
+    sid = "sess-write-fails-1"
+    sp = _FakeStorageProvider()
+    session_storage = sp.get_storage(WorkspaceSession)
+    fake_session = WorkspaceSession(
+        id=sid, workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=0,
+    )
+    await session_storage.create(fake_session)
+
+    async def _failing_update(entity, *, conn=None):
+        raise RuntimeError("simulated storage failure")
+
+    session_storage.update = _failing_update
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=None,               # type: ignore[arg-type]
+        storage=sp,
+        workspace_registry=None,      # type: ignore[arg-type]
+        provider_registry=None,       # type: ignore[arg-type]
+        engine=None,                  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="simulated storage failure"):
+        await pool._end_session(fake_session, reason="failed")
+
+    # The row must still show its pre-failure state.
+    row = await session_storage.get(sid)
+    assert row.status == SessionStatus.RUNNING
+
+
+async def test_end_session_vanished_row_mislabel_is_inert_via_on_release_recheck():
+    """01a08bf0 Q3 — pin test, NOT a designed guarantee.
+
+    'Vanished because something else already ended it' and 'vanished
+    unexpectedly' are genuinely indistinguishable at the point
+    _end_session runs: fresh is None carries no reason either way. Its
+    success=True on that branch is left unchanged (see the comment in
+    pool.py) because it is observably inert today -- but ONLY because
+    SessionClaimAdapter.on_release does its OWN independent re-fetch of
+    the row and returns immediately, before ever consulting
+    outcome.success, if that re-fetch ALSO finds nothing. That is a
+    COINCIDENTAL property of on_release's re-check, not a contract either
+    function was written to guarantee. If on_release is ever changed to
+    trust the caller's outcome instead of re-fetching, this test starts
+    failing -- and the vanished-row branch's success=True actually needs
+    to be revisited at that point, not just this test's assertion."""
+    from tests.conftest import _FakeStorageProvider
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+
+    sid = "sess-vanished-1"
+    sp = _FakeStorageProvider()
+    # Deliberately never created in storage -- this IS "vanished".
+    session_stub = WorkspaceSession(
+        id=sid, workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=3,
+    )
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=None,               # type: ignore[arg-type]
+        storage=sp,
+        workspace_registry=None,      # type: ignore[arg-type]
+        provider_registry=None,       # type: ignore[arg-type]
+        engine=None,                  # type: ignore[arg-type]
+    )
+
+    outcome = await pool._end_session(session_stub, reason="failed")
+    # Today's mislabel, left deliberately unchanged (01a08bf0 design call).
+    assert outcome.success is True
+    assert outcome.drop_lease is True
+
+    registry_calls: list[str] = []
+
+    class _TrackingRegistry:
+        async def get_workspace(self, workspace_id: str):
+            registry_calls.append(workspace_id)
+            raise AssertionError(
+                "on_release must never reach the terminal-error-record "
+                "path for a row that is genuinely gone"
+            )
+
+    adapter = SessionClaimAdapter(
+        session_storage=sp.get_storage(WorkspaceSession),
+        workspace_registry=_TrackingRegistry(),
+        event_bus=None,
+    )
+    # Must no-op cleanly: on_release's own re-fetch also finds nothing.
+    await adapter.on_release(conn=None, entity_id=sid, outcome=outcome)
+    assert registry_calls == [], (
+        "on_release's re-check no longer absorbs the vanished-row "
+        "mislabel -- _end_session's success=True is no longer inert and "
+        "needs a real fix, not just a pin"
+    )
+
+
 # ---------------------------------------------------------------------------
 # C1 — steering a RUNNING (leased) session must not strand the queued turn
 # ---------------------------------------------------------------------------

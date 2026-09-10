@@ -2027,13 +2027,16 @@ async def _transition_session_status(
             updates["ended_reason"] = ended_reason
         if ended_detail is not None:
             updates["ended_detail"] = ended_detail
-    try:
-        await session_storage.update(fresh.model_copy(update=updates))
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "dispatch: failed to transition session %s to %s",
-            session.id, new_status.value,
-        )
+    # 01a08bf0: let a genuine storage failure propagate instead of swallowing
+    # it. run_one_session_turn's single production caller
+    # (WorkerPool._run_engine_session) pre-sets a safe
+    # ReleaseOutcome(success=False, drop_lease=True) before its try and
+    # releases with it in a finally regardless of what raises, so an
+    # exception here converges on an honest failed-release rather than
+    # stranding the lease -- and it means the ENDED-only code below (the
+    # on-disk AgentSession mirror, and the caller's _publish_terminal) never
+    # runs for a status this process never actually persisted.
+    await session_storage.update(fresh.model_copy(update=updates))
     if new_status == SessionStatus.ENDED:
         await _sync_agent_session_ended(
             executor, ended_reason,
