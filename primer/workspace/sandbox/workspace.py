@@ -580,20 +580,15 @@ class SandboxWorkspace(Workspace):
         Path inside the sandbox:
         ``<workspace_root>/<template.state_path>/sessions/<session_id>/messages.jsonl``
 
-        Delegates to :meth:`Sandbox.append_file`, which uses read-modify-write
-        by default.  The ``FakeSandbox`` (used in tests) overrides with a
-        fast O_APPEND path.
-
-        .. TODO(Cluster-5): The container/k8s Sandbox impls still use the
-           default read-modify-write ``append_file``.  Cluster 5 will replace
-           the exec-per-call runtime with a persistent WS runtime that
-           exposes a native ``append_line`` op — at that point each backend's
-           ``append_file`` override will be the thin shim.
+        Delegates to :meth:`Sandbox.append_line`, the atomic single-line
+        primitive (native O_APPEND op on ``WSSandbox``; O_APPEND on
+        ``FakeSandbox``). ``append_line`` appends its own trailing newline,
+        so ``line`` is passed WITHOUT one — adding one here first would
+        double it on backends using the ABC's default ``append_line``.
         """
         if not line:
             return
-        if not line.endswith(b"\n"):
-            line = line + b"\n"
+        line = line[:-1] if line.endswith(b"\n") else line
 
         path = (
             f"{self._workspace_root}/{self._template.state_path}"
@@ -601,25 +596,23 @@ class SandboxWorkspace(Workspace):
         )
         # Serialise against this session's messages.jsonl read->rewrite
         # windows (AgentSession.append_instruction, the executor's turn
-        # persist). The default sandbox ``append_file`` is itself
-        # read-modify-write, so without this the event row could be
-        # truncated by a concurrent rewrite. Keyed by session id, so a
-        # flush for one session never waits on another session's commit.
+        # persist), which race with this append regardless of the append
+        # primitive's own atomicity. Keyed by session id, so a flush for
+        # one session never waits on another session's commit.
         async with self._state_repo.messages_lock(session_id):
-            await self._sandbox.append_file(path, line)
+            await self._sandbox.append_line(path, line)
 
     async def append_state_line(self, relative_path: str, line: bytes) -> None:
         """Append ``line`` to ``<workspace_root>/<relative_path>``.
 
-        Delegates to :meth:`Sandbox.append_file`. Mirrors the
+        Delegates to :meth:`Sandbox.append_line`. Mirrors the
         ``append_message_line`` shape but with operator-controlled path.
         """
         if not line:
             return
-        if not line.endswith(b"\n"):
-            line = line + b"\n"
+        line = line[:-1] if line.endswith(b"\n") else line
         path = f"{self._workspace_root}/{relative_path}"
-        await self._sandbox.append_file(path, line)
+        await self._sandbox.append_line(path, line)
 
     async def write_state_file(self, relative_path: str, content: bytes) -> None:
         """Overwrite ``<workspace_root>/<relative_path>`` via the sandbox.

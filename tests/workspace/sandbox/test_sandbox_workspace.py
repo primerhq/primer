@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -314,6 +315,126 @@ async def test_append_message_line_noop_for_empty(tmp_path: Path) -> None:
 
     path = tmp_path / ".state" / "sessions" / sid / "messages.jsonl"
     assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_append_message_line_routes_through_append_line_not_append_file(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for the WSSandbox.append_file truncation bug: the
+    line-append path must go through the atomic ``append_line`` primitive,
+    not the read-modify-write ``append_file`` fallback (which is unsafe on
+    a real runtime backend when its own read step fails transiently)."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-aml-route", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    sb.append_line = AsyncMock(wraps=sb.append_line)
+    sb.append_file = AsyncMock(wraps=sb.append_file)
+
+    await ws.append_message_line("sess-aml-route", b'{"seq":1}\n')
+
+    sb.append_line.assert_awaited_once()
+    sb.append_file.assert_not_awaited()
+
+
+# ===========================================================================
+# SandboxWorkspace.append_state_line
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_append_state_line_creates_file(tmp_path: Path) -> None:
+    """First append creates the state file at the given relative path."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-asl-1", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    rel = ".state/sessions/sess-asl-1/turns.jsonl"
+    await ws.append_state_line(rel, b'{"seq":1,"kind":"turn_start"}\n')
+
+    expected = tmp_path / ".state" / "sessions" / "sess-asl-1" / "turns.jsonl"
+    assert expected.exists()
+    assert expected.read_bytes() == b'{"seq":1,"kind":"turn_start"}\n'
+
+
+@pytest.mark.asyncio
+async def test_append_state_line_appends_sequentially(tmp_path: Path) -> None:
+    """Multiple appends accumulate correctly -- no prior record is lost."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-asl-2", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    rel = ".state/sessions/sess-asl-2/turns.jsonl"
+    line1 = b'{"seq":1,"kind":"turn_start"}\n'
+    line2 = b'{"seq":2,"kind":"turn_end"}\n'
+
+    await ws.append_state_line(rel, line1)
+    await ws.append_state_line(rel, line2)
+
+    path = tmp_path / ".state" / "sessions" / "sess-asl-2" / "turns.jsonl"
+    assert path.read_bytes() == line1 + line2
+
+
+@pytest.mark.asyncio
+async def test_append_state_line_adds_trailing_newline(tmp_path: Path) -> None:
+    """Line without trailing newline gets exactly one added."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-asl-3", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    rel = ".state/sessions/sess-asl-3/turns.jsonl"
+    await ws.append_state_line(rel, b'{"seq":1}')
+
+    path = tmp_path / ".state" / "sessions" / "sess-asl-3" / "turns.jsonl"
+    data = path.read_bytes()
+    assert data == b'{"seq":1}\n'
+
+
+@pytest.mark.asyncio
+async def test_append_state_line_noop_for_empty(tmp_path: Path) -> None:
+    """Appending empty bytes is a no-op."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-asl-4", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    rel = ".state/sessions/sess-asl-4/turns.jsonl"
+    await ws.append_state_line(rel, b"")
+
+    path = tmp_path / ".state" / "sessions" / "sess-asl-4" / "turns.jsonl"
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_append_state_line_routes_through_append_line_not_append_file(
+    tmp_path: Path,
+) -> None:
+    """Same routing guard as append_message_line, for the turn-log path --
+    this is the exact method the truncation bug was originally traced
+    through (io_shim's turn-log writer)."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-asl-route", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    sb.append_line = AsyncMock(wraps=sb.append_line)
+    sb.append_file = AsyncMock(wraps=sb.append_file)
+
+    await ws.append_state_line(".state/sessions/sess-asl-route/turns.jsonl", b'{"seq":1}\n')
+
+    sb.append_line.assert_awaited_once()
+    sb.append_file.assert_not_awaited()
 
 
 @pytest.mark.asyncio
