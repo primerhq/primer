@@ -630,16 +630,20 @@ class _BaseGraphExecutor(
                 )
                 continue
             except _ToolApprovalRejected as rej:
-                # Spec B §4.8 / Phase 6 Task 6.4 — operator rejected or
-                # the approval timed out; stamp the node as a failure
-                # with ``ended_detail='tool_execution_failed'``.
+                # Spec B §4.8 / Phase 6 Task 6.4 — operator rejected, the
+                # approval timed out, or the approval was cancelled; stamp
+                # the node as a failure with the specific ended_detail
+                # rej.ended_detail_code resolves (01a08be8: previously
+                # always the generic "tool_execution_failed", which made a
+                # declined approval byte-identical to an actual tool crash
+                # in ended_detail — the two are now distinguishable).
                 fail_out = NodeOutput(
                     text="",
                     parsed=None,
                     history=[],
                     iteration=context.iteration,
                     error=str(rej),
-                    ended_detail="tool_execution_failed",
+                    ended_detail=rej.ended_detail_code,
                 )
                 context.nodes[entry.node_id] = fail_out
                 node_states[entry.node_id] = NodeRuntimeState(
@@ -651,7 +655,7 @@ class _BaseGraphExecutor(
                 # Spec B §4.8 — emit a terminal error event so taps see
                 # the rejection, then mark the graph failed.
                 yield _GraphErrorEvent(  # type: ignore[misc]
-                    code="tool_execution_failed",
+                    code=rej.ended_detail_code,
                     message=str(rej),
                     node_id=entry.node_id,
                 )
@@ -669,7 +673,7 @@ class _BaseGraphExecutor(
                     node_states=node_states,
                     status=SessionStatus.ENDED,
                     ended_reason="failed",
-                    ended_detail="tool_execution_failed",
+                    ended_detail=rej.ended_detail_code,
                 )
                 return
             except Exception as exc:  # noqa: BLE001 -- map all to node failure
@@ -1022,10 +1026,19 @@ class _BaseGraphExecutor(
                     )
                     continue
                 except Exception as exc:  # noqa: BLE001 -- map to node failure
+                    # 01a08be8: mirrors the ay_pending loop's identical
+                    # TurnStreamFailure-aware resolution above — a
+                    # TurnStreamFailure means the LLM stream itself is why
+                    # this resumed tool_wait node failed, not a tool.
+                    detail = (
+                        exc.ended_detail_code
+                        if isinstance(exc, TurnStreamFailure)
+                        else "tool_execution_failed"
+                    )
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],
                         iteration=context.iteration, error=str(exc),
-                        ended_detail="tool_execution_failed",
+                        ended_detail=detail,
                     )
                     context.nodes[tw.node_id] = fail_out
                     node_states[tw.node_id] = NodeRuntimeState(
@@ -1035,7 +1048,7 @@ class _BaseGraphExecutor(
                         error=str(exc),
                     )
                     yield _GraphErrorEvent(  # type: ignore[misc]
-                        code="tool_execution_failed", message=str(exc),
+                        code=detail, message=str(exc),
                         node_id=tw.node_id,
                     )
                     yield _GraphTransitionEvent(  # type: ignore[misc]
@@ -1047,7 +1060,7 @@ class _BaseGraphExecutor(
                     await self._save_state(
                         iteration=context.iteration, node_states=node_states,
                         status=SessionStatus.ENDED, ended_reason="failed",
-                        ended_detail="tool_execution_failed",
+                        ended_detail=detail,
                     )
                     return
                 context.nodes[tw.node_id] = out
