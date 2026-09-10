@@ -58,3 +58,33 @@ def test_gate_is_permissive_while_loading() -> None:
     """
     src = _read("foundation/capabilities.js")
     assert "return true" in src
+
+
+def test_the_capability_gate_is_not_frozen_at_page_load() -> None:
+    """Relocated from tests/ui/test_composer_mic.py (deleted along with
+    ui/components/shared/composer.jsx in chore/delete-orphaned-composer-
+    shells - dead code, see that commit for the reachability evidence).
+    This assertion is about foundation/capabilities.js, a live, shared
+    module every capability-gated page depends on - unrelated to
+    composer.jsx's own deadness, so it survives the deletion.
+
+    Regression: registering a speech provider needed a page reload. The
+    mic (and every other capability gate) hangs off useCapabilities(),
+    which answers "does a provider row exist" and changes while the
+    console is open. The capabilities resource was fetched once and
+    never again, so the answer was a snapshot from whenever the page
+    happened to load: register a provider, go back to a session, and
+    the gate was still closed.
+
+    The extras block genuinely IS per-process, which is why IT polls
+    once; the capabilities block joining that pattern is what made the
+    freeze wrong.
+    """
+    src = _read("foundation/capabilities.js")
+    block = src[src.index("function useCapabilities()"):]
+    block = block[:block.index("function extraInstalled")]
+    assert "pollMs: 0" not in block, (
+        "a gate on a mutable fact cannot be answered once and cached "
+        "for the life of the page"
+    )
+    assert "pollMs: 10000" in block
