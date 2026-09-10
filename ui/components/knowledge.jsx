@@ -908,6 +908,15 @@ function KN_NewCollectionModal({ pushToast, onClose, onCreate }) {
 // Page
 // ============================================================================
 
+// 01a08b77: module-scope, NOT React state - see the comment on its read
+// site (inside CollectionsPage, below) for why component-local state
+// cannot hold this. Keyed by collection id so it survives across
+// however many CollectionsPage instances get created/destroyed for
+// however many collections get created in one page session; entries
+// are deleted once no longer needed (see both call sites below), not
+// left to grow unbounded.
+const KN_justCreatedCache = {};
+
 function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
   const { useResource, useRouter, useViewport, apiFetch, usePagedList, Pager } = window.primerApi;
   const { isMobile } = useViewport();
@@ -949,7 +958,29 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
   // The POST response already carries everything KN_CollectionDetail
   // reads directly off `collection` (id, system) - only its OWN separate
   // search-status fetch depends on network, unaffected by this.
-  const [justCreatedRow, setJustCreatedRow] = React.useState(null);
+  //
+  // 01a08b77: this CANNOT be React state local to CollectionsPage (it
+  // was, and the flake recurred). nv-overlays.jsx's NV_LegacyOverlay
+  // renders CollectionsPage from two STRUCTURALLY DIFFERENT branches
+  // depending on whether overlay.id is set (`bypassChrome`: the list
+  // view uses the shared wide-sheet chrome, the detail view renders its
+  // own complete Modal so two title bars/close buttons don't stack) -
+  // proven live (MiniRacer, not inference) that the ROOT element type
+  // NV_LegacyOverlay returns differs between the two (NV_OverlayPanel
+  // vs a bare div), so React cannot reconcile the old fiber into the
+  // new one and remounts CollectionsPage from scratch at EXACTLY the
+  // moment onCreate addresses into the just-created row - the local
+  // state fallback is destroyed the instant it's needed, on a call it
+  // never gets to make. KN_justCreatedCache lives at module scope,
+  // outside any component's lifecycle, so it survives that remount.
+  const fromList = selectedId ? rows.find((c) => c.id === selectedId) : null;
+  const addressed = selectedId ? fromList || KN_justCreatedCache[selectedId] || null : null;
+  // Once the list catches up, the cache entry has done its job - drop it
+  // (in an effect, not during render) so a long session creating many
+  // collections doesn't accumulate them.
+  React.useEffect(() => {
+    if (fromList && selectedId) delete KN_justCreatedCache[selectedId];
+  }, [fromList, selectedId]);
 
   // Which collection is open is ADDRESSED, not remembered. It used to
   // live in local state and never reach the url, so the address said
@@ -958,10 +989,6 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
   // differed from where you already were. The id slot decides which
   // renders, the same way it does for every other overlay here.
   const [localSelected, setLocalSelected] = React.useState(null);
-  const addressed = selectedId
-    ? rows.find((c) => c.id === selectedId) ||
-      (justCreatedRow && justCreatedRow.id === selectedId ? justCreatedRow : null)
-    : null;
   const selected = onNavigate ? addressed : localSelected;
   const select = (row) => {
     if (onNavigate) onNavigate(row ? row.id : null);
@@ -978,7 +1005,7 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
         cerProviders={cerProviders}
         pushToast={pushToast}
         onBack={() => {
-          setJustCreatedRow(null);
+          delete KN_justCreatedCache[selected.id];
           setSelected(null);
         }}
       />
@@ -1069,7 +1096,7 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
           onClose={() => setCreateOpen(false)}
           onCreate={(row) => {
             setCreateOpen(false);
-            setJustCreatedRow(row);
+            KN_justCreatedCache[row.id] = row;
             setReloadKey((k) => k + 1);
             setSelected(row);
           }}
