@@ -185,13 +185,41 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
     () => apiFetch("POST", "/internal_collections/bootstrap"),
     {
       invalidates: [IC_CACHE_CONFIG, IC_CACHE_BOOTSTRAP],
-      onSuccess: () => {
-        pushToast({ kind: "info", title: "Bootstrap started", detail: "Running in the background — leave this page if you like." });
+      // 01a08c05: the route is fully synchronous (the backend handler
+      // awaits enable_search(...) inline, no background task - see
+      // primer/api/routers/internal_collections.py's own bootstrap
+      // docstring: "the old asynchronous bootstrap pipeline is gone").
+      // Its response body already carries the real terminal {status,
+      // state, error} - by the time onSuccess fires, the operation is
+      // DONE, not "started". Read that body directly instead of
+      // announcing an interim state that no longer exists (telling an
+      // operator they may leave the page during a synchronous call is
+      // worse than saying nothing) and waiting on the poll-transition
+      // effect below, whose own `prev === "running"` condition
+      // synchronicity makes very unlikely to ever fire for a bootstrap
+      // THIS client triggered: bootstrapStatus's own refetch (kicked
+      // off by `invalidates` above, before onSuccess runs) resolves
+      // straight to the already-terminal status - there is no
+      // "running" tick for this client's own poll to observe.
+      onSuccess: (data) => {
         bootstrapStatus.refetch();
+        if (data?.status === "succeeded") {
+          pushToast({ kind: "success", title: "Bootstrap complete", detail: "Subsystem is now active." });
+          onRefresh();
+        } else {
+          pushToast({
+            kind: "error",
+            title: "Bootstrap failed",
+            detail: data?.error || "See server logs for details.",
+          });
+        }
       },
       onError: (err) => {
         if (err?.status === 409) {
-          // Already running — just sync the status and let the UI render.
+          // Already running (started elsewhere) - genuinely nothing
+          // terminal to report from THIS request; sync the status and
+          // let the poll-transition effect below catch its eventual
+          // completion, same as any other out-of-band run.
           bootstrapStatus.refetch();
           return;
         }
@@ -200,9 +228,15 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
     }
   );
 
-  // When a running bootstrap finishes, sync the config (which now has
-  // activated_at set). The page-level useResource flips us from
-  // ConfiguredCard to ActiveCard on the next render.
+  // Fallback path for a bootstrap started from elsewhere (a different
+  // tab/client, or the 409-already-running case above): this client
+  // never gets an onSuccess callback for a run it did not trigger, so
+  // it can only learn the outcome by observing the status row's own
+  // transition via its poll. NOT the primary path for a bootstrap this
+  // client itself triggers - onSuccess above handles that synchronously
+  // and accurately, straight from the response body, and flips
+  // ConfiguredCard to ActiveCard immediately via onRefresh() rather than
+  // waiting on this effect (or the page-level 30s poll) to notice.
   const prevStatusRef = React.useRef(null);
   React.useEffect(() => {
     const prev = prevStatusRef.current;
@@ -286,9 +320,23 @@ function ActiveCard({ config, onRefresh, pushToast }) {
     () => apiFetch("POST", "/internal_collections/bootstrap"),
     {
       invalidates: [IC_CACHE_CONFIG, IC_CACHE_BOOTSTRAP],
-      onSuccess: () => {
-        pushToast({ kind: "info", title: "Re-bootstrap started", detail: "Running in the background — leave this page if you like." });
+      // 01a08c05: same fix as ConfiguredCard's own bootstrap mutation
+      // above (this route is fully synchronous; its response body
+      // already carries the real terminal {status, state, error}) -
+      // read it directly instead of announcing a "started... running in
+      // the background" state that no longer exists.
+      onSuccess: (data) => {
         bootstrapStatus.refetch();
+        if (data?.status === "succeeded") {
+          pushToast({ kind: "success", title: "Re-bootstrap complete" });
+          onRefresh();
+        } else {
+          pushToast({
+            kind: "error",
+            title: "Re-bootstrap failed",
+            detail: data?.error || "See server logs for details.",
+          });
+        }
       },
       onError: (err) => {
         if (err?.status === 409) {
@@ -300,6 +348,8 @@ function ActiveCard({ config, onRefresh, pushToast }) {
     }
   );
 
+  // Fallback path for a re-bootstrap started elsewhere - see
+  // ConfiguredCard's own identical comment above.
   const prevStatusRef = React.useRef(null);
   React.useEffect(() => {
     const prev = prevStatusRef.current;
