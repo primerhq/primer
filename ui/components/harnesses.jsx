@@ -458,6 +458,12 @@ function HarnessDetail({ id }) {
   // have something to push (DRAFT or OUTDATED) and there is no in-flight op.
   const canBuild = !isPending;
   const canPush = !isPending && (h.status === "DRAFT" || h.status === "OUTDATED");
+  // fetch/sync/build/push all enqueue an async operation and can be
+  // rejected synchronously (e.g. 409 when one is already pending) - same
+  // "onError just refetches, nothing explains it" gap uninstall had.
+  // At most one of these fires per operator action, so one shared banner
+  // covers all four without tracking which mutation it came from.
+  const actionError = fetchMut.error || syncMut.error || buildMut.error || pushMut.error;
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -549,6 +555,14 @@ function HarnessDetail({ id }) {
         </div>
       </div>
 
+      {actionError && (
+        <Banner
+          kind="error"
+          title={actionError.title || "Couldn't start the operation"}
+          detail={actionError.detail || actionError.message}
+        />
+      )}
+
       {/* Metadata panel */}
       <div className="panel">
         <div className="panel-h"><Icon name="git-commit" size={13} /><span>Metadata</span></div>
@@ -632,18 +646,41 @@ function HarnessDetail({ id }) {
         <Modal
           title={`${isOutbound ? "Delete" : "Uninstall"} ${h.name || h.slug}?`}
           danger
-          onClose={() => { setConfirmUninstall(false); setCascadeDelete(false); }}
+          onClose={() => {
+            // Ignore Escape/backdrop-click while the request is in flight —
+            // dismissing here would hide the loading state without cancelling
+            // the underlying DELETE, and (on failure) would throw away the
+            // error below before the operator ever saw it.
+            if (uninstallMut.loading) return;
+            setConfirmUninstall(false);
+            setCascadeDelete(false);
+          }}
           footer={
             <>
-              <Btn kind="ghost" onClick={() => { setConfirmUninstall(false); setCascadeDelete(false); }}>Cancel</Btn>
+              <Btn
+                kind="ghost"
+                disabled={uninstallMut.loading}
+                onClick={() => { setConfirmUninstall(false); setCascadeDelete(false); }}
+              >
+                Cancel
+              </Btn>
               <Btn
                 kind="danger"
                 icon="trash"
                 disabled={uninstallMut.loading}
                 onClick={async () => {
-                  setConfirmUninstall(false);
-                  try { await uninstallMut.mutate(); } catch (_e) {}
-                  setCascadeDelete(false);
+                  try {
+                    await uninstallMut.mutate();
+                    // onSuccess navigates away on a real success; nothing
+                    // left to do here. On failure, deliberately do NOT
+                    // close the modal — uninstallMut.error (rendered
+                    // below) is the only place this failure is explained,
+                    // and closing on a destructive action's failure with
+                    // no visible reason is the defect this fixes.
+                  } catch (_e) {
+                    // uninstallMut.error already captured this; the catch
+                    // only exists so the rejection isn't unhandled.
+                  }
                 }}
               >
                 {uninstallMut.loading
@@ -653,6 +690,15 @@ function HarnessDetail({ id }) {
             </>
           }
         >
+          {uninstallMut.error && (
+            <div style={{ marginBottom: 12 }}>
+              <Banner
+                kind="error"
+                title={uninstallMut.error.title || `Couldn't ${isOutbound ? "delete" : "uninstall"} the harness`}
+                detail={uninstallMut.error.detail || uninstallMut.error.message}
+              />
+            </div>
+          )}
           <ul>
             <li>The harness row is removed once the worker finishes.</li>
             <li>
@@ -669,6 +715,7 @@ function HarnessDetail({ id }) {
               type="checkbox"
               checked={cascadeDelete}
               onChange={(e) => setCascadeDelete(e.target.checked)}
+              disabled={uninstallMut.loading}
               style={{ marginTop: 3 }}
             />
             <span>Also delete the entities this harness tracks (cascade). Leave off to remove only the harness.</span>
