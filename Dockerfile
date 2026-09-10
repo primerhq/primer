@@ -27,7 +27,14 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
 # System deps:
-# - curl              the HEALTHCHECK and for installing uv
+# - curl              was the HEALTHCHECK's own fetch tool; the HEALTHCHECK
+#                     now uses python3 instead (see below) so it can assert
+#                     on the response body, not just the HTTP status. uv
+#                     itself installs via the COPY --from below, not curl,
+#                     so nothing in this image still calls curl directly -
+#                     kept installed only in case an operator execs in to
+#                     debug connectivity; flagging for the Dockerfile owner
+#                     to decide whether to drop it.
 # - ca-certificates   HTTPS during uv install + runtime fetches
 # - git               required by primer/workspace/local/state.py:LocalStateRepo
 #                     which uses `git init` / `git commit` for the
@@ -83,8 +90,14 @@ EXPOSE 8000
 
 # Health: the FastAPI app exposes /v1/health. Honour PRIMER_PORT (compose sets
 # 8765; a bare `docker run` defaults to 8000) so the check follows the server.
+# curl -f only checks the HTTP status. /v1/health's `status` field is a
+# fixed Literal["ok"] and the route always returns 200 even with a dead
+# (alive=false) or degraded (in-memory scheduler under a multi-process
+# runtime_mode) scheduler - so the status code alone certifies nothing.
+# python3 is already on PATH (this is the app's own venv); reuse it to
+# fetch and assert on the body instead of adding a new dependency (jq).
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \
-    CMD curl -fsS "http://127.0.0.1:${PRIMER_PORT:-8000}/v1/health" || exit 1
+    CMD python3 -c "import json,sys,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:${PRIMER_PORT:-8000}/v1/health', timeout=4)); s=d.get('scheduler',{}); sys.exit(0 if s.get('alive') is True and s.get('degraded') is False else 1)"
 
 # Entrypoint renders /app/config.yaml from PRIMER_* env vars, then
 # exec's CMD. The primer CLI requires --config; the rendered file is
