@@ -329,60 +329,77 @@ class TestClassifyApprovalPayload:
     this fix, a genuine multi-event timeout/cancel classified here as
     "malformed approval payload (missing decision)", landing the wrong
     reason in the durable audit record.
+
+    01a08be8: added a third field, `kind`, alongside the existing
+    (decision, reason) pair - additive by construction (a NamedTuple, so
+    ``result == (decision, reason, kind)`` still reads naturally) rather
+    than changing what `decision`/`reason` mean for any input. `kind`
+    distinguishes WHY a rejection happened (an explicit human "no", an
+    approval timeout, or a cancellation) - the exact distinction this
+    function already computed internally and discarded before this
+    change, folding all three into `decision="rejected"` with only the
+    free-text `reason` string (a different spelling each time: "timed-
+    out", "cancelled", or the caller-supplied text) to tell them apart.
     """
 
     def test_typed_yield_timeout_instance(self):
         assert classify_approval_payload(YieldTimeout(elapsed_seconds=5)) == (
-            "rejected", "timed-out",
+            "rejected", "timed-out", "timeout",
         )
 
     def test_typed_yield_cancelled_instance_with_reason(self, t0: datetime):
         result = classify_approval_payload(
             YieldCancelled(reason="user closed", cancelled_at=t0, elapsed_seconds=1),
         )
-        assert result == ("rejected", "user closed")
+        assert result == ("rejected", "user closed", "cancelled")
 
     def test_typed_yield_cancelled_instance_defaults_reason(self, t0: datetime):
         result = classify_approval_payload(
             YieldCancelled(reason=None, cancelled_at=t0, elapsed_seconds=1),
         )
-        assert result == ("rejected", "cancelled")
+        assert result == ("rejected", "cancelled", "cancelled")
 
     def test_raw_timeout_marker_dict(self):
         """The multi-event graph drain's shape: a raw marker dict, never
         converted to a YieldTimeout instance."""
         assert classify_approval_payload({"__yield_timeout__": True}) == (
-            "rejected", "timed-out",
+            "rejected", "timed-out", "timeout",
         )
 
     def test_raw_cancelled_marker_dict_with_reason(self):
         assert classify_approval_payload({
             "__yield_cancelled__": True, "reason": "user closed",
             "cancelled_at": "2026-01-01T00:00:00+00:00",
-        }) == ("rejected", "user closed")
+        }) == ("rejected", "user closed", "cancelled")
 
     def test_raw_cancelled_marker_dict_defaults_reason(self):
         assert classify_approval_payload({
             "__yield_cancelled__": True,
             "cancelled_at": "2026-01-01T00:00:00+00:00",
-        }) == ("rejected", "cancelled")
+        }) == ("rejected", "cancelled", "cancelled")
 
     def test_real_approved_decision(self):
+        """kind is None on the approved path - it only ever disambiguates
+        WHY a rejection happened, there's no rejection to explain here."""
         assert classify_approval_payload(
             {"decision": "approved", "reason": "fine"},
-        ) == ("approved", "fine")
+        ) == ("approved", "fine", None)
 
     def test_real_rejected_decision(self):
         assert classify_approval_payload(
             {"decision": "rejected", "reason": "no"},
-        ) == ("rejected", "no")
+        ) == ("rejected", "no", "rejected")
 
     def test_malformed_dict_missing_decision(self):
+        """Malformed payloads fail closed to kind="rejected", the same
+        bucket an explicit human rejection produces - not a 4th kind.
+        Rare/defensive-only; an anonymous rejection is the right read."""
         assert classify_approval_payload({"reason": "huh"}) == (
             "rejected", "malformed approval payload (missing decision)",
+            "rejected",
         )
 
     def test_malformed_non_dict(self):
         assert classify_approval_payload("not a payload") == (
-            "rejected", "malformed approval payload (non-dict)",
+            "rejected", "malformed approval payload (non-dict)", "rejected",
         )

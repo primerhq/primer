@@ -85,7 +85,7 @@ async def write_approval_record_for_session(
     )
     from primer.model.tool_approval import ToolApprovalRecord
 
-    decision, reason = classify_approval_payload(payload)
+    decision, reason, _kind = classify_approval_payload(payload)
     yielded: dict = blob.get("yielded") or {}
     record = record_from_parked_blob(
         blob=blob,

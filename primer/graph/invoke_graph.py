@@ -122,12 +122,12 @@ async def resume_invoke_graph(
     from primer.model.yield_ import YieldToWorker
     from primer.worker.graph_resume import _decision_from_payload
 
-    decision, reason = _decision_from_payload(payload)
+    decision, reason, kind = _decision_from_payload(payload)
     if decision != "approved" and agent_tool_result is None:
         rejection_reason = reason or "rejected"
 
         async def _rejecting_dispatch(node, arguments):
-            raise _ToolApprovalRejected(rejection_reason)
+            raise _ToolApprovalRejected(rejection_reason, kind=kind)
 
         child._dispatch_toolcall_with_bypass = _rejecting_dispatch
 

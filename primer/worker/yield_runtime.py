@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 from primer.model.chat import ToolCallPart, ToolResultPart
 from primer.model.yield_ import (
@@ -541,10 +541,40 @@ def _parse_iso(value: str) -> datetime:
 # ===========================================================================
 
 
+class ApprovalClassification(NamedTuple):
+    """Return shape of :func:`classify_approval_payload`.
+
+    01a08be8: ``kind`` is additive alongside the pre-existing
+    ``(decision, reason)`` pair - what ``decision``/``reason`` MEAN for
+    any given input is unchanged, this only adds a third field. Every
+    call site that used to do ``decision, reason =
+    classify_approval_payload(payload)`` now needs a third unpack
+    target (``decision, reason, kind = ...`` if it wants ``kind``, or
+    ``decision, reason, _kind = ...`` if it doesn't) - a 3-element
+    NamedTuple raises on a 2-target unpack, same as a plain 3-tuple
+    would. That is deliberate: there is no silent-degradation path
+    where forgetting to update a call site yields plausible-but-wrong
+    data. It fails loudly, at the call site, immediately.
+
+    ``kind`` disambiguates WHY ``decision == "rejected"``: an explicit
+    human "no" (``"rejected"``), an approval timeout (``"timeout"``), or
+    a cancellation (``"cancelled"``). ``None`` when ``decision ==
+    "approved"`` - there is no rejection to explain. A malformed/
+    unrecognised payload fails closed to ``kind="rejected"``, the same
+    bucket an explicit rejection produces, not a 4th kind - malformed
+    payloads are rare/defensive-only; an anonymous rejection is the
+    right read, not a new category to plumb through every consumer.
+    """
+
+    decision: str
+    reason: str | None
+    kind: Literal["rejected", "timeout", "cancelled"] | None
+
+
 def classify_approval_payload(
     payload: "dict[str, Any] | YieldTimeout | YieldCancelled | Any",
-) -> tuple[str, str | None]:
-    """Classify a resume payload into ``(decision, reason)``.
+) -> ApprovalClassification:
+    """Classify a resume payload into ``(decision, reason, kind)``.
 
     The single source of truth for how an approval park interprets its
     resume payload: a timeout or cancellation becomes a rejection with a
@@ -565,24 +595,39 @@ def classify_approval_payload(
     "malformed approval payload (missing decision)" instead of
     "timed-out"/"cancelled", landing that wrong reason in the durable
     audit record.
+
+    01a08be8: see :class:`ApprovalClassification` for the ``kind`` field
+    this now also returns - added here, not re-derived downstream from
+    ``reason``'s free text (nv-platform.jsx's own UI-side derivation of
+    exactly this distinction from ``reason`` labels itself "HEURISTIC,
+    not spec" - this function is where the real answer already lived).
     """
     if isinstance(payload, YieldTimeout):
-        return "rejected", "timed-out"
+        return ApprovalClassification("rejected", "timed-out", "timeout")
     if isinstance(payload, YieldCancelled):
-        return "rejected", payload.reason or "cancelled"
+        return ApprovalClassification(
+            "rejected", payload.reason or "cancelled", "cancelled",
+        )
     if isinstance(payload, dict):
         if payload.get(_YIELD_TIMEOUT_KEY):
-            return "rejected", "timed-out"
+            return ApprovalClassification("rejected", "timed-out", "timeout")
         if payload.get(_YIELD_CANCELLED_KEY):
-            return "rejected", payload.get("reason") or "cancelled"
+            return ApprovalClassification(
+                "rejected", payload.get("reason") or "cancelled", "cancelled",
+            )
         raw = payload.get("decision")
         reason = payload.get("reason")
         if raw == "approved":
-            return "approved", reason
+            return ApprovalClassification("approved", reason, None)
         if raw == "rejected":
-            return "rejected", reason
-        return "rejected", "malformed approval payload (missing decision)"
-    return "rejected", "malformed approval payload (non-dict)"
+            return ApprovalClassification("rejected", reason, "rejected")
+        return ApprovalClassification(
+            "rejected", "malformed approval payload (missing decision)",
+            "rejected",
+        )
+    return ApprovalClassification(
+        "rejected", "malformed approval payload (non-dict)", "rejected",
+    )
 
 
 async def _resume_tool_approval(
@@ -629,7 +674,7 @@ async def _resume_tool_approval(
         arguments=original_raw.get("arguments") or {},
     )
 
-    decision, reason = classify_approval_payload(payload)
+    decision, reason, _kind = classify_approval_payload(payload)
 
     if decision == "approved":
         # ``system__call_tool`` parks the INNER (toolset_id, tool_name) it
