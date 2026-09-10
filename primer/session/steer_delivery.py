@@ -40,6 +40,7 @@ async def deliver_steer(
     session_id: str,
     text: str,
     parallelism: str,
+    human_intent: bool,
     storage_provider: Any,
     scheduler: Any,
     claim_engine: Any,
@@ -51,6 +52,13 @@ async def deliver_steer(
     ``parallelism="skip"`` drops the steer when the target already has a
     non-terminal turn; ``"queue"`` stores it as a pending row the drain
     checkpoint realizes. An idle target is woken immediately.
+
+    ``human_intent`` (01a08c08, required, no default): forwarded verbatim
+    to :func:`wake_session` -- True for a channel thread reply, False for
+    a trigger's session_append subscription. Both callers "mean the same
+    thing" per this module's docstring for ROUTING, but they are not the
+    same thing for a PAUSED target: a channel reply is a person; a
+    trigger fire is not, and must not silently clear an operator's pause.
 
     A row that is absent OR cannot take a message (a non-restartable ENDED
     session) reports ``DELIVERED_MISSING``, so the channel router remaps the
@@ -67,8 +75,10 @@ async def deliver_steer(
             )
         await store_pending_steer(
             storage_provider=storage_provider,
-            session_id=session_id,
+            session=row,
             text=text,
+            workspace_registry=workspace_registry,
+            event_bus=event_bus,
         )
         return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     try:
@@ -76,6 +86,7 @@ async def deliver_steer(
             workspace_id=row.workspace_id,
             session_id=session_id,
             instruction=text,
+            human_intent=human_intent,
             deps=SessionWakeDeps(
                 storage_provider=storage_provider,
                 scheduler=scheduler,

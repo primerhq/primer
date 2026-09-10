@@ -55,6 +55,10 @@ class SessionAppendDispatcher:
                 session_id=sub.config.session_id,
                 text=rendered_payload,
                 parallelism=sub.parallelism,
+                # 01a08c08: a trigger fires with nobody present. It must
+                # not be the thing that silently clears an operator's
+                # pause -- see wake_session's human_intent docstring.
+                human_intent=False,
                 storage_provider=deps.storage_provider,
                 scheduler=deps.scheduler,
                 claim_engine=deps.claim_engine,

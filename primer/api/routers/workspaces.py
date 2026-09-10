@@ -1758,8 +1758,10 @@ async def steer_session(
         ):
             await store_pending_steer(
                 storage_provider=storage_provider,
-                session_id=session_id,
+                session=row,
                 text=body.instruction,
+                workspace_registry=registry,
+                event_bus=event_bus,
             )
             return await sessions.get(session_id)
 
@@ -1814,6 +1816,10 @@ async def steer_session(
             workspace_id=workspace_id,
             session_id=session_id,
             instruction=body.instruction,
+            # 01a08c08: this endpoint is the console/API "send a message"
+            # action -- a live human (or a script acting on their behalf)
+            # is the one re-engaging.
+            human_intent=True,
             external_tools=body.external_tools,
             extra_parts=extra_parts,
             extra_payload=extra_payload,
@@ -1872,6 +1878,7 @@ async def restart_session_route(
         workspace_id=workspace_id,
         session_id=session_id,
         instruction=body.input,
+        human_intent=True,  # 01a08c08: console/API restart action
         reset_deps=SessionResetDeps(
             storage_provider=storage_provider,
             workspace_registry=registry,

@@ -1815,7 +1815,7 @@ async def test_seq_strictly_increases_across_invoke_and_restart(
     # --- Turn 1: first invoke ---
     await wake_session(
         workspace_id="w1", session_id=session_id,
-        instruction="first", deps=wake_deps,
+        instruction="first", human_intent=True, deps=wake_deps,
     )
     await run_one_session_turn(
         _make_lease(session_id),
@@ -1833,7 +1833,7 @@ async def test_seq_strictly_increases_across_invoke_and_restart(
     # --- Turn 2: follow-up message restarts the ended session ---
     await wake_session(
         workspace_id="w1", session_id=session_id,
-        instruction="second", deps=wake_deps,
+        instruction="second", human_intent=True, deps=wake_deps,
     )
     await run_one_session_turn(
         _make_lease(session_id),
@@ -1933,13 +1933,13 @@ async def test_midturn_concurrent_steer_seq_collision_is_known_gap(
     # Turn 1 invoke.
     await wake_session(
         workspace_id="w1", session_id=session_id,
-        instruction="first", deps=wake_deps,
+        instruction="first", human_intent=True, deps=wake_deps,
     )
 
     async def _steer_mid_turn() -> None:
         await wake_session(
             workspace_id="w1", session_id=session_id,
-            instruction="steer-mid", deps=wake_deps,
+            instruction="steer-mid", human_intent=True, deps=wake_deps,
         )
 
     class _MidTurnSteerExecutor:

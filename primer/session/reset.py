@@ -197,6 +197,7 @@ async def restart_session(
     workspace_id: str,
     session_id: str,
     instruction: str | None,
+    human_intent: bool,
     reset_deps: "SessionResetDeps",
     wake_deps,  # primer.session.enqueue.SessionWakeDeps
 ) -> WorkspaceSession:
@@ -209,6 +210,15 @@ async def restart_session(
     subsequent ``wake_session`` sees CREATED and merely invokes — its ENDED
     reopen branch never fires here, so there is exactly one invocation
     divider (no double-reopen).
+
+    ``human_intent`` (01a08c08) is forwarded to ``wake_session`` for
+    completeness and to keep this call site honest about its own two
+    callers (the REST restart endpoint vs. the ``workspaces__restart_
+    session`` agent tool) -- it is a no-op here in practice, since
+    ``_reopen_ended_locked`` already clears ``pause_requested`` as part of
+    the ENDED->CREATED reopen (a stale pause from a PRIOR, now-ended
+    invocation has nothing to do with THIS one), so ``wake_session``'s own
+    pause check never sees it set.
     """
     from primer.session.enqueue import wake_session
 
@@ -219,6 +229,7 @@ async def restart_session(
         workspace_id=workspace_id,
         session_id=session_id,
         instruction=instruction,
+        human_intent=human_intent,
         deps=wake_deps,
     )
 

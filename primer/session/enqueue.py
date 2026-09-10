@@ -11,7 +11,9 @@ tail: the session's on-disk ``messages.jsonl`` IS the FIFO queue
 Behaviour by status (studio-agents-interact §4.2 / §5.1):
   * CREATED           -> invoke  (transition to RUNNING; run with the message)
   * RUNNING / WAITING -> steer   (queue as the next turn; re-arm the claim)
-  * PAUSED            -> resume  (clear pause; transition to RUNNING)
+  * PAUSED, human_intent=True  -> resume (clear pause; transition to RUNNING)
+  * PAUSED, human_intent=False -> hold   (queue the message; pause untouched
+                                          -- 01a08c08, see ``human_intent``)
   * ENDED             -> restart (reopen + invocation divider, then invoke)
 
 Uniform "send a message" semantics: every clean agent turn ends the session,
@@ -73,6 +75,7 @@ async def wake_session(
     session_id: str,
     instruction: str | None,
     deps: SessionWakeDeps,
+    human_intent: bool,
     external_tools: "list | None" = None,
     extra_parts: "list | None" = None,
     extra_payload: "dict | None" = None,
@@ -88,6 +91,19 @@ async def wake_session(
     paths) so the transcript surface can show what was attached without
     reconstructing it from the full Message. Both ``None`` (every
     existing caller) is unchanged behaviour.
+
+    ``human_intent`` (01a08c08, REQUIRED, no default on purpose): does a
+    live human's decision to re-engage stand behind THIS wake? True for
+    the console steer endpoint and a channel thread reply. False for a
+    trigger's session_append subscription, an agent-to-agent steer tool
+    call, and a queued message's own later realization (a replay of an
+    EARLIER human action, not fresh intent). A pause is a control a human
+    exercised on purpose; wake_session must not be the place that quietly
+    decides an unrelated automated event counts as that human changing
+    their mind. See the ``pause_requested`` handling below -- a non-human
+    wake queues instead of clearing it, so a new caller literally cannot
+    compile without someone consciously stating which side of that line
+    they're on.
 
     Raises NotFoundError (missing / workspace mismatch). An ENDED session is
     reopened in place (reopen slot + invocation divider + ENDED->CREATED)
@@ -134,6 +150,37 @@ async def wake_session(
                         "wake_session: failed to publish divider tick for %s",
                         session_id,
                     )
+
+        if row.pause_requested and not human_intent:
+            # 01a08c08: the operator paused this session on purpose; a
+            # non-human wake (trigger fire, agent-to-agent steer, a
+            # queued message replaying) must not be the thing that
+            # silently un-pauses it. Queue the instruction through the
+            # SAME pending-message mechanism deliver_steer already uses
+            # for a busy session (store_pending_steer / realize_next_
+            # pending), rather than forcing a resume nobody asked for or
+            # dropping the message outright. The row is NOT written here
+            # -- pause_requested, status, and turn_status all stay exactly
+            # as they were.
+            pending_id = None
+            if instruction:
+                # Deferred: pending_messages.py imports wake_session from
+                # this module, so a top-level import here would cycle.
+                from primer.session.pending_messages import store_pending_steer
+
+                pending = await store_pending_steer(
+                    storage_provider=deps.storage_provider,
+                    session=row,
+                    text=instruction,
+                    workspace_registry=deps.workspace_registry,
+                    event_bus=deps.event_bus,
+                )
+                pending_id = pending.id
+            await _record_pause_superseded(
+                deps, workspace_id=workspace_id, session_id=session_id,
+                row=row, action="queued", pending_id=pending_id,
+            )
+            return row
 
         # 1. Append the user message to the on-disk slot FIFO (the queue) and
         #    persist a USER_INPUT record to messages.jsonl so the sent message
@@ -191,6 +238,13 @@ async def wake_session(
 
         # 2. Re-arm the scheduler-visible row: claimable + clear pause;
         #    CREATED/PAUSED/WAITING advance to RUNNING (like /resume).
+        # 01a08c08: a human-intent wake DOES still clear an existing pause
+        # here (Q1's trace: "typing a message while paused means resume"
+        # is the right call for a live human) -- but it must not do so
+        # silently. was_paused is recorded below via PAUSE_SUPERSEDED so an
+        # operator returning to the session can see that their pause was
+        # superseded, and by what.
+        was_paused = row.pause_requested
         row.turn_status = "claimable"
         row.pause_requested = False
         row.pause_requested_at = None
@@ -236,7 +290,63 @@ async def wake_session(
                         "wake_session: failed to publish tick for %s",
                         session_id,
                     )
+        if was_paused:
+            await _record_pause_superseded(
+                deps, workspace_id=workspace_id, session_id=session_id,
+                row=row, action="cleared", pending_id=None,
+            )
         return row
+
+
+async def _record_pause_superseded(
+    deps: SessionWakeDeps,
+    *,
+    workspace_id: str,
+    session_id: str,
+    row: WorkspaceSession,
+    action: str,
+    pending_id: str | None,
+) -> None:
+    """Append a PAUSE_SUPERSEDED record so a touched pause is never silent.
+
+    Best-effort: a missing workspace / write failure is logged and
+    swallowed, mirroring every other advisory write in this module
+    (the divider tick above, wake_session's own claimable/tick publishes)
+    -- an operator losing the ANNOUNCEMENT of a pause change must not
+    also cost them the wake or the queued message it's reporting on.
+    """
+    if deps.workspace_registry is None:
+        return
+    try:
+        ws = await deps.workspace_registry.get_workspace(workspace_id)
+        if ws is None:
+            return
+        writer = WorkspaceMessageWriter(
+            workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
+        )
+        seq = await writer.append(SessionMessageRecord(
+            seq=1,  # overwritten by the writer's monotonic counter
+            kind=SessionMessageKind.PAUSE_SUPERSEDED,
+            payload={"action": action, "pending_id": pending_id},
+            created_at=datetime.now(timezone.utc),
+        ))
+        await writer.flush()
+    except Exception:  # noqa: BLE001 -- advisory, never block the wake
+        logger.exception(
+            "wake_session: failed to record pause-superseded (%s) for %s",
+            action, session_id,
+        )
+        return
+    if deps.event_bus is not None:
+        try:
+            await deps.event_bus.publish(
+                f"session:{session_id}:tick", {"seq": seq}
+            )
+        except Exception:  # noqa: BLE001 -- advisory
+            logger.exception(
+                "wake_session: failed to publish pause-superseded tick for %s",
+                session_id,
+            )
 
 
 __all__ = ["SessionWakeDeps", "wake_session"]

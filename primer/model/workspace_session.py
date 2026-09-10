@@ -850,6 +850,16 @@ class SessionMessageKind(StrEnum):
     # history), and transcript renderers hide it - it is Trace-tab
     # material. Carries ``node_id`` when the call ran inside a graph node.
     LLM_CALL = "llm_call"
+    # 01a08c08: written by wake_session whenever an operator's pause is
+    # touched by an incoming wake, so a superseded pause is never silent.
+    # Payload: ``{"action": "cleared" | "queued", "pending_id": str | None}``.
+    # "cleared" -- a human-intent wake (console send, channel reply) found
+    # pause_requested=True and resumed the session, mirroring an explicit
+    # /resume. "queued" -- a non-human wake (trigger fire, agent-to-agent
+    # steer, a queued message's own later realization) found the session
+    # paused and stored the instruction as a PendingSessionMessage
+    # (``pending_id``) instead of clearing the pause -- the pause holds.
+    PAUSE_SUPERSEDED = "pause_superseded"
 class SessionMessageRecord(BaseModel):
     """One row in the per-session append-only message log.
 
