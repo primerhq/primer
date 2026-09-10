@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from primer.int.sandbox import ExecResult, FileStat, SandboxInspectInfo
+from primer.workspace.runtime.protocol import ErrorCode
+from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeOpError
 from primer.workspace.runtime.ws_sandbox import WSSandbox
 
 
@@ -237,13 +239,44 @@ async def test_append_file_reads_then_writes() -> None:
 
 @pytest.mark.asyncio
 async def test_append_file_creates_on_missing() -> None:
-    """append_file starts from empty when read_file raises."""
+    """append_file starts from empty when the runtime confirms ENOENT.
+
+    ``RuntimeOpError(ErrorCode.ENOENT, ...)`` is the real exception the
+    production ``RuntimeClient.read_file`` raises for a missing file (a WS
+    RPC error response) -- not a bare ``FileNotFoundError``, which this
+    backend never raises.
+    """
     sb, client = _make_sandbox()
-    client.read_file = AsyncMock(side_effect=FileNotFoundError("not found"))
+    client.read_file = AsyncMock(
+        side_effect=RuntimeOpError(ErrorCode.ENOENT, "No such file or directory")
+    )
     await sb.append_file("new.txt", b"first write")
     client.write_file.assert_awaited_once_with(
         "/workspace/new.txt", b"first write", mode=None
     )
+
+
+@pytest.mark.asyncio
+async def test_append_file_does_not_truncate_on_a_transient_read_failure() -> None:
+    """A non-ENOENT read failure must abort the append, not overwrite.
+
+    Regression test for the WSSandbox.append_file truncation bug: the read
+    step inside append_file can fail for reasons that have nothing to do
+    with the file being absent -- a dropped WS connection, a timeout, a
+    protocol error. The old code caught ALL of these the same as ENOENT,
+    defaulted ``existing`` to b"", and called
+    ``write_file(path, b"" + content)`` -- silently replacing whatever was
+    already durably on disk with just the new content. This test fails
+    against that code (write_file is called with only the new bytes) and
+    passes once a non-ENOENT failure propagates instead of being swallowed.
+    """
+    sb, client = _make_sandbox()
+    client.read_file = AsyncMock(
+        side_effect=RuntimeOpError(ErrorCode.EPROTOCOL, "connection dropped mid-request")
+    )
+    with pytest.raises(RuntimeOpError):
+        await sb.append_file("turns.jsonl", b"new line")
+    client.write_file.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

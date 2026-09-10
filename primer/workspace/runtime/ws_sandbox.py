@@ -19,7 +19,9 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from primer.int.sandbox import ExecResult, FileStat, Sandbox, SandboxInspectInfo
+from primer.workspace.runtime.protocol import ErrorCode
 from primer.workspace.runtime.runtime_client import RuntimeClient
+from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeOpError
 
 if TYPE_CHECKING:
     pass
@@ -151,24 +153,27 @@ class WSSandbox(Sandbox):
         await self._client.write_file(self._resolve(path), content, mode=mode)
 
     async def append_file(self, path: str, content: bytes) -> None:
-        """Append arbitrary bytes.  Delegates to :meth:`append_line` without
-        a trailing newline by splitting on newlines and appending each chunk.
+        """Append arbitrary bytes via a read-modify-write.
 
-        For the common single-chunk case this is a single ``append_line``
-        call minus the auto-appended newline — i.e. the content is passed
-        as-is with no trailing newline added.  Callers that need guaranteed
-        line semantics should use :meth:`append_line` directly.
+        There is no native atomic op for arbitrary (non-line) content —
+        :meth:`append_line` is the atomic primitive and should be used by
+        any caller whose content is a single line; this method is the
+        read-modify-write fallback for callers that genuinely have
+        multi-line or binary content.
+
+        A failed read only defaults to an empty ``existing`` when the
+        runtime confirms the file does not exist yet (``ErrorCode.ENOENT``).
+        Any other read failure — a dropped connection, a timeout, a
+        protocol error — MUST propagate rather than be treated as "empty",
+        or the write below would silently replace real, already-durable
+        content with just ``content``.
         """
-        # Use the atomic runtime append_line op, but don't add an extra
-        # newline — we strip the one that append_line adds by treating the
-        # entire content as a "line" without a trailing newline guard.
-        # The simplest correct implementation is to delegate to write_file
-        # via a read-modify-write (same as the ABC default) but route it
-        # through the runtime rather than raw FS.
         existing: bytes
         try:
             existing = await self.read_file(path)
-        except (FileNotFoundError, OSError, Exception):
+        except RuntimeOpError as exc:
+            if exc.code != ErrorCode.ENOENT:
+                raise
             existing = b""
         await self.write_file(path, existing + content)
 
