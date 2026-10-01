@@ -144,7 +144,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
       - name: Python Semantic Release
         id: psr
-        uses: python-semantic-release/python-semantic-release@v10.6.2
+        uses: python-semantic-release/python-semantic-release@v10.7.0
         with:
           github_token: ${{ steps.app-token.outputs.token }}
           # vcs_release was disabled for v0.1.0: that release spanned ~1785
