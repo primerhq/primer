@@ -299,9 +299,10 @@ class TimeoutSweeper(_BackgroundTask):
 
 
 #: A session's first turn is claimed moments after the row is created. One that is still at
-#: turn 0 well past this never got claimed - the worker died, the node OOM-killed it, the
-#: claim was lost - and it will sit non-terminal forever, because every other terminal path
-#: runs INSIDE a turn that never started.
+#: turn 0 well past this AND has no lease row at all lost its claim (the lease was deleted or
+#: never armed) and will sit non-terminal forever, because every other terminal path runs
+#: INSIDE a turn that never started. A session whose worker died or was OOM-killed keeps its
+#: lease row, so it is NOT reaped: the claim loop reclaims it and re-runs the turn.
 STUCK_SESSION_GRACE_SECONDS = 600.0
 
 #: OffsetPage caps a single page at 200 rows.
@@ -443,7 +444,7 @@ def _never_started(session, grace_seconds: float) -> bool:
     A session PARKED in its first turn did start. A park neither bumps ``turn_no`` (that is
     bumped only by a completed turn) nor leaves a lease behind (the park releases it), so
     such a row is indistinguishable from a never-started one by the two checks this
-    function and its caller make: ``turn_no == 0`` and no live lease. Without this guard a
+    function and its caller make: ``turn_no == 0`` and no lease row. Without this guard a
     first turn waiting on a human approval, ``ask_user`` or a timer for ten minutes was
     ended ``failed`` / ``never_started`` while the human was still deciding. A park has its
     own bound: the dispatch and resume park writers all set ``parked_until``, and
