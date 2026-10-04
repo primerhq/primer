@@ -6,7 +6,9 @@ replays the turn. Two defects made it wrong in both directions:
 * a bare ``max_tokens`` needle sent every Anthropic output-cap 400 ("max_tokens: N > M ... maximum allowed
   number of output tokens") into the compaction, which then hit the same 400 on the replay, on EVERY turn;
 * Ollama and Gemini open the request lazily, so their overflow is YIELDED as ``Error(code="bad_request")``
-  and surfaces as a ``TurnStreamFailure``, which the ``except BadRequestError`` handler never saw.
+  and surfaces as a ``TurnStreamFailure``, which the ``except BadRequestError`` handler never saw. The
+  classifier now recognises it, but ``invoke`` still does NOT recover it (the overflow-replay unit owns
+  that: a replay from scratch re-runs executed tools): a test below pins that boundary.
 
 These tests drive the real executor with a scripted LLM and a spy compaction strategy.
 """
@@ -19,6 +21,7 @@ import pytest
 
 from primer.agent.base import _BaseAgentExecutor
 from primer.agent.compaction import CompactedTurn, CompactionStrategy
+from primer.common.context_overflow import is_context_overflow
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
     Done,
@@ -165,17 +168,22 @@ async def test_a_raised_overflow_still_force_compacts_and_replays() -> None:
     assert "all good" in "".join(e.text for e in events if isinstance(e, TextDelta))
 
 
-async def test_a_yielded_overflow_force_compacts_and_replays() -> None:
-    """Ollama and Gemini: the 400 is yielded as Error(code='bad_request'), then raised as a TurnStreamFailure."""
+async def test_a_yielded_overflow_is_classified_as_an_overflow_but_not_recovered_here() -> None:
+    """Ollama and Gemini: the 400 is yielded as Error(code='bad_request'), then raised as a TurnStreamFailure.
+
+    The classifier recognises it (the overflow-replay unit will recover it), but ``invoke`` does not: a
+    replay from scratch would re-run tools the turn already executed, and the yielded Error has already
+    been streamed and recorded. So today it propagates exactly as before this change."""
     spy = _SpyCompaction()
-    llm = _FailsThenAnswers(yields=Error(code="bad_request", message=GEMINI_OVERFLOW, fatal=True))
+    llm = _FailsThenAnswers(yields=Error(code="bad_request", message=GEMINI_OVERFLOW, fatal=True), failures=99)
     executor = _Executor(llm, spy)
 
-    events = await _invoke(executor)
+    with pytest.raises(TurnStreamFailure) as caught:
+        await _invoke(executor)
 
-    assert spy.forced == 1 and len(executor.replaced) == 1
-    assert llm.calls == 2
-    assert "all good" in "".join(e.text for e in events if isinstance(e, TextDelta))
+    assert is_context_overflow(caught.value) is True, "the classifier must still recognise a yielded overflow"
+    assert spy.forced == 0 and executor.replaced == [], "the history must not be force-compacted here"
+    assert llm.calls == 1, "and the turn must not be replayed from scratch"
 
 
 async def test_the_recovery_is_attempted_once_not_in_a_loop() -> None:
