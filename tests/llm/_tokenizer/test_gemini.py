@@ -8,6 +8,8 @@ rest, naming exactly what it estimated.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -45,11 +47,27 @@ def _fake_client(tokens: int = 0, exc: Exception | None = None):
     return SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(count_tokens=count))), count
 
 
-async def _count(client, messages=USER, tools=None):
+async def _count(client, messages=USER, tools=None, **kwargs):
     return await count_tokens_gemini_detailed(
         client=client, model="gemini-2.5-pro", messages=messages, tools=tools,
-        messages_to_contents=_messages_to_gemini,
+        messages_to_contents=_messages_to_gemini, **kwargs,
     )
+
+
+def _sleeping_client(seconds: float):
+    """A client whose count outlasts its own per-attempt timeout, the way
+    google-genai 2.25's aiohttp path does after a connection error: it sleeps
+    ``1 + randint(0, 9)`` seconds and then retries once (``_api_client.py``), so the
+    per-call ``http_options.timeout`` alone does not bound the call."""
+    calls = {"n": 0}
+
+    async def count_tokens(**_kwargs):
+        calls["n"] += 1
+        await asyncio.sleep(seconds)
+        return SimpleNamespace(total_tokens=1)
+
+    client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(count_tokens=count_tokens)))
+    return client, calls
 
 
 def _connector_error() -> aiohttp.ClientConnectorError:
@@ -157,6 +175,25 @@ class TestFailuresRaiseMappedErrors:
         with pytest.raises(ProviderTimeoutError):
             await _count(client)
 
+    async def test_a_count_that_outlives_the_deadline_is_a_timeout_not_a_long_wait(self) -> None:
+        """The documented bound must be real: a count stuck in the SDK's sleep and
+        retry is cut off at ``timeout_s`` and reported as a timeout."""
+        client, calls = _sleeping_client(3.0)
+        started = time.monotonic()
+        with pytest.raises(ProviderTimeoutError):
+            await _count(client, timeout_s=0.1)
+        assert time.monotonic() - started < 1.0, "the call waited out the SDK's sleep"
+        assert calls["n"] == 1
+
+    async def test_a_408_is_a_timeout_and_a_425_is_retry_later_not_a_rejection(self) -> None:
+        """Both are 4xx with no SDK class; promoted to a rejection they would never
+        be negative-cached and every count would hit the endpoint again."""
+        for status, expected in ((408, ProviderTimeoutError), (425, RateLimitError)):
+            client, _ = _fake_client(exc=gerrors.ClientError(status, {"error": {"message": "x"}}))
+            with pytest.raises(expected) as caught:
+                await _count(client)
+            assert caught.value.status_code == status
+
     async def test_an_unreachable_host_is_a_network_error(self) -> None:
         client, _ = _fake_client(exc=_connector_error())
         with pytest.raises(NetworkError):
@@ -175,13 +212,14 @@ class TestFailuresRaiseMappedErrors:
 
 class TestThroughTheWrapper:
     class _Llm:
-        def __init__(self, client) -> None:
+        def __init__(self, client, timeout_s: float = COUNT_TIMEOUT_S) -> None:
             self.client = client
+            self.timeout_s = timeout_s
 
         async def count_tokens_detailed(self, *, model, messages, tools=None):
             return await count_tokens_gemini_detailed(
                 client=self.client, model=model, messages=messages, tools=tools,
-                messages_to_contents=_messages_to_gemini,
+                messages_to_contents=_messages_to_gemini, timeout_s=self.timeout_s,
             )
 
     MODEL = SimpleNamespace(provider_id="p", profile_id="prof", model_name="gemini-2.5-pro")
@@ -196,6 +234,8 @@ class TestThroughTheWrapper:
             (aiohttp.ServerTimeoutError("slow"), "fallback_timeout"),
             (_connector_error(), "fallback_transient"),
             (gerrors.ClientError(400, {"error": {"message": "x"}}), "fallback_rejected"),
+            (gerrors.ClientError(408, {"error": {"message": "x"}}), "fallback_timeout"),
+            (gerrors.ClientError(425, {"error": {"message": "x"}}), "fallback_transient"),
         ],
     )
     async def test_a_failing_client_is_an_estimate_never_native(self, exc, outcome) -> None:
@@ -213,6 +253,19 @@ class TestThroughTheWrapper:
         second = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
         assert (first.outcome, second.outcome) == ("fallback_timeout", "negative_cached")
         assert count.await_count == 1, "the second turn must not wait out the timeout again"
+
+    async def test_a_count_stuck_in_the_sdk_retry_sleep_is_a_cached_timeout(self) -> None:
+        """Through the wrapper: the deadline turns the SDK's sleep-and-retry into a
+        labelled fallback_timeout, and the next turn does not wait again."""
+        client, calls = _sleeping_client(3.0)
+        cache = NegativeCache()
+        llm = self._Llm(client, timeout_s=0.1)
+        started = time.monotonic()
+        first = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        second = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        assert (first.outcome, second.outcome) == ("fallback_timeout", "negative_cached")
+        assert calls["n"] == 1
+        assert time.monotonic() - started < 1.0
 
     async def test_an_aiohttp_connection_failure_is_negative_cached_too(self) -> None:
         client, count = _fake_client(exc=_connector_error())

@@ -19,8 +19,14 @@ the system prompt and the tool schemas (and for media, which is not sent), and
 reports exactly those as estimated components. The count and the real request
 therefore differ by the estimated parts, which the result says.
 
-Bounded: a per-call ``http_options.timeout`` (milliseconds); the client itself is
-built without one, so an unbounded call would otherwise be possible.
+Bounded twice. A per-call ``http_options.timeout`` (milliseconds) caps one HTTP
+attempt; the client itself is built without one, so an unbounded call would
+otherwise be possible. That alone is not the bound: google-genai's aiohttp path
+sleeps ``1 + randint(0, 9)`` seconds and retries once after a connection error
+(``_api_client.py``, 2.25.0), so one count could take the timeout, up to ten
+seconds of sleep, and the timeout again. The whole call, retry included, is
+therefore also wrapped in ``asyncio.wait_for(timeout_s)``, and either expiry is a
+``ProviderTimeoutError``.
 """
 
 from __future__ import annotations
@@ -110,10 +116,13 @@ async def count_tokens_gemini_detailed(
         components.append("media")
 
     try:
-        result = await client.aio.models.count_tokens(
-            model=model,
-            contents=contents,
-            config={"http_options": {"timeout": int(timeout_s * 1000)}},
+        result = await asyncio.wait_for(
+            client.aio.models.count_tokens(
+                model=model,
+                contents=contents,
+                config={"http_options": {"timeout": int(timeout_s * 1000)}},
+            ),
+            timeout_s,
         )
         counted = int(result.total_tokens)
     except PrimerError:

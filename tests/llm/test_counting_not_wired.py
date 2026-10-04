@@ -1,11 +1,11 @@
-"""A counter that returns the heuristic as a count must never sit under a wired wrapper.
+"""A counter that returns the heuristic as a count must never exist, wired or not.
 
 ``count_prompt_tokens`` was groundwork first: before the adapter-hardening slice the
 Anthropic, Gemini and HF counters swallowed their own errors and returned the
 character heuristic as a count, and wiring the wrapper to a turn then would have made
-a decision on a number nobody vouches for. That slice has landed; this test keeps it
-true. It passes while nothing outside primer/llm imports the wrapper, and once
-something does it demands that none of the three counters swallows.
+a decision on a number nobody vouches for. That slice has landed, so the check no
+longer waits for a wiring import: it holds unconditionally, and a counter that starts
+swallowing again fails here at once, not only after something imports the wrapper.
 """
 
 from __future__ import annotations
@@ -61,19 +61,18 @@ def _returns_the_heuristic_as_a_count(source: str) -> bool:
     return False
 
 
-def test_wiring_the_wrapper_requires_counters_that_raise():
-    wired = _wired()
-    if not wired:
-        return
+def test_no_vendor_counter_returns_the_heuristic_as_a_count():
     still_swallowing = [
         name for name in _SWALLOWERS
         if _returns_the_heuristic_as_a_count(
             (ROOT / "primer" / "llm" / "_tokenizer" / name).read_text()
         )
     ]
+    wired = _wired()
     assert not still_swallowing, (
-        f"{wired} wire primer.llm.counting while {still_swallowing} still return the "
-        "character heuristic as a count; land the adapter-hardening slice (S2) first"
+        f"{still_swallowing} return the character heuristic as a count; a counter "
+        "must raise (or return a TokenCount that names what it estimated) instead. "
+        f"Modules wiring primer.llm.counting right now: {wired or 'none'}"
     )
 
 
@@ -84,3 +83,29 @@ def test_the_swallowing_scanner_flags_a_return_but_not_an_added_estimate():
     assert _returns_the_heuristic_as_a_count(swallow)
     assert _returns_the_heuristic_as_a_count(nested)
     assert not _returns_the_heuristic_as_a_count(adds_estimate)
+
+
+def test_the_gate_sees_a_wiring_import_and_ignores_prose(tmp_path):
+    """The scanner finds a real import in each spelling and not a docstring
+    mention, so the wiring list the failure message prints is neither empty by
+    accident nor polluted by prose."""
+    pkg = tmp_path / "primer" / "agent"
+    pkg.mkdir(parents=True)
+    (pkg / "a.py").write_text("from primer.llm.counting import count_prompt_tokens\n")
+    (pkg / "b.py").write_text("import primer.llm.counting\n")
+    (pkg / "c.py").write_text("from primer.llm import counting\n")
+    (pkg / "prose.py").write_text('"""see primer.llm.counting.count_prompt_tokens"""\n')
+    (tmp_path / "primer" / "llm").mkdir()
+    (tmp_path / "primer" / "llm" / "inside.py").write_text("from primer.llm.counting import x\n")
+    assert _wired(tmp_path) == [
+        "primer/agent/a.py", "primer/agent/b.py", "primer/agent/c.py",
+    ]
+
+
+def test_the_real_counters_are_scanned_and_clean():
+    """Pins the scanner against the real files so the unconditional check above
+    cannot pass vacuously: it reads all three, and they exist."""
+    for name in _SWALLOWERS:
+        path = ROOT / "primer" / "llm" / "_tokenizer" / name
+        assert path.is_file(), name
+        assert "def count_tokens_" in path.read_text(), f"{name} no longer defines a counter"

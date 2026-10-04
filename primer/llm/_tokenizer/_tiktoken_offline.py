@@ -19,8 +19,12 @@ The cache directory is resolved exactly as tiktoken resolves it
 (``scripts/bake_tokenizers.py``) and a developer's warm tiktoken cache both
 work. An empty value, tiktoken's "disable caching", means no directory.
 
-Results are memoised for the life of the process, failures included: a
-vocabulary missing at the first attempt is not retried on every turn.
+Successes are memoised for the life of the process, and so are the failures that
+cannot cure themselves (a vocabulary file that is absent, fails its hash check or
+will not build, or no cache directory at all): those are not retried on every
+turn. A transient OS error reading the file (EMFILE, EACCES, EIO) is NOT
+memoised: it is raised, logged, and the next attempt reads the file again, so one
+bad moment cannot disable native counting until restart.
 
 The encoding's pattern and special tokens come from tiktoken's own
 constructor in ``tiktoken_ext.openai_public``, run against a copy of its

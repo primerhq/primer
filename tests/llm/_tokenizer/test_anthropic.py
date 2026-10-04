@@ -222,6 +222,10 @@ class TestThroughTheWrapper:
             (_status_error(anthropic.InternalServerError, 500), "fallback_transient"),
             (_status_error(anthropic.BadRequestError, 400), "fallback_rejected"),
             (_status_error(anthropic.APIStatusError, 413), "fallback_rejected"),
+            # No SDK class for 408 or 425; they are "try again", not a refusal, so
+            # they must be cached rather than promoted to a rejection.
+            (_status_error(anthropic.APIStatusError, 408), "fallback_timeout"),
+            (_status_error(anthropic.APIStatusError, 425), "fallback_transient"),
         ],
     )
     async def test_a_failing_client_is_an_estimate_never_native(self, exc, outcome) -> None:
