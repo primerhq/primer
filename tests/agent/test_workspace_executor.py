@@ -630,8 +630,18 @@ class TestPersistTurnInstructionRace:
 
 
 def _small_model() -> ResolvedModel:
-    """Tiny context so a modest seeded history trips the compaction trigger."""
-    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=500, config=ModelProfileConfig())
+    """A small context so a modest seeded history trips the compaction trigger.
+
+    The fixed part of the prompt (the system prompt plus the 7 workspace tools, about 3k tokens) counts against
+    the trigger now, so the window is sized around it: a context it alone fills is unreducible by design (see
+    ``test_fixed_overhead_compaction.py``)."""
+    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=8_000, config=ModelProfileConfig())
+
+
+def _small_strategy() -> CompactionStrategy:
+    """tail_turns=1 and a small summary allowance: with the default 4096 the best case (fixed part, protected input
+    and a summary of the full allowance) is over the trigger of a window this small, and compaction would rightly skip."""
+    return CompactionStrategy(tail_turns=1, summary_max_tokens=200)
 
 
 def _messages_path(workspace, session):
@@ -720,7 +730,7 @@ class TestCompactionPreservesEventLog:
                 llm_model=_small_model(),
                 tool_manager=mgr,
                 session=session,
-                compaction=CompactionStrategy(tail_turns=1),
+                compaction=_small_strategy(),
             )
 
             await _drain(executor.invoke([]))
@@ -838,7 +848,7 @@ class TestSteerDeferredDuringCompaction:
                 llm_model=_small_model(),
                 tool_manager=mgr,
                 session=session,
-                compaction=CompactionStrategy(tail_turns=1),
+                compaction=_small_strategy(),
             )
 
             invoke_task = asyncio.create_task(_drain(executor.invoke([])))
@@ -907,7 +917,7 @@ class TestSteerDeferredDuringCompaction:
                 llm_model=_small_model(),
                 tool_manager=mgr,
                 session=session,
-                compaction=CompactionStrategy(tail_turns=1),
+                compaction=_small_strategy(),
             )
 
             invoke_task = asyncio.create_task(_drain(executor.invoke([])))
@@ -959,7 +969,7 @@ class TestSteerDeferredDuringCompaction:
                 llm_model=_small_model(),
                 tool_manager=mgr,
                 session=session,
-                compaction=CompactionStrategy(tail_turns=1),
+                compaction=_small_strategy(),
             )
 
             # Fail ONLY the deferred-steer drain commit (op="user_instruction");

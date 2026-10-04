@@ -1563,7 +1563,10 @@ class _CompactionNote(BaseModel):
     outcome: str = Field(..., description="The counted outcome (``unreducible``).")
     reason: str = Field(
         ...,
-        description="Why: ``empty_head`` or ``protected_over_trigger`` (see CompactedTurn.unreducible).",
+        description=(
+            "Why: ``empty_head``, ``fixed_over_budget`` or ``protected_over_budget`` "
+            "(see CompactedTurn.unreducible)."
+        ),
     )
     estimated_tokens: int = Field(..., ge=0, description="The history's estimated size, in tokens.")
     trigger_tokens: int | None = Field(default=None, description="The trigger it was measured against.")
