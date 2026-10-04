@@ -210,7 +210,7 @@ sequenceDiagram
     else clean / cancel / error
         D->>L: TurnLogCompleted | Cancelled | Failed
         D-->>P: ReleaseOutcome(success, drop_lease=True)
-        P->>E: engine.release(lease, outcome)
+        P->>E: _release_lease marks the scope, then engine.release(lease, outcome)
     end
 ```
 

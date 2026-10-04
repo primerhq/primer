@@ -5,9 +5,10 @@ engine did not confirm. If the execution releases its lease while that heartbeat
 outstanding, the engine answers "not mine" (the lease is gone, which is exactly what a release does) and
 the loop cancelled the task of an execution that had nothing left to preempt except its own TAIL:
 ``_run_engine_session`` re-arms a queued wake/steer after the release (``_maybe_rearm_session``), and a
-cancel landing there leaves the steer with no lease. Since a drain now keeps the heartbeat running through
-the whole shutdown, the window is every turn that ends while a heartbeat is in flight, not just one
-rollout's.
+cancel landing there leaves the steer with no lease. The window opens whenever the engine answers a
+heartbeat AFTER the release committed (on Postgres the heartbeat's UPDATE waits on the release
+transaction's row lock and returns no row at commit), and a drain, which now keeps the heartbeat running
+through the whole shutdown, makes every such turn eligible, not just one rollout's.
 
 The verdict must still reach an execution that genuinely lost its lease (the second session in each
 test), and a user cancel is not part of this change.
@@ -276,22 +277,50 @@ async def test_the_harness_handler_marks_its_scope_before_it_releases():
         await scheduler.aclose()
 
 
-def test_no_worker_handler_releases_through_the_engine_directly():
+def test_no_handler_releases_through_the_engine_directly():
     """Every release of a RUNNING execution goes through ``WorkerPool._release_lease`` (which marks the
-    scope first). The two allowed direct calls are the helper itself and the give-back of a lease that
-    never started (it has no scope and is not in flight)."""
+    scope first). A syntactic scan, so docstrings and comments cannot trip it: every call named
+    ``release`` on something called ``engine`` or ``_engine``, anywhere under ``primer/`` except the engine
+    implementations in ``primer/claim/``. The only allowed callers are the helper itself and the give-back
+    of a lease that never started (it has no scope and is not in flight)."""
+    import ast
     import pathlib
-    import re
 
-    root = pathlib.Path(__file__).resolve().parents[2] / "primer" / "worker"
-    offenders: list[str] = []
-    for path in sorted(root.glob("*.py")):
-        for no, line in enumerate(path.read_text().splitlines(), 1):
-            if re.search(r"_engine\.release\(", line):
-                offenders.append(f"{path.name}:{no}: {line.strip()}")
-    # pool.py: _release_lease (marks, then releases) and _release_unstarted (never started).
-    assert len(offenders) == 2, offenders
-    assert all(o.startswith("pool.py:") for o in offenders), offenders
+    root = pathlib.Path(__file__).resolve().parents[2] / "primer"
+    found: set[tuple[str, str]] = set()
+
+    class _Scan(ast.NodeVisitor):
+        def __init__(self, rel: str) -> None:
+            self.rel = rel
+            self.stack: list[str] = []
+
+        def _visit_fn(self, node) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        visit_FunctionDef = visit_AsyncFunctionDef = _visit_fn
+
+        def visit_Call(self, node: ast.Call) -> None:
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "release":
+                owner = func.value
+                name = owner.id if isinstance(owner, ast.Name) else (
+                    owner.attr if isinstance(owner, ast.Attribute) else None
+                )
+                if name in {"engine", "_engine"}:
+                    found.add((self.rel, self.stack[-1] if self.stack else "<module>"))
+            self.generic_visit(node)
+
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root.parent).as_posix()
+        if rel.startswith("primer/claim/"):
+            continue
+        _Scan(rel).visit(ast.parse(path.read_text(), filename=rel))
+    assert found == {
+        ("primer/worker/pool.py", "_release_lease"),
+        ("primer/worker/pool.py", "_release_unstarted"),
+    }, found
 
 
 @pytest.mark.asyncio
