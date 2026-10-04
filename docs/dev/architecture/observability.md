@@ -254,13 +254,17 @@ WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
   view; the gap these close is the per-PROFILE dimension. `status` is `ok`,
   `error`, or `interrupted` (a Stop cut the call short while the loop waited for
   the model; like a stream that raises, it produces no `llm_call` record).
-- `session_interrupts_via_poll_total` counts Stops the dispatch watcher found on
-  the session row because the bus message never arrived, and
+- `session_interrupts_via_poll_total{reason}` counts Stops the dispatch watcher
+  found on the session row instead of on the bus. `reason="queued_before_turn"`
+  means the flag was already set when the turn began (a Stop recorded while the
+  session was queued): expected, not a fault. `reason="missed_while_running"`
+  means the Stop was requested while the turn ran and its bus message never
+  arrived: that one means the bus is dropping Stops, and the Stop was delayed (by
+  at most the 2s poll interval, which applies while a turn is running), not lost.
   `session_interrupt_publish_failures_total` counts Stop requests whose bus
   publish failed (`POST .../interrupt` still answers 200: the flag on the row is
-  durable and the running worker polls it). Neither has labels. A rate above
-  zero on either means the bus is dropping Stops; the Stop is delayed (by at
-  most the 2s poll interval), not lost.
+  durable and the running worker polls it); it has no labels. `reason` is a
+  closed two-value enum, so it is on the label allowlist.
 - `llm_count_tokens_total{provider_id,source,outcome}` and
   `llm_count_tokens_seconds{provider_id,source}` are written by
   `count_prompt_tokens` in `primer/llm/counting.py`, the one wrapper that turns
