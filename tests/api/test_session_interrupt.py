@@ -150,7 +150,13 @@ async def test_interrupt_on_a_parked_session_is_refused_and_records_nothing(
 
     assert resp.status_code == 409, resp.text
     detail = resp.json().get("detail", "")
-    assert "no turn is running" in detail and "Cancel" in detail, detail
+    assert "Cancel" in detail, detail
+    if parked_status == "parked":
+        assert "no turn is running" in detail, detail
+    else:
+        # A graph or subagent resume runs model calls inline, so "no turn is running" would be false.
+        assert "no turn is running" not in detail, detail
+        assert "resuming" in detail and "Stop is not available during a resume" in detail, detail
     after = await sessions.get(ctx.session_id)
     assert after.interrupt_requested is False, "a refused Stop must not leave a flag behind"
 
