@@ -28,15 +28,21 @@ What is sent, and what is not:
   media block is removed before translation, estimated with the shared flat
   constants, and reported as an estimated component.
 
-Bounded: a per-call ``timeout`` and ``max_retries=0`` (the SDK default is a 600 s
-read timeout and two retries, so a stalled count could hold a turn for minutes).
-A timeout is a ``ProviderTimeoutError`` (outcome ``fallback_timeout``); an unclassified
-4xx is a ``BadRequestError`` (a rejection), never a bare ``ProviderError``, which
-the wrapper would treat as a bug.
+Bounded twice, and the second bound is the real one. ``max_retries=0`` and a
+per-call ``timeout`` replace the SDK defaults (a 600 s read timeout and two
+retries), but that ``timeout`` becomes an httpx ``Timeout`` applied to each
+connect, write, read and pool wait separately, never to the call as a whole: a
+server that keeps trickling bytes resets the read timer on every one, and a real
+client against such a server returned successfully after 12 s with ``timeout=1.0``.
+The whole call is therefore also wrapped in ``asyncio.wait_for(timeout_s)``.
+Either expiry is a ``ProviderTimeoutError`` (outcome ``fallback_timeout``); an
+unclassified 4xx is a ``BadRequestError`` (a rejection), never a bare
+``ProviderError``, which the wrapper would treat as a bug.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -60,7 +66,7 @@ ToolsToWire = Callable[[list[Tool] | None], "list[dict[str, Any]] | None"]
 
 
 def _map_error(exc: Exception) -> PrimerError:
-    if isinstance(exc, anthropic.APITimeoutError):
+    if isinstance(exc, (anthropic.APITimeoutError, asyncio.TimeoutError, TimeoutError)):
         return ProviderTimeoutError(
             f"anthropic count_tokens timed out ({type(exc).__name__})", cause=exc,
         )
@@ -103,7 +109,7 @@ async def count_tokens_anthropic_detailed(
         request["system"] = system
     scoped = client.with_options(max_retries=0) if hasattr(client, "with_options") else client
     try:
-        result = await scoped.messages.count_tokens(**request)
+        result = await asyncio.wait_for(scoped.messages.count_tokens(**request), timeout_s)
         counted = int(result.input_tokens)
     except PrimerError:
         raise

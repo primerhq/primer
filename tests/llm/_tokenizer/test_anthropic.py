@@ -8,6 +8,10 @@ single wrapper (primer.llm.counting) turns into a labelled estimate.
 
 from __future__ import annotations
 
+import asyncio
+import socket
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -62,11 +66,29 @@ class _FakeClient:
         return self.messages.count_tokens.await_args.kwargs
 
 
-async def _count(client, messages=USER, tools=None):
+async def _count(client, messages=USER, tools=None, **kwargs):
     return await count_tokens_anthropic_detailed(
         client=client, model="claude-opus-4-7", messages=messages, tools=tools,
         messages_to_wire=_messages_to_anthropic, tools_to_wire=_tools_to_anthropic,
+        **kwargs,
     )
+
+
+def _sleeping_client(seconds: float):
+    """A client whose count outlasts ``timeout_s``: the SDK's own ``timeout`` is a
+    per-phase httpx timeout, so a slow response is not cut off by it."""
+    calls = {"n": 0}
+
+    async def count_tokens(**_kwargs):
+        calls["n"] += 1
+        await asyncio.sleep(seconds)
+        return SimpleNamespace(input_tokens=1)
+
+    client = SimpleNamespace(
+        messages=SimpleNamespace(count_tokens=count_tokens),
+        with_options=lambda **_options: client,
+    )
+    return client, calls
 
 
 class TestRequestShape:
@@ -169,6 +191,14 @@ class TestFailuresRaiseMappedErrors:
         with pytest.raises(ProviderTimeoutError):
             await _count(_FakeClient(exc=exc))
 
+    async def test_a_count_that_outlives_the_deadline_is_a_timeout_not_a_long_wait(self) -> None:
+        client, calls = _sleeping_client(3.0)
+        started = time.monotonic()
+        with pytest.raises(ProviderTimeoutError):
+            await _count(client, timeout_s=0.1)
+        assert time.monotonic() - started < 1.0, "the call waited out the sleep"
+        assert calls["n"] == 1
+
     async def test_a_connection_failure_is_a_network_error(self) -> None:
         exc = anthropic.APIConnectionError(request=httpx.Request("POST", "https://x"))
         with pytest.raises(NetworkError):
@@ -202,13 +232,15 @@ class TestThroughTheWrapper:
     """N4: a failing client must reach the wrapper's labelled fallback, never native."""
 
     class _Llm:
-        def __init__(self, client) -> None:
+        def __init__(self, client, timeout_s: float = COUNT_TIMEOUT_S) -> None:
             self.client = client
+            self.timeout_s = timeout_s
 
         async def count_tokens_detailed(self, *, model, messages, tools=None):
             return await count_tokens_anthropic_detailed(
                 client=self.client, model=model, messages=messages, tools=tools,
                 messages_to_wire=_messages_to_anthropic, tools_to_wire=_tools_to_anthropic,
+                timeout_s=self.timeout_s,
             )
 
     MODEL = SimpleNamespace(provider_id="p", profile_id="prof", model_name="claude-opus-4-7")
@@ -246,9 +278,76 @@ class TestThroughTheWrapper:
         assert (first.outcome, second.outcome) == ("fallback_timeout", "negative_cached")
         assert client.messages.count_tokens.await_count == 1
 
+    async def test_a_slow_count_is_a_cached_timeout_through_the_wrapper(self) -> None:
+        client, calls = _sleeping_client(3.0)
+        cache = NegativeCache()
+        llm = self._Llm(client, timeout_s=0.1)
+        started = time.monotonic()
+        first = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        second = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        assert (first.outcome, second.outcome) == ("fallback_timeout", "negative_cached")
+        assert calls["n"] == 1
+        assert time.monotonic() - started < 1.0
+
     async def test_a_working_client_is_labelled_native(self) -> None:
         result = await count_prompt_tokens(
             self._Llm(_FakeClient(tokens=77)), model=self.MODEL, messages=USER,
             negative_cache=NegativeCache(),
         )
         assert (result.total, result.source, result.outcome) == (77, "native", "ok")
+
+
+class TestTheRealClientIsBounded:
+    """The SDK's ``timeout`` is per phase, so only ``asyncio.wait_for`` bounds the call.
+    This runs the REAL ``AsyncAnthropic`` client against a loopback server that
+    trickles its response one byte at a time, which resets httpx's read timer on
+    every byte: with the old code a ``timeout_s`` of 0.5 returned successfully after
+    ~5 s (and 12 s at 1.0 against a slower trickle)."""
+
+    BODY = b'{"input_tokens": 7, "type": "message_tokens_count"}'
+    BYTE_DELAY_S = 0.1
+
+    def _server(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        stop = threading.Event()
+
+        def serve() -> None:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            try:
+                conn.recv(65536)
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n"
+                    b"content-length: %d\r\n\r\n" % len(self.BODY)
+                )
+                for byte in self.BODY:
+                    if stop.is_set():
+                        break
+                    conn.sendall(bytes([byte]))
+                    time.sleep(self.BYTE_DELAY_S)
+            except OSError:
+                pass  # the client gave up: the point of the test
+            finally:
+                conn.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        return listener, stop
+
+    async def test_a_trickling_response_is_cut_off_at_timeout_s(self) -> None:
+        listener, stop = self._server()
+        client = anthropic.AsyncAnthropic(
+            base_url=f"http://127.0.0.1:{listener.getsockname()[1]}", api_key="test",
+        )
+        started = time.monotonic()
+        try:
+            with pytest.raises(ProviderTimeoutError):
+                await _count(client, timeout_s=0.5)
+            assert time.monotonic() - started < 2.0, "the whole call must stop at timeout_s"
+        finally:
+            stop.set()
+            listener.close()
+            await client.close()
