@@ -160,6 +160,25 @@ class TestKeptTail:
             ("assistant", "rolled up"), ("user", "the unanswered question"),
         ]
 
+    async def test_a_summary_that_sits_after_the_kept_user_run_is_recorded_and_read_back_in_place(self):
+        from primer.workspace.session import reconstruct_compacted_history
+
+        io = _IO()
+        kept = [Message(role="user", parts=[TextPart(text="THE QUESTION")]),
+                Message(role="assistant", parts=[TextPart(text="newest round")])]
+
+        async def run(_history):
+            r = self._result("rolled up", kept)
+            r.summary_after = 1
+            return r
+
+        await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+        assert json.loads(io.lines[0])["payload"]["summary_after"] == 1
+        shown = reconstruct_compacted_history([line.decode() for line in io.lines])
+        assert [(m.role, m.parts[0].text) for m in shown] == [
+            ("user", "THE QUESTION"), ("assistant", "rolled up"), ("assistant", "newest round"),
+        ]
+
     async def test_a_marker_with_nothing_kept_has_no_tail_key(self):
         io = _IO()
 
@@ -225,3 +244,32 @@ class TestKeptTail:
         with pytest.raises(ValidationError, match="nothing to compact"):
             await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
         assert io.lines == []
+
+    async def test_the_refusal_names_the_strategys_reason_and_carries_it_as_a_problem_extension(self):
+        from primer.session.compaction import NothingToCompact
+
+        async def run(_history):
+            r = self._result("", [])
+            r.unreducible = "protected_over_budget"
+            return r
+
+        with pytest.raises(NothingToCompact) as refused:
+            await compact_session(row=_row(), workspace_io=_IO(), history=[], run_compaction=run)
+        assert refused.value.reason == "protected_over_budget"
+        assert refused.value.problem_extensions == {"reason": "protected_over_budget"}
+        assert "fills the context window" in str(refused.value) and "no earlier history" not in str(refused.value)
+
+    async def test_a_history_that_changed_under_the_summariser_is_logged_not_silently_dropped(self, caplog):
+        import logging
+
+        async def run(_history):
+            return self._result("rolled up", [])
+
+        old = [Message(role="user", parts=[TextPart(text="q")])]
+
+        async def reload():  # a different shape: the prefix no longer matches
+            return [Message(role="assistant", parts=[TextPart(text="x")]), Message(role="user", parts=[TextPart(text="y")])]
+
+        with caplog.at_level(logging.WARNING, logger="primer.session.compaction"):
+            await compact_session(row=_row(), workspace_io=_IO(), history=old, run_compaction=run, reload_history=reload)
+        assert any("history changed under a manual compaction" in r.getMessage() for r in caplog.records)

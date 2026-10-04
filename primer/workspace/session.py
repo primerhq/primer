@@ -116,8 +116,12 @@ UNREADABLE_TAIL_NOTE = (
 )
 
 
-def _kept_tail(payload: dict) -> list[Message]:
-    """The messages a compaction marker kept verbatim, or ``[]``.
+def _kept_tail(payload: dict) -> tuple[list[Message], int]:
+    """The messages a compaction marker kept verbatim, and where the summary goes among them.
+
+    The summary goes after ``summary_after`` of the kept messages (``0``, the default and what every
+    older marker means, puts it in front); a turn whose early tool rounds were summarised puts it
+    after the user run that opened the turn.
 
     All or nothing: a tail with one unreadable entry could hold a tool call
     without its result, which providers reject, so it is dropped whole and the
@@ -127,16 +131,18 @@ def _kept_tail(payload: dict) -> list[Message]:
     """
     raw = payload.get("kept_tail_messages")
     if not isinstance(raw, list):
-        return []
+        return [], 0
+    after = payload.get("summary_after")
+    after = after if isinstance(after, int) and not isinstance(after, bool) and after > 0 else 0
     try:
-        return [Message.model_validate(m) for m in raw]
+        return [Message.model_validate(m) for m in raw], after
     except ValueError:  # pydantic.ValidationError is a ValueError
         logger.warning(
             "compaction marker carries an unreadable kept tail (%d entries); "
             "dropping it and keeping the summary",
             len(raw),
         )
-        return [Message(role="assistant", parts=[TextPart(text=UNREADABLE_TAIL_NOTE)])]
+        return [Message(role="assistant", parts=[TextPart(text=UNREADABLE_TAIL_NOTE)])], 0
 
 
 def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
@@ -163,6 +169,7 @@ def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
     neither replays uncompacted history after a compaction.
     """
     summary_text: str | None = None
+    summary_after = 0
     # Each Message is carried with the last seq seen before it was
     # written. Message lines are seqless, so that is the only way to
     # decide later whether a rewind naming a seq covers them.
@@ -193,7 +200,8 @@ def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
             payload = obj.get("payload") or {}
             summary_text = payload.get("summary") or None
             summary_seq = seen_seq
-            carried = [(seen_seq, m) for m in _kept_tail(payload)]
+            kept, summary_after = _kept_tail(payload)
+            carried = [(seen_seq, m) for m in kept]
             continue
         if obj.get("kind") == rewind_kind:
             to_seq = (obj.get("payload") or {}).get("to_seq")
@@ -211,10 +219,9 @@ def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
         # else: a non-marker event-log record -> not LLM history, skip.
     msgs = [m for _s, m in carried]
     if summary_text:
-        return [
-            Message(role="assistant", parts=[TextPart(text=summary_text)]),
-            *msgs,
-        ]
+        summary = Message(role="assistant", parts=[TextPart(text=summary_text)])
+        k = min(summary_after, len(msgs))
+        return [*msgs[:k], summary, *msgs[k:]]
     return msgs
 
 
