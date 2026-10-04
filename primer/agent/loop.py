@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import primer.observability.metrics as _metrics
 
@@ -38,6 +38,7 @@ from primer.model.chat import (
     ExtendedEvent,
     Message,
     StreamEvent,
+    Tool,
     ToolCallPart,
     ToolResultPart,
     TurnStreamFailure,
@@ -59,6 +60,29 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class PromptGuard(Protocol):
+    """The seam through which a caller may reduce the prompt before each model call.
+
+    ``run_agent_turn`` calls :meth:`before_call` with the accumulated prompt and
+    the tool catalogue immediately before EVERY ``llm.stream`` call (the first
+    one included) and sends what it returns; it calls :meth:`after_call` with the
+    call's ``Usage`` (``None`` when the provider reported none) once the call has
+    finished. The guard sees and returns only the OUTGOING prompt: ``messages_out``
+    (what the caller persists and what a park stamps onto its exception) is never
+    touched, so a reduction is ephemeral and the durable record stays raw.
+
+    The loop owns no policy: a guard that reduces nothing is the default (no guard
+    at all), and later slices supply the implementation. Keep this surface small;
+    it is the one place the loop knows a guard exists.
+    """
+
+    async def before_call(
+        self, prompt: list[Message], *, tools: list[Tool],
+    ) -> list[Message]: ...
+
+    def after_call(self, usage: "Usage | None") -> None: ...
 
 
 def _observe_llm_call(
@@ -137,12 +161,13 @@ async def run_agent_turn(
     response_format: dict[str, Any] | None = None,
     principal: str | None = None,
     messages_out: list[Message] | None = None,
-    last_input_tokens_out: list[int | None] | None = None,
     artifact_storage: "ArtifactStorage | None" = None,
     turn_no: int | None = None,
     tool_calls_as_claims_enabled: bool = False,
     resolve_scoped_call: "Callable[[str], tuple[str, int]] | None" = None,
     await_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None,
+    tools: "list[Tool] | None" = None,
+    budget: "PromptGuard | None" = None,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -169,11 +194,6 @@ async def run_agent_turn(
         Optional caller-provided list. The helper appends every
         message produced during the turn (assistant message + tool-
         result messages) to it, in order.
-    last_input_tokens_out
-        Optional caller-provided single-element list. The helper
-        sets ``[0]`` to the most recent ``Usage.input_tokens`` value
-        observed during the turn (or leaves it as-is if the LLM
-        never emitted Usage).
     artifact_storage
         When given, every part with an ``artifact_id`` (image/document
         attachments, MCP tool-result media) is resolved to inline
@@ -252,6 +272,16 @@ async def run_agent_turn(
         concern -- not a durability proof, unlike ``resolve_scoped_call``
         -- so it must never be folded into that callable's own contract.
 
+    tools
+        The tool catalogue to offer the model, already fetched by the caller.
+        ``None`` (the default) fetches it from ``tool_manager.list_tools`` at the
+        top of the turn, exactly as before. A caller that needs the catalogue
+        itself (to size the prompt before the turn starts) fetches it once and
+        passes it here so the loop does not fetch it a second time.
+    budget
+        Optional :class:`PromptGuard`; see its docstring. ``None`` (the default)
+        sends every prompt exactly as the loop built it.
+
     Raises
     ------
     primer.model.except_.AuthRequiredError
@@ -265,19 +295,27 @@ async def run_agent_turn(
         unraised return from this generator as success without checking
         for this -- see each caller's own handling.
     """
-    tools = await tool_manager.list_tools(principal=principal)
+    if tools is None:
+        tools = await tool_manager.list_tools(principal=principal)
 
     tool_round = 0
     while True:
         if artifact_storage is not None:
             prompt = await hydrate_prompt_parts(artifact_storage, prompt)
+        if budget is not None:
+            # The loop's own ``prompt`` stays the unreduced accumulation: a guard
+            # that prunes must re-derive (or re-apply a recorded set) on every
+            # call, never rely on this variable carrying its previous output.
+            send_prompt = await budget.before_call(prompt, tools=tools)
+        else:
+            send_prompt = prompt
         buffered: list[StreamEvent] = []
         held_done: StreamEvent | None = None
         call_t0 = time.monotonic()
         call_usage: Usage | None = None
         stream = llm.stream(
             model=llm_model.model_name,
-            messages=prompt,
+            messages=send_prompt,
             temperature=agent.temperature,
             max_output_tokens=agent.max_output_tokens,
             response_format=response_format,
@@ -302,14 +340,6 @@ async def run_agent_turn(
                     held_done = event
                     continue
                 yield event
-                if (
-                    last_input_tokens_out is not None
-                    and isinstance(event, Usage)
-                ):
-                    if not last_input_tokens_out:
-                        last_input_tokens_out.append(event.input_tokens)
-                    else:
-                        last_input_tokens_out[0] = event.input_tokens
         except Exception:
             err_elapsed = _observe_llm_call(
                 llm_model, call_t0, call_usage, "error",
@@ -319,6 +349,8 @@ async def run_agent_turn(
             )
             raise
         call_status = "error" if isinstance(held_done, Error) else "ok"
+        if budget is not None:
+            budget.after_call(call_usage)
         elapsed = _observe_llm_call(llm_model, call_t0, call_usage, call_status)
         await _emit_llm_called(
             tool_manager, llm_model, call_usage, elapsed, call_status,
