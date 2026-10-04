@@ -122,7 +122,11 @@ a one-line reason; it may not simply be omitted.
   narrowed sweep above does not exercise them. The `postgres` job in
   `.github/workflows/ci.yml` does, against a `pgvector/pgvector:pg16` service,
   running each suite as its own pytest process (a hang kills only its own
-  process, so one suite cannot erase the others' results). The one gate is
+  process, so one suite cannot erase the others' results). Gated files that
+  live with their subsystem instead (`LANE_FILES` in `tests/pg_gate.py`:
+  today one under `tests/bus` and one under `tests/worker`) each get their own
+  step too, so a file that vanishes fails its own process; a static test fails
+  any gated file that is in neither `LANE_DIRS` nor `LANE_FILES`. The one gate is
   `PRIMER_TEST_POSTGRES_URL` (`postgresql://user:pw@host:port/db`, optional
   `?schema=name`); the former `PRIMER_TEST_PG_DSN` and `PRIMER_PG_TEST_DSN` are
   deprecated aliases that warn. The URL must name its port; the gate refuses a

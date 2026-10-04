@@ -181,6 +181,20 @@ jobs:
           uv run pytest tests/vector
           -o addopts= -n 0 -p no:cacheprovider -v -rs
           --timeout=120 --timeout-method=thread
+      # Gated files that live with their subsystem, outside the suites above
+      # (tests/pg_gate.py LANE_FILES). One process each, for the same reason.
+      - name: Postgres-gated test, bus LISTEN setup (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/bus/test_postgres_listen_setup_live.py
+          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          --timeout=120 --timeout-method=thread
+      - name: Postgres-gated test, worker cancel reconcile (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/worker/test_cancel_reconcile_live.py
+          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          --timeout=120 --timeout-method=thread
 
   core-install:
     # Boundary rule 1 enforcement (modular-monolith): a core-only install
