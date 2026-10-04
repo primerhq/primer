@@ -129,7 +129,13 @@ function NV_Rail_SessionContextMenu(props) {
   ];
   if (!over) {
     rows.push(act("Interrupt", function () {
-      SH_api.interrupt(wid, sid).then(props.onChanged);
+      // The shared Stop path: toasts the acknowledgement or the failure (this used to fire the
+      // request with no feedback and no error handling) and ignores a click while one is pending.
+      window.NV_doInterrupt(wid, sid, props.onChanged, function (msg) {
+        if (window.primerApi && window.primerApi.toastPush) {
+          window.primerApi.toastPush({ kind: "info", text: String(msg), requestId: null });
+        }
+      });
     }));
     rows.push(act("Park", function () {
       SH_api.pause(wid, sid).then(props.onChanged);

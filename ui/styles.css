@@ -4312,6 +4312,9 @@ button.nv-trace-line { cursor: pointer; }
   color: var(--text-2); cursor: pointer;
 }
 .nv-interrupt-btn:hover { border-color: var(--red); color: var(--red); }
+/* A Stop already requested (the "stopping" state): not clickable, and no destructive hover as if it would act. */
+.nv-interrupt-btn:disabled { cursor: not-allowed; opacity: 0.65; }
+.nv-interrupt-btn:disabled:hover { border-color: var(--border-strong); color: var(--text-2); }
 /* 01a052a5 item 5: pending attachment chips, above the input row. */
 .nv-attach-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 0; }
 .nv-attach-chip { gap: 7px; }
@@ -4376,6 +4379,8 @@ button.nv-trace-line { cursor: pointer; }
   font-family: inherit;
 }
 .nv-stop-btn:hover { border-color: var(--red); color: var(--red); }
+.nv-stop-btn:disabled { cursor: not-allowed; opacity: 0.65; }
+.nv-stop-btn:disabled:hover { border-color: var(--border-strong); color: var(--text-2); }
 .nv-send-btn {
   height: var(--hit); padding: 0 13px;
   border: 1px solid var(--accent); background: var(--accent);

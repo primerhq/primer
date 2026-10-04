@@ -145,8 +145,46 @@ function SH_scrollDecision(input) {
   };
 }
 
+// Stop (interrupt): the acknowledged "stopping" state. The console used to show nothing
+// after Stop, so an operator could not tell a lost click from a slow stop and reached for
+// Close (Cancel), which ENDS the session. The state is derived from the SERVED flag:
+// interrupt_requested is true from the moment the request is recorded until the worker lands
+// the Stop (it then clears it and the session reads "waiting"). An ended session is never
+// still stopping, whatever a stale flag on it says.
+function SH_isStopping(session) {
+  return !!session && session.interrupt_requested === true && session.status !== "ended";
+}
+
+// Verbs that mean "waiting on the model" (or an unknown phase): a Stop interrupts that wait
+// at once, so the strip just says "stopping". Any other verb is a TOOL: until a running tool
+// can be cancelled a Stop lets it finish, and the line says so instead of implying it is instant.
+var SH_STOP_MODEL_WAIT_VERBS = {
+  thinking: true, sending: true, responding: true, running: true, claimable: true,
+};
+
+function SH_stoppingLine(status) {
+  var verb = (status && status.verb) || "thinking";
+  if (SH_STOP_MODEL_WAIT_VERBS[verb]) return "stopping";
+  if (verb === "executing") return "stopping: waiting for the running tool to finish";
+  return "stopping: waiting for " + verb + " to finish";
+}
+
+// The slim lifecycle marker in the transcript. A Stop and a Cancel both write a "cancelled"
+// record; only the reason tells them apart, and a Stop (the session stays alive) must not read
+// as the end-of-session wording.
+function SH_lifecycleLabel(kind, payload) {
+  if (kind === "cancelled") {
+    return payload && payload.reason === "operator_interrupt"
+      ? "■ stopped" : "■ cancelled";
+  }
+  return "· " + kind;
+}
+
 window.SH_FOLLOW_PX = SH_FOLLOW_PX;
 window.SH_bareToolName = SH_bareToolName;
+window.SH_isStopping = SH_isStopping;
+window.SH_stoppingLine = SH_stoppingLine;
+window.SH_lifecycleLabel = SH_lifecycleLabel;
 window.SH_statusLine = SH_statusLine;
 window.SH_waitLine = SH_waitLine;
 window.SH_parkedStatusLine = SH_parkedStatusLine;
