@@ -219,50 +219,6 @@
     {
      "parts": [
       [
-       "text",
-       109,
-       "fed840289ce76151"
-      ]
-     ],
-     "role": "user"
-    }
-   ],
-   "model": "golden-model",
-   "response_format": null,
-   "tool_ids": [],
-   "tools": []
-  },
-  {
-   "call": 3,
-   "kwargs": {
-    "max_output_tokens": "None",
-    "temperature": "None",
-    "tool_choice": "'auto'"
-   },
-   "messages": [
-    {
-     "parts": [
-      [
-       "text",
-       1247,
-       "de655d8144e3e255"
-      ]
-     ],
-     "role": "system"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       81,
-       "1704fa4b0a48fa53"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
        "tool_call",
        89,
        "8a3a70f4c3a6aa73"
@@ -354,11 +310,31 @@
      "parts": [
       [
        "text",
+       42,
+       "c6ebfe3ce1e4d656"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
        120028,
        "264d3f1e0a586caa"
       ]
      ],
      "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "89dec7ca2d248a6a"
+      ]
+     ],
+     "role": "assistant"
     },
     {
      "parts": [
@@ -374,8 +350,82 @@
      "parts": [
       [
        "text",
+       109,
+       "fed840289ce76151"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "response_format": null,
+   "tool_ids": [],
+   "tools": []
+  },
+  {
+   "call": 3,
+   "kwargs": {
+    "max_output_tokens": "None",
+    "temperature": "None",
+    "tool_choice": "'auto'"
+   },
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       1247,
+       "de655d8144e3e255"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       81,
+       "1704fa4b0a48fa53"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "786e3bff1c6ca01f"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
        120028,
        "837782cd1cdf46ff"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "7fdec7e4489d3cfc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       40,
+       "13cd1f9b1949c16d"
       ]
      ],
      "role": "user"
@@ -457,6 +507,46 @@
       ]
      ],
      "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "786e3bff1c6ca01f"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "837782cd1cdf46ff"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "7fdec7e4489d3cfc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       40,
+       "13cd1f9b1949c16d"
+      ]
+     ],
+     "role": "user"
     },
     {
      "parts": [
@@ -654,6 +744,46 @@
       ]
      ],
      "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "786e3bff1c6ca01f"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "837782cd1cdf46ff"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "7fdec7e4489d3cfc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       40,
+       "13cd1f9b1949c16d"
+      ]
+     ],
+     "role": "user"
     },
     {
      "parts": [
@@ -900,6 +1030,86 @@
      "parts": [
       [
        "text",
+       42,
+       "da898ce0fe2e16dc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "a578d95d6d26b35d"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "da16e17bea047b16"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "c9d2ffb926b2d586"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "993400fa5a630edb"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "8bb269e38e83a199"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "ad6dbe76db8cf3bc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       40,
+       "24c53c448bc9b18f"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
        37,
        "6eda483240d52c9d"
       ]
@@ -912,6 +1122,46 @@
        "text",
        120028,
        "6c0e9cd1078f6a9e"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "d6aea6fc9b90ce06"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "93229b1ebd40e22f"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "0ad9d0d4de72d395"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "2f5e999af911ed8a"
       ]
      ],
      "role": "user"
@@ -959,46 +1209,6 @@
       ]
      ],
      "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "d6aea6fc9b90ce06"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       120028,
-       "93229b1ebd40e22f"
-      ]
-     ],
-     "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "0ad9d0d4de72d395"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       120028,
-       "2f5e999af911ed8a"
-      ]
-     ],
-     "role": "user"
     },
     {
      "parts": [
@@ -1377,7 +1587,7 @@
    ]
   }
  ],
- "captured_from": "e22fd42b7deef31b8352bbfeefaee948a163eb5b",
+ "captured_from": "f4c7fdc47c322b020adf002dcbbd3f48ccc86bdf",
  "turns": [
   {
    "file": {
@@ -1458,7 +1668,7 @@
   },
   {
    "file": {
-    "bytes": 841666,
+    "bytes": 962294,
     "lines": [
      {
       "len": 56,
@@ -1533,10 +1743,22 @@
       "sha": "2023b2c112b81b9c"
      },
      {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 0",
+      "sha": "6efd05f92d398a84"
+     },
+     {
       "len": 120051,
       "message": "user",
       "preview": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
       "sha": "408fe0d94351bcad"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 1",
+      "sha": "445c51ce44b2da62"
      },
      {
       "len": 120051,
@@ -1545,16 +1767,34 @@
       "sha": "5273df69bf887f5c"
      },
      {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 2",
+      "sha": "22174cd00978a9df"
+     },
+     {
       "len": 120051,
       "message": "user",
       "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
       "sha": "a9c5ce65bc45f610"
      },
      {
-      "len": 279,
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 3",
+      "sha": "525313b5754dc3cd"
+     },
+     {
+      "len": 63,
+      "message": "user",
+      "preview": "turn 2: next",
+      "sha": "dc1adde5e40679c6"
+     },
+     {
+      "len": 120559,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "4e90e64a44a5f9f5"
+      "sha": "d813cc85776e67fc"
      },
      {
       "len": 65,
@@ -1566,24 +1806,50 @@
     "markers": [
      {
       "created_at": "<ts>",
+      "kept_tail": [
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 2 reply 2",
+        "sha": "f956e9c2bb5d85d6"
+       },
+       {
+        "len": 120057,
+        "message": "user",
+        "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+        "sha": "d7e93b57cdb4c875"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 2 reply 3",
+        "sha": "011e0ed2434cb030"
+       },
+       {
+        "len": 69,
+        "message": "user",
+        "preview": "turn 2: next",
+        "sha": "c09bbf1863677404"
+       }
+      ],
       "model": "golden-model",
       "replaced_from_seq": 1,
       "replaced_to_seq": 0,
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "b6ebe312fb275ed4",
-      "tokens_after": 120444,
-      "tokens_before": 210449
+      "tokens_after": 30069,
+      "tokens_before": 210508
      }
     ],
-    "sha256": "e7573e4420cdf7369787768dabf226dfa512bc1b5eb146ffe806f860e10b0339"
+    "sha256": "28a9a7cbceb6dd37768e209d4b54596c691426f08bbd54df26cee5ce5e43241a"
    },
    "llm_calls": 2,
    "turn": "2-tier2-summary"
   },
   {
    "file": {
-    "bytes": 852772,
+    "bytes": 979979,
     "lines": [
      {
       "len": 56,
@@ -1658,10 +1924,22 @@
       "sha": "2023b2c112b81b9c"
      },
      {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 0",
+      "sha": "6efd05f92d398a84"
+     },
+     {
       "len": 120051,
       "message": "user",
       "preview": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
       "sha": "408fe0d94351bcad"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 1",
+      "sha": "445c51ce44b2da62"
      },
      {
       "len": 120051,
@@ -1670,16 +1948,34 @@
       "sha": "5273df69bf887f5c"
      },
      {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 2",
+      "sha": "22174cd00978a9df"
+     },
+     {
       "len": 120051,
       "message": "user",
       "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
       "sha": "a9c5ce65bc45f610"
      },
      {
-      "len": 279,
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 3",
+      "sha": "525313b5754dc3cd"
+     },
+     {
+      "len": 63,
+      "message": "user",
+      "preview": "turn 2: next",
+      "sha": "dc1adde5e40679c6"
+     },
+     {
+      "len": 120559,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "4e90e64a44a5f9f5"
+      "sha": "d813cc85776e67fc"
      },
      {
       "len": 65,
@@ -1754,10 +2050,10 @@
       "sha": "263b0d6170d662da"
      },
      {
-      "len": 275,
+      "len": 6854,
       "record": "compaction_marker",
       "seq": 2,
-      "sha": "d545df906d9f28a3"
+      "sha": "28e10d907d379189"
      },
      {
       "len": 65,
@@ -1769,17 +2065,93 @@
     "markers": [
      {
       "created_at": "<ts>",
+      "kept_tail": [
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 2 reply 2",
+        "sha": "f956e9c2bb5d85d6"
+       },
+       {
+        "len": 120057,
+        "message": "user",
+        "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+        "sha": "d7e93b57cdb4c875"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 2 reply 3",
+        "sha": "011e0ed2434cb030"
+       },
+       {
+        "len": 69,
+        "message": "user",
+        "preview": "turn 2: next",
+        "sha": "c09bbf1863677404"
+       }
+      ],
       "model": "golden-model",
       "replaced_from_seq": 1,
       "replaced_to_seq": 0,
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "b6ebe312fb275ed4",
-      "tokens_after": 120444,
-      "tokens_before": 210449
+      "tokens_after": 30069,
+      "tokens_before": 210508
      },
      {
       "created_at": "<ts>",
+      "kept_tail": [
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 1",
+        "sha": "43e984ec82f6f1a8"
+       },
+       {
+        "len": 2074,
+        "message": "user",
+        "preview": "turn 3 filler 2: fffffffffffffffffffffff",
+        "sha": "d5f46f2a7f034a4c"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 2",
+        "sha": "3d9b1e3cbba9a589"
+       },
+       {
+        "len": 2074,
+        "message": "user",
+        "preview": "turn 3 filler 3: fffffffffffffffffffffff",
+        "sha": "6bab83ba9cf1c7df"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 3",
+        "sha": "fd06569619adcf71"
+       },
+       {
+        "len": 2074,
+        "message": "user",
+        "preview": "turn 3 filler 4: fffffffffffffffffffffff",
+        "sha": "5af211e0b0ba55d8"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 4",
+        "sha": "4d9e43fd9a7e8fc1"
+       },
+       {
+        "len": 69,
+        "message": "user",
+        "preview": "turn 3: next",
+        "sha": "9102a778d5fd9df1"
+       }
+      ],
       "model": "golden-model",
       "replaced_from_seq": 1,
       "replaced_to_seq": 1,
@@ -1787,17 +2159,17 @@
       "summary_len": 51,
       "summary_sha": "8c49090b2ac9e12d",
       "tokens_after": 1624,
-      "tokens_before": 2673
+      "tokens_before": 32716
      }
     ],
-    "sha256": "919fe33ab08f6dbd24b11e66313aa27fc73b94842321d56ae66f433934e9eeba"
+    "sha256": "4ed202319b96474b06da742dceec5cc984f0d0a05aff1d10f7e65def58cf345a"
    },
    "llm_calls": 3,
    "turn": "3-overflow-replay"
   },
   {
    "file": {
-    "bytes": 1333763,
+    "bytes": 1581187,
     "lines": [
      {
       "len": 56,
@@ -1872,10 +2244,22 @@
       "sha": "2023b2c112b81b9c"
      },
      {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 0",
+      "sha": "6efd05f92d398a84"
+     },
+     {
       "len": 120051,
       "message": "user",
       "preview": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
       "sha": "408fe0d94351bcad"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 1",
+      "sha": "445c51ce44b2da62"
      },
      {
       "len": 120051,
@@ -1884,16 +2268,34 @@
       "sha": "5273df69bf887f5c"
      },
      {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 2",
+      "sha": "22174cd00978a9df"
+     },
+     {
       "len": 120051,
       "message": "user",
       "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
       "sha": "a9c5ce65bc45f610"
      },
      {
-      "len": 279,
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 2 reply 3",
+      "sha": "525313b5754dc3cd"
+     },
+     {
+      "len": 63,
+      "message": "user",
+      "preview": "turn 2: next",
+      "sha": "dc1adde5e40679c6"
+     },
+     {
+      "len": 120559,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "4e90e64a44a5f9f5"
+      "sha": "d813cc85776e67fc"
      },
      {
       "len": 65,
@@ -1968,10 +2370,10 @@
       "sha": "263b0d6170d662da"
      },
      {
-      "len": 275,
+      "len": 6854,
       "record": "compaction_marker",
       "seq": 2,
-      "sha": "d545df906d9f28a3"
+      "sha": "28e10d907d379189"
      },
      {
       "len": 65,
@@ -2028,10 +2430,10 @@
       "sha": "120309216c2494a6"
      },
      {
-      "len": 278,
+      "len": 120495,
       "record": "compaction_marker",
       "seq": 3,
-      "sha": "28bcfbeb2c934831"
+      "sha": "2c616185cceb7ce8"
      },
      {
       "len": 76,
@@ -2055,17 +2457,93 @@
     "markers": [
      {
       "created_at": "<ts>",
+      "kept_tail": [
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 2 reply 2",
+        "sha": "f956e9c2bb5d85d6"
+       },
+       {
+        "len": 120057,
+        "message": "user",
+        "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+        "sha": "d7e93b57cdb4c875"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 2 reply 3",
+        "sha": "011e0ed2434cb030"
+       },
+       {
+        "len": 69,
+        "message": "user",
+        "preview": "turn 2: next",
+        "sha": "c09bbf1863677404"
+       }
+      ],
       "model": "golden-model",
       "replaced_from_seq": 1,
       "replaced_to_seq": 0,
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "b6ebe312fb275ed4",
-      "tokens_after": 120444,
-      "tokens_before": 210449
+      "tokens_after": 30069,
+      "tokens_before": 210508
      },
      {
       "created_at": "<ts>",
+      "kept_tail": [
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 1",
+        "sha": "43e984ec82f6f1a8"
+       },
+       {
+        "len": 2074,
+        "message": "user",
+        "preview": "turn 3 filler 2: fffffffffffffffffffffff",
+        "sha": "d5f46f2a7f034a4c"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 2",
+        "sha": "3d9b1e3cbba9a589"
+       },
+       {
+        "len": 2074,
+        "message": "user",
+        "preview": "turn 3 filler 3: fffffffffffffffffffffff",
+        "sha": "6bab83ba9cf1c7df"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 3",
+        "sha": "fd06569619adcf71"
+       },
+       {
+        "len": 2074,
+        "message": "user",
+        "preview": "turn 3 filler 4: fffffffffffffffffffffff",
+        "sha": "5af211e0b0ba55d8"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 4",
+        "sha": "4d9e43fd9a7e8fc1"
+       },
+       {
+        "len": 69,
+        "message": "user",
+        "preview": "turn 3: next",
+        "sha": "9102a778d5fd9df1"
+       }
+      ],
       "model": "golden-model",
       "replaced_from_seq": 1,
       "replaced_to_seq": 1,
@@ -2073,21 +2551,41 @@
       "summary_len": 51,
       "summary_sha": "8c49090b2ac9e12d",
       "tokens_after": 1624,
-      "tokens_before": 2673
+      "tokens_before": 32716
      },
      {
       "created_at": "<ts>",
+      "kept_tail": [
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 4 reply 2",
+        "sha": "c0291d5f5d0ad9f6"
+       },
+       {
+        "len": 120057,
+        "message": "user",
+        "preview": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+        "sha": "8abbae5f84ff8666"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 4 reply 3",
+        "sha": "82dc0f0847a4cae1"
+       }
+      ],
       "model": "golden-model",
       "replaced_from_seq": 1,
       "replaced_to_seq": 2,
       "seq": 3,
       "summary_len": 51,
       "summary_sha": "eac741dd554ebe61",
-      "tokens_after": 90098,
-      "tokens_before": 120117
+      "tokens_after": 30058,
+      "tokens_before": 121715
      }
     ],
-    "sha256": "9adeaf76891a6e88ab415f16e9a501a8a8b51c9c24e7d712895f83a1fb472ab8"
+    "sha256": "347c0beadb269ee587a0d35ba6d529209510ab4594777385fce7ad7d89126bdb"
    },
    "llm_calls": 2,
    "turn": "4-deferred-steers"

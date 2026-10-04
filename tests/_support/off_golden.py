@@ -258,7 +258,15 @@ def capture_file(text: str, session_id: str) -> dict[str, Any]:
             if obj["kind"] == "compaction_marker":
                 payload = dict(obj["payload"])
                 summary = payload.pop("summary", "")
-                markers.append({"seq": obj["seq"], **payload, "summary_len": len(summary), "summary_sha": _digest(summary)})
+                kept = payload.pop("kept_tail_messages", None)
+                marker = {"seq": obj["seq"], **payload, "summary_len": len(summary), "summary_sha": _digest(summary)}
+                if kept is not None:
+                    # the tail the marker keeps verbatim, by label, size and digest (the texts are 120k chars)
+                    marker["kept_tail"] = [
+                        {"message": m.get("role"), "preview": _preview(m), "len": len(json.dumps(m)), "sha": _digest(json.dumps(m, sort_keys=True))}
+                        for m in kept
+                    ]
+                markers.append(marker)
         else:
             lines.append({"message": obj.get("role"), "preview": _preview(obj), "len": len(line), "sha": _digest(line)})
     return {

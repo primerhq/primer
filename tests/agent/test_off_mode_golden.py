@@ -1,5 +1,10 @@
 """Today's compaction behaviour, pinned byte for byte, for the prompt-budget work's ``off`` mode.
 
+``off`` means "today minus the standalone live-defect fixes", so the fixture moves with each such fix:
+it was first captured at ``e22fd42b`` and re-captured at the commit that made tier 2 keep its tail and the
+turn's own input (that fix changes what a tier-2 turn sends, what its marker records and what the next
+turn is handed; the scenario's turn 2 also needed answered history to compact, see ``off_golden.py``).
+
 ``tests/_support/off_golden.py`` runs one scripted session through every path the budget work
 touches (tier 1 pruning, tier 2 summarising, the overflow replay, steers deferred during a
 compaction window). ``fixtures/off_mode_golden.json`` is what that session produced on the code at
@@ -97,6 +102,15 @@ class TestTheFixtureCrossesWhatItPins:
         assert len(turn["file"]["markers"]) == 1
         summariser, answer = golden["calls"][1], golden["calls"][2]
         assert summariser["tool_ids"] == [] and answer["tool_ids"] != []
+
+    def test_the_tier_2_marker_keeps_the_tail_and_the_input_the_turn_answers(self, golden) -> None:
+        marker = golden["turns"][1]["file"]["markers"][0]
+        kept = marker["kept_tail"]
+        assert kept[-1]["preview"] == "turn 2: next", "the unanswered input is the last thing the marker keeps"
+        assert [k["message"] for k in kept] == ["assistant", "user", "assistant", "user"][-len(kept):]
+        assert 2 <= len(kept) < 9, "a tail, bounded by size: not the whole history and not nothing"
+        later = golden["turns"][2]["file"]["markers"]
+        assert all("kept_tail" in m for m in later), "every tier-2 marker records its tail"
 
     def test_the_overflow_replay_force_compacts_and_reruns_the_loop(self, golden) -> None:
         turn = golden["turns"][2]
