@@ -181,7 +181,10 @@ can run an agent or graph headlessly end to end.
 - `workspaces::cancel_workspace_session` - hard-cancel a session.
   Args: `workspace_id`, `session_id`. Returns the session
   `{status:"ended", ended_reason:"cancelled"}` (or still running with
-  `cancel_requested` while an in-flight turn is preempted). This is
+  `cancel_requested` while an in-flight turn is preempted). A turn
+  blocked in a long model or tool call is preempted within about the
+  worker heartbeat interval (10 seconds by default), even if the fast
+  cancel signal was lost on the way. This is
   how you end a session; sessions are not a CRUD entity and there is
   no delete.
 
