@@ -8,16 +8,21 @@ to ``o200k_base`` (the current ChatGPT default).
 Serialises messages and tools to a canonical text form, then encodes
 once and returns the token length. Per-message envelope overhead
 (``4``) mirrors OpenAI's published cookbook recipe for chat models.
+
+The encodings come from :mod:`primer.llm._tokenizer._tiktoken_offline`, which
+never fetches: a missing vocabulary raises ``TokenCounterUnavailable`` and the
+single wrapper in ``primer.llm.counting`` owns the fallback. Text is encoded
+with ``encode_ordinary``: ``encode`` raises ``ValueError`` on any content that
+spells a special token (``<|endoftext|>`` in a web page or a file a tool read),
+which would otherwise make the counter fail on arbitrary tool output.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from functools import lru_cache
 
-import tiktoken
-
+from primer.llm._tokenizer import _tiktoken_offline
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
@@ -57,11 +62,6 @@ def resolve_encoding_name(model: str) -> str:
     """Map a model name (possibly prefixed by provider) to a tiktoken encoding."""
     key = model.lower().split("/")[-1]
     return _MODEL_TO_ENCODING.get(key, "o200k_base")
-
-
-@lru_cache(maxsize=8)
-def _get_encoding(name: str) -> tiktoken.Encoding:
-    return tiktoken.get_encoding(name)
 
 
 def _part_text(part: Part) -> str:
@@ -122,12 +122,12 @@ def count_tokens_openai(
     Per-message overhead of 4 tokens covers role + envelope markers,
     matching OpenAI's published cookbook recipe.
     """
-    encoding = _get_encoding(resolve_encoding_name(model))
+    encoding = _tiktoken_offline.load_encoding(resolve_encoding_name(model))
     payload = _serialise_messages(messages)
     tools_payload = _serialise_tools(tools)
-    tokens = len(encoding.encode(payload))
+    tokens = len(encoding.encode_ordinary(payload))
     if tools_payload:
-        tokens += len(encoding.encode(tools_payload))
+        tokens += len(encoding.encode_ordinary(tools_payload))
     tokens += 4 * len(messages)
     return tokens
 

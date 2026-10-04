@@ -76,3 +76,43 @@ class TestCountTokensOpenAI:
         a = count_tokens_openai(model="gpt-4o", messages=msgs, tools=None)
         b = count_tokens_openai(model="gpt-4o", messages=msgs, tools=None)
         assert a == b
+
+
+class TestCounterContract:
+    """The counter never quietly returns a heuristic and never trips on content."""
+
+    def test_content_spelling_a_special_token_is_counted_not_raised(
+        self, monkeypatch,
+    ) -> None:
+        """tiktoken's ``encode`` raises ValueError on '<|endoftext|>' in tool
+        output; the counter must use ``encode_ordinary``. Reverting to
+        ``encode`` fails this test because the encoding registers the token."""
+        import tiktoken
+
+        from primer.llm._tokenizer import _tiktoken_offline
+
+        encoding = tiktoken.Encoding(
+            name="with-special",
+            pat_str=r"(?s:.)",
+            mergeable_ranks={bytes([i]): i for i in range(256)},
+            special_tokens={"<|endoftext|>": 256},
+        )
+        monkeypatch.setattr(
+            _tiktoken_offline, "load_encoding", lambda name, **_k: encoding,
+        )
+        msgs = [Message(role="user", parts=[TextPart(text="page: <|endoftext|> end")])]
+        assert count_tokens_openai(model="gpt-4o", messages=msgs) > 0
+
+    def test_an_unavailable_vocabulary_raises_it_does_not_estimate(
+        self, monkeypatch,
+    ) -> None:
+        from primer.llm._tokenizer import _tiktoken_offline
+        from primer.model.except_ import TokenCounterUnavailable
+
+        def unavailable(name, **_k):
+            raise TokenCounterUnavailable(f"{name}: no vocabulary")
+
+        monkeypatch.setattr(_tiktoken_offline, "load_encoding", unavailable)
+        msgs = [Message(role="user", parts=[TextPart(text="hello")])]
+        with pytest.raises(TokenCounterUnavailable, match="no vocabulary"):
+            count_tokens_openai(model="gpt-4o", messages=msgs)

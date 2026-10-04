@@ -151,8 +151,11 @@ class OpenRouterLLM(LLM):
         Counts are approximate for non-OpenAI upstreams; used by primer
         for context-window warning banners, not for billing.
         """
+        from primer.llm._tokenizer._executor import run_counter
         from primer.llm._tokenizer.openai import count_tokens_openai
-        return count_tokens_openai(model=model, messages=messages, tools=tools)
+        return await run_counter(
+            count_tokens_openai, model=model, messages=messages, tools=tools,
+        )
 
     async def stream(  # type: ignore[override]
         self,
