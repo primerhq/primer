@@ -594,7 +594,12 @@ class TestGetClient:
 class TestListModelsAndTokens:
     async def test_count_tokens_delegates(self) -> None:
         llm = OllamaLLM(_make_provider())
-        with patch("primer.llm.ollama.count_tokens_hf", return_value=17) as mock:
+        from primer.model.token_count import TokenCount
+
+        with patch(
+            "primer.llm.ollama.count_tokens_hf_detailed",
+            return_value=TokenCount(total=17, exact=False),
+        ) as mock:
             n = await llm.count_tokens(
                 model="llama3", messages=[Message(role="user", parts=[TextPart(text="hi")])], tools=None
             )

@@ -26,7 +26,8 @@ from pydantic import BaseModel as PydanticBaseModel
 
 from primer.int.llm import LLM
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
-from primer.llm._tokenizer.hf import count_tokens_hf
+from primer.llm._tokenizer._executor import run_counter
+from primer.llm._tokenizer.hf import count_tokens_hf_detailed
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
@@ -68,6 +69,7 @@ from primer.model.provider import (
     LLMProviderType,
     OllamaConfig,
 )
+from primer.model.token_count import TokenCount
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
 
@@ -456,8 +458,26 @@ class OllamaLLM(LLM):
         messages: list[Message],
         tools: list[Tool] | None = None,
     ) -> int:
-        return await asyncio.to_thread(
-            count_tokens_hf, model=model, messages=messages, tools=tools,
+        return (
+            await self.count_tokens_detailed(
+                model=model, messages=messages, tools=tools,
+            )
+        ).total
+
+    async def count_tokens_detailed(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> TokenCount:
+        """A local HF tokenizer when one is cached for this model, else it raises.
+
+        Runs on the dedicated counter executor, never the Hub (see
+        ``_tokenizer/hf.py``); ``exact=False``, the tokenizer is a stand-in.
+        """
+        return await run_counter(
+            count_tokens_hf_detailed, model=model, messages=messages, tools=tools,
         )
 
     def _get_client(self) -> ollama.AsyncClient:

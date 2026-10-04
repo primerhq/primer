@@ -251,7 +251,29 @@ A counter is a function that is meant to raise when it cannot count; the wrapper
 - **tiktoken never fetches.** `primer/llm/_tokenizer/_tiktoken_offline.py` reads the vocabulary from the cache directory (resolved as tiktoken resolves it), verifies its sha256 against the pins, builds the `Encoding` from the verified bytes by running tiktoken's own constructor against a copy of its globals, memoises results and failures for the life of the process, and raises `TokenCounterUnavailable` when anything is missing. It never calls `tiktoken.get_encoding` and leaves a bad file where it is. Counting uses `encode_ordinary`, because `encode` raises on content that spells a special token (`<|endoftext|>` in a web page a tool fetched).
 - **Synchronous counters run off the event loop** on a dedicated two-thread executor (`primer/llm/_tokenizer/_executor.py`) so a burst of counts cannot starve the shared default pool; a count that has not started within the queue-wait bound is a transient `TokenCounterUnavailable`.
 - **Aggregated profiles** count with the first member that can and never claim the result is exact (the member that counted may not be the one that serves). When none can, the failure is `TokenCounterUnavailable`, not `ConfigError`.
+- **What each counter sends, and how it is bounded.**
+
+  | Adapter | Counter | Bound | System text | Tools | Media | Result |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | OpenAI / OpenChat / OpenRouter | tiktoken, offline | CPU only, counter executor | counted | counted | flat estimate | `exact` only for a model in `_MODEL_TO_ENCODING` |
+  | Anthropic | `messages.count_tokens` | 3 s per call, `max_retries=0` | the `system` parameter | sent | stripped, flat estimate | exact, `media` estimated |
+  | Gemini | `models.count_tokens` | 3 s per call (`http_options`) | estimated, never sent | estimated, never sent | dropped, flat estimate | exact over contents, `system`/`tools`/`media` estimated |
+  | Ollama | local `AutoTokenizer` | CPU only, counter executor | counted | counted | flat estimate | never exact; unavailable unless a repo-id tokenizer is cached |
+
+  Gemini never sends `system_instruction`, `tools` or `generation_config` on a count: the Developer-API client raises `ValueError` for all three. Anthropic never sends an empty base64 placeholder for media. Both vendor counters raise on failure; neither falls back inside the adapter.
 - **Metrics** (`llm_count_tokens_total`, `llm_count_tokens_seconds`, `llm_tokenizer_ready`) are described in `docs/dev/architecture/observability.md`.
+
+### What `Usage.input_tokens` means
+
+`Usage.input_tokens` is the whole prompt the provider processed, cached tokens included; `cached_input_tokens` is a subset of it. Anything that reads provider usage as the size of the prompt depends on each adapter honouring that, so the mapping is pinned from payloads in `tests/llm/test_usage_semantics.py`:
+
+| Kind | Source field | Includes cached tokens? | Status |
+| --- | --- | --- | --- |
+| Anthropic | `usage.input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens` | the API's `input_tokens` EXCLUDES them (documented); the adapter adds them back | pinned |
+| Gemini | `prompt_token_count` | yes (documented) | pinned |
+| OpenResponses | `input_tokens`, cached from `input_tokens_details` | yes | pinned |
+| OpenChat, OpenRouter | `prompt_tokens` | OpenAI spec: yes; LM Studio, llama.cpp, vLLM and OpenRouter not verified | mapping pinned, semantics unverified |
+| Ollama | `prompt_eval_count` | docs list `prompt_eval_cached_count` separately; reports say a warm cache lowers it and a prompt past `num_ctx` is silently truncated and reported post-truncation | mapping pinned, not reproduced, do not trust as the prompt size |
 
 ## 6. Lifecycle
 
@@ -324,7 +346,7 @@ Inbound MCP is the mirror of the outbound MCP toolset client and is a peer surfa
 - **Unsupported parts raise, never drop.** An adapter that cannot transmit a `Part` modality raises `UnsupportedContentError` rather than silently dropping it, so input/output index correspondence is never corrupted. Embedders run this check before acquiring a rate-limit slot.
 - **Assistant history replays as string content on the Responses API.** `_finalize_message_item` (`primer/llm/openresponses.py`) collapses a text-only assistant item to `{"role": "assistant", "content": "<text>"}` before it is appended to the `input` list. A list of `output_text` parts matches only the `ResponseOutputMessageParam` union arm, which also requires `id` and `status`; real OpenAI infers those but a strict reimplementation of the schema rejects every arm and returns a 400 enumerating the whole union. String content matches `EasyInputMessageParam`, which accepts `role="assistant"`, and validates against both. Tool calls are split into separate `function_call` items before this runs, so the text-only case is the common one and the collapse is lossless; an assistant message carrying non-text parts keeps the list form.
 - **Unknown extended kwargs are dropped with one DEBUG line.** Each adapter whitelists the extended keys its wire format accepts and logs the dropped remainder once, so an operator diagnosing "my knob is not taking effect" has a discoverable signal.
-- **`count_tokens` never blocks a turn.** Network counters (`primer/llm/_tokenizer/anthropic.py`, `gemini.py`) fall back to `count_tokens_char_fallback` on any exception, log a WARNING, and return an estimate. The per-adapter wiring is: OpenResponses and OpenChat call `count_tokens_openai` (tiktoken); OpenRouter reuses the same tiktoken path; Anthropic calls `count_tokens_anthropic`; Gemini calls `count_tokens_gemini`; Ollama wraps `count_tokens_hf` (transformers `AutoTokenizer`) in `asyncio.to_thread`; `transformers` ships in the optional `huggingface` extra and is imported lazily, so a core install counts with the char heuristic instead of raising.
+- **A counter raises; the wrapper keeps a turn safe.** No adapter returns a heuristic number from `count_tokens`; a failure is a mapped provider error or `TokenCounterUnavailable`, and `primer.llm.counting.count_prompt_tokens` is the one place that turns it into a labelled estimate (see "Token counter contract"). The per-adapter wiring: OpenResponses, OpenChat and OpenRouter call `count_tokens_openai_detailed` (tiktoken, offline, off the loop); Anthropic calls `count_tokens_anthropic_detailed` (the vendor endpoint); Gemini calls `count_tokens_gemini_detailed` (the vendor endpoint over the contents only); Ollama runs `count_tokens_hf_detailed` (a local `AutoTokenizer`) on the counter executor. `transformers` ships in the optional `huggingface` extra and is imported lazily, so an install without it reports the Ollama counter as unavailable instead of returning a number.
 - **Exception classification is centralised.** Adapters call the matching `classify_*_exception` at the SDK boundary. The OpenAI/Anthropic classifiers map by SDK exception subclass; the Google classifier dispatches on the HTTP status carried by `google.genai.errors.APIError.code` (the SDK only distinguishes 4xx vs 5xx by subclass); the HuggingFace embedder uses an inline string-match classifier because sentence-transformers and huggingface_hub share no common base exception.
 
 ## 10. Testing patterns

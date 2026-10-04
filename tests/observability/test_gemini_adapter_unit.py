@@ -792,9 +792,11 @@ class TestAdapterLifecycle:
         llm = GeminiLLM(_make_provider())
         mock_client = MagicMock()
         with patch.object(llm, "_get_client", return_value=mock_client):
+            from primer.model.token_count import TokenCount
+
             with patch(
-                "primer.llm.gemini.count_tokens_gemini",
-                new=AsyncMock(return_value=55),
+                "primer.llm.gemini.count_tokens_gemini_detailed",
+                new=AsyncMock(return_value=TokenCount(total=55, exact=True)),
             ) as mock_count:
                 n = await llm.count_tokens(
                     model="gemini-2.5-flash",

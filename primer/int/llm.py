@@ -202,17 +202,22 @@ class LLM(ABC):
         messages: list[Message],
         tools: list[Tool] | None = None,
     ) -> int:
-        """Estimate prompt token count for ``messages`` (+ optional tools).
+        """Count the prompt tokens of ``messages`` (+ optional tools), or raise.
 
-        Adapters MUST return a best-effort estimate. Preferred path is
-        the provider's native tokenizer or count API. A char-heuristic
-        fallback is acceptable when neither is available.
+        The preferred path is the provider's native tokenizer or count API. An
+        adapter that cannot count right now MUST raise
+        :class:`~primer.model.except_.TokenCounterUnavailable` (or a mapped
+        provider error), and MUST NOT return a heuristic number: a heuristic
+        returned as a count would be labelled native. Fallback, timeout and
+        labelling belong to the one wrapper a turn calls,
+        :func:`primer.llm.counting.count_prompt_tokens`; no turn path calls
+        this method directly. Counters are bounded (a per-call timeout, or CPU
+        work on an already-loaded vocabulary) and synchronous ones run off the
+        event loop.
 
-        Used by :func:`primer.agent.compaction_mixin.should_compact`
-        to decide whether the next turn needs compaction before
-        dispatch. Called on the hot path, so adapters with
-        network-based counters (Anthropic, Gemini) MUST cache
-        aggressively.
+        System text arrives as a system-role message in ``messages``; what a
+        counter does with it is its own business (Anthropic lifts it into the
+        ``system`` parameter, Gemini estimates it).
         """
 
     async def count_tokens_detailed(
