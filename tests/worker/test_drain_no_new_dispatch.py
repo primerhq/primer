@@ -292,6 +292,9 @@ async def test_a_failed_hand_back_is_logged_and_does_not_block_drain(caplog):
             await asyncio.wait_for(pool._stop_claiming(grace=1.0), timeout=3.0)
         assert sum("returning unstarted lease" in r.getMessage() for r in caplog.records) == 2
         assert not pool._unstarted_releases
+        snap = pool.metrics_snapshot()
+        assert snap["primer_worker_claims_returned_on_drain_total"] == 0, "a failed hand-back was counted as returned"
+        assert snap["primer_worker_claim_returns_failed_on_drain_total"] == 2
     finally:
         await scheduler.aclose()
 

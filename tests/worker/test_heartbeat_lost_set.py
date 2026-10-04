@@ -116,6 +116,7 @@ class _Harness:
 
     async def __aexit__(self, *exc) -> None:
         self.pool._stopping.set()
+        self.pool._keepalive_done.set()
         for gate in self.gates.values():
             gate.set()
         self.proceed.set()
