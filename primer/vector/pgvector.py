@@ -52,6 +52,7 @@ from primer.model.except_ import (
 )
 from primer.model.provider import PgVectorConfig
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
+from primer.storage._pg_pool import keepalive_init_hook
 
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,16 @@ class PgVectorStoreProvider(VectorStoreProvider):
         if self._pool is not None:
             return
         cfg = self._config
+        # PoolConfig is shared with the storage provider, so its tcp_keepalive_*
+        # fields apply to this pool too: a half-open idle connection would
+        # otherwise be handed out and hang until command_timeout.
+        keepalive = keepalive_init_hook(cfg.pool, pool_name="pgvector")
+
+        async def _init(conn: asyncpg.Connection) -> None:
+            if keepalive is not None:
+                await keepalive(conn)
+            await self._init_connection(conn)
+
         try:
             self._pool = await asyncpg.create_pool(
                 host=cfg.hostname,
@@ -211,7 +222,7 @@ class PgVectorStoreProvider(VectorStoreProvider):
                 timeout=cfg.pool.acquire_timeout,
                 max_inactive_connection_lifetime=cfg.pool.max_idle,
                 command_timeout=cfg.pool.acquire_timeout,
-                init=self._init_connection,
+                init=_init,
             )
         except Exception as exc:
             raise ProviderError(

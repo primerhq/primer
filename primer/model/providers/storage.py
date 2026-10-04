@@ -24,7 +24,10 @@ class StorageProviderType(str, Enum):
 class PoolConfig(BaseModel):
     """Connection pool settings shared by Postgres-backed providers.
 
-    Maps directly onto asyncpg's :func:`asyncpg.create_pool` parameters.
+    Maps onto asyncpg's :func:`asyncpg.create_pool` parameters, except the
+    ``tcp_keepalive_*`` fields: asyncpg has no keepalive option, so those are
+    applied to every new connection's socket by the pool's ``init`` hook
+    (:mod:`primer.storage._pg_pool`).
     Defaults are tuned for a small-to-medium application; large
     deployments should raise ``max_size`` to match expected concurrency.
     """
@@ -64,6 +67,38 @@ class PoolConfig(BaseModel):
         default=3600.0,
         gt=0,
         description="Seconds a connection may live before being recycled (defends against leaks).",
+    )
+    tcp_keepalive_idle_seconds: int = Field(
+        default=60,
+        ge=0,
+        description=(
+            "Seconds a pooled connection may sit idle before the kernel starts "
+            "sending TCP keepalive probes on it. 0 turns keepalive off. An idle "
+            "connection (above all a LISTEN connection, which a worker holds "
+            "for its whole life) sends no packets, so when its peer vanishes "
+            "without a FIN or RST (a conntrack or NAT idle timeout, a network "
+            "partition) nothing ever notices and the watcher on it stays deaf "
+            "for good. The probes make that an ordinary connection loss within "
+            "idle + interval * count seconds (90 with the defaults), and they "
+            "also keep a NAT or conntrack entry alive (kube-proxy expires "
+            "idle ones after 24 hours). Applied through an asyncpg pool init "
+            "hook, because asyncpg has no keepalive option. On a platform "
+            "without the socket options it is skipped with one warning."
+        ),
+    )
+    tcp_keepalive_interval_seconds: PositiveInt = Field(
+        default=10,
+        description=(
+            "Seconds between TCP keepalive probes once the idle time has "
+            "passed with no answer. Ignored when tcp_keepalive_idle_seconds is 0."
+        ),
+    )
+    tcp_keepalive_count: PositiveInt = Field(
+        default=3,
+        description=(
+            "Unanswered TCP keepalive probes after which the connection is "
+            "declared dead. Ignored when tcp_keepalive_idle_seconds is 0."
+        ),
     )
 
     @model_validator(mode="after")
