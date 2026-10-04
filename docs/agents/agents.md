@@ -104,7 +104,10 @@ input the model has not answered yet and never splits a tool call
 from its results. The resulting summary replaces the elided range in
 the reconstructed history, followed by the kept tail. The original
 messages stay in storage; the substitution happens at history-
-reconstruction time.
+reconstruction time. If the provider still rejects a call as too
+large, the turn is retried once after a forced compaction, continuing
+from the tool rounds it already ran (no tool runs twice); if the retry
+is rejected too, those rounds are recorded and the turn fails.
 
 Streaming: subscribers (the WS connection, internal taps) see token
 events in the order the LLM produces them. Persisted state is the

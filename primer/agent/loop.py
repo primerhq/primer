@@ -168,6 +168,7 @@ async def run_agent_turn(
     await_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None,
     tools: "list[Tool] | None" = None,
     budget: "PromptGuard | None" = None,
+    initial_tool_round: int = 0,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -281,6 +282,10 @@ async def run_agent_turn(
     budget
         Optional :class:`PromptGuard`; see its docstring. ``None`` (the default)
         sends every prompt exactly as the loop built it.
+    initial_tool_round
+        Tool rounds this turn has already spent in earlier attempts (default 0).
+        A replay that carries rounds an earlier attempt ran passes how many, so
+        ``agent.max_tool_turns`` bounds the TURN and not each attempt.
 
     Raises
     ------
@@ -298,7 +303,7 @@ async def run_agent_turn(
     if tools is None:
         tools = await tool_manager.list_tools(principal=principal)
 
-    tool_round = 0
+    tool_round = initial_tool_round
     while True:
         if artifact_storage is not None:
             prompt = await hydrate_prompt_parts(artifact_storage, prompt)

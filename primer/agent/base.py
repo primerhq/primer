@@ -50,6 +50,7 @@ from primer.agent.events import (
     Subscription,
     _ExecutorToolResult,
 )
+from primer.agent.overflow import is_context_overflow, tool_rounds, whole_rounds
 from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import (
@@ -73,6 +74,7 @@ from primer.model.graph import build_execution_context
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from primer.agent.loop import PromptGuard
     from primer.int.artifact_storage import ArtifactStorage
     from primer.int.llm import LLM
     from primer.model.agent import Agent
@@ -80,30 +82,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-
-def _is_context_overflow(exc: BadRequestError) -> bool:
-    """Heuristic: is a BadRequestError caused by context overflow?
-
-    The four shipped LLM adapters wrap provider exceptions into
-    ``BadRequestError`` without a stable error code for context
-    overflow specifically. Match common substrings instead.
-    """
-    msg = (exc.message or "").lower()
-    needles = (
-        "context length",
-        "context_length",
-        "context window",
-        "maximum context",
-        "context limit",
-        "max_tokens",
-        "too long",
-        "input is too long",
-        "tokens exceeds",
-        "token limit",
-        "prompt is too long",
-    )
-    return any(n in msg for n in needles)
 
 
 class _BaseAgentExecutor(ABC):
@@ -291,11 +269,14 @@ class _BaseAgentExecutor(ABC):
             ):
                 yield ev
         except BadRequestError as exc:
-            if not _is_context_overflow(exc):
+            if not is_context_overflow(exc):
                 raise
+            # The rounds the rejected attempt already ran (its tools HAVE run): the replay
+            # continues from them instead of starting the turn again.
+            carried = whole_rounds(getattr(exc, "inflight_messages", None) or [])
             logger.warning(
                 "AgentExecutor: hard-overflow detected; force-compacting and retrying",
-                extra={"agent_id": self._agent.id, "error": str(exc)},
+                extra={"agent_id": self._agent.id, "error": str(exc), "carried_messages": len(carried)},
             )
             # Hard-overflow recovery also runs an LLM await (force_compact), so
             # bracket it too; ``history`` is already in hand, so the snapshot
@@ -318,12 +299,25 @@ class _BaseAgentExecutor(ABC):
                 history = forced.new_messages
             finally:
                 await self._close_compaction_window()
-            async for ev in self._run_loop(
-                history=history,
-                new_messages=messages,
-                response_format=response_format,
-            ):
-                yield ev
+            try:
+                async for ev in self._run_loop(
+                    history=history,
+                    new_messages=messages,
+                    response_format=response_format,
+                    inflight=carried,
+                    initial_tool_round=tool_rounds(carried),
+                    budget=self._compaction.replay_guard(self._model),
+                ):
+                    yield ev
+            except BadRequestError as replay_exc:
+                if is_context_overflow(replay_exc):
+                    logger.warning(
+                        "AgentExecutor: the replay after a forced compaction overflowed too; "
+                        "recording the tool rounds the turn ran and failing the turn",
+                        extra={"agent_id": self._agent.id, "error": str(replay_exc)},
+                    )
+                    await self._persist_failed_replay(messages, replay_exc, fallback=carried)
+                raise
 
     def bind_scoped_call_resolver(
         self, resolver: "Callable[[str], tuple[str, int]] | None",
@@ -357,11 +351,24 @@ class _BaseAgentExecutor(ABC):
         history: list[Message],
         new_messages: list[Message],
         response_format: type[BaseModel] | dict[str, Any] | None,
+        inflight: list[Message] | None = None,
+        initial_tool_round: int = 0,
+        budget: "PromptGuard | None" = None,
     ) -> AsyncIterator[StreamEvent]:
+        """Run the turn's LLM/tool loop and persist it.
+
+        ``inflight`` (default none) are the whole tool rounds an earlier attempt of THIS turn
+        already ran, carried into a replay after a context overflow: they follow
+        ``new_messages`` in the turn's own messages (so they are persisted, and stamped onto a
+        park, with the replay's) and are part of the prompt, and ``initial_tool_round`` is how
+        many rounds they are, so ``max_tool_turns`` bounds the turn. ``budget`` is an optional
+        :class:`PromptGuard` for the loop's calls.
+        """
         from primer.agent.loop import run_agent_turn
 
-        full_turn_messages: list[Message] = list(new_messages)
-        prompt = self._build_prompt(history, new_messages)
+        carried = list(inflight or [])
+        full_turn_messages: list[Message] = [*new_messages, *carried]
+        prompt = [*self._build_prompt(history, new_messages), *carried]
 
         # Shared helper handles the LLM+tool dispatch loop. We tap
         # every event into our subscriber fan-out + caller stream;
@@ -383,6 +390,8 @@ class _BaseAgentExecutor(ABC):
                 turn_no=self._turn_no,
                 tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
                 resolve_scoped_call=self._resolve_scoped_call,
+                budget=budget,
+                initial_tool_round=initial_tool_round,
             ):
                 await self._emit(event)
                 yield event
@@ -412,6 +421,13 @@ class _BaseAgentExecutor(ABC):
             # YieldToWorker's precedent exactly.
             exc.llm_messages = list(full_turn_messages[len(new_messages):])
             raise
+        except BadRequestError as exc:
+            # What this turn ran before the provider rejected a call (whole rounds: an LLM call
+            # is what raises, after the previous round's results were appended). The overflow
+            # handler in ``invoke`` replays from here instead of from scratch, and persists
+            # these if the replay fails too.
+            exc.inflight_messages = list(full_turn_messages[len(new_messages):])  # type: ignore[attr-defined]
+            raise
 
         # Persist only when the loop actually produced an assistant
         # message (helper appends it on the first non-tool stop or
@@ -421,6 +437,31 @@ class _BaseAgentExecutor(ABC):
         )
         if produced_assistant:
             await self._persist_turn(full_turn_messages)
+
+    async def _persist_failed_replay(
+        self,
+        new_messages: list[Message],
+        exc: BadRequestError,
+        *,
+        fallback: list[Message],
+    ) -> None:
+        """Record the tool rounds a turn ran when its replay after an overflow failed too.
+
+        Those tools HAVE run. Failing without recording them leaves a history the next turn's
+        model cannot see them in, so it can run them again: the double execution the replay
+        exists to avoid, one turn later. The turn's input follows the same rule as a normal
+        end-of-turn persist. Best effort: a failure to write must not mask the overflow.
+        """
+        inflight = whole_rounds(getattr(exc, "inflight_messages", None) or fallback)
+        if not inflight:
+            return
+        try:
+            await self._persist_turn([*new_messages, *inflight])
+        except Exception:  # noqa: BLE001 -- the overflow is the error to surface
+            logger.exception(
+                "AgentExecutor: could not record the tool rounds a failed replay carried",
+                extra={"agent_id": self._agent.id},
+            )
 
     # ---- Tool dispatch ---------------------------------------------------
 

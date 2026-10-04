@@ -212,14 +212,22 @@ def assistant_message(text: str) -> Message:
     return Message(role="assistant", parts=[TextPart(text=text)])
 
 
-async def run_turn(session, llm: ScriptedLLM) -> None:
+async def run_turn(session, llm: ScriptedLLM, *, wrap_tools=None, configure=None, messages=None) -> None:
+    """One turn on the real executor. ``wrap_tools`` receives the real tool manager and returns the one to use (a
+    test that needs a tool to park or to return a huge result wraps it); ``configure`` receives the executor before
+    it runs (``WorkspaceAgentExecutor`` rebuilds the agent from a few fields, so an agent setting such as
+    ``max_tool_turns`` cannot be passed in: a test that needs one sets it on the executor's own agent)."""
     manager = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
+    if wrap_tools is not None:
+        manager = wrap_tools(manager)
     executor = WorkspaceAgentExecutor(
         agent=make_agent(), llm=llm,  # type: ignore[arg-type]
         llm_model=make_model(), tool_manager=manager, session=session,
         compaction=CompactionStrategy(),
     )
-    async for _event in executor.invoke([]):
+    if configure is not None:
+        configure(executor)
+    async for _event in executor.invoke(list(messages or [])):
         pass
     assert llm.unused() == 0, f"{llm.unused()} scripted LLM step(s) were never used this turn"
 

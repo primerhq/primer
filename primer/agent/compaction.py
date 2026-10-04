@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
+from primer.agent.overflow import ReplayGuard, is_context_overflow, reduce_head_for_summary
 from primer.agent.tail import split_for_compaction
 from primer.model.chat import (
     Error,
@@ -56,7 +57,7 @@ from primer.model.chat import (
     _ExecutorToolResult,
     output_to_message,
 )
-from primer.model.except_ import ServerError
+from primer.model.except_ import BadRequestError, ServerError
 from primer.model.media_tokens import media_tokens
 from primer.observability import metrics as _metrics
 
@@ -225,6 +226,7 @@ class CompactionStrategy:
     DEFAULT_RESERVED_OUTPUT: int = 8192
     DEFAULT_TAIL_TURNS: int = 4
     DEFAULT_TAIL_BUDGET_FRACTION: float = 0.5
+    DEFAULT_REDUCED_FRACTION: float = 0.6
     DEFAULT_PRUNE_PER_OUTPUT: int = 20_000
     DEFAULT_PRUNE_TOTAL_THRESHOLD: int = 40_000
     DEFAULT_SUMMARY_MAX_TOKENS: int = 4096
@@ -417,6 +419,16 @@ class CompactionStrategy:
             size=self._estimate_tokens,
         )
 
+    def reduced_target(self, model: "ResolvedModel") -> int:
+        """The size, in estimated tokens, a prompt is reduced to when it has to shrink to be sent
+        again: ``DEFAULT_REDUCED_FRACTION`` of the budget, so the reduced prompt leaves room for
+        the reply and for the estimate being low."""
+        return int(self.DEFAULT_REDUCED_FRACTION * self._effective_budget(model))
+
+    def replay_guard(self, model: "ResolvedModel") -> ReplayGuard:
+        """The prompt guard for the replay after an overflow (see :class:`ReplayGuard`)."""
+        return ReplayGuard(target_tokens=self.reduced_target(model), size=self._estimate_tokens)
+
     def _tail_budget(self, trigger: int) -> int:
         """What the kept tail may weigh: a share of the trigger, and never so much that
         the summary (up to ``summary_max_tokens``) plus the tail would be over it."""
@@ -568,29 +580,28 @@ class CompactionStrategy:
             else DEFAULT_COMPACTION_PROMPT
         )
 
-        summary_request: list[Message] = [
-            Message(role="system", parts=[TextPart(text=compaction_prompt)]),
-            *head,
-            Message(
-                role="user",
-                parts=[
-                    TextPart(
-                        text=(
-                            "Now produce the summary as instructed. "
-                            "One dense paragraph; no headers, no lists."
-                        )
+        summary_instruction = Message(
+            role="user",
+            parts=[
+                TextPart(
+                    text=(
+                        "Now produce the summary as instructed. "
+                        "One dense paragraph; no headers, no lists."
                     )
-                ],
-            ),
-        ]
+                )
+            ],
+        )
 
-        if tool_manager is None:
-            summary_text = await self._summarise_text_only(
-                summary_request, llm=llm, model=model,
-            )
-        else:
-            summary_text = await self._summarise_with_tools(
-                summary_request,
+        async def summarise(messages: list[Message]) -> str:
+            request = [
+                Message(role="system", parts=[TextPart(text=compaction_prompt)]),
+                *messages,
+                summary_instruction,
+            ]
+            if tool_manager is None:
+                return await self._summarise_text_only(request, llm=llm, model=model)
+            return await self._summarise_with_tools(
+                request,
                 llm=llm,
                 model=model,
                 tool_manager=tool_manager,
@@ -599,13 +610,48 @@ class CompactionStrategy:
                 principal=principal,
             )
 
+        reduced = False
+        try:
+            summary_text = await summarise(head)
+        except BadRequestError as exc:
+            if not is_context_overflow(exc):
+                raise
+            # The summariser's own input was too large for the window. Retry ONCE with a
+            # reduced copy (tool results pruned, long texts cut); the persisted history is
+            # untouched until the marker this summary produces replaces it. With tool access
+            # on, the retry runs the summary tool loop again from its start.
+            target = self.reduced_target(model)
+            logger.warning(
+                "compaction: the summariser's input (about %d tokens) was rejected as too large; "
+                "retrying once with a copy reduced to about %d",
+                self._estimate_tokens(head), target,
+                extra={"estimated_tokens": self._estimate_tokens(head), "target_tokens": target},
+            )
+            try:
+                summary_text = await summarise(
+                    reduce_head_for_summary(head, target_tokens=target, size=self._estimate_tokens)
+                )
+            except BadRequestError as retry_exc:
+                if not is_context_overflow(retry_exc):
+                    raise
+                raise ServerError(
+                    "compaction summariser rejected its input as too large even after it was "
+                    f"reduced to about {target} tokens: {retry_exc.message}",
+                    code=getattr(retry_exc, "code", None),
+                ) from retry_exc
+            reduced = True
+
         marker_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        note = (
+            "; the oldest part was reduced (long messages and tool outputs truncated) before it was summarised"
+            if reduced else ""
+        )
         summary_msg = Message(
             role="assistant",
             parts=[
                 TextPart(
                     text=(
-                        f"[earlier conversation compacted on {marker_ts}]\n\n"
+                        f"[earlier conversation compacted on {marker_ts}{note}]\n\n"
                         f"{summary_text}"
                     )
                 )
