@@ -71,6 +71,11 @@ class TapEventClass(StrEnum):
     # One event per model call. Trace-tab material: the transcript
     # renderer skips it (ui/components/session-adapter.jsx).
     LLM_CALL = "llm_call"
+    # Mirrors SessionMessageKind.PAUSE_SUPERSEDED: an operator's pause was
+    # touched by an incoming wake (cleared by a human message, or held while
+    # an automated message was queued/dropped). Surfaced, not skipped: the
+    # record exists so the change is never silent.
+    PAUSE_SUPERSEDED = "pause_superseded"
 class TapEvent(BaseModel):
     """Normalised tap event ready for wire transmission.
 

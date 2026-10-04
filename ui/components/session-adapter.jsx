@@ -88,6 +88,10 @@ var SA_KIND_TO_TRANSCRIPT = {
   // fold pass below hides the span it names before this label ever
   // renders.
   rewind_marker: "divider",
+  // An operator's pause was touched by an incoming wake (01a08c08): a
+  // visible divider, never a generic lifecycle dot, because the whole
+  // point of the record is that the change is not silent.
+  pause_superseded: "divider",
   // Lifecycle rows map to the SAME-named kinds <Transcript>'s Message()
   // already renders with dedicated styling: yielded/resumed/done as a muted
   // "· kind" dot, cancelled as a red "■ cancelled" marker, error as an error
@@ -212,6 +216,22 @@ function SA_dividerLabel(rec) {
   if (rec.kind === "invocation_divider") {
     var n = (rec.payload && rec.payload.invocation) || 1;
     return "— invocation " + n + " —";
+  }
+  if (rec.kind === "pause_superseded") {
+    var sp = rec.payload || {};
+    if (sp.action === "cleared") {
+      return "— pause cleared by a new message —";
+    }
+    if (sp.action === "queued") {
+      return "— session is paused: automated message queued, pause kept —";
+    }
+    if (sp.action === "dropped") {
+      var gone = String(sp.text || "");
+      if (gone.length > 80) gone = gone.slice(0, 80) + "…";
+      return "— queued message dropped (" + (sp.reason || "queue full")
+        + "): " + gone + " —";
+    }
+    return "— pause superseded —";
   }
   var p = rec.payload || {};
   return (p.node_id || "node") + " · " + (p.phase || "");
