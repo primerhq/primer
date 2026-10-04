@@ -47,9 +47,8 @@ async def run_engine_harness(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
     harness_storage = pool._storage.get_storage(Harness)
     harness = await harness_storage.get(engine_lease.entity_id)
     if harness is None or harness.pending_operation is None:
-        await pool._engine.release(
-            engine_lease,
-            outcome=ReleaseOutcome(success=False, drop_lease=True),
+        await pool._release_lease(
+            engine_lease, ReleaseOutcome(success=False, drop_lease=True),
         )
         return
 
@@ -73,9 +72,8 @@ async def run_engine_harness(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
             engine_lease.entity_id,
         )
     finally:
-        await pool._engine.release(
-            engine_lease,
-            outcome=ReleaseOutcome(success=success, drop_lease=True),
+        await pool._release_lease(
+            engine_lease, ReleaseOutcome(success=success, drop_lease=True),
         )
 
 
@@ -202,9 +200,9 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
             engine_lease.entity_id,
         )
     finally:
-        await pool._engine.release(
+        await pool._release_lease(
             engine_lease,
-            outcome=ReleaseOutcome(
+            ReleaseOutcome(
                 success=success, drop_lease=False, last_error=last_error,
             ),
         )
