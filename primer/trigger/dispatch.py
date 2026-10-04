@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -48,6 +49,105 @@ class FireResult:
     skipped: bool = False
     fire_id: str | None = None
     results: list[dict] = field(default_factory=list)
+
+
+_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+")
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
+_MAX_ERROR_MESSAGE = 300
+
+
+def _safe_error_message(message: object) -> str | None:
+    """Scrub a dispatcher error message before it leaves the process.
+
+    The text is the ``str()`` of whatever a dispatcher caught, so it can
+    embed a URL (webhook, DSN, SDK endpoint) carrying credentials in its
+    userinfo or query string. Payload redaction is key-name based and
+    never inspects string values, so this scrubs the value itself:
+    anything URL-shaped becomes ``<url>``, bearer tokens are masked, and
+    the result is bounded.
+    """
+    if not message:
+        return None
+    text = _BEARER_RE.sub("Bearer <redacted>", _URL_RE.sub("<url>", str(message)))
+    if len(text) > _MAX_ERROR_MESSAGE:
+        text = text[:_MAX_ERROR_MESSAGE] + "..."
+    return text
+
+
+async def _record_delivery_outcomes(
+    *,
+    deps: DispatchDeps,
+    trigger: Trigger,
+    fire_id: str,
+    fired_at: datetime,
+    scheduled_for: datetime | None,
+    results: list[dict],
+) -> None:
+    """Persist what each subscription's delivery actually did.
+
+    Two destinations, for two different questions:
+
+    * the Subscription row (``last_fired_at`` / ``last_fire_error``) is
+      LATEST-state: it answers "what happened last time this
+      subscription was delivered to". A later clean fire clears it, on
+      purpose - that is what a field named ``last_*`` means.
+    * a ``trigger.delivery_failed`` event per failed delivery is the
+      HISTORY: it is the only record that survives the next fire, and so
+      the only answer to "did the 03:00 delivery ever arrive" after a
+      catchup replay has fired the same trigger many times over.
+
+    Skipped results (no event match, session busy/missing) were never
+    attempted, so they touch neither. Best-effort by construction: this
+    is bookkeeping about a fire that already happened, so a storage
+    hiccup is logged and must not fail the fire it is reporting on.
+    """
+    from primer.events.recorder import recorder_for
+
+    subs_storage = deps.storage_provider.get_storage(Subscription)
+    recorder = recorder_for(deps.storage_provider)
+    scheduled_iso = scheduled_for.isoformat() if scheduled_for else None
+    for r in results:
+        sub_id = r.get("subscription_id")
+        if sub_id is None or r.get("skipped"):
+            continue
+        ok = bool(r.get("ok"))
+        code = r.get("error_code")
+        message = None if ok else _safe_error_message(r.get("error_message"))
+        if not ok:
+            await recorder.emit(
+                "trigger.delivery_failed",
+                actor=f"trigger:{trigger.id}",
+                entity_kind="trigger",
+                entity_id=trigger.id,
+                payload={
+                    "fire_id": fire_id,
+                    "subscription_id": sub_id,
+                    "scheduled_for": scheduled_iso,
+                    "error_code": code,
+                    "error_message": message,
+                },
+            )
+        try:
+            # Re-read: the row in hand predates the (possibly slow)
+            # dispatch, and a whole-row write of it would clobber an
+            # edit made meanwhile. Only the two outcome fields change.
+            fresh = await subs_storage.get(sub_id)
+            if fresh is None:
+                continue
+            await subs_storage.update(fresh.model_copy(update={
+                "last_fired_at": fired_at,
+                "last_fire_error": None if ok else json.dumps({
+                    "code": code,
+                    "message": message,
+                    "fire_id": fire_id,
+                    "scheduled_for": scheduled_iso,
+                }),
+            }))
+        except Exception:  # noqa: BLE001 - bookkeeping, never fail the fire
+            logger.exception(
+                "trigger %s: could not record the delivery outcome on "
+                "subscription %s", trigger.id, sub_id,
+            )
 
 
 async def fire_trigger(
@@ -190,6 +290,11 @@ async def fire_trigger(
                 "error_code": "dispatch_failed",
                 "error_message": str(exc),
             })
+
+    await _record_delivery_outcomes(
+        deps=deps, trigger=trigger, fire_id=fire_id, fired_at=fired_at,
+        scheduled_for=scheduled_for, results=results,
+    )
 
     # Update trigger row's last_fired_at + last_fired_id + error. Recording
     # last_fired_id here is the dedup marker the gate above reads on a

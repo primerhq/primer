@@ -60,3 +60,28 @@ def test_fire_now_result_row_surfaces_the_error_message() -> None:
     src = _src()
     assert "r.error_message" in src
     assert "r.artefact_id" in src
+
+
+def test_subscription_row_reads_the_fields_the_backend_now_populates() -> None:
+    """01a08bfb item 2: the table's "last fired" / error cells render
+    sub.last_fired_at and sub.last_fire_error, which fire_trigger now
+    writes per subscription (tests/api/test_triggers_router.py proves the
+    REST payload carries them). Pin the render sites so a rename on either
+    side cannot silently re-empty the column."""
+    src = _src()
+    assert "TR_relTime(sub.last_fired_at)" in src
+    assert "sub.last_fire_error ?" in src
+    assert "error={sub.last_fire_error}" in src
+    assert "`sub-row-${sub.id}-error`" in src
+
+
+def test_fire_error_chip_decodes_the_json_encoded_string_the_backend_stores() -> None:
+    """last_fire_error is a JSON-ENCODED STRING on Trigger and Subscription
+    rows. The chip used to treat any string as prose and printed the raw
+    JSON text as its message."""
+    src = _src()
+    chip = src[src.index("function TR_FireErrorChip"):]
+    chip = chip[: chip.index("\n}\n")]
+    assert "JSON.parse(error)" in chip
+    # Falls back to the plain-string path when the string is not JSON.
+    assert "plain-string message" in chip

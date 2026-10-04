@@ -321,6 +321,57 @@ async def test_fire_now_returns_fire_id_and_results(client):
 
 
 @pytest.mark.asyncio
+async def test_failed_delivery_populates_the_subscription_fields_the_ui_renders(
+    client, monkeypatch,
+):
+    """01a08bfb item 2, over the REST surface triggers.jsx actually reads.
+
+    The subscriptions table renders ``sub.last_fired_at`` and
+    ``sub.last_fire_error``, but nothing in primer/ ever wrote them, so
+    those two columns were permanently empty. This drives a real fire_now
+    with a failing dispatcher and reads the SAME list endpoint the table
+    polls: the slot must now carry the failure, JSON-encoded as
+    {code, message, ...} (the shape TR_FireErrorChip decodes).
+    """
+    import json
+
+    import primer.trigger.dispatch as dispatch_mod
+    from primer.trigger.subscribers import SubscriptionDispatchResult
+
+    class _Fails:
+        async def dispatch(self, sub, **_kw):
+            return SubscriptionDispatchResult(
+                ok=False, error_code="dispatch_failed",
+                error_message="target session unreachable",
+            )
+
+    monkeypatch.setattr(dispatch_mod, "get_dispatcher", lambda kind: _Fails())
+
+    r = await client.post("/v1/triggers", json=_delayed_body(slug="fails", name="F"))
+    assert r.status_code == 201, r.text
+    tid = r.json()["id"]
+    r_sub = await client.post(
+        f"/v1/triggers/{tid}/subscriptions",
+        json={"config": {"kind": "session_append", "session_id": "sess-1"}},
+    )
+    assert r_sub.status_code == 201, r_sub.text
+
+    before = (await client.get(f"/v1/triggers/{tid}/subscriptions")).json()["items"][0]
+    assert before["last_fired_at"] is None
+    assert before["last_fire_error"] is None
+
+    r_fire = await client.post(f"/v1/triggers/{tid}/fire_now")
+    assert r_fire.status_code == 200, r_fire.text
+    assert r_fire.json()["results"][0]["ok"] is False
+
+    after = (await client.get(f"/v1/triggers/{tid}/subscriptions")).json()["items"][0]
+    assert after["last_fired_at"] is not None
+    blob = json.loads(after["last_fire_error"])
+    assert blob["code"] == "dispatch_failed"
+    assert blob["message"] == "target session unreachable"
+
+
+@pytest.mark.asyncio
 async def test_fire_now_disabled_trigger_returns_skipped(client):
     # Disabled triggers skip dispatch and report skipped=True without a fire_id.
     r = await client.post(

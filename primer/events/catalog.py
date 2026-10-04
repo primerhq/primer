@@ -24,6 +24,7 @@ ACTION_EVENT_TYPES: frozenset[str] = frozenset({
     "approval.requested",
     "approval.decided",
     "trigger.fired",
+    "trigger.delivery_failed",
     "mcp.tool_called",
     "tool.called",
     "turn.started",
