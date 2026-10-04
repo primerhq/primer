@@ -66,6 +66,7 @@ from primer.model.chat import (
 from primer.model.except_ import (
     AuthRequiredError,
     BadRequestError,
+    ContextOverflowUnrecoverable,
     PrimerError,
 )
 from primer.model.graph import build_execution_context
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from primer.agent.compaction import CompactedTurn
+    from primer.model.chat import Tool
 
     from primer.int.artifact_storage import ArtifactStorage
     from primer.int.llm import LLM
@@ -200,6 +202,7 @@ class _BaseAgentExecutor(ABC):
         outcome: str = "summarised",
         unreducible: str | None = None,
         trigger_tokens: int | None = None,
+        fixed_overhead_tokens: int = 0,
         snapshot: list[Message] | None = None,
     ) -> None:
         """Replace the persisted history with the compacted form.
@@ -209,7 +212,8 @@ class _BaseAgentExecutor(ABC):
         summarised); ``tokens_before`` / ``tokens_after`` are the strategy's
         telemetry, and ``outcome`` / ``unreducible`` / ``trigger_tokens`` its
         verdict (``insufficient`` when the summary stands and the prompt is
-        still over the trigger). ``snapshot`` is the history the compaction
+        still over the trigger) and ``fixed_overhead_tokens`` the part of the
+        prompt no history can give back that its figures include. ``snapshot`` is the history the compaction
         was computed from: lines written to the persisted history after it
         was taken (a steer, say) are not in ``compacted`` and must survive
         the fold. Surfaces that record compaction as an append-only marker
@@ -269,6 +273,10 @@ class _BaseAgentExecutor(ABC):
         # only live across an ACTUAL LLM await: maybe_compact returns None with
         # no await when compaction does not fire, and pruning-only is
         # synchronous, so steers on non-compaction turns are never deferred.
+        # The part of every prompt no history can give back: the compaction counts it, and the
+        # catalogue is handed to the loop so it is fetched once per invoke.
+        tools = await self._tool_manager.list_tools(principal=self._principal)
+        fixed_overhead = await self.fixed_overhead_tokens(tools)
         snapshot = await self._open_compaction_window()
         notes: list[ExtendedEvent] = []
         try:
@@ -281,6 +289,7 @@ class _BaseAgentExecutor(ABC):
                 model=self._model,
                 history=history,
                 new_messages=messages,
+                fixed_overhead=fixed_overhead,
                 **self._compaction_tool_kwargs(),
             )
             if compacted is not None:
@@ -292,6 +301,7 @@ class _BaseAgentExecutor(ABC):
                     outcome=compacted.outcome,
                     unreducible=compacted.unreducible,
                     trigger_tokens=compacted.trigger_tokens,
+                    fixed_overhead_tokens=compacted.fixed_overhead_tokens,
                     snapshot=history,
                 )
                 notes += self._compaction_notes(compacted)
@@ -300,6 +310,7 @@ class _BaseAgentExecutor(ABC):
                     "AgentExecutor: compaction fired",
                     extra={
                         "agent_id": self._agent.id,
+                        "outcome": compacted.outcome,
                         "before_tokens": compacted.estimated_tokens_before,
                         "after_tokens": compacted.estimated_tokens_after,
                         "pruned": compacted.pruned_tool_outputs,
@@ -317,6 +328,7 @@ class _BaseAgentExecutor(ABC):
                 history=history,
                 new_messages=messages,
                 response_format=response_format,
+                tools=tools,
             ):
                 yield ev
         except BadRequestError as exc:
@@ -336,8 +348,21 @@ class _BaseAgentExecutor(ABC):
                     llm=self._llm,
                     model=self._model,
                     history=history,
+                    new_messages=messages,
+                    fixed_overhead=fixed_overhead,
                     **self._compaction_tool_kwargs(),
                 )
+                if forced.outcome == "unreducible":
+                    # Nothing can be shrunk (the fixed part, or the input the model has not answered,
+                    # already fills the window): replaying the byte-identical prompt would be rejected
+                    # the same way, so fail now, with a name, instead of spending a model call on it.
+                    raise ContextOverflowUnrecoverable(
+                        f"the model rejected the prompt as too large and compaction cannot shrink it "
+                        f"({forced.unreducible}): about {forced.estimated_tokens_after} tokens, of which "
+                        f"{forced.fixed_overhead_tokens} are the system prompt and tool schemas, against a "
+                        f"context window of {self._model.context_length}",
+                        cause=exc,
+                    ) from exc
                 await self._replace_compacted_head(
                     forced.new_messages,
                     summary_message=forced.summary_message,
@@ -346,6 +371,7 @@ class _BaseAgentExecutor(ABC):
                     outcome=forced.outcome,
                     unreducible=forced.unreducible,
                     trigger_tokens=forced.trigger_tokens,
+                    fixed_overhead_tokens=forced.fixed_overhead_tokens,
                     snapshot=history,
                 )
                 notes = self._compaction_notes(forced)
@@ -359,8 +385,16 @@ class _BaseAgentExecutor(ABC):
                 history=history,
                 new_messages=messages,
                 response_format=response_format,
+                tools=tools,
             ):
                 yield ev
+
+    async def fixed_overhead_tokens(self, tools: "list[Tool] | None" = None) -> int:
+        """The estimated size of what goes out on every call and no history can give back: the rendered
+        system prompt and the tool catalogue (``tools``, fetched when not given)."""
+        if tools is None:
+            tools = await self._tool_manager.list_tools(principal=self._principal)
+        return self._compaction.estimate_fixed_overhead(self._build_prompt([], []), tools)
 
     @staticmethod
     def _compaction_notes(compacted: "CompactedTurn") -> list[ExtendedEvent]:
@@ -421,6 +455,7 @@ class _BaseAgentExecutor(ABC):
         history: list[Message],
         new_messages: list[Message],
         response_format: type[BaseModel] | dict[str, Any] | None,
+        tools: "list[Tool] | None" = None,
     ) -> AsyncIterator[StreamEvent]:
         from primer.agent.loop import run_agent_turn
 
@@ -451,6 +486,7 @@ class _BaseAgentExecutor(ABC):
                 resolve_scoped_call=self._resolve_scoped_call,
                 interrupt=self._interrupt_event,
                 interrupted_out=interrupted_holder,
+                tools=tools,
             ):
                 await self._emit(event)
                 yield event

@@ -109,10 +109,14 @@ class TestTheHeuristic:
         assert CompactionStrategy._estimate_tokens([document]) == 8 + DOCUMENT_TOKENS
 
     def test_it_measures_messages_only_never_the_system_prompt_or_the_tool_schemas(self) -> None:
-        """LIMITATION pinned (task 01a10914, R2): the fixed part of a prompt (system prompt + tool schemas, about 3k
-        tokens for a workspace agent) is invisible to the trigger, so a small-context model overflows while 'under' it."""
+        """The estimate counts messages only, by design. FIXED (task 01a10914, R2): the fixed part of a prompt (system
+        prompt + tool schemas, about 3k tokens for a workspace agent) used to be invisible to the trigger, so a
+        small-context model overflowed while 'under' it. It now enters through ``fixed_overhead`` on ``maybe_compact``
+        and ``force_compact``, added to every measure (``test_fixed_overhead_compaction.py``)."""
         assert list(inspect.signature(CompactionStrategy._estimate_tokens).parameters) == ["messages"]
         assert "tools" not in inspect.signature(CompactionStrategy.maybe_compact).parameters
+        assert "fixed_overhead" in inspect.signature(CompactionStrategy.maybe_compact).parameters
+        assert "fixed_overhead" in inspect.signature(CompactionStrategy.force_compact).parameters
 
 
 class TestTheBudget:
@@ -288,20 +292,36 @@ class TestTheSilentNoOp:
         assert result.head_messages_replaced == 3
 
     @pytest.mark.asyncio
-    async def test_unanswered_input_over_the_trigger_is_never_summarised_and_makes_no_model_call(self) -> None:
-        """FIXED (was F14a, the other half): input the model has not answered is protected. Here three 30k-token user
-        messages follow the one reply: 90k tokens of protected input is already over the trigger, so no summary can
-        help and the compaction says so before spending a model call."""
+    async def test_unanswered_input_that_fits_the_window_but_not_the_trigger_is_kept_and_the_rest_summarised(self) -> None:
+        """FIXED (was F14a, the other half): input the model has not answered is protected. Three 30k-token user
+        messages follow the one reply: 90k tokens of protected input fits the window (91.8k) but not the trigger
+        (82.6k). The prompt is over the window, so compaction is still allowed: the three stay verbatim, the rest is
+        summarised, and the result says it is still over the trigger (``insufficient``)."""
         history: list[Message] = []
         for i in range(5):
             history.append(Message(role="user", parts=[TextPart(text=chr(ord("A") + i) * 120_000)]))  # 150k tokens
         history.insert(2, Message(role="assistant", parts=[TextPart(text="one reply")]))
+        llm = _SummaryLLM()
+        result = await CompactionStrategy().maybe_compact(
+            agent=_agent(), llm=llm, model=_model(), history=history, new_messages=[],  # type: ignore[arg-type]
+        )
+        assert result is not None and llm.calls == 1 and result.summary_message is not None
+        assert result.new_messages[1:] == history[3:], "everything after the reply is unanswered input: kept verbatim"
+        assert (result.outcome, result.unreducible) == ("insufficient", "over_trigger")
+
+    @pytest.mark.asyncio
+    async def test_unanswered_input_that_fills_the_window_is_never_summarised_and_makes_no_model_call(self) -> None:
+        """Four 30k-token user messages after the reply: the protected input alone is over the whole budget, so no
+        summary of the rest can make the prompt fit, and the compaction says so before spending a model call."""
+        history: list[Message] = [Message(role="assistant", parts=[TextPart(text="one reply")])]
+        history += [Message(role="user", parts=[TextPart(text=chr(ord("A") + i) * 120_000)]) for i in range(4)]
+        history.insert(0, Message(role="user", parts=[TextPart(text="old")]))
         result = await CompactionStrategy().maybe_compact(
             agent=_agent(), llm=_NoLLM(), model=_model(), history=history, new_messages=[],  # type: ignore[arg-type]
         )
         assert result is not None and result.summary_message is None
         assert result.new_messages == history
-        assert (result.outcome, result.unreducible) == ("unreducible", "protected_over_trigger")
+        assert (result.outcome, result.unreducible) == ("unreducible", "protected_over_budget")
 
     @pytest.mark.asyncio
     async def test_no_assistant_message_at_all_is_reported_unreducible_instead_of_summarised(self) -> None:

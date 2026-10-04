@@ -262,7 +262,8 @@ llm_tokenizer_ready = Gauge(
 compaction_outcomes_total = Counter(
     "compaction_outcomes_total",
     "Compactions by outcome: pruned (tier 1 sufficed), summarised, unreducible "
-    "(nothing could be summarised; no marker) or insufficient (summarised, still over the trigger).",
+    "(nothing could be summarised; no marker), skipped (the trigger cannot be reached and "
+    "the prompt fits) or insufficient (summarised, still over the trigger).",
     ["outcome"],
     registry=registry,
 )
@@ -557,7 +558,8 @@ def reset_for_test() -> None:
     compaction_outcomes_total = Counter(
         "compaction_outcomes_total",
         "Compactions by outcome: pruned (tier 1 sufficed), summarised, unreducible "
-        "(nothing could be summarised; no marker) or insufficient (summarised, still over the trigger).",
+        "(nothing could be summarised; no marker), skipped (the trigger cannot be reached and "
+        "the prompt fits) or insufficient (summarised, still over the trigger).",
         ["outcome"],
         registry=registry,
     )

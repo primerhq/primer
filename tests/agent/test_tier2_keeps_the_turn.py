@@ -408,18 +408,18 @@ class TestTheStrategy:
         ))
         assert counts()["pruned"] == 1.0, "tier 1 sufficed"
 
-    def test_a_protected_suffix_at_or_over_the_trigger_makes_no_summariser_call_and_no_marker(self, caplog) -> None:
-        """The current turn's unanswered input alone is over the trigger: a summary of the rest cannot help, so the
-        compaction is unreducible BEFORE any model call (it used to make a summary-of-summary call and copy the whole
-        oversized input into every marker)."""
+    def test_a_protected_suffix_that_fills_the_window_makes_no_summariser_call_and_no_marker(self, caplog) -> None:
+        """The current turn's unanswered input alone fills the whole budget: a summary of the rest cannot make the
+        prompt fit, so the compaction is unreducible BEFORE any model call (it used to make a summary-of-summary
+        call and copy the whole oversized input into every marker)."""
         history = [_msg("user", "old"), _msg("assistant", "old reply"), _msg("user", "z" * 400_000)]
         with caplog.at_level(logging.WARNING, logger="primer.agent.compaction"):
             result, summariser = self._compact(history)
         assert summariser.calls == 0
         assert result.summary_message is None and result.new_messages == history
-        assert (result.outcome, result.unreducible) == ("unreducible", "protected_over_trigger")
+        assert (result.outcome, result.unreducible) == ("unreducible", "protected_over_budget")
         assert result.trigger_tokens == int(0.9 * (100_000 - 8_192))
-        assert any("protected_over_trigger" in r.getMessage() for r in caplog.records)
+        assert any("protected_over_budget" in r.getMessage() for r in caplog.records)
 
     def test_a_summary_larger_than_its_allowance_gets_one_bounded_escalation(self) -> None:
         """The first split leaves the summary plus the tail over the trigger, so the tail is cut down to what may not
