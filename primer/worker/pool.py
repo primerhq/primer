@@ -332,16 +332,16 @@ class WorkerPool:
 
         Requires an actual TOOL_CALL handler in self._dispatch, not just
         the config knob: with the reserve set but
-        tool_calls_as_claims_enabled off (no TOOL_CALL adapter
-        registered), the reserved loop would still run - silently
-        shrinking general capacity by the reserve for a slice nothing
-        can ever claim into, and issuing a no-op claim_due every poll
-        (build_claim_query({}) is a valid no-op, so no crash - just
-        wasted capacity and a wasted query, contradicting this knob's
-        own "ignored when the flag is off" docstring promise). Found in
-        review of c6bb92c1. Extracted to its own method (rather than
-        inlined in start()) so this decision is testable without
-        fighting start()'s own _dispatch construction.
+        tool_calls_as_claims_enabled off (no TOOL_CALL handler in
+        self._dispatch - the engine's TOOL_CALL adapter is registered
+        regardless, by claim.factory), the reserved loop would still run -
+        silently shrinking general capacity by the reserve for a slice
+        nothing can ever claim into, and issuing a claim_due that finds
+        nothing every poll (wasted capacity and a wasted query,
+        contradicting this knob's own "ignored when the flag is off"
+        docstring promise). Found in review of c6bb92c1. Extracted to its
+        own method (rather than inlined in start()) so this decision is
+        testable without fighting start()'s own _dispatch construction.
         """
         if (
             self.config.tool_call_reserved_concurrency is not None

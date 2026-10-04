@@ -1,19 +1,25 @@
 """Lock-amplification + concurrent-workers integration test.
 
 Spins up 10 concurrent workers each calling ``engine.claim_due(max_count=5)``
-against a Postgres-backed pool of 20 leases (mixed kinds). Verifies:
+against a Postgres-backed pool of 20 leases (two kinds). Workers HOLD what
+they claim until every worker has finished. Verifies:
 
-* No double-claim — every lease ends up with EXACTLY ONE ``claimed_by``.
-* Total throughput ≥ 95 % (≥ 19 of 20 leases claimed within 2 s).
-* No permanently stuck locks — after the test, no lease has
-  ``claimed_by IS NOT NULL AND expires_at > now()``.
+* No double-claim - no lease is held by two workers at once. Claims are held
+  (not released) while the workers race, so a lease appearing twice in the
+  claim history can only mean the exclusivity guarantee broke. (Releasing
+  immediately would make a legitimate re-claim after release look like a
+  double-claim.)
+* Total throughput >= 95 % (>= 19 of 20 leases claimed within 2 s).
+* No permanently stuck locks - once the test releases everything, no lease
+  has ``claimed_by IS NOT NULL AND expires_at > now()``.
 
 Skipped unless PRIMER_TEST_POSTGRES_URL is set (same gate as the other
 Postgres live tests in ``tests/claim/test_postgres_engine.py``).
 
-The test uses the ``_NoJoinAdapter`` trick (eligibility SQL references only
-the lease alias with ``l.kind IS NOT NULL``) so no entity rows are needed.
-This isolates the concurrency invariants from entity-side eligibility logic.
+The adapters' eligibility SQL references only the lease alias
+(``l.kind IS NOT NULL``), but the claim query still INNER JOINs each
+adapter's entity table, so an entity row is seeded for every lease. This
+isolates the concurrency invariants from entity-side eligibility logic.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
 from primer.claim.postgres import PostgresClaimEngine
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage.postgres import PostgresStorageProvider
+from tests.claim._entity_seed import EntitySeeder
 
 
 _URL_ENV = "PRIMER_TEST_POSTGRES_URL"
@@ -68,19 +75,8 @@ def _parse_url(url: str) -> PostgresConfig:
 
 
 # ---------------------------------------------------------------------------
-# No-join adapters for all three kinds (no entity-row seed required)
+# Synthetic adapters for the two kinds under test (entity rows are seeded)
 # ---------------------------------------------------------------------------
-
-
-class _ChatNoJoin(ClaimAdapter):
-    kind = ClaimKind.HARNESS
-    entity_table = "chats"
-
-    def eligibility_sql(self) -> str:
-        return "l.kind IS NOT NULL"
-
-    async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
-        pass
 
 
 class _SessionNoJoin(ClaimAdapter):
@@ -137,13 +133,28 @@ async def pg_storage_la() -> AsyncIterator[PostgresStorageProvider]:
 async def pg_engine_la(
     pg_storage_la: PostgresStorageProvider,
 ) -> PostgresClaimEngine:
-    """PostgresClaimEngine with all three no-join adapters."""
+    """PostgresClaimEngine with a synthetic adapter per kind under test.
+
+    (This dict used to list ``ClaimKind.HARNESS`` twice - a leftover from a
+    removed kind - so the first adapter was silently shadowed; the test has
+    only ever exercised these two kinds.)
+    """
     adapters = {
-        ClaimKind.HARNESS:    _ChatNoJoin(),
         ClaimKind.SESSION: _SessionNoJoin(),
         ClaimKind.HARNESS: _HarnessNoJoin(),
     }
     return PostgresClaimEngine(storage_provider=pg_storage_la, adapters=adapters)
+
+
+@pytest_asyncio.fixture
+async def entity_seeder_la(
+    pg_storage_la: PostgresStorageProvider,
+) -> AsyncIterator[EntitySeeder]:
+    seeder = EntitySeeder(pg_storage_la)
+    try:
+        yield seeder
+    finally:
+        await seeder.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -159,9 +170,9 @@ _THROUGHPUT_THRESHOLD = 0.95  # 95 % of 20 leases = 19
 
 
 def _make_lease_ids() -> list[tuple[ClaimKind, str]]:
-    """Return 20 (kind, entity_id) pairs — roughly 7 chat, 7 session, 6 harness."""
+    """Return 20 (kind, entity_id) pairs - 10 harness, 10 session."""
     items: list[tuple[ClaimKind, str]] = []
-    kinds = [ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.HARNESS]
+    kinds = [ClaimKind.HARNESS, ClaimKind.SESSION]
     for i in range(_TOTAL_LEASES):
         kind = kinds[i % len(kinds)]
         items.append((kind, f"la-{kind.value}-{i:02d}"))
@@ -173,37 +184,44 @@ def _make_lease_ids() -> list[tuple[ClaimKind, str]]:
 async def test_concurrent_workers_no_double_claim(
     pg_engine_la: PostgresClaimEngine,
     pg_storage_la: PostgresStorageProvider,
+    entity_seeder_la: EntitySeeder,
 ) -> None:
     """10 concurrent workers racing over 20 leases.
 
     Invariants checked:
-    - No double-claim (each lease has at most one claimed_by).
-    - Throughput ≥ 95 % (≥ 19 leases claimed within _TIME_LIMIT_S).
-    - No permanently stuck locks after all workers finish.
+    - No double-claim: no lease is held by two workers at once. Workers HOLD
+      their claims until all have finished, so a lease claimed twice can only
+      mean the exclusivity guarantee broke (an immediate release would make
+      a legitimate re-claim look like a double-claim).
+    - Throughput >= 95 % (>= 19 leases claimed within _TIME_LIMIT_S).
+    - No permanently stuck locks once everything is released.
     """
     engine = pg_engine_la
     storage = pg_storage_la
 
-    # Seed 20 leases with mixed kinds.
+    # Seed 20 leases with mixed kinds, plus the entity row each one's
+    # INNER JOIN needs (a lease without one is never claimable).
     lease_ids = _make_lease_ids()
+    for entity_table, kind in (("sessions", ClaimKind.SESSION), ("harnesses", ClaimKind.HARNESS)):
+        await entity_seeder_la.seed(
+            entity_table, [eid for k, eid in lease_ids if k == kind],
+        )
     for kind, entity_id in lease_ids:
         await engine.upsert(kind, entity_id, priority=100)
 
-    # Each worker loops until it has claimed at least one lease OR time elapses.
+    # Each worker loops until it has claimed at least one lease, every lease
+    # is held, or time elapses. Claims are held, not released.
     claimed_by_worker: dict[str, list[str]] = {}
+    held_leases: list = []
 
     async def _worker(worker_id: str) -> None:
         deadline = time.monotonic() + _TIME_LIMIT_S
         my_claims: list[str] = []
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and len(held_leases) < _TOTAL_LEASES:
             leases = await engine.claim_due(worker_id, max_count=_MAX_PER_WORKER)
             for lease in leases:
                 my_claims.append(f"{lease.kind.value}:{lease.entity_id}")
-                # Release immediately so we don't block the test on stuck leases.
-                await engine.release(
-                    lease,
-                    outcome=ReleaseOutcome(success=True, drop_lease=False),
-                )
+                held_leases.append(lease)
             if my_claims:
                 # Each worker only needs one successful batch to confirm it works.
                 break
@@ -229,7 +247,8 @@ async def test_concurrent_workers_no_double_claim(
 
     # ------------------------------------------------------------------
     # Invariant 1: No double-claim.
-    # Each entity_id in claimed_by_worker should appear at most once total.
+    # Claims are held until the end, so each lease must appear at most once
+    # across all workers, and the lease row must name the worker that got it.
     # ------------------------------------------------------------------
     all_claimed_flat: list[str] = [
         item for claims in claimed_by_worker.values() for item in claims
@@ -243,6 +262,13 @@ async def test_concurrent_workers_no_double_claim(
     assert not doubles, (
         f"Double-claims detected (same lease claimed by multiple workers): {doubles}"
     )
+    wrong_owner = [
+        f"{item}: row says {lease_map.get(item)!r}, claimed by {worker}"
+        for worker, claims in claimed_by_worker.items()
+        for item in claims
+        if lease_map.get(item) != worker
+    ]
+    assert not wrong_owner, f"Lease rows disagree with who claimed them: {wrong_owner}"
 
     # ------------------------------------------------------------------
     # Invariant 2: Throughput ≥ 95 %.
@@ -258,12 +284,15 @@ async def test_concurrent_workers_no_double_claim(
 
     # ------------------------------------------------------------------
     # Invariant 3: No permanently stuck locks.
-    # After the test all leases were released (drop_lease=False), so
-    # claimed_by should be NULL for all rows (Postgres expires_at tracks
-    # the active claim window but we released everything above).
-    # A "stuck" lease is one still showing claimed_by IS NOT NULL with
-    # expires_at > now() — indicating a worker held it and never released.
+    # Release everything the workers held (drop_lease=False), after which
+    # claimed_by should be NULL for all rows. A "stuck" lease is one still
+    # showing claimed_by IS NOT NULL with expires_at > now() - a lease
+    # that release failed to free.
     # ------------------------------------------------------------------
+    for lease in held_leases:
+        await engine.release(
+            lease, outcome=ReleaseOutcome(success=True, drop_lease=False),
+        )
     async with storage.pool.acquire() as conn:
         stuck = await conn.fetch(
             f"SELECT kind, entity_id, claimed_by, expires_at "
