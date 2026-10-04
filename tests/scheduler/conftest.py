@@ -31,7 +31,7 @@ from primer.model.scheduler import PostgresSchedulerConfig
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.scheduler.postgres import PostgresScheduler
 from primer.storage.postgres import PostgresStorageProvider
-from tests.pg_gate import CANONICAL_ENV, postgres_url, require_postgres_url
+from tests.pg_gate import CANONICAL_ENV, explicit_port, postgres_url, require_postgres_url
 
 
 _DSN_ENV = CANONICAL_ENV
@@ -47,7 +47,7 @@ def _parse_dsn(dsn: str) -> PostgresConfig:
     schema = query.get("schema", ["public"])[0]
     return PostgresConfig(
         hostname=p.hostname or "localhost",
-        port=p.port or 5432,
+        port=explicit_port(p),
         username=p.username or "postgres",
         password=p.password or "",  # type: ignore[arg-type]
         database=(p.path or "/postgres").lstrip("/") or "postgres",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from urllib.parse import urlparse
 
 import pytest
 
@@ -11,6 +12,7 @@ from tests.pg_gate import (
     DEPRECATED_ALIASES,
     GATE_REASON_PREFIX,
     REQUIRE_ENV,
+    explicit_port,
     postgres_marks,
     postgres_url,
     require_postgres_url,
@@ -120,3 +122,36 @@ def test_e2e_database_is_fine_with_a_private_schema(monkeypatch):
 def test_a_throwaway_database_is_not_refused(monkeypatch):
     monkeypatch.setenv(CANONICAL_ENV, URL)
     assert postgres_url() == URL
+
+
+# ---- no default port: 5432 is often a developer's own database --------------
+
+PORTLESS = "postgresql://primer:primer@localhost/primer_test"
+
+
+def test_gate_refuses_a_url_without_a_port(monkeypatch):
+    """A fixture that quietly assumed 5432 would DROP tables in whatever
+    Postgres a developer happens to run there. The gate refuses instead."""
+    monkeypatch.setenv(CANONICAL_ENV, PORTLESS)
+    with pytest.raises(RuntimeError, match="no explicit port"):
+        postgres_url()
+
+
+@pytest.mark.parametrize("alias", DEPRECATED_ALIASES)
+def test_gate_refuses_a_portless_url_through_an_alias_too(monkeypatch, alias):
+    monkeypatch.setenv(alias, PORTLESS)
+    with pytest.raises(RuntimeError, match="no explicit port"):
+        postgres_url()
+
+
+def test_gate_accepts_any_explicit_port(monkeypatch):
+    for port in ("5432", "55432"):
+        url = f"postgresql://primer:primer@127.0.0.1:{port}/primer_test"
+        monkeypatch.setenv(CANONICAL_ENV, url)
+        assert postgres_url() == url
+
+
+def test_explicit_port_returns_the_port_and_never_defaults():
+    assert explicit_port(urlparse(URL)) == 5432
+    with pytest.raises(RuntimeError, match="no explicit port"):
+        explicit_port(urlparse(PORTLESS))

@@ -24,7 +24,7 @@ from primer.model.provider import (
     StorageProviderType,
 )
 from primer.storage.factory import StorageProviderFactory
-from tests.pg_gate import postgres_url, require_postgres_url
+from tests.pg_gate import explicit_port, postgres_url, require_postgres_url
 
 
 _BACKENDS: list = ["sqlite"]
@@ -43,7 +43,7 @@ def _pg_config_for_test() -> StorageProviderConfig:
         provider=StorageProviderType.POSTGRES,
         config=PostgresConfig(
             hostname=u.hostname or "localhost",
-            port=u.port or 5432,
+            port=explicit_port(u),
             username=u.username or "primer",
             password=u.password or "primer",  # type: ignore[arg-type]
             database=(u.path or "/primer_pgtest").lstrip("/") or "primer_pgtest",

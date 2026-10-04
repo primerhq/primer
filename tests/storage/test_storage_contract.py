@@ -33,7 +33,7 @@ from primer.model.storage import (
 )
 from primer.storage.factory import StorageProviderFactory
 from primer.storage.postgres import PostgresStorageProvider
-from tests.pg_gate import postgres_url, require_postgres_url
+from tests.pg_gate import explicit_port, postgres_url, require_postgres_url
 
 
 class _Thing(Identifiable):
@@ -64,7 +64,7 @@ def _pg_config_for_test() -> "StorageProviderConfig":
         provider=StorageProviderType.POSTGRES,
         config=PostgresConfig(
             hostname=u.hostname or "localhost",
-            port=u.port or 5432,
+            port=explicit_port(u),
             username=u.username or "primer",
             password=u.password or "primer",  # type: ignore[arg-type]
             database=(u.path or "/primer_pgtest").lstrip("/") or "primer_pgtest",
