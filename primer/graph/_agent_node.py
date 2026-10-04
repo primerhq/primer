@@ -389,6 +389,18 @@ class _AgentNodeMixin:
         rehydrated_assistant = [
             Message.model_validate(m) for m in pending.llm_messages
         ]
+        # The node's own user message has ONE source: the input_template
+        # re-rendered just above. A parked stamp (pending.llm_messages) is the
+        # in-progress turn WITHOUT it, which is also what the first park in
+        # _stream_agent_node stamps. The re-park arms below used to stamp
+        # ``[new_user_msg, ...]``, so every resume after a second park prepended
+        # the user input on top of a stamp that already began with it (and
+        # persisted both). They no longer do, but a checkpoint written by that
+        # code can still be parked: no produced or tool message has the user
+        # role, so a leading user message in a stamp can only be that stale copy.
+        # Drop it (a record re-parked N times carries N of them).
+        while rehydrated_assistant and rehydrated_assistant[0].role == "user":
+            rehydrated_assistant.pop(0)
         prompt.extend(rehydrated_assistant)
         prompt.append(tool_result_msg)
 
@@ -449,15 +461,17 @@ class _AgentNodeMixin:
             # _PendingAgentYield for a THIRD resume. Unlike
             # _stream_agent_node's first-ever dispatch (where
             # produced_messages alone IS the whole in-progress turn), a
-            # resume's prompt already carries a PREFIX -- new_user_msg +
-            # the PRIOR park's rehydrated_assistant + THIS resume's own
-            # tool_result_msg -- that must be included too, or a third
-            # resume would silently lose everything before this
-            # continuation's own new messages.
+            # resume's prompt already carries a PREFIX -- the PRIOR park's
+            # rehydrated_assistant + THIS resume's own tool_result_msg --
+            # that must be included too, or a third resume would silently
+            # lose everything before this continuation's own new messages.
+            # NOT new_user_msg: a stamp never carries the node's user input
+            # (the next resume re-renders it), or that resume would see it
+            # twice.
             if not yld.llm_messages:
                 yld.llm_messages = [
                     m.model_dump(mode="json") for m in (
-                        [new_user_msg, *rehydrated_assistant, tool_result_msg]
+                        [*rehydrated_assistant, tool_result_msg]
                         + produced_messages
                     )
                 ]
@@ -467,15 +481,16 @@ class _AgentNodeMixin:
             # YieldToWorker arm above and _stream_agent_node's own
             # matching ToolWaitPark arm - the resumed turn's OWN
             # continuation dispatched a NEW claims batch before finishing,
-            # so the prefix (new_user_msg + the PRIOR park's rehydrated
-            # assistant + THIS resume's own tool_result_msg) must be
-            # included, or graph/base.py's tw_pending re-park would
-            # silently lose everything before this continuation's own new
-            # messages, same as the YieldToWorker case above.
+            # so the prefix (the PRIOR park's rehydrated assistant + THIS
+            # resume's own tool_result_msg) must be included, or
+            # graph/base.py's tw_pending re-park would silently lose
+            # everything before this continuation's own new messages, same
+            # as the YieldToWorker case above. new_user_msg is deliberately
+            # not stamped (see the rehydration above).
             if not exc.llm_messages:
                 exc.llm_messages = [
                     m.model_dump(mode="json") for m in (
-                        [new_user_msg, *rehydrated_assistant, tool_result_msg]
+                        [*rehydrated_assistant, tool_result_msg]
                         + produced_messages
                     )
                 ]
