@@ -1,8 +1,14 @@
 """The one place that turns a token count into a labelled number, never an error.
 
-Counters (``LLM.count_tokens_detailed``) raise: a typed
-``TokenCounterUnavailable``, or a mapped provider error. This wrapper is what
-a turn path calls. It
+Counters (``LLM.count_tokens_detailed``) are meant to raise on failure: a typed
+``TokenCounterUnavailable``, or a mapped provider error. (The OpenAI-family
+counters and the aggregated profile do. The Anthropic, Gemini and HF counters
+still swallow their own errors and return the character heuristic until the
+adapter-hardening slice lands; they have not been taught to declare what they
+counted, so this wrapper reports their numbers as ``estimate`` /
+``legacy_counter``, never as native. No turn path may call this wrapper before
+that slice lands: ``tests/llm/test_counting_not_wired.py`` fails if one does.)
+This wrapper is what a turn path calls. It
 
 * never raises (``CancelledError`` excepted) and never blocks past a backstop,
 * falls back to an estimate and says so (``source="estimate"`` plus an
@@ -65,6 +71,7 @@ CountOutcome = Literal[
     "fallback_rejected",
     "negative_cached",
     "no_counter",
+    "legacy_counter",
     "fallback_bug",
 ]
 
@@ -204,7 +211,7 @@ async def count_prompt_tokens(
         )
         if detailed is not None:
             return await detailed(**call)
-        return TokenCount(total=await legacy(**call), exact=False)
+        return TokenCount(total=await legacy(**call), exact=False, declared=False)
 
     if negative_cache.active(key):
         return fallback("negative_cached", "a recent transient failure is cached")
@@ -239,6 +246,15 @@ async def count_prompt_tokens(
         )
         return fallback("fallback_bug", f"{type(exc).__name__}: {exc}")
 
+    if not detail.declared:
+        # An adapter that never said what it counted: the figure may be a
+        # heuristic, so it is an estimate whatever it looks like.
+        _record(provider, "estimate", "legacy_counter", started)
+        return CountResult(
+            total=detail.total, source="estimate", outcome="legacy_counter",
+            estimated_components=tuple(detail.estimated_components),
+            reason=f"{type(llm).__name__} does not declare what it counts",
+        )
     source = _source_of(detail)
     _record(provider, source, "ok", started)
     return CountResult(

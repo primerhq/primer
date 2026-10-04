@@ -222,13 +222,36 @@ async def test_an_object_with_no_counter_is_an_estimate_not_an_error(cache):
     assert (result.source, result.outcome, result.total) == ("estimate", "no_counter", 1234)
 
 
-async def test_a_legacy_counter_is_accepted_and_never_labelled_exact(cache):
+async def test_a_counter_that_declares_nothing_is_an_estimate_never_native(cache):
+    """An adapter on the base-class default (or a bare ``count_tokens`` fake) has
+    not said what it counted, so its figure may be a heuristic: it is reported as
+    an estimate with outcome ``legacy_counter``, whatever the number looks like."""
     class Legacy:
         async def count_tokens(self, *, model, messages, tools=None) -> int:
             return 77
 
     result = await _count(Legacy(), cache)
-    assert (result.total, result.source, result.outcome) == (77, "native_approx", "ok")
+    assert (result.total, result.source, result.outcome) == (77, "estimate", "legacy_counter")
+    assert _sample("prov-1", "estimate", "legacy_counter") == 1.0
+
+
+async def test_the_abc_default_is_undeclared_through_the_wrapper(cache):
+    from primer.int.llm import LLM
+
+    class OnlyCountTokens(LLM):
+        async def stream(self, **kwargs):  # pragma: no cover
+            raise NotImplementedError
+
+        async def count_tokens(self, *, model, messages, tools=None) -> int:
+            return 99
+
+    result = await _count(OnlyCountTokens(), cache)
+    assert (result.total, result.source, result.outcome) == (99, "estimate", "legacy_counter")
+
+
+async def test_a_declared_counter_with_exact_false_is_still_native_approx(cache):
+    result = await _count(_Counter(TokenCount(total=5, exact=False)), cache)
+    assert (result.source, result.outcome) == ("native_approx", "ok")
 
 
 @pytest.mark.allow_fallback_bug

@@ -1092,6 +1092,13 @@ def _make_lifespan(config: AppConfig):
             except Exception:
                 logger.exception("provider_registry.aclose failed")
             try:
+                # The token-counter threads (a no-op when no count ever ran).
+                from primer.llm._tokenizer._executor import shutdown_counter_executor
+
+                shutdown_counter_executor()
+            except Exception:
+                logger.exception("counter executor shutdown failed")
+            try:
                 await semantic_search_registry.aclose()
             except Exception:
                 logger.exception("semantic_search_registry.aclose failed")

@@ -228,8 +228,9 @@ class LLM(ABC):
         only for the model's own tokenizer or a vendor count endpoint, and
         ``estimated_components`` names any part (media, system, tools) that was
         estimated rather than counted. The default wraps :meth:`count_tokens`
-        and claims nothing (``exact=False``), so a count from an adapter that
-        has not been taught to say otherwise is never labelled native-exact.
+        and claims nothing (``exact=False, declared=False``), so a count from an
+        adapter that has not been taught to say otherwise is never labelled native,
+        exact or not: the counter wrapper reports it as an estimate.
 
         Callers that must never fail a turn use
         :func:`primer.llm.counting.count_prompt_tokens`, which owns timeout,
@@ -238,7 +239,7 @@ class LLM(ABC):
         provider error.
         """
         total = await self.count_tokens(model=model, messages=messages, tools=tools)
-        return TokenCount(total=total, exact=False)
+        return TokenCount(total=total, exact=False, declared=False)
 
     async def aclose(self) -> None:
         """Release backend resources held by this adapter.

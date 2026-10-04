@@ -45,7 +45,7 @@ class _CountOnly(LLM):
 
 async def test_the_default_claims_nothing():
     detail = await _CountOnly().count_tokens_detailed(model="m", messages=TEXT)
-    assert detail == TokenCount(total=42, exact=False)
+    assert detail == TokenCount(total=42, exact=False, declared=False)
 
 
 async def test_the_retrying_wrapper_forwards_what_the_inner_adapter_knows():
@@ -150,6 +150,33 @@ async def test_aggregated_skips_a_member_that_cannot_count_and_never_claims_exac
     assert detail.total == 11
     assert detail.exact is False, "the member that counted may not be the one that serves"
     assert detail.estimated_components == ("media",)
+
+
+async def test_aggregated_keeps_a_legacy_members_count_undeclared():
+    class _Legacy:
+        async def count_tokens(self, *, model, messages, tools=None) -> int:
+            return 5
+
+    detail = await _aggregate({"a": _Legacy()}).count_tokens_detailed(model="v", messages=TEXT)
+    assert (detail.total, detail.exact, detail.declared) == (5, False, False)
+
+
+async def test_aggregated_surfaces_a_deterministic_rejection_when_every_member_rejected():
+    """A 400 caused by this conversation's content is not an unavailable counter:
+    the wrapper must see the rejection (reported, never negative-cached)."""
+    from primer.model.except_ import BadRequestError
+
+    agg = _aggregate({"a": _Member(BadRequestError("bad")), "b": _Member(BadRequestError("also bad"))})
+    with pytest.raises(BadRequestError, match="also bad"):
+        await agg.count_tokens_detailed(model="virtual", messages=TEXT)
+
+
+async def test_aggregated_mixed_rejection_and_unavailable_is_unavailable():
+    from primer.model.except_ import BadRequestError
+
+    agg = _aggregate({"a": _Member(BadRequestError("bad")), "b": _Member(TokenCounterUnavailable("none"))})
+    with pytest.raises(TokenCounterUnavailable):
+        await agg.count_tokens_detailed(model="virtual", messages=TEXT)
 
 
 async def test_aggregated_with_no_member_that_can_count_raises_unavailable_not_config_error():

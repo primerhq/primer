@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from primer.int.llm import LLM
-from primer.llm.counting import TRANSIENT_ERRORS
+from primer.llm.counting import REJECTED_ERRORS, TRANSIENT_ERRORS
 from primer.model.chat import Error as ChatError
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
 from primer.model.except_ import (
@@ -387,11 +387,18 @@ class AggregatedLLM(LLM):
                             model=resolved.model_name, messages=messages, tools=tools,
                         ),
                         exact=False,
+                        declared=False,
                     )
             except (TokenCounterUnavailable, ConfigError, ProviderError, NetworkError, TimeoutError) as exc:
                 failures.append(exc)
                 continue
             return counted.model_copy(update={"exact": False})
+        if failures and all(isinstance(exc, REJECTED_ERRORS) for exc in failures):
+            # Every member rejected the request itself (a 400 caused by this
+            # conversation's content): that is a deterministic rejection, not an
+            # unavailable counter, and the wrapper must see it as one (reported,
+            # never negative-cached).
+            raise failures[-1]
         transient = any(
             getattr(exc, "transient", False) or isinstance(exc, TRANSIENT_ERRORS)
             for exc in failures

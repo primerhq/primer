@@ -258,10 +258,13 @@ WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
   figure stands on (`native`, `native_approx`, `native_plus_estimated`,
   `estimate`); `outcome` is `ok` or why it fell back to an estimate
   (`fallback_timeout`, `fallback_unavailable`, `fallback_transient`,
-  `fallback_rejected`, `negative_cached`, `no_counter`, `fallback_bug`). Alert on
+  `fallback_rejected`, `negative_cached`, `no_counter`, `legacy_counter`,
+  `fallback_bug`). Alert on
   `fallback_bug`: it means a counter raised something unexpected, and the test
   suite fails on it too. `llm_tokenizer_ready{name}` (1/0) says whether a
-  tokenizer vocabulary is loaded and verified in this process. `source` is a
+  tokenizer vocabulary is loaded and verified in this process; the offline
+  loader sets it on every `load_encoding` (1 on a load or a memoised hit, 0 on
+  an unavailable vocabulary). `source` is a
   deliberately added label; it is a closed enum, so it stays bounded.
 
 Per-CALL resolution inside a multi-call turn is a RECORD, not a metric: the agent

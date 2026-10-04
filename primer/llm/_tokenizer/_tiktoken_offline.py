@@ -44,6 +44,7 @@ from pathlib import Path
 
 import tiktoken
 
+import primer.observability.metrics as _metrics
 from primer.llm._tokenizer.vocab_pins import PINS, VocabPin
 from primer.model.except_ import TokenCounterUnavailable
 
@@ -132,12 +133,23 @@ def load_encoding(
 
     with _LOCK:
         if key in _ENCODINGS:
+            _metrics.llm_tokenizer_ready.labels(name).set(1)
             return _ENCODINGS[key]
         if key in _UNAVAILABLE:
+            _metrics.llm_tokenizer_ready.labels(name).set(0)
             raise TokenCounterUnavailable(_UNAVAILABLE[key])
         try:
             encoding = _load(pin, resolved_dir, constructor)
         except TokenCounterUnavailable as exc:
+            _metrics.llm_tokenizer_ready.labels(name).set(0)
+            if exc.transient:
+                # A momentary OS condition (EMFILE, EACCES, EIO): not remembered,
+                # so one bad moment cannot disable counting for the process.
+                logger.warning(
+                    "tokenizer vocabulary %s could not be read just now: %s",
+                    name, exc.message,
+                )
+                raise
             _UNAVAILABLE[key] = exc.message
             logger.warning(
                 "tokenizer vocabulary %s unavailable, native counts disabled "
@@ -145,6 +157,7 @@ def load_encoding(
             )
             raise
         _ENCODINGS[key] = encoding
+        _metrics.llm_tokenizer_ready.labels(name).set(1)
         return encoding
 
 
@@ -161,8 +174,11 @@ def _load(
     try:
         data = path.read_bytes()
     except OSError as exc:
+        # Absent is permanent-until-restart; any other OS error is a moment.
+        absent = isinstance(exc, (FileNotFoundError, NotADirectoryError, IsADirectoryError))
         raise TokenCounterUnavailable(
             f"{pin.encoding}: vocabulary file not readable at {path} ({exc.strerror or exc})",
+            transient=not absent,
             cause=exc,
         ) from exc
     actual = hashlib.sha256(data).hexdigest()
