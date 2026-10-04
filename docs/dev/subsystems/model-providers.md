@@ -168,6 +168,13 @@ failures also RAISE at connect (where the class is preserved and `transient`
 correctly excludes them). The all-members-failed error is an aggregated
 `RateLimitError` whose message lists each member and its failure class;
 that per-member class summary is the coarsened record of what went wrong.
+The one exception is a pool in which EVERY member failed because the prompt
+did not fit the context window (`primer.common.context_overflow`): that is
+not "rate limited, retry later", and the executor's overflow recovery keys on
+it, so the last member's own `BadRequestError` is re-raised instead (for a
+member that YIELDED its 400, one is built from the `Error`). Any other mix of
+failures, a rate limit or a missing member among them, stays the aggregated
+`RateLimitError`. An overflow on a single member still fails over to the next.
 
 **Safety constraint.** Clean failover is only possible before the first
 non-terminal event reaches the subscriber; retrying after partial output

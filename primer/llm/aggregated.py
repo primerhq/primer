@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from primer.common.context_overflow import is_context_overflow, is_context_overflow_error
 from primer.int.llm import LLM
 from primer.llm.counting import REJECTED_ERRORS, TRANSIENT_ERRORS
 from primer.model.chat import Error as ChatError
@@ -231,6 +232,9 @@ class AggregatedLLM(LLM):
         failover_point = self._failover_point
         failover_on = self._failover_on
         errors: list[str] = []
+        # One BadRequestError per member that failed because the PROMPT did not fit (see the
+        # exhaustion branch at the end). A member that failed any other way adds to ``errors`` only.
+        overflows: list[BadRequestError] = []
         for member_id in await self._member_order():
             try:
                 llm, resolved = await self._resolve(member_id)
@@ -277,6 +281,8 @@ class AggregatedLLM(LLM):
                 except (ProviderError, NetworkError) as exc:
                     if _exc_eligible(exc, failover_on):
                         errors.append(f"{member_id}: {type(exc).__name__}")
+                        if isinstance(exc, BadRequestError) and is_context_overflow(exc):
+                            overflows.append(exc)
                         self._log_failover(member_id, f"connect {type(exc).__name__}: {exc}")
                         continue
                     raise
@@ -287,6 +293,9 @@ class AggregatedLLM(LLM):
                     and _yielded_eligible(first.code, failover_on)
                 ):
                     errors.append(f"{member_id}: first-event Error code={first.code}")
+                    if is_context_overflow_error(first):
+                        # A lazily-opened member (Ollama, Gemini) YIELDS its 400: build the exception.
+                        overflows.append(BadRequestError(first.message, code=first.code, status_code=400))
                     self._log_failover(member_id, f"first-event Error code={first.code}")
                     continue
                 # commit to this member: nothing has been yielded downstream yet.
@@ -330,6 +339,12 @@ class AggregatedLLM(LLM):
                 return  # stream completed on this member (success or surfaced error)
             finally:
                 await _safe_aclose(agen)
+        if errors and len(overflows) == len(errors):
+            # Every member failed because the prompt does not fit: that is not "rate limited, retry
+            # later", and the executor's overflow recovery keys on it. Re-raise the last member's own
+            # BadRequestError instead of wrapping it. A pool with ANY other failure (a rate limit, a
+            # missing member) stays a RateLimitError: it may fit once that member recovers.
+            raise overflows[-1]
         raise RateLimitError(
             f"all {len(errors)} aggregated members failed: {'; '.join(errors)}",
         )

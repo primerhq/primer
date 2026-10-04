@@ -52,6 +52,7 @@ from primer.agent.events import (
 )
 from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.common.context_overflow import is_context_overflow
 from primer.model.chat import (
     ExtendedEvent,
     Message,
@@ -59,6 +60,7 @@ from primer.model.chat import (
     TextPart,
     ToolCallPart,
     ToolResultPart,
+    TurnStreamFailure,
     Usage,
     _CompactionNote,
     output_to_message,
@@ -83,30 +85,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-
-def _is_context_overflow(exc: BadRequestError) -> bool:
-    """Heuristic: is a BadRequestError caused by context overflow?
-
-    The four shipped LLM adapters wrap provider exceptions into
-    ``BadRequestError`` without a stable error code for context
-    overflow specifically. Match common substrings instead.
-    """
-    msg = (exc.message or "").lower()
-    needles = (
-        "context length",
-        "context_length",
-        "context window",
-        "maximum context",
-        "context limit",
-        "max_tokens",
-        "too long",
-        "input is too long",
-        "tokens exceeds",
-        "token limit",
-        "prompt is too long",
-    )
-    return any(n in msg for n in needles)
 
 
 class _BaseAgentExecutor(ABC):
@@ -319,8 +297,10 @@ class _BaseAgentExecutor(ABC):
                 response_format=response_format,
             ):
                 yield ev
-        except BadRequestError as exc:
-            if not _is_context_overflow(exc):
+        except (BadRequestError, TurnStreamFailure) as exc:
+            # A raised BadRequestError (Anthropic, OpenAI-compatible) or a yielded bad_request Error
+            # the loop turned into a TurnStreamFailure (Ollama, Gemini): see is_context_overflow.
+            if not is_context_overflow(exc):
                 raise
             logger.warning(
                 "AgentExecutor: hard-overflow detected; force-compacting and retrying",

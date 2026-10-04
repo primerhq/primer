@@ -752,3 +752,109 @@ async def test_nested_aggregation_raises_bad_request():
     outer = AggregatedLLM(_profile(members=["nested-member"]), resolve_member=resolve_to_nested)
     with pytest.raises(BadRequestError, match="nesting/self-reference is not allowed"):
         await _drain(outer.stream(model="virtual-1", messages=_MSG))
+
+
+# --- context-overflow exhaustion (01a108b1-2480) ------------------------------------------------------
+#
+# Failing over past an overflow is right (a later member may have the bigger window). But when EVERY member
+# overflowed the pool did not fail "rate limited": the prompt does not fit anywhere, and the executor's
+# recovery (force-compact, replay) keys on the overflow. Wrapping it as RateLimitError hid it.
+
+_OVERFLOW_TEXT = "This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens."
+_OUTPUT_CAP_TEXT = "max_tokens: 100000 > 64000, which is the maximum allowed number of output tokens for the model"
+
+
+@pytest.mark.asyncio
+async def test_every_member_overflowing_re_raises_the_last_members_bad_request():
+    from primer.common.context_overflow import is_context_overflow
+
+    first = BadRequestError(_OVERFLOW_TEXT, code="context_length_exceeded", status_code=400)
+    last = BadRequestError(_OVERFLOW_TEXT + " (member b)", status_code=400)
+    agg = AggregatedLLM(_profile(members=["a", "b"]), resolve_member=_resolver({
+        "a": (_FakeLLM(connect_exc=first), "m"), "b": (_FakeLLM(connect_exc=last), "m"),
+    }))
+
+    with pytest.raises(BadRequestError) as caught:
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
+
+    assert caught.value is last, "the last member's own exception, not a wrapper"
+    assert is_context_overflow(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_every_member_yielding_an_overflow_raises_a_bad_request_too():
+    """Ollama and Gemini members YIELD the 400: there is no exception to re-raise, so one is built from it."""
+    from primer.common.context_overflow import is_context_overflow
+
+    def member():
+        return _FakeLLM(events=[ChatError(code="bad_request", message=_OVERFLOW_TEXT, fatal=True)])
+
+    agg = AggregatedLLM(_profile(members=["a", "b"]), resolve_member=_resolver({
+        "a": (member(), "m"), "b": (member(), "m"),
+    }))
+
+    with pytest.raises(BadRequestError) as caught:
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
+
+    assert is_context_overflow(caught.value)
+    assert _OVERFLOW_TEXT in caught.value.message
+
+
+@pytest.mark.asyncio
+async def test_an_overflow_on_one_member_still_fails_over_to_a_member_that_fits():
+    good = _FakeLLM(events=[TextDelta(text="fits", index=0), Done(stop_reason="stop", raw_reason="stop")])
+    small = _FakeLLM(connect_exc=BadRequestError(_OVERFLOW_TEXT, status_code=400))
+    agg = AggregatedLLM(_profile(members=["small", "big"]), resolve_member=_resolver({
+        "small": (small, "m1"), "big": (good, "m2"),
+    }))
+
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+
+    assert any(isinstance(e, TextDelta) and e.text == "fits" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_failure_is_still_the_aggregated_rate_limit():
+    """One member overflowed, the other was rate limited: the pool is retryable, so it is not an overflow."""
+    agg = AggregatedLLM(_profile(members=["a", "b"]), resolve_member=_resolver({
+        "a": (_FakeLLM(connect_exc=BadRequestError(_OVERFLOW_TEXT, status_code=400)), "m"),
+        "b": (_FakeLLM(connect_exc=RateLimitError("429 b")), "m"),
+    }))
+
+    with pytest.raises(RateLimitError, match="all 2 aggregated members failed"):
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
+
+
+@pytest.mark.asyncio
+async def test_a_missing_member_among_overflowing_ones_is_still_the_aggregated_rate_limit():
+    agg = AggregatedLLM(_profile(members=["gone", "a"]), resolve_member=_resolver({
+        "a": (_FakeLLM(connect_exc=BadRequestError(_OVERFLOW_TEXT, status_code=400)), "m"),
+    }))
+
+    with pytest.raises(RateLimitError, match="all 2 aggregated members failed"):
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
+
+
+@pytest.mark.asyncio
+async def test_every_member_rejecting_the_output_cap_stays_the_aggregated_rate_limit():
+    """The negative: a bad max_tokens on every member is not an overflow, so nothing changes for it."""
+    agg = AggregatedLLM(_profile(members=["a", "b"]), resolve_member=_resolver({
+        "a": (_FakeLLM(connect_exc=BadRequestError(_OUTPUT_CAP_TEXT, status_code=400)), "m"),
+        "b": (_FakeLLM(connect_exc=BadRequestError(_OUTPUT_CAP_TEXT, status_code=400)), "m"),
+    }))
+
+    with pytest.raises(RateLimitError, match="all 2 aggregated members failed"):
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
+
+
+@pytest.mark.asyncio
+async def test_every_member_yielding_the_output_cap_stays_the_aggregated_rate_limit():
+    def member():
+        return _FakeLLM(events=[ChatError(code="bad_request", message=_OUTPUT_CAP_TEXT, fatal=True)])
+
+    agg = AggregatedLLM(_profile(members=["a", "b"]), resolve_member=_resolver({
+        "a": (member(), "m"), "b": (member(), "m"),
+    }))
+
+    with pytest.raises(RateLimitError, match="all 2 aggregated members failed"):
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
