@@ -943,7 +943,9 @@ class PostgresStorage(Storage[ModelT]):
                     exists = await c.fetchval(
                         f'SELECT 1 FROM {self._qualified} WHERE id = $1', id,
                     )
-        except ValidationError:
+        except ValueError:
+            # A malformed spec, a leaf the model drops, or a ValidationError (a ValueError subclass): the caller's
+            # mistake, reported as itself, not wrapped as a backend failure.
             raise
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc

@@ -935,7 +935,9 @@ class SqliteStorage(Storage[ModelT]):
                     await conn_.execute("RELEASE patch_if")
                 if should_commit:
                     await conn_.commit()
-        except ValidationError:
+        except ValueError:
+            # A malformed spec, a leaf the model drops, or a ValidationError (a ValueError subclass): the caller's
+            # mistake, reported as itself, not wrapped as a backend failure.
             raise
         except Exception as exc:
             raise _wrap_sqlite_error(
