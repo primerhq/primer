@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, UTC, timedelta
 from collections.abc import AsyncIterator, Sequence
 from primer.int.claim import (
-    ClaimAdapter, ClaimEngine, ClaimKind, Lease, ReleaseOutcome,
+    CLAIM_PRIORITY_FRESH, CLAIM_PRIORITY_RESUME, ClaimAdapter, ClaimEngine, ClaimKind, Lease,
+    ReleaseOutcome,
 )
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
@@ -22,7 +23,7 @@ class _LeaseRow:
     last_heartbeat_at: datetime | None = None
     expires_at: datetime | None = None
     next_attempt_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    priority_score: int = 100
+    priority_score: int = CLAIM_PRIORITY_FRESH
     attempt_count: int = 0
     last_error: str | None = None
 
@@ -46,7 +47,7 @@ class InMemoryClaimEngine(ClaimEngine):
         self.lease_ttl_seconds = lease_ttl_seconds
 
     async def upsert(
-        self, kind: ClaimKind, entity_id: str, *, priority: int = 100,
+        self, kind: ClaimKind, entity_id: str, *, priority: int = CLAIM_PRIORITY_FRESH,
         next_attempt_at: datetime | None = None,
     ) -> None:
         key = (kind, entity_id)
@@ -203,7 +204,9 @@ class InMemoryClaimEngine(ClaimEngine):
         if wake_signal is not None and self._post_release_hook is not None:
             await self._post_release_hook(wake_signal)
 
-    async def mark_resumable(self, kind: ClaimKind, entity_id: str, *, priority: int = 50) -> None:
+    async def mark_resumable(
+        self, kind: ClaimKind, entity_id: str, *, priority: int = CLAIM_PRIORITY_RESUME,
+    ) -> None:
         row = self._leases.get((kind, entity_id))
         if row is None:
             await self.upsert(kind, entity_id, priority=priority)

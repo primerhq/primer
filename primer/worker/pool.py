@@ -403,6 +403,12 @@ class WorkerPool:
                     return
                 try:
                     await self._scheduler.heartbeat_worker(self._worker_id)
+                except Exception:
+                    logger.exception("heartbeat_loop: scheduler heartbeat failed")
+                # Two try blocks, not one: the engine heartbeat is what keeps the in-flight leases
+                # alive and what preempts a turn whose lease is lost, so a failed scheduler (worker
+                # row) heartbeat must not skip it for the whole tick.
+                try:
                     # Engine path: heartbeat all in-flight leases via engine.
                     if self._in_flight:
                         # Decide "lost" from what was SENT, never from the live set
@@ -437,29 +443,26 @@ class WorkerPool:
     def _select_claim_loop(self) -> Callable[[], Coroutine]:
         """Which claim-loop coroutine function start() should schedule.
 
-        Phase 3 stage 7a (01a0518b) pool-class separation: a reserved
-        TOOL_CALL slice routes to a dedicated loop with its own claim_due
-        split (ruling C, leader-approved). Decided once, at start - NOT
-        per-iteration - so the unreserved (default) path stays exactly
-        the loop it always was, with zero risk of the split logic
-        touching it.
+        Phase 3 stage 7a (01a0518b) pool-class separation: a reserved TOOL_CALL slice routes to a
+        dedicated loop with its own claim_due split (ruling C, leader-approved). Decided once, at
+        start - NOT per-iteration - so the unreserved (default) path stays exactly the loop it
+        always was, with zero risk of the split logic touching it.
 
-        Requires an actual TOOL_CALL handler in self._dispatch, not just
-        the config knob: with the reserve set but
-        tool_calls_as_claims_enabled off (no TOOL_CALL handler in
-        self._dispatch - the engine's TOOL_CALL adapter is registered
-        regardless, by claim.factory), the reserved loop would still run -
-        silently shrinking general capacity by the reserve for a slice
-        nothing can ever claim into, and issuing a claim_due that finds
-        nothing every poll (wasted capacity and a wasted query,
-        contradicting this knob's own "ignored when the flag is off"
-        docstring promise). Found in review of c6bb92c1. Extracted to its
-        own method (rather than inlined in start()) so this decision is
-        testable without fighting start()'s own _dispatch construction.
+        The condition is literally ``tool_calls_as_claims_enabled and tool_call_reserved_concurrency
+        is not None``. ``WorkerConfig`` derives the reserve whenever the flag is on, so "flag and
+        reserve" is the whole test. It is deliberately NOT keyed on whether TOOL_CALL is in
+        ``_dispatch`` (the earlier guard): from the executor slice on, TOOL_CALL is ALWAYS in
+        ``_dispatch`` (the handler is registered unconditionally), so that guard would switch the
+        reserved loop on with the flag OFF whenever an explicit reserve is configured, silently
+        shrinking general capacity for a slice nothing enqueues into. A reserve set with the flag
+        off selects the unreserved loop (pinned in tests/worker/test_pool.py).
+
+        Extracted to its own method (rather than inlined in start()) so this decision is testable
+        without fighting start()'s own _dispatch construction.
         """
         if (
-            self.config.tool_call_reserved_concurrency is not None
-            and ClaimKind.TOOL_CALL in self._dispatch
+            self.config.tool_calls_as_claims_enabled
+            and self.config.tool_call_reserved_concurrency is not None
         ):
             return self._engine_claim_loop_reserved
         return self._engine_claim_loop
@@ -491,6 +494,10 @@ class WorkerPool:
                     leases = await self._engine.claim_due(
                         self._worker_id,
                         max_count=min(self.config.claim_batch_size, free),
+                        # Only kinds this pool can run. Without it the unified loop claimed leases of
+                        # a kind with no handler (a TOOL_CALL lease left over after the flag was
+                        # turned off) and then logged "no handler" and sat on them until they expired.
+                        kinds=list(self._dispatch),
                     )
                 except Exception:
                     logger.exception("engine claim_loop iteration failed")
@@ -673,7 +680,10 @@ class WorkerPool:
                         kinds=[k for k in self._dispatch if k != ClaimKind.TOOL_CALL],
                         max_count=min(self.config.claim_batch_size, general_free),
                     )
-                if tool_call_free > 0 and not self._stopping.is_set():
+                # Claim tool calls only while something here can run them: a claimed lease with no
+                # handler would be logged and abandoned to expire, then claimed again, for ever.
+                tool_call_can_claim = tool_call_free > 0 and ClaimKind.TOOL_CALL in self._dispatch
+                if tool_call_can_claim and not self._stopping.is_set():
                     claimed_any |= await self._claim_slice(
                         kinds=[ClaimKind.TOOL_CALL],
                         max_count=min(self.config.claim_batch_size, tool_call_free),
@@ -685,7 +695,7 @@ class WorkerPool:
                     # mirrors the unified loop's own free>0-but-empty
                     # accounting; both-slices-full is the reserved
                     # equivalent of its free<=0 short-circuit.
-                    if general_free > 0 or tool_call_free > 0:
+                    if general_free > 0 or tool_call_can_claim:
                         self._claims_empty_total += 1
                     self._wake.clear()
                     if self._stopping.is_set():

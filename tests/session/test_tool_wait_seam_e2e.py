@@ -29,7 +29,7 @@ import pytest
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
-from primer.int.claim import ClaimKind, Lease, ReleaseOutcome
+from primer.int.claim import CLAIM_PRIORITY_RESUME, ClaimKind, Lease, ReleaseOutcome
 from primer.model.chat import (
     Message,
     ToolCallEnd,
@@ -87,9 +87,12 @@ class _RecordingClaimEngine:
 
     def __init__(self) -> None:
         self.upserted: list[tuple[ClaimKind, str]] = []
+        # The priority kwarg the seam passed; None when it passed none (so the engine default applies).
+        self.priorities: dict[tuple[ClaimKind, str], int | None] = {}
 
     async def upsert(self, kind: ClaimKind, entity_id: str, **kwargs) -> None:
         self.upserted.append((kind, entity_id))
+        self.priorities[(kind, entity_id)] = kwargs.get("priority")
 
 
 class _ToolWaitExecutor:
@@ -249,6 +252,12 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
         (ClaimKind.TOOL_CALL, "x:tool:0:1"),
         (ClaimKind.TOOL_CALL, "x:tool:0:2"),
     ]
+    # Armed in the resume tier, not the fresh-session tier: this is the agent-bound arm site
+    # (primer/session/dispatch.py); the graph site is pinned in test_dispatch_park_arms_e2e.
+    assert claim_engine.priorities == {
+        (ClaimKind.TOOL_CALL, "x:tool:0:1"): CLAIM_PRIORITY_RESUME,
+        (ClaimKind.TOOL_CALL, "x:tool:0:2"): CLAIM_PRIORITY_RESUME,
+    }
 
     # batch_task_ids is the SAME full-batch list on every row (claimable
     # AND notifying) - what on_release's last-sibling check reads.

@@ -281,6 +281,43 @@ async def test_postgres_claim_due_skips_already_claimed(pg_storage, entity_seede
     assert second == []
 
 
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_claim_due_kinds_restricts_the_claim_to_those_adapters(pg_storage, entity_seeder):
+    """The worker pool now ALWAYS passes ``kinds`` (the unified loop claims only the kinds it has a
+    handler for), so the scoped compiled query is the production claim path, not a side branch: a
+    lease of a kind outside ``kinds`` stays unclaimed, and ``kinds=None`` still claims it."""
+    from primer.int.claim import ClaimAdapter
+
+    def adapter_for(kind: ClaimKind, table: str) -> ClaimAdapter:
+        class _Adapter(ClaimAdapter):
+            entity_table = table
+
+            def eligibility_sql(self) -> str:
+                return "l.kind IS NOT NULL"
+
+            async def on_release(self, conn, entity_id, *, outcome): ...
+
+        _Adapter.kind = kind
+        return _Adapter()
+
+    harness, tool = adapter_for(ClaimKind.HARNESS, "chats"), adapter_for(ClaimKind.TOOL_CALL, "toolcalltask")
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: harness, ClaimKind.TOOL_CALL: tool},
+    )
+    await entity_seeder.seed("chats", ["h-1"])
+    await entity_seeder.seed("toolcalltask", ["t-1"])
+    await engine.upsert(ClaimKind.HARNESS, "h-1")
+    await engine.upsert(ClaimKind.TOOL_CALL, "t-1")
+
+    scoped = await engine.claim_due("worker-A", max_count=5, kinds=[ClaimKind.HARNESS])
+    assert [(lse.kind, lse.entity_id) for lse in scoped] == [(ClaimKind.HARNESS, "h-1")]
+    assert not await engine.has_live_lease(ClaimKind.TOOL_CALL, "t-1"), "an out-of-kinds lease was claimed"
+
+    rest = await engine.claim_due("worker-A", max_count=5)
+    assert [(lse.kind, lse.entity_id) for lse in rest] == [(ClaimKind.TOOL_CALL, "t-1")]
+
+
 # ---------------------------------------------------------------------------
 # Tests — build_claim_query (unit, no DB, always run)
 # ---------------------------------------------------------------------------
@@ -409,6 +446,28 @@ def test_claim_query_for_kinds_scopes_to_the_subset_and_caches():
     assert "session_cand" in other
     assert "harness_cand" not in other
     assert other is not scoped
+
+
+def test_claim_query_for_the_pools_kind_set_omits_tool_call_and_keeps_the_rest():
+    """The pool passes ``list(self._dispatch)`` = SESSION, HARNESS, TRIGGER on every claim; with the
+    TOOL_CALL adapter registered too, that scoped query must drop exactly its CTE and nothing else."""
+    from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
+    from primer.claim.adapters.triggers import TriggerClaimAdapter
+
+    engine = PostgresClaimEngine(
+        storage_provider=_StorageProviderStub(),
+        adapters={
+            ClaimKind.SESSION: SessionClaimAdapter(session_storage=None),
+            ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
+            ClaimKind.TRIGGER: TriggerClaimAdapter(storage=None),
+            ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=None),
+        },
+    )
+    scoped = engine._claim_query_for([ClaimKind.SESSION, ClaimKind.HARNESS, ClaimKind.TRIGGER])
+    assert "tool_call_cand" not in scoped
+    assert all(f"{k}_cand" in scoped for k in ("session", "harness", "trigger"))
+    assert scoped.count("UNION ALL") == 2
+    assert "tool_call_cand" in engine._claim_query_for(None)
 
 
 # ---------------------------------------------------------------------------

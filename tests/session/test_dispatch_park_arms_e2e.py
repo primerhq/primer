@@ -60,9 +60,11 @@ class _FakeEventBus:
 class _RecordingClaimEngine:
     def __init__(self) -> None:
         self.upserted: list[tuple] = []
+        self.priorities: dict[tuple, object] = {}
 
     async def upsert(self, kind, entity_id: str, **kwargs) -> None:
         self.upserted.append((kind, entity_id))
+        self.priorities[(kind, entity_id)] = kwargs.get("priority")
 
 
 def _session(session_id: str) -> WorkspaceSession:
@@ -156,6 +158,7 @@ async def test_pure_graph_arm_materializes_per_node_rows_through_real_turn_loop(
     assert outcome.park.parked_event_key == "tool_wait:s-pure-graph:0:x"
     assert outcome.park.parked_event_keys == ["tool_wait:s-pure-graph:0:x"]
     assert deps.claim_engine.upserted == [(ClaimKind.TOOL_CALL, "x:tool:0:1")]
+    assert deps.claim_engine.priorities[(ClaimKind.TOOL_CALL, "x:tool:0:1")] == 50  # CLAIM_PRIORITY_RESUME
 
 
 @pytest.mark.asyncio
@@ -245,6 +248,7 @@ async def test_mixed_arm_materializes_co_pending_tool_wait_through_real_turn_loo
     assert row is not None
     assert row.state == ToolCallTaskState.QUEUED
     assert deps.claim_engine.upserted == [(ClaimKind.TOOL_CALL, "x:tool:0:1")]
+    assert deps.claim_engine.priorities[(ClaimKind.TOOL_CALL, "x:tool:0:1")] == 50  # CLAIM_PRIORITY_RESUME
 
     # The gate's OWN key is still the primary parked_event_key (a human
     # gate always addresses the park); the tool_wait batch's wake key is
