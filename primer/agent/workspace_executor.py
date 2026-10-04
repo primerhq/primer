@@ -187,6 +187,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         outcome: str = "summarised",
         unreducible: str | None = None,
         trigger_tokens: int | None = None,
+        fixed_overhead_tokens: int = 0,
         snapshot: "list[Message] | None" = None,
     ) -> None:
         """Record a compaction by APPENDING one ``compaction_marker`` record.
@@ -264,6 +265,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     "outcome": outcome,
                     "unreducible": unreducible,
                     "trigger_tokens": trigger_tokens,
+                    # ``tokens_before`` / ``tokens_after`` and the trigger count this part of the
+                    # prompt too (system prompt and tool schemas): it is no history's to give back.
+                    "fixed_overhead_tokens": fixed_overhead_tokens,
                     "created_at": now.isoformat(),
                 },
                 created_at=now,
