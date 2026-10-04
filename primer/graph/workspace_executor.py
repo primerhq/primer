@@ -623,11 +623,19 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
                     ended_reason=holder_reason,
                 )
             except Exception:  # noqa: BLE001 -- best-effort holder sync
+                # Swallowing is the deliberate policy (same as dispatch.py's
+                # _sync_agent_session_ended: the scheduler row is
+                # authoritative, the holder is a secondary view). But nothing
+                # else repairs a graph's holder - the dispatch-side mirror
+                # finds no `.session` on this executor - so this line is the
+                # only trace of why a finished graph reads "running" forever.
+                # It must carry the cause.
                 logger.warning(
                     "WorkspaceGraphExecutor: failed to end holder session "
                     "%r on graph terminal (reason=%r)",
                     getattr(self._workspace_session, "session_id", "?"),
                     holder_reason,
+                    exc_info=True,
                 )
 
     async def _build_sub_executor(
