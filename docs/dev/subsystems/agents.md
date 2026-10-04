@@ -6,7 +6,7 @@ The agent subsystem is the runtime that drives one LLM turn end to end: it assem
 
 The subsystem lives in `primer/agent/` and is organised around a shared abstract base, `_BaseAgentExecutor` (`primer/agent/base.py`), with one concrete executor:
 
-- `WorkspaceAgentExecutor` (`primer/agent/workspace_executor.py`) persists to a workspace's `messages.jsonl` via `AgentSession.commit_state(op='message')`, one git commit per turn, and drives `SessionStatus` transitions for the worker pool.
+- `WorkspaceAgentExecutor` (`primer/agent/workspace_executor.py`) persists to a workspace's `messages.jsonl` via `AgentSession.commit_state(op='message')`, one git commit per turn, and drives `SessionStatus` transitions for the worker pool. It runs a COPY of the agent whose `system_prompt` is extended with the session's workspace fragment (`agent.model_copy(update={"system_prompt": ...}, deep=True)`): every other field is carried over as configured, so `max_tool_turns` and `compaction_tool_access` take effect in workspace sessions (an earlier version rebuilt the agent from eight named fields and silently reset the rest to their defaults). The workspace graph executor's per-node agent resolver (`WorkspaceGraphExecutor._wrap_agent_resolver`) does the same, for the same reason.
 
 The base stays abstract because the graph executor reuses its turn loop verbatim, not because a second persistence backend is expected. A thread-backed executor existed alongside it while the chat surface did, and went with it.
 

@@ -301,20 +301,16 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             return base
 
         async def _resolve(agent_id: str) -> "Agent":
-            from primer.model.agent import Agent as _Agent
-
             agent = await base(agent_id)
             composite_system_prompt = list(agent.system_prompt) + [
                 workspace_session.system_prompt_fragment
             ]
-            return _Agent(
-                id=agent.id,
-                description=agent.description,
-                model=agent.model,
-                temperature=agent.temperature,
-                tools=list(agent.tools),
-                system_prompt=composite_system_prompt,
-                compaction_prompt=list(agent.compaction_prompt),
+            # Copy the agent and replace ONLY the system prompt. This used to rebuild it
+            # from seven named fields, so every other one (max_tool_turns,
+            # max_output_tokens, ...) silently reset to its default for every node of a
+            # workspace-bound graph (the same defect as WorkspaceAgentExecutor's).
+            return agent.model_copy(
+                update={"system_prompt": composite_system_prompt}, deep=True,
             )
 
         return _resolve
