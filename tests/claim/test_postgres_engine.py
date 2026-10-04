@@ -679,7 +679,8 @@ async def test_postgres_entity_noop_release_skips_on_release_and_only_moves_the_
     pg_storage, entity_seeder,
 ):
     """A lease-only release: ``on_release`` is not called (the entity is neither read nor written);
-    the lease is requeued (claimable again, attempt_count reset by success) or dropped."""
+    the lease is requeued (claimable again; ``attempt_count`` and ``last_error`` left alone, which is the whole
+    difference from a success release that resets them) or dropped."""
     from primer.int.claim import ClaimAdapter
 
     calls: list[str] = []

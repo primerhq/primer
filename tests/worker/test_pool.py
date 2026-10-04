@@ -770,7 +770,7 @@ async def test_turn_driver_drains_async_generator():
 
 
 async def test_cancel_loop_closes_its_iterator_when_it_returns_on_stopping():
-    """The cancel loop returns from `async for` when the worker is stopping.
+    """The cancel loop returns from `async for` when the worker's keep-alive is over (the end of a drain).
     That abandons a SUSPENDED async generator, whose cleanup (releasing the
     scheduler's pooled LISTEN connection) would otherwise be left to
     asyncio's async-generator finalizer, which closes an unreferenced
@@ -785,7 +785,8 @@ async def test_cancel_loop_closes_its_iterator_when_it_returns_on_stopping():
 
             async def _iter():
                 try:
-                    pool_ref._stopping.set()  # drain has begun
+                    pool_ref._stopping.set()
+                    pool_ref._keepalive_done.set()  # drain has finished with the turns
                     yield "sess-cancelled-during-drain"
                     await asyncio.Event().wait()
                 finally:

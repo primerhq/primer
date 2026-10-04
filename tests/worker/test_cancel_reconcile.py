@@ -381,7 +381,9 @@ def _fast_sleep(monkeypatch, pool: WorkerPool, ticks: int) -> list[float]:
     async def fake_sleep(delay, *args, **kwargs):
         delays.append(delay)
         if len(delays) >= ticks:
+            # the heartbeat and cancel loops outlive _stopping (they keep leases alive through a drain)
             pool._stopping.set()
+            pool._keepalive_done.set()
         await real_sleep(0)
 
     monkeypatch.setattr(pool_module, "asyncio", _Patched(asyncio, sleep=fake_sleep))
@@ -521,3 +523,70 @@ def test_the_metric_starts_at_zero():
 def test_the_session_model_still_has_the_flag_the_reconciler_reads():
     """The reconciler keys on WorkspaceSession.cancel_requested."""
     assert "cancel_requested" in WorkspaceSession.model_fields
+
+
+# ---- through a drain ----------------------------------------------------------------
+# drain_and_stop sets _stopping and then waits up to drain_timeout_seconds for running turns. The heartbeat and
+# both cancel loops used to exit on _stopping, so a Cancel arriving during that wait was only cooperative.
+
+
+async def test_the_reconcile_loop_keeps_running_through_a_drain_and_ends_with_the_keepalive(monkeypatch):
+    pool = _pool({"a": _row(cancel_requested=True), "b": _row(cancel_requested=False)}, interval=1)
+    scope_a, task_a, *_ = await _turn(pool, "a")
+    scope_b, task_b, *_ = await _turn(pool, "b")
+    pool._stopping.set()                            # the drain has begun; the turns are still running
+    real_sleep = asyncio.sleep
+    ticks = []
+
+    async def fake_sleep(delay, *args, **kwargs):
+        ticks.append(delay)
+        if len(ticks) >= 3:
+            pool._keepalive_done.set()              # drain has finished with the turns
+        await real_sleep(0)
+
+    monkeypatch.setattr(pool_module, "asyncio", _Patched(asyncio, sleep=fake_sleep))
+
+    await asyncio.wait_for(pool._cancel_reconcile_loop(), 3.0)
+
+    assert len(ticks) == 3, "the loop quit when drain began instead of when the turns were done"
+    assert scope_a.cancelled and not scope_b.cancelled, "a Cancel requested during the drain must preempt its turn"
+    await _stop(task_a)
+    await _stop(task_b)
+
+
+async def test_the_cancel_loop_delivers_a_notify_during_a_drain():
+    notify = _Notify()
+    pool = _pool(scheduler=notify)
+    scope_a, task_a, *_ = await _turn(pool, "a")
+    scope_b, task_b, *_ = await _turn(pool, "b")
+    pool._stopping.set()                            # the drain has begun
+    loop_task = asyncio.create_task(pool._cancel_loop())
+    try:
+        await asyncio.sleep(0.05)
+        await notify.queue.put("a")
+        await asyncio.wait_for(_until(lambda: scope_a.cancelled), 2.0)
+        assert not scope_b.cancelled
+        assert not loop_task.done(), "the cancel loop exited with the drain still waiting on running turns"
+    finally:
+        pool._keepalive_done.set()
+        loop_task.cancel()
+        await asyncio.gather(loop_task, return_exceptions=True)
+        await _stop(task_a)
+        await _stop(task_b)
+
+
+async def test_the_keepalive_has_an_absolute_deadline():
+    """A turn task that ignores its cancel would hold drain, and so the keep-alive, open for ever."""
+    pool = _pool(scheduler=SimpleNamespace(heartbeat_worker=lambda wid: asyncio.sleep(0)))
+    pool._stopping.set()
+    assert pool._keepalive_over() is False, "no deadline and no completion: still over?"
+    pool._keepalive_deadline = asyncio.get_event_loop().time() - 1
+    assert pool._keepalive_over() is True
+
+    await asyncio.wait_for(pool._heartbeat_loop(), 3.0)       # returns at once instead of looping for ever
+    await asyncio.wait_for(pool._cancel_reconcile_loop(), 3.0)
+
+
+async def _until(predicate):
+    while not predicate():
+        await asyncio.sleep(0.01)

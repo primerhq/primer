@@ -139,10 +139,18 @@ class WorkerPool:
         # rolling deploy does not exit with a lease still claimed by a worker that is gone.
         self._unstarted_releases: set[asyncio.Task] = set()
         self._claims_returned_on_drain_total: int = 0
+        self._claim_returns_failed_on_drain_total: int = 0
         # How long drain waits for the claim loop to finish the iteration it is in (and for hand-backs).
         self._claim_stop_grace_seconds: float = 5.0
         self._wake = asyncio.Event()
         self._stopping = asyncio.Event()
+        # Shutdown stops CLAIMING (``_stopping``), not KEEPING what is already running: the lease heartbeat,
+        # lost-lease detection and both cancel loops run until the turns have finished or this deadline passes.
+        # ``_stopping`` alone would stop them within one heartbeat interval of the drain starting, while a turn
+        # can run for ``drain_timeout_seconds`` (default 120) against a lease TTL of 30 s: its lease would expire,
+        # a peer would claim it and run a DUPLICATE execution, and the draining worker would never learn of it.
+        self._keepalive_done = asyncio.Event()
+        self._keepalive_deadline: float | None = None
 
         # ---- engine-driven loop tasks ----
         self._engine_claim_task: asyncio.Task | None = None
@@ -231,7 +239,32 @@ class WorkerPool:
             name=f"engine-bus-{self._worker_id}",
         )
 
+    # What drain waits for besides ``drain_timeout_seconds``: the claim loop's last iteration and the hand-back
+    # releases (2 x ``_claim_stop_grace_seconds``), the turn tasks after the cancel, and a margin.
+    _KEEPALIVE_EXTRA_SECONDS = 30.0
+
+    def _keepalive_over(self) -> bool:
+        """True once drain has finished with the turn tasks, or its absolute deadline has passed.
+
+        The deadline bounds the keep-alive even when a turn task ignores its cancel and drain's own wait
+        never returns: a worker must not keep a lease alive for ever on behalf of a task it cannot stop.
+        """
+        if self._keepalive_done.is_set():
+            return True
+        return (
+            self._keepalive_deadline is not None
+            and asyncio.get_event_loop().time() >= self._keepalive_deadline
+        )
+
     async def drain_and_stop(self, timeout: float | None = None) -> None:
+        drain_timeout = (
+            timeout
+            if timeout is not None
+            else float(self.config.drain_timeout_seconds)
+        )
+        self._keepalive_deadline = (
+            asyncio.get_event_loop().time() + drain_timeout + self._KEEPALIVE_EXTRA_SECONDS
+        )
         self._stopping.set()
         # Wake any sleeping claim loops so they see the stopping flag.
         self._wake.set()
@@ -246,11 +279,6 @@ class WorkerPool:
             await self._scheduler.drain_worker(self._worker_id)
         except Exception:
             logger.exception("drain_worker failed for %s", self._worker_id)
-        drain_timeout = (
-            timeout
-            if timeout is not None
-            else float(self.config.drain_timeout_seconds)
-        )
         deadline = asyncio.get_event_loop().time() + drain_timeout
         while self._active_scopes and asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
@@ -272,6 +300,8 @@ class WorkerPool:
                 pass
         self._turn_tasks.clear()
 
+        # Nothing is running any more: only now do the heartbeat and cancel loops stop.
+        self._keepalive_done.set()
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -349,6 +379,7 @@ class WorkerPool:
             "primer_worker_cancels_reconciled_total": self._cancels_reconciled_total,
             "primer_worker_duplicate_claims_total": self._duplicate_claims_total,
             "primer_worker_claims_returned_on_drain_total": self._claims_returned_on_drain_total,
+            "primer_worker_claim_returns_failed_on_drain_total": self._claim_returns_failed_on_drain_total,
             "primer_session_turns_total": dict(self._turns_total_by_result),
             "primer_session_turn_duration_seconds": {
                 "count": self._turn_duration_count,
@@ -359,10 +390,12 @@ class WorkerPool:
     # ---- internal --------------------------------------------------------
 
     async def _heartbeat_loop(self) -> None:
+        # Keeps running through a drain (see ``_keepalive_done``): the worker row's heartbeat too, because a
+        # stale ``last_heartbeat`` is what marks a worker dead and a draining worker is still alive.
         try:
-            while not self._stopping.is_set():
+            while not self._keepalive_over():
                 await asyncio.sleep(self.config.heartbeat_interval_seconds)
-                if self._stopping.is_set():
+                if self._keepalive_over():
                     return
                 try:
                     await self._scheduler.heartbeat_worker(self._worker_id)
@@ -577,7 +610,6 @@ class WorkerPool:
         ``turn_no`` for a turn that never ran). It is requeued immediately, so a peer's next
         claim takes it. The release is awaited by :meth:`drain_and_stop`.
         """
-        self._claims_returned_on_drain_total += 1
         logger.info(
             "shutdown in progress: returning just-claimed %s/%s unstarted",
             lease.kind, lease.entity_id,
@@ -594,9 +626,11 @@ class WorkerPool:
             await self._engine.release(
                 lease, outcome=ReleaseOutcome(success=True, entity_noop=True),
             )
+            self._claims_returned_on_drain_total += 1
         except Exception:
-            # A failed give-back leaves the lease claimed by this worker; with no heartbeat
-            # it expires after one lease TTL and a peer claims it. Slower, not lost.
+            # A failed give-back leaves the lease claimed by this worker; nothing heartbeats it (it was
+            # never in flight), so it expires after one lease TTL and a peer claims it. Slower, not lost.
+            self._claim_returns_failed_on_drain_total += 1
             logger.exception(
                 "returning unstarted lease %s/%s failed; it will expire and be re-claimed",
                 lease.kind, lease.entity_id,
@@ -1216,7 +1250,7 @@ class WorkerPool:
         Restart-on-failure pattern mirrors :meth:`_notify_loop`.
         """
         backoff = 1.0
-        while not self._stopping.is_set():
+        while not self._keepalive_over():
             try:
                 # aclosing: the early return below (or any other exit from
                 # the loop body) would otherwise abandon a SUSPENDED async
@@ -1231,7 +1265,7 @@ class WorkerPool:
                         scope = self._active_scopes.get((ClaimKind.SESSION, sid))
                         if scope is not None:
                             scope.cancel_once("user_signal")
-                        if self._stopping.is_set():
+                        if self._keepalive_over():
                             return
             except asyncio.CancelledError:
                 return
@@ -1324,9 +1358,9 @@ class WorkerPool:
         about that long, whichever way it was lost.
         """
         try:
-            while not self._stopping.is_set():
+            while not self._keepalive_over():
                 await asyncio.sleep(self.config.heartbeat_interval_seconds)
-                if self._stopping.is_set():
+                if self._keepalive_over():
                     return
                 try:
                     await self._reconcile_cancels()
