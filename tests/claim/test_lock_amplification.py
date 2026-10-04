@@ -25,7 +25,6 @@ isolates the concurrency invariants from entity-side eligibility logic.
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from collections.abc import AsyncIterator
 from urllib.parse import parse_qs, urlparse
@@ -38,16 +37,12 @@ from primer.claim.postgres import PostgresClaimEngine
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage.postgres import PostgresStorageProvider
 from tests.claim._entity_seed import EntitySeeder
+from tests.pg_gate import CANONICAL_ENV, needs_postgres, require_postgres_url
 
 
-_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
+_URL_ENV = CANONICAL_ENV
 
-POSTGRES_AVAILABLE = bool(os.environ.get(_URL_ENV))
-
-_needs_pg = pytest.mark.skipif(
-    not POSTGRES_AVAILABLE,
-    reason=f"set {_URL_ENV} to run Postgres lock-amplification tests",
-)
+_needs_pg = needs_postgres("Postgres lock-amplification tests")
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +104,7 @@ class _HarnessNoJoin(ClaimAdapter):
 @pytest_asyncio.fixture
 async def pg_storage_la() -> AsyncIterator[PostgresStorageProvider]:
     """Initialised PostgresStorageProvider; cleans up leases on entry/exit."""
-    url = os.environ.get(_URL_ENV)
-    if not url:
-        pytest.skip(f"set {_URL_ENV} to run Postgres lock-amplification tests")
+    url = require_postgres_url("Postgres lock-amplification tests")
 
     cfg = _parse_url(url)
     sp = PostgresStorageProvider(cfg)

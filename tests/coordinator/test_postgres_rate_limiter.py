@@ -4,15 +4,13 @@ real Postgres test container."""
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
 
+from tests.pg_gate import postgres_marks
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("PRIMER_TEST_POSTGRES_URL"),
-    reason="needs PRIMER_TEST_POSTGRES_URL set",
-)
+
+pytestmark = postgres_marks("Postgres rate-limiter tests")
 
 
 @pytest.mark.asyncio

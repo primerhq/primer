@@ -6,7 +6,6 @@ Postgres tests are skipped unless ``PRIMER_TEST_POSTGRES_URL`` is set.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -19,13 +18,14 @@ from primer.model.except_ import ConfigError
 from primer.model.provider import PoolConfig, PostgresConfig, SqliteConfig
 from primer.storage.postgres import PostgresStorageProvider
 from primer.storage.sqlite import SqliteStorageProvider
+from tests.pg_gate import CANONICAL_ENV, require_postgres_url
 
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
-_POSTGRES_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
+_POSTGRES_URL_ENV = CANONICAL_ENV
 
 
 def _parse_postgres_url(url: str) -> PostgresConfig:
@@ -47,7 +47,9 @@ def _parse_postgres_url(url: str) -> PostgresConfig:
 
 # Parametrize over both backends using indirect fixtures.
 # SQLite is always available; Postgres is skipped when the env var is absent.
-@pytest_asyncio.fixture(params=["sqlite", "postgres"])
+@pytest_asyncio.fixture(
+    params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)],
+)
 async def storage_provider(
     request: pytest.FixtureRequest,
     tmp_path: Path,
@@ -61,9 +63,7 @@ async def storage_provider(
         finally:
             await provider.aclose()
     else:
-        url = os.environ.get(_POSTGRES_URL_ENV)
-        if not url:
-            pytest.skip(f"set {_POSTGRES_URL_ENV} to run Postgres system_state tests")
+        url = require_postgres_url("Postgres system_state tests")
         cfg = _parse_postgres_url(url)
         provider = PostgresStorageProvider(cfg)
         await provider.initialize()

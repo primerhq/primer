@@ -5,14 +5,11 @@ Requires PRIMER_TEST_POSTGRES_URL to run; skipped otherwise.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("PRIMER_TEST_POSTGRES_URL"),
-    reason="needs PRIMER_TEST_POSTGRES_URL set",
-)
+from tests.pg_gate import postgres_marks, require_postgres_url
+
+pytestmark = postgres_marks("Postgres storage-provider tests")
 
 
 @pytest.mark.asyncio
@@ -53,9 +50,9 @@ async def test_postgres_provider_ping_raises_when_the_pool_is_gone():
     than answer from in-process state. Uses its own provider so the
     shared fixture's teardown is not left holding a dead pool."""
     from primer.storage.postgres import PostgresStorageProvider
-    from tests.coordinator.conftest import _URL_ENV, _parse_url
+    from tests.coordinator.conftest import _parse_url
 
-    sp = PostgresStorageProvider(_parse_url(os.environ[_URL_ENV]))
+    sp = PostgresStorageProvider(_parse_url(require_postgres_url()))
     await sp.initialize()
     sp.pool.terminate()
     with pytest.raises(Exception):

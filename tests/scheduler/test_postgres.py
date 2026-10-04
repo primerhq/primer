@@ -1,9 +1,8 @@
 """Tests for primer.scheduler.postgres.PostgresScheduler.
 
-Real-Postgres tests. They are skipped automatically when the
-``PRIMER_PG_TEST_DSN`` environment variable isn't set — no other
-test in this repo currently uses a live Postgres, so this file
-defines the fixture inline rather than relying on shared infra.
+Real-Postgres tests, gated on ``PRIMER_TEST_POSTGRES_URL`` (the single
+gate, see tests/pg_gate.py). The CI Postgres lane runs them with
+``PRIMER_REQUIRE_POSTGRES_TESTS=1``, where a skip is a failure.
 
 The DSN must be parseable by asyncpg and may include an optional
 ``?schema=<name>`` query parameter (default: ``public``). The test
@@ -16,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -28,18 +26,12 @@ from primer.model.scheduler import PostgresSchedulerConfig
 from primer.model.workspace_session import WorkspaceSession
 from primer.scheduler.postgres import PostgresScheduler
 from primer.storage.postgres import PostgresStorageProvider
+from tests.pg_gate import CANONICAL_ENV, postgres_marks, require_postgres_url
 
 
-_DSN_ENV = "PRIMER_PG_TEST_DSN"
+_DSN_ENV = CANONICAL_ENV
 
-pytestmark = pytest.mark.skipif(
-    os.getenv(_DSN_ENV) is None,
-    reason=(
-        f"set {_DSN_ENV} to a Postgres DSN (e.g. "
-        "postgres://user:pw@localhost:5432/primer_test) to run the "
-        "live PostgresScheduler tests"
-    ),
-)
+pytestmark = postgres_marks("the live PostgresScheduler tests")
 
 
 def _parse_dsn(dsn: str) -> PostgresConfig:
@@ -66,7 +58,7 @@ def _parse_dsn(dsn: str) -> PostgresConfig:
 
 @pytest.fixture
 async def storage_provider():
-    cfg = _parse_dsn(os.environ[_DSN_ENV])
+    cfg = _parse_dsn(require_postgres_url("the live PostgresScheduler tests"))
     sp = PostgresStorageProvider(cfg)
     await sp.initialize()
     # Drop scheduler tables so each test starts clean.
@@ -239,7 +231,7 @@ async def test_signal_cancel_yields_to_watcher(sched):
 
 
 async def _fresh_pair(**scheduler_config):
-    sp = PostgresStorageProvider(_parse_dsn(os.environ[_DSN_ENV]))
+    sp = PostgresStorageProvider(_parse_dsn(require_postgres_url()))
     await sp.initialize()
     async with sp.pool.acquire() as conn:
         await conn.execute("DROP TABLE IF EXISTS workers")

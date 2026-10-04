@@ -2,12 +2,11 @@
 
 Mirrors the parametrised backend ``provider`` fixture in
 ``test_storage_contract.py``: SQLite always runs; Postgres runs too when
-``PRIMER_TEST_PG_DSN`` is set.
+``PRIMER_TEST_POSTGRES_URL`` is set.
 """
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -25,20 +24,21 @@ from primer.model.provider import (
     StorageProviderType,
 )
 from primer.storage.factory import StorageProviderFactory
+from tests.pg_gate import postgres_url, require_postgres_url
 
 
-_BACKENDS: list[str] = ["sqlite"]
-if os.environ.get("PRIMER_TEST_PG_DSN"):
-    _BACKENDS.append("postgres")
+_BACKENDS: list = ["sqlite"]
+if postgres_url():
+    _BACKENDS.append(pytest.param("postgres", marks=pytest.mark.postgres))
 
 
 def _pg_config_for_test() -> StorageProviderConfig:
-    """Build a Postgres config from PRIMER_TEST_PG_DSN with a unique schema."""
+    """Build a Postgres config from PRIMER_TEST_POSTGRES_URL with a unique schema."""
     from urllib.parse import urlparse
 
     from primer.model.provider import PoolConfig, PostgresConfig
 
-    u = urlparse(os.environ["PRIMER_TEST_PG_DSN"])
+    u = urlparse(require_postgres_url())
     return StorageProviderConfig(
         provider=StorageProviderType.POSTGRES,
         config=PostgresConfig(

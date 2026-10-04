@@ -14,9 +14,9 @@ See ``primer/storage/postgres.py`` (``_HOT_FIELD_INDEXES``).
 
 from __future__ import annotations
 
-import os
-
 import pytest
+
+from tests.pg_gate import needs_postgres
 
 from primer.storage.postgres import (
     _HOT_FIELD_INDEXES,
@@ -129,10 +129,7 @@ def test_status_ddl_emits_plain_index():
 # Live pg_indexes introspection (gated on a real Postgres DSN)
 # ---------------------------------------------------------------------------
 
-pg = pytest.mark.skipif(
-    not os.environ.get("PRIMER_TEST_POSTGRES_URL"),
-    reason="needs PRIMER_TEST_POSTGRES_URL set",
-)
+pg = needs_postgres("Postgres hot-index tests")
 
 
 async def _index_names(sp, table: str) -> set[str]:
