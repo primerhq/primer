@@ -64,6 +64,7 @@ from primer.session.persistence import (
     WorkspaceMessageWriter,
     _CoalesceState,
     _create_tool_call_task_idempotent,
+    flush_partial_output,
     infer_agent_phase,
     materialize_pending_tool_wait_rows,
     stash_and_flush_tool_call_record,
@@ -79,6 +80,12 @@ from primer.observability.turn_log_writer import (
 
 
 logger = logging.getLogger(__name__)
+
+# How often a running turn re-reads its session row for a Stop whose bus message never
+# arrived (see _cancel_watcher). A fallback, so it only has to be quick enough that a Stop
+# does not feel lost: one point read per running session per interval, per worker. The
+# first read is immediate, so a Stop recorded before the turn began is honoured at once.
+_INTERRUPT_POLL_S = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -415,9 +422,20 @@ async def run_one_session_turn(
 
     cancel_event = asyncio.Event()
     cancel_task = asyncio.create_task(
-        _cancel_watcher(deps.event_bus, session_id, cancel_event),
+        _cancel_watcher(
+            deps.event_bus, session_id, cancel_event, session_storage=session_storage,
+        ),
         name=f"sess-cancel-{session_id}",
     )
+    # An executor that takes the Stop event (the agent executors) races it against every wait
+    # for the model and decides where the turn stops, so a Stop reaches a model that has not
+    # produced its first token and a tool batch's results are never cut short. Dispatch then
+    # reads ``was_interrupted`` once the stream ends instead of breaking out on its own.
+    # Executors without it (graph sessions, test fakes) keep the cooperative break below.
+    _bind_interrupt = getattr(executor, "bind_interrupt_event", None)
+    executor_owns_interrupt = _bind_interrupt is not None
+    if _bind_interrupt is not None:
+        _bind_interrupt(cancel_event)
 
     # ------------------------------------------------------------------
     # 4. Stream events from executor
@@ -519,7 +537,7 @@ async def run_one_session_turn(
             )
             if result is None:
                 # Check cancel between events even when nothing was produced
-                if cancel_event.is_set():
+                if cancel_event.is_set() and not executor_owns_interrupt:
                     cancel_requested = True
                     break
                 continue
@@ -551,9 +569,14 @@ async def run_one_session_turn(
                     await _emit_graph_transition(deps, session, rec)
 
             # Honour cancel after processing the current batch
-            if cancel_event.is_set():
+            if cancel_event.is_set() and not executor_owns_interrupt:
                 cancel_requested = True
                 break
+
+        # The stream ended on its own. If the executor ended it because the Stop fired, the
+        # turn was interrupted: take the soft exit below, not the clean-completion path.
+        if executor_owns_interrupt and getattr(executor, "was_interrupted", False):
+            cancel_requested = True
 
     except YieldToWorker as park:
         # ------------------------------------------------------------------
@@ -1097,6 +1120,21 @@ async def run_one_session_turn(
                 "session %s: turn_events.aclose() raised during cleanup",
                 session_id,
             )
+        if cancel_requested:
+            # Output the model had already streamed when the Stop/Cancel landed is still only in the
+            # coalesce buffers (it becomes a record at a tool call or at Done). Make it durable now,
+            # ahead of the CANCELLED record below, or it exists only in the live view and vanishes
+            # on refresh. Before delta_buffer.aclose() so the live parts are closed too.
+            try:
+                for partial in flush_partial_output(
+                    coalesce_state, delta_sink=delta_buffer, turn_no=session.turn_no,
+                ):
+                    await writer.append(partial)
+            except Exception:  # noqa: BLE001 - the cancel must still land
+                logger.exception(
+                    "session %s: could not persist the output streamed before the stop",
+                    session_id,
+                )
         _metrics.sessions_active.labels(session.workspace_id).dec()
         reset_delegation_sink(_delegation_token)
         cancel_task.cancel()
@@ -2133,9 +2171,55 @@ async def _cancel_watcher(
     event_bus: EventBus,
     session_id: str,
     cancel_event: asyncio.Event,
+    *,
+    session_storage: Any | None = None,
 ) -> None:
-    """Subscribe to the event bus and set cancel_event when cancel fires."""
-    sub = event_bus.subscribe()
+    """Set ``cancel_event`` when a Stop or Cancel is requested, from two independent sources.
+
+    * The bus key ``session:{sid}:cancel``: the fast path, delivered in milliseconds.
+    * The session row's ``interrupt_requested`` flag, polled every ``_INTERRUPT_POLL_S``
+      (the first read is immediate): the durable fallback. The bus is not durable, so a Stop
+      whose publish failed, a bus that cannot subscribe, a Stop recorded before this turn began
+      and the window before the subscription is live would otherwise be lost silently, and
+      nothing else reads the flag during a turn.
+
+    Either source ending the watch ends the other. A bus that fails (it cannot subscribe, or its
+    iterator dies) is logged and the poll carries on alone; before, it killed this task silently and
+    every later Stop of the turn was lost. Without ``session_storage`` only the bus is watched.
+    """
+    watchers = [
+        asyncio.create_task(
+            _watch_bus_for_cancel(event_bus, session_id, cancel_event),
+            name=f"sess-cancel-bus-{session_id}",
+        )
+    ]
+    if session_storage is not None:
+        watchers.append(
+            asyncio.create_task(
+                _poll_row_for_interrupt(session_storage, session_id, cancel_event),
+                name=f"sess-cancel-poll-{session_id}",
+            )
+        )
+    try:
+        await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for watcher in watchers:
+            watcher.cancel()
+        await asyncio.gather(*watchers, return_exceptions=True)
+
+
+async def _watch_bus_for_cancel(
+    event_bus: EventBus, session_id: str, cancel_event: asyncio.Event,
+) -> None:
+    try:
+        sub = event_bus.subscribe()
+    except Exception as exc:  # noqa: BLE001 - the row poll is the fallback
+        logger.warning(
+            "session %s: cannot subscribe to the bus for Stop/Cancel (%s); "
+            "relying on the session row poll", session_id, exc,
+        )
+        await asyncio.Event().wait()      # stay quiet so the poll keeps the watch alive
+        return
     try:
         async for event in sub:
             if event.event_key == f"session:{session_id}:cancel":
@@ -2143,8 +2227,40 @@ async def _cancel_watcher(
                 return
     except asyncio.CancelledError:
         return
+    except Exception as exc:  # noqa: BLE001 - the row poll is the fallback
+        logger.warning(
+            "session %s: the bus subscription for Stop/Cancel failed (%s); "
+            "relying on the session row poll", session_id, exc,
+        )
+        await asyncio.Event().wait()
     finally:
         await sub.aclose()
+
+
+async def _poll_row_for_interrupt(
+    session_storage: Any, session_id: str, cancel_event: asyncio.Event,
+) -> None:
+    while True:
+        try:
+            row = await session_storage.get(session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - retried next interval
+            logger.warning(
+                "session %s: could not read the row to look for a Stop (%s); will retry",
+                session_id, exc,
+            )
+        else:
+            if row is not None and row.interrupt_requested:
+                if not cancel_event.is_set():
+                    cancel_event.set()
+                    _metrics.session_interrupts_via_poll_total.inc()
+                    logger.info(
+                        "session %s: Stop reached this turn through the session row, not the "
+                        "bus (a publish failed or was missed)", session_id,
+                    )
+                return
+        await asyncio.sleep(_INTERRUPT_POLL_S)
 
 
 __all__ = ["SessionDispatchDeps", "run_one_session_turn"]

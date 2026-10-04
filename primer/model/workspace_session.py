@@ -472,10 +472,14 @@ class WorkspaceSession(Identifiable):
     interrupt_requested: bool = Field(
         default=False,
         description=(
-            "Set by POST .../interrupt (Stop). The worker preempts the "
-            "in-flight turn like a cancel but transitions the session to "
-            "WAITING (alive/idle) instead of ENDED, so the user can keep "
-            "chatting (studio-agents-interact §4.4). Cleared by the worker."
+            "Set by POST .../interrupt (Stop). The worker running the turn "
+            "stops it at its next wait for the model (the first token, or "
+            "between chunks; a tool call that is already running finishes "
+            "first) and transitions the session to WAITING (alive/idle) "
+            "instead of ENDED, so the user can keep chatting "
+            "(studio-agents-interact §4.4). The worker learns of it from a "
+            "bus message and, as a durable fallback, by re-reading this "
+            "flag every couple of seconds. Cleared by the worker."
         ),
     )
 
@@ -673,11 +677,11 @@ class WorkspaceSession(Identifiable):
     cancel_requested_at: datetime | None = Field(
         default=None,
         description=(
-            "Set by the API when an ``interrupt`` WS frame arrives. "
-            "The owning worker polls the field via heartbeat reads "
-            "AND subscribes to a ``session:{id}:cancel`` bus event for "
-            "faster wake-up.  Cleared by the worker after honouring "
-            "the cancellation."
+            "When the most recent Stop (POST .../interrupt) or Cancel was "
+            "requested. Informational: the worker does not read this field "
+            "(it reads ``interrupt_requested`` and ``cancel_requested``) and "
+            "does not clear it when a request is honoured; only a session "
+            "reset clears it."
         ),
     )
     pause_requested_at: datetime | None = Field(

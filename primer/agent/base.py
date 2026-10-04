@@ -161,6 +161,14 @@ class _BaseAgentExecutor(ABC):
         self._resolve_scoped_call: (
             "Callable[[str], tuple[str, int]] | None"
         ) = None
+        # Stop signal, bound by the session dispatch once it has created its cancel
+        # event (same post-construction shape as the resolver above; see
+        # bind_interrupt_event). None for every caller that is never stopped.
+        self._interrupt_event: asyncio.Event | None = None
+        # True when the LATEST invoke() ended because the Stop signal fired (the loop
+        # returns cleanly, so there is no exception to read). Reset at the start of
+        # every invoke; dispatch reads it after the event stream ends.
+        self.was_interrupted: bool = False
         # Ambient run context exposed to the system prompt as ``ctx``. Base is
         # surface-agnostic -> memory default; subclasses override with the real
         # surface (AgentExecutor -> "chat", WorkspaceAgentExecutor -> "workspace").
@@ -339,6 +347,17 @@ class _BaseAgentExecutor(ABC):
         """
         self._resolve_scoped_call = resolver
 
+    def bind_interrupt_event(self, event: "asyncio.Event | None") -> None:
+        """Bind the Stop signal: the agent loop races it against every wait for the
+        model's next event (see :func:`primer.agent.loop.run_agent_turn`), so a model
+        that has not produced its first token is stoppable too.
+
+        Post-construction setter, not a constructor parameter: the caller
+        (``primer.session.dispatch``) creates its cancel event only after the executor
+        exists. A caller that never binds one is never stopped by it.
+        """
+        self._interrupt_event = event
+
     def subscribe(self, subscriber: AgentEventSubscriber) -> Subscription:
         """Register a streaming-tap subscriber. Returns the subscription handle."""
         sub_id = f"sub-{uuid.uuid4().hex[:12]}"
@@ -362,6 +381,8 @@ class _BaseAgentExecutor(ABC):
 
         full_turn_messages: list[Message] = list(new_messages)
         prompt = self._build_prompt(history, new_messages)
+        self.was_interrupted = False
+        interrupted_holder: list[bool] = []
 
         # Shared helper handles the LLM+tool dispatch loop. We tap
         # every event into our subscriber fan-out + caller stream;
@@ -383,6 +404,8 @@ class _BaseAgentExecutor(ABC):
                 turn_no=self._turn_no,
                 tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
                 resolve_scoped_call=self._resolve_scoped_call,
+                interrupt=self._interrupt_event,
+                interrupted_out=interrupted_holder,
             ):
                 await self._emit(event)
                 yield event
@@ -412,6 +435,11 @@ class _BaseAgentExecutor(ABC):
             # YieldToWorker's precedent exactly.
             exc.llm_messages = list(full_turn_messages[len(new_messages):])
             raise
+
+        # A Stop ends the loop cleanly. What was persisted is whatever COMPLETED
+        # (assistant + tool rounds, always paired); the interrupted round's partial
+        # assistant text never became a message, so it never reaches the history.
+        self.was_interrupted = bool(interrupted_holder)
 
         # Persist only when the loop actually produced an assistant
         # message (helper appends it on the first non-tool stop or

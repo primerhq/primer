@@ -266,6 +266,21 @@ sessions_active = Gauge(
     registry=registry,
 )
 
+session_interrupts_via_poll_total = Counter(
+    "session_interrupts_via_poll_total",
+    "Stop requests the dispatch watcher found on the session row because the bus "
+    "message never arrived (a failed publish, a degraded bus, a Stop recorded before "
+    "the turn began). Non-zero means the bus is dropping Stops.",
+    registry=registry,
+)
+
+session_interrupt_publish_failures_total = Counter(
+    "session_interrupt_publish_failures_total",
+    "Stop requests whose bus publish failed. The request is still recorded on the "
+    "session row and the running worker recovers it by polling, so it is delayed, not lost.",
+    registry=registry,
+)
+
 
 # ---------------------------------------------------------------------------
 # Cardinality guard (S7 section 4, crosscheck m2)
@@ -348,6 +363,8 @@ def reset_for_test() -> None:
     global storage_cas_drift_total  # noqa: PLW0603
     global turns_total, turn_duration_seconds  # noqa: PLW0603
     global llm_calls_total, llm_profile_tokens_total, sessions_active  # noqa: PLW0603
+    global session_interrupts_via_poll_total  # noqa: PLW0603
+    global session_interrupt_publish_failures_total  # noqa: PLW0603
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
@@ -528,6 +545,19 @@ def reset_for_test() -> None:
         ["workspace_id"],
         registry=registry,
     )
+    session_interrupts_via_poll_total = Counter(
+        "session_interrupts_via_poll_total",
+        "Stop requests the dispatch watcher found on the session row because the bus "
+        "message never arrived (a failed publish, a degraded bus, a Stop recorded before "
+        "the turn began). Non-zero means the bus is dropping Stops.",
+        registry=registry,
+    )
+    session_interrupt_publish_failures_total = Counter(
+        "session_interrupt_publish_failures_total",
+        "Stop requests whose bus publish failed. The request is still recorded on the "
+        "session row and the running worker recovers it by polling, so it is delayed, not lost.",
+        registry=registry,
+    )
 
 
 __all__ = [
@@ -565,4 +595,7 @@ __all__ = [
     "llm_calls_total",
     "llm_profile_tokens_total",
     "sessions_active",
+    # Stop (interrupt)
+    "session_interrupts_via_poll_total",
+    "session_interrupt_publish_failures_total",
 ]

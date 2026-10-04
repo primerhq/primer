@@ -7372,7 +7372,7 @@
                 "type": "null"
               }
             ],
-            "description": "Set by the API when an ``interrupt`` WS frame arrives. The owning worker polls the field via heartbeat reads AND subscribes to a ``session:{id}:cancel`` bus event for faster wake-up.  Cleared by the worker after honouring the cancellation.",
+            "description": "When the most recent Stop (POST .../interrupt) or Cancel was requested. Informational: the worker does not read this field (it reads ``interrupt_requested`` and ``cancel_requested``) and does not clear it when a request is honoured; only a session reset clears it.",
             "title": "Cancel Requested At"
           },
           "created_at": {
@@ -7474,7 +7474,7 @@
           },
           "interrupt_requested": {
             "default": false,
-            "description": "Set by POST .../interrupt (Stop). The worker preempts the in-flight turn like a cancel but transitions the session to WAITING (alive/idle) instead of ENDED, so the user can keep chatting (studio-agents-interact \u00a74.4). Cleared by the worker.",
+            "description": "Set by POST .../interrupt (Stop). The worker running the turn stops it at its next wait for the model (the first token, or between chunks; a tool call that is already running finishes first) and transitions the session to WAITING (alive/idle) instead of ENDED, so the user can keep chatting (studio-agents-interact \u00a74.4). The worker learns of it from a bus message and, as a durable fallback, by re-reading this flag every couple of seconds. Cleared by the worker.",
             "title": "Interrupt Requested",
             "type": "boolean"
           },
@@ -9933,7 +9933,7 @@
                 "type": "null"
               }
             ],
-            "description": "Set by the API when an ``interrupt`` WS frame arrives. The owning worker polls the field via heartbeat reads AND subscribes to a ``session:{id}:cancel`` bus event for faster wake-up.  Cleared by the worker after honouring the cancellation.",
+            "description": "When the most recent Stop (POST .../interrupt) or Cancel was requested. Informational: the worker does not read this field (it reads ``interrupt_requested`` and ``cancel_requested``) and does not clear it when a request is honoured; only a session reset clears it.",
             "title": "Cancel Requested At"
           },
           "created_at": {
@@ -10035,7 +10035,7 @@
           },
           "interrupt_requested": {
             "default": false,
-            "description": "Set by POST .../interrupt (Stop). The worker preempts the in-flight turn like a cancel but transitions the session to WAITING (alive/idle) instead of ENDED, so the user can keep chatting (studio-agents-interact \u00a74.4). Cleared by the worker.",
+            "description": "Set by POST .../interrupt (Stop). The worker running the turn stops it at its next wait for the model (the first token, or between chunks; a tool call that is already running finishes first) and transitions the session to WAITING (alive/idle) instead of ENDED, so the user can keep chatting (studio-agents-interact \u00a74.4). The worker learns of it from a bus message and, as a durable fallback, by re-reading this flag every couple of seconds. Cleared by the worker.",
             "title": "Interrupt Requested",
             "type": "boolean"
           },
@@ -34558,7 +34558,7 @@
     },
     "/v1/workspaces/{workspace_id}/sessions/{session_id}/interrupt": {
       "post": {
-        "description": "Stop (interrupt) the running turn without ending the session.\n\nRUNNING: flag ``interrupt_requested`` + publish ``session:{sid}:cancel``\nso the worker preempts the turn and lands the session in WAITING (alive).\nNon-running: 200 no-op. ENDED: 409 (studio-agents-interact \u00a74.4).",
+        "description": "Stop (interrupt) the running turn without ending the session.\n\nRUNNING: flag ``interrupt_requested`` on the session row, then publish\n``session:{sid}:cancel``. The worker running the turn stops it at its next wait for\nthe model and lands the session in WAITING (alive). The bus message is the fast path\n(milliseconds); the flag is the durable one, which the worker re-reads every couple of\nseconds (``primer.session.dispatch._INTERRUPT_POLL_S``). So a publish that fails here is\nlogged and counted but still answers 200: the Stop is delayed, not lost.\nNon-running: 200 no-op. ENDED: 409 (studio-agents-interact \u00a74.4).",
         "operationId": "interrupt_session_v1_workspaces__workspace_id__sessions__session_id__interrupt_post",
         "parameters": [
           {
