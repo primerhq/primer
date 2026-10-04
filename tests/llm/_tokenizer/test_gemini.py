@@ -11,8 +11,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import aiohttp
 import httpx
 import pytest
+from aiohttp.client_reqrep import ConnectionKey
 from google.genai import errors as gerrors
 from google.genai import models as genai_models
 from google.genai import types as genai_types
@@ -20,11 +22,13 @@ from google.genai import types as genai_types
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.llm._tokenizer.gemini import COUNT_TIMEOUT_S, count_tokens_gemini_detailed
 from primer.llm.counting import NegativeCache, count_prompt_tokens
-from primer.model.chat import ImagePart, Message, TextPart, Tool
+from primer.llm.gemini import _messages_to_gemini
+from primer.model.chat import ImagePart, Message, TextPart, Tool, ToolCallPart, ToolResultPart
 from primer.model.except_ import (
     BadRequestError,
     NetworkError,
     ProviderError,
+    ProviderTimeoutError,
     RateLimitError,
     TokenCounterUnavailable,
 )
@@ -44,7 +48,13 @@ def _fake_client(tokens: int = 0, exc: Exception | None = None):
 async def _count(client, messages=USER, tools=None):
     return await count_tokens_gemini_detailed(
         client=client, model="gemini-2.5-pro", messages=messages, tools=tools,
+        messages_to_contents=_messages_to_gemini,
     )
+
+
+def _connector_error() -> aiohttp.ClientConnectorError:
+    key = ConnectionKey("generativelanguage.googleapis.com", 443, True, None, None, None, None)
+    return aiohttp.ClientConnectorError(key, OSError(111, "Connection refused"))
 
 
 class TestRequestShape:
@@ -68,13 +78,35 @@ class TestRequestShape:
         assert set(kwargs["config"]) == {"http_options"}
         for forbidden in ("system_instruction", "tools", "generation_config"):
             assert forbidden not in kwargs["config"]
-        assert [c["role"] for c in kwargs["contents"]] == ["user"]
+        assert [c.role for c in kwargs["contents"]] == ["user"]
         estimated = (
             count_tokens_char_fallback(messages=[SYSTEM])
             + count_tokens_char_fallback(messages=[], tools=TOOLS)
         )
         assert got.total == 100 + estimated
         assert got.estimated_components == ("system", "tools")
+
+    async def test_a_tool_using_history_is_sent_as_user_and_model_contents(self) -> None:
+        """The count API takes only user and model; the live translator makes tool
+        results user-role function_response parts. A private copy once sent role
+        'tool', which is rejected."""
+        client, count = _fake_client(1)
+        await _count(client, [
+            *USER,
+            Message(role="assistant", parts=[ToolCallPart(id="t1", name="ls", arguments={})]),
+            Message(role="tool", parts=[ToolResultPart(id="t1", output="a b c")]),
+        ])
+        contents = count.await_args.kwargs["contents"]
+        assert [c.role for c in contents] == ["user", "model", "user"]
+        assert contents[2].parts[0].function_response.name == "ls"
+
+    async def test_the_contents_are_exactly_what_the_live_translator_builds(self) -> None:
+        history = [SYSTEM, *USER,
+                   Message(role="assistant", parts=[ToolCallPart(id="t1", name="ls", arguments={})]),
+                   Message(role="tool", parts=[ToolResultPart(id="t1", output="x")])]
+        client, count = _fake_client(1)
+        await _count(client, history)
+        assert count.await_args.kwargs["contents"] == _messages_to_gemini(history)[1]
 
     async def test_the_request_is_accepted_by_the_real_sdk_converter(self) -> None:
         """The Developer-API conversion raises ValueError on the three forbidden
@@ -114,8 +146,24 @@ class TestFailuresRaiseMappedErrors:
         with pytest.raises(BadRequestError):
             await _count(client)
 
-    async def test_a_transport_timeout_is_a_network_error(self) -> None:
-        client, _ = _fake_client(exc=httpx.ReadTimeout("slow"))
+    @pytest.mark.parametrize(
+        "exc", [TimeoutError(), httpx.ReadTimeout("slow"), aiohttp.ServerTimeoutError("slow")],
+        ids=["builtin", "httpx", "aiohttp-server-timeout"],
+    )
+    async def test_a_timeout_is_a_provider_timeout(self, exc) -> None:
+        """google-genai 2.x calls through aiohttp, so a stalled count raises the
+        builtin TimeoutError; the httpx-only classifier left it a bare ProviderError."""
+        client, _ = _fake_client(exc=exc)
+        with pytest.raises(ProviderTimeoutError):
+            await _count(client)
+
+    async def test_an_unreachable_host_is_a_network_error(self) -> None:
+        client, _ = _fake_client(exc=_connector_error())
+        with pytest.raises(NetworkError):
+            await _count(client)
+
+    async def test_any_aiohttp_client_error_is_a_network_error(self) -> None:
+        client, _ = _fake_client(exc=aiohttp.ServerDisconnectedError())
         with pytest.raises(NetworkError):
             await _count(client)
 
@@ -133,6 +181,7 @@ class TestThroughTheWrapper:
         async def count_tokens_detailed(self, *, model, messages, tools=None):
             return await count_tokens_gemini_detailed(
                 client=self.client, model=model, messages=messages, tools=tools,
+                messages_to_contents=_messages_to_gemini,
             )
 
     MODEL = SimpleNamespace(provider_id="p", profile_id="prof", model_name="gemini-2.5-pro")
@@ -143,6 +192,9 @@ class TestThroughTheWrapper:
             (gerrors.ClientError(429, {"error": {"message": "x"}}), "fallback_transient"),
             (gerrors.ServerError(503, {"error": {"message": "x"}}), "fallback_transient"),
             (httpx.ConnectError("down"), "fallback_transient"),
+            (TimeoutError(), "fallback_timeout"),
+            (aiohttp.ServerTimeoutError("slow"), "fallback_timeout"),
+            (_connector_error(), "fallback_transient"),
             (gerrors.ClientError(400, {"error": {"message": "x"}}), "fallback_rejected"),
         ],
     )
@@ -152,6 +204,23 @@ class TestThroughTheWrapper:
             self._Llm(client), model=self.MODEL, messages=USER, negative_cache=NegativeCache(),
         )
         assert (result.source, result.outcome) == ("estimate", outcome)
+
+    async def test_a_stalled_count_is_negative_cached_so_it_does_not_re_stall_every_turn(self) -> None:
+        client, count = _fake_client(exc=TimeoutError())
+        cache = NegativeCache()
+        llm = self._Llm(client)
+        first = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        second = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        assert (first.outcome, second.outcome) == ("fallback_timeout", "negative_cached")
+        assert count.await_count == 1, "the second turn must not wait out the timeout again"
+
+    async def test_an_aiohttp_connection_failure_is_negative_cached_too(self) -> None:
+        client, count = _fake_client(exc=_connector_error())
+        cache = NegativeCache()
+        llm = self._Llm(client)
+        await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        again = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        assert again.outcome == "negative_cached" and count.await_count == 1
 
     async def test_system_and_tools_make_the_label_native_plus_estimated(self) -> None:
         client, _ = _fake_client(50)

@@ -376,7 +376,7 @@ def _absorb_input_usage(state: "_StreamState", usage_obj: Any) -> None:
     """Record the input-side usage fields the API reported, whichever are present.
 
     ``message_start`` carries them; newer API versions repeat the cumulative
-    values on ``message_delta``, so a later report supersedes an earlier one.
+    values on ``message_delta``, so a later report can only raise a figure.
     """
     for attr, field_name in (
         ("input_tokens", "input_tokens"),
@@ -385,7 +385,10 @@ def _absorb_input_usage(state: "_StreamState", usage_obj: Any) -> None:
     ):
         value = getattr(usage_obj, attr, None)
         if isinstance(value, int):
-            setattr(state, field_name, value)
+            # Cumulative counters never decrease: a later report only ever raises
+            # a figure (a delta that reports input_tokens=0 must not zero it).
+            current = getattr(state, field_name)
+            setattr(state, field_name, value if current is None else max(current, value))
 
 
 def _translate_event(  # noqa: C901  (intentional dispatch table)
@@ -645,6 +648,7 @@ class AnthropicLLM(LLM):
         """
         return await count_tokens_anthropic_detailed(
             client=self._get_client(), model=model, messages=messages, tools=tools,
+            messages_to_wire=_messages_to_anthropic, tools_to_wire=_tools_to_anthropic,
         )
 
     def _get_client(self) -> AsyncAnthropic:

@@ -11,11 +11,14 @@ layer can use it without importing the adapters.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
     ExtendedPart,
     ImagePart,
+    Message,
     Part,
     VideoPart,
 )
@@ -39,10 +42,34 @@ def media_tokens(part: Part) -> int | None:
     return None
 
 
+def split_media(messages: Sequence[Message]) -> tuple[list[Message], int]:
+    """``(messages without their media parts, flat estimate of what was removed)``.
+
+    A message left with no parts is dropped (a ``Message`` needs at least one).
+    Used by the vendor counters, which must not send media bytes they cannot
+    count, and report the estimate as an estimated component instead.
+    """
+    kept: list[Message] = []
+    estimate = 0
+    for msg in messages:
+        parts = []
+        for part in msg.parts:
+            media = media_tokens(part)
+            if media is None:
+                parts.append(part)
+            else:
+                estimate += media
+        if not parts:
+            continue
+        kept.append(msg if len(parts) == len(msg.parts) else msg.model_copy(update={"parts": parts}))
+    return kept, estimate
+
+
 __all__ = [
     "AUDIO_VIDEO_TOKENS",
     "DOCUMENT_TOKENS",
     "IMAGE_TOKENS",
     "OTHER_EXTENDED_TOKENS",
     "media_tokens",
+    "split_media",
 ]

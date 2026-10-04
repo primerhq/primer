@@ -71,7 +71,17 @@ class TestAnthropic:
         usage = _anthropic_usage(start={"input_tokens": 1_234})
         assert (usage.input_tokens, usage.cached_input_tokens) == (1_234, None)
 
-    def test_a_later_cumulative_report_supersedes_the_start_report(self) -> None:
+    def test_a_delta_reporting_zero_input_tokens_does_not_zero_the_prompt(self) -> None:
+        """Cumulative counters never decrease; a message_delta carrying
+        input_tokens=0 (and zero cache fields) must not erase the start report."""
+        usage = _anthropic_usage(
+            start={"input_tokens": 50, "cache_read_input_tokens": 1_000},
+            delta={"input_tokens": 0, "cache_read_input_tokens": 0},
+        )
+        assert usage.input_tokens == 1_050
+        assert usage.cached_input_tokens == 1_000
+
+    def test_a_later_cumulative_report_raises_the_start_report(self) -> None:
         usage = _anthropic_usage(
             start={"input_tokens": 5, "cache_read_input_tokens": 100},
             delta={"input_tokens": 7, "cache_read_input_tokens": 120},

@@ -19,6 +19,7 @@ from primer.llm._tokenizer.anthropic import (
     COUNT_TIMEOUT_S,
     count_tokens_anthropic_detailed,
 )
+from primer.llm.anthropic import _messages_to_anthropic, _tools_to_anthropic
 from primer.llm.counting import NegativeCache, count_prompt_tokens
 from primer.model.chat import (
     DocumentPart,
@@ -26,11 +27,14 @@ from primer.model.chat import (
     Message,
     TextPart,
     Tool,
+    ToolCallPart,
+    ToolResultPart,
 )
 from primer.model.except_ import (
     BadRequestError,
     NetworkError,
     ProviderError,
+    ProviderTimeoutError,
     TokenCounterUnavailable,
 )
 from primer.model.media_tokens import DOCUMENT_TOKENS, IMAGE_TOKENS
@@ -61,6 +65,7 @@ class _FakeClient:
 async def _count(client, messages=USER, tools=None):
     return await count_tokens_anthropic_detailed(
         client=client, model="claude-opus-4-7", messages=messages, tools=tools,
+        messages_to_wire=_messages_to_anthropic, tools_to_wire=_tools_to_anthropic,
     )
 
 
@@ -90,12 +95,43 @@ class TestRequestShape:
         client = _FakeClient(tokens=1)
         await _count(client)
         assert "system" not in client.request
+        assert "tools" not in client.request
+
+    async def test_a_tool_using_history_is_sent_with_the_roles_the_count_api_accepts(self) -> None:
+        """The count API takes only user and assistant. The live stream() translator
+        turns a ``tool`` message into a user-role tool_result block; a private copy
+        of that walk once sent role ``tool`` verbatim and every count of a
+        tool-using history was a 400."""
+        client = _FakeClient(tokens=1)
+        await _count(client, [
+            *USER,
+            Message(role="assistant", parts=[ToolCallPart(id="t1", name="ls", arguments={})]),
+            Message(role="tool", parts=[ToolResultPart(id="t1", output="a b c")]),
+        ])
+        wire = client.request["messages"]
+        assert [m["role"] for m in wire] == ["user", "assistant", "user"]
+        assert wire[2]["content"][0]["type"] == "tool_result"
+        assert wire[2]["content"][0]["tool_use_id"] == "t1"
+
+    async def test_the_request_is_built_by_the_live_translators(self) -> None:
+        """No drift: the counted messages are exactly what stream() would send."""
+        history = [
+            Message(role="system", parts=[TextPart(text="be brief")]),
+            *USER,
+            Message(role="assistant", parts=[ToolCallPart(id="t1", name="ls", arguments={"p": 1})]),
+            Message(role="tool", parts=[ToolResultPart(id="t1", output="x", error=True)]),
+        ]
+        client = _FakeClient(tokens=1)
+        await _count(client, history)
+        system, expected = _messages_to_anthropic(history)
+        assert client.request["messages"] == expected and client.request["system"] == system
 
     async def test_tools_are_sent(self) -> None:
         client = _FakeClient(tokens=1)
         tools = [Tool(id="ls", description="list", toolset_id="x",
                       args_schema={"type": "object", "properties": {}})]
         await _count(client, tools=tools)
+        assert client.request["tools"] == _tools_to_anthropic(tools)
         assert client.request["tools"][0]["name"] == "ls"
 
     async def test_media_is_never_sent_and_is_an_estimated_component(self) -> None:
@@ -128,10 +164,24 @@ def _status_error(cls, status: int):
 
 
 class TestFailuresRaiseMappedErrors:
-    async def test_a_timeout_is_a_network_error(self) -> None:
+    async def test_a_timeout_is_a_provider_timeout(self) -> None:
         exc = anthropic.APITimeoutError(request=httpx.Request("POST", "https://x"))
+        with pytest.raises(ProviderTimeoutError):
+            await _count(_FakeClient(exc=exc))
+
+    async def test_a_connection_failure_is_a_network_error(self) -> None:
+        exc = anthropic.APIConnectionError(request=httpx.Request("POST", "https://x"))
         with pytest.raises(NetworkError):
             await _count(_FakeClient(exc=exc))
+
+    async def test_an_unclassified_4xx_is_a_bad_request_not_a_bare_provider_error(self) -> None:
+        """A 413 has no SDK class, so the classifier returns a bare ProviderError, which
+        the wrapper would treat as a bug. A 4xx is the request being refused."""
+        request = httpx.Request("POST", "https://x")
+        exc = anthropic.APIStatusError("too large", response=httpx.Response(413, request=request), body=None)
+        with pytest.raises(BadRequestError) as caught:
+            await _count(_FakeClient(exc=exc))
+        assert caught.value.status_code == 413
 
     async def test_a_400_is_a_bad_request(self) -> None:
         with pytest.raises(BadRequestError):
@@ -158,6 +208,7 @@ class TestThroughTheWrapper:
         async def count_tokens_detailed(self, *, model, messages, tools=None):
             return await count_tokens_anthropic_detailed(
                 client=self.client, model=model, messages=messages, tools=tools,
+                messages_to_wire=_messages_to_anthropic, tools_to_wire=_tools_to_anthropic,
             )
 
     MODEL = SimpleNamespace(provider_id="p", profile_id="prof", model_name="claude-opus-4-7")
@@ -165,10 +216,12 @@ class TestThroughTheWrapper:
     @pytest.mark.parametrize(
         ("exc", "outcome"),
         [
-            (anthropic.APITimeoutError(request=httpx.Request("POST", "https://x")), "fallback_transient"),
+            (anthropic.APITimeoutError(request=httpx.Request("POST", "https://x")), "fallback_timeout"),
+            (anthropic.APIConnectionError(request=httpx.Request("POST", "https://x")), "fallback_transient"),
             (_status_error(anthropic.RateLimitError, 429), "fallback_transient"),
             (_status_error(anthropic.InternalServerError, 500), "fallback_transient"),
             (_status_error(anthropic.BadRequestError, 400), "fallback_rejected"),
+            (_status_error(anthropic.APIStatusError, 413), "fallback_rejected"),
         ],
     )
     async def test_a_failing_client_is_an_estimate_never_native(self, exc, outcome) -> None:
@@ -178,6 +231,16 @@ class TestThroughTheWrapper:
         )
         assert (result.source, result.outcome) == ("estimate", outcome)
         assert result.total > 0
+
+    async def test_a_stalled_count_is_negative_cached(self) -> None:
+        exc = anthropic.APITimeoutError(request=httpx.Request("POST", "https://x"))
+        client = _FakeClient(exc=exc)
+        cache = NegativeCache()
+        llm = self._Llm(client)
+        first = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        second = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        assert (first.outcome, second.outcome) == ("fallback_timeout", "negative_cached")
+        assert client.messages.count_tokens.await_count == 1
 
     async def test_a_working_client_is_labelled_native(self) -> None:
         result = await count_prompt_tokens(

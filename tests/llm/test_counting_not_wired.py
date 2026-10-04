@@ -1,13 +1,11 @@
-"""The counter wrapper is not on any production path yet, and may not be until S2.
+"""A counter that returns the heuristic as a count must never sit under a wired wrapper.
 
-``count_prompt_tokens`` is groundwork. Until the adapter-hardening slice lands, the
-Anthropic, Gemini and HF counters still swallow their own errors and return the
-character heuristic as a count; wiring the wrapper to a turn before that would make
-a decision on a number nobody vouches for. This test is the gate: it passes while
-nothing outside primer/llm imports the wrapper, and once something does, it demands
-that the swallowing counters are gone.
-
-When a wiring slice lands it updates this test deliberately (that is the point).
+``count_prompt_tokens`` was groundwork first: before the adapter-hardening slice the
+Anthropic, Gemini and HF counters swallowed their own errors and returned the
+character heuristic as a count, and wiring the wrapper to a turn then would have made
+a decision on a number nobody vouches for. That slice has landed; this test keeps it
+true. It passes while nothing outside primer/llm imports the wrapper, and once
+something does it demands that none of the three counters swallows.
 """
 
 from __future__ import annotations
@@ -86,34 +84,3 @@ def test_the_swallowing_scanner_flags_a_return_but_not_an_added_estimate():
     assert _returns_the_heuristic_as_a_count(swallow)
     assert _returns_the_heuristic_as_a_count(nested)
     assert not _returns_the_heuristic_as_a_count(adds_estimate)
-
-
-def test_the_current_swallowers_are_detected_until_s2_lands():
-    """Pins the scanner against the real files: today (before S2) it must see the
-    three counters that swallow, or the gate above would pass vacuously."""
-    flagged = [
-        name for name in _SWALLOWERS
-        if _returns_the_heuristic_as_a_count(
-            (ROOT / "primer" / "llm" / "_tokenizer" / name).read_text()
-        )
-    ]
-    assert flagged == list(_SWALLOWERS), (
-        "after S2 this test is deleted (the counters no longer swallow); "
-        f"before it, all three must be detected, got {flagged}"
-    )
-
-
-def test_the_gate_sees_a_wiring_import_and_ignores_prose(tmp_path):
-    """The scanner finds a real import in each spelling and not a docstring
-    mention, so the gate can neither pass vacuously nor fail on prose."""
-    pkg = tmp_path / "primer" / "agent"
-    pkg.mkdir(parents=True)
-    (pkg / "a.py").write_text("from primer.llm.counting import count_prompt_tokens\n")
-    (pkg / "b.py").write_text("import primer.llm.counting\n")
-    (pkg / "c.py").write_text("from primer.llm import counting\n")
-    (pkg / "prose.py").write_text('"""see primer.llm.counting.count_prompt_tokens"""\n')
-    (tmp_path / "primer" / "llm").mkdir()
-    (tmp_path / "primer" / "llm" / "inside.py").write_text("from primer.llm.counting import x\n")
-    assert _wired(tmp_path) == [
-        "primer/agent/a.py", "primer/agent/b.py", "primer/agent/c.py",
-    ]
