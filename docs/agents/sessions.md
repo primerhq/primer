@@ -188,6 +188,24 @@ can run an agent or graph headlessly end to end.
   how you end a session; sessions are not a CRUD entity and there is
   no delete.
 
+Stopping a turn without ending the session is the console's Stop button
+(`POST /v1/workspaces/{workspace_id}/sessions/{session_id}/interrupt`);
+there is no tool for it. The session lands in `waiting` with its history
+intact, so the next message continues it:
+
+- It takes effect at the next wait for the model: before the first token
+  as well as between chunks. A tool call that is already running is not
+  cancelled; it finishes, its result is recorded, and the turn ends
+  before the next model call. Graph sessions and the context-compaction
+  call that can run first are not interruptible yet.
+- What the model had already written is kept in the transcript. The model
+  itself does not see that partial text on the next turn, and is not told
+  it was stopped; tool rounds that completed are kept.
+- The request is recorded on the session row (`interrupt_requested`) and
+  the running worker re-reads it every 2 seconds (one point read per
+  running turn), so a Stop is delayed, not lost, if the fast signal
+  fails. The row shows `interrupt_requested: true` until the turn stops.
+
 For starting a fresh session of a known agent in a known workspace,
 the right tool is `workspaces::create_workspace_session`. For
 triggering a fresh session in response to an event, the right path is
