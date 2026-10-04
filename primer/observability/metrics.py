@@ -189,6 +189,14 @@ worker_tasks_total = Counter(
     registry=registry,
 )
 
+storage_cas_drift_total = Counter(
+    "storage_cas_drift_total",
+    "Storage.patch_if writes rejected although a fresh read still matches the guard "
+    "(a serialization drift, not a race), by model.",
+    ["model"],
+    registry=registry,
+)
+
 worker_task_duration_seconds = Histogram(
     "worker_task_duration_seconds",
     "Claim-lane task duration in seconds, by worker, claim kind and outcome.",
@@ -285,6 +293,8 @@ ALLOWED_LABEL_NAMES = frozenset({
     # What a token figure stands on (usage_calibrated/native/native_approx/
     # native_plus_estimated/estimate): a closed enum, so bounded.
     "source",
+    # Entity model class name (storage_cas_drift_total): bounded by the set of model classes.
+    "model",
 })
 """Every label name any Primer instrument is permitted to carry.
 
@@ -335,6 +345,7 @@ def reset_for_test() -> None:
     global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
     global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
     global worker_tasks_total, worker_task_duration_seconds  # noqa: PLW0603
+    global storage_cas_drift_total  # noqa: PLW0603
     global turns_total, turn_duration_seconds  # noqa: PLW0603
     global llm_calls_total, llm_profile_tokens_total, sessions_active  # noqa: PLW0603
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
@@ -448,6 +459,13 @@ def reset_for_test() -> None:
         "worker_tasks_total",
         "Total claim-lane tasks run, by stable worker label, claim kind and outcome.",
         ["worker", "kind", "status"],
+        registry=registry,
+    )
+    storage_cas_drift_total = Counter(
+        "storage_cas_drift_total",
+        "Storage.patch_if writes rejected although a fresh read still matches the guard "
+        "(a serialization drift, not a race), by model.",
+        ["model"],
         registry=registry,
     )
     worker_task_duration_seconds = Histogram(

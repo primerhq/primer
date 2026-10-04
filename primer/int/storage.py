@@ -8,7 +8,7 @@ SQLite, Postgres, MongoDB, etc.). One backend instance, one model type:
 applications that store multiple model kinds wire up one
 :class:`Storage` per kind.
 
-The interface exposes seven operations:
+The interface exposes eight operations:
 
 * :meth:`Storage.get` -- fetch by id, returns ``None`` if missing.
 * :meth:`Storage.create` -- insert a new entity, raise
@@ -18,6 +18,10 @@ The interface exposes seven operations:
 * :meth:`Storage.update_unless` -- like ``update``, but atomically
   skipped if the row's CURRENT value of a given field already equals a
   forbidden value -- for callers that must not act on a stale snapshot.
+* :meth:`Storage.patch_if` -- a field-scoped compare-and-set: merge a
+  shallow ``patch`` and nested ``set_paths`` leaves iff every ``where``
+  clause matches the row's CURRENT document, in one statement. For
+  writers that own only a few fields and must not overwrite the rest.
 * :meth:`Storage.delete` -- remove by id, raise
   :class:`primer.model.except_.NotFoundError` if missing.
 * :meth:`Storage.list` -- paginated enumeration, optionally ordered.
@@ -41,6 +45,7 @@ semantics.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
 from typing import Any, Generic, TypeVar
 
 from primer.model.common import Identifiable
@@ -164,6 +169,70 @@ class Storage(ABC, Generic[ModelT]):
         ------
         primer.model.except_.NotFoundError
             No entity with this id exists.
+        """
+
+    @abstractmethod
+    async def patch_if(
+        self,
+        id: str,
+        patch: Mapping[str, Any] | None = None,
+        *,
+        where: Mapping[str, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None = None,
+        conn: Any | None = None,
+    ) -> ModelT | None:
+        """Write ONLY the named fields of one row, iff its CURRENT document matches ``where``.
+
+        One statement, evaluated by the backend against the row's current version: there is no
+        read-modify-write, so a concurrent writer's other fields (a cancel flag, a human reply
+        accumulated into a nested map) are never overwritten, which a whole-document
+        :meth:`update` from a snapshot cannot promise.
+
+        Parameters
+        ----------
+        patch
+            Top-level fields to set, merged shallowly into the stored document (a value replaces
+            that field wholesale). JSON-ready values, as ``model_dump(mode="json")`` produces.
+        where
+            ``{field: [allowed values, ...]}``, ALL fields must match (AND), any listed value
+            matches (OR). Values are compared as typed JSON scalars, not as text, so ``True`` does
+            not match ``"true"``. ``None`` in the list matches an absent field or JSON null. Take the
+            comparison value from :func:`primer.storage.raw_generation`, never from a re-formatted
+            Python value, so "the row I read" is spelled exactly as the backend stores it.
+        set_paths
+            ``{("parked_state", "resume_event_payloads", key): value}``: nested leaves set after the
+            shallow patch. Every parent is ensured to be an object first, shallowest first (an
+            absent, null or scalar parent is replaced by ``{}``), so sibling keys written by others
+            survive. Paths are at most four deep; elements may not contain a quote, a backslash or a
+            control character (rejected identically on every backend).
+        conn
+            See :meth:`update`.
+
+        Returns
+        -------
+        ModelT | None
+            The stored entity after the write; ``None`` when ``where`` did not match (the row is
+            unchanged).
+
+        Raises
+        ------
+        primer.model.except_.NotFoundError
+            No entity with this id exists. A missing row is NOT reported as ``None``: "someone else
+            won the race" and "the row is gone" need different handling.
+        ValueError
+            The spec is malformed: an empty ``patch``/``set_paths``, an empty ``where`` or one naming
+            ``id``, a ``where`` value that is not a list of JSON scalars (a bare string is rejected),
+            a bad path (too deep, forbidden characters, a prefix of another), or more than 32 patch
+            keys, 16 leaves or 4 distinct parent objects. Rejected identically on every backend,
+            before any SQL.
+        pydantic.ValidationError
+            The document the write would produce no longer validates against the model. The write is
+            rolled back (a savepoint inside a caller's transaction) and the row is unchanged. It is a
+            ``ValueError`` subclass, so a caller that must tell a malformed SPEC from a bad VALUE
+            catches it first.
+
+        Comparison rules for ``where``: typed JSON scalars, numbers by value (``1`` equals ``1.0``),
+        a number is never a string or a bool, ``None`` matches an absent field or JSON null.
         """
 
     @abstractmethod

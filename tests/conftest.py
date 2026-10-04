@@ -63,6 +63,26 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
+    async def patch_if(
+        self, id: str, patch=None, *, where, set_paths=None, conn=None,
+    ) -> _T | None:
+        """The pure-Python statement of ``Storage.patch_if`` (see tests/storage/_patch_reference.py)."""
+        from primer.model.common import dump_for_storage
+        from primer.storage._patch import validate_patch
+        from tests.storage._patch_reference import apply_patch, doc_matches
+
+        patch_d, paths_d, where_d = validate_patch(patch, set_paths, where)
+        current = self._data.get(id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {id!r}")
+        doc = dump_for_storage(current)
+        doc_no_id = {k: v for k, v in doc.items() if k != "id"}   # the id is a column, not stored data
+        if not doc_matches(doc_no_id, where_d):
+            return None
+        updated = self._cls.model_validate({**apply_patch(doc_no_id, patch_d, paths_d), "id": id})
+        self._data[id] = updated
+        return updated
+
     async def delete(self, id: str, *, conn=None) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")

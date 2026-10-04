@@ -231,6 +231,7 @@ WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
 `ws_session_duration_seconds`, `ws_replay_backlog_seconds`), and the worker / turn
 / session families:
 
+- `storage_cas_drift_total{model}` counts `Storage.patch_if` writes (through `primer.storage.cas.patch_if_checked`) that the database rejected although a fresh read still satisfies the guard in Python: a serialization disagreement rather than a lost race. Any non-zero rate means a compare-and-set can never apply and deserves attention.
 - `worker_tasks_total{worker,kind,status}` and
   `worker_task_duration_seconds{worker,kind,status}` are written by
   `WorkerPool._run_engine` (`primer/worker/pool.py`). Lease acquire to release IS
