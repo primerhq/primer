@@ -234,3 +234,68 @@ class TestSessionCompactJourney:
         assert "the story so far" in texts[0]
         # Append-only: the pre-compaction rows are all still on disk.
         assert "hi back" in ws.read(".state/sessions/c-ok/messages.jsonl")
+
+    async def test_a_steer_written_while_the_summariser_ran_survives_the_fold(
+        self, client: AsyncClient, app: FastAPI, monkeypatch,
+    ) -> None:
+        """The router re-reads the history just before the write (``reload_history``): the summarising call takes
+        seconds and a steer can land in that time. Without the wiring the marker folds it away."""
+        from primer.model_profile.resolver import ResolvedModel
+        from primer.workspace.session import reconstruct_compacted_history
+
+        ws = await _seed(app, "c-steer")
+        steer_line = _msg("user", "A STEER THAT LANDED DURING THE SUMMARISER CALL") + "\n"
+
+        class _SteeringLLM(_StubLLM):
+            def stream(self, *, model, messages, **kwargs):
+                path = ".state/sessions/c-steer/messages.jsonl"
+                ws._files[path] = ws._files[path] + steer_line.encode()  # noqa: SLF001 - the fake's own store
+                return super().stream(model=model, messages=messages, **kwargs)
+
+        stub = _SteeringLLM(summary="the story so far")
+
+        async def _get_llm(_provider_id):
+            return stub
+
+        app.state.provider_registry.get_llm = _get_llm  # type: ignore[assignment]
+
+        async def _resolve(*_a, **_k):
+            return ResolvedModel(
+                profile_id="p--m", provider_id="prov", model_name="m", context_length=128_000, config={},
+            )
+
+        monkeypatch.setattr("primer.model_profile.resolve_model", _resolve, raising=False)
+        r = await client.post(f"/v1/workspaces/{WID}/sessions/c-steer/compact")
+        assert r.status_code == 200, r.text
+        lines = ws.read(".state/sessions/c-steer/messages.jsonl").splitlines()
+        texts = [p.text for m in reconstruct_compacted_history(lines) for p in m.parts]
+        assert "the story so far" in texts[0]
+        assert "A STEER THAT LANDED DURING THE SUMMARISER CALL" in texts, "the steer was folded into the summary"
+
+    async def test_nothing_to_summarise_is_a_422_that_names_the_reason(
+        self, client: AsyncClient, app: FastAPI, monkeypatch,
+    ) -> None:
+        """One user message and no reply: that input is unanswered, so there is nothing to fold."""
+        from primer.model_profile.resolver import ResolvedModel
+
+        ws = await _seed(app, "c-empty", lines=[_rec(1, "user_input", text="hello"), _msg("user", "hello")])
+        stub = _StubLLM()
+
+        async def _get_llm(_provider_id):
+            return stub
+
+        app.state.provider_registry.get_llm = _get_llm  # type: ignore[assignment]
+
+        async def _resolve(*_a, **_k):
+            return ResolvedModel(
+                profile_id="p--m", provider_id="prov", model_name="m", context_length=128_000, config={},
+            )
+
+        monkeypatch.setattr("primer.model_profile.resolve_model", _resolve, raising=False)
+        r = await client.post(f"/v1/workspaces/{WID}/sessions/c-empty/compact")
+        assert r.status_code == 422, r.text
+        body = r.json()
+        assert body["extensions"]["reason"] == "empty_head"
+        assert "nothing to compact" in body["detail"]
+        assert stub.calls == [], "no summariser call"
+        assert "compaction_marker" not in ws.read(".state/sessions/c-empty/messages.jsonl")

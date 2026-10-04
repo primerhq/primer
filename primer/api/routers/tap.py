@@ -350,6 +350,12 @@ def build_compaction_frame(raw_lines: list[str]) -> dict | None:
         "replaced_to_seq": payload.get("replaced_to_seq"),
         "tokens_before": payload.get("tokens_before"),
         "tokens_after": payload.get("tokens_after"),
+        # The verdict (absent on a marker written before it was recorded): summarised, or insufficient
+        # when the summary stands and the prompt is still at or over the trigger.
+        "outcome": payload.get("outcome"),
+        "unreducible": payload.get("unreducible"),
+        "trigger_tokens": payload.get("trigger_tokens"),
+        "fixed_overhead_tokens": payload.get("fixed_overhead_tokens"),
     }
 
 

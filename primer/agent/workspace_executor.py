@@ -221,10 +221,14 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         """
         if summary_message is None:
             return
-        # ``compacted`` is ``[summary, *kept_tail]`` (CompactionStrategy._tier2): the
-        # marker must carry the tail too, or the next load folds it into the summary
-        # along with every line before the marker (including the turn's own input).
-        kept_tail = compacted[1:] if compacted and compacted[0] is summary_message else []
+        # ``compacted`` is the kept messages with the summary at its place (CompactionStrategy._place):
+        # in front, or after the user run that opened the turn when the turn's early rounds were
+        # summarised. The marker must carry the kept messages too, or the next load folds them into
+        # the summary along with every line before the marker (including the turn's own input), and
+        # where the summary sits among them.
+        at = next((i for i, m in enumerate(compacted) if m is summary_message), None)
+        kept_tail = [m for i, m in enumerate(compacted) if i != at] if at is not None else []
+        summary_after = at or 0
         summary_text = "".join(
             part.text
             for part in summary_message.parts
@@ -248,6 +252,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                         {"kept_tail_messages": [json.loads(m.model_dump_json()) for m in kept_tail]}
                         if kept_tail else {}
                     ),
+                    **({"summary_after": summary_after} if summary_after and kept_tail else {}),
                     "replaced_from_seq": 1,
                     # Message lines are seqless, so physical position in the
                     # append-only file IS the boundary; ``replaced_to_seq`` is

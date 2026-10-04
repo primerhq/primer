@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
-from primer.agent.tail import split_for_compaction
+from primer.agent.tail import CompactionSplit, split_for_compaction
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.model.chat import (
     Error,
@@ -221,6 +221,15 @@ class CompactedTurn(BaseModel):
     trigger_tokens: int | None = Field(
         default=None,
         description="The trigger this compaction was measured against, in estimated tokens.",
+    )
+    summary_after: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Where the summary sits in ``new_messages``: after this many kept messages. ``0`` "
+            "(the usual) puts it in front; a turn whose early tool rounds were summarised puts it "
+            "after the user run that opened the turn, so the question stays first and verbatim."
+        ),
     )
     fixed_overhead_tokens: int = Field(
         default=0,
@@ -475,10 +484,10 @@ class CompactionStrategy:
 
         split = self._split(history, tail_budget_tokens=self._tail_budget(trigger - extra))
         summary_msg = await self._full_compact(
-            head=split.head, agent=agent, llm=llm, model=model, tool_manager=tool_manager,
+            head=split.summary_input, agent=agent, llm=llm, model=model, tool_manager=tool_manager,
             event_sink=event_sink, max_tool_turns=max_tool_turns, principal=principal,
         )
-        compacted_messages = [summary_msg, *split.tail]
+        compacted_messages = self._place(summary_msg, split)
         after = self._estimate_tokens(compacted_messages) + extra
         if after >= trigger and len(floor.tail) < len(split.tail):
             # Measure again: still over the trigger. One bounded escalation, in memory: summarise
@@ -486,8 +495,8 @@ class CompactionStrategy:
             # tool-enabled summariser would run its tools a second time, and the marker is written
             # once, for the result that is returned.
             split = floor
-            summary_msg = await self._full_compact(head=split.head, agent=agent, llm=llm, model=model)
-            compacted_messages = [summary_msg, *split.tail]
+            summary_msg = await self._full_compact(head=split.summary_input, agent=agent, llm=llm, model=model)
+            compacted_messages = self._place(summary_msg, split)
             after = self._estimate_tokens(compacted_messages) + extra
         insufficient = after >= trigger
         outcome = "insufficient" if insufficient else "summarised"
@@ -504,8 +513,15 @@ class CompactionStrategy:
             unreducible="over_trigger" if insufficient else None,
             outcome=outcome,
             trigger_tokens=trigger,
+            summary_after=split.summary_after,
             fixed_overhead_tokens=fixed_overhead,
         )
+
+    @staticmethod
+    def _place(summary: Message, split: "CompactionSplit") -> list[Message]:
+        """The compacted history: the kept messages with the summary at its place (``summary_after``)."""
+        k = split.summary_after
+        return [*split.tail[:k], summary, *split.tail[k:]]
 
     def _split(self, history: list[Message], *, tail_budget_tokens: int):
         return split_for_compaction(
@@ -539,6 +555,14 @@ class CompactionStrategy:
     @staticmethod
     def _warn(reason: str, *, tokens: int, trigger: int) -> None:
         """A compaction that cannot reduce the prompt is a decision to send it anyway: say so."""
+        if reason == "over_trigger":
+            logger.warning(
+                "compaction insufficient (%s): summarised, and the compacted prompt is still about %d tokens "
+                "against a trigger of %d; what is left is the protected input and the fixed part",
+                reason, tokens, trigger,
+                extra={"reason": reason, "estimated_tokens": tokens, "trigger_tokens": trigger},
+            )
+            return
         logger.warning(
             "compaction unreducible (%s): the prompt is about %d tokens against a trigger of %d "
             "and nothing more can be summarised without dropping input the model has not answered",

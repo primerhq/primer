@@ -68,3 +68,15 @@ def test_frame_renderer_drops_llm_call_before_the_unknown_kind_fallback() -> Non
     fallback = body.index("Unknown / future frame kinds")
     assert guard < fallback, "the guard must precede the catch-all"
     assert "return null" in body[guard : guard + 120]
+
+
+def test_compaction_note_is_hidden_by_both_renderers() -> None:
+    """The compaction verdict record is session-record material, like llm_call: neither transcript renderer shows it."""
+    adapter = SRC.read_text(encoding="utf-8")
+    table = adapter[adapter.index("var SA_SKIP_IN_TRANSCRIPT = ") :]
+    assert "compaction_note: true" in table[: table.index("};")]
+    frame = FRAME.read_text(encoding="utf-8")
+    body = frame[frame.index("function _SLS_Frame") :]
+    body = body[: body.index("\n}\n")]
+    guard = body.index('kind === "compaction_note"')
+    assert guard < body.index("Unknown / future frame kinds") and "return null" in body[guard : guard + 80]
