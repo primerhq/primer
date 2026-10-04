@@ -27,7 +27,8 @@ class PoolConfig(BaseModel):
     Maps onto asyncpg's :func:`asyncpg.create_pool` parameters, except the
     ``tcp_keepalive_*`` fields: asyncpg has no keepalive option, so those are
     applied to every new connection's socket by the pool's ``init`` hook
-    (:mod:`primer.storage._pg_pool`).
+    (:mod:`primer.storage._pg_pool`). ``max_lifetime`` is accepted but NOT
+    enforced (see its description).
     Defaults are tuned for a small-to-medium application; large
     deployments should raise ``max_size`` to match expected concurrency.
     """
@@ -66,7 +67,15 @@ class PoolConfig(BaseModel):
     max_lifetime: float = Field(
         default=3600.0,
         gt=0,
-        description="Seconds a connection may live before being recycled (defends against leaks).",
+        description=(
+            "NOT ENFORCED. Accepted so that a saved config which sets it still "
+            "validates, but nothing reads it. asyncpg has no maximum connection "
+            "age, and an age limit could only ever recycle idle pooled "
+            "connections (which max_idle already closes), never the LISTEN "
+            "connections a worker holds checked out for its whole life. Leave "
+            "it at its default: a non-default value logs one warning when the "
+            "pool is created."
+        ),
     )
     tcp_keepalive_idle_seconds: int = Field(
         default=60,

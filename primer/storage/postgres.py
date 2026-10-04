@@ -93,7 +93,7 @@ from primer.model.storage import (
     PageRequest,
     Predicate,
 )
-from primer.storage._pg_pool import keepalive_init_hook
+from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_options
 from primer.storage._cursor import (
     _decode_cursor,
     _encode_cursor_for,
@@ -221,6 +221,7 @@ class PostgresStorageProvider(StorageProvider):
         if self._pool is not None:
             return
         cfg = self._config
+        warn_unenforced_pool_options(cfg.pool, pool_name="storage")
         try:
             self._pool = await asyncpg.create_pool(
                 host=cfg.hostname,
