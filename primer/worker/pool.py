@@ -117,6 +117,10 @@ class WorkerPool:
         self._worker_label: str = stable_worker_label(config)
         self._tasks: list[asyncio.Task] = []
         self._active_scopes: dict[tuple[ClaimKind, str], _CancelScope] = {}
+        # Cancels that reached a running turn through the session row because
+        # their NOTIFY never arrived (see _reconcile_cancels). Exposed as
+        # primer_worker_cancels_reconciled_total.
+        self._cancels_reconciled_total: int = 0
 
         # Unified in-flight tracking — one set for all claim kinds.
         # (ClaimKind, entity_id) tuples for all kinds.
@@ -197,6 +201,13 @@ class WorkerPool:
             asyncio.create_task(
                 self._cancel_loop(),
                 name=f"scheduler-cancel-{self._worker_id}",
+            ),
+            # Its own task, NOT a step of _heartbeat_loop: the row read can
+            # block up to command_timeout, which would delay lease heartbeats
+            # past the lease TTL.
+            asyncio.create_task(
+                self._cancel_reconcile_loop(),
+                name=f"cancel-reconcile-{self._worker_id}",
             ),
         ]
         self._engine_claim_task = asyncio.create_task(
@@ -307,6 +318,7 @@ class WorkerPool:
             "primer_worker_capacity": self.config.concurrency,
             "primer_worker_claims_total": self._claims_total,
             "primer_worker_claims_empty_total": self._claims_empty_total,
+            "primer_worker_cancels_reconciled_total": self._cancels_reconciled_total,
             "primer_session_turns_total": dict(self._turns_total_by_result),
             "primer_session_turn_duration_seconds": {
                 "count": self._turn_duration_count,
@@ -1038,9 +1050,18 @@ class WorkerPool:
 
     async def _cancel_loop(self) -> None:
         """Drain cancel notifications. When a sid arrives that this worker
-        holds an active scope for, fire scope.cancel(reason). The reason
+        holds an active scope for, fire scope.cancel_once(reason). The reason
         string is informational; the running turn inspects the Session row
         to determine cancel-vs-pause routing.
+
+        ``cancel_once``, not ``cancel``: a second cancel (a double-clicked
+        Cancel sends two NOTIFYs) landing while the session handler is still
+        converging the preempted session to ENDED would skip that convergence
+        and strand the session (see :class:`_CancelScope`).
+
+        NOTIFY is not durable, so this loop alone can miss a cancel (while the
+        watcher reconnects, or while a dead connection has not been detected
+        yet); :meth:`_cancel_reconcile_loop` is the safety net for those.
 
         Restart-on-failure pattern mirrors :meth:`_notify_loop`.
         """
@@ -1059,7 +1080,7 @@ class WorkerPool:
                     async for sid in cancel_iter:
                         scope = self._active_scopes.get((ClaimKind.SESSION, sid))
                         if scope is not None:
-                            scope.cancel("user_signal")
+                            scope.cancel_once("user_signal")
                         if self._stopping.is_set():
                             return
             except asyncio.CancelledError:
@@ -1096,6 +1117,73 @@ class WorkerPool:
             if False:
                 yield
         return _empty()
+
+    async def _reconcile_cancels(self) -> int:
+        """Cancel running sessions whose row says a cancel is pending.
+
+        ``cancel_session`` records ``cancel_requested`` on the session row and
+        then sends a ``session_cancel`` NOTIFY, which is what lets
+        :meth:`_cancel_loop` hard-preempt a turn blocked in a long LLM or tool
+        call. The NOTIFY can be lost (the watcher is reconnecting, a half-open
+        connection has not been detected yet, startup before the first LISTEN),
+        and then the API answered 200 while the turn kept running until it next
+        yielded an event. The row is the truth, so this re-reads it for every
+        SESSION scope this worker holds. It is idempotent, so a cancel that
+        arrives both ways is cancelled once (``cancel_once``).
+
+        Only ``cancel_requested`` is checked: that is the one flag
+        ``cancel_session`` signals through the NOTIFY. Interrupt (Stop) never had
+        this path. Returns how many scopes it cancelled. A storage error for one
+        session is logged and skipped; it never propagates.
+        """
+        reconciled = 0
+        for (kind, sid), scope in list(self._active_scopes.items()):
+            if kind is not ClaimKind.SESSION or scope.cancelled:
+                continue
+            try:
+                row = await self._load_session(sid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "cancel reconcile: could not read session %s, will retry: %s", sid, exc,
+                )
+                continue
+            if row is None or not row.cancel_requested or row.status == SessionStatus.ENDED:
+                continue
+            # The turn may have finished (or been cancelled by a NOTIFY) while
+            # the row was being read.
+            if self._active_scopes.get((kind, sid)) is not scope:
+                continue
+            if scope.cancel_once("user_signal"):
+                self._cancels_reconciled_total += 1
+                reconciled += 1
+                logger.info(
+                    "cancel for session %s reached this worker through the session "
+                    "row, not the NOTIFY (a NOTIFY was missed or is still queued)",
+                    sid,
+                )
+        return reconciled
+
+    async def _cancel_reconcile_loop(self) -> None:
+        """Run :meth:`_reconcile_cancels` every ``heartbeat_interval_seconds``.
+
+        Its own task, not a step of :meth:`_heartbeat_loop`: the row read can
+        block up to the pool's ``command_timeout`` (30s), which inside the
+        heartbeat loop would delay lease heartbeats past the lease TTL and cost
+        leases. The cadence deliberately follows the heartbeat interval (no
+        separate setting), so a cancel whose NOTIFY was lost is preempted within
+        about that long, whichever way it was lost.
+        """
+        try:
+            while not self._stopping.is_set():
+                await asyncio.sleep(self.config.heartbeat_interval_seconds)
+                if self._stopping.is_set():
+                    return
+                try:
+                    await self._reconcile_cancels()
+                except Exception:
+                    logger.exception("cancel_reconcile_loop iteration failed")
+        except asyncio.CancelledError:
+            return
 
     # ---- per-turn execution -----------------------------------------------
 
