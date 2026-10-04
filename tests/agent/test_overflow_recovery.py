@@ -186,6 +186,41 @@ async def test_a_yielded_overflow_is_classified_as_an_overflow_but_not_recovered
     assert llm.calls == 1, "and the turn must not be replayed from scratch"
 
 
+VLLM_OVERFLOW = (
+    "'max_tokens' or 'max_completion_tokens' is too large: 4096. This model's maximum context length is "
+    "32768 tokens and your request has 29000 input tokens (4096 > 32768 - 29000)."
+)
+VLLM_CAP_EXCEEDS_CONTEXT = (
+    "'max_tokens' or 'max_completion_tokens' is too large: 100000. This model's maximum context length is "
+    "8192 tokens and your request has 50 input tokens (100000 > 8192 - 50)."
+)
+
+
+async def test_vllms_normal_overflow_form_still_force_compacts_and_replays() -> None:
+    """primer always sends max_output_tokens, so on a vLLM profile an overflow arrives as "'max_tokens' ... is
+    too large" with the cap well inside the context length. The history is what must shrink, and compaction
+    can fix it: a lexical output-cap veto here turns every such overflow into a failed turn."""
+    spy = _SpyCompaction()
+    llm = _FailsThenAnswers(raises=BadRequestError(VLLM_OVERFLOW, status_code=400))
+    executor = _Executor(llm, spy)
+
+    events = await _invoke(executor)
+
+    assert spy.forced == 1 and llm.calls == 2
+    assert "all good" in "".join(e.text for e in events if isinstance(e, TextDelta))
+
+
+async def test_vllms_cap_larger_than_the_context_does_not_force_compact() -> None:
+    spy = _SpyCompaction()
+    llm = _FailsThenAnswers(raises=BadRequestError(VLLM_CAP_EXCEEDS_CONTEXT, status_code=400), failures=99)
+    executor = _Executor(llm, spy)
+
+    with pytest.raises(BadRequestError):
+        await _invoke(executor)
+
+    assert spy.forced == 0 and executor.replaced == [] and llm.calls == 1
+
+
 async def test_the_recovery_is_attempted_once_not_in_a_loop() -> None:
     spy = _SpyCompaction()
     llm = _FailsThenAnswers(raises=BadRequestError(OVERFLOW, status_code=400), failures=99)
