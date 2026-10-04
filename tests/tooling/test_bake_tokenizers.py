@@ -13,6 +13,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import re
+import socket
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -47,7 +50,7 @@ OTHER = _Pin("other_base", b"Iw== 0\nJA== 1\n")
 def _fetcher(pins, log):
     by_url = {p.url: p.payload for p in pins}
 
-    def fetch(url, *, deadline, clock):
+    def fetch(url, *, timeout_s):
         log.append(url)
         return by_url[url]
 
@@ -95,7 +98,7 @@ def test_downloaded_bytes_that_fail_the_hash_are_never_written(tmp_path):
 
 
 def test_a_failed_download_is_reported_not_raised(tmp_path):
-    def broken(url, *, deadline, clock):
+    def broken(url, *, timeout_s):
         raise ConnectionError("no route to host")
 
     problems = bake_mod.bake(tmp_path, [GOOD], fetcher=broken)
@@ -103,38 +106,140 @@ def test_a_failed_download_is_reported_not_raised(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_the_total_deadline_is_handed_to_every_download(tmp_path):
+def test_each_download_gets_only_the_time_left_of_one_shared_deadline(tmp_path):
     seen: list[float] = []
+    now = {"t": 100.0}
 
-    def fetch(url, *, deadline, clock):
-        seen.append(deadline)
+    def fetch(url, *, timeout_s):
+        seen.append(timeout_s)
+        now["t"] += 12.0  # this download took 12 s of the shared budget
         return GOOD.payload if url == GOOD.url else OTHER.payload
 
-    bake_mod.bake(tmp_path, [GOOD, OTHER], fetcher=fetch, clock=lambda: 100.0,
-                  deadline_s=30.0)
-    assert seen == [130.0, 130.0], "one deadline for the whole bake, not per file"
+    bake_mod.bake(tmp_path, [GOOD, OTHER], fetcher=fetch, clock=lambda: now["t"], deadline_s=30.0)
+    assert seen == [30.0, 18.0], "one budget for the whole bake, shrinking as it is spent"
 
 
-def test_fetch_gives_up_once_the_deadline_has_passed(monkeypatch):
-    class _Slow:
-        def __enter__(self):
-            return self
+def test_a_bake_whose_budget_is_spent_does_not_start_another_download(tmp_path):
+    now = {"t": 0.0}
+    calls = []
 
-        def __exit__(self, *exc):
-            return False
+    def fetch(url, *, timeout_s):
+        calls.append(timeout_s)
+        now["t"] += 50.0
+        if timeout_s <= 0:
+            raise TimeoutError("budget spent")
+        return GOOD.payload if url == GOOD.url else OTHER.payload
 
-        def read(self, _n):
-            return b"x" * 10  # never ends: a slow trickle
-
-    monkeypatch.setattr(bake_mod.urllib.request, "urlopen", lambda *a, **k: _Slow())
-    ticks = iter([0.0, 1.0, 2.0, 99.0])
-    with pytest.raises(TimeoutError, match="total deadline"):
-        bake_mod.fetch(GOOD.url, deadline=10.0, clock=lambda: next(ticks))
+    problems = bake_mod.bake(tmp_path, [GOOD, OTHER], fetcher=fetch, clock=lambda: now["t"], deadline_s=30.0)
+    assert calls[1] <= 0, "the second download is handed a spent budget, not a fresh one"
+    assert len(problems) == 1 and "TimeoutError" in problems[0]
 
 
-def test_fetch_refuses_a_non_https_url():
-    with pytest.raises(ValueError, match="non-https"):
-        bake_mod.fetch("http://example.invalid/x", deadline=1e18)
+# ---- the hard wall-clock bound, against REAL sockets ---------------------------
+
+
+def _serve(handler_body):
+    """A loopback HTTP server running ``handler_body(conn)`` for one connection."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    done = threading.Event()
+
+    def run():
+        server.settimeout(5)
+        try:
+            conn, _ = server.accept()
+        except OSError:
+            return
+        try:
+            conn.recv(4096)
+            handler_body(conn)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+            done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    return f"http://127.0.0.1:{port}/vocab", server, done
+
+
+def test_fetch_returns_what_a_server_sends():
+    payload = b"v" * 300_000
+
+    def body(conn):
+        conn.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n" % len(payload) + payload)
+
+    url, server, _ = _serve(body)
+    try:
+        assert bake_mod.fetch(url, timeout_s=10) == payload
+    finally:
+        server.close()
+
+
+def test_a_server_trickling_one_byte_at_a_time_cannot_outlast_the_deadline():
+    """Each recv lands well inside the per-operation timeout, so only the wall-clock
+    bound stops it. The previous check between reads never ran: one buffered
+    read blocks until its whole chunk arrives."""
+    def body(conn):
+        conn.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 30\r\n\r\n")
+        for _ in range(30):
+            conn.sendall(b"x")
+            time.sleep(0.2)
+
+    url, server, _ = _serve(body)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError, match="did not finish within"):
+            bake_mod.fetch(url, timeout_s=1.0)
+    finally:
+        server.close()
+    assert time.monotonic() - started < 2.5, "it must give up at the deadline, not when the trickle ends"
+
+
+def test_a_server_that_accepts_and_never_answers_is_bounded():
+    url, server, done = _serve(lambda conn: time.sleep(5))
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            bake_mod.fetch(url, timeout_s=0.5)
+    finally:
+        server.close()
+    assert time.monotonic() - started < 2.0
+
+
+def test_anything_that_hangs_before_the_socket_such_as_dns_is_bounded_too(monkeypatch):
+    """The per-operation socket timeout does not cover name resolution; the thread
+    bound covers whatever urlopen is doing."""
+    release = threading.Event()
+    monkeypatch.setattr(bake_mod.urllib.request, "urlopen", lambda *a, **k: release.wait(5))
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        bake_mod.fetch("https://example.invalid/x", timeout_s=0.3)
+    release.set()
+    assert time.monotonic() - started < 1.5
+
+
+def test_a_download_error_reaches_the_caller_unchanged():
+    url, server, _ = _serve(lambda conn: conn.sendall(b"HTTP/1.0 404 Not Found\r\n\r\n"))
+    try:
+        with pytest.raises(Exception) as caught:
+            bake_mod.fetch(url, timeout_s=5)
+    finally:
+        server.close()
+    assert "404" in str(caught.value)
+
+
+def test_http_is_accepted_only_for_loopback():
+    for host in ("127.0.0.1", "localhost"):
+        url = f"http://{host}:9/x"
+        try:
+            bake_mod.fetch(url, timeout_s=1)
+        except ValueError:
+            pytest.fail(f"loopback {host} must pass the scheme check")
+        except Exception:  # noqa: BLE001 - nothing listens on :9; only the scheme check matters
+            pass
 
 
 def test_check_passes_on_verified_files_and_never_downloads(tmp_path, monkeypatch):
@@ -211,6 +316,19 @@ def test_dockerfile_ships_the_baked_vocab_and_verifies_it_in_the_final_stage():
     assert "COPY --from=tokenizer-vocab /opt/primer/tiktoken-cache" in final
     assert "ENV TIKTOKEN_CACHE_DIR=/opt/primer/tiktoken-cache" in final
     assert "bake_tokenizers.py --check" in final
+
+
+def test_the_vocab_layers_sit_below_both_uv_sync_layers():
+    """A pin or script change must not invalidate the dependency install (the slow
+    layer), so the COPY --from, ENV and --check come AFTER the last `uv sync`."""
+    final = _dockerfile().split("AS base", 1)[1]
+    last_sync = final.rindex("RUN uv sync")
+    for needle in (
+        "COPY --from=tokenizer-vocab /opt/primer/tiktoken-cache",
+        "ENV TIKTOKEN_CACHE_DIR=/opt/primer/tiktoken-cache",
+        "bake_tokenizers.py --check",
+    ):
+        assert final.index(needle) > last_sync, f"{needle!r} is above a uv sync layer"
 
 
 def test_the_cache_dir_is_the_same_in_both_stages():

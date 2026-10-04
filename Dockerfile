@@ -21,9 +21,11 @@
 # Token counting needs the tiktoken vocabularies, and tiktoken's own loader
 # fetches them over the network (no timeout) whenever its cache misses. Bake
 # them here, verified against the sha256 pins in
-# primer/llm/_tokenizer/vocab_pins.py (checked directly, not through tiktoken).
-# stdlib only, so the layer is cached independently of the dependency sync, and
-# `docker build --target tokenizer-vocab .` exercises it alone, in seconds.
+# primer/llm/_tokenizer/vocab_pins.py (checked directly, not through tiktoken),
+# under a hard wall-clock deadline (a slow DNS lookup or a trickling server cannot
+# hold the build). stdlib only, so the stage is cached independently of the
+# dependency sync, and `docker build --target tokenizer-vocab .` exercises it alone,
+# in seconds.
 FROM python:3.12-slim AS tokenizer-vocab
 ENV TIKTOKEN_CACHE_DIR=/opt/primer/tiktoken-cache
 COPY scripts/bake_tokenizers.py primer/llm/_tokenizer/vocab_pins.py /bake/
@@ -72,14 +74,6 @@ RUN apt-get update \
 # it's on PATH for all subsequent layers.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# Baked tokenizer vocabularies (see the tokenizer-vocab stage above). The check
-# re-verifies the bytes in THIS stage's filesystem, so a bad COPY fails the
-# build; the same command works inside a running container as a readiness check.
-COPY --from=tokenizer-vocab /opt/primer/tiktoken-cache /opt/primer/tiktoken-cache
-COPY --from=tokenizer-vocab /bake /opt/primer/bake
-ENV TIKTOKEN_CACHE_DIR=/opt/primer/tiktoken-cache
-RUN python3 /opt/primer/bake/bake_tokenizers.py --check
-
 WORKDIR /app
 
 # ----- Layer 2/3: dependency install (cached on pyproject+lock) -----
@@ -106,6 +100,17 @@ RUN chmod +x /usr/local/bin/primer-entrypoint.sh
 # Editable install (uv default) so /app/primer is the live tree -
 # necessary for the console mount's `_UI_DIR` path math.
 RUN uv sync ${UV_SYNC_EXTRAS} --frozen --no-dev
+
+# ----- Baked tokenizer vocabularies (see the tokenizer-vocab stage above) -----
+# Deliberately AFTER both uv sync layers: a change to the bake script or the pins
+# rebuilds only this stage and these three layers, never the dependency install
+# (the slow layer). The check re-verifies the bytes in THIS stage's filesystem, so
+# a bad COPY fails the build; the same command works inside a running container
+# as a readiness check.
+COPY --from=tokenizer-vocab /opt/primer/tiktoken-cache /opt/primer/tiktoken-cache
+COPY --from=tokenizer-vocab /bake /opt/primer/bake
+ENV TIKTOKEN_CACHE_DIR=/opt/primer/tiktoken-cache
+RUN python3 /opt/primer/bake/bake_tokenizers.py --check
 
 EXPOSE 8000
 
