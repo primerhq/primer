@@ -335,3 +335,53 @@ async def test_a_skipped_tool_slice_is_not_counted_as_an_empty_poll():
         pool._in_flight.discard((ClaimKind.HARNESS, "busy"))
         await pool.drain_and_stop(timeout=3)
         await scheduler.aclose()
+
+
+class _CountingEvent(asyncio.Event):
+    """An Event that counts how many times the loop parks on it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits = 0
+
+    async def wait(self) -> bool:
+        self.waits += 1
+        return await super().wait()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_claim_due_is_not_an_empty_poll_and_does_not_sleep_twice():
+    """The reserved loop's slice already backs off for one poll interval when ``claim_due`` raises; the loop then
+    counted that as an empty poll and parked on the wake event for ANOTHER interval. A failure is neither: no
+    empty-poll count, no second wait (the unified loop never doubled its sleep on a failure either)."""
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _SpyAdapter(ClaimKind.HARNESS)})
+    scheduler = InMemoryScheduler()
+    await scheduler.initialize()
+    config = WorkerConfig(
+        concurrency=2, heartbeat_interval_seconds=1, lease_ttl_seconds=5,
+        poll_interval_seconds=0.1, drain_timeout_seconds=3, tool_calls_as_claims_enabled=True,
+    )
+    assert config.tool_call_reserved_concurrency == 1
+    attempts: list[object] = []
+
+    async def failing_claim_due(worker_id, *, max_count, kinds=None):
+        attempts.append(kinds)
+        raise RuntimeError("database unavailable")
+
+    engine.claim_due = failing_claim_due  # type: ignore[method-assign]
+    pool = WorkerPool(
+        config=config, scheduler=scheduler, storage=None,  # type: ignore[arg-type]
+        workspace_registry=None, provider_registry=None, engine=engine,  # type: ignore[arg-type]
+    )
+    wake = _CountingEvent()
+    pool._wake = wake
+    try:
+        await pool.start()
+        await _until(lambda: len(attempts) >= 4, "the loop did not keep retrying a failing claim_due")
+        snap = pool.metrics_snapshot()
+        assert snap["primer_worker_claims_empty_total"] == 0, "a failed claim_due was counted as an empty poll"
+        assert wake.waits == 0, f"the loop parked on the wake event {wake.waits} time(s) after a failed claim_due"
+    finally:
+        engine.claim_due = InMemoryClaimEngine.claim_due.__get__(engine)  # type: ignore[method-assign]
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
