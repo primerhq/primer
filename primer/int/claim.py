@@ -45,6 +45,13 @@ class ParkRequest:
     parked_event_keys: list[str] | None = None
 
 
+#: Claim priorities (lower is claimed first). Three named values instead of scattered literals: a
+#: priority is a scheduling contract, and the 7a TOOL_CALL arm sites must say which one they mean.
+CLAIM_PRIORITY_OPERATOR = 10  #: an operator asked for it (harness operations, trigger seeding)
+CLAIM_PRIORITY_RESUME = 50    #: resume-from-park (``mark_resumable``'s default), and every TOOL_CALL arm
+CLAIM_PRIORITY_FRESH = 100    #: fresh work (``upsert``'s default)
+
+
 @dataclass(frozen=True)
 class ReleaseOutcome:
     success: bool
@@ -219,7 +226,7 @@ class ClaimEngine(ABC):
 
     @abstractmethod
     async def mark_resumable(
-        self, kind: ClaimKind, entity_id: str, *, priority: int = 50,
+        self, kind: ClaimKind, entity_id: str, *, priority: int = CLAIM_PRIORITY_RESUME,
     ) -> None: ...
 
     @abstractmethod
@@ -237,7 +244,7 @@ class ClaimEngine(ABC):
 
     @abstractmethod
     async def upsert(
-        self, kind: ClaimKind, entity_id: str, *, priority: int = 100,
+        self, kind: ClaimKind, entity_id: str, *, priority: int = CLAIM_PRIORITY_FRESH,
         next_attempt_at: datetime | None = None,
     ) -> None: ...
 

@@ -112,11 +112,14 @@ async def _async_return(value):
 # ---------------------------------------------------------------------------
 
 
-def _bare_pool(scheduler, engine, *, tool_call_reserved_concurrency=None):
+def _bare_pool(
+    scheduler, engine, *, tool_call_reserved_concurrency=None, tool_calls_as_claims_enabled=False,
+):
     pool = WorkerPool(
         config=WorkerConfig(
             concurrency=4,
             tool_call_reserved_concurrency=tool_call_reserved_concurrency,
+            tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
         ),
         scheduler=scheduler, storage=None,             # type: ignore[arg-type]
         workspace_registry=None,                       # type: ignore[arg-type]
@@ -194,25 +197,24 @@ def test_select_claim_loop_none_reserve_is_unreserved(scheduler, engine):
     assert pool._select_claim_loop() == pool._engine_claim_loop
 
 
-def test_select_claim_loop_reserve_without_tool_call_adapter_is_unreserved(
-    scheduler, engine,
-):
-    """Review finding on c6bb92c1: today's real self._dispatch (built by
-    start()) NEVER contains ClaimKind.TOOL_CALL - nothing registers that
-    handler until a later commit. A reserve configured ahead of that
-    landing must not silently shrink general capacity for a slice
-    nothing can claim into."""
+def test_select_claim_loop_reserve_with_the_flag_off_is_unreserved(scheduler, engine):
+    """The flag-off pin. A reserve can be configured with the flag OFF (WorkerConfig accepts it), and
+    from the executor slice on TOOL_CALL is always in ``_dispatch``; the loop key must still be
+    "flag AND reserve", never "reserve and TOOL_CALL in _dispatch", or an explicit reserve would
+    silently shrink general capacity for a slice nothing enqueues into."""
     pool = _bare_pool(scheduler, engine, tool_call_reserved_concurrency=1)
-    pool._dispatch = {ClaimKind.SESSION: object(), ClaimKind.HARNESS: object()}
+    pool._dispatch = {ClaimKind.SESSION: object(), ClaimKind.TOOL_CALL: object()}
     assert pool._select_claim_loop() == pool._engine_claim_loop
 
 
-def test_select_claim_loop_reserve_with_tool_call_adapter_is_reserved(
-    scheduler, engine,
-):
-    """Once a future commit registers a TOOL_CALL handler, a configured
-    reserve DOES route to the split loop."""
-    pool = _bare_pool(scheduler, engine, tool_call_reserved_concurrency=1)
+def test_select_claim_loop_flag_on_with_a_reserve_is_reserved(scheduler, engine):
+    """Flag on + reserve routes to the split loop, whether or not a TOOL_CALL handler is registered
+    yet (the executor slice registers it unconditionally)."""
+    pool = _bare_pool(
+        scheduler, engine, tool_call_reserved_concurrency=1, tool_calls_as_claims_enabled=True,
+    )
+    pool._dispatch = {ClaimKind.SESSION: object(), ClaimKind.HARNESS: object()}
+    assert pool._select_claim_loop() == pool._engine_claim_loop_reserved
     pool._dispatch = {ClaimKind.SESSION: object(), ClaimKind.TOOL_CALL: object()}
     assert pool._select_claim_loop() == pool._engine_claim_loop_reserved
 
@@ -258,11 +260,8 @@ def test_select_resume_handler_tool_wait_park_is_tool_wait(scheduler, engine):
 async def test_start_routes_to_reserved_loop_only_when_configured(
     scheduler, engine,
 ):
-    """End-to-end through start(): today's real dispatch table never
-    contains a TOOL_CALL handler (see the direct _select_claim_loop
-    tests above for that half), so BOTH the default AND a configured
-    reserve must schedule the exact same _engine_claim_loop until a
-    future commit registers one."""
+    """End-to-end through start(): the default AND a reserve with the flag off schedule the unified
+    loop; the flag on (reserve derived) schedules the reserved loop."""
     # No return_value= given: patch.object auto-detects both targets are
     # coroutine functions and builds AsyncMocks, which fabricate a fresh
     # awaitable per call - pre-building ONE coroutine via return_value=
@@ -279,6 +278,7 @@ async def test_start_routes_to_reserved_loop_only_when_configured(
     unified.assert_called_once()
     reserved.assert_not_called()
 
+    # A reserve with the flag OFF still schedules the unified loop.
     reserve_engine = InMemoryClaimEngine(adapters={})
     reserved_pool = _bare_pool(
         scheduler, reserve_engine, tool_call_reserved_concurrency=1,
@@ -292,6 +292,19 @@ async def test_start_routes_to_reserved_loop_only_when_configured(
         await reserved_pool.drain_and_stop()
     unified2.assert_called_once()
     reserved2.assert_not_called()
+
+    # Flag ON (the reserve is derived) schedules the reserved loop.
+    flag_engine = InMemoryClaimEngine(adapters={})
+    flag_pool = _bare_pool(scheduler, flag_engine, tool_calls_as_claims_enabled=True)
+    with patch.object(
+        WorkerPool, "_engine_claim_loop",
+    ) as unified3, patch.object(
+        WorkerPool, "_engine_claim_loop_reserved",
+    ) as reserved3:
+        await flag_pool.start()
+        await flag_pool.drain_and_stop()
+    reserved3.assert_called_once()
+    unified3.assert_not_called()
 
 
 async def test_claim_loop_runs_runnable_session(scheduler, engine, monkeypatch):

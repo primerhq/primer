@@ -27,7 +27,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from collections.abc import Awaitable, Callable
 
-from primer.int.claim import ClaimKind, Lease, ParkRequest, ReleaseOutcome
+from primer.int.claim import (
+    CLAIM_PRIORITY_RESUME, ClaimKind, Lease, ParkRequest, ReleaseOutcome,
+)
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 import primer.observability.metrics as _metrics
@@ -927,7 +929,11 @@ async def run_one_session_turn(
                     session_id=session_id,
                 )
                 if deps.claim_engine is not None:
-                    await deps.claim_engine.upsert(ClaimKind.TOOL_CALL, scoped_id)
+                    # Priority 50, not the fresh-work default 100: a tool call is a continuation of a
+                    # turn a human is waiting on, and must not queue behind fresh sessions.
+                    await deps.claim_engine.upsert(
+                        ClaimKind.TOOL_CALL, scoped_id, priority=CLAIM_PRIORITY_RESUME,
+                    )
             for scoped_id, result in tool_wait.notifying_results:
                 record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
                 tool_name = coalesce_state.tool_call_record_name.get(scoped_id)

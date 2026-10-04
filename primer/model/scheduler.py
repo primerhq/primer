@@ -77,18 +77,20 @@ class WorkerConfig(BaseModel):
         description=(
             "Phase 3 stage 7a (docs/superpowers/2026-08-29-"
             "phase3-execution-topology-design.md, 01a0518b, user-approved). "
-            "When enabled, each tool call in a batch becomes its own "
+            "When enabled, each tool call of a batch becomes its own "
             "independently-claimable ToolCallTask instead of executing "
             "sequentially in-process, so a single gated call (approval "
             "required, or a yielding tool) no longer blocks its batch "
-            "siblings. Default OFF per the design's own rollout plan. "
-            "WARNING: multi-process unsafe for write-capable workspaces "
-            "until cross-process serialization is wired (the existing "
-            "workspace write-lock is in-process-only today; the "
-            "cross-process flock is sequenced late in this arc, as its "
-            "own commit, after the core entity/adapter/park work proves "
-            "out) - do not enable on a real multi-worker-process topology "
-            "before that lands."
+            "siblings, and the session parks until the batch is done. Default "
+            "OFF. It controls ONLY whether the dispatch seam creates tasks. "
+            "The executor that runs them is not built yet (stage 7a is in "
+            "progress), so on this build nothing runs a task: leave it off "
+            "outside development. Enabling it also selects the reserved "
+            "TOOL_CALL claim slice (see "
+            "tool_call_reserved_concurrency, derived when unset). A "
+            "deployment with more than one worker process must use docker or "
+            "kubernetes workspaces: the local-provider workspace write lock "
+            "is in-process only."
         ),
     )
 
@@ -103,17 +105,22 @@ class WorkerConfig(BaseModel):
             "the single general pool exactly like every other kind does "
             "today. A value carves this many slots EXCLUSIVELY out of "
             "concurrency for TOOL_CALL claims: the pool loop then calls "
-            "claim_due twice per iteration (kinds=[everything but "
+            "claim_due up to twice per iteration (kinds=[everything but "
             "TOOL_CALL] for the remaining concurrency - reserve slots, "
-            "kinds=[TOOL_CALL] for the reserve) so a burst of tool-call "
+            "kinds=[TOOL_CALL] for the reserve, the latter only while a "
+            "TOOL_CALL handler is registered) so a burst of tool-call "
             "tasks cannot starve session/harness/trigger claiming, or "
             "vice versa - the starvation risk identified in the 7a "
             "ground-truth remap (a worker holding a pool slot for a "
             "delegate-tool task can block on an untimed provider-slot "
             "acquire). Only meaningful when "
-            "tool_calls_as_claims_enabled=True; ignored otherwise "
-            "(nothing ever claims ClaimKind.TOOL_CALL leases with the "
-            "flag off)."
+            "tool_calls_as_claims_enabled=True; ignored otherwise (the pool "
+            "selects the reserved loop only when the flag is on). When the "
+            "flag is on and this is unset it is DERIVED as "
+            "max(1, concurrency // 2) (and stays unset when concurrency is "
+            "1). The reserve is an EXCLUSIVE cap: with concurrency 3 the "
+            "derived reserve is 1, so one tool task runs at a time per "
+            "worker."
         ),
     )
 
@@ -126,6 +133,22 @@ class WorkerConfig(BaseModel):
                 f"({self.heartbeat_interval_seconds}) to tolerate one "
                 "missed beat"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _derive_tool_call_reserve_when_the_flag_is_on(self) -> "WorkerConfig":
+        """With the flag on the reserved TOOL_CALL slice is the whole mechanism, so derive it.
+
+        ``max(1, concurrency // 2)``, never leaving fewer than one general slot: with
+        ``concurrency == 1`` nothing is derived (the unreserved loop runs). An explicit value is
+        kept as given; the next validator rejects one that would leave no general slot.
+        """
+        if (
+            self.tool_calls_as_claims_enabled
+            and self.tool_call_reserved_concurrency is None
+            and self.concurrency > 1
+        ):
+            self.tool_call_reserved_concurrency = max(1, self.concurrency // 2)
         return self
 
     @model_validator(mode="after")

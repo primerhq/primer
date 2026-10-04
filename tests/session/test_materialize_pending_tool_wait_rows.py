@@ -35,9 +35,11 @@ from tests.conftest import _FakeStorageProvider
 class _RecordingClaimEngine:
     def __init__(self) -> None:
         self.upserted: list[tuple[ClaimKind, str]] = []
+        self.priorities: dict[tuple[ClaimKind, str], object] = {}
 
     async def upsert(self, kind, entity_id, **kwargs) -> None:
         self.upserted.append((kind, entity_id))
+        self.priorities[(kind, entity_id)] = kwargs.get("priority")
 
 
 def _session() -> WorkspaceSession:
@@ -90,6 +92,10 @@ async def test_creates_per_node_scoped_batch_task_ids() -> None:
     assert set(claim_engine.upserted) == {
         (ClaimKind.TOOL_CALL, "A:tool:0:1"), (ClaimKind.TOOL_CALL, "B:tool:0:1"),
     }
+    # Armed at the RESUME priority (50), never the fresh-work default: a tool call continues a turn a
+    # human is waiting on and must not queue behind fresh sessions.
+    from primer.int.claim import CLAIM_PRIORITY_RESUME
+    assert set(claim_engine.priorities.values()) == {CLAIM_PRIORITY_RESUME}
 
 
 @pytest.mark.asyncio

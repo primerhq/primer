@@ -1027,7 +1027,7 @@ async def materialize_pending_tool_wait_rows(
     docstring). ``[]`` for an agent-bound park, or a graph park with no
     co-pending tool_wait batch at all - a no-op.
     """
-    from primer.int.claim import ClaimKind
+    from primer.int.claim import CLAIM_PRIORITY_RESUME, ClaimKind
     from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
     from primer.session.yields import tool_wait_event_key
 
@@ -1069,7 +1069,9 @@ async def materialize_pending_tool_wait_rows(
                 strict=strict,
             )
             if claim_engine is not None:
-                await claim_engine.upsert(ClaimKind.TOOL_CALL, scoped_id)
+                await claim_engine.upsert(
+                    ClaimKind.TOOL_CALL, scoped_id, priority=CLAIM_PRIORITY_RESUME,
+                )
         for scoped_id, result_dict in pw["notifying_results"]:
             record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
             tool_name = coalesce_state.tool_call_record_name.get(scoped_id)

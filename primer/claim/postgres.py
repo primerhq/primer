@@ -47,7 +47,10 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
 
-from primer.int.claim import ClaimAdapter, ClaimEngine, ClaimKind, Lease, ReleaseOutcome
+from primer.int.claim import (
+    CLAIM_PRIORITY_FRESH, CLAIM_PRIORITY_RESUME, ClaimAdapter, ClaimEngine, ClaimKind, Lease,
+    ReleaseOutcome,
+)
 from primer.claim.sql import build_claim_query
 from primer.model.except_ import ListenConnectionLost
 from primer.storage._ddl import CONCURRENT_CREATE_RACE
@@ -184,7 +187,7 @@ class PostgresClaimEngine(ClaimEngine):
         kind: ClaimKind,
         entity_id: str,
         *,
-        priority: int = 100,
+        priority: int = CLAIM_PRIORITY_FRESH,
         next_attempt_at: datetime | None = None,
     ) -> None:
         """Insert or update a lease row.
@@ -434,7 +437,7 @@ class PostgresClaimEngine(ClaimEngine):
     # ------------------------------------------------------------------
 
     async def mark_resumable(
-        self, kind: ClaimKind, entity_id: str, *, priority: int = 50,
+        self, kind: ClaimKind, entity_id: str, *, priority: int = CLAIM_PRIORITY_RESUME,
     ) -> None:
         """Upsert a lease as resumable (low priority) and broadcast a notification.
 

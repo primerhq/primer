@@ -127,13 +127,13 @@ async def _upsert_claim_if_eligible(
     source = get_source(trigger.config.kind)
     if not getattr(source, "eligible_for_claim", False):
         return
-    from primer.int.claim import ClaimKind
+    from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
 
     try:
         await deps.claim_engine.upsert(
             ClaimKind.TRIGGER,
             trigger.id,
-            priority=10,
+            priority=CLAIM_PRIORITY_OPERATOR,
             next_attempt_at=trigger.next_fire_at,
         )
     except TypeError:
@@ -141,7 +141,7 @@ async def _upsert_claim_if_eligible(
         # fall back to the basic upsert (still correct; the next_fire_at
         # is also persisted on the trigger row itself).
         await deps.claim_engine.upsert(
-            ClaimKind.TRIGGER, trigger.id, priority=10,
+            ClaimKind.TRIGGER, trigger.id, priority=CLAIM_PRIORITY_OPERATOR,
         )
 
 
