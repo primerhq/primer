@@ -67,7 +67,7 @@ _OUTAGE_ERRORS: tuple[type[BaseException], ...] = (
     OSError,                           # refused, reset, timed out, unresolvable host
     asyncpg.PostgresConnectionError,   # SQLSTATE 08xxx, e.g. ConnectionDoesNotExistError mid-LISTEN
     asyncpg.CannotConnectNowError,     # 57P03: the server is starting up or shutting down
-    asyncpg.AdminShutdownError,        # 57P01: a shutdown terminated the connection
+    asyncpg.AdminShutdownError,        # 57P01: terminated by a shutdown or pg_terminate_backend
     asyncpg.CrashShutdownError,        # 57P02: a crash shutdown terminated the connection
 )
 
@@ -587,8 +587,10 @@ class WorkerPool:
           errors such as ``CannotConnectNowError`` while the server is starting
           up or ``ConnectionDoesNotExistError`` mid-LISTEN): it could not
           connect or re-subscribe, which is expected while the server is down
-          or restarting. One WARNING naming the cause, no traceback. No
-          connection was lost here, because none was made.
+          or restarting. One WARNING naming the cause, no traceback. The
+          watcher never reached a subscribed state, so this is not reported
+          as a lost LISTEN connection (a connection may well have been lost
+          during the subscribe itself, as with 57P01 or 08xxx).
         * anything else is unexpected: an ERROR with its traceback.
         """
         assert self._engine is not None

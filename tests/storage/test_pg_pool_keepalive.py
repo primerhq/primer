@@ -162,7 +162,15 @@ async def test_a_failing_option_is_named_and_leaves_keepalive_off(failing, name,
 async def test_the_options_land_on_a_real_tcp_socket():
     """Runs in CI (no database): a real asyncio TCP connection, the real hook,
     and the options read back with getsockopt."""
-    server = await asyncio.start_server(lambda reader, writer: None, "127.0.0.1", 0)
+    # Keep the server side of the connection so it can be closed in the finally:
+    # left open it is garbage-collected later, and its ResourceWarning fires
+    # against whichever unrelated test happens to be running then.
+    server_side: list[asyncio.StreamWriter] = []
+
+    async def accept(_reader, accepted_writer):
+        server_side.append(accepted_writer)
+
+    server = await asyncio.start_server(accept, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     _reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
@@ -178,8 +186,18 @@ async def test_the_options_land_on_a_real_tcp_socket():
         assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL) == 7
         assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT) == 4
     finally:
+        for _ in range(100):  # the accept callback runs as its own task
+            if server_side:
+                break
+            await asyncio.sleep(0.01)
         writer.close()
+        for accepted in server_side:
+            accepted.close()
+        await writer.wait_closed()
+        for accepted in server_side:
+            await accepted.wait_closed()
         server.close()
+        await server.wait_closed()
 
 
 def test_asyncpg_still_exposes_the_private_transport_the_hook_reaches_through():

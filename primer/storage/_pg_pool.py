@@ -18,9 +18,12 @@ hours), which prevents the likeliest trigger in the first place.
 asyncpg has no keepalive option (the only socket option it sets is
 TCP_NODELAY), so :func:`keepalive_init_hook` returns a pool ``init`` hook that
 reaches the socket through ``Connection._transport``. That is a private
-attribute, so a live-Postgres test reads the options back from a pooled
-connection and fails loudly if an asyncpg upgrade moves it. Whatever goes wrong
-here, the hook never raises: an exception from ``init`` would fail pool
+attribute, so tests pin it. Two run in CI without a database: one asserts that
+asyncpg's ``Connection`` still has the ``_transport`` slot, the other runs the
+hook against a real asyncio TCP socket and reads the options back. A third, in
+``tests/storage/test_postgres_tcp_keepalive_live.py``, reads them back from a
+connection out of a real pool, but only runs where a Postgres gate is set. Whatever
+goes wrong here, the hook never raises: an exception from ``init`` would fail pool
 creation, and a missing keepalive is only worth one warning per pool.
 """
 
