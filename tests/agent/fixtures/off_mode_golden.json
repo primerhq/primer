@@ -1,15 +1,13 @@
 {
- "call_count": 8,
+ "call_count": 10,
  "calls": [
   {
    "call": 1,
-   "kwargs": [
-    "max_output_tokens",
-    "response_format",
-    "temperature",
-    "tool_choice",
-    "tools"
-   ],
+   "kwargs": {
+    "max_output_tokens": "None",
+    "temperature": "None",
+    "tool_choice": "'auto'"
+   },
    "messages": [
     {
      "parts": [
@@ -123,6 +121,7 @@
     }
    ],
    "model": "golden-model",
+   "response_format": null,
    "tool_ids": [
     "workspace__edit",
     "workspace__exec",
@@ -131,14 +130,51 @@
     "workspace__ls",
     "workspace__read",
     "workspace__write"
+   ],
+   "tools": [
+    [
+     "workspace__edit",
+     1146,
+     "a02dc907af70a822"
+    ],
+    [
+     "workspace__exec",
+     2842,
+     "f3a330e4dcd0697e"
+    ],
+    [
+     "workspace__glob",
+     1120,
+     "0cd782222626fe3f"
+    ],
+    [
+     "workspace__grep",
+     1878,
+     "3c281bca7c21e171"
+    ],
+    [
+     "workspace__ls",
+     1152,
+     "57690367095b1346"
+    ],
+    [
+     "workspace__read",
+     1011,
+     "b2026835dfe3c8c2"
+    ],
+    [
+     "workspace__write",
+     1232,
+     "136655698cd51521"
+    ]
    ]
   },
   {
    "call": 2,
-   "kwargs": [
-    "max_output_tokens",
-    "temperature"
-   ],
+   "kwargs": {
+    "max_output_tokens": "4096",
+    "temperature": "0.0"
+   },
    "messages": [
     {
      "parts": [
@@ -192,17 +228,17 @@
     }
    ],
    "model": "golden-model",
-   "tool_ids": []
+   "response_format": null,
+   "tool_ids": [],
+   "tools": []
   },
   {
    "call": 3,
-   "kwargs": [
-    "max_output_tokens",
-    "response_format",
-    "temperature",
-    "tool_choice",
-    "tools"
-   ],
+   "kwargs": {
+    "max_output_tokens": "None",
+    "temperature": "None",
+    "tool_choice": "'auto'"
+   },
    "messages": [
     {
      "parts": [
@@ -346,6 +382,7 @@
     }
    ],
    "model": "golden-model",
+   "response_format": null,
    "tool_ids": [
     "workspace__edit",
     "workspace__exec",
@@ -354,17 +391,52 @@
     "workspace__ls",
     "workspace__read",
     "workspace__write"
+   ],
+   "tools": [
+    [
+     "workspace__edit",
+     1146,
+     "a02dc907af70a822"
+    ],
+    [
+     "workspace__exec",
+     2842,
+     "f3a330e4dcd0697e"
+    ],
+    [
+     "workspace__glob",
+     1120,
+     "0cd782222626fe3f"
+    ],
+    [
+     "workspace__grep",
+     1878,
+     "3c281bca7c21e171"
+    ],
+    [
+     "workspace__ls",
+     1152,
+     "57690367095b1346"
+    ],
+    [
+     "workspace__read",
+     1011,
+     "b2026835dfe3c8c2"
+    ],
+    [
+     "workspace__write",
+     1232,
+     "136655698cd51521"
+    ]
    ]
   },
   {
    "call": 4,
-   "kwargs": [
-    "max_output_tokens",
-    "response_format",
-    "temperature",
-    "tool_choice",
-    "tools"
-   ],
+   "kwargs": {
+    "max_output_tokens": "None",
+    "temperature": "None",
+    "tool_choice": "'auto'"
+   },
    "messages": [
     {
      "parts": [
@@ -508,6 +580,7 @@
     }
    ],
    "model": "golden-model",
+   "response_format": null,
    "tool_ids": [
     "workspace__edit",
     "workspace__exec",
@@ -516,14 +589,51 @@
     "workspace__ls",
     "workspace__read",
     "workspace__write"
+   ],
+   "tools": [
+    [
+     "workspace__edit",
+     1146,
+     "a02dc907af70a822"
+    ],
+    [
+     "workspace__exec",
+     2842,
+     "f3a330e4dcd0697e"
+    ],
+    [
+     "workspace__glob",
+     1120,
+     "0cd782222626fe3f"
+    ],
+    [
+     "workspace__grep",
+     1878,
+     "3c281bca7c21e171"
+    ],
+    [
+     "workspace__ls",
+     1152,
+     "57690367095b1346"
+    ],
+    [
+     "workspace__read",
+     1011,
+     "b2026835dfe3c8c2"
+    ],
+    [
+     "workspace__write",
+     1232,
+     "136655698cd51521"
+    ]
    ]
   },
   {
    "call": 5,
-   "kwargs": [
-    "max_output_tokens",
-    "temperature"
-   ],
+   "kwargs": {
+    "max_output_tokens": "4096",
+    "temperature": "0.0"
+   },
    "messages": [
     {
      "parts": [
@@ -597,17 +707,17 @@
     }
    ],
    "model": "golden-model",
-   "tool_ids": []
+   "response_format": null,
+   "tool_ids": [],
+   "tools": []
   },
   {
    "call": 6,
-   "kwargs": [
-    "max_output_tokens",
-    "response_format",
-    "temperature",
-    "tool_choice",
-    "tools"
-   ],
+   "kwargs": {
+    "max_output_tokens": "None",
+    "temperature": "None",
+    "tool_choice": "'auto'"
+   },
    "messages": [
     {
      "parts": [
@@ -711,6 +821,7 @@
     }
    ],
    "model": "golden-model",
+   "response_format": null,
    "tool_ids": [
     "workspace__edit",
     "workspace__exec",
@@ -719,14 +830,51 @@
     "workspace__ls",
     "workspace__read",
     "workspace__write"
+   ],
+   "tools": [
+    [
+     "workspace__edit",
+     1146,
+     "a02dc907af70a822"
+    ],
+    [
+     "workspace__exec",
+     2842,
+     "f3a330e4dcd0697e"
+    ],
+    [
+     "workspace__glob",
+     1120,
+     "0cd782222626fe3f"
+    ],
+    [
+     "workspace__grep",
+     1878,
+     "3c281bca7c21e171"
+    ],
+    [
+     "workspace__ls",
+     1152,
+     "57690367095b1346"
+    ],
+    [
+     "workspace__read",
+     1011,
+     "b2026835dfe3c8c2"
+    ],
+    [
+     "workspace__write",
+     1232,
+     "136655698cd51521"
+    ]
    ]
   },
   {
    "call": 7,
-   "kwargs": [
-    "max_output_tokens",
-    "temperature"
-   ],
+   "kwargs": {
+    "max_output_tokens": "4096",
+    "temperature": "0.0"
+   },
    "messages": [
     {
      "parts": [
@@ -780,17 +928,17 @@
     }
    ],
    "model": "golden-model",
-   "tool_ids": []
+   "response_format": null,
+   "tool_ids": [],
+   "tools": []
   },
   {
    "call": 8,
-   "kwargs": [
-    "max_output_tokens",
-    "response_format",
-    "temperature",
-    "tool_choice",
-    "tools"
-   ],
+   "kwargs": {
+    "max_output_tokens": "None",
+    "temperature": "None",
+    "tool_choice": "'auto'"
+   },
    "messages": [
     {
      "parts": [
@@ -884,6 +1032,7 @@
     }
    ],
    "model": "golden-model",
+   "response_format": null,
    "tool_ids": [
     "workspace__edit",
     "workspace__exec",
@@ -892,6 +1041,339 @@
     "workspace__ls",
     "workspace__read",
     "workspace__write"
+   ],
+   "tools": [
+    [
+     "workspace__edit",
+     1146,
+     "a02dc907af70a822"
+    ],
+    [
+     "workspace__exec",
+     2842,
+     "f3a330e4dcd0697e"
+    ],
+    [
+     "workspace__glob",
+     1120,
+     "0cd782222626fe3f"
+    ],
+    [
+     "workspace__grep",
+     1878,
+     "3c281bca7c21e171"
+    ],
+    [
+     "workspace__ls",
+     1152,
+     "57690367095b1346"
+    ],
+    [
+     "workspace__read",
+     1011,
+     "b2026835dfe3c8c2"
+    ],
+    [
+     "workspace__write",
+     1232,
+     "136655698cd51521"
+    ]
+   ]
+  },
+  {
+   "call": 9,
+   "kwargs": {
+    "max_output_tokens": "None",
+    "temperature": "None",
+    "tool_choice": "'auto'"
+   },
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       1247,
+       "de655d8144e3e255"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       33,
+       "083f9a86ebd7dc93"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "3456c07dd1220441"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       90102,
+       "54600bdfbd8b2bad"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "8a3a70f4c3a6aa73"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       90102,
+       "aa6aae6b2e12c31c"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "821f4b3b4089999d"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       90102,
+       "8bdcd7d0023774b2"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       59308,
+       "696cfe6c42980c83"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "response_format": null,
+   "tool_ids": [
+    "workspace__edit",
+    "workspace__exec",
+    "workspace__glob",
+    "workspace__grep",
+    "workspace__ls",
+    "workspace__read",
+    "workspace__write"
+   ],
+   "tools": [
+    [
+     "workspace__edit",
+     1146,
+     "a02dc907af70a822"
+    ],
+    [
+     "workspace__exec",
+     2842,
+     "f3a330e4dcd0697e"
+    ],
+    [
+     "workspace__glob",
+     1120,
+     "0cd782222626fe3f"
+    ],
+    [
+     "workspace__grep",
+     1878,
+     "3c281bca7c21e171"
+    ],
+    [
+     "workspace__ls",
+     1152,
+     "57690367095b1346"
+    ],
+    [
+     "workspace__read",
+     1011,
+     "b2026835dfe3c8c2"
+    ],
+    [
+     "workspace__write",
+     1232,
+     "136655698cd51521"
+    ]
+   ]
+  },
+  {
+   "call": 10,
+   "kwargs": {
+    "max_output_tokens": "None",
+    "temperature": "None",
+    "tool_choice": "'auto'"
+   },
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       1247,
+       "de655d8144e3e255"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       33,
+       "083f9a86ebd7dc93"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "3456c07dd1220441"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "7a93ab52f8d3ef90"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "8a3a70f4c3a6aa73"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "87461bd28027cf0b"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "821f4b3b4089999d"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "87eff4f2d047f88a"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       59312,
+       "cf4cc856343662a5"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "response_format": null,
+   "tool_ids": [
+    "workspace__edit",
+    "workspace__exec",
+    "workspace__glob",
+    "workspace__grep",
+    "workspace__ls",
+    "workspace__read",
+    "workspace__write"
+   ],
+   "tools": [
+    [
+     "workspace__edit",
+     1146,
+     "a02dc907af70a822"
+    ],
+    [
+     "workspace__exec",
+     2842,
+     "f3a330e4dcd0697e"
+    ],
+    [
+     "workspace__glob",
+     1120,
+     "0cd782222626fe3f"
+    ],
+    [
+     "workspace__grep",
+     1878,
+     "3c281bca7c21e171"
+    ],
+    [
+     "workspace__ls",
+     1152,
+     "57690367095b1346"
+    ],
+    [
+     "workspace__read",
+     1011,
+     "b2026835dfe3c8c2"
+    ],
+    [
+     "workspace__write",
+     1232,
+     "136655698cd51521"
+    ]
    ]
   }
  ],
@@ -1609,6 +2091,138 @@
    },
    "llm_calls": 2,
    "turn": "4-deferred-steers"
+  },
+  {
+   "file": {
+    "bytes": 330150,
+    "lines": [
+     {
+      "len": 56,
+      "message": "user",
+      "preview": "hello",
+      "sha": "d2713c5c5317c67f"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_0>",
+      "sha": "aee4a87d1f06ddbe"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_0 90000 chars>",
+      "sha": "13c1fdad3401a01c"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_1>",
+      "sha": "f0a22efee924f3d5"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_1 90000 chars>",
+      "sha": "5e1f94bfd6ceaa68"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_2>",
+      "sha": "c337faf9bc18fd10"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_2 90000 chars>",
+      "sha": "5ebd4ca098b68297"
+     },
+     {
+      "len": 59331,
+      "message": "user",
+      "preview": "pppppppppppppppppppppppppppppppppppppppp",
+      "sha": "af75b065d532ac9e"
+     },
+     {
+      "len": 67,
+      "message": "assistant",
+      "preview": "boundary-ok",
+      "sha": "f23e724c8c271beb"
+     }
+    ],
+    "markers": [],
+    "sha256": "bb8992ec6284027fb25fba5d366e7b548b7e0bd16b26f5cf8bdc79de020924ba"
+   },
+   "llm_calls": 1,
+   "target_estimate": 82626,
+   "turn": "5-one-under-the-trigger"
+  },
+  {
+   "file": {
+    "bytes": 330154,
+    "lines": [
+     {
+      "len": 56,
+      "message": "user",
+      "preview": "hello",
+      "sha": "d2713c5c5317c67f"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_0>",
+      "sha": "aee4a87d1f06ddbe"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_0 90000 chars>",
+      "sha": "13c1fdad3401a01c"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_1>",
+      "sha": "f0a22efee924f3d5"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_1 90000 chars>",
+      "sha": "5e1f94bfd6ceaa68"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_2>",
+      "sha": "c337faf9bc18fd10"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_2 90000 chars>",
+      "sha": "5ebd4ca098b68297"
+     },
+     {
+      "len": 59335,
+      "message": "user",
+      "preview": "pppppppppppppppppppppppppppppppppppppppp",
+      "sha": "277341e78da86e52"
+     },
+     {
+      "len": 67,
+      "message": "assistant",
+      "preview": "boundary-ok",
+      "sha": "f23e724c8c271beb"
+     }
+    ],
+    "markers": [],
+    "sha256": "e90dd45ce0d0a880d37b70278448a4d5579819966481701bf9cfcd7ec3d94eb3"
+   },
+   "llm_calls": 1,
+   "target_estimate": 82627,
+   "turn": "6-exactly-at-the-trigger"
   }
  ]
 }
