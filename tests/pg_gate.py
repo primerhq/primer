@@ -50,6 +50,17 @@ LANE_DIRS = (
     "tests/vector",
 )
 
+# Live-Postgres test FILES that sit outside those directories (they belong with
+# the subsystem they guard, not with the database suites). The lane runs each as
+# its own pytest process too: the guard's "at least one gated test passed" check
+# is per process, so a file that vanished (a collection-time skip, a bad import
+# swallowed by a marker) fails its own step instead of hiding behind a sibling.
+# A static test fails any gated file that is in neither tuple.
+LANE_FILES = (
+    "tests/bus/test_postgres_listen_setup_live.py",
+    "tests/worker/test_cancel_reconcile_live.py",
+)
+
 # The e2e server's own database. Its bringup script creates it and a live
 # server uses it. The gated fixtures are destructive and several of them issue
 # UNQUALIFIED statements (the scheduler's DDL, the coordinator's DELETEs), which

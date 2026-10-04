@@ -61,8 +61,9 @@ def test_deprecated_names_are_gone_from_workflows_and_config():
 
 
 def test_ci_has_a_postgres_lane_that_cannot_skip_silently():
-    from tests.pg_gate import LANE_DIRS
+    from tests.pg_gate import LANE_DIRS, LANE_FILES
 
+    targets = (*LANE_DIRS, *LANE_FILES)
     ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     job = ci["jobs"]["postgres"]
     assert job["services"]["postgres"]["image"].startswith("pgvector/pgvector")
@@ -79,7 +80,7 @@ def test_ci_has_a_postgres_lane_that_cannot_skip_silently():
     covered = []
     for st in pytest_steps:
         run = st["run"]
-        dirs = [d for d in LANE_DIRS if d in run]
+        dirs = [d for d in targets if d in run]
         assert len(dirs) == 1, (
             f"step {st['name']!r} runs {dirs}: each lane suite needs its own "
             "pytest process so one hang cannot erase the others' results"
@@ -90,9 +91,66 @@ def test_ci_has_a_postgres_lane_that_cannot_skip_silently():
         assert "--timeout=" in run and "--timeout-method=thread" in run, st["name"]
         # -v so the last node id before a timeout dump names the hung test.
         assert re.search(r"\s-v\b", run), st["name"]
-    assert sorted(covered) == sorted(LANE_DIRS), (
-        f"lane steps cover {sorted(covered)}, expected {sorted(LANE_DIRS)}"
+    assert sorted(covered) == sorted(targets), (
+        f"lane steps cover {sorted(covered)}, expected {sorted(targets)}"
     )
+
+
+# The gate API a live-Postgres test file calls. Infrastructure that DEFINES or
+# tests it, and the distributed suite (switched off everywhere; it starts its
+# own container), are not lane members.
+_GATE_API = re.compile(r"\b(?:postgres_marks|require_postgres_url|postgres_url)\(")
+_NOT_LANE_MEMBERS = (
+    "tests/conftest.py",
+    "tests/pg_gate.py",
+    "tests/tooling/test_pg_gate.py",
+    "tests/docs/test_postgres_lane.py",
+    "tests/distributed/",
+)
+
+
+def _gated_test_files() -> list[str]:
+    out = []
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        rel = path.relative_to(ROOT).as_posix()
+        if any(rel == n or (n.endswith("/") and rel.startswith(n)) for n in _NOT_LANE_MEMBERS):
+            continue
+        if _GATE_API.search(path.read_text()):
+            out.append(rel)
+    return out
+
+
+def test_every_gated_test_file_is_run_by_the_lane():
+    """A live-Postgres file the lane does not run is a regression test nobody
+    runs: REQUIRE=1 only guards what the lane executes. tests/bus and
+    tests/worker each gained one outside the lane directories, and nothing
+    noticed. A gated file must sit under a LANE_DIRS directory or be named in
+    LANE_FILES (which gives it its own CI step, asserted above)."""
+    from tests.pg_gate import LANE_DIRS, LANE_FILES
+
+    outside = [
+        rel for rel in _gated_test_files()
+        if rel not in LANE_FILES and not rel.startswith(tuple(f"{d}/" for d in LANE_DIRS))
+    ]
+    assert not outside, (
+        "these files use the Postgres gate but no CI lane step runs them; add "
+        f"each to LANE_FILES in tests/pg_gate.py and to the postgres job: {outside}"
+    )
+
+
+def test_every_lane_file_entry_is_a_real_gated_file():
+    """No dead entry lingers (the same rule as the port-default allowlist), and
+    a file is not listed twice over (a LANE_FILES entry under a LANE_DIRS
+    directory would get two processes for no reason)."""
+    from tests.pg_gate import LANE_DIRS, LANE_FILES
+
+    gated = set(_gated_test_files())
+    for rel in LANE_FILES:
+        assert (ROOT / rel).is_file(), f"LANE_FILES names a file that does not exist: {rel}"
+        assert rel in gated, f"LANE_FILES names a file that does not use the gate: {rel}"
+        assert not rel.startswith(tuple(f"{d}/" for d in LANE_DIRS)), (
+            f"{rel} is already covered by a LANE_DIRS directory"
+        )
 
 
 # Files where a port default is the BRINGUP's own contract, not a guess:
