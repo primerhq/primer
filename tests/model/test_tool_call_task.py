@@ -58,3 +58,41 @@ def test_constructs_with_a_valid_record_seq() -> None:
     assert task.state == ToolCallTaskState.QUEUED
     assert task.gate_state is None
     assert task.result_state is None
+
+
+# ---- executor bookkeeping fields (slice S1-B) -------------------------------------------------------
+
+
+def _task(**extra) -> ToolCallTask:
+    return ToolCallTask(
+        id="w:tool:1:1", session_id="sess-1", turn_no=1, tool_name="t", record_seq=1,
+        created_at=_now(), **extra,
+    )
+
+
+def test_the_executor_bookkeeping_fields_default_to_a_fresh_unowned_row() -> None:
+    task = _task()
+    assert (task.attempts, task.gate_seq) == (0, 0)
+    assert task.claim_token is None
+    assert task.materialized_at is None
+
+
+@pytest.mark.parametrize("field", ["attempts", "gate_seq"])
+def test_the_counters_reject_a_negative_value(field) -> None:
+    with pytest.raises(ValidationError):
+        _task(**{field: -1})
+
+
+def test_a_row_stored_before_the_fields_existed_still_loads() -> None:
+    """Rows written by the park handlers on main carry none of the new keys."""
+    stored = _task().model_dump(mode="json")
+    for key in ("attempts", "claim_token", "gate_seq", "materialized_at"):
+        del stored[key]
+    loaded = ToolCallTask.model_validate(stored)
+    assert (loaded.attempts, loaded.claim_token, loaded.gate_seq, loaded.materialized_at) == (0, None, 0, None)
+
+
+def test_the_new_fields_round_trip_through_the_stored_json() -> None:
+    task = _task(attempts=3, claim_token="wrk-1:2026-10-05T00:00:00+00:00:ab12cd34", gate_seq=2,
+                 materialized_at=_now())
+    assert ToolCallTask.model_validate(task.model_dump(mode="json")) == task

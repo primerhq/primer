@@ -154,3 +154,23 @@ def patch_if_reference(
         if key in canonical and not same_spelling(produced.get(key), canonical[key]):
             produced[key] = canonical[key]
     return produced, entity
+
+
+def patch_model(
+    current: Any,
+    patch: Mapping[str, Any] | None,
+    *,
+    where: Mapping[str, Sequence[Any]],
+    set_paths: Mapping[tuple[str, ...], Any] | None = None,
+) -> Any | None:
+    """The model ``current`` becomes under ``patch_if``, or ``None`` when ``where`` rejects it.
+
+    For test storages that hold models and need their own visibility rules around the write (a per-connection
+    view, say) but not their own copy of the patch semantics: the stored document is the model's own dump, and the
+    rest is :func:`patch_if_reference`.
+    """
+    from primer.model.common import dump_for_storage
+
+    doc = {k: v for k, v in dump_for_storage(current).items() if k != "id"}   # the id is a column
+    out = patch_if_reference(type(current), current.id, doc, patch, where=where, set_paths=set_paths)
+    return None if out is None else out[1]

@@ -1402,3 +1402,145 @@ async def test_postgres_has_lease_counts_armed_claimed_and_expired_rows(
 
     await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
     assert await engine.has_lease(ClaimKind.HARNESS, "h-1") is False
+
+
+# ---------------------------------------------------------------------------
+# lease_exists and prune_dead_leases (Phase 3 stage 7a, slice S1-B)
+# ---------------------------------------------------------------------------
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_lease_exists_answers_the_subset_in_one_query(pg_engine, pg_storage):
+    await pg_engine.upsert(ClaimKind.HARNESS, "a")
+    await pg_engine.upsert(ClaimKind.HARNESS, "b")
+    await pg_engine.upsert(ClaimKind.SESSION, "c")           # other kind
+
+    assert await pg_engine.lease_exists(ClaimKind.HARNESS, ["a", "b", "c", "d"]) == {"a", "b"}
+    assert await pg_engine.lease_exists(ClaimKind.HARNESS, []) == set()
+    assert await pg_engine.lease_exists(ClaimKind.HARNESS, ["a", "a"]) == {"a"}
+    assert await pg_engine.lease_exists(ClaimKind.HARNESS, ["a", "z"]) == {
+        i for i in ["a", "z"] if await pg_engine.has_lease(ClaimKind.HARNESS, i)
+    }
+
+
+def _tool_call_engine(pg_storage, memory_tasks=None):
+    from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
+
+    return PostgresClaimEngine(
+        storage_provider=pg_storage,
+        adapters={
+            ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=memory_tasks),
+            ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
+        },
+    )
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_prune_dead_leases_matches_the_adapters_in_process_rule(pg_storage, entity_seeder):
+    """The SQL predicate and ``ToolCallClaimAdapter.is_dead`` are two statements of one rule (the
+    in-memory engine uses the second); run both over every state and a missing row and compare."""
+    from datetime import UTC, datetime
+
+    from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
+    from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+    from tests.conftest import _InMemoryStorage
+
+    mirror = _InMemoryStorage(ToolCallTask)
+    ids = {}
+    for state in ToolCallTaskState:
+        ids[state] = f"t-{state.value}"
+        await entity_seeder.seed("toolcalltask", [ids[state]], data={"state": state.value})
+        await mirror.create(ToolCallTask(
+            id=ids[state], session_id="s", turn_no=0, tool_name="t", state=state, record_seq=1,
+            created_at=datetime.now(UTC),
+        ))
+    all_ids = [*ids.values(), "t-ghost"]
+    engine = _tool_call_engine(pg_storage)
+    for tid in all_ids:
+        await engine.upsert(ClaimKind.TOOL_CALL, tid)
+
+    in_process = ToolCallClaimAdapter(task_storage=mirror)
+    expected_dead = {tid for tid in all_ids if await in_process.is_dead(tid)}
+    assert expected_dead == {"t-done", "t-failed", "t-ghost"}
+
+    assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == len(expected_dead)
+    survivors = {tid for tid in all_ids if await engine.has_lease(ClaimKind.TOOL_CALL, tid)}
+    assert survivors == set(all_ids) - expected_dead
+    assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 0, "idempotent"
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_prune_never_deletes_a_held_lease_but_takes_a_lapsed_one(pg_storage, entity_seeder):
+    await entity_seeder.seed("toolcalltask", ["held", "lapsed"], data={"state": "done"})
+    engine = _tool_call_engine(pg_storage)
+    await engine.upsert(ClaimKind.TOOL_CALL, "held")
+    await engine.upsert(ClaimKind.TOOL_CALL, "lapsed")
+    # The claim query would not claim a finished task (it is not eligible), so stamp the claims
+    # directly: a holder mid-release, and a holder whose lease has run out.
+    async with pg_storage.pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE {pg_storage.leases_table} SET claimed_by = 'w', claimed_at = now(), "
+            f"expires_at = now() + interval '60 seconds' "
+            f"WHERE kind = 'tool_call' AND entity_id = 'held'"
+        )
+        await conn.execute(
+            f"UPDATE {pg_storage.leases_table} SET claimed_by = 'w', claimed_at = now(), "
+            f"expires_at = now() - interval '1 second' "
+            f"WHERE kind = 'tool_call' AND entity_id = 'lapsed'"
+        )
+
+    assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 1
+    assert await engine.has_lease(ClaimKind.TOOL_CALL, "held") is True
+    assert await engine.has_lease(ClaimKind.TOOL_CALL, "lapsed") is False
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_prune_is_scoped_to_its_kind_and_skips_kinds_with_no_dead_rule(
+    pg_storage, entity_seeder,
+):
+    await entity_seeder.seed("toolcalltask", ["x"], data={"state": "failed"})
+    engine = _tool_call_engine(pg_storage)
+    await engine.upsert(ClaimKind.TOOL_CALL, "x")
+    await engine.upsert(ClaimKind.HARNESS, "x")              # same id, no entity row, no rule for its kind
+
+    assert await engine.prune_dead_leases(ClaimKind.HARNESS) == 0
+    assert await engine.prune_dead_leases(ClaimKind.TRIGGER) == 0, "no adapter registered"
+    assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 1
+    assert await engine.has_lease(ClaimKind.HARNESS, "x") is True
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_prune_on_a_fresh_schema_ensures_the_entity_table(pg_storage):
+    async with pg_storage.pool.acquire() as conn:
+        await conn.execute(f'DROP TABLE IF EXISTS "{pg_storage.schema}"."toolcalltask" CASCADE')
+    engine = _tool_call_engine(pg_storage)
+    await engine.upsert(ClaimKind.TOOL_CALL, "orphan")
+
+    assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 1, "no entity table means no entity"
+
+
+@pytest.mark.asyncio
+async def test_prune_statement_shape_without_a_database():
+    """No live database: pin what the statement may and may not delete (the live tests above execute it)."""
+    from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
+
+    conn = _RecordingConn()
+    engine = PostgresClaimEngine(
+        storage_provider=_RecordingSP(conn),
+        adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=None)},
+    )
+    engine._entity_tables_ensured = True
+    await engine.prune_dead_leases(ClaimKind.TOOL_CALL)
+
+    query, args = conn.fetch_calls[-1]
+    assert query.startswith('DELETE FROM "primer"."leases" l')
+    assert args == ("tool_call",)
+    assert "l.claimed_by IS NULL OR l.expires_at < now()" in query, "a held lease must survive"
+    assert "NOT EXISTS" in query and '"primer"."toolcalltask"' in query
+    assert "e.data->>'state' IN ('done', 'failed')" in query
+    assert "RETURNING" in query

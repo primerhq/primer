@@ -270,9 +270,11 @@ async def test_factory_bound_hook_wakes_session_on_last_sibling_release():
     task = await task_storage.get(first)
     await task_storage.update(task.model_copy(update={
         "result_state": {"id": first, "output": "result A", "error": False},
+        "claim_token": f"tok-{first}",
     }))
     await engine.release(
-        lease_by_id[first], outcome=ReleaseOutcome(success=True, drop_lease=True),
+        lease_by_id[first],
+        outcome=ReleaseOutcome(success=True, drop_lease=True, claim_token=f"tok-{first}"),
     )
     row = await session_storage.get(session_id)
     assert row.parked_status == "parked"
@@ -282,9 +284,11 @@ async def test_factory_bound_hook_wakes_session_on_last_sibling_release():
     task = await task_storage.get(second)
     await task_storage.update(task.model_copy(update={
         "result_state": {"id": second, "output": "result B", "error": False},
+        "claim_token": f"tok-{second}",
     }))
     await engine.release(
-        lease_by_id[second], outcome=ReleaseOutcome(success=True, drop_lease=True),
+        lease_by_id[second],
+        outcome=ReleaseOutcome(success=True, drop_lease=True, claim_token=f"tok-{second}"),
     )
     row = await session_storage.get(session_id)
     assert row.parked_status == "resumable"

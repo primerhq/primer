@@ -3,7 +3,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, UTC, timedelta
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from primer.int.claim import (
     ClaimAdapter, ClaimEngine, ClaimKind, Lease, ReleaseOutcome,
 )
@@ -68,6 +68,27 @@ class InMemoryClaimEngine(ClaimEngine):
 
     async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
         return (kind, entity_id) in self._leases
+
+    async def lease_exists(self, kind: ClaimKind, entity_ids: Sequence[str]) -> set[str]:
+        return {eid for eid in entity_ids if (kind, eid) in self._leases}
+
+    async def prune_dead_leases(self, kind: ClaimKind) -> int:
+        adapter = self._adapters.get(kind)
+        if adapter is None or adapter.dead_lease_sql() is None:
+            return 0
+        def held(row: _LeaseRow) -> bool:
+            return row.claimed_by is not None and (row.expires_at is None or row.expires_at >= datetime.now(UTC))
+
+        pruned = 0
+        for key, row in list(self._leases.items()):
+            if row.kind != kind or held(row):
+                continue                                  # held: its holder's release owns it
+            # ``is_dead`` awaits, and a claim can land meanwhile (claim_due mutates the row in place): decide
+            # again after it, with no await between the last check and the delete.
+            if await adapter.is_dead(row.entity_id) and self._leases.get(key) is row and not held(row):
+                del self._leases[key]
+                pruned += 1
+        return pruned
 
     async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
         row = self._leases.get((kind, entity_id))

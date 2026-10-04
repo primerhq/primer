@@ -600,6 +600,25 @@ async def _dispatch_and_claim_batch(storage_provider, session_id: str):
     return engine, session_storage, task_storage, task_leases
 
 
+async def _claim_task(task_storage, task_id: str) -> str:
+    """What the (not yet built) claim worker's RUNNING patch does: stamp a per-claim token on the row."""
+    token = f"tok-{task_id}"
+    stamped = await task_storage.patch_if(
+        task_id, {"state": "running", "claim_token": token},
+        where={"state": ["queued", "running"]},
+    )
+    assert stamped is not None
+    return token
+
+
+def _finish(token: str, result: ToolResultPart) -> ReleaseOutcome:
+    """The worker's terminal release: the result travels in ``entity_update``, fenced by the token."""
+    return ReleaseOutcome(
+        success=True, drop_lease=True, claim_token=token,
+        entity_update={"result_state": result.model_dump(mode="json")},
+    )
+
+
 @pytest.mark.asyncio
 async def test_last_sibling_on_release_wakes_session_and_resume_continues(
     monkeypatch,
@@ -616,26 +635,16 @@ async def test_last_sibling_on_release_wakes_session_and_resume_continues(
     )
     lease_by_id = {lease.entity_id: lease for lease in task_leases}
 
-    task_a = await task_storage.get("x:tool:0:1")
+    token_a = await _claim_task(task_storage, "x:tool:0:1")
     result_a = ToolResultPart(id="x:tool:0:1", output="result A", error=False)
-    await task_storage.update(task_a.model_copy(
-        update={"result_state": result_a.model_dump(mode="json")}
-    ))
-    await engine.release(
-        lease_by_id["x:tool:0:1"], outcome=ReleaseOutcome(success=True, drop_lease=True),
-    )
+    await engine.release(lease_by_id["x:tool:0:1"], outcome=_finish(token_a, result_a))
 
     row = await session_storage.get("s-wake-1")
     assert row.parked_status == "parked"  # sibling x:tool:0:2 still QUEUED
 
-    task_b = await task_storage.get("x:tool:0:2")
+    token_b = await _claim_task(task_storage, "x:tool:0:2")
     result_b = ToolResultPart(id="x:tool:0:2", output="result B", error=False)
-    await task_storage.update(task_b.model_copy(
-        update={"result_state": result_b.model_dump(mode="json")}
-    ))
-    await engine.release(
-        lease_by_id["x:tool:0:2"], outcome=ReleaseOutcome(success=True, drop_lease=True),
-    )
+    await engine.release(lease_by_id["x:tool:0:2"], outcome=_finish(token_b, result_b))
 
     row = await session_storage.get("s-wake-1")
     assert row.parked_status == "resumable"
@@ -679,23 +688,17 @@ async def test_concurrent_last_two_siblings_wake_idempotently() -> None:
     )
     lease_by_id = {lease.entity_id: lease for lease in task_leases}
 
+    outcomes = {}
     for tid, output in (("x:tool:0:1", "result A"), ("x:tool:0:2", "result B")):
-        task = await task_storage.get(tid)
-        result = ToolResultPart(id=tid, output=output, error=False)
-        await task_storage.update(task.model_copy(
-            update={"result_state": result.model_dump(mode="json")}
-        ))
+        token = await _claim_task(task_storage, tid)
+        outcomes[tid] = _finish(token, ToolResultPart(id=tid, output=output, error=False))
 
     # Both siblings release "at the same time" - each on_release's own
     # sibling-check may observe the OTHER as already terminal or not,
     # exercising the real interleaving rather than a hand-picked order.
     await asyncio.gather(
-        engine.release(
-            lease_by_id["x:tool:0:1"], outcome=ReleaseOutcome(success=True, drop_lease=True),
-        ),
-        engine.release(
-            lease_by_id["x:tool:0:2"], outcome=ReleaseOutcome(success=True, drop_lease=True),
-        ),
+        engine.release(lease_by_id["x:tool:0:1"], outcome=outcomes["x:tool:0:1"]),
+        engine.release(lease_by_id["x:tool:0:2"], outcome=outcomes["x:tool:0:2"]),
     )
 
     row = await session_storage.get("s-wake-2")
