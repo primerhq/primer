@@ -1,11 +1,17 @@
 """ClaimAdapter for ClaimKind.TOOL_CALL (Phase 3 stage 7a).
 
-Entirely additive and, on its own, inert: nothing creates ToolCallTask
-rows or TOOL_CALL leases yet (that lands in the dispatch-seam split, a
-later commit in this arc). This commit lands the adapter + entity so the
-claim-engine wiring, eligibility filter, and terminal-state bookkeeping
-are independently reviewable and tested ahead of the riskier executor
-change.
+Dormant behind ``WorkerConfig.tool_calls_as_claims_enabled`` (default
+off). With the flag on, the dispatch seam's park handlers
+(``primer.session.dispatch`` and
+``primer.session.persistence.materialize_pending_tool_wait_rows``) create
+the ToolCallTask rows and upsert the TOOL_CALL leases this adapter
+governs, and ``on_release`` below is the gate / terminal / retry
+bookkeeping plus the last-sibling wake.
+
+NOT BUILT: nothing claims and runs a task. ``WorkerPool`` registers no
+TOOL_CALL handler, so on main only tests ever release a TOOL_CALL lease
+and the transitions below are exercised by hand. See "Tool-call claims:
+built and not built" in docs/dev/architecture/claim-machine.md.
 """
 
 from __future__ import annotations
@@ -94,10 +100,13 @@ class ToolCallClaimAdapter(ClaimAdapter):
 
         # Terminal branch: the caller has already decided this task is
         # done (whether the underlying tool call itself succeeded or
-        # failed is caller's call, encoded in outcome.success - the
-        # dispatch seam writes the durable TOOL_RESULT record, success OR
-        # a poisoned-task failure, BEFORE calling release; this row only
-        # needs a cheap, queryable summary of which happened).
+        # failed is caller's call, encoded in outcome.success; this row
+        # only needs a cheap, queryable summary of which happened). The
+        # tool's result travels in result_state, which the resume
+        # coordinator turns into the TOOL_RESULT record. The intended
+        # caller is the claim worker, which is not built: a poisoned-task
+        # failure (retry cap) has no write side yet, only the resume
+        # side's synthesised error part.
         if outcome.drop_lease:
             updated = task.model_copy(update={
                 "state": (

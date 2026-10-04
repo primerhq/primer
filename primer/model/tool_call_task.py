@@ -67,7 +67,9 @@ class ToolCallTask(Identifiable):
     # claimable) is exactly what a claim-based worker needs to be true: it
     # must never be able to claim a task whose TOOL_CALL record isn't
     # durable yet. The lookup helper that reads a task's arguments back
-    # (primer.claim.tool_call_lookup, once it lands) seeks directly to
+    # (primer.claim.tool_call_lookup.read_tool_call_record; it exists but
+    # has no production caller, because the claim worker that would call
+    # it is not built) seeks directly to
     # this seq and verifies the record's own id == this row's id, failing
     # loudly on any mismatch rather than falling back to a scan — a
     # mismatch means this invariant broke somewhere upstream, which is a
@@ -128,21 +130,23 @@ class ToolCallTask(Identifiable):
     # detail; this is a cheap, queryable summary only.
     last_error: str | None = None
 
-    # Set only on a terminal (DONE/FAILED) release - the claim worker's
-    # full tool-execution result (primer.model.chat.ToolResultPart's own
-    # shape: output/error/metadata), NOT yet written as a durable
-    # TOOL_RESULT record. Ruling (01a0518b, "same philosophy as
-    # gate_state"): the SINGLE in-process session-log writer + its
-    # in-memory seq counter is the shared, working invariant this design
-    # must not touch (a claim worker allocating its own atomic seq would
-    # still race the still-active original turn's stale in-memory
-    # counter) - so the claim worker writes ONLY here + publishes the
-    # tick, and the task-resume-coordinator (not yet built) is what
-    # actually materializes the durable TOOL_RESULT record, in-process,
-    # under the session log's existing single-writer lock, when the
-    # parked turn resumes. Cleared to None once the resume coordinator
-    # has consumed it into a durable record - this field is a mailbox,
-    # not a second copy of the transcript.
+    # The tool-execution result (primer.model.chat.ToolResultPart's own
+    # shape: output/error/metadata), NOT itself a durable TOOL_RESULT
+    # record. Ruling (01a0518b, "same philosophy as gate_state"): the
+    # SINGLE in-process session-log writer + its in-memory seq counter is
+    # the shared, working invariant this design must not touch (a claim
+    # worker allocating its own atomic seq would still race the
+    # still-active original turn's stale in-memory counter) - so the
+    # intended claim worker writes ONLY here + publishes the tick, and
+    # the resume coordinator (primer.worker.tool_wait_resume_coordinator)
+    # reads it to assemble the continuation message and then writes the
+    # durable TOOL_RESULT records, in-process, under the session log's
+    # existing single-writer lock, when the parked turn resumes. Nothing
+    # clears it after that read; only ToolCallClaimAdapter.on_release's
+    # retry branch resets it to None. Today the only production writers
+    # are the park handlers, for notifying calls (born DONE with the
+    # result already set); the claim worker that would write it for a
+    # claimable call is not built.
     result_state: dict[str, Any] | None = None
 
     created_at: datetime
