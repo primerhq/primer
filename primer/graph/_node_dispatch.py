@@ -38,6 +38,7 @@ from primer.graph._node_identity import (
 from primer.graph._node_refs import (
     _FanoutDrainState,
     _FanoutInstance,
+    _fanout_scope,
     _FanoutSourceInvalid,
     _GraphEndOutputEvent,
     _GraphErrorEvent,
@@ -127,15 +128,8 @@ class _NodeDispatchMixin:
         ``fanout_index`` and ``fanout_item``.
         """
         instance = self._fanout_instances.get(node_id)
-        if instance is not None:
-            node = self._nodes_by_id[instance.target_node_id]
-            extra_scope: dict[str, Any] | None = {
-                "fanout_index": instance.fanout_index,
-                "fanout_item": instance.fanout_item,
-            }
-        else:
-            node = self._nodes_by_id[node_id]
-            extra_scope = None
+        node = self._nodes_by_id[instance.target_node_id if instance is not None else node_id]
+        extra_scope = _fanout_scope(instance)
         try:
             if isinstance(node, _FanOutNode):
                 # FanOut is a pure dispatcher (Spec B §2.1):

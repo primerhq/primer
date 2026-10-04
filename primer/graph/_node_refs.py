@@ -48,6 +48,7 @@ __all__ = [
     "_RoutingFailed",
     "_FanoutSourceInvalid",
     "_FanoutInstance",
+    "_fanout_scope",
     "_FanoutDrainState",
     "_resolve_fanout_spec",
     "_GraphErrorEvent",
@@ -570,6 +571,21 @@ class _FanoutInstance:
     target_node_id: str            # the underlying node definition
     fanout_index: int | None       # None for tee
     fanout_item: Any               # FanOut's NodeOutput for broadcast/tee; list element for map
+
+
+def _fanout_scope(instance: "_FanoutInstance | None") -> dict[str, Any] | None:
+    """The extra Jinja scope a fan-out instance renders its ``input_template`` against.
+
+    ``None`` for an ordinary node (no extra names). ONE definition for both renders of that
+    template: the first dispatch (``_stream_node``) and a parked instance's resume
+    (``_resume_agent_node``), which re-renders it because the resume rebuilds the node's user
+    message from the template. Two copies could disagree about ``fanout_index`` and
+    ``fanout_item``, and a resume that lacks them fails the node on the undefined name (or,
+    where the template has a default, quietly hands the model a different prompt).
+    """
+    if instance is None:
+        return None
+    return {"fanout_index": instance.fanout_index, "fanout_item": instance.fanout_item}
 
 
 @dataclass
