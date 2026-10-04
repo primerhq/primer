@@ -73,3 +73,92 @@ async def test_lifespan_full_cycle_preserves_state_and_seams(
         await app.state.event_bus.publish(
             "test:lifespan-probe", {"ok": True}
         )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_mcp_mount_starts_and_stops_in_one_task_and_pins_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_storage_provider: _FakeStorageProvider,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Production check for the leak the test ``app`` fixture had.
+
+    The MCP mount runs an anyio task group, which must be exited by the task
+    that entered it. The test fixture violated that (setup and teardown run
+    in different tasks) and pinned every finished app through anyio's
+    ``_task_states``. The production lifespan starts and stops the mount in
+    one coroutine, so it should be immune - established by reading the code
+    until this test. Uvicorn drives the whole lifespan from ONE task, so one
+    dedicated task does the same here.
+
+    The lifespan guards each teardown step (so one failure does not skip the
+    rest), which means a cross-task exit does NOT raise out of it: it is
+    logged as "mcp session manager teardown failed" at ERROR. So the first
+    check below is that record's absence. A pinned entry, if one existed,
+    would survive the garbage collection at the end, and the app would stay
+    alive. Verified with a deliberate cross-task enter/exit of the same
+    lifespan: it logs that error and leaves the entry pinned.
+    """
+    import asyncio
+    import gc
+    import logging
+    import weakref
+
+    from anyio._backends import _asyncio as anyio_asyncio
+
+    monkeypatch.setattr(
+        "primer.api.app._build_storage_provider",
+        lambda _cfg: mock_storage_provider,
+    )
+    app = create_app(
+        AppConfig(runtime_mode=RuntimeMode.API_PLUS_WORKER, scheduler=None)
+    )
+    app_ref = weakref.ref(app)
+    mount_was_live: list[bool] = []
+    running = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _drive_lifespan() -> None:
+        async with app.router.lifespan_context(app):
+            mount_was_live.append(app.state.mcp_session_manager is not None)
+            running.set()
+            await release.wait()
+
+    gc.collect()
+    states_before = len(anyio_asyncio._task_states)  # noqa: SLF001
+
+    caplog.set_level(logging.ERROR, logger="primer.api._app_lifespan")
+    task = asyncio.create_task(_drive_lifespan(), name="lifespan-under-test")
+    await running.wait()
+    release.set()
+    await task
+
+    teardown_failures = [
+        r.getMessage() for r in caplog.records
+        if "mcp session manager teardown failed" in r.getMessage()
+    ]
+    assert not teardown_failures, (
+        "the MCP mount's teardown failed (a cross-task anyio exit logs "
+        f"exactly this): {teardown_failures}"
+    )
+
+    # Without this the test would pass vacuously if the mount never started.
+    assert mount_was_live == [True]
+    assert app.state.mcp_session_manager is None, "teardown did not run"
+
+    del task, app, _drive_lifespan
+    # Yield to the loop before collecting. In THIS loop iteration the handle
+    # that resumed us after `await task` is still executing and still holds
+    # the finished lifespan task as its argument, so the task (and its
+    # WeakKeyDictionary entry) cannot be collected yet. That is the event
+    # loop's own transient reference, not a pin - checked: one entry in this
+    # iteration, zero after two yields. Collecting without yielding fails
+    # even though nothing leaked.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    gc.collect()
+    gc.collect()
+    assert len(anyio_asyncio._task_states) <= states_before, (  # noqa: SLF001
+        "the lifespan left a task-state entry pinned in anyio"
+    )
+    assert app_ref() is None, "the app is still alive after its lifespan ended"

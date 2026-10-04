@@ -150,18 +150,23 @@ async def app(
     try:
         yield _app
     finally:
-        # Stop the MCP mount first — its anyio task group depends on
-        # the asyncio loop being alive.
-        if getattr(_app.state, "stop_mcp_mount", None) is not None:
+        # Stop the MCP mount first - its anyio task group depends on
+        # the asyncio loop being alive. Both stops are always attempted,
+        # but a failure is RAISED, never swallowed: a swallowed MCP
+        # teardown error hid a cross-task anyio exit that pinned every
+        # finished app for the life of the process (see
+        # test_app_fixture_does_not_pin_apps.py).
+        teardown_errors: list[Exception] = []
+        for stop_name in ("stop_mcp_mount", "stop_worker_pool"):
+            stop = getattr(_app.state, stop_name, None)
+            if stop is None:
+                continue
             try:
-                await _app.state.stop_mcp_mount()
-            except Exception:
-                pass
-        if getattr(_app.state, "stop_worker_pool", None) is not None:
-            try:
-                await _app.state.stop_worker_pool()
-            except Exception:
-                pass
+                await stop()
+            except Exception as exc:
+                teardown_errors.append(exc)
+        if teardown_errors:
+            raise teardown_errors[0]
 
 
 @pytest.fixture
