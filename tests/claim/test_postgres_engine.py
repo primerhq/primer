@@ -26,6 +26,7 @@ from primer.claim.postgres import PostgresClaimEngine
 from primer.claim.sql import build_claim_query
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage.postgres import PostgresStorageProvider
+from tests.claim._entity_seed import EntitySeeder
 
 
 _URL_ENV = "PRIMER_TEST_POSTGRES_URL"
@@ -99,6 +100,16 @@ async def pg_engine(pg_storage: PostgresStorageProvider) -> PostgresClaimEngine:
         ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
     }
     return PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+
+
+@pytest_asyncio.fixture
+async def entity_seeder(pg_storage: PostgresStorageProvider) -> AsyncIterator[EntitySeeder]:
+    """Seeds the entity rows claim_due's INNER JOIN needs; removes them on exit."""
+    seeder = EntitySeeder(pg_storage)
+    try:
+        yield seeder
+    finally:
+        await seeder.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +206,12 @@ async def test_postgres_delete_lease_noop_on_missing(pg_engine):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_claim_due_claims_unclaimed(pg_engine, pg_storage):
-    """claim_due with no adapters produces no-op SQL; returns empty list."""
+async def test_postgres_claim_due_with_no_adapters_returns_empty(pg_storage):
+    """claim_due with no adapters produces no-op SQL; returns empty list.
+
+    The no-op query used to omit $1, so this raised asyncpg's
+    IndeterminateDatatypeError instead of returning [].
+    """
     bare_engine = PostgresClaimEngine(
         storage_provider=pg_storage,
         adapters={},
@@ -209,12 +224,13 @@ async def test_postgres_claim_due_claims_unclaimed(pg_engine, pg_storage):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_claim_due_respects_max_count(pg_storage):
+async def test_postgres_claim_due_respects_max_count(pg_storage, entity_seeder):
     """Seed multiple leases; claim_due should respect max_count.
 
-    Uses a synthetic adapter whose eligibility SQL only touches the
-    lease alias (no entity table JOIN needed) so we don't have to seed
-    any entity rows.
+    Uses a synthetic adapter whose eligibility SQL only touches the lease
+    alias. The claim query still INNER JOINs the adapter's entity table, so
+    an entity row is seeded for every lease (a lease without one is never
+    claimable).
     """
     from primer.int.claim import ClaimAdapter
 
@@ -228,9 +244,12 @@ async def test_postgres_claim_due_respects_max_count(pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
-    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: adapter},
+    )
 
+    await entity_seeder.seed(adapter.entity_table, [f"c-{i}" for i in range(5)])
     for i in range(5):
         await engine.upsert(ClaimKind.HARNESS, f"c-{i}")
 
@@ -241,7 +260,7 @@ async def test_postgres_claim_due_respects_max_count(pg_storage):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_claim_due_skips_already_claimed(pg_storage):
+async def test_postgres_claim_due_skips_already_claimed(pg_storage, entity_seeder):
     """A lease already claimed (within TTL) should not be returned again."""
     from primer.int.claim import ClaimAdapter
 
@@ -254,9 +273,12 @@ async def test_postgres_claim_due_skips_already_claimed(pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.SESSION: _NoJoinAdapter()}
-    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.SESSION: adapter},
+    )
 
+    await entity_seeder.seed(adapter.entity_table, ["s-1"])
     await engine.upsert(ClaimKind.SESSION, "s-1")
 
     first = await engine.claim_due("worker-A", max_count=1)
@@ -280,6 +302,31 @@ def test_build_claim_query_empty_adapters():
     # No adapter CTEs.
     assert "harness_cand" not in sql
     assert "session_cand" not in sql
+
+
+@pytest.mark.parametrize(
+    "adapters",
+    [
+        {},
+        {ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None)},
+        {
+            ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
+            ClaimKind.SESSION: SessionClaimAdapter(session_storage=None),
+        },
+    ],
+    ids=["no-adapters", "one-adapter", "two-adapters"],
+)
+def test_build_claim_query_references_every_bound_parameter(adapters):
+    """claim_due ALWAYS binds $1 (max_count), $2 (worker_id) and $3 (ttl).
+
+    Postgres cannot infer a type for a bound parameter that appears nowhere
+    in the statement (asyncpg raises IndeterminateDatatypeError), so every
+    shape of the query - including the zero-adapter no-op - must reference
+    all three. The no-op branch used to omit $1.
+    """
+    sql = build_claim_query(adapters, '"test"."leases"')
+    for n in (1, 2, 3):
+        assert f"${n}" in sql, f"${n} is bound by claim_due but unused in the SQL"
 
 
 def test_build_claim_query_single_adapter():
@@ -378,7 +425,7 @@ def test_claim_query_for_kinds_scopes_to_the_subset_and_caches():
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_heartbeat_refreshes_expiry(pg_engine, pg_storage):
+async def test_postgres_heartbeat_refreshes_expiry(pg_storage, entity_seeder):
     """heartbeat extends expires_at and confirms the (kind, entity_id) pair."""
     from datetime import UTC, timedelta
 
@@ -394,9 +441,12 @@ async def test_postgres_heartbeat_refreshes_expiry(pg_engine, pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
-    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: adapter},
+    )
 
+    await entity_seeder.seed(adapter.entity_table, ["hb-1"])
     await engine.upsert(ClaimKind.HARNESS, "hb-1")
     [lease] = await engine.claim_due("worker-A", max_count=1)
 
@@ -422,8 +472,15 @@ async def test_postgres_heartbeat_refreshes_expiry(pg_engine, pg_storage):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_heartbeat_rejects_non_owner(pg_engine, pg_storage):
-    """heartbeat with the wrong worker_id returns an empty list."""
+async def test_postgres_heartbeat_rejects_non_owner(pg_storage, entity_seeder):
+    """heartbeat with the wrong worker_id returns an empty list.
+
+    The lease must actually be claimed by worker A first: with nothing
+    claimed, worker B's heartbeat is empty whether or not the ownership
+    check exists, and the test would pass without testing it (it did, until
+    the claim itself started succeeding). Worker A's own heartbeat is the
+    positive control proving the lease is really held.
+    """
     from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
@@ -435,14 +492,23 @@ async def test_postgres_heartbeat_rejects_non_owner(pg_engine, pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.SESSION: _NoJoinAdapter()}
-    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.SESSION: adapter},
+    )
 
+    await entity_seeder.seed(adapter.entity_table, ["hb-wrong"])
     await engine.upsert(ClaimKind.SESSION, "hb-wrong")
-    await engine.claim_due("worker-A", max_count=1)
+    claimed = await engine.claim_due("worker-A", max_count=1)
+    assert [(c.kind, c.entity_id, c.claimed_by) for c in claimed] == [
+        (ClaimKind.SESSION, "hb-wrong", "worker-A"),
+    ], "precondition: worker-A must really hold the lease"
 
-    confirmed = await engine.heartbeat("worker-B", [(ClaimKind.SESSION, "hb-wrong")])
-    assert confirmed == []
+    pair = [(ClaimKind.SESSION, "hb-wrong")]
+    # Positive control: the owner's heartbeat IS confirmed ...
+    assert await engine.heartbeat("worker-A", pair) == pair
+    # ... and a different worker's is rejected.
+    assert await engine.heartbeat("worker-B", pair) == []
 
 
 @_needs_pg
@@ -460,7 +526,7 @@ async def test_postgres_heartbeat_empty_list(pg_engine):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_release_drop_lease_deletes_row(pg_storage):
+async def test_postgres_release_drop_lease_deletes_row(pg_storage, entity_seeder):
     """release with drop_lease=True removes the lease row."""
     from primer.int.claim import ClaimAdapter
 
@@ -473,9 +539,12 @@ async def test_postgres_release_drop_lease_deletes_row(pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
-    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: adapter},
+    )
 
+    await entity_seeder.seed(adapter.entity_table, ["rel-drop"])
     await engine.upsert(ClaimKind.HARNESS, "rel-drop")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
@@ -490,7 +559,7 @@ async def test_postgres_release_drop_lease_deletes_row(pg_storage):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_release_without_drop_clears_claim_fields(pg_storage):
+async def test_postgres_release_without_drop_clears_claim_fields(pg_storage, entity_seeder):
     """release without drop_lease clears claimed_by and makes row reclaimable."""
     from primer.int.claim import ClaimAdapter
 
@@ -503,9 +572,12 @@ async def test_postgres_release_without_drop_clears_claim_fields(pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
-    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: adapter},
+    )
 
+    await entity_seeder.seed(adapter.entity_table, ["rel-clear"])
     await engine.upsert(ClaimKind.HARNESS, "rel-clear")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=False))
@@ -522,7 +594,7 @@ async def test_postgres_release_without_drop_clears_claim_fields(pg_storage):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_release_failure_bumps_attempt_count(pg_storage):
+async def test_postgres_release_failure_bumps_attempt_count(pg_storage, entity_seeder):
     """release with success=False increments attempt_count and stores last_error."""
     from datetime import timedelta
     from primer.int.claim import ClaimAdapter
@@ -536,9 +608,12 @@ async def test_postgres_release_failure_bumps_attempt_count(pg_storage):
 
         async def on_release(self, conn, entity_id, *, outcome): ...
 
-    adapters = {ClaimKind.HARNESS: _NoJoinAdapter()}
-    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: adapter},
+    )
 
+    await entity_seeder.seed(adapter.entity_table, ["rel-fail"])
     await engine.upsert(ClaimKind.HARNESS, "rel-fail")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     await engine.release(

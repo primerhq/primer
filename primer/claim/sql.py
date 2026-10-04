@@ -39,10 +39,16 @@ def build_claim_query(
         # No adapters → produce a valid but no-op UPDATE that always
         # returns zero rows. This keeps claim_due safe when called with
         # an empty adapter registry.
+        #
+        # It must still reference $1: claim_due always binds all three
+        # parameters, and Postgres cannot infer a type for a bound
+        # parameter that appears nowhere in the statement (asyncpg raises
+        # IndeterminateDatatypeError). The LIMIT gives $1 its integer type
+        # and costs nothing on a WHERE FALSE scan.
         return (
             f"WITH all_cand AS ("
             f"  SELECT kind, entity_id, priority_score, next_attempt_at "
-            f"  FROM {leases_table} WHERE FALSE"
+            f"  FROM {leases_table} WHERE FALSE LIMIT $1"
             f") "
             f"UPDATE {leases_table} l "
             f"   SET claimed_by = $2, claimed_at = now(), "
