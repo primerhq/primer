@@ -7,7 +7,9 @@ History of the fixture (``captured_from`` is the ``primer/`` tree hash it was ca
 2. re-captured by the commit that made tier 2 keep its tail and the turn's own input (task 01a1089e): that
    fix changes what a tier-2 turn's marker records and what the next turn is handed, and the scenario's
    turn 2 needed answered history to compact (see ``off_golden.py``). Only turns 2 to 4 (the turns with a
-   tier-2 marker) and what they feed changed; turns 1, 5 and 6 and calls 0, 5, 8 and 9 are byte-identical.
+   tier-2 marker) and what they feed changed; turns 1, 5 and 6 and calls 0, 5, 8 and 9 are byte-identical;
+3. re-captured, under the guard below, when every turn got its own session (turns 3 and 4 no longer inherit
+   turn 2's marker and tail). The fixture's ``recaptures`` list says which turns moved and why.
 
 ``tests/_support/off_golden.py`` runs one scripted session through every path the budget work
 touches (tier 1 pruning, tier 2 summarising, the overflow replay, steers deferred during a
@@ -18,10 +20,11 @@ marker, the number of LLM calls, or a single byte of the persisted ``messages.js
 
 Timestamps and the session id are the only values normalised (they differ between runs); everything
 else is compared exactly. A change that is MEANT to alter ``off`` behaviour means re-capturing the
-fixture in the same commit and saying why in its message. The mechanical guard for that (the lead's R11:
-declare which turns may change, refuse any other difference, record the reason, reproduce the old fixture on
-the merge base) is NOT built yet and must land before the next re-capture: until then, compare the old and
-new fixture turn by turn.
+fixture in the same commit and saying why in its message. ``scripts/capture_off_golden.py`` is the guard: it
+refuses a re-capture that changes a turn not declared with ``--expect-changed``, or declares one that did not
+change, or gives no ``--reason``, and records every re-capture on the fixture. Each turn is a unit on its own
+session, so one turn's change cannot cascade into the next. Turn 1 and the first call are also pinned by
+digest constants below: moving them takes an edit to this file.
 """
 
 from __future__ import annotations
@@ -33,9 +36,13 @@ from typing import Any
 
 import pytest
 
+from tests._support.golden_compare import behaviour, call_sha256, changed_turns, differences, unit_sha256
 from tests._support.off_golden import TOOL_RESULT_CHARS, run_scenario, trigger_tokens
 
 FIXTURE = Path(__file__).parent / "fixtures" / "off_mode_golden.json"
+
+TURN_1_SHA256 = "d17e974df0cd07f740fda3c7160ba1f05cd5e143810555ce72fe402195710a88"
+CALL_0_SHA256 = "97730bbfdd63185dd865548254190931526605a2c5bbdf547638493e7e17719a"
 
 
 @pytest.fixture(scope="module")
@@ -49,38 +56,26 @@ def runs() -> tuple[dict[str, Any], dict[str, Any]]:
     return asyncio.run(run_scenario()), asyncio.run(run_scenario())
 
 
-def _first_difference(got: Any, want: Any, path: str = "") -> str | None:
-    if type(got) is not type(want):
-        return f"{path or '/'}: type {type(got).__name__} != {type(want).__name__}"
-    if isinstance(got, dict):
-        for key in sorted(set(got) | set(want)):
-            if key not in got or key not in want:
-                return f"{path}/{key}: present in only one of them"
-            found = _first_difference(got[key], want[key], f"{path}/{key}")
-            if found:
-                return found
-    elif isinstance(got, list):
-        if len(got) != len(want):
-            return f"{path}: {len(got)} items != {len(want)}"
-        for i, (a, b) in enumerate(zip(got, want)):
-            found = _first_difference(a, b, f"{path}[{i}]")
-            if found:
-                return found
-    elif got != want:
-        return f"{path}: {got!r} != {want!r}"
-    return None
-
-
 class TestTheGolden:
     def test_a_fresh_run_matches_the_fixture_exactly(self, runs, golden) -> None:
-        difference = _first_difference(runs[0], {k: v for k, v in golden.items() if k != "captured_from"})
-        assert difference is None, (
-            f"mode `off` no longer behaves as it did for primer/ tree {golden['captured_from'][:8]}: first difference at {difference}"
+        found = differences(runs[0], behaviour(golden))
+        assert not found, (
+            f"mode `off` no longer behaves as it did for primer/ tree {golden['captured_from'][:8]}: "
+            f"{len(found)} differing path(s) in turn(s) {sorted(changed_turns(runs[0], golden))}; the first 20:\n  "
+            + "\n  ".join(found[:20])
         )
 
     def test_the_scenario_is_deterministic(self, runs) -> None:
         """The comparison above is only meaningful if two runs of today's code agree."""
-        assert _first_difference(runs[0], runs[1]) is None
+        assert differences(runs[0], runs[1]) == []
+
+    def test_turn_1_and_the_first_call_are_pinned_by_constants_in_this_file(self, golden) -> None:
+        """The fixture can be regenerated; these two digests cannot be changed without editing THIS file, in review.
+
+        Turn 1 (tier 1, prune-only) and the first LLM call are the part of ``off`` that no change to compaction
+        is meant to touch. If a re-capture moves them, the constants must move with it and say why."""
+        assert unit_sha256(golden, 1) == TURN_1_SHA256
+        assert call_sha256(golden, 0) == CALL_0_SHA256
 
     def test_the_fixture_names_the_primer_tree_it_was_captured_from(self, golden) -> None:
         """A tree hash, not a commit SHA: rebase-merge orphans commit SHAs (see scripts/capture_off_golden.py)."""
@@ -122,7 +117,7 @@ class TestTheFixtureCrossesWhatItPins:
     def test_the_overflow_replay_force_compacts_and_reruns_the_loop(self, golden) -> None:
         turn = golden["turns"][2]
         assert turn["llm_calls"] == 3
-        assert len(turn["file"]["markers"]) == 2
+        assert len(turn["file"]["markers"]) == 1, "the turn owns its session: the one marker is the forced compaction's"
         rejected, summariser, retry = golden["calls"][3:6]
         assert (bool(rejected["tool_ids"]), bool(summariser["tool_ids"]), bool(retry["tool_ids"])) == (True, False, True)
 

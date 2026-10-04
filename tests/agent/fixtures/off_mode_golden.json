@@ -502,61 +502,11 @@
      "parts": [
       [
        "text",
-       81,
-       "1704fa4b0a48fa53"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "786e3bff1c6ca01f"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       120028,
-       "837782cd1cdf46ff"
+       33,
+       "083f9a86ebd7dc93"
       ]
      ],
      "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "7fdec7e4489d3cfc"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       40,
-       "13cd1f9b1949c16d"
-      ]
-     ],
-     "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       37,
-       "0ed31ecb2f418f5a"
-      ]
-     ],
-     "role": "assistant"
     },
     {
      "parts": [
@@ -654,6 +604,46 @@
        "text",
        42,
        "ad6dbe76db8cf3bc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "a65ff8bd4547176d"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "1bebe6af69b86cb5"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "714e88ccb5a87d63"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "c4d831f7e416867c"
       ]
      ],
      "role": "assistant"
@@ -739,61 +729,11 @@
      "parts": [
       [
        "text",
-       81,
-       "1704fa4b0a48fa53"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "786e3bff1c6ca01f"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       120028,
-       "837782cd1cdf46ff"
+       33,
+       "083f9a86ebd7dc93"
       ]
      ],
      "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "7fdec7e4489d3cfc"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       40,
-       "13cd1f9b1949c16d"
-      ]
-     ],
-     "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       37,
-       "0ed31ecb2f418f5a"
-      ]
-     ],
-     "role": "assistant"
     },
     {
      "parts": [
@@ -821,6 +761,46 @@
        "text",
        2045,
        "43eea0488e1e2b4f"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "da898ce0fe2e16dc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "a578d95d6d26b35d"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "da16e17bea047b16"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "c9d2ffb926b2d586"
       ]
      ],
      "role": "user"
@@ -874,46 +854,6 @@
       [
        "text",
        42,
-       "da898ce0fe2e16dc"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       2045,
-       "a578d95d6d26b35d"
-      ]
-     ],
-     "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "da16e17bea047b16"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       2045,
-       "c9d2ffb926b2d586"
-      ]
-     ],
-     "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
        "993400fa5a630edb"
       ]
      ],
@@ -935,6 +875,46 @@
        "text",
        42,
        "ad6dbe76db8cf3bc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "a65ff8bd4547176d"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "1bebe6af69b86cb5"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "714e88ccb5a87d63"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "c4d831f7e416867c"
       ]
      ],
      "role": "assistant"
@@ -1020,101 +1000,11 @@
      "parts": [
       [
        "text",
-       81,
-       "5f6193e97de2613e"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "da898ce0fe2e16dc"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       2045,
-       "a578d95d6d26b35d"
+       33,
+       "083f9a86ebd7dc93"
       ]
      ],
      "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "da16e17bea047b16"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       2045,
-       "c9d2ffb926b2d586"
-      ]
-     ],
-     "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "993400fa5a630edb"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       2045,
-       "8bb269e38e83a199"
-      ]
-     ],
-     "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       42,
-       "ad6dbe76db8cf3bc"
-      ]
-     ],
-     "role": "assistant"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       40,
-       "24c53c448bc9b18f"
-      ]
-     ],
-     "role": "user"
-    },
-    {
-     "parts": [
-      [
-       "text",
-       37,
-       "6eda483240d52c9d"
-      ]
-     ],
-     "role": "assistant"
     },
     {
      "parts": [
@@ -1588,6 +1478,17 @@
   }
  ],
  "captured_from": "648e26158fa256c41bdb216c3aa78acbe847e722",
+ "recaptures": [
+  {
+   "changed_turns": [
+    3,
+    4
+   ],
+   "previous_captured_from": "648e26158fa256c41bdb216c3aa78acbe847e722",
+   "previous_fixture_sha256": "7fbab6401bd4b14e01ee1644855121bcf416f71d396ee70ce89c7f7eb357c464",
+   "reason": "scenario: every turn owns its session (turns 3 and 4 no longer inherit turn 2's marker and tail), so a change to one turn cannot cascade into the next"
+  }
+ ],
  "turns": [
   {
    "file": {
@@ -1852,139 +1753,13 @@
   },
   {
    "file": {
-    "bytes": 980109,
+    "bytes": 22086,
     "lines": [
      {
       "len": 56,
       "message": "user",
       "preview": "hello",
       "sha": "d2713c5c5317c67f"
-     },
-     {
-      "len": 112,
-      "message": "assistant",
-      "preview": "<tool_call call_0>",
-      "sha": "aee4a87d1f06ddbe"
-     },
-     {
-      "len": 90117,
-      "message": "tool",
-      "preview": "<tool_result call_0 90000 chars>",
-      "sha": "13c1fdad3401a01c"
-     },
-     {
-      "len": 112,
-      "message": "assistant",
-      "preview": "<tool_call call_1>",
-      "sha": "f0a22efee924f3d5"
-     },
-     {
-      "len": 90117,
-      "message": "tool",
-      "preview": "<tool_result call_1 90000 chars>",
-      "sha": "5e1f94bfd6ceaa68"
-     },
-     {
-      "len": 112,
-      "message": "assistant",
-      "preview": "<tool_call call_2>",
-      "sha": "c337faf9bc18fd10"
-     },
-     {
-      "len": 90117,
-      "message": "tool",
-      "preview": "<tool_result call_2 90000 chars>",
-      "sha": "5ebd4ca098b68297"
-     },
-     {
-      "len": 112,
-      "message": "assistant",
-      "preview": "<tool_call call_3>",
-      "sha": "6f9a6522a468da03"
-     },
-     {
-      "len": 90117,
-      "message": "tool",
-      "preview": "<tool_result call_3 90000 chars>",
-      "sha": "4ddc1c9ca79b0f95"
-     },
-     {
-      "len": 64,
-      "message": "user",
-      "preview": "turn 1: go on",
-      "sha": "11e040681e0d1385"
-     },
-     {
-      "len": 65,
-      "message": "assistant",
-      "preview": "turn-1-ok",
-      "sha": "f14fd9ebfee6c357"
-     },
-     {
-      "len": 120051,
-      "message": "user",
-      "preview": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-      "sha": "2023b2c112b81b9c"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 2 reply 0",
-      "sha": "6efd05f92d398a84"
-     },
-     {
-      "len": 120051,
-      "message": "user",
-      "preview": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-      "sha": "408fe0d94351bcad"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 2 reply 1",
-      "sha": "445c51ce44b2da62"
-     },
-     {
-      "len": 120051,
-      "message": "user",
-      "preview": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
-      "sha": "5273df69bf887f5c"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 2 reply 2",
-      "sha": "22174cd00978a9df"
-     },
-     {
-      "len": 120051,
-      "message": "user",
-      "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
-      "sha": "a9c5ce65bc45f610"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 2 reply 3",
-      "sha": "525313b5754dc3cd"
-     },
-     {
-      "len": 63,
-      "message": "user",
-      "preview": "turn 2: next",
-      "sha": "dc1adde5e40679c6"
-     },
-     {
-      "len": 120624,
-      "record": "compaction_marker",
-      "seq": 1,
-      "sha": "5404779b6f6456f0"
-     },
-     {
-      "len": 65,
-      "message": "assistant",
-      "preview": "turn-2-ok",
-      "sha": "68d8d151470dd180"
      },
      {
       "len": 2068,
@@ -2047,16 +1822,40 @@
       "sha": "a773c5366207ab1f"
      },
      {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 5: fffffffffffffffffffffff",
+      "sha": "9cf4a6cbd77ad8f7"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 5",
+      "sha": "8d7d00c6a1773ac4"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 6: fffffffffffffffffffffff",
+      "sha": "fa4d96032ac9e596"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 6",
+      "sha": "a4119f2ad59fd08b"
+     },
+     {
       "len": 63,
       "message": "user",
       "preview": "turn 3: next",
       "sha": "263b0d6170d662da"
      },
      {
-      "len": 6919,
+      "len": 6918,
       "record": "compaction_marker",
-      "seq": 2,
-      "sha": "55624c3bc493e2c2"
+      "seq": 1,
+      "sha": "e0b82661d348b061"
      },
      {
       "len": 65,
@@ -2069,70 +1868,6 @@
      {
       "created_at": "<ts>",
       "kept_tail": [
-       {
-        "len": 76,
-        "message": "assistant",
-        "preview": "turn 2 reply 2",
-        "sha": "f956e9c2bb5d85d6"
-       },
-       {
-        "len": 120057,
-        "message": "user",
-        "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
-        "sha": "d7e93b57cdb4c875"
-       },
-       {
-        "len": 76,
-        "message": "assistant",
-        "preview": "turn 2 reply 3",
-        "sha": "011e0ed2434cb030"
-       },
-       {
-        "len": 69,
-        "message": "user",
-        "preview": "turn 2: next",
-        "sha": "c09bbf1863677404"
-       }
-      ],
-      "model": "golden-model",
-      "outcome": "summarised",
-      "replaced_from_seq": 1,
-      "replaced_to_seq": 0,
-      "seq": 1,
-      "summary_len": 51,
-      "summary_sha": "b6ebe312fb275ed4",
-      "tokens_after": 30069,
-      "tokens_before": 210508,
-      "trigger_tokens": 82627,
-      "unreducible": null
-     },
-     {
-      "created_at": "<ts>",
-      "kept_tail": [
-       {
-        "len": 76,
-        "message": "assistant",
-        "preview": "turn 3 reply 1",
-        "sha": "43e984ec82f6f1a8"
-       },
-       {
-        "len": 2074,
-        "message": "user",
-        "preview": "turn 3 filler 2: fffffffffffffffffffffff",
-        "sha": "d5f46f2a7f034a4c"
-       },
-       {
-        "len": 76,
-        "message": "assistant",
-        "preview": "turn 3 reply 2",
-        "sha": "3d9b1e3cbba9a589"
-       },
-       {
-        "len": 2074,
-        "message": "user",
-        "preview": "turn 3 filler 3: fffffffffffffffffffffff",
-        "sha": "6bab83ba9cf1c7df"
-       },
        {
         "len": 76,
         "message": "assistant",
@@ -2152,6 +1887,30 @@
         "sha": "4d9e43fd9a7e8fc1"
        },
        {
+        "len": 2074,
+        "message": "user",
+        "preview": "turn 3 filler 5: fffffffffffffffffffffff",
+        "sha": "4e9b8dfbe01673bd"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 5",
+        "sha": "10953cb594a96182"
+       },
+       {
+        "len": 2074,
+        "message": "user",
+        "preview": "turn 3 filler 6: fffffffffffffffffffffff",
+        "sha": "02490a9ad46c4805"
+       },
+       {
+        "len": 76,
+        "message": "assistant",
+        "preview": "turn 3 reply 6",
+        "sha": "b69fd722c7341873"
+       },
+       {
         "len": 69,
         "message": "user",
         "preview": "turn 3: next",
@@ -2161,234 +1920,30 @@
       "model": "golden-model",
       "outcome": "summarised",
       "replaced_from_seq": 1,
-      "replaced_to_seq": 1,
-      "seq": 2,
+      "replaced_to_seq": 0,
+      "seq": 1,
       "summary_len": 51,
       "summary_sha": "8c49090b2ac9e12d",
       "tokens_after": 1624,
-      "tokens_before": 32716,
+      "tokens_before": 3696,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "0bb1c8701b87dd19d32d2c94d6dd3afade63e69dc86c8546252a72eaaffa0194"
+    "sha256": "46db53a4c8eddb1cf23b8c10f41826ebfd4dfccfc12e1b94578a9b4edd3ef87c"
    },
    "llm_calls": 3,
    "turn": "3-overflow-replay"
   },
   {
    "file": {
-    "bytes": 1581382,
+    "bytes": 601330,
     "lines": [
      {
       "len": 56,
       "message": "user",
       "preview": "hello",
       "sha": "d2713c5c5317c67f"
-     },
-     {
-      "len": 112,
-      "message": "assistant",
-      "preview": "<tool_call call_0>",
-      "sha": "aee4a87d1f06ddbe"
-     },
-     {
-      "len": 90117,
-      "message": "tool",
-      "preview": "<tool_result call_0 90000 chars>",
-      "sha": "13c1fdad3401a01c"
-     },
-     {
-      "len": 112,
-      "message": "assistant",
-      "preview": "<tool_call call_1>",
-      "sha": "f0a22efee924f3d5"
-     },
-     {
-      "len": 90117,
-      "message": "tool",
-      "preview": "<tool_result call_1 90000 chars>",
-      "sha": "5e1f94bfd6ceaa68"
-     },
-     {
-      "len": 112,
-      "message": "assistant",
-      "preview": "<tool_call call_2>",
-      "sha": "c337faf9bc18fd10"
-     },
-     {
-      "len": 90117,
-      "message": "tool",
-      "preview": "<tool_result call_2 90000 chars>",
-      "sha": "5ebd4ca098b68297"
-     },
-     {
-      "len": 112,
-      "message": "assistant",
-      "preview": "<tool_call call_3>",
-      "sha": "6f9a6522a468da03"
-     },
-     {
-      "len": 90117,
-      "message": "tool",
-      "preview": "<tool_result call_3 90000 chars>",
-      "sha": "4ddc1c9ca79b0f95"
-     },
-     {
-      "len": 64,
-      "message": "user",
-      "preview": "turn 1: go on",
-      "sha": "11e040681e0d1385"
-     },
-     {
-      "len": 65,
-      "message": "assistant",
-      "preview": "turn-1-ok",
-      "sha": "f14fd9ebfee6c357"
-     },
-     {
-      "len": 120051,
-      "message": "user",
-      "preview": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-      "sha": "2023b2c112b81b9c"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 2 reply 0",
-      "sha": "6efd05f92d398a84"
-     },
-     {
-      "len": 120051,
-      "message": "user",
-      "preview": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-      "sha": "408fe0d94351bcad"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 2 reply 1",
-      "sha": "445c51ce44b2da62"
-     },
-     {
-      "len": 120051,
-      "message": "user",
-      "preview": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
-      "sha": "5273df69bf887f5c"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 2 reply 2",
-      "sha": "22174cd00978a9df"
-     },
-     {
-      "len": 120051,
-      "message": "user",
-      "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
-      "sha": "a9c5ce65bc45f610"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 2 reply 3",
-      "sha": "525313b5754dc3cd"
-     },
-     {
-      "len": 63,
-      "message": "user",
-      "preview": "turn 2: next",
-      "sha": "dc1adde5e40679c6"
-     },
-     {
-      "len": 120624,
-      "record": "compaction_marker",
-      "seq": 1,
-      "sha": "5404779b6f6456f0"
-     },
-     {
-      "len": 65,
-      "message": "assistant",
-      "preview": "turn-2-ok",
-      "sha": "68d8d151470dd180"
-     },
-     {
-      "len": 2068,
-      "message": "user",
-      "preview": "turn 3 filler 0: fffffffffffffffffffffff",
-      "sha": "b5e25186e3042bb4"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 3 reply 0",
-      "sha": "da3bfb53512c65c2"
-     },
-     {
-      "len": 2068,
-      "message": "user",
-      "preview": "turn 3 filler 1: fffffffffffffffffffffff",
-      "sha": "b1e49568ff02349b"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 3 reply 1",
-      "sha": "05d96da5b6d55653"
-     },
-     {
-      "len": 2068,
-      "message": "user",
-      "preview": "turn 3 filler 2: fffffffffffffffffffffff",
-      "sha": "8c03488a8b0e8451"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 3 reply 2",
-      "sha": "1a9495af29681c61"
-     },
-     {
-      "len": 2068,
-      "message": "user",
-      "preview": "turn 3 filler 3: fffffffffffffffffffffff",
-      "sha": "fff55e5f8ad7a504"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 3 reply 3",
-      "sha": "325b8e3de48a4f6a"
-     },
-     {
-      "len": 2068,
-      "message": "user",
-      "preview": "turn 3 filler 4: fffffffffffffffffffffff",
-      "sha": "809cd0c7c84056c7"
-     },
-     {
-      "len": 70,
-      "message": "assistant",
-      "preview": "turn 3 reply 4",
-      "sha": "a773c5366207ab1f"
-     },
-     {
-      "len": 63,
-      "message": "user",
-      "preview": "turn 3: next",
-      "sha": "263b0d6170d662da"
-     },
-     {
-      "len": 6919,
-      "record": "compaction_marker",
-      "seq": 2,
-      "sha": "55624c3bc493e2c2"
-     },
-     {
-      "len": 65,
-      "message": "assistant",
-      "preview": "turn-3-ok",
-      "sha": "241ee9de2ec90bfc"
      },
      {
       "len": 120051,
@@ -2441,8 +1996,8 @@
      {
       "len": 120560,
       "record": "compaction_marker",
-      "seq": 3,
-      "sha": "2a749d2a9c61eb47"
+      "seq": 1,
+      "sha": "8ed94365e5e559f5"
      },
      {
       "len": 76,
@@ -2470,110 +2025,6 @@
        {
         "len": 76,
         "message": "assistant",
-        "preview": "turn 2 reply 2",
-        "sha": "f956e9c2bb5d85d6"
-       },
-       {
-        "len": 120057,
-        "message": "user",
-        "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
-        "sha": "d7e93b57cdb4c875"
-       },
-       {
-        "len": 76,
-        "message": "assistant",
-        "preview": "turn 2 reply 3",
-        "sha": "011e0ed2434cb030"
-       },
-       {
-        "len": 69,
-        "message": "user",
-        "preview": "turn 2: next",
-        "sha": "c09bbf1863677404"
-       }
-      ],
-      "model": "golden-model",
-      "outcome": "summarised",
-      "replaced_from_seq": 1,
-      "replaced_to_seq": 0,
-      "seq": 1,
-      "summary_len": 51,
-      "summary_sha": "b6ebe312fb275ed4",
-      "tokens_after": 30069,
-      "tokens_before": 210508,
-      "trigger_tokens": 82627,
-      "unreducible": null
-     },
-     {
-      "created_at": "<ts>",
-      "kept_tail": [
-       {
-        "len": 76,
-        "message": "assistant",
-        "preview": "turn 3 reply 1",
-        "sha": "43e984ec82f6f1a8"
-       },
-       {
-        "len": 2074,
-        "message": "user",
-        "preview": "turn 3 filler 2: fffffffffffffffffffffff",
-        "sha": "d5f46f2a7f034a4c"
-       },
-       {
-        "len": 76,
-        "message": "assistant",
-        "preview": "turn 3 reply 2",
-        "sha": "3d9b1e3cbba9a589"
-       },
-       {
-        "len": 2074,
-        "message": "user",
-        "preview": "turn 3 filler 3: fffffffffffffffffffffff",
-        "sha": "6bab83ba9cf1c7df"
-       },
-       {
-        "len": 76,
-        "message": "assistant",
-        "preview": "turn 3 reply 3",
-        "sha": "fd06569619adcf71"
-       },
-       {
-        "len": 2074,
-        "message": "user",
-        "preview": "turn 3 filler 4: fffffffffffffffffffffff",
-        "sha": "5af211e0b0ba55d8"
-       },
-       {
-        "len": 76,
-        "message": "assistant",
-        "preview": "turn 3 reply 4",
-        "sha": "4d9e43fd9a7e8fc1"
-       },
-       {
-        "len": 69,
-        "message": "user",
-        "preview": "turn 3: next",
-        "sha": "9102a778d5fd9df1"
-       }
-      ],
-      "model": "golden-model",
-      "outcome": "summarised",
-      "replaced_from_seq": 1,
-      "replaced_to_seq": 1,
-      "seq": 2,
-      "summary_len": 51,
-      "summary_sha": "8c49090b2ac9e12d",
-      "tokens_after": 1624,
-      "tokens_before": 32716,
-      "trigger_tokens": 82627,
-      "unreducible": null
-     },
-     {
-      "created_at": "<ts>",
-      "kept_tail": [
-       {
-        "len": 76,
-        "message": "assistant",
         "preview": "turn 4 reply 2",
         "sha": "c0291d5f5d0ad9f6"
        },
@@ -2593,17 +2044,17 @@
       "model": "golden-model",
       "outcome": "summarised",
       "replaced_from_seq": 1,
-      "replaced_to_seq": 2,
-      "seq": 3,
+      "replaced_to_seq": 0,
+      "seq": 1,
       "summary_len": 51,
       "summary_sha": "eac741dd554ebe61",
       "tokens_after": 30058,
-      "tokens_before": 121715,
+      "tokens_before": 120090,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "58bd189b9d0ae7e0af1431a25bf1ada1b51b9bbfa3e6054c095a83c87b78d862"
+    "sha256": "67ada2b190104fbb46b50500c6f481b8bce1652719fd2256e4d84bc5c2cf9766"
    },
    "llm_calls": 2,
    "turn": "4-deferred-steers"
