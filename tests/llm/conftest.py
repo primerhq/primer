@@ -20,6 +20,7 @@ from __future__ import annotations
 import socket
 
 import pytest
+import tiktoken
 
 _LOOPBACK_NAMES = frozenset({"localhost", "localhost.localdomain"})
 
@@ -75,3 +76,43 @@ def no_real_network(monkeypatch: pytest.MonkeyPatch):
     assert not attempted, (
         f"tests/llm reached the real network: {sorted(set(attempted))}"
     )
+
+
+@pytest.fixture(autouse=True)
+def offline_tiktoken(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Serve tiktoken encodings from memory instead of downloading them.
+
+    ``tiktoken.get_encoding("o200k_base")`` fetches the BPE vocabulary from
+    openaipublic.blob.core.windows.net on first use and caches it on disk.
+    On a warm cache that is invisible, which is why these tests looked
+    network-free (identical results under ``unshare -rn``) on a developer
+    machine; on a cold CI runner the first token-count test downloads
+    ~5 MB, and the guard above, correctly, fails it.
+
+    Each requested encoding is replaced by a real ``tiktoken.Encoding`` over
+    a byte-level vocabulary: the real class and ``encode`` contract, a
+    deterministic synthetic vocabulary (one token per UTF-8 byte). What this
+    keeps testing is primer's own logic: which encoding a model name maps
+    to, how messages and tools are serialised, the per-message overhead, and
+    that adapters route ``count_tokens`` through it. What it deliberately no
+    longer tests is tiktoken's real tokenisation, which is tiktoken's
+    behaviour, not ours.
+
+    Returns the encoding names requested, in order, so a test can assert the
+    selection (e.g. gpt-4 -> cl100k_base) rather than only "n > 0".
+    """
+    from primer.llm._tokenizer import openai as tok
+
+    requested: list[str] = []
+
+    def _get_encoding(name: str) -> tiktoken.Encoding:
+        requested.append(name)
+        return tiktoken.Encoding(
+            name=f"offline-{name}",
+            pat_str=r"(?s:.)",
+            mergeable_ranks={bytes([i]): i for i in range(256)},
+            special_tokens={},
+        )
+
+    monkeypatch.setattr(tok, "_get_encoding", _get_encoding)
+    return requested
