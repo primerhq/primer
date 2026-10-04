@@ -23,6 +23,8 @@ Behaviour:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -30,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import primer.observability.metrics as _metrics
 
+from primer.agent.interrupt import Interrupted, interruptible
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.media.hydrate import hydrate_prompt_parts
 from primer.model.chat import (
@@ -168,6 +171,8 @@ async def run_agent_turn(
     await_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None,
     tools: "list[Tool] | None" = None,
     budget: "PromptGuard | None" = None,
+    interrupt: "asyncio.Event | None" = None,
+    interrupted_out: "list[bool] | None" = None,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -281,6 +286,22 @@ async def run_agent_turn(
     budget
         Optional :class:`PromptGuard`; see its docstring. ``None`` (the default)
         sends every prompt exactly as the loop built it.
+    interrupt
+        Optional Stop signal (the session dispatch sets it). The loop races it
+        against every wait for the model's next event, so a model that has not
+        produced its first token is stoppable too (see
+        :func:`primer.agent.interrupt.interruptible`). When it fires the turn
+        ends CLEANLY (no exception), after the provider stream is closed.
+        Tool dispatch is NOT interruptible here: a Stop that lands while a tool
+        runs lets the batch finish and its results be yielded (the log stays
+        paired), and the turn ends before the next model call. ``None`` (the
+        default) changes nothing.
+    interrupted_out
+        Optional caller-provided list; ``True`` is appended when the turn ended
+        because ``interrupt`` fired (the same output-parameter shape as
+        ``messages_out``). ``messages_out`` then holds only COMPLETED rounds: the
+        interrupted round's partial assistant text is never appended, so it never
+        reaches the model's history.
 
     Raises
     ------
@@ -300,6 +321,12 @@ async def run_agent_turn(
 
     tool_round = 0
     while True:
+        if interrupt is not None and interrupt.is_set():
+            # A Stop that landed during the previous round's tool batch (or before the
+            # turn began): end here, before spending a model call on it.
+            if interrupted_out is not None:
+                interrupted_out.append(True)
+            return
         if artifact_storage is not None:
             prompt = await hydrate_prompt_parts(artifact_storage, prompt)
         if budget is not None:
@@ -322,8 +349,19 @@ async def run_agent_turn(
             tools=tools,
             tool_choice="auto",
         )
+        stream_it = stream.__aiter__()
         try:
-            async for event in stream:
+            while True:
+                try:
+                    # The scope wraps ONLY the await, never the yield below: it cancels the
+                    # task that entered it (see primer.agent.interrupt). Once the terminal
+                    # event is in, the round is complete and only the end of the stream is
+                    # left to drain: that is not a wait for the model, and stopping there
+                    # would drop a tool call the model had already finished asking for.
+                    async with interruptible(interrupt if held_done is None else None):
+                        event = await stream_it.__anext__()
+                except StopAsyncIteration:
+                    break
                 buffered.append(event)
                 if isinstance(event, Usage):
                     call_usage = event
@@ -340,6 +378,22 @@ async def run_agent_turn(
                     held_done = event
                     continue
                 yield event
+        except Interrupted:
+            # Stop landed while waiting for the model (its first event, or between
+            # chunks). Counted like any call (a stream that was cut short is
+            # not an "ok" and not lost), but no ``llm_call`` record is produced:
+            # like a stream that raises, an interrupted one has no Done to precede.
+            elapsed = _observe_llm_call(llm_model, call_t0, call_usage, "interrupted")
+            await _emit_llm_called(
+                tool_manager, llm_model, call_usage, elapsed, "interrupted",
+            )
+            aclose = getattr(stream_it, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(Exception):
+                    await aclose()
+            if interrupted_out is not None:
+                interrupted_out.append(True)
+            return
         except Exception:
             err_elapsed = _observe_llm_call(
                 llm_model, call_t0, call_usage, "error",

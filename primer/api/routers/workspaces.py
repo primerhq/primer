@@ -50,6 +50,7 @@ from primer.api.deps import (
     get_workspace_storage,
     get_workspace_template_storage,
 )
+import primer.observability.metrics as _metrics
 from primer.api.errors import PROBLEM_JSON_MEDIA_TYPE, common_responses
 from primer.model.problem_details import ProblemDetails
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
@@ -1908,8 +1909,12 @@ async def interrupt_session(
 ) -> WorkspaceSession:
     """Stop (interrupt) the running turn without ending the session.
 
-    RUNNING: flag ``interrupt_requested`` + publish ``session:{sid}:cancel``
-    so the worker preempts the turn and lands the session in WAITING (alive).
+    RUNNING: flag ``interrupt_requested`` on the session row, then publish
+    ``session:{sid}:cancel``. The worker running the turn stops it at its next wait for
+    the model and lands the session in WAITING (alive). The bus message is the fast path
+    (milliseconds); the flag is the durable one, which the worker re-reads every couple of
+    seconds (``primer.session.dispatch._INTERRUPT_POLL_S``). So a publish that fails here is
+    logged and counted but still answers 200: the Stop is delayed, not lost.
     Non-running: 200 no-op. ENDED: 409 (studio-agents-interact §4.4).
     """
     async with session_lifecycle_lock().acquire(session_id):
@@ -1930,10 +1935,12 @@ async def interrupt_session(
                     await event_bus.publish(
                         f"session:{session_id}:cancel", {}
                     )
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
+                    _metrics.session_interrupt_publish_failures_total.inc()
                     logger.warning(
-                        "interrupt_session: bus publish failed for %s",
-                        session_id,
+                        "interrupt_session: bus publish failed for %s (%s: %s); the Stop is "
+                        "recorded on the session row and the worker will find it by polling",
+                        session_id, type(exc).__name__, exc,
                     )
         return s
 

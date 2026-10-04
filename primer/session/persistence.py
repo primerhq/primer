@@ -787,6 +787,63 @@ def translate_stream_event(
     return None
 
 
+def flush_partial_output(
+    state: "_CoalesceState",
+    *,
+    delta_sink: "_DeltaSink | None" = None,
+    turn_no: int = 0,
+) -> list[SessionMessageRecord]:
+    """Drain the coalesce buffers into records when a turn is cut short (Stop or Cancel).
+
+    Text and reasoning are coalesced and only become a durable record at a tool call
+    (``ToolCallEnd``) or at ``Done``. A turn stopped mid-answer reaches neither, so what
+    the model had already streamed lived only in the live tap and vanished on refresh.
+    This turns whatever is buffered, for every node, into the same REASONING /
+    ASSISTANT_TOKEN records those flush points produce (thought before answer, as there),
+    and closes the live parts so the client stops showing them as still streaming. The
+    caller appends the records, then the CANCELLED record that explains why they end there.
+
+    ``last_assistant_token`` is deliberately NOT set: it feeds the final-result relay of a
+    turn that completed, and a stopped turn has no final result.
+    """
+    now = _now_utc()
+    records: list[SessionMessageRecord] = []
+    node_ids = list(dict.fromkeys([*state.reasoning_buffers, *state.text_buffers]))
+    for node_id in node_ids:
+        thought = state.reasoning_buffers.pop(node_id, "")
+        if thought:
+            records.append(
+                SessionMessageRecord(
+                    seq=1,
+                    kind=SessionMessageKind.REASONING,
+                    payload={
+                        "text": thought,
+                        "part_id": part_id(node_id, KIND_REASONING, turn_no),
+                    },
+                    node_id=node_id,
+                    created_at=now,
+                )
+            )
+        buffered = state.text_buffers.pop(node_id, "")
+        if buffered:
+            records.append(
+                SessionMessageRecord(
+                    seq=1,
+                    kind=SessionMessageKind.ASSISTANT_TOKEN,
+                    payload={
+                        "text": buffered,
+                        "part_id": part_id(node_id, KIND_TEXT, turn_no),
+                    },
+                    node_id=node_id,
+                    created_at=now,
+                )
+            )
+        if delta_sink is not None:
+            delta_sink.close(part_id(node_id, KIND_TEXT, turn_no))
+            delta_sink.close(part_id(node_id, KIND_REASONING, turn_no))
+    return records
+
+
 async def stash_and_flush_tool_call_record(
     rec: SessionMessageRecord,
     seq: int,
