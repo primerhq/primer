@@ -675,6 +675,107 @@ async def test_postgres_pool_same_worker_reclaim_neither_preempts_nor_redispatch
 
 @_needs_pg
 @pytest.mark.asyncio
+async def test_postgres_entity_noop_release_skips_on_release_and_only_moves_the_lease(
+    pg_storage, entity_seeder,
+):
+    """A lease-only release: ``on_release`` is not called (the entity is neither read nor written);
+    the lease is requeued (claimable again, attempt_count reset by success) or dropped."""
+    from primer.int.claim import ClaimAdapter
+
+    calls: list[str] = []
+
+    class _NoJoinAdapter(ClaimAdapter):
+        kind = ClaimKind.HARNESS
+        entity_table = "chats"
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            calls.append(entity_id)
+
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: adapter},
+    )
+    await entity_seeder.seed(adapter.entity_table, ["noop-requeue", "noop-drop"])
+    await engine.upsert(ClaimKind.HARNESS, "noop-requeue")
+    await engine.upsert(ClaimKind.HARNESS, "noop-drop")
+    leases = {x.entity_id: x for x in await engine.claim_due("worker-A", max_count=8)}
+    assert set(leases) == {"noop-requeue", "noop-drop"}
+
+    await engine.release(leases["noop-requeue"], outcome=ReleaseOutcome(success=True, entity_noop=True))
+    await engine.release(
+        leases["noop-drop"],
+        outcome=ReleaseOutcome(success=True, entity_noop=True, drop_lease=True),
+    )
+
+    assert calls == [], "entity_noop must not call on_release"
+    async with pg_storage.pool.acquire() as conn:
+        rows = {
+            r["entity_id"]: r
+            for r in await conn.fetch(
+                f"SELECT entity_id, claimed_by, attempt_count, last_error FROM {pg_storage.leases_table} "
+                f"WHERE kind = 'harness'"
+            )
+        }
+    assert set(rows) == {"noop-requeue"} and rows["noop-requeue"]["claimed_by"] is None
+    again = await engine.claim_due("worker-B", max_count=8)
+    assert [x.entity_id for x in again] == ["noop-requeue"]
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_entity_noop_requeue_leaves_the_failure_history_and_place_in_line_alone(
+    pg_storage, entity_seeder,
+):
+    from primer.int.claim import ClaimAdapter
+
+    class _NoJoinAdapter(ClaimAdapter):
+        kind = ClaimKind.HARNESS
+        entity_table = "chats"
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome): ...
+
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: adapter},
+    )
+    await entity_seeder.seed(adapter.entity_table, ["noop-hist"])
+    await engine.upsert(ClaimKind.HARNESS, "noop-hist")
+    for _ in range(3):
+        [lease] = await engine.claim_due("worker-A", max_count=1)
+        await engine.release(lease, outcome=ReleaseOutcome(success=False, last_error="boom"))
+        async with pg_storage.pool.acquire() as conn:      # make the failed requeue claimable at once
+            await conn.execute(
+                f"UPDATE {pg_storage.leases_table} SET next_attempt_at = now() - interval '1 second' "
+                f"WHERE entity_id = 'noop-hist'"
+            )
+    async with pg_storage.pool.acquire() as conn:
+        before = await conn.fetchrow(
+            f"SELECT attempt_count, last_error, next_attempt_at FROM {pg_storage.leases_table} "
+            f"WHERE entity_id = 'noop-hist'"
+        )
+    assert (before["attempt_count"], before["last_error"]) == (3, "boom")
+
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    await engine.release(lease, outcome=ReleaseOutcome(success=True, entity_noop=True))
+
+    async with pg_storage.pool.acquire() as conn:
+        after = await conn.fetchrow(
+            f"SELECT claimed_by, attempt_count, last_error, next_attempt_at FROM {pg_storage.leases_table} "
+            f"WHERE entity_id = 'noop-hist'"
+        )
+    assert after["claimed_by"] is None
+    assert (after["attempt_count"], after["last_error"]) == (3, "boom")
+    assert after["next_attempt_at"] == before["next_attempt_at"]
+
+
+@_needs_pg
+@pytest.mark.asyncio
 async def test_postgres_release_without_drop_clears_claim_fields(pg_storage, entity_seeder):
     """release without drop_lease clears claimed_by and makes row reclaimable."""
     from primer.int.claim import ClaimAdapter

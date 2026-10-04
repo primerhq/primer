@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
-from primer.int.claim import ClaimKind
+from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.int.claim import Lease as ClaimLease
 from primer.int.scheduler import (
     Scheduler,
@@ -134,6 +134,13 @@ class WorkerPool:
         # Strong references to in-flight per-turn tasks so the GC does not
         # silently collect them between create_task and the first await.
         self._turn_tasks: set[asyncio.Task] = set()
+        # Just-claimed leases handed back unstarted because shutdown had begun (see
+        # _reserve_and_dispatch). Strong references, awaited by drain_and_stop, so a
+        # rolling deploy does not exit with a lease still claimed by a worker that is gone.
+        self._unstarted_releases: set[asyncio.Task] = set()
+        self._claims_returned_on_drain_total: int = 0
+        # How long drain waits for the claim loop to finish the iteration it is in (and for hand-backs).
+        self._claim_stop_grace_seconds: float = 5.0
         self._wake = asyncio.Event()
         self._stopping = asyncio.Event()
 
@@ -228,6 +235,13 @@ class WorkerPool:
         self._stopping.set()
         # Wake any sleeping claim loops so they see the stopping flag.
         self._wake.set()
+        # Stop CLAIMING first, before anything else waits: a claim that is already inside
+        # claim_due returns its leases after this point, and _reserve_and_dispatch hands them
+        # back unstarted instead of dispatching them. The claim task is given a moment to finish
+        # that iteration (its loop exits on _stopping) and is only cancelled if it is stuck, since
+        # cancelling a claim_due mid-flight can leave rows claimed here with nothing running them
+        # (they expire after one lease TTL).
+        await self._stop_claiming()
         try:
             await self._scheduler.drain_worker(self._worker_id)
         except Exception:
@@ -244,22 +258,6 @@ class WorkerPool:
             for scope in list(self._active_scopes.values()):
                 scope.cancel("worker_drain_timeout")
             self._active_scopes.clear()
-
-        # --- Stop engine-driven tasks (if running) ----
-        if self._engine_bus_task is not None:
-            self._engine_bus_task.cancel()
-            try:
-                await self._engine_bus_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._engine_bus_task = None
-        if self._engine_claim_task is not None:
-            self._engine_claim_task.cancel()
-            try:
-                await self._engine_claim_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._engine_claim_task = None
 
         # Wait for all in-flight turn tasks to complete.
         all_tasks_deadline = asyncio.get_event_loop().time() + min(drain_timeout, 5.0)
@@ -288,6 +286,31 @@ class WorkerPool:
             logger.exception(
                 "deregister_worker failed for %s", self._worker_id,
             )
+
+    async def _stop_claiming(self, grace: float | None = None) -> None:
+        """Stop the claim and bus loops, then wait for leases handed back unstarted."""
+        grace = self._claim_stop_grace_seconds if grace is None else grace
+        if self._engine_bus_task is not None:
+            self._engine_bus_task.cancel()
+            try:
+                await self._engine_bus_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._engine_bus_task = None
+        claim = self._engine_claim_task
+        if claim is not None:
+            # The loop exits on _stopping at its next check; let an in-flight iteration finish.
+            await asyncio.wait({claim}, timeout=grace)
+            if not claim.done():
+                claim.cancel()
+            try:
+                await claim            # retrieves an exception too, so none is logged as never retrieved
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._engine_claim_task = None
+        if self._unstarted_releases:
+            # asyncio.wait, not wait_for(gather(...)): a timeout must not cancel a release.
+            await asyncio.wait(set(self._unstarted_releases), timeout=grace)
 
     async def run_one_turn_now(self, session_id: str) -> None:
         """Test helper: claim and execute exactly one turn for ``session_id``.
@@ -325,6 +348,7 @@ class WorkerPool:
             "primer_worker_claims_empty_total": self._claims_empty_total,
             "primer_worker_cancels_reconciled_total": self._cancels_reconciled_total,
             "primer_worker_duplicate_claims_total": self._duplicate_claims_total,
+            "primer_worker_claims_returned_on_drain_total": self._claims_returned_on_drain_total,
             "primer_session_turns_total": dict(self._turns_total_by_result),
             "primer_session_turn_duration_seconds": {
                 "count": self._turn_duration_count,
@@ -416,6 +440,8 @@ class WorkerPool:
                 free = self.config.concurrency - len(self._in_flight)
                 if free <= 0:
                     self._wake.clear()
+                    if self._stopping.is_set():
+                        continue  # drain set _stopping then _wake; the clear() above may have eaten it
                     try:
                         await asyncio.wait_for(
                             self._wake.wait(),
@@ -436,6 +462,8 @@ class WorkerPool:
                 if not leases:
                     self._claims_empty_total += 1
                     self._wake.clear()
+                    if self._stopping.is_set():
+                        continue  # drain set _stopping then _wake; the clear() above may have eaten it
                     try:
                         await asyncio.wait_for(
                             self._wake.wait(),
@@ -515,6 +543,13 @@ class WorkerPool:
                     lease.kind, lease.entity_id,
                 )
                 continue
+            if self._stopping.is_set():
+                # Shutdown began after this claim was issued (the claim loop was inside
+                # claim_due when drain_and_stop set _stopping). Starting the turn would
+                # only get it killed at the drain timeout, so hand the lease back for a
+                # peer instead of dispatching it.
+                self._give_back_unstarted(lease)
+                continue
             self._in_flight.add(key)
             fresh.append(lease)
         for lease in fresh:
@@ -533,6 +568,39 @@ class WorkerPool:
             )
             self._turn_tasks.add(task)
             task.add_done_callback(self._turn_tasks.discard)
+
+    def _give_back_unstarted(self, lease: ClaimLease) -> None:
+        """Hand a just-claimed lease back, untouched, because this worker is shutting down.
+
+        ``entity_noop``: the lease never reached a handler, so NO ``on_release`` may run (the
+        session adapter's non-park branch would clear a resumable session's park and bump
+        ``turn_no`` for a turn that never ran). It is requeued immediately, so a peer's next
+        claim takes it. The release is awaited by :meth:`drain_and_stop`.
+        """
+        self._claims_returned_on_drain_total += 1
+        logger.info(
+            "shutdown in progress: returning just-claimed %s/%s unstarted",
+            lease.kind, lease.entity_id,
+        )
+        task = asyncio.create_task(
+            self._release_unstarted(lease),
+            name=f"engine-giveback-{lease.kind}-{lease.entity_id}",
+        )
+        self._unstarted_releases.add(task)
+        task.add_done_callback(self._unstarted_releases.discard)
+
+    async def _release_unstarted(self, lease: ClaimLease) -> None:
+        try:
+            await self._engine.release(
+                lease, outcome=ReleaseOutcome(success=True, entity_noop=True),
+            )
+        except Exception:
+            # A failed give-back leaves the lease claimed by this worker; with no heartbeat
+            # it expires after one lease TTL and a peer claims it. Slower, not lost.
+            logger.exception(
+                "returning unstarted lease %s/%s failed; it will expire and be re-claimed",
+                lease.kind, lease.entity_id,
+            )
 
     async def _engine_claim_loop_reserved(self) -> None:
         """Claim loop variant used when config.tool_call_reserved_concurrency
@@ -567,7 +635,7 @@ class WorkerPool:
                         kinds=[k for k in self._dispatch if k != ClaimKind.TOOL_CALL],
                         max_count=min(self.config.claim_batch_size, general_free),
                     )
-                if tool_call_free > 0:
+                if tool_call_free > 0 and not self._stopping.is_set():
                     claimed_any |= await self._claim_slice(
                         kinds=[ClaimKind.TOOL_CALL],
                         max_count=min(self.config.claim_batch_size, tool_call_free),
@@ -582,6 +650,8 @@ class WorkerPool:
                     if general_free > 0 or tool_call_free > 0:
                         self._claims_empty_total += 1
                     self._wake.clear()
+                    if self._stopping.is_set():
+                        continue
                     try:
                         await asyncio.wait_for(
                             self._wake.wait(),

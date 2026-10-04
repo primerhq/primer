@@ -152,7 +152,7 @@ class InMemoryClaimEngine(ClaimEngine):
         # resume hook ran twice, double-executing an approved tool.
         adapter = self._adapters.get(lease.kind)
         wake_signal = None
-        if adapter is not None:
+        if adapter is not None and not outcome.entity_noop:
             wake_signal = await adapter.on_release(
                 conn=None, entity_id=lease.entity_id, outcome=outcome,
             )
@@ -165,7 +165,9 @@ class InMemoryClaimEngine(ClaimEngine):
             row.expires_at = None
             if outcome.requeue_after is not None:
                 row.next_attempt_at = datetime.now(UTC) + outcome.requeue_after
-            if not outcome.success:
+            if outcome.entity_noop:
+                pass  # a lease-only hand-back is not a run: attempt_count and last_error stay
+            elif not outcome.success:
                 row.attempt_count += 1
                 row.last_error = outcome.last_error
             else:
