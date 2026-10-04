@@ -352,6 +352,24 @@ async def test_patch_if_appends_the_updated_event_for_a_registered_kind(
 
 
 @pytest.mark.asyncio
+async def test_patch_if_event_payload_is_the_final_canonical_document_after_a_loose_patch(
+    provider: StorageProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical rewrite is a second statement; the event must carry ITS result, not the first statement's."""
+    from primer.events import registry
+
+    monkeypatch.setitem(registry._EVENT_KINDS, "patchdoc", _ps.PatchDoc)
+    monkeypatch.setitem(registry._KIND_BY_MODEL, _ps.PatchDoc, "patchdoc")
+    store = provider.get_storage(_ps.PatchDoc)
+    await store.create(_ps.PatchDoc(id="ev2", status="created"))
+    out = await store.patch_if("ev2", {"count": "5", "flag": 1}, where={"status": ["created"]})
+    assert out is not None and (out.count, out.flag) == (5, True)
+    events = await provider.get_event_store().read_after(0)
+    (updated,) = [e for e in events if e.event_type == "patchdoc.updated" and e.entity_id == "ev2"]
+    assert updated.payload["count"] == 5 and updated.payload["flag"] is True, updated.payload
+
+
+@pytest.mark.asyncio
 async def test_patch_if_accepts_conn_and_rolls_back_with_the_caller_transaction(
     provider: StorageProvider,
 ) -> None:

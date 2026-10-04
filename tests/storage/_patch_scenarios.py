@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Annotated, Any
 
 import pytest
-from pydantic import AfterValidator, ConfigDict, SecretStr, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from primer.int.storage import Storage
 from primer.model.common import Identifiable
@@ -44,6 +44,13 @@ class PatchDoc(Identifiable):
     secret: SecretStr | None = None
 
 
+class Sub(BaseModel):
+    """A typed sub-model field: unknown nested keys are ignored on read, so the canonical dump drops them."""
+
+    a: int = 0
+    when: datetime | None = None
+
+
 class StrictDoc(Identifiable):
     """The usual shape: unknown stored keys are IGNORED on read, and a validator normalises `tag`."""
 
@@ -53,6 +60,8 @@ class StrictDoc(Identifiable):
     flag: bool = False
     stamp: datetime | None = None
     tag: Annotated[str, AfterValidator(str.lower)] = ""
+    timeout: int | None = 30  # nullable with a non-null default: a stored null and an absent key differ
+    sub: Sub = Field(default_factory=Sub)
 
 
 Store = Storage[PatchDoc]
@@ -433,12 +442,45 @@ async def patching_a_field_the_model_does_not_have_is_rejected(env: Env) -> None
     assert row is not None and row.count == 0
 
 
+async def a_stale_guard_on_a_nullable_field_with_a_default_is_not_applied_over_a_newer_null(env: Env) -> None:
+    """A field that can hold null reads an absent key as its default, but a guard naming the default must NOT also
+    match a stored JSON null: a reader saw 30, a writer set it to null, and the stale guard would apply over it."""
+    store = env.store(StrictDoc)
+    await store.create(StrictDoc(id="a"))
+    row = await store.get("a")
+    assert row is not None and row.timeout == 30
+    stale = {"timeout": [raw_generation(row, "timeout")]}
+    assert await store.patch_if("a", {"timeout": None}, where={"status": ["created"]}) is not None
+    assert await store.patch_if("a", {"status": "x"}, where=stale) is None, "a stale guard applied over a null"
+    fresh = await store.get("a")
+    assert fresh is not None and fresh.timeout is None
+    assert await store.patch_if("a", {"status": "y"}, where={"timeout": [raw_generation(fresh, "timeout")]}) is not None
+
+
+async def a_set_paths_leaf_under_a_typed_sub_model_is_canonicalised_and_a_typo_is_refused(env: Env) -> None:
+    store = env.store(StrictDoc)
+    await store.create(StrictDoc(id="a"))
+    out = await store.patch_if(
+        "a", None, where={"status": ["created"]},
+        set_paths={("sub", "a"): "7", ("sub", "when"): "2026-10-04T12:30:45+00:00"},
+    )
+    assert out is not None and out.sub.a == 7
+    assert out.sub.when is not None and out.sub.when.utcoffset() == timedelta(0)
+    # a leaf the typed sub-model does not carry would be reported written and silently dropped: refused instead
+    with pytest.raises(ValueError):
+        await store.patch_if("a", None, where={"status": ["created"]}, set_paths={("sub", "typo"): 1})
+    fresh = await store.get("a")
+    assert fresh is not None and fresh.sub.a == 7
+
+
 RAW = [
     a_loosely_typed_patch_is_stored_canonical_so_a_guard_built_from_a_read_matches,
     a_patch_that_is_already_canonical_is_not_rewritten_or_changed,
     a_document_missing_a_defaulted_field_reads_as_the_default_in_a_guard,
     a_key_the_model_ignores_survives_a_patch_and_is_dropped_by_a_whole_document_update,
     patching_a_field_the_model_does_not_have_is_rejected,
+    a_stale_guard_on_a_nullable_field_with_a_default_is_not_applied_over_a_newer_null,
+    a_set_paths_leaf_under_a_typed_sub_model_is_canonicalised_and_a_typo_is_refused,
 ]
 
 

@@ -183,10 +183,14 @@ class Storage(ABC, Generic[ModelT]):
     ) -> ModelT | None:
         """Write ONLY the named fields of one row, iff its CURRENT document matches ``where``.
 
-        One statement, evaluated by the backend against the row's current version: there is no
-        read-modify-write, so a concurrent writer's other fields (a cancel flag, a human reply
-        accumulated into a nested map) are never overwritten, which a whole-document
-        :meth:`update` from a snapshot cannot promise.
+        The write is ONE guarded statement, evaluated by the backend against the row's current
+        version: there is no read-modify-write, so a concurrent writer's other fields (a cancel
+        flag, a human reply accumulated into a nested map) are never overwritten, which a
+        whole-document :meth:`update` from a snapshot cannot promise. When what the patch wrote is
+        not the model's own canonical spelling (``"5"`` for an int, a ``+00:00`` timestamp), a
+        second statement in the same transaction rewrites the touched top-level fields to the
+        canonical dump, so the stored document always equals what a read re-dumps and a guard built
+        from :func:`primer.storage.raw_generation` matches.
 
         Parameters
         ----------
@@ -198,7 +202,9 @@ class Storage(ABC, Generic[ModelT]):
             matches (OR). Values are compared as typed JSON scalars, not as text, so ``True`` does
             not match ``"true"``. ``None`` in the list matches an absent field or JSON null. Take the
             comparison value from :func:`primer.storage.raw_generation`, never from a re-formatted
-            Python value, so "the row I read" is spelled exactly as the backend stores it.
+            Python value, so "the row I read" is spelled exactly as the backend stores it. A guard
+            that names the DEFAULT of a field that cannot hold null also matches a document lacking
+            the key (the model reads it as the default); a nullable field is compared as stored.
         set_paths
             ``{("parked_state", "resume_event_payloads", key): value}``: nested leaves set after the
             shallow patch. Every parent is ensured to be an object first, shallowest first (an
@@ -220,8 +226,9 @@ class Storage(ABC, Generic[ModelT]):
             No entity with this id exists. A missing row is NOT reported as ``None``: "someone else
             won the race" and "the row is gone" need different handling.
         ValueError
-            The spec is malformed: an empty ``patch``/``set_paths``, an empty ``where`` or one naming
-            ``id``, a ``where`` value that is not a list of JSON scalars (a bare string is rejected),
+            The spec is malformed: a patch or path root that is not a field of the model (unless the
+            model allows extras), a ``set_paths`` leaf the validated model does not carry, an empty
+            ``patch``/``set_paths``, an empty ``where`` or one naming ``id``, a ``where`` value that is not a list of JSON scalars (a bare string is rejected),
             a bad path (too deep, forbidden characters, a prefix of another), or more than 32 patch
             keys, 16 leaves or 4 distinct parent objects. Rejected identically on every backend,
             before any SQL.

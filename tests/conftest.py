@@ -78,14 +78,14 @@ class _InMemoryStorage(Generic[_T]):
         a guard is evaluated against what is stored (not a re-dump of the model), and the fields a patch wrote
         are stored in canonical form.
         """
-        from tests.storage._patch_reference import patch_if_reference
+        from primer.storage._patch import validate_patch
+        from tests.storage._patch_reference import check_known_fields_reference, patch_if_reference
 
         current = self._data.get(id)
         if current is None:
-            # the spec is validated first on every backend, then the row is looked up
-            from primer.storage._patch import validate_patch
-
-            validate_patch(patch, set_paths, where)
+            # the spec (and the field names) are validated first on every backend, then the row is looked up
+            patch_d, paths_d, _ = validate_patch(patch, set_paths, where)
+            check_known_fields_reference(self._cls, patch_d, paths_d)
             raise NotFoundError(f"no entity with id {id!r}")
         out = patch_if_reference(
             self._cls, id, self._raw_doc(id, current), patch, where=where, set_paths=set_paths,

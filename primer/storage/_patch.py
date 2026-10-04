@@ -42,9 +42,12 @@ model reads it.
 from __future__ import annotations
 
 import json
+import types
+import typing
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from pydantic import SecretStr
 from pydantic_core import to_jsonable_python
 
 from primer.model.common import dump_for_storage
@@ -107,15 +110,40 @@ def json_equal(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
+def json_identical(a: Any, b: Any) -> bool:
+    """Stricter than :func:`json_equal`: also tells ``5`` from ``5.0``. Decides whether a stored value must be
+    rewritten to the canonical dump (the spelling matters to text comparisons; ``where`` compares by value)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(json_identical(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(json_identical(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
+
+
+def _accepts_none(annotation: Any) -> bool:
+    """Whether a field annotation admits ``None`` (``X | None``, ``Optional[X]``, ``Any``, ``None``)."""
+    if annotation is None or annotation is Any or annotation is type(None):
+        return True
+    origin = typing.get_origin(annotation)
+    if origin is typing.Annotated:
+        return _accepts_none(typing.get_args(annotation)[0])
+    if origin is typing.Union or origin is types.UnionType:
+        return any(_accepts_none(arg) for arg in typing.get_args(annotation))
+    return False
+
+
 def _default_as_stored(model_cls: Any, field: str) -> Any:
     """The JSON form of ``field``'s default on ``model_cls``, or ``_MISSING`` (required, unknown, or a factory
     that needs validated data)."""
     info = getattr(model_cls, "model_fields", {}).get(field)
-    if info is None or info.is_required():
+    # A nullable field is left alone: there ``None`` already means a stored JSON null, and adding it to a guard that
+    # names the default would let a stale read (30) be applied over a newer null. Only a field that cannot hold null
+    # reads an absent key as its default. A factory default is never called (a stateful one would make a guard
+    # non-deterministic) and a secret default is never serialised (it would be masked, not what is stored).
+    if info is None or info.is_required() or info.default_factory is not None or _accepts_none(info.annotation):
         return _MISSING
-    try:
-        default = info.get_default(call_default_factory=True)
-    except (TypeError, ValueError):
+    default = info.default
+    if isinstance(default, SecretStr):
         return _MISSING
     return to_jsonable_python(default)
 
@@ -169,11 +197,22 @@ def canonical_fixup(
     was already canonical, the common case).
     """
     canonical = dump_for_storage(entity)
+    for path in set_paths:
+        # A leaf the validated model does not carry (a typo under a typed sub-model, a key it ignores) would be
+        # reported as written and silently dropped by the rewrite below: refuse it, so the write rolls back.
+        node: Any = canonical
+        for part in path:
+            if not isinstance(node, dict) or part not in node:
+                raise ValueError(
+                    f"set_paths {path!r} is not part of {type(entity).__name__} (the model drops it); patch_if writes "
+                    "fields the model carries"
+                )
+            node = node[part]
     roots = {*patch, *(path[0] for path in set_paths)}
     return {
         key: canonical[key]
         for key in sorted(roots)
-        if key in canonical and not json_equal(stored.get(key), canonical[key])
+        if key in canonical and not json_identical(stored.get(key), canonical[key])
     }
 
 
