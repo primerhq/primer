@@ -174,3 +174,4 @@ async def test_an_ordinary_failure_still_ends_the_session_slot_as_failed(tmp_pat
     session, _ = await _invoke_raising(tmp_path, monkeypatch, RuntimeError("boom"))
 
     assert await session.status() == SessionStatus.ENDED
+    assert (await session.info()).ended_reason == "failed"
