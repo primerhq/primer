@@ -230,6 +230,24 @@ class ClaimEngine(ABC):
     @abstractmethod
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None: ...
 
+    async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+        """Whether a lease ROW exists for ``(kind, entity_id)``: armed, claimed or expired.
+
+        Distinct from :meth:`has_live_lease`, which is true only while a worker holds an
+        unexpired claim. A row that exists is work in the queue (an unclaimed one waits for
+        the next free worker, an expired one is reclaimed once its entity is eligible), so its
+        entity is queued, not lost. The
+        absence of a row is what a lost claim actually looks like. Answers "is this entity
+        waiting for a worker?", which ``has_live_lease`` cannot: an armed lease nobody has
+        claimed yet reads False there.
+
+        Concrete, not abstract, and the default is ``True`` on purpose, for the same reason
+        as :meth:`has_live_lease`: callers use this to decide whether something is stuck
+        and may act destructively, so an engine that cannot answer must make them do
+        nothing.
+        """
+        return True
+
     async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
         """Whether a worker currently holds an unexpired lease on (kind, entity_id).
 

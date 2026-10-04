@@ -66,6 +66,9 @@ class InMemoryClaimEngine(ClaimEngine):
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
         self._leases.pop((kind, entity_id), None)
 
+    async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+        return (kind, entity_id) in self._leases
+
     async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
         row = self._leases.get((kind, entity_id))
         if row is None or row.claimed_by is None or row.expires_at is None:
