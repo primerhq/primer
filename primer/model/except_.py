@@ -255,6 +255,23 @@ class TurnConflictError(PrimerError):
     """
 
 
+class ListenConnectionLost(PrimerError, ConnectionError):
+    """Internal: a LISTEN connection was lost (a Postgres restart or failover,
+    a network blip) while a watcher was parked on it.
+
+    Raised out of a LISTEN-backed watcher (``ClaimEngine.watch_ready`` on
+    Postgres) once every notification received before the loss has been
+    delivered, so the consumer can re-subscribe. Never escapes the worker
+    boundary.
+
+    It is deliberately also a builtin :class:`ConnectionError`. That subclass
+    relationship is NOT how a consumer tells it apart from a connect failure
+    (a refused connection while the server is still down is also a
+    ``ConnectionError``); catch this class FIRST, by name, to report "a live
+    connection was lost" separately from "could not connect".
+    """
+
+
 class SubprocessTimeoutError(PrimerError):
     """A git or init-command subprocess exceeded the configured deadline.
 

@@ -25,6 +25,17 @@ from primer.scheduler.postgres import PostgresScheduler
 class _Conn:
     def __init__(self, add_listener_exc: BaseException) -> None:
         self._exc = add_listener_exc
+        self.termination_added = False
+        self.termination_listeners: set = set()
+
+    # A real asyncpg connection has these; the scheduler attaches one before
+    # LISTEN so it hears about a dropped connection.
+    def add_termination_listener(self, callback) -> None:
+        self.termination_added = True
+        self.termination_listeners.add(callback)
+
+    def remove_termination_listener(self, callback) -> None:
+        self.termination_listeners.discard(callback)
 
     async def add_listener(self, channel, callback) -> None:
         raise self._exc
@@ -61,6 +72,10 @@ async def test_failed_listen_setup_releases_the_connection():
 
     assert pool.released == [pool._conn]
     assert not sched._listeners  # never registered
+    # The termination callback was attached before LISTEN, so a failed setup
+    # must take it off again rather than leave it on a pooled connection.
+    assert pool._conn.termination_added
+    assert pool._conn.termination_listeners == set()
 
 
 async def test_failing_release_does_not_replace_a_cancellation():

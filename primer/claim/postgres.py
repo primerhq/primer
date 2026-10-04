@@ -35,7 +35,8 @@ upsert).
 keeps it for the generator's lifetime.  The ``claim_ready`` listener
 callback calls ``queue.put_nowait(payload)`` — asyncpg invokes the
 callback from within the event-loop read loop, so ``put_nowait`` is
-safe without ``call_soon_threadsafe``.
+safe without ``call_soon_threadsafe``.  A lost connection surfaces as a
+``ListenConnectionLost`` out of the generator (see :meth:`PostgresClaimEngine.watch_ready`).
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from typing import Any
 
 from primer.int.claim import ClaimAdapter, ClaimEngine, ClaimKind, Lease, ReleaseOutcome
 from primer.claim.sql import build_claim_query
+from primer.model.except_ import ListenConnectionLost
 from primer.storage._ddl import CONCURRENT_CREATE_RACE
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
@@ -459,8 +461,17 @@ class PostgresClaimEngine(ClaimEngine):
         The generator cleans up by removing the listener and releasing
         the connection when it is closed (``aclose()`` or the enclosing
         ``async for`` exits).
+
+        If the server connection is lost (a Postgres restart or failover, a
+        network blip) the generator raises :class:`ListenConnectionLost` once
+        every wake received before the loss has been yielded. asyncpg never raises
+        into the NOTIFY queue itself, so without that the watcher would park on
+        a dead connection forever. The caller re-subscribes by calling
+        ``watch_ready()`` again (``WorkerPool._engine_bus_loop`` does); wakes
+        sent in the meantime are lost, which only costs the claim loop's poll
+        interval because ``claim_ready`` is a hint, not the record of a claim.
         """
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
 
         def _on_notify(
             conn: Any,
@@ -470,15 +481,38 @@ class PostgresClaimEngine(ClaimEngine):
         ) -> None:
             queue.put_nowait(payload)
 
+        def _on_termination(_conn: Any) -> None:
+            # asyncpg's only signal that the server connection is gone.
+            queue.put_nowait(None)
+
         conn = await self._storage.pool.acquire()
         try:
-            await conn.add_listener("claim_ready", _on_notify)
+            conn.add_termination_listener(_on_termination)
             try:
+                await conn.add_listener("claim_ready", _on_notify)
                 while True:
                     payload = await queue.get()
+                    if payload is None:
+                        raise ListenConnectionLost(
+                            "claim_ready LISTEN connection was terminated"
+                        )
                     kind_str, entity_id = payload.split(":", 1)
                     yield (ClaimKind(kind_str), entity_id)
             finally:
-                await conn.remove_listener("claim_ready", _on_notify)
+                # After a loss, asyncpg has already released the connection
+                # and every method on it raises InterfaceError. That must not
+                # replace the exception in flight (a CancelledError at
+                # shutdown), and one failing step must not skip the next, so
+                # each is guarded on its own.
+                try:
+                    conn.remove_termination_listener(_on_termination)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "claim_ready remove_termination_listener failed: %s", exc,
+                    )
+                try:
+                    await conn.remove_listener("claim_ready", _on_notify)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("claim_ready remove_listener failed: %s", exc)
         finally:
             await self._storage.pool.release(conn)

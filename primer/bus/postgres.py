@@ -15,13 +15,17 @@ queue as :class:`Event` instances.
 
 The subscriber connection is supervised by a reconnect loop that
 mirrors the scheduler's LISTEN reconnect (see
-:meth:`primer.scheduler.postgres.PostgresScheduler._watch_channel`):
-if the dedicated connection drops, the loop re-acquires a connection
-from the pool, re-registers the LISTEN callback, and resumes pushing
-events. NOTIFY messages emitted while a subscriber is reconnecting are
-lost (postgres LISTEN/NOTIFY is not durable); this matches the
-scheduler's best-effort wake-up contract -- the worker's claim loop is
-the safety net for any missed resume signal.
+:meth:`primer.scheduler.postgres.PostgresScheduler._watch_channel`).
+Both learn of a dropped connection the same way, from asyncpg's
+termination listener (asyncpg never raises into the NOTIFY queue, so
+nothing else would wake them), and both then release the dead
+connection, wait the reconnect interval (2.0s by default), re-acquire a
+connection from the pool, re-register the LISTEN callback, and resume
+pushing events. Each open attempt after the first one, failed or
+successful, is counted as a reconnect. NOTIFY messages emitted while a
+subscriber is reconnecting are lost (postgres LISTEN/NOTIFY is not
+durable); this matches the scheduler's best-effort wake-up contract --
+the worker's claim loop is the safety net for any missed resume signal.
 
 Multiple subscribers on the same channel each receive every event
 (broadcast -- postgres' default LISTEN/NOTIFY semantics).
@@ -150,11 +154,26 @@ class _PostgresSubscription(EventSubscription):
         # put_nowait is fine -- the queue is unbounded.
         self._queue.put_nowait(event)
 
-    async def _safe_release(self, conn) -> None:
+    async def _safe_release(self, conn, on_termination=None) -> None:
         """Release the LISTEN connection back to the pool; log + swallow
-        failures so a release error doesn't mask the original cause."""
+        failures so a release error doesn't mask the original cause.
+
+        ``on_termination`` is this subscription's termination callback, taken
+        off the connection first: asyncpg leaves it attached when a healthy
+        connection goes back to the pool, so without this every subscription
+        (about one per session turn) would add one more to a hot pooled
+        connection until that connection is eventually closed, and then call
+        them all at once. A dropped connection has already released and
+        cleared everything, so there the removal fails and is only logged."""
         if conn is None:
             return
+        if on_termination is not None:
+            try:
+                conn.remove_termination_listener(on_termination)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "PostgresEventBus remove_termination_listener failed: %s", exc,
+                )
         try:
             await conn.remove_listener(YIELD_EVENTS_CHANNEL, self._on_notify)
         except Exception:  # noqa: BLE001 -- best-effort on a dropped conn
@@ -173,10 +192,16 @@ class _PostgresSubscription(EventSubscription):
 
         Mirrors PostgresScheduler._watch_channel's ``_iter`` loop:
         acquire + LISTEN, then block on a sentinel that the connection's
-        termination listener trips; on any drop, release, back off, and
-        loop to reconnect.
+        termination listener trips (an ``asyncio.Event`` here; the scheduler
+        pushes a marker into its NOTIFY queue instead); on any drop, release,
+        back off, and loop to reconnect. Both also take their termination
+        callback off the connection when they release it, because asyncpg
+        leaves it attached across a release to the pool.
         """
         first_attempt = True
+        # The current iteration's termination callback, kept here (not just in
+        # the loop body) so the final cleanup can take it off too.
+        on_termination = None
         try:
             while not self._closed:
                 try:
@@ -206,8 +231,9 @@ class _PostgresSubscription(EventSubscription):
 
                 # Bind this iteration's event via a default argument so the
                 # listener sets its OWN event, not whatever ``dropped`` is
-                # bound to in a later iteration. The listener is never
-                # de-registered, so a stale closure left on a pooled
+                # bound to in a later iteration. The callback is taken off the
+                # connection on release (see _safe_release), but if that
+                # removal ever fails a stale closure left on a pooled
                 # connection could otherwise fire against the current
                 # iteration's event and trip a spurious reconnect.
                 def _on_termination(_conn, _ev: asyncio.Event = dropped) -> None:
@@ -215,6 +241,7 @@ class _PostgresSubscription(EventSubscription):
 
                 try:
                     conn.add_termination_listener(_on_termination)
+                    on_termination = _on_termination
                 except Exception:  # noqa: BLE001 -- not all conns expose this
                     pass
 
@@ -222,19 +249,20 @@ class _PostgresSubscription(EventSubscription):
                     await dropped.wait()
                 except asyncio.CancelledError:
                     self._conn = None
-                    await self._safe_release(conn)
+                    await self._safe_release(conn, on_termination)
                     raise
                 # Connection dropped -- release, back off, reconnect.
                 logger.warning(
                     "PostgresEventBus LISTEN dropped -- reconnecting",
                 )
                 self._conn = None
-                await self._safe_release(conn)
+                await self._safe_release(conn, on_termination)
+                on_termination = None
                 await asyncio.sleep(self._reconnect_seconds)
         finally:
             # On close/cancel, ensure the live connection is released.
             if self._conn is not None:
-                await self._safe_release(self._conn)
+                await self._safe_release(self._conn, on_termination)
                 self._conn = None
 
     def _start(self) -> None:

@@ -209,7 +209,17 @@ class ClaimEngine(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def watch_ready(self) -> AsyncIterator[tuple[ClaimKind, str]]: ...
+    async def watch_ready(self) -> AsyncIterator[tuple[ClaimKind, str]]:
+        """Yield ``(kind, entity_id)`` for each claim that just became ready.
+
+        A wake-up hint only: claimers must still poll, because wakes sent while
+        a watcher is down are lost. A backend whose subscription can be lost
+        (a LISTEN connection) raises :class:`~primer.model.except_.ListenConnectionLost`
+        when it is, after yielding everything received before the loss; the
+        consumer re-subscribes by calling this again
+        (``WorkerPool._engine_bus_loop`` does).
+        """
+        ...
 
     @abstractmethod
     async def upsert(

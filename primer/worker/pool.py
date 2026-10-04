@@ -24,11 +24,14 @@ from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+import asyncpg
+
 from primer.int.claim import ClaimKind
 from primer.int.claim import Lease as ClaimLease
 from primer.int.scheduler import (
     Scheduler,
 )
+from primer.model.except_ import ListenConnectionLost
 from primer.model.scheduler import WorkerConfig
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.turn import _CancelScope
@@ -49,6 +52,24 @@ if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
 
 logger = logging.getLogger(__name__)
+
+# Restart wait for _engine_bus_loop: starts at the initial value, doubles while
+# the watcher keeps failing, and is capped. A watcher that stayed up at least as
+# long as the cap is healthy again, so its failure is a fresh incident and the
+# wait starts over from the initial value.
+_ENGINE_BUS_BACKOFF_INITIAL_S = 1.0
+_ENGINE_BUS_BACKOFF_MAX_S = 30.0
+
+# What connecting or re-subscribing raises while Postgres is down, restarting or
+# shutting down. Each is expected during an outage, so it is a one-line WARNING,
+# not an ERROR with a traceback.
+_OUTAGE_ERRORS: tuple[type[BaseException], ...] = (
+    OSError,                           # refused, reset, timed out, unresolvable host
+    asyncpg.PostgresConnectionError,   # SQLSTATE 08xxx, e.g. ConnectionDoesNotExistError mid-LISTEN
+    asyncpg.CannotConnectNowError,     # 57P03: the server is starting up or shutting down
+    asyncpg.AdminShutdownError,        # 57P01: a shutdown terminated the connection
+    asyncpg.CrashShutdownError,        # 57P02: a crash shutdown terminated the connection
+)
 
 
 class WorkerPool:
@@ -551,10 +572,29 @@ class WorkerPool:
             self._wake.set()
 
     async def _engine_bus_loop(self) -> None:
-        """Subscribe to ClaimEngine.watch_ready and wake the claim loop."""
+        """Subscribe to ClaimEngine.watch_ready and wake the claim loop.
+
+        The wake is only a hint (the claim loop also polls), but this loop is
+        what notices the watcher died and re-subscribes. What ended the watcher
+        decides how it is logged, and every case restarts it after a wait that
+        doubles while it keeps failing and starts over once a watcher has
+        stayed up for the cap:
+
+        * ``ListenConnectionLost``: a live LISTEN connection was lost (a
+          Postgres restart or failover). One WARNING, no traceback.
+        * an outage error (``_OUTAGE_ERRORS``: an ``OSError`` such as a refused
+          or reset connection or a timeout, or one of asyncpg's connection
+          errors such as ``CannotConnectNowError`` while the server is starting
+          up or ``ConnectionDoesNotExistError`` mid-LISTEN): it could not
+          connect or re-subscribe, which is expected while the server is down
+          or restarting. One WARNING naming the cause, no traceback. No
+          connection was lost here, because none was made.
+        * anything else is unexpected: an ERROR with its traceback.
+        """
         assert self._engine is not None
-        backoff = 1.0
+        backoff = _ENGINE_BUS_BACKOFF_INITIAL_S
         while not self._stopping.is_set():
+            started = time.monotonic()
             try:
                 async for _kind, _entity_id in self._engine.watch_ready():
                     self._wake.set()
@@ -562,18 +602,33 @@ class WorkerPool:
                         return
             except asyncio.CancelledError:
                 return
-            except Exception:
-                logger.exception(
-                    "engine_bus_loop watch_ready raised; restarting in %.1fs",
-                    backoff,
-                )
+            except Exception as exc:
+                if time.monotonic() - started >= _ENGINE_BUS_BACKOFF_MAX_S:
+                    backoff = _ENGINE_BUS_BACKOFF_INITIAL_S
+                if isinstance(exc, ListenConnectionLost):
+                    logger.warning(
+                        "engine_bus_loop watch_ready lost its connection (%s); "
+                        "restarting in %.1fs",
+                        exc, backoff,
+                    )
+                elif isinstance(exc, _OUTAGE_ERRORS):
+                    logger.warning(
+                        "engine_bus_loop could not re-subscribe: %s; "
+                        "retrying in %.1fs",
+                        exc, backoff,
+                    )
+                else:
+                    logger.exception(
+                        "engine_bus_loop watch_ready raised; restarting in %.1fs",
+                        backoff,
+                    )
                 try:
                     await asyncio.sleep(backoff)
                 except asyncio.CancelledError:
                     return
-                backoff = min(backoff * 2, 30.0)
+                backoff = min(backoff * 2, _ENGINE_BUS_BACKOFF_MAX_S)
             else:
-                backoff = 1.0
+                backoff = _ENGINE_BUS_BACKOFF_INITIAL_S
 
     # ---- engine per-kind handlers ----------------------------------------
 

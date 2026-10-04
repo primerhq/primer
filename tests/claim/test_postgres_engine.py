@@ -911,6 +911,116 @@ async def test_postgres_watch_ready_yields_on_mark_resumable(pg_engine):
     await gen.aclose()
 
 
+# --- the LISTEN backend dying -----------------------------------------------
+# asyncpg never raises into the NOTIFY queue when the backend goes away (a
+# Postgres restart or failover, a network blip), so a watcher that does not
+# listen for connection termination parks forever and the pool stops being
+# woken for new claims. The no-DB twin is test_postgres_listen_drop.py.
+
+
+async def _listen_pids(sp, channel: str) -> set[int]:
+    async with sp.pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT pid FROM pg_stat_activity "
+            "WHERE pid <> pg_backend_pid() AND query ILIKE $1",
+            f"%listen%{channel}%",
+        )
+    return {r["pid"] for r in rows}
+
+
+async def _new_listen_pid(sp, channel: str, known: set[int], *, timeout: float = 10.0) -> int:
+    """The pid of a LISTEN backend on ``channel`` that is not in ``known``."""
+    import asyncio
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        fresh = await _listen_pids(sp, channel) - known
+        if fresh:
+            assert len(fresh) == 1, f"expected exactly one new LISTEN backend, got {fresh}"
+            return next(iter(fresh))
+        if asyncio.get_running_loop().time() > deadline:
+            pytest.fail(f"no new LISTEN backend on {channel} within {timeout}s")
+        await asyncio.sleep(0.05)
+
+
+async def _terminate_backend(sp, pid: int) -> None:
+    async with sp.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT pg_terminate_backend($1)", pid)
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_watch_ready_raises_listen_connection_lost_when_its_backend_is_terminated(
+    pg_engine, pg_storage,
+):
+    import asyncio
+
+    from primer.model.except_ import ListenConnectionLost
+
+    known = await _listen_pids(pg_storage, "claim_ready")
+
+    async def consume():
+        async for _ in pg_engine.watch_ready():
+            pass
+
+    task = asyncio.create_task(consume())
+    try:
+        pid = await _new_listen_pid(pg_storage, "claim_ready", known)
+        await _terminate_backend(pg_storage, pid)
+        with pytest.raises(ListenConnectionLost, match="claim_ready"):
+            await asyncio.wait_for(task, timeout=5.0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_engine_bus_loop_wakes_the_claim_loop_after_its_listen_backend_is_terminated(
+    pg_engine, pg_storage,
+):
+    """The pool's restart arm re-subscribes, and a claim_ready sent AFTER the
+    drop wakes the claim loop again (before the fix it never did)."""
+    import asyncio
+
+    from primer.model.scheduler import WorkerConfig
+    from primer.worker.pool import WorkerPool
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1, poll_interval_seconds=0.1),
+        scheduler=None,                                # type: ignore[arg-type]
+        storage=None,                                  # type: ignore[arg-type]
+        workspace_registry=None,                       # type: ignore[arg-type]
+        provider_registry=None,                        # type: ignore[arg-type]
+        engine=pg_engine,
+    )
+
+    async def wait_woken(what: str) -> None:
+        for _ in range(250):
+            if pool._wake.is_set():
+                return
+            await asyncio.sleep(0.02)
+        pytest.fail(f"the claim loop was never woken: {what}")
+
+    known = await _listen_pids(pg_storage, "claim_ready")
+    task = asyncio.create_task(pool._engine_bus_loop())
+    try:
+        first = await _new_listen_pid(pg_storage, "claim_ready", known)
+        await pg_engine.upsert(ClaimKind.SESSION, "loop-before-drop")
+        await wait_woken("before the drop (control)")
+        pool._wake.clear()
+
+        await _terminate_backend(pg_storage, first)
+        await _new_listen_pid(pg_storage, "claim_ready", known | {first})
+
+        await pg_engine.upsert(ClaimKind.SESSION, "loop-after-drop")
+        await wait_woken("after the drop")
+    finally:
+        pool._stopping.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 # ---------------------------------------------------------------------------
 # Regression: claim_due must work on a fresh DB where entity tables for the
 # claim kinds have not been created yet (lazily-created by storage on first
