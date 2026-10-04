@@ -66,6 +66,13 @@ async def run_counter(
 
     Raises :class:`TokenCounterUnavailable` (transient) if the count has not
     started within ``queue_wait_s``. Whatever ``fn`` raises propagates.
+
+    The job is submitted straight to the executor and cancelled on the CONCURRENT
+    future. Cancelling the asyncio future that ``run_in_executor`` returns is not
+    enough: it forwards the cancel to the real future from a later loop iteration,
+    so a worker that has just been freed can dequeue the abandoned job first and
+    burn CPU for nobody (a test caught exactly that, intermittently, on a loaded
+    host).
     """
     loop = asyncio.get_running_loop()
     started = asyncio.Event()
@@ -74,19 +81,22 @@ async def run_counter(
         loop.call_soon_threadsafe(started.set)
         return fn(*args, **kwargs)
 
-    future = loop.run_in_executor(counter_executor(), _run)
+    submitted = counter_executor().submit(_run)
+    result = asyncio.wrap_future(submitted, loop=loop)
     try:
         await asyncio.wait_for(started.wait(), queue_wait_s)
     except TimeoutError:
-        future.cancel()
-        raise TokenCounterUnavailable(
-            f"token counter queue did not start the count within {queue_wait_s:g}s",
-            transient=True,
-        ) from None
+        if submitted.cancel():
+            raise TokenCounterUnavailable(
+                f"token counter queue did not start the count within {queue_wait_s:g}s",
+                transient=True,
+            ) from None
+        # It started in the instant between the timeout and the cancel: it is
+        # running now and finite, so take its answer rather than waste it.
     except asyncio.CancelledError:
-        future.cancel()
+        submitted.cancel()
         raise
-    return await future
+    return await result
 
 
 __all__ = [
