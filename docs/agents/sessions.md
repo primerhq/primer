@@ -201,10 +201,17 @@ intact, so the next message continues it:
 - What the model had already written is kept in the transcript. The model
   itself does not see that partial text on the next turn, and is not told
   it was stopped; tool rounds that completed are kept.
-- The request is recorded on the session row (`interrupt_requested`) and
-  the running worker re-reads it every 2 seconds (one point read per
-  running turn), so a Stop is delayed, not lost, if the fast signal
-  fails. The row shows `interrupt_requested: true` until the turn stops.
+- The request is recorded on the session row (`interrupt_requested`) and,
+  while the turn is running, the worker re-reads it every 2 seconds (one
+  point read per running turn), so a Stop is delayed, not lost, if the
+  fast signal fails. The row shows `interrupt_requested: true` until the
+  turn stops.
+- A session that is parked (waiting on an approval, an answer or a timer)
+  has no turn to stop: the request is refused with 409 and nothing is
+  recorded; use Cancel to end it. And a later human action wins over an
+  earlier Stop: approving or answering a park, or sending a message to a
+  session that is not running a turn, clears a Stop that was pressed
+  before.
 
 For starting a fresh session of a known agent in a known workspace,
 the right tool is `workspaces::create_workspace_session`. For
