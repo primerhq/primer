@@ -27,8 +27,11 @@ import pytest
 import primer.observability.metrics as metrics
 import primer.session.dispatch as dispatch
 from primer.agent.interrupt import Interrupted, interruptible
+from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
 from primer.model.chat import Done, ExtendedEvent, TextDelta, _ExecutorToolResult
+from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.workspace_session import SessionMessageKind, SessionStatus, WorkspaceSession
+from primer.observability.turn_log_writer import NoopTurnLogWriter
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
 from tests.session.test_dispatch import (  # noqa: F401  (fixtures are used by name)
     FakeWorkspaceIO,
@@ -82,13 +85,40 @@ class _StopAwareExecutor:
                 yield item
 
 
-def _deps(storage, io, bus, executor) -> SessionDispatchDeps:
+def _build_returning(executor):
     async def build(_session: WorkspaceSession):
         return executor
 
+    return build
+
+
+def _deps(storage, io, bus, executor) -> SessionDispatchDeps:
     return SessionDispatchDeps(
-        storage_provider=storage, workspace_io=io, event_bus=bus, build_executor=build,
+        storage_provider=storage, workspace_io=io, event_bus=bus, build_executor=_build_returning(executor),
     )
+
+
+class _RecordingTurnLog(NoopTurnLogWriter):
+    """Remembers the class name of every turn-log event appended."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kinds: list[str] = []
+
+    async def append(self, event) -> int:
+        self.kinds.append(type(event).__name__)
+        return await super().append(event)
+
+
+class _RecordingDispatcher:
+    """The channel dispatcher the final-result relay posts to."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def dispatch_prompt(self, *, envelope, session=None):
+        self.texts.append(envelope.prompt)
+        return [{"ok": True}]
 
 
 async def _request_stop(storage, bus, session_id: str, *, publish: bool = True) -> None:
@@ -229,6 +259,74 @@ class TestACancelThatLandsAfterTheModelFinished:
 
         row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
         assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled"
+        records = _records(fake_workspace_io, sid)
+        assert [r["kind"] for r in records][-1] == SessionMessageKind.CANCELLED, (
+            "the transcript must end in CANCELLED, not in a done the user never got"
+        )
+
+    async def test_that_window_is_a_whole_cancel_arm_not_just_a_status(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        """A Cancel that lands during the final flush used to change only the status: the turn was still
+        counted completed, ``session.replied`` and TurnLogCompleted were emitted, and a thread-mapped
+        session's answer was relayed to the channel AFTER the user cancelled."""
+        sid = seeded_session.id
+        sessions = fake_storage_provider.get_storage(WorkspaceSession)
+        row = await sessions.get(sid)
+        row.metadata = {
+            **(row.metadata or {}),
+            SESSION_REPLY_BINDING_KEY: {"channel_id": "ch-1", "anchor": "thr-1", "quiet": False},
+            RELAY_EVERY_TURN_KEY: True,
+        }
+        await sessions.update(row)
+        row = await sessions.get(sid)
+        ref = dispatch._binding_ref(row)
+
+        emitted: list[str] = []
+
+        class _Recorder:
+            async def emit(self, name: str, **_kwargs: Any) -> None:
+                emitted.append(name)
+
+        monkeypatch.setattr(dispatch, "_event_recorder", lambda deps: _Recorder())
+        turn_log = _RecordingTurnLog()
+        dispatcher = _RecordingDispatcher()
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def read_status_then_cancel_lands(executor):
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            return None
+
+        monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+        published: list[tuple[str, dict]] = []
+        publish = fake_event_bus.publish
+
+        async def spy_publish(key: str, payload: dict) -> None:
+            published.append((key, payload))
+            await publish(key, payload)
+
+        monkeypatch.setattr(fake_event_bus, "publish", spy_publish)
+        executor = _StopAwareExecutor([
+            TextDelta(text="the full answer", index=0), Done(stop_reason="stop", raw_reason="stop"),
+        ])
+        deps = SessionDispatchDeps(
+            storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus,
+            build_executor=_build_returning(executor), channel_dispatcher=dispatcher,
+            turn_log_writer_factory=lambda _io, _sid: turn_log,
+        )
+        await asyncio.wait_for(run_one_session_turn(_make_lease(sid), deps), 3.0)
+
+        records = _records(fake_workspace_io, sid)
+        assert records[-1]["kind"] == SessionMessageKind.CANCELLED
+        # The live surfaces are told too: a tick that carries the CANCELLED record's seq (so a reader
+        # fetches it) and the terminal event the interactive webhook hold waits on.
+        assert (f"session:{sid}:tick", {"seq": records[-1]["seq"]}) in published
+        assert (f"session:{sid}:terminal", {"status": "ended", "ended_reason": "cancelled"}) in published
+        assert metrics.turns_total.labels(ref, "cancelled")._value.get() == 1.0
+        assert metrics.turns_total.labels(ref, "completed")._value.get() == 0.0, "counted completed"
+        assert "session.replied" not in emitted, "announced a reply to a session that was cancelled"
+        assert "TurnLogCompleted" not in turn_log.kinds and "TurnLogCancelled" in turn_log.kinds
+        assert dispatcher.texts == [], "the answer was relayed to the channel after the user cancelled"
 
     async def test_without_a_cancel_the_turn_completes_as_before(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
@@ -242,6 +340,65 @@ class TestACancelThatLandsAfterTheModelFinished:
         row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
         assert row.status != SessionStatus.ENDED or row.ended_reason != "cancelled"
         assert SessionMessageKind.CANCELLED not in [r["kind"] for r in _records(fake_workspace_io, sid)]
+
+
+class TestAStopFollowedByAHumanSteer:
+    """A steer that lands while a turn runs flips ``turn_status`` to claimable, and ``wake_session`` then
+    clears ``interrupt_requested`` on the row. The cancel arm used to decide Stop-vs-End from that flag,
+    so a Stop pressed during a long batch followed by a steer landed ENDED/cancelled instead of WAITING.
+    A Cancel always sets ``cancel_requested`` BEFORE it publishes; that is what separates the two."""
+
+    async def _steer_clears_the_flag(self, storage, sid: str) -> None:
+        sessions = storage.get_storage(WorkspaceSession)
+        row = await sessions.get(sid)
+        row.interrupt_requested = False
+        row.turn_status = "claimable"
+        await sessions.update(row)
+
+    async def test_the_steer_clearing_the_flag_does_not_turn_the_stop_into_an_end(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+
+        async def stop_then_steer() -> None:
+            await _request_stop(fake_storage_provider, fake_event_bus, sid)
+            await asyncio.sleep(0.1)                     # the watcher sets the event
+            await self._steer_clears_the_flag(fake_storage_provider, sid)
+
+        executor = _StopAwareExecutor([stop_then_steer, "BLOCK"])
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status == SessionStatus.WAITING and row.ended_reason is None, (
+            f"a Stop followed by a steer ended the session ({row.status!r}/{row.ended_reason!r})"
+        )
+        cancelled = next(r for r in _records(fake_workspace_io, sid) if r["kind"] == SessionMessageKind.CANCELLED)
+        assert cancelled["payload"]["reason"] == "operator_interrupt"
+
+    async def test_a_real_cancel_is_still_an_end_even_with_the_stop_flag_cleared(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+        sessions = fake_storage_provider.get_storage(WorkspaceSession)
+
+        async def stop_then_cancel() -> None:
+            await _request_stop(fake_storage_provider, fake_event_bus, sid)
+            await self._steer_clears_the_flag(fake_storage_provider, sid)
+            row = await sessions.get(sid)
+            row.cancel_requested = True
+            await sessions.update(row)
+            await fake_event_bus.publish(f"session:{sid}:cancel", {})
+
+        # The Cancel lands as the stream ends (the shape TestACancelThatLandsAfterTheModelFinished
+        # uses): a hard Cancel that lands while the executor is blocked preempts by cancelling the turn.
+        executor = _StopAwareExecutor([
+            TextDelta(text="the full answer", index=0), stop_then_cancel,
+            Done(stop_reason="stop", raw_reason="stop"),
+        ])
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        row = await sessions.get(sid)
+        assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled"
 
 
 class TestAStopIsNeverLostToTheBus:

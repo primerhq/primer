@@ -194,13 +194,19 @@ there is no tool for it. The session lands in `waiting` with its history
 intact, so the next message continues it:
 
 - It takes effect at the next wait for the model: before the first token
-  as well as between chunks. A tool call that is already running is not
-  cancelled; it finishes, its result is recorded, and the turn ends
-  before the next model call. Graph sessions and the context-compaction
-  call that can run first are not interruptible yet.
+  as well as between chunks. If the model had just asked for tool calls
+  when you pressed Stop, none of them run: each is answered "not run:
+  stopped by user". A tool call that is already running is not cancelled;
+  it finishes, its result is recorded, and the turn ends before the next
+  model call. If that batch parks (a timer, a long-running tool, an
+  approval), the session parks instead of stopping and the Stop is
+  dropped; Stop is then refused with 409 and Cancel is the way out. Graph
+  sessions and the context-compaction call that can run first are not
+  interruptible yet.
 - What the model had already written is kept in the transcript. The model
   itself does not see that partial text on the next turn, and is not told
-  it was stopped; tool rounds that completed are kept.
+  it was stopped (apart from the "not run: stopped by user" results
+  above); tool rounds that completed are kept.
 - The request is recorded on the session row (`interrupt_requested`) and,
   while the turn is running, the worker re-reads it every 2 seconds (one
   point read per running turn), so a Stop is delayed, not lost, if the
@@ -208,7 +214,9 @@ intact, so the next message continues it:
   turn stops.
 - A session that is parked (waiting on an approval, an answer or a timer)
   has no turn to stop: the request is refused with 409 and nothing is
-  recorded; use Cancel to end it. And a later human action wins over an
+  recorded; use Cancel to end it. A session whose park has just fired and
+  is resuming is refused too ("the session is resuming; Stop is not
+  available during a resume"). And a later human action wins over an
   earlier Stop: approving or answering a park, or sending a message to a
   session that is not running a turn, clears a Stop that was pressed
   before.

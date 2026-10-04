@@ -64,6 +64,31 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The synthetic result a tool call gets when a Stop landed before the loop dispatched its round.
+_STOPPED_REFUSAL = "not run: stopped by user"
+
+
+def _answer_undispatched(
+    tool_calls: list[ToolCallPart], text: str,
+) -> tuple[Message, list[ExtendedEvent]]:
+    """Answer every call of a round the loop is NOT going to run with a synthetic ERROR result.
+
+    A tool call that no result answers leaves the persisted history invalid for the provider (Anthropic
+    400s every later request, OpenAI Chat Completions rejects an assistant ``tool_calls`` no tool message
+    follows), so a turn that ends without dispatching a round must still answer it. Returns the one
+    ``tool`` message for the caller to append to ``messages_out`` (the model's history) and the events to
+    yield (the durable log), so both stay paired. An error result, rather than dropping the call, keeps
+    the model told that it asked and was refused.
+    """
+    parts = [ToolResultPart(id=call.id, output=text, error=True) for call in tool_calls]
+    events = [
+        ExtendedEvent(
+            extended=_ExecutorToolResult(call_id=p.id, output=p.output, error=True, metadata=None)
+        )
+        for p in parts
+    ]
+    return Message(role="tool", parts=parts), events
+
 
 class PromptGuard(Protocol):
     """The seam through which a caller may reduce the prompt before each model call.
@@ -294,8 +319,11 @@ async def run_agent_turn(
         ends CLEANLY (no exception), after the provider stream is closed.
         Tool dispatch is NOT interruptible here: a Stop that lands while a tool
         runs lets the batch finish and its results be yielded (the log stays
-        paired), and the turn ends before the next model call. ``None`` (the
-        default) changes nothing.
+        paired), and the turn ends before the next model call. A Stop that has
+        landed BEFORE a round's batch starts runs none of it: each call is
+        answered with a synthetic ``not run: stopped by user`` error result
+        (appended to ``messages_out`` and yielded), so the history stays valid
+        for the next request. ``None`` (the default) changes nothing.
     interrupted_out
         Optional caller-provided list; ``True`` is appended when the turn ended
         because ``interrupt`` fired (the same output-parameter shape as
@@ -483,6 +511,21 @@ async def run_agent_turn(
             p for p in assistant_msg.parts if isinstance(p, ToolCallPart)
         ]
         if not tool_calls:
+            return
+
+        if interrupt is not None and interrupt.is_set():
+            # A Stop that landed as the model finished (or while its terminal event was draining). The
+            # model already asked for these calls, but the user has since said stop: running a
+            # destructive one now would make Stop a lie. None of the round runs; each call is answered so
+            # the history stays valid for the next request. A call that has already STARTED is another
+            # matter (slice B): this only covers a Stop that lands before the batch begins.
+            answered, answer_events = _answer_undispatched(tool_calls, _STOPPED_REFUSAL)
+            if messages_out is not None:
+                messages_out.append(answered)
+            for answer_event in answer_events:
+                yield answer_event
+            if interrupted_out is not None:
+                interrupted_out.append(True)
             return
 
         tool_round += 1

@@ -1170,17 +1170,16 @@ async def run_one_session_turn(
     if cancel_requested:
         # Re-read to see whether this preemption was a Stop (interrupt,
         # stay alive) or an End/Cancel (terminal). The interrupt path and
-        # the cancel path both fire session:{sid}:cancel on the bus, so
-        # both flags can be set on the same row (e.g. a stuck
-        # interrupt_requested left over from an earlier turn that never
-        # consumed it, plus a brand-new hard cancel). Cancel is always the
-        # stronger intent: require interrupt_requested AND NOT
-        # cancel_requested, so a genuine Cancel is never downgraded to a
-        # Stop.
+        # the cancel path both fire session:{sid}:cancel on the bus. A
+        # Cancel ALWAYS sets cancel_requested before it publishes, so that
+        # flag alone separates them: not set means a Stop. Do NOT read
+        # interrupt_requested here: a human steer that lands mid-turn flips
+        # turn_status to claimable, and wake_session then clears
+        # interrupt_requested, which turned a Stop into a hard End
+        # (ENDED/cancelled) for exactly the user who pressed Stop and then
+        # typed. A genuine Cancel is never downgraded to a Stop.
         fresh = await session_storage.get(session_id)
-        is_interrupt = bool(
-            fresh and fresh.interrupt_requested and not fresh.cancel_requested
-        )
+        is_interrupt = bool(fresh is not None and not fresh.cancel_requested)
         await _safe_turn_log(turn_log, TurnLogCancelled(
             seq=0,
             ts=_now(),
@@ -1243,12 +1242,8 @@ async def run_one_session_turn(
     # (dispatch.py:833-842: max_tokens / content_filter park the session in
     # WAITING with no ended_reason). Only "failed" is a failure; a None
     # reason means the turn ran to a clean stop the session can continue
-    # from, so it counts as completed.
-    _observe_turn(
-        session,
-        "failed" if ended_reason == "failed" else "completed",
-        _turn_started_at,
-    )
+    # from, so it counts as completed. (Observed after the lock below: a
+    # Cancel can still turn this turn into a cancelled one.)
     # Serialize the terminal transition + interrupt-flag clear against a
     # concurrent resume/pause/cancel/interrupt API call (T0432-style lost
     # update; see primer.session.mutation_lock). A clean completion can
@@ -1256,13 +1251,22 @@ async def run_one_session_turn(
     # too late to be observed by this turn's cancel_event check), so clear
     # it here too -- every terminal path must, or it leaks into a future
     # turn and can downgrade a later genuine Cancel to a Stop.
+    late_cancel = False
+    late_seq = 0
     async with session_lifecycle_lock().acquire(session_id):
         # The Cancel route takes this same lock, so the row read here cannot be stale: a Cancel that
         # landed in the window since the check above wins over whatever the turn's own stop reason
         # mapped to (a cancelled session must not come to rest WAITING).
         locked = await session_storage.get(session_id)
         if locked is not None and locked.cancel_requested and locked.status != SessionStatus.ENDED:
+            # This is a cancelled turn, not a completed one with a different status: it gets the whole
+            # cancel arm below (the CANCELLED record, the cancelled metric, no reply event, no relay).
+            # The record is written HERE, before the transition and inside the lock, so last_seq below
+            # covers it and a reader never sees ENDED before the record that explains it.
+            late_cancel = True
             new_status, ended_reason = SessionStatus.ENDED, "cancelled"
+            late_seq = await writer.append(_cancelled_record(cancel_reason))
+            await writer.flush()
         await _transition_session_status(
             session_storage,
             session,
@@ -1275,6 +1279,26 @@ async def run_one_session_turn(
         await _persist_last_seq(session_storage, session_id, writer.last_seq)
         await _advance_drain_cursor(session_storage, session_id)
 
+    if late_cancel:
+        # The rest of the cancel arm. Nothing below this block describes a turn the user cancelled:
+        # no "session.replied", no TurnLogCompleted, no completed metric, and above all no relay of
+        # the answer to the channel after the user said cancel.
+        await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": late_seq})
+        await _safe_turn_log(turn_log, TurnLogCancelled(
+            seq=0, ts=_now(), turn_no=session.turn_no, reason=cancel_reason,
+        ))
+        await _publish_terminal(deps, session, new_status, ended_reason)
+        await turn_log.aclose()
+        await _apply_pending_switch_at_checkpoint(deps, session)
+        await _realize_pending_at_checkpoint(deps, session)
+        _observe_turn(session, "cancelled", _turn_started_at)
+        return ReleaseOutcome(success=True, drop_lease=True)
+
+    _observe_turn(
+        session,
+        "failed" if ended_reason == "failed" else "completed",
+        _turn_started_at,
+    )
     await _event_recorder(deps).emit(
         "session.replied",
         workspace_id=session.workspace_id,

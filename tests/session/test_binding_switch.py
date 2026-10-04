@@ -196,7 +196,8 @@ def test_switch_is_applied_before_the_queue_drains():
     ]
     switch = "await _apply_pending_switch_at_checkpoint(deps, session)"
     realize = "await _realize_pending_at_checkpoint(deps, session)"
-    assert calls.count(switch) == 3
-    assert calls.count(realize) == 3
-    # They must alternate, switch first, at all three terminal exits.
-    assert calls == [switch, realize] * 3, calls
+    assert calls.count(switch) == 4
+    assert calls.count(realize) == 4
+    # They must alternate, switch first, at all four terminal exits (executor failure, cancel/interrupt,
+    # a Cancel that lands inside the completion lock, clean completion).
+    assert calls == [switch, realize] * 4, calls

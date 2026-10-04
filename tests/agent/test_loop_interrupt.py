@@ -39,6 +39,7 @@ from primer.model.chat import (
 )
 from primer.model.model_profile import ModelProfileConfig
 from primer.model_profile import ResolvedModel
+from tests._support.provider_history import assert_anthropic_valid, assert_openai_valid
 
 MODEL = ResolvedModel(
     profile_id="p", provider_id="prov", model_name="m", context_length=4096,
@@ -281,38 +282,11 @@ class TestTheToolBatchIsNotInterruptedHere:
         assert [m.role for m in messages_out] == ["assistant", "tool"], "a paired, completed round"
         assert any(isinstance(e, ExtendedEvent) for e in events), "the tool result was yielded"
 
-    async def test_a_stop_that_lands_before_the_tools_are_dispatched_still_lets_them_run(self) -> None:
-        """The model already asked for the call and the log already holds the tool_use: the batch is
-        run and answered (slice B decides whether a Stop may cancel it), then the turn stops."""
-        interrupt = asyncio.Event()
-        manager = _Manager()
-
-        class _StopsWhileAnswering:
-            calls = 0
-
-            def stream(self, **_kwargs):
-                self.calls += 1
-
-                async def gen():
-                    yield ToolCallStart(id="tc1", name="loop_tool", index=0)
-                    yield ToolCallEnd(id="tc1", arguments={}, index=0)
-                    interrupt.set()                       # the Stop lands as the model finishes
-                    yield Done(stop_reason="tool_use", raw_reason="tool_use")
-
-                return gen()
-
-        llm = _StopsWhileAnswering()
-        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
-
-        assert manager.finished == 1, "the requested tool call was dropped"
-        assert [m.role for m in messages_out] == ["assistant", "tool"]
-        assert interrupted == [True] and llm.calls == 1
-
     async def test_a_stream_that_hangs_after_its_terminal_event_does_not_hold_a_stop(self) -> None:
         """The round is complete (Done and a tool call are in) but the provider never closes the
-        stream. A Stop must not wait out the stall timeout (300s by default, then the turn FAILS):
-        the stream is closed, the completed round is processed normally (the tool runs, paired), and
-        the turn ends before the next model call."""
+        stream. A Stop must not wait out the stall timeout (300s by default, then the turn FAILS): the
+        stream is closed and the turn ends before the next model call. The round's tool call is NOT
+        run (see TestAStopBeforeTheBatchStopsTheBatch)."""
         interrupt = asyncio.Event()
         manager = _Manager()
         llm = _ScriptedLLM(
@@ -322,8 +296,8 @@ class TestTheToolBatchIsNotInterruptedHere:
 
         _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=0.1)
 
-        assert manager.finished == 1, "the completed round's tool call was dropped"
-        assert [m.role for m in messages_out] == ["assistant", "tool"]
+        assert manager.finished == 0, "a Stop did not stop the round's tool call"
+        assert [m.role for m in messages_out] == ["assistant", "tool"], "the call must still be answered"
         assert interrupted == [True] and llm.calls == 1
         assert llm.closed == 1, "the hung provider stream was left open"
 
@@ -334,7 +308,7 @@ class TestTheToolBatchIsNotInterruptedHere:
 
         _, messages_out, interrupted = await _drive(llm, interrupt=asyncio.Event(), manager=manager, stop_after=0.1)
 
-        assert manager.finished == 1 and [m.role for m in messages_out] == ["assistant", "tool"]
+        assert manager.finished == 0 and [m.role for m in messages_out] == ["assistant", "tool"]
         assert interrupted == [True] and llm.calls == 1
         assert stream.closed == 1, "the hung SDK stream was left open after the Stop"
 
@@ -346,3 +320,103 @@ class TestTheToolBatchIsNotInterruptedHere:
         assert [m.role for m in messages_out] == ["assistant", "tool"]
         assert [e.text for e in events if isinstance(e, TextDelta)] == ["par"]
         assert llm.calls == 2
+
+
+STOPPED = "not run: stopped by user"
+
+
+class _StopsAsTheModelFinishes:
+    """Every call asks for ``per_round`` tool calls and sets the Stop right before its Done."""
+
+    def __init__(self, interrupt: asyncio.Event, per_round: int = 1) -> None:
+        self.interrupt, self.per_round, self.calls = interrupt, per_round, 0
+
+    def stream(self, **_kwargs):
+        self.calls += 1
+        n = self.calls
+
+        async def gen():
+            for i in range(self.per_round):
+                yield ToolCallStart(id=f"tc{n}-{i}", name="loop_tool", index=i)
+                yield ToolCallEnd(id=f"tc{n}-{i}", arguments={}, index=i)
+            self.interrupt.set()                          # the Stop lands as the model finishes
+            yield Done(stop_reason="tool_use", raw_reason="tool_use")
+
+        return gen()
+
+
+def _tool_results(messages: list[Message]) -> list[ToolResultPart]:
+    return [p for m in messages for p in m.parts if isinstance(p, ToolResultPart)]
+
+
+class TestAStopBeforeTheBatchStopsTheBatch:
+    """A Stop pressed on a destructive call must not see it execute. The model already asked, so the
+    log holds the tool_use: each call is answered with a synthetic error result and the turn ends, so
+    the history stays valid for the next request (an unanswered tool_use is a 400 on Anthropic)."""
+
+    async def test_none_of_the_rounds_tool_calls_run(self) -> None:
+        interrupt = asyncio.Event()
+        manager = _Manager()
+        llm = _StopsAsTheModelFinishes(interrupt, per_round=3)
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert manager.started.is_set() is False and manager.finished == 0, "a stopped call ran"
+        assert interrupted == [True] and llm.calls == 1
+        assert [m.role for m in messages_out] == ["assistant", "tool"]
+
+    async def test_every_call_is_answered_with_a_synthetic_error_result_in_one_tool_message(self) -> None:
+        interrupt = asyncio.Event()
+        llm = _StopsAsTheModelFinishes(interrupt, per_round=3)
+
+        _, messages_out, _ = await _drive(llm, interrupt=interrupt, stop_after=None)
+
+        assert [p.id for p in messages_out[-1].parts] == ["tc1-0", "tc1-1", "tc1-2"]
+        assert all(p.error is True and p.output == STOPPED for p in _tool_results(messages_out))
+
+    async def test_the_results_are_yielded_so_the_durable_log_is_paired_too(self) -> None:
+        interrupt = asyncio.Event()
+        llm = _StopsAsTheModelFinishes(interrupt, per_round=2)
+
+        events, _, _ = await _drive(llm, interrupt=interrupt, stop_after=None)
+
+        results = [e.extended for e in events if isinstance(e, ExtendedEvent) and hasattr(e.extended, "call_id")]
+        assert [r.call_id for r in results] == ["tc1-0", "tc1-1"]
+        assert all(r.error is True and r.output == STOPPED for r in results)
+
+    async def test_the_persisted_history_is_valid_for_both_providers(self) -> None:
+        interrupt = asyncio.Event()
+        llm = _StopsAsTheModelFinishes(interrupt, per_round=2)
+        _, messages_out, _ = await _drive(llm, interrupt=interrupt, stop_after=None)
+        history = [Message(role="user", parts=[TextPart(text="go")]), *messages_out]
+
+        assert_anthropic_valid(history)
+        assert_openai_valid(history)
+
+    async def test_a_stop_during_a_tool_is_unchanged_the_running_call_finishes(self) -> None:
+        """The boundary that stays slice B's: a call that has already STARTED is not cancelled."""
+        gate = asyncio.Event()
+        manager = _Manager(gate)
+        interrupt = asyncio.Event()
+        llm = _ScriptedLLM(_tool_round(1), [TextDelta(text="after", index=0), Done(stop_reason="stop", raw_reason="stop")])
+
+        async def stop_during_the_tool() -> None:
+            await manager.started.wait()
+            interrupt.set()
+            await asyncio.sleep(0.05)
+            gate.set()
+
+        asyncio.get_running_loop().create_task(stop_during_the_tool())
+        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert manager.finished == 1 and interrupted == [True]
+        assert [p.output for p in _tool_results(messages_out)] == ["ok"], "the real result, not a refusal"
+
+    async def test_without_a_stop_the_batch_runs_as_before(self) -> None:
+        manager = _Manager()
+        llm = _ScriptedLLM(_tool_round(1), [TextDelta(text="done", index=0), Done(stop_reason="stop", raw_reason="stop")])
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=asyncio.Event(), manager=manager, stop_after=None)
+
+        assert manager.finished == 1 and interrupted == []
+        assert STOPPED not in [p.output for p in _tool_results(messages_out)]

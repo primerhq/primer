@@ -91,7 +91,7 @@ async def test_every_terminal_exit_drains_the_queue():
     from primer.session.dispatch import run_one_session_turn
 
     src = inspect.getsource(run_one_session_turn)
-    assert src.count("_realize_pending_at_checkpoint(deps, session)") == 3, (
-        "expected the drain at all three terminal exits "
-        "(executor failure, cancel/interrupt, clean completion)"
+    assert src.count("_realize_pending_at_checkpoint(deps, session)") == 4, (
+        "expected the drain at all four terminal exits (executor failure, cancel/interrupt, "
+        "a Cancel that lands inside the completion lock, clean completion)"
     )
