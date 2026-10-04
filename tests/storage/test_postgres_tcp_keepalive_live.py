@@ -8,13 +8,12 @@ the options back with getsockopt from a connection that came out of a real
 ``PostgresStorageProvider`` pool, which is also where every LISTEN watcher's
 connection comes from.
 
-Skipped unless PRIMER_TEST_POSTGRES_URL is set.
+Gated on the single Postgres test gate (tests/pg_gate.py: PRIMER_TEST_POSTGRES_URL).
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import socket
 from urllib.parse import parse_qs, urlparse
 
@@ -23,25 +22,21 @@ import pytest
 from primer.model.except_ import ConfigError
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage.postgres import PostgresStorageProvider
+from tests.pg_gate import CANONICAL_ENV, explicit_port, postgres_marks, require_postgres_url
 
-_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get(_URL_ENV),
-    reason=f"set {_URL_ENV} to run the live TCP keepalive tests",
-)
+pytestmark = postgres_marks("the live TCP keepalive tests")
 
 _IDLE_OPT = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
 
 
 def _config(**pool) -> PostgresConfig:
-    p = urlparse(os.environ[_URL_ENV])
+    p = urlparse(require_postgres_url("the live TCP keepalive tests"))
     if p.scheme not in {"postgres", "postgresql"}:
-        raise ConfigError(f"unexpected scheme {p.scheme!r} in {_URL_ENV}")
+        raise ConfigError(f"unexpected scheme {p.scheme!r} in {CANONICAL_ENV}")
     schema = parse_qs(p.query).get("schema", ["public"])[0]
     return PostgresConfig(
         hostname=p.hostname or "localhost",
-        port=p.port or 5432,
+        port=explicit_port(p),
         username=p.username or "postgres",
         password=p.password or "",  # type: ignore[arg-type]
         database=(p.path or "/postgres").lstrip("/") or "postgres",

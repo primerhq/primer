@@ -7,7 +7,7 @@ and real ``PostgresEventBus`` stay in place), then check the thing that matters
 in production: the pool gets its connection back, so ``Pool.close()`` (which
 waits for every acquired connection with no timeout) cannot hang shutdown.
 
-Skipped unless PRIMER_TEST_POSTGRES_URL is set. Every pool close is bounded, so
+Gated on the single Postgres test gate (tests/pg_gate.py: PRIMER_TEST_POSTGRES_URL). Every pool close is bounded, so
 a regression fails in seconds instead of hanging the run.
 """
 
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 from urllib.parse import parse_qs, urlparse
 
 import asyncpg.connection
@@ -25,25 +24,21 @@ from primer.bus.postgres import PostgresEventBus
 from primer.model.except_ import ConfigError
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage.postgres import PostgresStorageProvider
+from tests.pg_gate import CANONICAL_ENV, explicit_port, postgres_marks, require_postgres_url
 
-_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get(_URL_ENV),
-    reason=f"set {_URL_ENV} to run the live PostgresEventBus tests",
-)
+pytestmark = postgres_marks("the live PostgresEventBus tests")
 
 POOL_MAX = 4
 
 
 def _config() -> PostgresConfig:
-    p = urlparse(os.environ[_URL_ENV])
+    p = urlparse(require_postgres_url("the live PostgresEventBus tests"))
     if p.scheme not in {"postgres", "postgresql"}:
-        raise ConfigError(f"unexpected scheme {p.scheme!r} in {_URL_ENV}")
+        raise ConfigError(f"unexpected scheme {p.scheme!r} in {CANONICAL_ENV}")
     schema = parse_qs(p.query).get("schema", ["public"])[0]
     return PostgresConfig(
         hostname=p.hostname or "localhost",
-        port=p.port or 5432,
+        port=explicit_port(p),
         username=p.username or "postgres",
         password=p.password or "",  # type: ignore[arg-type]
         database=(p.path or "/postgres").lstrip("/") or "postgres",
