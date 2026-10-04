@@ -1068,6 +1068,51 @@ class TestHolderLifecycle:
         assert (SessionStatus.ENDED, "completed") in holder.status_calls
 
     @pytest.mark.asyncio
+    async def test_failed_holder_mirror_is_best_effort_but_logs_the_cause(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """01a08bfb item 3: a holder write failure must not crash the graph's
+        terminal commit (deliberate best-effort policy), but nothing else
+        repairs a graph's holder, so the warning is the only trace of why a
+        finished graph reads "running" forever. It must carry the exception,
+        not just "failed"."""
+        import logging
+
+        repo = await _make_state_repo(tmp_path)
+        holder = _RecordingHolder()
+
+        async def boom(status, *, ended_reason=None, waiting_state=None):
+            raise OSError("session.json commit rejected")
+
+        holder.set_status = boom  # type: ignore[method-assign]
+
+        async def agent_resolver(agent_id: str) -> Agent:
+            return _agent(agent_id)
+
+        async def llm_resolver(_a: Agent):
+            return (_one_shot_llm(), _model())
+
+        executor = WorkspaceGraphExecutor(
+            graph=_begin_agent_end_graph(),
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            state_repo=repo,
+            graph_session_id="gsid-hold-boom",
+            workspace_session=holder,  # type: ignore[arg-type]
+            owns_session_lifecycle=True,
+        )
+        with caplog.at_level(logging.WARNING):
+            await _drain(executor.invoke([]))  # must not raise
+
+        records = [
+            r for r in caplog.records
+            if "failed to end holder session" in r.getMessage()
+        ]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
+        assert isinstance(records[0].exc_info[1], OSError)
+
+    @pytest.mark.asyncio
     async def test_subgraph_executor_does_not_end_shared_holder(
         self, tmp_path: Path
     ) -> None:
