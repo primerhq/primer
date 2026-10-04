@@ -39,6 +39,8 @@ class _CancelScope:
         # Whether a cancel has been delivered, and why the FIRST one was.
         self.cancelled: bool = False
         self.cancel_reason: str | None = None
+        # Set by the handler just before it hands its lease back (see :meth:`mark_lease_returned`).
+        self.lease_returned: bool = False
 
     async def __aenter__(self) -> "_CancelScope":
         self._task = asyncio.current_task()
@@ -46,6 +48,19 @@ class _CancelScope:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         return None
+
+    def mark_lease_returned(self) -> None:
+        """Record that the execution is handing its lease back.
+
+        From here the execution has nothing left for a LOST-LEASE verdict to preempt: its work is
+        done and what remains is the release itself and whatever the handler does after it (the
+        session handler re-arms a queued steer). The heartbeat loop decides "lost" from a round trip
+        that left BEFORE the release, so it can report the key lost for the very lease the execution
+        just gave back, and a cancel delivered then lands in that tail and strands what it was
+        finishing. The loop therefore does not cancel a scope that has this mark. Only that verdict
+        is skipped: :meth:`cancel` itself stays unconditional, so the drain timeout can still abort
+        a release that hangs."""
+        self.lease_returned = True
 
     def cancel(self, reason: str) -> None:
         """Cancel the anchored task. Every call delivers another cancel."""

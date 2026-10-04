@@ -430,6 +430,12 @@ class WorkerPool:
                         for kind_id, scope in sent.items():
                             if kind_id in confirmed_set or scope is None:
                                 continue
+                            if scope.lease_returned:
+                                # The execution gave this lease back (see _release_lease), possibly
+                                # while this round trip was in flight, so "not confirmed" is what a
+                                # release looks like, not a loss. Cancelling now would land in the
+                                # post-release tail (the session re-arm) and strand its work.
+                                continue
                             # Unconditional on purpose (see _CancelScope): a lease lost
                             # mid-turn must be able to push a turn that is stuck unwinding.
                             scope.cancel("preempted")
@@ -996,7 +1002,7 @@ class WorkerPool:
             # through it); discarding here too would be redundant.
             self._wake.set()
             try:
-                await self._engine.release(engine_lease, outcome=outcome)
+                await self._release_lease(engine_lease, outcome)
             except Exception:
                 logger.exception(
                     "_run_engine_session: engine.release for %s failed", sid,
@@ -1039,6 +1045,23 @@ class WorkerPool:
         if parked_state.get("kind") == "tool_wait":
             return self._resume_engine_tool_wait
         return self._resume_engine_session
+
+    async def _release_lease(self, lease: ClaimLease, outcome: ReleaseOutcome) -> None:
+        """Hand a running execution's lease back through the engine.
+
+        Every handler releases through here, not ``self._engine.release`` directly: it first marks
+        the execution's scope ``lease_returned``, so a lost-lease verdict from a heartbeat that was
+        already in flight when the release ran is not delivered to an execution that has given its
+        lease back (see :meth:`_CancelScope.mark_lease_returned`). The mark comes BEFORE the call,
+        not after it: the engine answers "not yours" as soon as the release commits, which can be
+        before the call returns to this task, and the release's own post-commit hooks (the tool-call
+        wake) must not be cancelled either. If the release itself fails the lease is still held and
+        still heartbeated until the wrapper discards the key, which follows immediately.
+        """
+        scope = self._active_scopes.get((lease.kind, lease.entity_id))
+        if scope is not None:
+            scope.mark_lease_returned()
+        await self._engine.release(lease, outcome=outcome)
 
     async def _maybe_rearm_session(self, session_id: str) -> None:
         """Re-arm a fresh SESSION claim lease if a turn is still queued.
