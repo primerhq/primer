@@ -96,7 +96,9 @@ class _Executor(_BaseAgentExecutor):
     async def _persist_turn(self, turn_messages: list[Message]) -> None:
         self.persisted.append(turn_messages)
 
-    async def _replace_compacted_head(self, compacted, *, summary_message=None, tokens_before=0, tokens_after=0):
+    async def _replace_compacted_head(self, compacted, **_hook_kwargs):
+        # The hook's keyword arguments (summary_message, tokens_*, outcome, unreducible, ...) are the
+        # persistence layer's business; this double only needs the compacted history.
         self.replaced.append(compacted)
         self.history = compacted
 
