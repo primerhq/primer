@@ -51,6 +51,16 @@ def test_emits_groups_and_tones() -> None:
     assert "waitingOn" in SRC
 
 
+def test_a_tool_turn_cap_end_is_not_read_as_completed() -> None:
+    """An autonomous session ended by max_tool_turns carries ended_reason "tool_turn_cap" and status "ended":
+    the decoder must name it before the status === "ended" fall-through that reads as Completed (green)."""
+    cap = SRC.index('reason === "tool_turn_cap"')
+    completed = SRC.index('label: "Completed"')
+    assert cap < completed
+    branch = SRC[cap:completed]
+    assert 'group: "failed"' in branch and "tool-turn cap" in branch
+
+
 def test_registered_before_list_and_detail() -> None:
     order = _order()
     assert "components/session-state.jsx" in order

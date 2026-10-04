@@ -230,14 +230,16 @@ class SessionInfo(BaseModel):
         description="Current lifecycle state of the session.",
     )
     ended_reason: Literal[
-        "completed", "failed", "cancelled", "workspace_lost", "force_deleted"
+        "completed", "failed", "cancelled", "workspace_lost", "force_deleted", "tool_turn_cap"
     ] | None = Field(
         default=None,
         description=(
             "Set when ``status == SessionStatus.ENDED``. ``None`` "
             "otherwise. ``completed`` for a clean exit, ``failed`` for "
             "an unrecoverable error, ``cancelled`` when the user "
-            "requested the end."
+            "requested the end, ``tool_turn_cap`` when an autonomous "
+            "session's turn was stopped by the agent's ``max_tool_turns`` "
+            "(an interactive session rests WAITING instead)."
         ),
     )
     parent_session_id: str | None = Field(
@@ -447,7 +449,7 @@ class WorkspaceSession(Identifiable):
     last_turn_at: datetime | None = Field(default=None)
     ended_at: datetime | None = Field(default=None)
     ended_reason: Literal[
-        "completed", "failed", "cancelled", "workspace_lost", "force_deleted"
+        "completed", "failed", "cancelled", "workspace_lost", "force_deleted", "tool_turn_cap"
     ] | None = Field(
         default=None,
     )

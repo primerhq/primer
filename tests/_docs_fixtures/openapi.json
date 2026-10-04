@@ -7412,7 +7412,8 @@
                   "failed",
                   "cancelled",
                   "workspace_lost",
-                  "force_deleted"
+                  "force_deleted",
+                  "tool_turn_cap"
                 ],
                 "type": "string"
               },
@@ -9973,7 +9974,8 @@
                   "failed",
                   "cancelled",
                   "workspace_lost",
-                  "force_deleted"
+                  "force_deleted",
+                  "tool_turn_cap"
                 ],
                 "type": "string"
               },

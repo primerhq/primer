@@ -63,6 +63,11 @@ function describeSessionState(session) {
   if (reason === "force_deleted") {
     return { group: "cancelled", label: "Force-deleted", tone: "neutral", detail: null, needsAttention: false, countdownTo: null, waitingOn: null };
   }
+  if (reason === "tool_turn_cap") {
+    // An autonomous session whose turn the agent's max_tool_turns stopped: nobody is there to resume it, and
+    // the work did not finish, so it must not fall through to "Completed" below.
+    return { group: "failed", label: "Stopped at the tool-turn cap", tone: "amber", detail: null, needsAttention: false, countdownTo: null, waitingOn: null };
+  }
   if (status === "ended" || status === "completed" || reason === "completed") {
     return { group: "ended", label: "Completed", tone: "green", detail: null, needsAttention: false, countdownTo: null, waitingOn: null };
   }

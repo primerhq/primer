@@ -203,6 +203,7 @@ async def run_agent_turn(
     budget: "PromptGuard | None" = None,
     interrupt: "asyncio.Event | None" = None,
     interrupted_out: "list[bool] | None" = None,
+    capped_out: "list[bool] | None" = None,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -335,6 +336,14 @@ async def run_agent_turn(
         ``messages_out``). ``messages_out`` then holds only COMPLETED rounds: the
         interrupted round's partial assistant text is never appended, so it never
         reaches the model's history.
+    capped_out
+        Optional caller-provided list; ``True`` is appended when the turn ended
+        because the model asked for another tool round at ``agent.max_tool_turns``
+        (the round that REACHES the cap is answered with ``not executed``
+        results, not run). The model's last event was still ``Done(tool_use)``,
+        so without this a caller cannot tell a cap trip from a turn that is
+        mid-chain. A Stop that lands on the same round wins and is reported
+        through ``interrupted_out`` only.
 
     Raises
     ------
@@ -551,6 +560,8 @@ async def run_agent_turn(
             # run, and the same result is yielded so the durable log stays paired too.
             for answer_event in _answer_undispatched(tool_calls, _TOOL_CAP_REFUSAL, messages_out):
                 yield answer_event
+            if capped_out is not None:
+                capped_out.append(True)
             return
 
         client_actions: list[_ClientAction] = []

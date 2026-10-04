@@ -453,13 +453,20 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 )
             raise
 
+        # A max_tool_turns trip ends on the model's Done(tool_use) like a turn that is
+        # mid-chain, but nothing will queue a continuation: publish the trip itself, or
+        # the status mapper reads "tool_use" as RUNNING and the row rests RUNNING with no
+        # lease, which boot recovery re-arms and resumes with no user input.
+        if self.hit_tool_turn_cap:
+            last_done_reason = "tool_turn_cap"
+
         # Publish the trailing stop reason so the worker pool's
         # post-turn status mapper can read it without re-iterating.
         self.last_done_reason = last_done_reason
 
         # Post-turn status transition.
-        if last_done_reason == "tool_use":
-            return  # inner loop handled tool dispatch already
+        if last_done_reason in ("tool_use", "tool_turn_cap"):
+            return  # inner loop handled tool dispatch already (or stopped at the cap)
         if last_done_reason == "error":
             await self._session.set_status(
                 SessionStatus.ENDED,
