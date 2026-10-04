@@ -37,7 +37,8 @@ def _tool_call(call_id: str, command: str) -> Events:
 
 
 async def _seed_replies(workspace, session, n: int) -> None:
-    """More than ``tail_turns`` (4) assistant messages, so a forced compaction has a head to summarise."""
+    """Replies enough that something precedes the 4th most recent assistant message (``tail_turns``), so a
+    forced compaction has a head to summarise. The history starts with a user message, so n >= 5 does it."""
     for i in range(n):
         await append_messages(workspace, session, user_message(f"filler {i}: " + "f" * 500), assistant_message(f"reply {i}"))
     await append_messages(workspace, session, user_message("now do the thing"))
@@ -103,7 +104,8 @@ async def test_a_second_overflow_has_no_handler_and_the_turn_fails_after_the_for
 async def test_a_context_overflow_in_the_summariser_fails_the_turn_because_maybe_compact_is_outside_the_handler(tmp_path) -> None:
     backend, workspace, session = await open_session(tmp_path)
     try:
-        # over the trigger (4 x 30k tokens of user text) and with more than 4 assistant replies, so tier 2 runs
+        # over the trigger (6 x 30k tokens of user text) and with a head before the 4th most recent assistant
+        # reply, so tier 2 runs
         for i in range(6):
             await append_messages(workspace, session, user_message(chr(ord("A") + i) * BIG_USER_CHARS), assistant_message(f"reply {i}"))
         await append_messages(workspace, session, user_message("now do the thing"))

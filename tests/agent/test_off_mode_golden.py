@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from tests._support.off_golden import TOOL_RESULT_CHARS, run_scenario
+from tests._support.off_golden import TOOL_RESULT_CHARS, run_scenario, trigger_tokens
 
 FIXTURE = Path(__file__).parent / "fixtures" / "off_mode_golden.json"
 
@@ -116,5 +116,25 @@ class TestTheFixtureCrossesWhatItPins:
         assert turn_call["messages"][-1]["role"] == "assistant", "the in-flight turn is not handed the deferred steers"
 
     def test_every_scripted_llm_call_is_accounted_for(self, golden) -> None:
-        assert golden["call_count"] == 8 == sum(t["llm_calls"] for t in golden["turns"])
+        assert golden["call_count"] == 10 == sum(t["llm_calls"] for t in golden["turns"])
         assert [c["call"] for c in golden["calls"] if not c["tool_ids"]] == [2, 5, 7], "the three summariser calls"
+
+    def test_call_arguments_are_recorded_by_value_and_tools_by_digest(self, golden) -> None:
+        """A change to temperature, max_output_tokens or a tool's schema must show, not only a change of tool ids."""
+        turn_call, summariser = golden["calls"][0], golden["calls"][1]
+        assert turn_call["kwargs"] == {"max_output_tokens": "None", "temperature": "None", "tool_choice": "'auto'"}
+        assert summariser["kwargs"] == {"max_output_tokens": "4096", "temperature": "0.0"}
+        assert turn_call["response_format"] is None
+        assert [t[0] for t in turn_call["tools"]] == turn_call["tool_ids"] and len(turn_call["tools"]) == 7
+        assert all(isinstance(length, int) and length > 50 and len(digest) == 16 for _id, length, digest in turn_call["tools"])
+        assert summariser["tools"] == []
+
+    def test_the_boundary_turns_pin_that_the_trigger_fires_at_the_trigger_not_one_under(self, golden) -> None:
+        under, at = golden["turns"][4], golden["turns"][5]
+        trigger = trigger_tokens()
+        assert (under["target_estimate"], at["target_estimate"]) == (trigger - 1, trigger)
+        assert under["llm_calls"] == at["llm_calls"] == 1
+        assert under["file"]["markers"] == at["file"]["markers"] == [], "tier 1 alone suffices: no marker in either"
+        sent = lambda call: [p[1] for m in call["messages"] if m["role"] == "tool" for p in m["parts"]]  # noqa: E731
+        assert all(length > 50_000 for length in sent(golden["calls"][8])), "one token under: the raw results are sent"
+        assert all(length < 1_000 for length in sent(golden["calls"][9])), "at the trigger: they are pruned in memory"

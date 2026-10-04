@@ -227,7 +227,9 @@ class TestWhatMaybeCompactDoes:
 
 
 class TestTheSilentNoOp:
-    """LIMITATION pinned (F14a): tier 2 needs MORE than ``tail_turns`` assistant messages to have anything to summarise."""
+    """LIMITATION pinned (F14a): tier 2 has nothing to summarise unless something precedes the ``tail_turns``-th most
+    recent ASSISTANT message. With NO assistant message the head is everything (the opposite case); with fewer than
+    ``tail_turns`` it is empty; with exactly that many it is empty only when the oldest kept one is the first message."""
 
     @staticmethod
     def _turns(assistants: int, *, starts_with_assistant: bool = False) -> list[Message]:

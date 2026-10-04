@@ -13,7 +13,10 @@ change without failing a unit test:
 * turn 3, OVERFLOW REPLAY: the model rejects the turn with a context-overflow error, the executor
   force-compacts and re-runs the loop;
 * turn 4, DEFERRED STEER: two steers arrive while the compaction summary call is in flight, are held
-  back and land after the marker, in submission order.
+  back and land after the marker, in submission order;
+* turns 5 and 6, THE BOUNDARY: two small sessions whose history estimate is exactly one token under the
+  trigger and exactly at it, so the end-to-end golden pins whether the trigger fires at ``<`` or ``<=``
+  (tier 1 is in memory, so the difference shows in the prompt: raw tool results, then placeholders).
 
 For every turn it records the prompt of every LLM call, the markers, and the persisted
 ``messages.jsonl`` line by line and as a whole (timestamps and the session id are normalised: they
@@ -90,6 +93,11 @@ def part_fingerprint(part: Any, session_id: str) -> list[Any]:
     return [getattr(part, "type", type(part).__name__), len(body), _digest(body)]
 
 
+def tool_fingerprint(tool: Any, session_id: str) -> list[Any]:
+    body = normalise(json.dumps(tool.model_dump(mode="json"), sort_keys=True), session_id)
+    return [tool.id, len(body), _digest(body)]
+
+
 def message_fingerprint(message: Message, session_id: str) -> dict[str, Any]:
     return {"role": message.role, "parts": [part_fingerprint(p, session_id) for p in message.parts]}
 
@@ -118,12 +126,19 @@ class ScriptedLLM:
 
     def stream(self, *, model, messages, **kwargs):
         tools = kwargs.get("tools") or []
+        response_format = kwargs.get("response_format")
         self.calls.append({
             "call": len(self.calls) + 1,
             "model": model,
             "messages": [message_fingerprint(m, self.session_id) for m in messages],
             "tool_ids": sorted(t.id for t in tools),
-            "kwargs": sorted(kwargs),
+            # each tool as [id, length, digest] of its whole normalised dump, so a changed description or
+            # argument schema is a change, not just a changed id
+            "tools": sorted(tool_fingerprint(t, self.session_id) for t in tools),
+            # the call's other keyword arguments BY VALUE (temperature, max_output_tokens, tool_choice...);
+            # response_format can be a model class or a schema, so it is digested
+            "kwargs": {k: repr(v) for k, v in sorted(kwargs.items()) if k not in ("tools", "response_format")},
+            "response_format": None if response_format is None else _digest(repr(response_format)),
         })
         if not self._steps:
             raise AssertionError(f"the session made LLM call {len(self.calls)} but the scenario scripted no step for it")
@@ -254,6 +269,55 @@ def capture_file(text: str, session_id: str) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------- the boundary turns
+
+async def _history_estimate(session) -> int:
+    """The heuristic's size of the history the executor would hand ``maybe_compact`` right now."""
+    manager = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
+    executor = WorkspaceAgentExecutor(
+        agent=make_agent(), llm=ScriptedLLM(),  # type: ignore[arg-type]
+        llm_model=make_model(), tool_manager=manager, session=session, compaction=CompactionStrategy(),
+    )
+    return CompactionStrategy._estimate_tokens(await executor._read_messages_jsonl())
+
+
+def trigger_tokens() -> int:
+    strategy = CompactionStrategy()
+    return int(strategy.trigger_ratio * strategy._effective_budget(make_model()))
+
+
+async def boundary_turn(root: Path, llm: ScriptedLLM, name: str, delta: int) -> dict[str, Any]:
+    """One turn on a fresh session whose history estimate is EXACTLY ``trigger + delta`` tokens.
+
+    Three tool results over the per-output and total prune thresholds give tier 1 something to do; one
+    trailing user message of computed length pads the estimate to the target. Below the trigger nothing
+    happens and the prompt carries the raw results; at it, tier 1 prunes them in memory.
+    """
+    backend, workspace, session = await open_session(root)
+    try:
+        llm.session_id = session.session_id
+        for i in range(3):
+            await append_messages(workspace, session, *tool_round(i))
+        target = trigger_tokens() + delta
+        padding_tokens = target - await _history_estimate(session) - 8  # 8 = the pad message's own overhead
+        assert padding_tokens >= 1, "the seeded history is already past the target"
+        await append_messages(workspace, session, user_message("p" * (4 * padding_tokens)))
+        assert await _history_estimate(session) == target, "the padding must land the estimate exactly on the target"
+        llm.extend([Events(text_events("boundary-ok"))])
+        before = len(llm.calls)
+        await run_turn(session, llm)
+        path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+        return {
+            "turn": name,
+            "target_estimate": target,
+            "llm_calls": len(llm.calls) - before,
+            "file": capture_file(path.read_text(encoding="utf-8"), session.session_id),
+        }
+    finally:
+        await session.aclose()
+        await backend.aclose()
+
+
 # ---------------------------------------------------------------- the scenario
 
 async def run_scenario() -> dict[str, Any]:
@@ -292,9 +356,11 @@ async def run_scenario() -> dict[str, Any]:
             await run_turn(session, llm)
             record("2-tier2-summary", before)
 
-            # Turn 3, overflow replay: the turn's own call is rejected as a context overflow. A "turn" for the
-            # tail split is an ASSISTANT message, and the head is empty (nothing to summarise, no LLM call)
-            # unless there are more than 4 of them, so the history carries assistant replies.
+            # Turn 3, overflow replay: the turn's own call is rejected as a context overflow. The tail split
+            # treats an ASSISTANT message as a turn boundary and the head is whatever precedes the 4th most
+            # recent one; with fewer than 4 (or that one first in the history) it is empty, nothing is
+            # summarised and no LLM call is made. This history starts with a user message and carries 7
+            # assistant replies, so the head exists.
             for i in range(5):
                 await append_messages(workspace, session, user_message(f"turn 3 filler {i}: " + ("f" * 2000)), assistant_message(f"turn 3 reply {i}"))
             await append_messages(workspace, session, user_message("turn 3: next"))
@@ -307,8 +373,9 @@ async def run_scenario() -> dict[str, Any]:
             await run_turn(session, llm)
             record("3-overflow-replay", before)
 
-            # Turn 4, deferred steers: two steers land while the summary call is in flight. Again more than 4
-            # assistant messages, or the strategy silently does nothing (see the characterisation tests).
+            # Turn 4, deferred steers: two steers land while the summary call is in flight. Again something
+            # must precede the 4th most recent assistant message, or the strategy silently does nothing (see
+            # the characterisation tests).
             for i in range(4):
                 await append_messages(workspace, session, user_message(chr(ord("W") + i) * BIG_USER_CHARS), assistant_message(f"turn 4 reply {i}"))
             entered, release = asyncio.Event(), asyncio.Event()
@@ -324,4 +391,7 @@ async def run_scenario() -> dict[str, Any]:
         finally:
             await session.aclose()
             await backend.aclose()
+        # Turns 5 and 6: the boundary, each on its own session (the main one's history is not under our control).
+        turns.append(await boundary_turn(Path(tmp), llm, "5-one-under-the-trigger", -1))
+        turns.append(await boundary_turn(Path(tmp), llm, "6-exactly-at-the-trigger", 0))
         return {"call_count": len(llm.calls), "calls": llm.calls, "turns": turns}
