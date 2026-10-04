@@ -256,7 +256,7 @@ A counter is a function that is meant to raise when it cannot count; the wrapper
   | Adapter | Counter | Bound | System text | Tools | Media | Result |
   | --- | --- | --- | --- | --- | --- | --- |
   | OpenAI / OpenChat / OpenRouter | tiktoken, offline | CPU only, counter executor | counted | counted | flat estimate | `exact` only for a model in `_MODEL_TO_ENCODING` |
-  | Anthropic | `messages.count_tokens` | 3 s per call, `max_retries=0` | the `system` parameter | sent | stripped, flat estimate | exact, `media` estimated |
+  | Anthropic | `messages.count_tokens` | 3 s per attempt and 3 s for the whole call (`asyncio.wait_for`), `max_retries=0`: the SDK's `timeout` is applied to each connect, write, read and pool wait separately, so a server that keeps trickling bytes is never cut off by it | the `system` parameter | sent | stripped, flat estimate | exact, `media` estimated |
   | Gemini | `models.count_tokens` | 3 s per attempt (`http_options`) and 3 s for the whole call (`asyncio.wait_for`): google-genai's aiohttp path sleeps 1 to 10 s and retries once after a connection error, so the per-attempt timeout alone is not a bound | estimated, never sent | estimated, never sent | dropped, flat estimate | exact over contents, `system`/`tools`/`media` estimated |
   | Ollama | local `AutoTokenizer` | CPU only, counter executor | counted | counted | flat estimate | never exact; unavailable unless a repo-id tokenizer is cached |
 
