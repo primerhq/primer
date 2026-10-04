@@ -151,8 +151,11 @@ reason rather than skipping it silently.
   `tests/coordinator`, `tests/vector`) skip unless a database is configured. The
   single gate is `PRIMER_TEST_POSTGRES_URL=postgresql://user:pw@host:port/db[?schema=name]`;
   `PRIMER_TEST_PG_DSN` and `PRIMER_PG_TEST_DSN` are deprecated aliases that
-  warn. Test code reads the gate only through `tests/pg_gate.py` (a static test
-  fails on any other `os.environ` read of a gate name); it is NOT the e2e
+  warn. The URL must name its port: the gate refuses one without (5432 on a dev
+  host is often somebody's own database), and a static test fails any test
+  that defaults a Postgres port (`or 5432`, an env lookup defaulting to
+  `"5432"`). Test code reads the gate only through `tests/pg_gate.py` (a
+  static test fails on any other `os.environ` read of a gate name); it is NOT the e2e
   server's Postgres capability, which uses `PRIMER_TEST_E2E_POSTGRES_DSN`, and
   it refuses to open on database `primer_e2e`'s public schema because the
   gated fixtures DROP tables and DELETE leases. CI runs these in a dedicated

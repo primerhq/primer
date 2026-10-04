@@ -125,7 +125,11 @@ a one-line reason; it may not simply be omitted.
   process, so one suite cannot erase the others' results). The one gate is
   `PRIMER_TEST_POSTGRES_URL` (`postgresql://user:pw@host:port/db`, optional
   `?schema=name`); the former `PRIMER_TEST_PG_DSN` and `PRIMER_PG_TEST_DSN` are
-  deprecated aliases that warn. Test code reads the gate in exactly one place,
+  deprecated aliases that warn. The URL must name its port; the gate refuses a
+  port-less one, and a static test fails any test file that defaults a
+  Postgres port, because 5432 on a dev host is often a developer's own
+  database that the gated fixtures would drop tables in. Test code reads the
+  gate in exactly one place,
   `tests/pg_gate.py`, and a static test fails if any other test file reads a
   gate name, or a constant aliasing one, from `os.environ`. A new gated test
   takes its marker and skip from that module (`postgres_marks`,

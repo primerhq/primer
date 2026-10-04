@@ -8,7 +8,7 @@ from primer.model.except_ import BadRequestError
 from primer.model.provider import PgVectorConfig
 from primer.model.vector import EmbeddingRecord
 from primer.vector.pgvector import PgVectorStoreProvider
-from tests.pg_gate import postgres_marks, require_postgres_url
+from tests.pg_gate import explicit_port, postgres_marks, require_postgres_url
 
 # Gated on the single Postgres test gate (tests/pg_gate.py), so the Postgres
 # CI lane runs these: they are the only coverage of halfvec on a real pgvector,
@@ -25,7 +25,7 @@ def _conn_args() -> dict:
     u = urlparse(require_postgres_url("the live pgvector halfvec tests"))
     return {
         "host": u.hostname or "localhost",
-        "port": u.port or 5432,
+        "port": explicit_port(u),
         "user": u.username or "postgres",
         "password": u.password or "",
         "database": (u.path or "/postgres").lstrip("/") or "postgres",

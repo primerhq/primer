@@ -8,7 +8,11 @@ those suites were skipped everywhere and a broken claim engine, a missing
 purge_dead_workers coverage and a hanging LISTEN teardown all went unseen.
 
 Canonical name: ``PRIMER_TEST_POSTGRES_URL``, a libpq-style URL
-(``postgresql://user:pw@host:5432/db[?schema=name]``).
+(``postgresql://user:pw@host:5432/db[?schema=name]``). The URL MUST name its
+port: no test assumes a default. On a dev host 5432 is frequently somebody's
+own database, and a gated fixture that quietly fell back to it would DROP
+tables there. A URL without a port is refused here, at the one place the
+gate is read, so no parser downstream needs (or has) a fallback port.
 
 The two old names still work as DEPRECATED ALIASES, resolved here and nowhere
 else, because silently ignoring a name a developer already exports would turn
@@ -73,6 +77,31 @@ def _refuse_shared_database(url: str, source: str) -> None:
         )
 
 
+def _require_explicit_port(url: str, source: str) -> None:
+    from urllib.parse import urlparse
+
+    if urlparse(url).port is None:
+        raise RuntimeError(
+            f"{source} has no explicit port: the Postgres test gate assumes "
+            "no default (5432 is often a developer's own database, which the "
+            "gated fixtures would DROP tables in). Name the port, e.g. "
+            "postgresql://user:pw@127.0.0.1:55432/db"
+        )
+
+
+def explicit_port(parsed) -> int:
+    """The port of a URL the gate already vetted (a type-narrowing safety net).
+
+    ``parsed`` is a ``urllib.parse.ParseResult`` of the gate URL. The gate
+    refuses a port-less URL when it is read, so this never fires for a URL
+    that came from ``postgres_url()``; it exists so a call site cannot
+    reintroduce a fallback to the default port without a test noticing.
+    """
+    if parsed.port is None:
+        raise RuntimeError("Postgres test URL has no explicit port")
+    return parsed.port
+
+
 def postgres_url() -> str | None:
     """The configured test database URL, or None when the gate is closed."""
     url = _resolve_postgres_url()
@@ -95,10 +124,12 @@ def _resolve_postgres_url() -> str | None:
         )
     if canonical:
         _refuse_shared_database(canonical, CANONICAL_ENV)
+        _require_explicit_port(canonical, CANONICAL_ENV)
         return canonical
     if aliases:
         name = next(iter(aliases))
         _refuse_shared_database(aliases[name], name)
+        _require_explicit_port(aliases[name], name)
         warnings.warn(
             f"{name} is a deprecated alias; set {CANONICAL_ENV} instead",
             DeprecationWarning,

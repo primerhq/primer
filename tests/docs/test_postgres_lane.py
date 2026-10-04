@@ -93,3 +93,53 @@ def test_ci_has_a_postgres_lane_that_cannot_skip_silently():
     assert sorted(covered) == sorted(LANE_DIRS), (
         f"lane steps cover {sorted(covered)}, expected {sorted(LANE_DIRS)}"
     )
+
+
+# Files where a port default is the BRINGUP's own contract, not a guess:
+# the e2e helpers talk to the database scripts/e2e/bringup.sh provisioned,
+# which publishes on ${PRIMER_DB_PORT:-5432}; tests/distributed builds its URL
+# from a container it starts itself (suite switched off everywhere); the rest
+# are this guard and the gate's own unit tests, which hold port numbers as data.
+_PORT_DEFAULT_ALLOWED = (
+    "tests/e2e/",
+    "tests/ui_e2e/test_approvals_journey.py",
+    "tests/distributed/",
+    "tests/docs/test_postgres_lane.py",
+    "tests/tooling/test_pg_gate.py",
+    "tests/test_e2e_db_config_hygiene.py",
+)
+
+# The default SHAPES: `... or 5432` on a parsed URL, and a quoted "5432" as the
+# default argument of an env lookup. A literal in a config payload that never
+# dials out ({"port": 5432}) is a different thing and is not flagged.
+_PORT_DEFAULT = re.compile(
+    r"""\bor\s+5432\b|,\s*["']5432["']\s*\)|PRIMER_DB_PORT["']?\s*,"""
+)
+
+
+def _port_default_allowed(rel: str) -> bool:
+    return any(
+        rel == allowed or (allowed.endswith("/") and rel.startswith(allowed))
+        for allowed in _PORT_DEFAULT_ALLOWED
+    )
+
+
+def test_no_test_defaults_a_postgres_port():
+    """A live-connect path must use the gate URL (which must name its port) or
+    skip: 5432 on a developer host is often their own database, and the gated
+    fixtures drop tables. tests/vector/test_halfvec_e2e.py used to default to
+    PRIMER_DB_PORT / 5432 and connect, so every local sweep probed it."""
+    offenders = []
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        rel = path.relative_to(ROOT).as_posix()
+        if _port_default_allowed(rel):
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if _PORT_DEFAULT.search(line):
+                offenders.append(f"{rel}:{lineno}: {line.strip()}")
+    assert not offenders, (
+        "a test defaults a Postgres port; take it from tests.pg_gate "
+        f"(explicit_port) or skip: {offenders}"
+    )

@@ -25,7 +25,7 @@ from primer.model.provider import (
 )
 from primer.storage.postgres import PostgresStorageProvider
 from primer.storage.sqlite import SqliteStorageProvider
-from tests.pg_gate import CANONICAL_ENV, require_postgres_url
+from tests.pg_gate import CANONICAL_ENV, explicit_port, require_postgres_url
 
 _POSTGRES_URL_ENV = CANONICAL_ENV
 
@@ -50,7 +50,7 @@ def _parse_postgres_url(url: str, *, schema: str) -> PostgresConfig:
         raise ConfigError(f"unexpected scheme {p.scheme!r} in {_POSTGRES_URL_ENV}")
     return PostgresConfig(
         hostname=p.hostname or "localhost",
-        port=p.port or 5432,
+        port=explicit_port(p),
         username=p.username or "postgres",
         password=p.password or "",  # type: ignore[arg-type]
         database=(p.path or "/postgres").lstrip("/") or "postgres",
@@ -170,7 +170,7 @@ async def test_postgres_db_schema_env_override() -> None:
             provider=StorageProviderType.POSTGRES,
             config=PostgresConfig(
                 hostname=p.hostname or "localhost",
-                port=p.port or 5432,
+                port=explicit_port(p),
                 username=p.username or "postgres",
                 password=p.password or "",  # type: ignore[arg-type]
                 database=(p.path or "/postgres").lstrip("/") or "postgres",
