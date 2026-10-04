@@ -63,3 +63,18 @@ def test_reasoning_collapses_and_external_tool_calls_fold_into_their_pair() -> N
     turns = TURNS.read_text(encoding="utf-8")
     assert "reasoning" in turns
     assert "external_tool_call" in turns
+
+
+def test_pause_superseded_is_a_visible_divider_with_a_label_per_action() -> None:
+    """01a08c08 records every pause a wake touched (cleared / queued /
+    dropped). The record only does its job if the operator can SEE it, so it
+    must be a divider with its own wording, not the generic lifecycle dot."""
+    src = ADAPTER.read_text(encoding="utf-8")
+    skip_start = src.index("var SA_SKIP_IN_TRANSCRIPT")
+    assert "pause_superseded" not in src[skip_start:src.index("};", skip_start)]
+    render_map = src.split("SA_KIND_TO_TRANSCRIPT = {")[1].split("};")[0]
+    assert 'pause_superseded: "divider"' in render_map
+    label = src[src.index("function SA_dividerLabel"):]
+    label = label[: label.index("\n}\n")]
+    for action in ('"cleared"', '"queued"', '"dropped"'):
+        assert f"sp.action === {action}" in label

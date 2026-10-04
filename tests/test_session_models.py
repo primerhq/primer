@@ -367,6 +367,10 @@ class TestSessionMessageKind:
             "client_action",
             # One record per model call at the agent-loop seam (S7).
             "llm_call",
+            # An operator's pause touched by an incoming wake: cleared by a
+            # human message, or held while an automated one was queued or
+            # dropped (01a08c08).
+            "pause_superseded",
             "yielded",
             "resumed",
             "done",
