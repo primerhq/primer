@@ -24,6 +24,7 @@ upward into the api layer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import traceback
@@ -172,6 +173,15 @@ class WorkspaceTurnLogWriter(TurnLogWriter):
     across worker restarts mid-session -- without it, a restart would
     write seq=1 on top of disk's existing seq space and break
     ``since_seq`` pagination.
+
+    ``read_existing`` must distinguish "the file does not exist" (return
+    ``b""``, or raise :class:`NotFoundError`) from "the read failed" (raise
+    anything else). Only the first means a brand-new log. A failed read
+    propagates out of :meth:`append` WITHOUT writing and without marking the
+    bootstrap done, so the next append retries it: guessing ``seq=1`` over a
+    log that may already hold higher seqs would break ``since_seq``
+    pagination, and dropping one best-effort event (``safe_append`` logs it)
+    is the smaller harm.
     """
 
     def __init__(
@@ -185,33 +195,36 @@ class WorkspaceTurnLogWriter(TurnLogWriter):
         self._seq = 0
         self._closed = False
         self._bootstrapped = read_existing is None
+        self._bootstrap_lock = asyncio.Lock()
 
     async def _bootstrap(self) -> None:
         """Read existing file (if any) and seed ``_seq`` to ``max(seq)``."""
         if self._bootstrapped:
             return
-        self._bootstrapped = True  # set first so an exception still pins it
-        if self._read is None:
-            return
-        try:
-            raw = await self._read()
-        except Exception:  # noqa: BLE001 -- missing-file / IO / decode
-            raw = b""
-        if not raw:
-            return
-        max_seq = 0
-        for line in raw.decode("utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        # Serialised so a retry after a failed read can't be raced by a
+        # concurrent append that would otherwise see the flag and use seq 0.
+        async with self._bootstrap_lock:
+            if self._bootstrapped:
+                return
+            assert self._read is not None  # _bootstrapped is True otherwise
             try:
-                obj = json.loads(line)
-                seq = int(obj.get("seq", 0))
-            except Exception:  # noqa: BLE001 -- bogus line
-                continue
-            if seq > max_seq:
-                max_seq = seq
-        self._seq = max_seq
+                raw = await self._read()
+            except NotFoundError:
+                raw = b""
+            max_seq = 0
+            for line in raw.decode("utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    seq = int(obj.get("seq", 0))
+                except Exception:  # noqa: BLE001 -- bogus line
+                    continue
+                if seq > max_seq:
+                    max_seq = seq
+            self._seq = max_seq
+            self._bootstrapped = True
 
     async def append(self, event: TurnLogEvent) -> int:
         if self._closed:
