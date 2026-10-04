@@ -754,6 +754,7 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
     """
     from datetime import timedelta
     from primer.int.claim import ParkRequest, ReleaseOutcome
+    from primer.model.tool_call_task import tool_call_task_id
     from primer.session.yields import tool_wait_event_key
     from primer.worker.yield_runtime import ToolWaitParkedState
 
@@ -771,9 +772,14 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
     ]
     now = datetime.now(timezone.utc)
     timeout = 3600.0
+    # The park exception carries scoped call ids; the rows, leases and blobs use the session-qualified form.
     parked_state = ToolWaitParkedState(
-        outstanding_task_ids=list(repark.outstanding_task_ids),
-        notifying_task_ids=[sid for sid, _ in repark.notifying_results],
+        outstanding_task_ids=[
+            tool_call_task_id(session.id, i) for i in repark.outstanding_task_ids
+        ],
+        notifying_task_ids=[
+            tool_call_task_id(session.id, sid) for sid, _ in repark.notifying_results
+        ],
         event_key=wake_keys[0] if wake_keys else repark.event_key,
         llm_messages=list(repark.llm_messages or []),
         turn_no=session.turn_no,

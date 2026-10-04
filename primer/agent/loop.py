@@ -721,6 +721,7 @@ async def _dispatch_as_claims(
         await await_dispatch_barrier()
 
     notifying_results: list[tuple[str, ToolResultPart]] = []
+    call_ids: dict[str, str] = {}
     for call in notifying_calls:
         actions_out.append(
             _ClientAction(
@@ -732,11 +733,13 @@ async def _dispatch_as_claims(
         rp = await tool_manager.deliver_notifying(call, principal=principal)
         scoped_id, _record_seq = resolve_scoped_call(call.id)
         notifying_results.append((scoped_id, rp))
+        call_ids[scoped_id] = call.id
 
     outstanding_task_ids: list[str] = []
     for call in claimable_calls:
         scoped_id, _record_seq = resolve_scoped_call(call.id)
         outstanding_task_ids.append(scoped_id)
+        call_ids[scoped_id] = call.id
 
     # Synthetic, non-pub/sub identifier (ToolWaitPark's own docstring) --
     # keyed on the first outstanding task so it is at least deterministic
@@ -748,6 +751,7 @@ async def _dispatch_as_claims(
         outstanding_task_ids=outstanding_task_ids,
         event_key=event_key,
         notifying_results=notifying_results,
+        call_ids=call_ids,
     )
 
 

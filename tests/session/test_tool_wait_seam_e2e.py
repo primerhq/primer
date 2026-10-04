@@ -139,6 +139,22 @@ async def _async_return(value):
     return value
 
 
+def _batch_park(notify_result: ToolResultPart) -> ToolWaitPark:
+    """The park a 2-claimable + 1-notifying batch raises: SCOPED ids, plus the provider's raw id of each call (what
+    the assistant message in the parked history carries, so what every result must be handed back under)."""
+    return ToolWaitPark(
+        outstanding_task_ids=["x:tool:0:1", "x:tool:0:2"],
+        event_key="tool_wait:x:tool:0:1",
+        notifying_results=[("x:tool:0:3", notify_result)],
+        call_ids={"x:tool:0:1": "call_a", "x:tool:0:2": "call_b", "x:tool:0:3": "call_c"},
+    )
+
+
+def _qid(session_id: str, n: int) -> str:
+    """The session-qualified task id of the n-th call of turn 0 on the agent surface (S1b)."""
+    return f"{session_id}/x:tool:0:{n}"
+
+
 def _make_lease(session_id: str) -> Lease:
     now = _now()
     return Lease(
@@ -183,12 +199,8 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
     # Part 1: WRITE side - dispatch a mixed batch through the tool_wait
     # park branch.
     # ------------------------------------------------------------------
-    notify_result = ToolResultPart(id="x:tool:0:3", output="notified ok", error=False)
-    park = ToolWaitPark(
-        outstanding_task_ids=["x:tool:0:1", "x:tool:0:2"],
-        event_key="tool_wait:x:tool:0:1",
-        notifying_results=[("x:tool:0:3", notify_result)],
-    )
+    notify_result = ToolResultPart(id="call_c", output="notified ok", error=False)
+    park = _batch_park(notify_result)
 
     fake_io = _FakeWorkspaceIO()
     fake_bus = _FakeEventBus()
@@ -233,7 +245,7 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
 
     # The notifying call's DONE row exists, result_state populated -
     # answered inline, durable home for the resume coordinator to read.
-    notify_task = await task_storage.get("x:tool:0:3")
+    notify_task = await task_storage.get(_qid(session.id, 3))
     assert notify_task is not None
     assert notify_task.state == ToolCallTaskState.DONE
     assert notify_task.tool_name == "notify_tool"
@@ -242,26 +254,26 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
     # The two claimable calls are QUEUED, pointing at their own durable
     # TOOL_CALL record's seq, and registered with the claim engine - the
     # notifying (already-terminal) one is NOT.
-    task_a = await task_storage.get("x:tool:0:1")
-    task_b = await task_storage.get("x:tool:0:2")
+    task_a = await task_storage.get(_qid(session.id, 1))
+    task_b = await task_storage.get(_qid(session.id, 2))
     assert task_a.state == ToolCallTaskState.QUEUED
     assert task_a.tool_name == "tool_a"
     assert task_b.state == ToolCallTaskState.QUEUED
     assert task_b.tool_name == "tool_b"
     assert claim_engine.upserted == [
-        (ClaimKind.TOOL_CALL, "x:tool:0:1"),
-        (ClaimKind.TOOL_CALL, "x:tool:0:2"),
+        (ClaimKind.TOOL_CALL, _qid(session.id, 1)),
+        (ClaimKind.TOOL_CALL, _qid(session.id, 2)),
     ]
     # Armed in the resume tier, not the fresh-session tier: this is the agent-bound arm site
     # (primer/session/dispatch.py); the graph site is pinned in test_dispatch_park_arms_e2e.
     assert claim_engine.priorities == {
-        (ClaimKind.TOOL_CALL, "x:tool:0:1"): CLAIM_PRIORITY_RESUME,
-        (ClaimKind.TOOL_CALL, "x:tool:0:2"): CLAIM_PRIORITY_RESUME,
+        (ClaimKind.TOOL_CALL, _qid(session.id, 1)): CLAIM_PRIORITY_RESUME,
+        (ClaimKind.TOOL_CALL, _qid(session.id, 2)): CLAIM_PRIORITY_RESUME,
     }
 
     # batch_task_ids is the SAME full-batch list on every row (claimable
     # AND notifying) - what on_release's last-sibling check reads.
-    expected_batch = ["x:tool:0:1", "x:tool:0:2", "x:tool:0:3"]
+    expected_batch = [_qid(session.id, n) for n in (1, 2, 3)]
     assert task_a.batch_task_ids == expected_batch
     assert task_b.batch_task_ids == expected_batch
     assert notify_task.batch_task_ids == expected_batch
@@ -283,8 +295,10 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
 
     row = await session_storage.get(session.id)
     assert row.parked_state["kind"] == "tool_wait"
-    assert row.parked_state["outstanding_task_ids"] == ["x:tool:0:1", "x:tool:0:2"]
-    assert row.parked_state["notifying_task_ids"] == ["x:tool:0:3"]
+    # The park blob stores the QUALIFIED row ids; the transcript (above) keeps the scoped ones.
+    assert row.parked_state["outstanding_task_ids"] == [_qid(session.id, 1), _qid(session.id, 2)]
+    assert row.parked_state["notifying_task_ids"] == [_qid(session.id, 3)]
+    assert (task_a.call_id, task_b.call_id, notify_task.call_id) == ("call_a", "call_b", "call_c")
 
     # ------------------------------------------------------------------
     # Part 2: simulate the (not-yet-built) claim worker completing the
@@ -292,8 +306,8 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
     # terminal branch expects to find already written (result_state set
     # BEFORE release/on_release runs - see that adapter's own docstring).
     # ------------------------------------------------------------------
-    result_a = ToolResultPart(id="x:tool:0:1", output="result A", error=False)
-    result_b = ToolResultPart(id="x:tool:0:2", output="result B", error=False)
+    result_a = ToolResultPart(id="call_a", output="result A", error=False)
+    result_b = ToolResultPart(id="call_b", output="result B", error=False)
     await task_storage.update(task_a.model_copy(update={
         "state": ToolCallTaskState.DONE,
         "result_state": result_a.model_dump(mode="json"),
@@ -334,10 +348,18 @@ async def test_mixed_batch_notifies_inline_and_resume_assembles_both_results(
     tool_msg = injected[-1]
     assert tool_msg.role == "tool"
     by_id = {p.id: p for p in tool_msg.parts if isinstance(p, ToolCallPart | ToolResultPart)}
-    assert set(by_id) == {"x:tool:0:1", "x:tool:0:2", "x:tool:0:3"}
-    assert by_id["x:tool:0:1"].output == "result A"
-    assert by_id["x:tool:0:2"].output == "result B"
-    assert by_id["x:tool:0:3"].output == "notified ok"
+    # The durable TOOL_RESULT records keep the transcript's SCOPED ids (the row ids are session-qualified and internal).
+    result_lines = [
+        json.loads(ln) for ln in fake_io.read_lines(session.id)
+        if json.loads(ln)["kind"] == SessionMessageKind.TOOL_RESULT
+    ]
+    assert {ln["payload"]["call_id"] for ln in result_lines} == {"x:tool:0:1", "x:tool:0:2", "x:tool:0:3"}
+
+    # Every result is handed back under the provider's raw id, the one the parked assistant message carries.
+    assert set(by_id) == {"call_a", "call_b", "call_c"}
+    assert by_id["call_a"].output == "result A"
+    assert by_id["call_b"].output == "result B"
+    assert by_id["call_c"].output == "notified ok"
 
 
 @pytest.mark.asyncio
@@ -370,7 +392,7 @@ async def test_crash_retry_replay_with_matching_record_seq_is_a_noop() -> None:
     # session's first TOOL_CALL append (start_seq=0, "the first record
     # gets start_seq + 1").
     await task_storage.create(ToolCallTask(
-        id="x:tool:0:1",
+        id=_qid(session.id, 1),
         session_id=session.id,
         turn_no=0,
         tool_name="tool_a",
@@ -379,12 +401,8 @@ async def test_crash_retry_replay_with_matching_record_seq_is_a_noop() -> None:
         created_at=_now(),
     ))
 
-    notify_result = ToolResultPart(id="x:tool:0:3", output="notified ok", error=False)
-    park = ToolWaitPark(
-        outstanding_task_ids=["x:tool:0:1", "x:tool:0:2"],
-        event_key="tool_wait:x:tool:0:1",
-        notifying_results=[("x:tool:0:3", notify_result)],
-    )
+    notify_result = ToolResultPart(id="call_c", output="notified ok", error=False)
+    park = _batch_park(notify_result)
     fake_io = _FakeWorkspaceIO()
     fake_bus = _FakeEventBus()
     claim_engine = _RecordingClaimEngine()
@@ -407,12 +425,12 @@ async def test_crash_retry_replay_with_matching_record_seq_is_a_noop() -> None:
     # The pre-existing row survives untouched (no-op, not overwritten);
     # the claim engine still gets an upsert call for it - idempotent
     # registration is always safe to repeat, unlike the row create.
-    task_a = await task_storage.get("x:tool:0:1")
+    task_a = await task_storage.get(_qid(session.id, 1))
     assert task_a.state == ToolCallTaskState.QUEUED
     assert task_a.record_seq == 1
-    assert (ClaimKind.TOOL_CALL, "x:tool:0:1") in claim_engine.upserted
+    assert (ClaimKind.TOOL_CALL, _qid(session.id, 1)) in claim_engine.upserted
 
-    task_b = await task_storage.get("x:tool:0:2")
+    task_b = await task_storage.get(_qid(session.id, 2))
     assert task_b is not None
     assert task_b.state == ToolCallTaskState.QUEUED
 
@@ -440,7 +458,7 @@ async def test_crash_retry_with_mismatched_record_seq_fails_loudly() -> None:
     await session_storage.create(session)
 
     await task_storage.create(ToolCallTask(
-        id="x:tool:0:1",
+        id=_qid(session.id, 1),
         session_id=session.id,
         turn_no=0,
         tool_name="tool_a",
@@ -449,12 +467,8 @@ async def test_crash_retry_with_mismatched_record_seq_fails_loudly() -> None:
         created_at=_now(),
     ))
 
-    notify_result = ToolResultPart(id="x:tool:0:3", output="notified ok", error=False)
-    park = ToolWaitPark(
-        outstanding_task_ids=["x:tool:0:1", "x:tool:0:2"],
-        event_key="tool_wait:x:tool:0:1",
-        notifying_results=[("x:tool:0:3", notify_result)],
-    )
+    notify_result = ToolResultPart(id="call_c", output="notified ok", error=False)
+    park = _batch_park(notify_result)
     fake_io = _FakeWorkspaceIO()
     fake_bus = _FakeEventBus()
     claim_engine = _RecordingClaimEngine()
@@ -556,12 +570,8 @@ async def _dispatch_and_claim_batch(storage_provider, session_id: str):
     )
     await session_storage.create(session)
 
-    notify_result = ToolResultPart(id="x:tool:0:3", output="notified ok", error=False)
-    park = ToolWaitPark(
-        outstanding_task_ids=["x:tool:0:1", "x:tool:0:2"],
-        event_key="tool_wait:x:tool:0:1",
-        notifying_results=[("x:tool:0:3", notify_result)],
-    )
+    notify_result = ToolResultPart(id="call_c", output="notified ok", error=False)
+    park = _batch_park(notify_result)
     fake_io = _FakeWorkspaceIO()
     fake_bus = _FakeEventBus()
 
@@ -644,16 +654,16 @@ async def test_last_sibling_on_release_wakes_session_and_resume_continues(
     )
     lease_by_id = {lease.entity_id: lease for lease in task_leases}
 
-    token_a = await _claim_task(task_storage, "x:tool:0:1")
-    result_a = ToolResultPart(id="x:tool:0:1", output="result A", error=False)
-    await engine.release(lease_by_id["x:tool:0:1"], outcome=_finish(token_a, result_a))
+    token_a = await _claim_task(task_storage, _qid("s-wake-1", 1))
+    result_a = ToolResultPart(id="call_a", output="result A", error=False)
+    await engine.release(lease_by_id[_qid("s-wake-1", 1)], outcome=_finish(token_a, result_a))
 
     row = await session_storage.get("s-wake-1")
     assert row.parked_status == "parked"  # sibling x:tool:0:2 still QUEUED
 
-    token_b = await _claim_task(task_storage, "x:tool:0:2")
-    result_b = ToolResultPart(id="x:tool:0:2", output="result B", error=False)
-    await engine.release(lease_by_id["x:tool:0:2"], outcome=_finish(token_b, result_b))
+    token_b = await _claim_task(task_storage, _qid("s-wake-1", 2))
+    result_b = ToolResultPart(id="call_b", output="result B", error=False)
+    await engine.release(lease_by_id[_qid("s-wake-1", 2)], outcome=_finish(token_b, result_b))
 
     row = await session_storage.get("s-wake-1")
     assert row.parked_status == "resumable"
@@ -677,9 +687,9 @@ async def test_last_sibling_on_release_wakes_session_and_resume_continues(
     assert len(fake_executor.injected) == 1
     tool_msg = fake_executor.injected[0][-1]
     by_id = {p.id: p for p in tool_msg.parts if isinstance(p, ToolCallPart | ToolResultPart)}
-    assert by_id["x:tool:0:1"].output == "result A"
-    assert by_id["x:tool:0:2"].output == "result B"
-    assert by_id["x:tool:0:3"].output == "notified ok"
+    assert by_id["call_a"].output == "result A"
+    assert by_id["call_b"].output == "result B"
+    assert by_id["call_c"].output == "notified ok"
 
 
 @pytest.mark.asyncio
@@ -698,19 +708,117 @@ async def test_concurrent_last_two_siblings_wake_idempotently() -> None:
     lease_by_id = {lease.entity_id: lease for lease in task_leases}
 
     outcomes = {}
-    for tid, output in (("x:tool:0:1", "result A"), ("x:tool:0:2", "result B")):
+    for n, raw, output in ((1, "call_a", "result A"), (2, "call_b", "result B")):
+        tid = _qid("s-wake-2", n)
         token = await _claim_task(task_storage, tid)
-        outcomes[tid] = _finish(token, ToolResultPart(id=tid, output=output, error=False))
+        outcomes[tid] = _finish(token, ToolResultPart(id=raw, output=output, error=False))
 
     # Both siblings release "at the same time" - each on_release's own
     # sibling-check may observe the OTHER as already terminal or not,
     # exercising the real interleaving rather than a hand-picked order.
     await asyncio.gather(
-        engine.release(lease_by_id["x:tool:0:1"], outcome=outcomes["x:tool:0:1"]),
-        engine.release(lease_by_id["x:tool:0:2"], outcome=outcomes["x:tool:0:2"]),
+        engine.release(lease_by_id[_qid("s-wake-2", 1)], outcome=outcomes[_qid("s-wake-2", 1)]),
+        engine.release(lease_by_id[_qid("s-wake-2", 2)], outcome=outcomes[_qid("s-wake-2", 2)]),
     )
 
     row = await session_storage.get("s-wake-2")
     assert row.parked_status == "resumable"
     assert row.parked_state["resume_event_payload"] == {"tool_wait_ready": True}
     assert row.parked_state["resume_event_key"] == "tool_wait:s-wake-2:0:x"
+
+
+# ===========================================================================
+# S1b: two sessions parking identically-shaped batches (red on main)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_with_identical_turn_zero_batches_do_not_share_rows_leases_or_results(
+    monkeypatch,
+) -> None:
+    """Every agent session's first call of turn 0 is `x:tool:0:1`. A task row id is a global primary key and a lease
+    is keyed (kind, entity_id), so before the ids were session-qualified the second session's park found the first
+    session's row (same record_seq, so read as a crash-retry replay), shared its lease and resumed holding its
+    results: a cross-session data leak. Two sessions on ONE storage and ONE claim engine, each finishing its own
+    tasks with its own outputs, must each resume with exactly its own."""
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    task_storage = storage_provider.get_storage(ToolCallTask)
+    engine = InMemoryClaimEngine(adapters={
+        ClaimKind.SESSION: SessionClaimAdapter(session_storage=session_storage),
+        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage),
+    })
+
+    async def _wake(signal) -> None:
+        from primer.session.yields import durably_mark_session_resumable
+
+        woken = await session_storage.get(signal.session_id)
+        if woken is not None:
+            await durably_mark_session_resumable(
+                woken, event_key=signal.event_key, payload=signal.payload,
+                session_storage=session_storage, engine=engine,
+            )
+
+    engine.bind_post_release_hook(_wake)
+
+    async def _park_session(session_id: str) -> None:
+        await session_storage.create(WorkspaceSession(
+            id=session_id, workspace_id="w1", binding=AgentSessionBinding(agent_id="ag1"),
+            status=SessionStatus.RUNNING, created_at=_now(), turn_status="running",
+        ))
+        park = _batch_park(ToolResultPart(id="call_c", output=f"notified {session_id}", error=False))
+
+        async def _build_executor(_session: WorkspaceSession):
+            return _ToolWaitExecutor(park)
+
+        deps = SessionDispatchDeps(
+            storage_provider=storage_provider, workspace_io=_FakeWorkspaceIO(), event_bus=_FakeEventBus(),
+            build_executor=_build_executor, claim_engine=engine,
+        )
+        await engine.upsert(ClaimKind.SESSION, session_id)
+        lease = next(
+            l for l in await engine.claim_due("worker-1", max_count=10, kinds=[ClaimKind.SESSION])
+            if l.entity_id == session_id
+        )
+        outcome = await run_one_session_turn(lease, deps)
+        await engine.release(lease, outcome=outcome)
+        assert outcome.park is not None
+
+    await _park_session("s-iso-A")
+    await _park_session("s-iso-B")        # on main: finds A's rows (same ids, same record_seq) and adopts them
+
+    # four separate rows (two claimable per session) and four separate leases
+    leases = await engine.claim_due("worker-1", max_count=10, kinds=[ClaimKind.TOOL_CALL])
+    assert sorted(l.entity_id for l in leases) == sorted(
+        _qid(sid, n) for sid in ("s-iso-A", "s-iso-B") for n in (1, 2)
+    )
+    for sid in ("s-iso-A", "s-iso-B"):
+        for n in (1, 2, 3):
+            row = await task_storage.get(_qid(sid, n))
+            assert row is not None and row.session_id == sid and row.scoped_call_id == f"x:tool:0:{n}"
+        assert (await session_storage.get(sid)).parked_state["outstanding_task_ids"] == [_qid(sid, 1), _qid(sid, 2)]
+
+    # each session finishes ITS OWN claimable tasks with its own output; the post-release hook wakes the right one
+    lease_by_id = {l.entity_id: l for l in leases}
+    for sid in ("s-iso-A", "s-iso-B"):
+        assert (await session_storage.get(sid)).parked_status == "parked"
+        for n, raw in ((1, "call_a"), (2, "call_b")):
+            token = await _claim_task(task_storage, _qid(sid, n))
+            part = ToolResultPart(id=raw, output=f"{sid} result {n}", error=False)
+            await engine.release(lease_by_id[_qid(sid, n)], outcome=_finish(token, part))
+        assert (await session_storage.get(sid)).parked_status == "resumable", f"{sid} was not woken"
+
+    # and each resumes holding exactly its own results, paired with the provider's ids
+    for sid in ("s-iso-A", "s-iso-B"):
+        pool = _build_pool(storage_provider)
+        executor = _RecordingExecutor()
+        monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _ws: _async_return(None))
+        monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w, ex=executor: _async_return(ex))
+        row = await session_storage.get(sid)
+        outcome = await resume_engine_tool_wait(pool, _make_lease(sid), row)
+        assert outcome.success is True
+        tool_msg = executor.injected[0][-1]
+        by_id = {p.id: p.output for p in tool_msg.parts}
+        assert by_id == {
+            "call_a": f"{sid} result 1", "call_b": f"{sid} result 2", "call_c": f"notified {sid}",
+        }

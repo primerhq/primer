@@ -493,6 +493,7 @@ class _NodeDispatchMixin:
                     ],
                     llm_messages=list(twp.llm_messages or []),
                     iteration=context.iteration,
+                    call_ids=dict(twp.call_ids),
                 )
             )
             await queue.put(

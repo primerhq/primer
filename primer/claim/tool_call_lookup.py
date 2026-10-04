@@ -29,7 +29,7 @@ class ToolCallRecordMismatch(RuntimeError):
 
     Any of: the log is missing, no record exists at ``record_seq``, the
     record at that seq is not a ``TOOL_CALL``, or its ``payload['id']``
-    does not match the task's own ``id``. Every one of these means the
+    does not match the task's own scoped call id. Every one of these means the
     "record durable before task claimable" ordering invariant broke
     somewhere upstream — a bug worth surfacing loudly, never a case to
     silently paper over with a fallback scan for "the right" record.
@@ -44,8 +44,9 @@ async def read_tool_call_record(
     Raises :class:`ToolCallRecordMismatch` (never returns ``None``,
     never falls back to scanning for a plausible substitute) if the
     record is missing, isn't a TOOL_CALL, or its id doesn't match
-    ``task.id`` — ruling (01a0518b): "fail loudly on mismatch... a
-    mismatch means the ordering invariant broke and we want to know."
+    ``task.scoped_call_id`` (the transcript's id, the task id without its
+    session qualification) — ruling (01a0518b): "fail loudly on mismatch...
+    a mismatch means the ordering invariant broke and we want to know."
     """
     record = await read_record_by_seq(
         workspace_io, session_id=task.session_id, seq=task.record_seq,
@@ -61,10 +62,10 @@ async def read_tool_call_record(
             f"record at seq={task.record_seq} for task {task.id!r} is "
             f"kind={record.kind!r}, expected TOOL_CALL"
         )
-    if record.payload.get("id") != task.id:
+    if record.payload.get("id") != task.scoped_call_id:
         raise ToolCallRecordMismatch(
             f"record at seq={task.record_seq} has payload id="
-            f"{record.payload.get('id')!r}, expected {task.id!r}"
+            f"{record.payload.get('id')!r}, expected {task.scoped_call_id!r}"
         )
     return record
 

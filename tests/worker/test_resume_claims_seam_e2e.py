@@ -224,13 +224,22 @@ async def test_resumed_node_dispatches_second_claims_batch_through_the_real_gate
     storage = _FakeStorageProvider()
     task_storage = storage.get_storage(ToolCallTask)
     session_storage = storage.get_storage(WorkspaceSession)
-    await task_storage.create(ToolCallTask(
-        id=scoped_id_1, session_id="s-claims-seam", turn_no=0,
-        tool_name=tool_name_1, state=ToolCallTaskState.DONE,
-        record_seq=record_seq_1, created_at=_now(), finished_at=_now(),
-        result_state={"id": scoped_id_1, "output": "result 1", "error": False},
-        batch_task_ids=[scoped_id_1],
-    ))
+    # Round 1's row goes through the SAME materializer dispatch.py uses (so the checkpoint entry is stored in the
+    # session-qualified form the resume reads back), then is completed the way a claim worker would.
+    from primer.session.persistence import materialize_pending_tool_wait_rows
+
+    await materialize_pending_tool_wait_rows(
+        storage, None, "s-claims-seam", 0, live_coalesce_state, _now(),
+        first_park.graph_checkpoint["pending_tool_waits"],
+    )
+    qualified_1 = f"s-claims-seam/{scoped_id_1}"
+    row_1 = await task_storage.get(qualified_1)
+    assert row_1 is not None and (row_1.record_seq, row_1.tool_name) == (record_seq_1, tool_name_1)
+    assert row_1.call_id, "the raw provider id travelled from the real gate to the row"
+    await task_storage.update(row_1.model_copy(update={
+        "state": ToolCallTaskState.DONE, "finished_at": _now(),
+        "result_state": {"id": row_1.call_id, "output": "result 1", "error": False},
+    }))
     session = WorkspaceSession(
         id="s-claims-seam", workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="x"),
@@ -240,7 +249,7 @@ async def test_resumed_node_dispatches_second_claims_batch_through_the_real_gate
     await session_storage.create(session)
 
     parked = ToolWaitParkedState(
-        outstanding_task_ids=[scoped_id_1], notifying_task_ids=[],
+        outstanding_task_ids=[qualified_1], notifying_task_ids=[],
         event_key=first_park.event_key, llm_messages=[], turn_no=0,
         started_at=_now(), graph_checkpoint=first_park.graph_checkpoint,
         node_tool_call_seq=node_tool_call_seq_1,
@@ -269,7 +278,8 @@ async def test_resumed_node_dispatches_second_claims_batch_through_the_real_gate
     # tap-backed coalesce_state - not a phantom/never-persisted park.
     second_pending = second_park.graph_checkpoint["pending_tool_waits"]
     assert [pw["node_id"] for pw in second_pending] == ["A"]
-    assert second_pending[0]["outstanding_task_ids"] == [scoped_id_2]
+    qualified_2 = f"s-claims-seam/{scoped_id_2}"
+    assert second_pending[0]["outstanding_task_ids"] == [qualified_2]
 
     # 7a gate review (verdict R2-1/R2-5): the whole point of this test -
     # round 2's batch must have a REAL ToolCallTask row + claim-engine
@@ -277,12 +287,13 @@ async def test_resumed_node_dispatches_second_claims_batch_through_the_real_gate
     # nothing backing them (the unwakeable-park bug). Before R2-1's fix,
     # this row simply did not exist: the repark path never called
     # materialize_pending_tool_wait_rows at all.
-    row_2 = await task_storage.get(scoped_id_2)
+    row_2 = await task_storage.get(qualified_2)
     assert row_2 is not None
     assert row_2.state == ToolCallTaskState.QUEUED
     assert row_2.tool_name == "fake__echo"
-    assert row_2.batch_task_ids == [scoped_id_2]
-    assert pool._engine.upserted == [(ClaimKind.TOOL_CALL, scoped_id_2)]
+    assert row_2.batch_task_ids == [qualified_2]
+    assert row_2.call_id, "round 2's raw provider id travelled through the resume drain to its row"
+    assert pool._engine.upserted == [(ClaimKind.TOOL_CALL, qualified_2)]
 
     # The REAL repark outcome builder ran (not the old stub) - proves the
     # full ReleaseOutcome/ParkRequest shape a real caller would consume

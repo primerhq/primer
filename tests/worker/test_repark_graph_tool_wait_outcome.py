@@ -46,7 +46,8 @@ def test_dispatches_to_tool_wait_builder_for_toolwaitpark() -> None:
     assert outcome.park.parked_event_key == "tool_wait:gs-1:0:A"
     assert outcome.park.parked_event_keys == ["tool_wait:gs-1:0:A"]
     parked_state = ToolWaitParkedState.from_jsonable(outcome.park.parked_state)
-    assert parked_state.outstanding_task_ids == ["A:tool:0:1"]
+    # the park exception carries SCOPED ids; the blob names the rows by the session-qualified form (S1b)
+    assert parked_state.outstanding_task_ids == ["gs-1/A:tool:0:1"]
     assert parked_state.graph_checkpoint == repark.graph_checkpoint
 
 
@@ -113,7 +114,7 @@ def test_notifying_results_included_in_task_ids() -> None:
     outcome = repark_graph_outcome(None, session, repark)
 
     parked_state = ToolWaitParkedState.from_jsonable(outcome.park.parked_state)
-    assert parked_state.notifying_task_ids == ["A:tool:0:2"]
+    assert parked_state.notifying_task_ids == ["gs-1/A:tool:0:2"]
 
 
 def test_dispatches_to_yield_builder_for_yieldtoworker() -> None:

@@ -880,6 +880,7 @@ class _BaseGraphExecutor(
                             ],
                             llm_messages=list(twp.llm_messages or []),
                             iteration=ay.iteration,
+                            call_ids=dict(twp.call_ids),
                         )
                     )
                     continue
@@ -1035,6 +1036,7 @@ class _BaseGraphExecutor(
                             ],
                             llm_messages=list(twp.llm_messages or []),
                             iteration=tw.iteration,
+                            call_ids=dict(twp.call_ids),
                         )
                     )
                     continue

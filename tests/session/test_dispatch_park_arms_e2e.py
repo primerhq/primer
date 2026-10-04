@@ -141,10 +141,12 @@ async def test_pure_graph_arm_materializes_per_node_rows_through_real_turn_loop(
     # NOT the flat-field loop - if the flat loop ran instead it would
     # use the SAME scoped id here too, so this alone doesn't
     # discriminate.
-    row = await task_storage.get("x:tool:0:1")
+    # (S1b: the row id is the session-qualified form of the scoped id.)
+    row = await task_storage.get("s-pure-graph/x:tool:0:1")
     assert row is not None
     assert row.state == ToolCallTaskState.QUEUED
-    assert row.batch_task_ids == ["x:tool:0:1"]
+    assert row.batch_task_ids == ["s-pure-graph/x:tool:0:1"]
+    assert row.scoped_call_id == "x:tool:0:1"
     # 7a gate review (verdict R2-6): the SINGLE parked_event_key below is
     # computed identically regardless of which branch ran (a pure
     # function of session_id/turn_no/scoped-id, evaluated BEFORE the
@@ -157,8 +159,13 @@ async def test_pure_graph_arm_materializes_per_node_rows_through_real_turn_loop(
     # assert its actual per-node content.
     assert outcome.park.parked_event_key == "tool_wait:s-pure-graph:0:x"
     assert outcome.park.parked_event_keys == ["tool_wait:s-pure-graph:0:x"]
-    assert deps.claim_engine.upserted == [(ClaimKind.TOOL_CALL, "x:tool:0:1")]
-    assert deps.claim_engine.priorities[(ClaimKind.TOOL_CALL, "x:tool:0:1")] == 50  # CLAIM_PRIORITY_RESUME
+    assert deps.claim_engine.upserted == [(ClaimKind.TOOL_CALL, "s-pure-graph/x:tool:0:1")]
+    assert deps.claim_engine.priorities[(ClaimKind.TOOL_CALL, "s-pure-graph/x:tool:0:1")] == 50  # CLAIM_PRIORITY_RESUME
+    # the parked blob names the rows by the qualified id too
+    assert outcome.park.parked_state["outstanding_task_ids"] == ["s-pure-graph/x:tool:0:1"]
+    assert outcome.park.parked_state["graph_checkpoint"]["pending_tool_waits"][0]["outstanding_task_ids"] == [
+        "s-pure-graph/x:tool:0:1"
+    ]
 
 
 @pytest.mark.asyncio
@@ -244,11 +251,11 @@ async def test_mixed_arm_materializes_co_pending_tool_wait_through_real_turn_loo
     # The co-pending tool_wait batch's row exists - proof
     # _materialize_pending_tool_wait_rows actually ran in THIS arm, not
     # just the pure one.
-    row = await task_storage.get("x:tool:0:1")
+    row = await task_storage.get("s-mixed/x:tool:0:1")
     assert row is not None
     assert row.state == ToolCallTaskState.QUEUED
-    assert deps.claim_engine.upserted == [(ClaimKind.TOOL_CALL, "x:tool:0:1")]
-    assert deps.claim_engine.priorities[(ClaimKind.TOOL_CALL, "x:tool:0:1")] == 50  # CLAIM_PRIORITY_RESUME
+    assert deps.claim_engine.upserted == [(ClaimKind.TOOL_CALL, "s-mixed/x:tool:0:1")]
+    assert deps.claim_engine.priorities[(ClaimKind.TOOL_CALL, "s-mixed/x:tool:0:1")] == 50  # CLAIM_PRIORITY_RESUME
 
     # The gate's OWN key is still the primary parked_event_key (a human
     # gate always addresses the park); the tool_wait batch's wake key is
@@ -270,3 +277,67 @@ async def test_mixed_arm_materializes_co_pending_tool_wait_through_real_turn_loo
     assert (
         parked_state["graph_checkpoint"]["pending_tool_waits"][0]["node_id"] == "x"
     )
+
+
+@pytest.mark.asyncio
+async def test_two_graph_sessions_parking_the_same_scoped_batch_keep_separate_rows_blobs_and_leases() -> None:
+    """S1b, the GRAPH surface: every graph session mints `<node>:tool:0:1` for its first call, so two sessions parked
+    on the same storage and claim engine used to share one row and one lease (red on main: the second park adopts the
+    first's row). Each must own its row, its lease and a parked blob that names exactly its own."""
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    task_storage = storage_provider.get_storage(ToolCallTask)
+    claim_engine = _RecordingClaimEngine()
+
+    class _GraphExecutor:
+        _tool_calls_as_claims_enabled = True
+
+        async def invoke(self, messages, **kwargs):
+            yield ToolCallStart(id="call_a", name="tool_a", index=0)
+            yield ToolCallEnd(id="call_a", arguments={"x": 1}, index=0)
+            park = ToolWaitPark(
+                outstanding_task_ids=["x:tool:0:1"], event_key="tool_wait:x:tool:0:1",
+                call_ids={"x:tool:0:1": "call_a"},
+            )
+            park.graph_checkpoint = {
+                "pending_tool_waits": [
+                    {
+                        "node_id": "x", "outstanding_task_ids": ["x:tool:0:1"], "notifying_results": [],
+                        "call_ids": {"x:tool:0:1": "call_a"},
+                    },
+                ],
+            }
+            raise park
+            yield  # pragma: no cover - unreachable, keeps this a generator
+
+    async def _build_executor(_session: WorkspaceSession):
+        return _GraphExecutor()
+
+    from primer.int.claim import ClaimKind, Lease
+
+    outcomes = {}
+    for session_id in ("s-graph-A", "s-graph-B"):
+        await session_storage.create(_session(session_id))
+        deps = SessionDispatchDeps(
+            storage_provider=storage_provider, workspace_io=_FakeWorkspaceIO(), event_bus=_FakeEventBus(),
+            build_executor=_build_executor, claim_engine=claim_engine,
+        )
+        lease = Lease(
+            kind=ClaimKind.SESSION, entity_id=session_id, claimed_by="worker-1",
+            claimed_at=_now(), expires_at=_now(), attempt_count=0, last_error=None,
+        )
+        outcomes[session_id] = await run_one_session_turn(lease, deps)
+
+    assert sorted(entity for _, entity in claim_engine.upserted) == [
+        "s-graph-A/x:tool:0:1", "s-graph-B/x:tool:0:1",
+    ]
+    for session_id, outcome in outcomes.items():
+        row = await task_storage.get(f"{session_id}/x:tool:0:1")
+        assert row is not None and row.session_id == session_id and row.call_id == "call_a"
+        assert row.batch_task_ids == [f"{session_id}/x:tool:0:1"]
+        blob = outcome.park.parked_state
+        assert blob["outstanding_task_ids"] == [f"{session_id}/x:tool:0:1"]
+        assert blob["graph_checkpoint"]["pending_tool_waits"][0]["outstanding_task_ids"] == [
+            f"{session_id}/x:tool:0:1"
+        ]
+        assert outcome.park.parked_event_key == f"tool_wait:{session_id}:0:x"

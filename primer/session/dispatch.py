@@ -830,14 +830,26 @@ async def run_one_session_turn(
         # gate itself (an individual task going GATED later is handled by
         # ToolCallClaimAdapter.on_release, task-granular, not here).
         # ------------------------------------------------------------------
-        from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+        from primer.model.tool_call_task import (
+            ToolCallTask,
+            ToolCallTaskState,
+            tool_call_task_id,
+        )
         from primer.session.yields import tool_wait_event_key
         from primer.worker.yield_runtime import ToolWaitParkedState
 
-        all_batch_ids = [
-            *tool_wait.outstanding_task_ids,
-            *(scoped_id for scoped_id, _ in tool_wait.notifying_results),
+        # The park exception carries SCOPED call ids (unique within one session only; the transcript records are
+        # keyed on them). A task row id is a global primary key and a lease key, so every row, lease, batch list and
+        # park blob below uses the session-qualified id; the record lookups stay on the scoped one.
+        outstanding_ids = [
+            tool_call_task_id(session_id, scoped_id)
+            for scoped_id in tool_wait.outstanding_task_ids
         ]
+        notifying_ids = [
+            tool_call_task_id(session_id, scoped_id)
+            for scoped_id, _ in tool_wait.notifying_results
+        ]
+        all_batch_ids = [*outstanding_ids, *notifying_ids]
         # 01a0518b (mixed-park wake seam review): the FUNCTIONAL wake key -
         # a pure function of session_id + turn_no + the batch's own node
         # segment (see tool_wait_event_key's own docstring), stamped on
@@ -936,15 +948,17 @@ async def run_one_session_turn(
                         "this turn's coalesce_state - the durable-append-"
                         "before-claimable invariant broke"
                     )
+                task_id = tool_call_task_id(session_id, scoped_id)
                 await _create_tool_call_task_idempotent(
                     task_storage,
                     ToolCallTask(
-                        id=scoped_id,
+                        id=task_id,
                         session_id=session_id,
                         turn_no=session.turn_no,
                         tool_name=tool_name,
                         state=ToolCallTaskState.QUEUED,
                         record_seq=record_seq,
+                        call_id=tool_wait.call_ids.get(scoped_id),
                         created_at=parked_at,
                         batch_task_ids=all_batch_ids,
                     ),
@@ -954,7 +968,7 @@ async def run_one_session_turn(
                     # Priority 50, not the fresh-work default 100: a tool call is a continuation of a
                     # turn a human is waiting on, and must not queue behind fresh sessions.
                     await deps.claim_engine.upsert(
-                        ClaimKind.TOOL_CALL, scoped_id, priority=CLAIM_PRIORITY_RESUME,
+                        ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME,
                     )
             for scoped_id, result in tool_wait.notifying_results:
                 record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
@@ -969,12 +983,13 @@ async def run_one_session_turn(
                 await _create_tool_call_task_idempotent(
                     task_storage,
                     ToolCallTask(
-                        id=scoped_id,
+                        id=tool_call_task_id(session_id, scoped_id),
                         session_id=session_id,
                         turn_no=session.turn_no,
                         tool_name=tool_name,
                         state=ToolCallTaskState.DONE,
                         record_seq=record_seq,
+                        call_id=tool_wait.call_ids.get(scoped_id),
                         created_at=parked_at,
                         finished_at=parked_at,
                         result_state=result.model_dump(mode="json"),
@@ -983,14 +998,12 @@ async def run_one_session_turn(
                     session_id=session_id,
                 )
 
-        notifying_task_ids = [
-            scoped_id for scoped_id, _ in tool_wait.notifying_results
-        ]
+        notifying_task_ids = list(notifying_ids)
         captured_messages = tool_wait.llm_messages or []
         llm_message_dicts = [m.model_dump(mode="json") for m in captured_messages]
 
         parked_state = ToolWaitParkedState(
-            outstanding_task_ids=list(tool_wait.outstanding_task_ids),
+            outstanding_task_ids=list(outstanding_ids),
             notifying_task_ids=notifying_task_ids,
             event_key=wake_key,
             llm_messages=llm_message_dicts,

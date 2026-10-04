@@ -1016,6 +1016,13 @@ async def _create_tool_call_task_idempotent(
         await task_storage.create(task)
     except ConflictError:
         existing = await task_storage.get(task.id)
+        if existing is not None and existing.session_id != task.session_id:
+            # Row ids are session-qualified (S1b), so this should be unreachable; if a row of ANOTHER session holds
+            # this id, adopting it would hand this session that session's result. Never a replay, whatever the seq.
+            raise RuntimeError(
+                f"session {session_id} ToolCallTask {task.id!r} already exists for session "
+                f"{existing.session_id!r}: a cross-session id collision, not a crash-retry replay"
+            ) from None
         if existing is not None and existing.record_seq == task.record_seq:
             logger.info(
                 "session %s ToolCallTask %r already exists with matching "
@@ -1102,7 +1109,12 @@ async def materialize_pending_tool_wait_rows(
     co-pending tool_wait batch at all - a no-op.
     """
     from primer.int.claim import CLAIM_PRIORITY_RESUME, ClaimKind
-    from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+    from primer.model.tool_call_task import (
+        ToolCallTask,
+        ToolCallTaskState,
+        external_call_id,
+        tool_call_task_id,
+    )
     from primer.session.yields import tool_wait_event_key
 
     if not pending_tool_waits:
@@ -1110,11 +1122,21 @@ async def materialize_pending_tool_wait_rows(
     task_storage = storage_provider.get_storage(ToolCallTask)
     wake_keys: list[str] = []
     for pw in pending_tool_waits:
-        node_batch_ids = [
-            *pw["outstanding_task_ids"],
-            *(scoped_id for scoped_id, _ in pw["notifying_results"]),
+        # An entry's ids are SCOPED when this park produced it and already QUALIFIED when it is carried over from an
+        # earlier park (the checkpoint stores the qualified form). The transcript records are keyed on the scoped id,
+        # the rows, leases and batch lists on the qualified one; both forms normalise here.
+        call_ids: dict[str, str] = pw.get("call_ids") or {}
+        outstanding_scoped = [
+            external_call_id(i, session_id) for i in pw["outstanding_task_ids"]
         ]
-        for scoped_id in pw["outstanding_task_ids"]:
+        notifying_scoped = [
+            external_call_id(i, session_id) for i, _ in pw["notifying_results"]
+        ]
+        node_batch_ids = [
+            tool_call_task_id(session_id, i)
+            for i in [*outstanding_scoped, *notifying_scoped]
+        ]
+        for scoped_id in outstanding_scoped:
             record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
             tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
             if record_seq is None or tool_name is None:
@@ -1130,12 +1152,13 @@ async def materialize_pending_tool_wait_rows(
             await _create_tool_call_task_idempotent(
                 task_storage,
                 ToolCallTask(
-                    id=scoped_id,
+                    id=tool_call_task_id(session_id, scoped_id),
                     session_id=session_id,
                     turn_no=turn_no,
                     tool_name=tool_name,
                     state=ToolCallTaskState.QUEUED,
                     record_seq=record_seq,
+                    call_id=call_ids.get(scoped_id),
                     created_at=parked_at,
                     batch_task_ids=node_batch_ids,
                 ),
@@ -1144,9 +1167,11 @@ async def materialize_pending_tool_wait_rows(
             )
             if claim_engine is not None:
                 await claim_engine.upsert(
-                    ClaimKind.TOOL_CALL, scoped_id, priority=CLAIM_PRIORITY_RESUME,
+                    ClaimKind.TOOL_CALL, tool_call_task_id(session_id, scoped_id),
+                    priority=CLAIM_PRIORITY_RESUME,
                 )
-        for scoped_id, result_dict in pw["notifying_results"]:
+        for notifying_id, result_dict in pw["notifying_results"]:
+            scoped_id = external_call_id(notifying_id, session_id)
             record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
             tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
             if record_seq is None or tool_name is None:
@@ -1162,12 +1187,13 @@ async def materialize_pending_tool_wait_rows(
             await _create_tool_call_task_idempotent(
                 task_storage,
                 ToolCallTask(
-                    id=scoped_id,
+                    id=tool_call_task_id(session_id, scoped_id),
                     session_id=session_id,
                     turn_no=turn_no,
                     tool_name=tool_name,
                     state=ToolCallTaskState.DONE,
                     record_seq=record_seq,
+                    call_id=call_ids.get(scoped_id),
                     created_at=parked_at,
                     finished_at=parked_at,
                     result_state=dict(result_dict),
@@ -1176,6 +1202,15 @@ async def materialize_pending_tool_wait_rows(
                 session_id=session_id,
                 strict=strict,
             )
+        # Store the QUALIFIED form in the entry itself (it is the dict inside the checkpoint that is parked), so the
+        # blob, the rows and the leases agree and every later reader looks the rows up by the id it finds there.
+        pw["outstanding_task_ids"] = [
+            tool_call_task_id(session_id, i) for i in outstanding_scoped
+        ]
+        pw["notifying_results"] = [
+            (tool_call_task_id(session_id, external_call_id(i, session_id)), r)
+            for i, r in pw["notifying_results"]
+        ]
         wake_keys.append(
             tool_wait_event_key(
                 session_id, turn_no, scoped_task_id=node_batch_ids[0],

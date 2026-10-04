@@ -360,6 +360,14 @@ class ToolWaitPark(Exception):
     ToolResultPart)`` — the scoped id because that is what the
     resulting row's ``id`` must be, matching every other
     ``ToolCallTask`` in the batch.
+
+    ``call_ids`` (S1b): ``{scoped_call_id: provider_raw_id}`` for every
+    call in the batch, claimable and notifying alike. The scoped ids
+    above are unique within ONE session only and are what the
+    transcript records and external surfaces carry; the row id the
+    seam creates from each is session-qualified. The raw provider id
+    is the only one on the LLM wire, so it rides to the row's
+    ``call_id`` and every result is handed back to the model under it.
     """
 
     def __init__(
@@ -369,12 +377,16 @@ class ToolWaitPark(Exception):
         event_key: str,
         llm_messages: list | None = None,
         notifying_results: "list[tuple[str, ToolResultPart]] | None" = None,
+        call_ids: "dict[str, str] | None" = None,
     ) -> None:
         super().__init__(
             f"tool batch parked as {len(outstanding_task_ids)} "
             f"claimed task(s); event_key={event_key!r}"
         )
         self.outstanding_task_ids = outstanding_task_ids
+        # scoped call id -> the provider's raw id, for every call in the batch (claimable and notifying): the
+        # only id the LLM knows a call by, carried to the rows so results are handed back under it.
+        self.call_ids: dict[str, str] = dict(call_ids or {})
         self.event_key = event_key
         self.llm_messages: list | None = llm_messages
         self.frames: list = []
