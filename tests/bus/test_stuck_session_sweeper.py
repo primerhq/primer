@@ -194,3 +194,67 @@ async def test_grace_is_configurable(fake_storage_provider):
 
     assert await _sweeper(storage, grace_seconds=3600)._tick() == 0
     assert await _sweeper(storage, grace_seconds=10)._tick() == 1
+
+
+# A park does not bump ``turn_no`` and releases the session's lease, so a first turn that
+# is parked on a human (or a timer, or an event) looks exactly like a session that never
+# started: turn 0, no live lease, old. The sweeper used to end it as "never_started" ten
+# minutes in, while the human was still deciding.
+
+
+def _parked(sid, *, parked_status="parked", **over):
+    now = datetime.now(timezone.utc)
+    base = dict(
+        parked_status=parked_status,
+        parked_event_key=f"tool_approval:{sid}:call_0",
+        parked_at=now - timedelta(seconds=3000),
+        parked_until=now + timedelta(seconds=600),
+        parked_state={"yielded": {"tool_name": "_approval"}},
+    )
+    base.update(over)
+    return _session(sid, turn_no=0, age_seconds=3600, **base)
+
+
+@pytest.mark.asyncio
+async def test_leaves_a_first_turn_that_is_parked_alone(fake_storage_provider):
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_parked("se-parked"))
+
+    reaped = await _sweeper(storage)._tick()
+
+    assert reaped == 0
+    row = await storage.get("se-parked")
+    assert row.status == SessionStatus.RUNNING
+    assert row.ended_detail is None
+    assert row.parked_status == "parked"
+
+
+@pytest.mark.asyncio
+async def test_leaves_a_first_turn_that_is_resumable_alone(fake_storage_provider):
+    """The event fired and the row is waiting for a claim; it is no more stuck than a
+    parked one."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_parked("se-resumable", parked_status="resumable"))
+
+    reaped = await _sweeper(storage)._tick()
+
+    assert reaped == 0
+    assert (await storage.get("se-resumable")).status == SessionStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_still_reaps_a_first_turn_whose_park_was_cleared(fake_storage_provider):
+    """Control for the two above: only an ACTIVE park exempts a session. Park columns
+    left over from a park that has since been cleared (parked_status back to None) must
+    not shelter a session that never went on to run."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_parked(
+        "se-cleared", parked_status=None, parked_event_key=None, parked_state=None,
+    ))
+
+    reaped = await _sweeper(storage)._tick()
+
+    assert reaped == 1
+    row = await storage.get("se-cleared")
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_detail == "never_started"
