@@ -24,7 +24,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from primer.common.anthropic_errors import classify_anthropic_exception
 from primer.int.llm import LLM
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
-from primer.llm._tokenizer.anthropic import count_tokens_anthropic
+from primer.llm._tokenizer.anthropic import count_tokens_anthropic_detailed
 from primer.model.chat import (
     AudioPart,
     Citation,
@@ -63,6 +63,7 @@ from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
 )
+from primer.model.token_count import TokenCount
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
 
@@ -317,7 +318,12 @@ class _StreamState:
     block_kinds: dict[int, str] = field(default_factory=dict)
     tool_call_meta: dict[int, dict[str, str]] = field(default_factory=dict)
     accumulated_args: dict[int, str] = field(default_factory=dict)
+    # ``input_tokens`` is the API's own field, which EXCLUDES prompt-cache reads and
+    # cache creation; the two are kept apart and added back when Usage is emitted
+    # (``Usage.input_tokens`` means the whole prompt, cached tokens included).
     input_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
     output_tokens: int | None = None
     final_stop_reason: str | None = None
     emitted_stream_start: bool = False
@@ -366,6 +372,22 @@ def _citation_to_universal(citation: Any, index: int) -> Citation:
     )
 
 
+def _absorb_input_usage(state: "_StreamState", usage_obj: Any) -> None:
+    """Record the input-side usage fields the API reported, whichever are present.
+
+    ``message_start`` carries them; newer API versions repeat the cumulative
+    values on ``message_delta``, so a later report supersedes an earlier one.
+    """
+    for attr, field_name in (
+        ("input_tokens", "input_tokens"),
+        ("cache_read_input_tokens", "cache_read_tokens"),
+        ("cache_creation_input_tokens", "cache_creation_tokens"),
+    ):
+        value = getattr(usage_obj, attr, None)
+        if isinstance(value, int):
+            setattr(state, field_name, value)
+
+
 def _translate_event(  # noqa: C901  (intentional dispatch table)
     event: Any, state: _StreamState, *, model_name: str
 ) -> list[StreamEvent]:
@@ -382,9 +404,7 @@ def _translate_event(  # noqa: C901  (intentional dispatch table)
         msg = getattr(event, "message", None)
         usage_obj = getattr(msg, "usage", None) if msg is not None else None
         if usage_obj is not None:
-            in_tok = getattr(usage_obj, "input_tokens", None)
-            if in_tok is not None:
-                state.input_tokens = in_tok
+            _absorb_input_usage(state, usage_obj)
         request_id = getattr(msg, "id", None) if msg is not None else None
         sdk_model = getattr(msg, "model", None) if msg is not None else None
         state.request_id = request_id
@@ -508,6 +528,7 @@ def _translate_event(  # noqa: C901  (intentional dispatch table)
                 state.final_stop_reason = stop_reason
         usage_obj = getattr(event, "usage", None)
         if usage_obj is not None:
+            _absorb_input_usage(state, usage_obj)
             out_tok = getattr(usage_obj, "output_tokens", None)
             if out_tok is not None:
                 state.output_tokens = out_tok
@@ -518,8 +539,17 @@ def _translate_event(  # noqa: C901  (intentional dispatch table)
         if state.input_tokens is not None and state.output_tokens is not None:
             out.append(
                 Usage(
-                    input_tokens=state.input_tokens,
+                    # The whole prompt: the API's input_tokens excludes cache
+                    # reads and cache creation (docs: total = cache_read +
+                    # cache_creation + input_tokens), and a count that leaves
+                    # them out undercounts exactly when caching is on.
+                    input_tokens=(
+                        state.input_tokens
+                        + (state.cache_read_tokens or 0)
+                        + (state.cache_creation_tokens or 0)
+                    ),
                     output_tokens=state.output_tokens,
+                    cached_input_tokens=state.cache_read_tokens,
                     cumulative=False,
                 )
             )
@@ -595,9 +625,26 @@ class AnthropicLLM(LLM):
         messages: list[Message],
         tools: list[Tool] | None = None,
     ) -> int:
-        client = self._get_client()
-        return await count_tokens_anthropic(
-            client=client, model=model, messages=messages, tools=tools,
+        return (
+            await self.count_tokens_detailed(
+                model=model, messages=messages, tools=tools,
+            )
+        ).total
+
+    async def count_tokens_detailed(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> TokenCount:
+        """Anthropic's own count endpoint: exact, bounded, and it raises.
+
+        System text is sent as the endpoint's ``system`` parameter; media blocks
+        are estimated and reported, never sent. See ``_tokenizer/anthropic.py``.
+        """
+        return await count_tokens_anthropic_detailed(
+            client=self._get_client(), model=model, messages=messages, tools=tools,
         )
 
     def _get_client(self) -> AsyncAnthropic:

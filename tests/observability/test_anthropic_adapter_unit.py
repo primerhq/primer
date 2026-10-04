@@ -881,9 +881,11 @@ class TestAdapterLifecycle:
     async def test_count_tokens_delegates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patched_client(monkeypatch)
         llm = AnthropicLLM(_make_provider())
+        from primer.model.token_count import TokenCount
+
         with patch(
-            "primer.llm.anthropic.count_tokens_anthropic",
-            new=AsyncMock(return_value=123),
+            "primer.llm.anthropic.count_tokens_anthropic_detailed",
+            new=AsyncMock(return_value=TokenCount(total=123, exact=True)),
         ) as mock_count:
             n = await llm.count_tokens(
                 model="claude-sonnet-4-5",

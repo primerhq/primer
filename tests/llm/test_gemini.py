@@ -1017,9 +1017,11 @@ class TestCountTokens:
         from unittest.mock import AsyncMock, patch
         llm = GeminiLLM(_make_provider())
         msgs = [Message(role="user", parts=[TextPart(text="hi")])]
+        from primer.model.token_count import TokenCount
+
         with patch(
-            "primer.llm.gemini.count_tokens_gemini",
-            new=AsyncMock(return_value=17),
+            "primer.llm.gemini.count_tokens_gemini_detailed",
+            new=AsyncMock(return_value=TokenCount(total=17, exact=True)),
         ) as mock_count:
             n = await llm.count_tokens(
                 model="gemini-2.5-flash", messages=msgs, tools=None,

@@ -1131,9 +1131,11 @@ class TestCountTokens:
         from unittest.mock import AsyncMock, patch
         llm = AnthropicLLM(_make_provider())
         msgs = [Message(role="user", parts=[TextPart(text="hi")])]
+        from primer.model.token_count import TokenCount
+
         with patch(
-            "primer.llm.anthropic.count_tokens_anthropic",
-            new=AsyncMock(return_value=42),
+            "primer.llm.anthropic.count_tokens_anthropic_detailed",
+            new=AsyncMock(return_value=TokenCount(total=42, exact=True)),
         ) as mock_count:
             n = await llm.count_tokens(
                 model="claude-opus-4-7", messages=msgs, tools=None,

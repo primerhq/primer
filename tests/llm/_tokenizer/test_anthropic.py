@@ -1,93 +1,187 @@
-"""Unit tests for the Anthropic count-tokens adapter."""
+"""Anthropic count-tokens counter: bounded, honest, and it raises.
+
+The counter used to swallow every exception and return the character heuristic
+as a successful count, so a failed call was labelled native. These tests pin the
+replacement: every failure is a mapped error or TokenCounterUnavailable that the
+single wrapper (primer.llm.counting) turns into a labelled estimate.
+"""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import anthropic
+import httpx
 import pytest
 
 from primer.llm._tokenizer.anthropic import (
-    _CACHE_MAX,
-    count_tokens_anthropic,
-    invalidate_anthropic_cache,
+    COUNT_TIMEOUT_S,
+    count_tokens_anthropic_detailed,
 )
-from primer.model.chat import Message, TextPart, Tool
+from primer.llm.counting import NegativeCache, count_prompt_tokens
+from primer.model.chat import (
+    DocumentPart,
+    ImagePart,
+    Message,
+    TextPart,
+    Tool,
+)
+from primer.model.except_ import (
+    BadRequestError,
+    NetworkError,
+    ProviderError,
+    TokenCounterUnavailable,
+)
+from primer.model.media_tokens import DOCUMENT_TOKENS, IMAGE_TOKENS
+
+USER = [Message(role="user", parts=[TextPart(text="hi")])]
 
 
-@pytest.fixture(autouse=True)
-def _clear_cache() -> None:
-    invalidate_anthropic_cache()
+class _FakeClient:
+    """Records ``with_options`` and the request; ``count_tokens`` is scripted."""
 
-
-def _fake_client(token_count: int) -> MagicMock:
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.count_tokens = AsyncMock(
-        return_value=MagicMock(input_tokens=token_count)
-    )
-    return client
-
-
-class TestCountTokensAnthropic:
-    async def test_returns_api_count(self) -> None:
-        client = _fake_client(123)
-        msgs = [Message(role="user", parts=[TextPart(text="hi")])]
-        n = await count_tokens_anthropic(
-            client=client, model="claude-opus-4-7", messages=msgs, tools=None,
-        )
-        assert n == 123
-        client.messages.count_tokens.assert_awaited_once()
-
-    async def test_cache_hit_skips_api(self) -> None:
-        client = _fake_client(50)
-        msgs = [Message(role="user", parts=[TextPart(text="cached")])]
-        a = await count_tokens_anthropic(
-            client=client, model="claude-opus-4-7", messages=msgs, tools=None,
-        )
-        b = await count_tokens_anthropic(
-            client=client, model="claude-opus-4-7", messages=msgs, tools=None,
-        )
-        assert a == b == 50
-        assert client.messages.count_tokens.await_count == 1
-
-    async def test_cache_keyed_by_model(self) -> None:
-        client = _fake_client(77)
-        msgs = [Message(role="user", parts=[TextPart(text="hi")])]
-        await count_tokens_anthropic(
-            client=client, model="claude-opus-4-7", messages=msgs, tools=None,
-        )
-        await count_tokens_anthropic(
-            client=client, model="claude-haiku-4-5-20251001", messages=msgs, tools=None,
-        )
-        assert client.messages.count_tokens.await_count == 2
-
-    async def test_falls_back_on_api_error(self) -> None:
-        client = MagicMock()
-        client.messages = MagicMock()
-        client.messages.count_tokens = AsyncMock(side_effect=RuntimeError("boom"))
-        msgs = [Message(role="user", parts=[TextPart(text="hello")])]
-        n = await count_tokens_anthropic(
-            client=client, model="claude-opus-4-7", messages=msgs, tools=None,
-        )
-        # Char-fallback floor: 8 + ceil(5/4)=2 = 10.
-        assert n == 10
-
-    async def test_tools_included_in_request(self) -> None:
-        client = _fake_client(99)
-        msgs = [Message(role="user", parts=[TextPart(text="x")])]
-        tools = [
-            Tool(
-                id="ls", description="list", toolset_id="x",
-                args_schema={"type": "object", "properties": {}},
+    def __init__(self, *, tokens: int = 0, exc: Exception | None = None) -> None:
+        self.options: list[dict] = []
+        self.messages = SimpleNamespace(
+            count_tokens=AsyncMock(
+                return_value=SimpleNamespace(input_tokens=tokens), side_effect=exc,
             )
-        ]
-        await count_tokens_anthropic(
-            client=client, model="claude-opus-4-7", messages=msgs, tools=tools,
         )
-        call_kwargs = client.messages.count_tokens.await_args.kwargs
-        assert call_kwargs["model"] == "claude-opus-4-7"
-        assert call_kwargs["tools"]
-        assert call_kwargs["tools"][0]["name"] == "ls"
 
-    async def test_cache_max_size(self) -> None:
-        assert _CACHE_MAX == 1024
+    def with_options(self, **options):
+        self.options.append(options)
+        return self
+
+    @property
+    def request(self) -> dict:
+        return self.messages.count_tokens.await_args.kwargs
+
+
+async def _count(client, messages=USER, tools=None):
+    return await count_tokens_anthropic_detailed(
+        client=client, model="claude-opus-4-7", messages=messages, tools=tools,
+    )
+
+
+class TestRequestShape:
+    async def test_returns_the_endpoints_count_and_says_it_is_exact(self) -> None:
+        client = _FakeClient(tokens=123)
+        got = await _count(client)
+        assert (got.total, got.exact, got.estimated_components) == (123, True, ())
+
+    async def test_every_call_is_bounded(self) -> None:
+        client = _FakeClient(tokens=1)
+        await _count(client)
+        assert client.options == [{"max_retries": 0}], "the SDK default is two retries"
+        assert client.request["timeout"] == COUNT_TIMEOUT_S == 3.0
+
+    async def test_system_messages_become_the_system_parameter(self) -> None:
+        client = _FakeClient(tokens=1)
+        await _count(client, [
+            Message(role="system", parts=[TextPart(text="be brief")]),
+            Message(role="system", parts=[TextPart(text="be kind")]),
+            *USER,
+        ])
+        assert client.request["system"] == "be brief\n\nbe kind"
+        assert [m["role"] for m in client.request["messages"]] == ["user"]
+
+    async def test_no_system_parameter_when_there_is_no_system_text(self) -> None:
+        client = _FakeClient(tokens=1)
+        await _count(client)
+        assert "system" not in client.request
+
+    async def test_tools_are_sent(self) -> None:
+        client = _FakeClient(tokens=1)
+        tools = [Tool(id="ls", description="list", toolset_id="x",
+                      args_schema={"type": "object", "properties": {}})]
+        await _count(client, tools=tools)
+        assert client.request["tools"][0]["name"] == "ls"
+
+    async def test_media_is_never_sent_and_is_an_estimated_component(self) -> None:
+        """An empty base64 placeholder is unverified against the API and likely
+        rejected; media is estimated with the shared constants instead."""
+        client = _FakeClient(tokens=100)
+        got = await _count(client, [Message(role="user", parts=[
+            TextPart(text="look"),
+            ImagePart(mime_type="image/png", data=b"\x00"),
+            DocumentPart(mime_type="application/pdf", data=b"%PDF"),
+        ])])
+        blocks = client.request["messages"][0]["content"]
+        assert [b["type"] for b in blocks] == ["text"]
+        assert '"data": ""' not in repr(client.request)
+        assert got.total == 100 + IMAGE_TOKENS + DOCUMENT_TOKENS
+        assert got.estimated_components == ("media",)
+
+    async def test_nothing_natively_countable_is_unavailable_without_a_call(self) -> None:
+        client = _FakeClient(tokens=1)
+        with pytest.raises(TokenCounterUnavailable, match="nothing natively countable"):
+            await _count(client, [Message(role="user", parts=[
+                ImagePart(mime_type="image/png", data=b"\x00"),
+            ])])
+        client.messages.count_tokens.assert_not_awaited()
+
+
+def _status_error(cls, status: int):
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages/count_tokens")
+    return cls("boom", response=httpx.Response(status, request=request), body=None)
+
+
+class TestFailuresRaiseMappedErrors:
+    async def test_a_timeout_is_a_network_error(self) -> None:
+        exc = anthropic.APITimeoutError(request=httpx.Request("POST", "https://x"))
+        with pytest.raises(NetworkError):
+            await _count(_FakeClient(exc=exc))
+
+    async def test_a_400_is_a_bad_request(self) -> None:
+        with pytest.raises(BadRequestError):
+            await _count(_FakeClient(exc=_status_error(anthropic.BadRequestError, 400)))
+
+    async def test_an_unexpected_exception_is_not_swallowed_into_a_number(self) -> None:
+        with pytest.raises(ProviderError):
+            await _count(_FakeClient(exc=RuntimeError("boom")))
+
+    async def test_the_old_char_fallback_value_is_not_returned(self) -> None:
+        # 'hello' used to come back as the heuristic's 10 from a failed call.
+        client = _FakeClient(exc=RuntimeError("boom"))
+        with pytest.raises(ProviderError):
+            await _count(client, [Message(role="user", parts=[TextPart(text="hello")])])
+
+
+class TestThroughTheWrapper:
+    """N4: a failing client must reach the wrapper's labelled fallback, never native."""
+
+    class _Llm:
+        def __init__(self, client) -> None:
+            self.client = client
+
+        async def count_tokens_detailed(self, *, model, messages, tools=None):
+            return await count_tokens_anthropic_detailed(
+                client=self.client, model=model, messages=messages, tools=tools,
+            )
+
+    MODEL = SimpleNamespace(provider_id="p", profile_id="prof", model_name="claude-opus-4-7")
+
+    @pytest.mark.parametrize(
+        ("exc", "outcome"),
+        [
+            (anthropic.APITimeoutError(request=httpx.Request("POST", "https://x")), "fallback_transient"),
+            (_status_error(anthropic.RateLimitError, 429), "fallback_transient"),
+            (_status_error(anthropic.InternalServerError, 500), "fallback_transient"),
+            (_status_error(anthropic.BadRequestError, 400), "fallback_rejected"),
+        ],
+    )
+    async def test_a_failing_client_is_an_estimate_never_native(self, exc, outcome) -> None:
+        result = await count_prompt_tokens(
+            self._Llm(_FakeClient(exc=exc)), model=self.MODEL, messages=USER,
+            negative_cache=NegativeCache(),
+        )
+        assert (result.source, result.outcome) == ("estimate", outcome)
+        assert result.total > 0
+
+    async def test_a_working_client_is_labelled_native(self) -> None:
+        result = await count_prompt_tokens(
+            self._Llm(_FakeClient(tokens=77)), model=self.MODEL, messages=USER,
+            negative_cache=NegativeCache(),
+        )
+        assert (result.total, result.source, result.outcome) == (77, "native", "ok")

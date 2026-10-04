@@ -1,114 +1,123 @@
-"""Unit tests for the HF-tokenizer counter (Ollama adapter)."""
+"""HF-tokenizer counter (Ollama): local files only, remembers failures, raises.
+
+It used to call ``AutoTokenizer.from_pretrained(<ollama model name>)`` on every
+count (a Hub lookup per turn, for a name that is not a repo id), return the
+character heuristic as a successful count on failure, and log a WARNING each time.
+"""
 
 from __future__ import annotations
 
-from importlib.util import find_spec
-from unittest.mock import MagicMock, patch
+import logging
+import sys
+import types
+from unittest.mock import MagicMock
 
 import pytest
 
-from primer.llm._tokenizer.hf import (
-    _TOKENIZER_CACHE,
-    count_tokens_hf,
-    invalidate_hf_cache,
-)
-from primer.model.chat import Message, TextPart
+from primer.llm._tokenizer import hf as hf_mod
+from primer.llm._tokenizer.hf import count_tokens_hf_detailed, invalidate_hf_cache
+from primer.model.chat import ImagePart, Message, TextPart
+from primer.model.except_ import TokenCounterUnavailable
+from primer.model.media_tokens import IMAGE_TOKENS
+
+REPO = "Qwen/Qwen2.5-7B-Instruct"
+MSGS = [Message(role="user", parts=[TextPart(text="hello")])]
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache() -> None:
+def _clear() -> None:
+    invalidate_hf_cache()
+    yield
     invalidate_hf_cache()
 
 
-@pytest.mark.skipif(
-    find_spec("transformers") is None,
-    reason="exact-tokenizer path needs the 'huggingface' extra",
-)
-class TestCountTokensHF:
-    # transformers is imported lazily inside _get_tokenizer (it lives in
-    # the optional 'huggingface' extra), so the patch target is the
-    # library itself, not an attribute on the hf module. That also means
-    # these cannot run at all without it: patch() has to import the
-    # module to replace an attribute on it. The fallback tests below
-    # deliberately stay unskipped, since they cover the absent case.
-    def test_uses_cached_tokenizer(self) -> None:
-        fake_tok = MagicMock()
-        fake_tok.encode.return_value = [1, 2, 3, 4, 5]
-
-        with patch(
-            "transformers.AutoTokenizer"
-        ) as mock_auto:
-            mock_auto.from_pretrained.return_value = fake_tok
-            msgs = [Message(role="user", parts=[TextPart(text="hello")])]
-            n1 = count_tokens_hf(model="llama3.2", messages=msgs, tools=None)
-            n2 = count_tokens_hf(model="llama3.2", messages=msgs, tools=None)
-            assert n1 == n2 == 5
-            assert mock_auto.from_pretrained.call_count == 1
-
-    def test_falls_back_on_load_failure(self) -> None:
-        with patch(
-            "transformers.AutoTokenizer"
-        ) as mock_auto:
-            mock_auto.from_pretrained.side_effect = OSError("not on hub")
-            msgs = [Message(role="user", parts=[TextPart(text="hello")])]
-            n = count_tokens_hf(model="unknown-model", messages=msgs, tools=None)
-            # Char fallback: 8 + ceil(5/4)=2 = 10
-            assert n == 10
-
-    def test_different_models_use_different_tokenizers(self) -> None:
-        fake_a = MagicMock(); fake_a.encode.return_value = [1] * 3
-        fake_b = MagicMock(); fake_b.encode.return_value = [1] * 7
-        with patch("transformers.AutoTokenizer") as mock_auto:
-            mock_auto.from_pretrained.side_effect = [fake_a, fake_b]
-            msgs = [Message(role="user", parts=[TextPart(text="x")])]
-            na = count_tokens_hf(model="llama3.2", messages=msgs, tools=None)
-            nb = count_tokens_hf(model="qwen2.5", messages=msgs, tools=None)
-            assert na == 3
-            assert nb == 7
+@pytest.fixture
+def fake_transformers(monkeypatch):
+    """A stand-in ``transformers`` so these run with or without the extra."""
+    auto = MagicMock()
+    module = types.ModuleType("transformers")
+    module.AutoTokenizer = auto
+    monkeypatch.setitem(sys.modules, "transformers", module)
+    return auto
 
 
-def test_count_tokens_hf_falls_back_without_transformers(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+def _tok(n: int) -> MagicMock:
+    tok = MagicMock()
+    tok.encode.return_value = [1] * n
+    return tok
+
+
+def test_a_cached_repo_tokenizer_counts_and_is_never_exact(fake_transformers) -> None:
+    fake_transformers.from_pretrained.return_value = _tok(5)
+    got = count_tokens_hf_detailed(model=REPO, messages=MSGS)
+    assert (got.total, got.exact, got.estimated_components) == (5, False, ())
+    assert got.encoding == REPO
+
+
+def test_the_hub_is_never_contacted_from_a_turn(fake_transformers) -> None:
+    fake_transformers.from_pretrained.return_value = _tok(1)
+    count_tokens_hf_detailed(model=REPO, messages=MSGS)
+    assert fake_transformers.from_pretrained.call_args.kwargs == {"local_files_only": True}
+
+
+def test_the_tokenizer_is_loaded_once_per_model(fake_transformers) -> None:
+    fake_transformers.from_pretrained.return_value = _tok(5)
+    for _ in range(3):
+        count_tokens_hf_detailed(model=REPO, messages=MSGS)
+    assert fake_transformers.from_pretrained.call_count == 1
+
+
+def test_different_models_use_different_tokenizers(fake_transformers) -> None:
+    fake_transformers.from_pretrained.side_effect = [_tok(3), _tok(7)]
+    assert count_tokens_hf_detailed(model="a/one", messages=MSGS).total == 3
+    assert count_tokens_hf_detailed(model="b/two", messages=MSGS).total == 7
+
+
+@pytest.mark.parametrize("name", ["llama3.1:8b", "llama3.2", "mistral:latest"])
+def test_an_ollama_tag_is_not_a_hub_repo_id_and_never_reaches_transformers(
+    fake_transformers, name,
 ) -> None:
-    """With transformers uninstalled, counting degrades to the char heuristic.
+    with pytest.raises(TokenCounterUnavailable, match="not a Hub repo id"):
+        count_tokens_hf_detailed(model=name, messages=MSGS)
+    fake_transformers.from_pretrained.assert_not_called()
 
-    transformers moved to the optional 'huggingface' extra, so a core
-    install has no exact tokenizer. That must cost accuracy, not raise:
-    Ollama token counting is on the hot path of every turn.
 
-    The count alone does not prove this, because a failed Hub load falls
-    back to the same number. The log discriminates: the absent-dependency
-    path is a debug about the extra, not a warning about a load failure.
-    """
-    import logging
-    import sys
+def test_an_unavailable_model_is_remembered_not_retried(fake_transformers, caplog) -> None:
+    fake_transformers.from_pretrained.side_effect = OSError("not cached")
+    with caplog.at_level(logging.WARNING, logger="primer.llm._tokenizer.hf"):
+        for _ in range(3):
+            with pytest.raises(TokenCounterUnavailable, match="not available locally"):
+                count_tokens_hf_detailed(model=REPO, messages=MSGS)
+    assert fake_transformers.from_pretrained.call_count == 1
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
 
-    from primer.llm._tokenizer import hf as hf_mod
-    from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 
-    hf_mod.invalidate_hf_cache()
-    # sys.modules[name] = None makes `import name` raise ImportError, which
-    # is how an absent extra presents at the lazy import site.
+def test_missing_transformers_is_unavailable_and_remembered(monkeypatch) -> None:
+    # sys.modules[name] = None makes `import name` raise ImportError, which is
+    # how an absent extra presents at the lazy import site.
     monkeypatch.setitem(sys.modules, "transformers", None)
-    messages = [Message(role="user", parts=[TextPart(text="hello world")])]
+    with pytest.raises(TokenCounterUnavailable, match="not installed"):
+        count_tokens_hf_detailed(model=REPO, messages=MSGS)
+    with pytest.raises(TokenCounterUnavailable, match="not installed"):
+        count_tokens_hf_detailed(model=REPO, messages=MSGS)
 
-    with caplog.at_level(logging.DEBUG, logger="primer.llm._tokenizer.hf"):
-        got = hf_mod.count_tokens_hf(model="llama3", messages=messages)
 
-    assert got == count_tokens_char_fallback(messages=messages, tools=None)
-    assert any("not installed" in r.getMessage() for r in caplog.records), (
-        "expected the absent-dependency path, not a Hub load failure"
-    )
+def test_media_is_estimated_not_serialised(fake_transformers) -> None:
+    fake_transformers.from_pretrained.return_value = _tok(4)
+    got = count_tokens_hf_detailed(model=REPO, messages=[Message(role="user", parts=[
+        TextPart(text="look"), ImagePart(mime_type="image/png", data=b"\x00"),
+    ])])
+    assert got.total == 4 + IMAGE_TOKENS
+    assert got.estimated_components == ("media",)
+
+
+def test_it_never_returns_a_heuristic_for_a_failure(fake_transformers) -> None:
+    fake_transformers.from_pretrained.side_effect = OSError("x")
+    with pytest.raises(TokenCounterUnavailable):
+        count_tokens_hf_detailed(model=REPO, messages=MSGS)
 
 
 def test_hf_module_does_not_import_transformers_eagerly() -> None:
-    """The import must be inside _get_tokenizer, not at module scope.
-
-    A module-level import would drag transformers into every core install
-    the moment anything touches the Ollama tokenizer path, which is the
-    dependency this task removes.
-    """
-    from primer.llm._tokenizer import hf as hf_mod
-
+    """The import must be inside _get_tokenizer, not at module scope: a
+    module-level import would drag transformers into every core install."""
     assert not hasattr(hf_mod, "AutoTokenizer")

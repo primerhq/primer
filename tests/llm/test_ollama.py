@@ -1085,8 +1085,11 @@ class TestCountTokens:
         from unittest.mock import patch
         llm = OllamaLLM(_make_provider())
         msgs = [Message(role="user", parts=[TextPart(text="hi")])]
+        from primer.model.token_count import TokenCount
+
         with patch(
-            "primer.llm.ollama.count_tokens_hf", return_value=17,
+            "primer.llm.ollama.count_tokens_hf_detailed",
+            return_value=TokenCount(total=17, exact=False),
         ) as mock_count:
             n = await llm.count_tokens(
                 model="llama3.2", messages=msgs, tools=None,

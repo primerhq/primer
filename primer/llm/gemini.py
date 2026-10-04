@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from primer.common.google_errors import classify_google_exception
 from primer.int.llm import LLM
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
-from primer.llm._tokenizer.gemini import count_tokens_gemini
+from primer.llm._tokenizer.gemini import count_tokens_gemini_detailed
 from primer.model.except_ import (
     ConfigError,
     UnsupportedContentError,
@@ -73,6 +73,7 @@ from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
 )
+from primer.model.token_count import TokenCount
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
 
@@ -855,9 +856,27 @@ class GeminiLLM(LLM):
         messages: list[Message],
         tools: list[Tool] | None = None,
     ) -> int:
-        client = self._get_client()
-        return await count_tokens_gemini(
-            client=client, model=model, messages=messages, tools=tools,
+        return (
+            await self.count_tokens_detailed(
+                model=model, messages=messages, tools=tools,
+            )
+        ).total
+
+    async def count_tokens_detailed(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> TokenCount:
+        """Gemini's count endpoint over the contents only; it raises.
+
+        The Developer-API client rejects ``system_instruction``/``tools`` on a
+        count, so system text, tool schemas and media are estimated and reported
+        as estimated components. See ``_tokenizer/gemini.py``.
+        """
+        return await count_tokens_gemini_detailed(
+            client=self._get_client(), model=model, messages=messages, tools=tools,
         )
 
     def _get_client(self) -> genai.Client:
