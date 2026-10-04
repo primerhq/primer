@@ -79,33 +79,36 @@ def no_real_network(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
-def offline_tiktoken(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Serve tiktoken encodings from memory instead of downloading them.
+def offline_tiktoken(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> list[str]:
+    """Serve tiktoken encodings from memory instead of loading real vocabularies.
 
-    ``tiktoken.get_encoding("o200k_base")`` fetches the BPE vocabulary from
-    openaipublic.blob.core.windows.net on first use and caches it on disk.
-    On a warm cache that is invisible, which is why these tests looked
-    network-free (identical results under ``unshare -rn``) on a developer
-    machine; on a cold CI runner the first token-count test downloads
-    ~5 MB, and the guard above, correctly, fails it.
+    Counting normally goes through ``primer.llm._tokenizer._tiktoken_offline``,
+    which reads a verified vocabulary file from the cache directory. Those
+    files are ~5 MB, absent on a cold CI runner, and not what these tests are
+    about. The seam ``_tiktoken_offline.load_encoding`` is therefore replaced
+    by a real ``tiktoken.Encoding`` over a byte-level vocabulary: the real
+    class and ``encode_ordinary`` contract, a deterministic synthetic
+    vocabulary (one token per UTF-8 byte). What this keeps testing is primer's
+    own logic: which encoding a model name maps to, how messages and tools are
+    serialised, the per-message overhead, and that adapters route
+    ``count_tokens`` through it. What it deliberately does not test is tiktoken's
+    real tokenisation, which is tiktoken's behaviour, not ours.
 
-    Each requested encoding is replaced by a real ``tiktoken.Encoding`` over
-    a byte-level vocabulary: the real class and ``encode`` contract, a
-    deterministic synthetic vocabulary (one token per UTF-8 byte). What this
-    keeps testing is primer's own logic: which encoding a model name maps
-    to, how messages and tools are serialised, the per-message overhead, and
-    that adapters route ``count_tokens`` through it. What it deliberately no
-    longer tests is tiktoken's real tokenisation, which is tiktoken's
-    behaviour, not ours.
+    A test of the loader itself marks ``@pytest.mark.real_tiktoken_loader`` to
+    opt out and exercise the real code (against files it builds in ``tmp_path``).
 
     Returns the encoding names requested, in order, so a test can assert the
     selection (e.g. gpt-4 -> cl100k_base) rather than only "n > 0".
     """
-    from primer.llm._tokenizer import openai as tok
-
     requested: list[str] = []
+    if request.node.get_closest_marker("real_tiktoken_loader"):
+        return requested
 
-    def _get_encoding(name: str) -> tiktoken.Encoding:
+    from primer.llm._tokenizer import _tiktoken_offline
+
+    def _load_encoding(name: str, **_kwargs) -> tiktoken.Encoding:
         requested.append(name)
         return tiktoken.Encoding(
             name=f"offline-{name}",
@@ -114,5 +117,5 @@ def offline_tiktoken(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             special_tokens={},
         )
 
-    monkeypatch.setattr(tok, "_get_encoding", _get_encoding)
+    monkeypatch.setattr(_tiktoken_offline, "load_encoding", _load_encoding)
     return requested

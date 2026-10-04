@@ -238,6 +238,33 @@ class TransientError(PrimerError):
     """
 
 
+class TokenCounterUnavailable(PrimerError):
+    """A token counter cannot produce a count right now.
+
+    Raised by the counters themselves (a missing or corrupt tokenizer
+    vocabulary, a tokenizer the host does not have, a counter queue that did
+    not start in time, no aggregated member that can count). It is never a
+    failure of the turn: ``primer.llm.counting.count_prompt_tokens`` is the one
+    place that turns it into a labelled estimate. Counters must raise this (or
+    a mapped provider error) rather than quietly return a heuristic number,
+    because a heuristic returned as a count would be labelled native.
+
+    ``transient`` says whether retrying later can help: ``False`` for a missing
+    vocabulary (it will not appear by itself), ``True`` for a queue wait that
+    timed out. The wrapper only negative-caches transient failures.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        transient: bool = False,
+        cause: Exception | None = None,
+    ) -> None:
+        super().__init__(message, cause=cause)
+        self.transient = transient
+
+
 class LeaseLostError(PrimerError):
     """Internal: the scheduler detected a lost lease on session release.
 

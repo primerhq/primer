@@ -892,8 +892,11 @@ class OpenResponsesLLM(LLM):
         tools: list[Tool] | None = None,
     ) -> int:
         """Delegate to ``primer.llm._tokenizer.openai`` (tiktoken)."""
+        from primer.llm._tokenizer._executor import run_counter
         from primer.llm._tokenizer.openai import count_tokens_openai
-        return count_tokens_openai(model=model, messages=messages, tools=tools)
+        return await run_counter(
+            count_tokens_openai, model=model, messages=messages, tools=tools,
+        )
 
     def _get_client(self) -> AsyncOpenAI:
         """Construct the AsyncOpenAI client lazily on first use."""
