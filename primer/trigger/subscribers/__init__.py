@@ -142,6 +142,11 @@ def session_holds_skip_gate(
       legitimately take hours (a graph build, a long exec), and firing a second session
       beside it is worse than skipping - two runs writing the same workspace state can
       clobber each other. Elapsed time is deliberately NOT consulted here.
+    * A PARKED session always holds it. A park does not bump ``turn_no``, so a first turn
+      waiting on a human approval, ``ask_user`` or a timer reads turn 0 for as long as it
+      waits; judged by the next bullet alone it would lose the gate after the grace and a
+      second session would start beside the one still waiting on its human. A park is
+      bounded by its own ``parked_until`` (``TimeoutSweeper`` / ``TimerScheduler``).
     * ``turn_no == 0`` holds it only within :data:`SKIP_GATE_START_GRACE`. The first turn
       is claimed moments after creation, so a row still at turn 0 well past that lost its
       claim and will never run.
@@ -151,6 +156,8 @@ def session_holds_skip_gate(
     if session.cancel_requested:
         return False
     if session.turn_no > 0:
+        return True
+    if session.parked_status is not None:
         return True
     ref = session.started_at or session.created_at
     if ref is None:  # defensive: unset clock -> treat as live rather than fire twice

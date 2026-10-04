@@ -340,6 +340,33 @@ def test_long_running_turn_holds_the_gate_regardless_of_age(
     assert session_holds_skip_gate(working) is True
 
 
+def test_first_turn_parked_on_a_human_holds_the_gate_past_the_grace(
+    seeded_workspace, seeded_agent,
+):
+    """A park does not bump turn_no, so a first turn waiting on an approval reads turn 0.
+    It is waiting, not lost: a second session beside it would duplicate the work."""
+    from primer.trigger.subscribers import session_holds_skip_gate
+    for status in ("parked", "resumable"):
+        waiting = _seed_session(
+            f"se-{status}", seeded_workspace.id, seeded_agent.id,
+            parked_status=status,
+            parked_event_key="tool_approval:se-x:call_0",
+        )
+        assert session_holds_skip_gate(waiting) is True, status
+
+
+def test_cleared_park_does_not_shelter_a_session_that_never_ran(
+    seeded_workspace, seeded_agent,
+):
+    """Control: only an ACTIVE park exempts a turn-0 session from the grace."""
+    from primer.trigger.subscribers import session_holds_skip_gate
+    cleared = _seed_session(
+        "se-cleared", seeded_workspace.id, seeded_agent.id,
+        parked_status=None, parked_event_key="tool_approval:se-x:call_0",
+    )
+    assert session_holds_skip_gate(cleared) is False
+
+
 def test_cancel_requested_releases_the_gate(seeded_workspace, seeded_agent):
     """Cancel is a flag the worker reads on its next step; a session that never started
     has nobody to read it, so cancel must reopen the gate by itself."""
