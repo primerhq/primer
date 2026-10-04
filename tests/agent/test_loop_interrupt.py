@@ -119,6 +119,36 @@ class _ClassStreamLLM:
         return self.stream_obj
 
 
+class _HungAfterDoneStream:
+    """An SDK-style stream object (not an async generator): it delivers one complete tool round and
+    then never ends. Cancelling a wait on it does not finish it, so the loop must close it."""
+
+    def __init__(self, events) -> None:
+        self._events = list(events)
+        self.closed = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._events:
+            return self._events.pop(0)
+        await _block()
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+class _OneStreamLLM:
+    def __init__(self, stream_obj) -> None:
+        self.stream_obj = stream_obj
+        self.calls = 0
+
+    def stream(self, **_kwargs):
+        self.calls += 1
+        return self.stream_obj
+
+
 class _Manager:
     """Tools run immediately unless ``gate`` is given, then they wait for it."""
 
@@ -277,6 +307,36 @@ class TestTheToolBatchIsNotInterruptedHere:
         assert manager.finished == 1, "the requested tool call was dropped"
         assert [m.role for m in messages_out] == ["assistant", "tool"]
         assert interrupted == [True] and llm.calls == 1
+
+    async def test_a_stream_that_hangs_after_its_terminal_event_does_not_hold_a_stop(self) -> None:
+        """The round is complete (Done and a tool call are in) but the provider never closes the
+        stream. A Stop must not wait out the stall timeout (300s by default, then the turn FAILS):
+        the stream is closed, the completed round is processed normally (the tool runs, paired), and
+        the turn ends before the next model call."""
+        interrupt = asyncio.Event()
+        manager = _Manager()
+        llm = _ScriptedLLM(
+            [*_tool_round(1), "BLOCK"],
+            [TextDelta(text="after", index=0), Done(stop_reason="stop", raw_reason="stop")],
+        )
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=0.1)
+
+        assert manager.finished == 1, "the completed round's tool call was dropped"
+        assert [m.role for m in messages_out] == ["assistant", "tool"]
+        assert interrupted == [True] and llm.calls == 1
+        assert llm.closed == 1, "the hung provider stream was left open"
+
+    async def test_a_provider_stream_object_that_hangs_after_done_is_closed_by_the_loop(self) -> None:
+        stream = _HungAfterDoneStream(_tool_round(1))
+        llm = _OneStreamLLM(stream)
+        manager = _Manager()
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=asyncio.Event(), manager=manager, stop_after=0.1)
+
+        assert manager.finished == 1 and [m.role for m in messages_out] == ["assistant", "tool"]
+        assert interrupted == [True] and llm.calls == 1
+        assert stream.closed == 1, "the hung SDK stream was left open after the Stop"
 
     async def test_completed_rounds_stay_and_only_the_interrupted_round_is_dropped(self) -> None:
         llm = _ScriptedLLM(_tool_round(1), [TextDelta(text="par", index=0), "BLOCK"])

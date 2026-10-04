@@ -354,13 +354,25 @@ async def run_agent_turn(
             while True:
                 try:
                     # The scope wraps ONLY the await, never the yield below: it cancels the
-                    # task that entered it (see primer.agent.interrupt). Once the terminal
-                    # event is in, the round is complete and only the end of the stream is
-                    # left to drain: that is not a wait for the model, and stopping there
-                    # would drop a tool call the model had already finished asking for.
-                    async with interruptible(interrupt if held_done is None else None):
+                    # task that entered it (see primer.agent.interrupt).
+                    async with interruptible(interrupt):
                         event = await stream_it.__anext__()
                 except StopAsyncIteration:
+                    break
+                except Interrupted:
+                    if held_done is None:
+                        raise
+                    # The terminal event is already in, so the round is COMPLETE and only the
+                    # end of the stream is left to drain. A Stop here must not discard it
+                    # (that would drop a tool call the model had finished asking for), and a
+                    # provider that never closes the stream must not hold the Stop for the
+                    # stall timeout: close it and treat it as the end of the stream. The
+                    # completed round is processed normally; the Stop is honoured before the
+                    # next model call.
+                    aclose = getattr(stream_it, "aclose", None)
+                    if aclose is not None:
+                        with contextlib.suppress(Exception):
+                            await aclose()
                     break
                 buffered.append(event)
                 if isinstance(event, Usage):

@@ -1154,6 +1154,16 @@ async def run_one_session_turn(
         async with session_lifecycle_lock().acquire(session_id):
             await _clear_turn_running(session_storage, session_id)
 
+    # A Cancel that landed AFTER the stream's last event (the model's terminal event is in, the
+    # executor ended normally) was never seen by the loops above: an executor that owns the Stop
+    # event does not have dispatch break on a set event, and none of them was waiting. Left alone
+    # the turn would complete WAITING with cancel_requested still set ("I cancelled it and nothing
+    # happened"). The row is the truth, so ask it before taking the clean-completion path.
+    if not cancel_requested:
+        late = await session_storage.get(session_id)
+        if late is not None and late.cancel_requested and late.status != SessionStatus.ENDED:
+            cancel_requested = True
+
     # ------------------------------------------------------------------
     # 5b. Cancel path — write CANCELLED record, transition row to ENDED
     # ------------------------------------------------------------------
@@ -1247,6 +1257,12 @@ async def run_one_session_turn(
     # it here too -- every terminal path must, or it leaks into a future
     # turn and can downgrade a later genuine Cancel to a Stop.
     async with session_lifecycle_lock().acquire(session_id):
+        # The Cancel route takes this same lock, so the row read here cannot be stale: a Cancel that
+        # landed in the window since the check above wins over whatever the turn's own stop reason
+        # mapped to (a cancelled session must not come to rest WAITING).
+        locked = await session_storage.get(session_id)
+        if locked is not None and locked.cancel_requested and locked.status != SessionStatus.ENDED:
+            new_status, ended_reason = SessionStatus.ENDED, "cancelled"
         await _transition_session_status(
             session_storage,
             session,
@@ -1904,6 +1920,19 @@ async def _clear_interrupt_requested(session_storage, session_id: str) -> None:
         )
 
 
+async def clear_interrupt_for_resume(session_storage, session_id: str) -> None:
+    """Drop a Stop that was recorded before a park is resumed.
+
+    A later explicit human action (an approval, an answer) wins over an earlier Stop. The
+    ``/interrupt`` route refuses a Stop on a parked session, so a flag can only be on the row here
+    through a race with the park itself; left alone it would be honoured by the first poll of the
+    turn that runs after the resume and kill the continuation before its first token. Taken under
+    the lifecycle lock like every other write of this flag.
+    """
+    async with session_lifecycle_lock().acquire(session_id):
+        await _clear_interrupt_requested(session_storage, session_id)
+
+
 async def _clear_turn_running(session_storage, session_id: str) -> None:
     """Best-effort reset of ``turn_status``/``turn_started_at`` (and the
     finer-grained ``agent_phase``/``agent_phase_turn_no``/
@@ -2240,6 +2269,7 @@ async def _watch_bus_for_cancel(
 async def _poll_row_for_interrupt(
     session_storage: Any, session_id: str, cancel_event: asyncio.Event,
 ) -> None:
+    first_read = True
     while True:
         try:
             row = await session_storage.get(session_id)
@@ -2254,12 +2284,18 @@ async def _poll_row_for_interrupt(
             if row is not None and row.interrupt_requested:
                 if not cancel_event.is_set():
                     cancel_event.set()
-                    _metrics.session_interrupts_via_poll_total.inc()
+                    # The first read is the turn's own start: a flag already there was recorded
+                    # BEFORE the turn began (a queued Stop), which is not a bus fault. Only a flag
+                    # that appears on a later read was requested while the turn ran and missed the
+                    # bus, which is the case that means the bus is dropping Stops.
+                    reason = "queued_before_turn" if first_read else "missed_while_running"
+                    _metrics.session_interrupts_via_poll_total.labels(reason).inc()
                     logger.info(
-                        "session %s: Stop reached this turn through the session row, not the "
-                        "bus (a publish failed or was missed)", session_id,
+                        "session %s: Stop reached this turn through the session row, not the bus (%s)",
+                        session_id, reason,
                     )
                 return
+            first_read = False          # only a read that SUCCEEDED and found nothing is "the start"
         await asyncio.sleep(_INTERRUPT_POLL_S)
 
 

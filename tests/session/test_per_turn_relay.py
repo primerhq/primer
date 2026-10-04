@@ -133,3 +133,68 @@ async def test_quiet_binding_still_suppresses_a_mapped_session():
         {SESSION_REPLY_BINDING_KEY: {**_BINDING, "quiet": True}}, "stop",
     )
     assert dispatcher.texts == []
+
+
+async def test_a_stopped_turn_does_not_leak_its_partial_text_into_the_next_turns_relay():
+    """A Stop writes what the model had streamed as durable records (flush_partial_output) before
+    CANCELLED. The next turn's relay must carry only ITS reply, not 'partial answer' + its reply."""
+    import asyncio
+
+    from primer.agent.interrupt import Interrupted, interruptible
+
+    sp = _FakeStorageProvider()
+    sessions = sp.get_storage(WorkspaceSession)
+    await sessions.create(WorkspaceSession(
+        id="s1", workspace_id="w1", binding=AgentSessionBinding(agent_id="ag1"),
+        status=SessionStatus.RUNNING, created_at=datetime.now(UTC), turn_status="running",
+        metadata={SESSION_REPLY_BINDING_KEY: _BINDING},
+    ))
+    bus = InMemoryEventBus()
+    await bus.initialize()
+    io = _FakeWorkspaceIO()
+    dispatcher = _RecordingDispatcher()
+
+    class _StoppedMidAnswer:
+        last_done_reason = None
+        was_interrupted = False
+        event = None
+
+        def bind_interrupt_event(self, event):
+            self.event = event
+
+        async def invoke(self, messages, **kwargs):
+            yield TextDelta(text="Here is a long partial ans", index=0)
+            try:
+                async with interruptible(self.event):
+                    await asyncio.Event().wait()
+            except Interrupted:
+                self.was_interrupted = True
+
+    def deps(executor):
+        async def build(_session):
+            return executor
+
+        return SessionDispatchDeps(
+            storage_provider=sp, workspace_io=io, event_bus=bus, build_executor=build,
+            channel_dispatcher=dispatcher,
+        )
+
+    first = asyncio.create_task(run_one_session_turn(_lease("s1"), deps(_StoppedMidAnswer())))
+    await asyncio.sleep(0.05)
+    row = await sessions.get("s1")
+    row.interrupt_requested = True
+    await sessions.update(row)
+    await bus.publish("session:s1:cancel", {})
+    await asyncio.wait_for(first, 3.0)
+    assert dispatcher.texts == [], "a stopped turn relays nothing"
+
+    row = await sessions.get("s1")
+    row.status = SessionStatus.RUNNING
+    await sessions.update(row)
+    await run_one_session_turn(_lease("s1"), deps(_ScriptedExecutor(
+        [TextDelta(text="Short reply.", index=0), Done(stop_reason="stop", raw_reason="stop")],
+        last_done_reason="stop",
+    )))
+    await bus.aclose()
+
+    assert dispatcher.texts == ["Short reply."]

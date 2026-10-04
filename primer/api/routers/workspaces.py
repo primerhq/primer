@@ -1913,9 +1913,11 @@ async def interrupt_session(
     ``session:{sid}:cancel``. The worker running the turn stops it at its next wait for
     the model and lands the session in WAITING (alive). The bus message is the fast path
     (milliseconds); the flag is the durable one, which the worker re-reads every couple of
-    seconds (``primer.session.dispatch._INTERRUPT_POLL_S``). So a publish that fails here is
-    logged and counted but still answers 200: the Stop is delayed, not lost.
-    Non-running: 200 no-op. ENDED: 409 (studio-agents-interact §4.4).
+    seconds while the turn runs (``primer.session.dispatch._INTERRUPT_POLL_S``). So a publish
+    that fails here is logged and counted but still answers 200: the Stop is delayed, not lost.
+    Non-running: 200 no-op. ENDED: 409 (studio-agents-interact §4.4). PARKED (waiting on an
+    approval, an answer or a timer): 409, and nothing is recorded, because no turn is running
+    and a flag left on the row would kill the continuation after a later decision.
     """
     async with session_lifecycle_lock().acquire(session_id):
         s = await sessions.get(session_id)
@@ -1926,6 +1928,16 @@ async def interrupt_session(
             )
         if s.status == SessionStatus.ENDED:
             raise ConflictError(f"Session {session_id!r} has ended")
+        if s.status == SessionStatus.RUNNING and s.parked_status is not None:
+            # Parked (waiting on an approval, an answer or a timer): no turn is running, so there
+            # is nothing to stop. Recording the flag anyway would let it outlive the park and kill
+            # the continuation after a LATER human decision (approve hours later, the approved tool
+            # runs, then the continuation is killed before its first token). A later explicit human
+            # action wins over an earlier Stop, so the Stop is refused instead of parked on the row.
+            raise ConflictError(
+                f"Session {session_id!r}: no turn is running; the session is waiting for you "
+                "(an approval, an answer or a timer). Use Cancel to end it."
+            )
         if s.status == SessionStatus.RUNNING:
             s.interrupt_requested = True
             s.cancel_requested_at = datetime.now(timezone.utc)
