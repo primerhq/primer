@@ -106,7 +106,7 @@ a one-line reason; it may not simply be omitted.
 - The narrowed sweep stays green:
 
   ```bash
-  uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
+  uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e --ignore=tests/e2e --ignore=tests/integration
   ```
 
   The suite runs in parallel by default (`-n auto --dist loadscope` is baked

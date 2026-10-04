@@ -48,7 +48,7 @@ jobs:
         run: >-
           uv run pytest tests/ -q
           --ignore=tests/distributed --ignore=tests/ui_e2e
-          --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
+          --ignore=tests/e2e --ignore=tests/integration
       - name: Render smoke config
         run: |
           mkdir -p tests/.e2e/logs
