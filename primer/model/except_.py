@@ -50,6 +50,22 @@ class ConfigError(PrimerError):
     """Programmer or setup error — invalid configuration or arguments."""
 
 
+class ContextOverflowUnrecoverable(ConfigError):
+    """The prompt does not fit the model's context window and compaction cannot make it fit.
+
+    Raised by the executor when a turn was rejected as a context overflow and the forced compaction
+    found nothing it could shrink (the fixed part of the prompt, the system prompt plus the tool
+    schemas, or the input the model has not answered, already fills the window): replaying the
+    byte-identical prompt would fail the same way. ``code`` is ``context_overflow_unrecoverable``.
+    ``__cause__`` is the provider's rejection.
+    """
+
+    CODE = "context_overflow_unrecoverable"
+
+    def __init__(self, message: str, *, cause: BaseException | None = None) -> None:
+        super().__init__(message, code=self.CODE, cause=cause)
+
+
 class ModelNotFoundError(ConfigError):
     """Requested model isn't in the adapter's declared models list."""
 

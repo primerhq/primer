@@ -53,7 +53,7 @@ Four rules make that safe:
   surface.
 
 The message log stays append-only under all of this. Compaction appends a
-`compaction_marker` carrying its summary, the span it replaced and the tail it kept verbatim (`kept_tail_messages`, read back by `reconstruct_compacted_history` right after the summary) and its verdict (`outcome`, `unreducible`, `trigger_tokens`); a compaction that could not reduce the prompt and wrote no marker leaves a `compaction_note` record instead (display and derivation only, never history); rewind
+`compaction_marker` carrying its summary, the span it replaced and the tail it kept verbatim (`kept_tail_messages`, read back by `reconstruct_compacted_history` right after the summary) and its verdict (`outcome`, `unreducible`, `trigger_tokens`, `fixed_overhead_tokens`); a compaction that could not reduce the prompt and wrote no marker leaves a `compaction_note` record instead (display and derivation only, never history); rewind
 appends a `rewind_marker` naming the seq to keep. Neither deletes a line,
 so the read-time replay walk (`primer/session/replay.py`) computes what a
 reader currently sees by folding markers in order. That is why rewind is

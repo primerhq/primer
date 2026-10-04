@@ -98,11 +98,14 @@ The instrumentation plumbing lives in `primer/observability/`:
   `from`-import would keep writing to the dead registry after any reset.
 - `compaction_outcomes_total{outcome}` is incremented by `CompactionStrategy` (`primer/agent/compaction.py`) once per
   compaction: `pruned` (tier 1 sufficed), `summarised`, `unreducible` (nothing could be summarised, so no marker was
-  written) or `insufficient` (summarised, and the result is still at or over the trigger). The last two also log a
-  WARNING and are in the session record (the marker's payload, or a `compaction_note` record when there is no marker).
-  A rising `unreducible` rate means sessions whose prompt is mostly input the model has not answered. It does NOT
-  detect a fixed part (system prompt, tool schemas) too large for the context: the trigger, the tail budget and the
-  re-measure count messages only until task 01a10914 lands. `outcome` is a closed enum, so the label stays bounded.
+  written), `skipped` (the trigger cannot be reached and the prompt still fits the window, so it was deliberately not
+  compacted) or `insufficient` (summarised, and the result is still at or over the trigger). `unreducible` and
+  `insufficient` also log a WARNING and are in the session record (the marker's payload, or a `compaction_note`
+  record when there is no marker); `skipped` logs at INFO and writes nothing. The trigger, the tail budget and the
+  re-measure count the FIXED overhead (system prompt and tool schemas), so a rising `unreducible` rate with reason
+  `fixed_over_budget` is an agent whose fixed part does not fit its model's window (too many or too large tool
+  schemas), and a steady `skipped` rate is one whose fixed part keeps it over the trigger without overflowing.
+  `outcome` is a closed enum, so the label stays bounded.
 - `metrics.ALLOWED_LABEL_NAMES` plus `metrics.registered_label_names()` are the
   cardinality guard. Every label on every instrument must be a reviewed name, and
   `session_id` is in neither set: a per-session dimension would grow the series
