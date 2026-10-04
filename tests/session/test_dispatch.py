@@ -1528,11 +1528,12 @@ async def test_real_cancel_wins_over_stuck_interrupt_flag(
 
     # The functionally meaningful assertion: cancel must win the
     # disambiguation, landing the row ENDED/cancelled (terminal) rather
-    # than WAITING (a Stop leaves the session alive). Note the CANCELLED
-    # record's payload["reason"] text is not a reliable signal here: it's
-    # sourced from a `cancel_reason` local that's hardcoded to
-    # "operator_interrupt" on both branches (a pre-existing, unrelated
-    # cosmetic gap) -- the row's status/ended_reason is the real contract.
+    # than WAITING (a Stop leaves the session alive). The CANCELLED record's
+    # reason follows the same decision: "operator_cancel" for a Cancel (it
+    # used to be "operator_interrupt" on both branches, which made the
+    # console label a real Cancel "stopped").
+    cancelled = next(r for r in records if r["kind"] == SessionMessageKind.CANCELLED)
+    assert cancelled["payload"]["reason"] == "operator_cancel"
     row = await storage.get(seeded_session.id)
     assert row.status == SessionStatus.ENDED, (
         f"cancel was downgraded to a stop: row left at {row.status!r} "
