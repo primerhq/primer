@@ -9,12 +9,31 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+
+
+@dataclass(frozen=True)
+class ToolEmit:
+    """One call of a multi-call response (``Rule.emit_tools``)."""
+
+    name: str
+    args: dict[str, Any] = field(default_factory=dict)
+    # Defaults to ``call_<position>``, unique within the response, so a batch can be told apart by id on
+    # resume (the single-call ``Rule.emit_tool`` keeps its historical fixed ``call_0``).
+    call_id: str | None = None
+
+
+# How a multi-call response is chunked on the wire. Real providers differ and the adapter must cope with all:
+#   per_call   one delta per call carrying id, name and the whole arguments (OpenAI-style, small calls)
+#   batched    every call in ONE delta (some gateways)
+#   fragmented headers (id + name, empty arguments) for every index first, then the argument text in two
+#              fragments per index, interleaved across indexes (what a long parallel batch streams like)
+ToolChunking = Literal["per_call", "batched", "fragmented"]
 
 
 @dataclass
@@ -48,6 +67,25 @@ class Rule:
     # 0/unset so every existing rule keeps resolving instantly.
     chunk_delay_s: float = 0.0
     text_chunk_words: int = 0
+    # Several tool calls in ONE assistant response (parallel tool use), each with its own stream ``index``.
+    # Mutually exclusive with ``emit_tool``. See :class:`ToolEmit` and :data:`ToolChunking`.
+    emit_tools: list[ToolEmit] | None = None
+    emit_tools_chunking: ToolChunking = "per_call"
+
+    def __post_init__(self) -> None:
+        if self.emit_tools is None:
+            return
+        if self.emit_tool:
+            raise ValueError("Rule: emit_tool and emit_tools are mutually exclusive")
+        if not self.emit_tools:
+            raise ValueError("Rule: emit_tools must hold at least one ToolEmit")
+        ids = self.tool_call_ids()
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"Rule: emit_tools call ids must be unique, got {ids}")
+
+    def tool_call_ids(self) -> list[str]:
+        """The ids ``emit_tools`` is sent with, in stream-index order."""
+        return [t.call_id or f"call_{i}" for i, t in enumerate(self.emit_tools or [])]
 
     def matches(self, req: dict[str, Any]) -> bool:
         msgs = req.get("messages", [])
@@ -125,6 +163,37 @@ def _chunk(model: str, delta: dict, finish: str | None = None) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+def _multi_tool_chunks(rule: Rule) -> list[list[dict[str, Any]]]:
+    """The ``delta.tool_calls`` arrays of a multi-call response, one per wire chunk (see :data:`ToolChunking`)."""
+    assert rule.emit_tools
+    ids = rule.tool_call_ids()
+
+    def header(i: int, arguments: str) -> dict[str, Any]:
+        return {
+            "index": i, "id": ids[i], "type": "function",
+            "function": {"name": rule.emit_tools[i].name, "arguments": arguments},
+        }
+
+    def args_json(i: int) -> str:
+        return json.dumps(rule.emit_tools[i].args)
+
+    n = len(rule.emit_tools)
+    if rule.emit_tools_chunking == "batched":
+        return [[header(i, args_json(i)) for i in range(n)]]
+    if rule.emit_tools_chunking == "per_call":
+        return [[header(i, args_json(i))] for i in range(n)]
+
+    def fragment(i: int, text: str) -> dict[str, Any]:
+        return {"index": i, "function": {"arguments": text}}
+
+    halves = [(args_json(i)[: len(args_json(i)) // 2], args_json(i)[len(args_json(i)) // 2:]) for i in range(n)]
+    return (
+        [[header(i, "")] for i in range(n)]
+        + [[fragment(i, halves[i][0])] for i in range(n)]
+        + [[fragment(i, halves[i][1])] for i in range(n)]
+    )
+
+
 def build_app(registry: ScriptRegistry) -> Starlette:
     async def models(_req: Request) -> JSONResponse:
         return JSONResponse(
@@ -154,7 +223,13 @@ def build_app(registry: ScriptRegistry) -> Starlette:
             yield _chunk(model, {"role": "assistant"})
             if rule.chunk_delay_s:
                 await asyncio.sleep(rule.chunk_delay_s)
-            if rule.emit_tool:
+            if rule.emit_tools:
+                for tool_chunk in _multi_tool_chunks(rule):
+                    yield _chunk(model, {"tool_calls": tool_chunk})
+                if rule.chunk_delay_s:
+                    await asyncio.sleep(rule.chunk_delay_s)
+                yield _chunk(model, {}, finish="tool_calls")
+            elif rule.emit_tool:
                 tc = [
                     {
                         "index": 0,
@@ -278,4 +353,29 @@ def slow_turn_with_mid_stream_tool_call(
             chunk_delay_s=half / final_chunk_count,
             text_chunk_words=words_per_chunk,
         ),
+    ]
+
+
+def parallel_tool_batch(
+    tools: list[ToolEmit],
+    *,
+    final_text: str = "All tool calls are done.",
+    chunking: ToolChunking = "per_call",
+    chunk_delay_s: float = 0.0,
+) -> list[Rule]:
+    """The two rules of a parallel-tool-use turn: the first model response emits ALL of ``tools`` at once
+    (distinct ids and stream indexes), and once a tool result is back the model answers with ``final_text``.
+
+    Register on a model id with ``registry.register(model_id, parallel_tool_batch([...]))``. The 7a flag-on
+    journeys use it to make a session park on a batch of independent calls; it needs no slow tool, so a
+    delay (``chunk_delay_s``) is only for tests that want a pollable gap.
+    """
+    return [
+        Rule(
+            when_tool_result=False,
+            emit_tools=list(tools),
+            emit_tools_chunking=chunking,
+            chunk_delay_s=chunk_delay_s,
+        ),
+        Rule(when_tool_result=True, emit_text=final_text),
     ]

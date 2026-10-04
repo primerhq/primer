@@ -191,3 +191,74 @@ async def test_slow_turn_with_mid_stream_tool_call_produces_a_real_tool_call_the
         # Both round-trips together land in the requested ballpark rather
         # than resolving instantly (the whole point of the asset).
         assert first_elapsed + second_elapsed >= 0.15
+
+
+# ---- multi-call responses (Phase 3 stage 7a, slice S1-D) -----------------------------------------------
+
+
+def _calls(chunks):
+    """Reassemble the tool calls a stream carries, by index: {index: [id, name, arguments-text]}."""
+    out: dict[int, list] = {}
+    for ch in chunks:
+        for tc in ch["choices"][0]["delta"].get("tool_calls", []) if ch["choices"] else []:
+            row = out.setdefault(tc["index"], ["", "", ""])
+            row[0] = tc.get("id", row[0])
+            fn = tc.get("function", {})
+            row[1] = fn.get("name", row[1])
+            row[2] += fn.get("arguments", "")
+    return out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunking", ["per_call", "batched", "fragmented"])
+async def test_emit_tools_streams_every_call_under_its_own_index(chunking):
+    from tests._support.mock_llm import ToolEmit
+
+    reg = ScriptRegistry()
+    reg.register("scripted:b", [Rule(
+        emit_tools=[ToolEmit("a", {"x": 1}), ToolEmit("b", {}), ToolEmit("c", {"y": [1, 2]}, call_id="mine")],
+        emit_tools_chunking=chunking,
+    )])
+    transport = httpx.ASGITransport(app=build_app(reg))
+    async with httpx.AsyncClient(transport=transport, base_url="http://mock") as c:
+        chunks = await _collect_sse(c, {"model": "scripted:b", "stream": True, "messages": [{"role": "user", "content": "go"}]})
+
+    calls = _calls(chunks)
+    assert {i: (r[0], r[1], json.loads(r[2])) for i, r in calls.items()} == {
+        0: ("call_0", "a", {"x": 1}), 1: ("call_1", "b", {}), 2: ("mine", "c", {"y": [1, 2]}),
+    }
+    assert chunks[-2]["choices"][0]["finish_reason"] == "tool_calls"
+    per_chunk = [len(ch["choices"][0]["delta"].get("tool_calls", [])) for ch in chunks if ch["choices"]]
+    if chunking == "batched":
+        assert 3 in per_chunk
+    else:
+        assert max(per_chunk) == 1
+    if chunking == "fragmented":
+        assert sum(1 for n in per_chunk if n) == 9, "three headers then two argument fragments per call"
+
+
+def test_emit_tools_is_validated():
+    from tests._support.mock_llm import ToolEmit
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        Rule(emit_tool="a", emit_tools=[ToolEmit("b")])
+    with pytest.raises(ValueError, match="at least one"):
+        Rule(emit_tools=[])
+    with pytest.raises(ValueError, match="unique"):
+        Rule(emit_tools=[ToolEmit("a", call_id="same"), ToolEmit("b", call_id="same")])
+    with pytest.raises(ValueError, match="unique"):
+        Rule(emit_tools=[ToolEmit("a", call_id="call_1"), ToolEmit("b")])      # b's default id is call_1
+
+
+def test_parallel_tool_batch_preset_has_a_batch_rule_then_a_final_answer_rule():
+    from tests._support.mock_llm import ToolEmit, parallel_tool_batch
+
+    first, second = parallel_tool_batch([ToolEmit("a"), ToolEmit("b")], final_text="fin", chunking="batched")
+    assert (first.when_tool_result, [t.name for t in first.emit_tools], first.emit_tools_chunking) == (
+        False, ["a", "b"], "batched",
+    )
+    assert (second.when_tool_result, second.emit_text, second.emit_tools) == (True, "fin", None)
+    reg = ScriptRegistry()
+    reg.register("m", [first, second])
+    assert reg.resolve({"model": "m", "messages": [{"role": "user", "content": "x"}]}) is first
+    assert reg.resolve({"model": "m", "messages": [{"role": "tool", "content": "r"}]}) is second
