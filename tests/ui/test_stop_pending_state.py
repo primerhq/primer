@@ -67,6 +67,16 @@ def test_nothing_is_stopping_without_the_flag_or_a_session_or_after_the_session_
     assert _js(ctx, 'SH_isStopping({status: "ended", interrupt_requested: true})') is False
 
 
+def test_a_parked_session_is_never_stopping() -> None:
+    """No turn is running while a session is parked, and the server refuses a Stop on one (409), so a
+    leftover flag on a parked row must not put the console in a 'stopping' state."""
+    ctx = _ctx()
+    for parked in ("parked", "resumable"):
+        assert _js(
+            ctx, f'SH_isStopping({{status: "running", parked_status: "{parked}", interrupt_requested: true}})',
+        ) is False
+
+
 # ---- SH_stoppingLine: what the strip says, honestly ------------------------------------------
 
 
@@ -143,6 +153,31 @@ def test_every_entry_point_shares_one_guarded_function_that_toasts() -> None:
     assert re.search(r'toast\("Stopping', fn), "success must be acknowledged with a toast"
     assert 'toast("Interrupt failed: "' in fn, "the existing failure toast is kept"
     assert "window.NV_doInterrupt = NV_doInterrupt;" in DOC
+
+
+def test_the_rail_menu_does_not_offer_interrupt_on_a_parked_session() -> None:
+    """A parked session has no turn to stop and the server answers 409; offering the row would only
+    produce an error. Park and End stay (a parked session can still be ended)."""
+    menu = _function_source(RAIL, "NV_Rail_SessionContextMenu")
+    interrupt_row = re.search(r'if \(![^)]*parked_status[^)]*\) \{\s*rows\.push\(act\("Interrupt"', menu)
+    assert interrupt_row, "the Interrupt row must be gated on the session not being parked"
+    assert 'rows.push(act("End"' in menu and 'rows.push(act("Park"' in menu
+
+
+def test_a_refused_stop_shows_the_servers_honest_reason_and_clears_the_pending_state() -> None:
+    ctx = _interrupt_ctx(rejects=True)
+    detail = (
+        "Session 's': no turn is running; the session is waiting for you "
+        "(an approval, an answer or a timer). Use Cancel to end it."
+    )
+    ctx.eval(
+        "SH_api.interrupt = function () { calls++; return Promise.reject({ status: 409, detail: "
+        + json.dumps(detail) + " }); };"
+        'var first = null; NV_doInterrupt("w", "s", refetch, toast).then(function (r) { first = r; });'
+    )
+
+    assert json.loads(ctx.eval("JSON.stringify(toasts)")) == ["Interrupt failed: " + detail]
+    assert json.loads(ctx.eval("JSON.stringify(first)")) == {"failed": True}
 
 
 def test_the_rail_menu_no_longer_fires_an_unacknowledged_unhandled_request() -> None:
