@@ -7,12 +7,12 @@ from primer.graph.workspace_executor import WorkspaceGraphExecutor
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
     Done, ExtendedEvent, Message, StreamEvent, TextDelta, TextPart,
-    ToolResultPart, _GraphNodeEvent,
+    ToolCallPart, ToolResultPart, _GraphNodeEvent,
 )
 from primer.model.graph import (
     Graph, _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge,
 )
-from primer.model.yield_ import Yielded, YieldToWorker
+from primer.model.yield_ import ToolWaitPark, Yielded, YieldToWorker
 from primer.worker.frames import (
     AgentFrame, AgentResumeContext, frames_from_jsonable,
 )
@@ -76,14 +76,14 @@ def _graph():
                _StaticEdge(from_node="A", to_node="exit")])
 
 
-async def _build(tmp_path, llm, gsid):
+async def _build(tmp_path, llm, gsid, graph=None):
     repo = await _make_state_repo(tmp_path)
 
     async def agent_resolver(_): return _agent()
     async def llm_resolver(_): return (llm, ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig()))
 
     return WorkspaceGraphExecutor(
-        graph=_graph(), agent_resolver=agent_resolver,
+        graph=graph or _graph(), agent_resolver=agent_resolver,
         llm_resolver=llm_resolver,  # type: ignore[arg-type]
         state_repo=repo, graph_session_id=gsid)
 
@@ -387,3 +387,181 @@ async def test_agent_node_resume_llm_failure_ends_failed_with_code(tmp_path):
     assert state["ended_reason"] == "failed"
     assert state["ended_detail"] == "llm_connect_error"
     assert state["node_states"]["A"]["status"] == "failed"
+
+
+# --- a node that parks more than once must see its user input exactly once ---
+
+_USER_INPUT = "do the thing"
+
+
+def _input_graph():
+    """Like _graph(), but the node has an explicit input_template so its user
+    message is recognisable in a prompt."""
+    return Graph(id="gi", description="b->A->e", nodes=[
+        _BeginNode(id="begin"),
+        _AgentNodeRef(id="A", agent_id="x", input_template=_USER_INPUT),
+        _EndNode(id="exit", output_template="{{ nodes.A.text }}")],
+        edges=[_StaticEdge(from_node="begin", to_node="A"),
+               _StaticEdge(from_node="A", to_node="exit")])
+
+
+def _shape(messages) -> list[tuple[str, str]]:
+    """A prompt as (role, what-it-carries) pairs, easy to compare exactly."""
+    out: list[tuple[str, str]] = []
+    for m in messages:
+        for part in m.parts:
+            if isinstance(part, TextPart):
+                out.append((m.role, part.text))
+            elif isinstance(part, ToolCallPart):
+                out.append((m.role, f"call:{part.id}"))
+            elif isinstance(part, ToolResultPart):
+                out.append((m.role, f"result:{part.id}:{part.output}"))
+    return out
+
+
+class _ParkingTurn:
+    """Stands in for ``run_agent_turn``: records the prompt it is handed. For its
+    first ``parks`` calls it appends an assistant tool call to ``messages_out`` and
+    raises a bare ``YieldToWorker`` with ``llm_messages`` UNSET, exactly as a real
+    ask_user / approval yield leaves it, so it is the node's own except-arm that
+    stamps the in-progress turn. After that it answers."""
+
+    def __init__(self, parks: int) -> None:
+        self.parks = parks
+        self.prompts: list[list[Message]] = []
+
+    async def __call__(self, *, prompt, messages_out, **_kwargs):
+        i = len(self.prompts)
+        self.prompts.append(list(prompt))
+        if i < self.parks:
+            messages_out.append(Message(role="assistant", parts=[
+                ToolCallPart(id=f"tc{i}", name="ask_user", arguments={"q": i})]))
+            raise YieldToWorker(
+                Yielded(tool_name="ask_user", event_key=f"ask_user:t:tc{i}",
+                        resume_metadata={"prompt": f"q{i}"}),
+                tool_call_id=f"tc{i}")
+        messages_out.append(Message(role="assistant", parts=[TextPart(text="done")]))
+        yield TextDelta(text="done", index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+
+def _answer(i: int) -> Message:
+    return Message(role="tool", parts=[ToolResultPart(id=f"tc{i}", output=f"answer{i}")])
+
+
+@pytest.mark.asyncio
+async def test_a_node_that_parks_three_times_sees_its_user_input_once_each_time(tmp_path, monkeypatch):
+    """The re-park stamp used to begin with the node's own user message, and every
+    resume prepends a freshly rendered one: after a second park the NEXT resume's
+    prompt (and what was persisted to the node history) carried the instruction
+    twice, and a third park carried it again. Two human approvals, or an ask_user
+    followed by an approval, were enough to reach it.
+
+    Park, resume, park, resume, park, resume: every prompt the model is handed, and
+    the node history that ends up on disk, must hold the user input exactly once and
+    every earlier turn exactly once."""
+    import primer.graph._agent_node as agent_node_mod
+
+    turn = _ParkingTurn(parks=3)
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", turn)
+
+    ex = await _build(tmp_path, object(), "gsid-3p", _input_graph())
+    raised = await _drain_until_yield(ex.invoke([]))
+    assert raised is not None and raised.graph_checkpoint is not None
+    checkpoint = raised.graph_checkpoint
+
+    for i in range(3):
+        ex = await _build(tmp_path, object(), "gsid-3p", _input_graph())
+        again = await _drain_until_yield(ex.resume_from_checkpoint(
+            checkpoint, resumed_tcid=f"tc{i}", agent_tool_result=_answer(i)))
+        if i < 2:
+            assert again is not None and again.graph_checkpoint is not None, f"resume {i} must re-park"
+            # The stamp is the in-progress turn WITHOUT the node's user input (the
+            # next resume re-renders it). Pinned here as well as through the
+            # prompt, because the resume tolerates a stale leading user message
+            # and so would hide a stamp that went back to carrying one.
+            stamped = ex._pending_agent_yields[0].llm_messages
+            assert "user" not in [m["role"] for m in stamped], "a parked stamp never carries the user input"
+            checkpoint = again.graph_checkpoint
+        else:
+            assert again is None, "the last resume answers and the node ends"
+
+    system = ("system", "Be terse.")
+    user = ("user", _USER_INPUT)
+    assert [_shape(p) for p in turn.prompts] == [
+        [system, user],
+        [system, user, ("assistant", "call:tc0"), ("tool", "result:tc0:answer0")],
+        [system, user, ("assistant", "call:tc0"), ("tool", "result:tc0:answer0"),
+         ("assistant", "call:tc1"), ("tool", "result:tc1:answer1")],
+        [system, user, ("assistant", "call:tc0"), ("tool", "result:tc0:answer0"),
+         ("assistant", "call:tc1"), ("tool", "result:tc1:answer1"),
+         ("assistant", "call:tc2"), ("tool", "result:tc2:answer2")],
+    ]
+
+    history = await (await _build(tmp_path, object(), "gsid-3p", _input_graph()))._load_node_history("A")
+    assert _shape(history) == [
+        user,
+        ("assistant", "call:tc0"), ("tool", "result:tc0:answer0"),
+        ("assistant", "call:tc1"), ("tool", "result:tc1:answer1"),
+        ("assistant", "call:tc2"), ("tool", "result:tc2:answer2"),
+        ("assistant", "done"),
+    ], "the persisted node history carries the user input once"
+
+
+@pytest.mark.asyncio
+async def test_a_checkpoint_stamped_by_the_old_code_resumes_with_the_user_input_once(tmp_path, monkeypatch):
+    """The old re-park arms stamped ``[new_user_msg, ...]``, so a node already parked
+    twice sits in storage with a stamp that BEGINS with its user input (a node
+    re-parked N times, with N copies). Fixing the stamp does not touch those
+    records; the resume must not turn them into a duplicated instruction either."""
+    import primer.graph._agent_node as agent_node_mod
+
+    turn = _ParkingTurn(parks=1)
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", turn)
+    ex = await _build(tmp_path, object(), "gsid-old", _input_graph())
+    assert await _drain_until_yield(ex.invoke([])) is not None
+    pending = ex._pending_agent_yields[0]
+
+    def dump(message: Message) -> dict:
+        return message.model_dump(mode="json")
+
+    user_input = Message(role="user", parts=[TextPart(text=_USER_INPUT)])
+    call = lambda i: Message(role="assistant", parts=[ToolCallPart(id=f"tc{i}", name="ask_user", arguments={"q": i})])  # noqa: E731
+    # what the old arms stamped for a node parked three times: two leading copies
+    pending.llm_messages = [dump(user_input), dump(user_input), dump(call(0)), dump(_answer(0)), dump(call(1))]
+
+    async for _ev in ex._resume_agent_node(pending, _answer(1), {}):
+        pass
+
+    assert _shape(turn.prompts[-1]) == [
+        ("system", "Be terse."), ("user", _USER_INPUT),
+        ("assistant", "call:tc0"), ("tool", "result:tc0:answer0"),
+        ("assistant", "call:tc1"), ("tool", "result:tc1:answer1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_wait_re_park_stamp_does_not_carry_the_user_input_either(tmp_path, monkeypatch):
+    """The ToolWaitPark arm had the same stamp as the YieldToWorker arm, so a node that
+    re-parks on a claims batch duplicated its user input on the next resume too."""
+    import primer.graph._agent_node as agent_node_mod
+
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", _ParkingTurn(parks=1))
+    ex = await _build(tmp_path, object(), "gsid-tw", _input_graph())
+    assert await _drain_until_yield(ex.invoke([])) is not None
+    pending = ex._pending_agent_yields[0]
+
+    async def _re_park(*, messages_out, **_kwargs):
+        messages_out.append(Message(role="assistant", parts=[TextPart(text="calling again")]))
+        raise ToolWaitPark(outstanding_task_ids=["A:tool:1:1"], event_key="tool_wait:A:tool:1:1")
+        yield  # pragma: no cover - keeps this an async generator
+
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", _re_park)
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex._resume_agent_node(pending, _answer(0), {}):
+            pass
+
+    stamped = [Message.model_validate(m) for m in excinfo.value.llm_messages]
+    assert _shape(stamped) == [
+        ("assistant", "call:tc0"), ("tool", "result:tc0:answer0"), ("assistant", "calling again"),
+    ]
