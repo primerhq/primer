@@ -12,7 +12,9 @@ creates, so seeding works before the engine's first claim.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import json
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 
 class EntitySeeder:
@@ -26,7 +28,9 @@ class EntitySeeder:
         schema = self._storage.schema
         return f'"{schema}"."{table}"' if schema else f'"{table}"'
 
-    async def seed(self, table: str, entity_ids: Iterable[str]) -> None:
+    async def seed(
+        self, table: str, entity_ids: Iterable[str], data: Mapping[str, Any] | None = None,
+    ) -> None:
         qualified = self._qualified(table)
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
@@ -40,8 +44,8 @@ class EntitySeeder:
             for entity_id in entity_ids:
                 await conn.execute(
                     f"INSERT INTO {qualified} (id, data) "
-                    "VALUES ($1, '{}'::jsonb) ON CONFLICT (id) DO NOTHING",
-                    entity_id,
+                    "VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING",
+                    entity_id, json.dumps(dict(data or {})),
                 )
                 self._seeded.append((table, entity_id))
 
