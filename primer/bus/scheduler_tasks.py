@@ -234,6 +234,10 @@ class TimeoutSweeper(_BackgroundTask):
         self._storage = session_storage
         self._poll = poll_seconds
         self._sp = storage_provider
+        # Parked sessions already reported as unwakeable, so a row that stays broken is
+        # logged once rather than every tick. Rebuilt each tick, so it stays bounded and
+        # a row that is repaired and breaks again is reported again.
+        self._reported_unwakeable: set[str] = set()
 
     async def _run(self) -> None:
         while not self._stopping:
@@ -261,6 +265,37 @@ class TimeoutSweeper(_BackgroundTask):
                 )
             else:
                 await self._bus.publish(event_key, payload=payload)
+        await self._report_unwakeable_parks()
+
+    async def _report_unwakeable_parks(self) -> None:
+        """Log an ERROR, once per session, for a park nothing here can ever time out.
+
+        The sweeps above select on ``parked_until`` and ``parked_event_key``; a parked row
+        missing either is skipped silently, so a park with no deadline would sit forever
+        with nothing recording that it is stuck. No current park writer produces one
+        (``ParkRequest.parked_until`` is typed optional, and a test pins that), so this is
+        a tripwire for a future writer, not a handled case.
+        """
+        current: set[str] = set()
+        async for sess in _iter_parked_sessions(self._storage):
+            if sess.parked_until is not None and sess.parked_event_key is not None:
+                continue
+            current.add(sess.id)
+            if sess.id in self._reported_unwakeable:
+                continue
+            missing = [
+                name for name, value in (
+                    ("parked_until", sess.parked_until),
+                    ("parked_event_key", sess.parked_event_key),
+                ) if value is None
+            ]
+            logger.error(
+                "yield-timeout-sweeper: session %s is parked but has no %s, so no "
+                "timeout or timer sweep can ever wake it; it will stay parked until "
+                "something publishes its event or an operator intervenes",
+                sess.id, " and no ".join(missing),
+            )
+        self._reported_unwakeable = current
 
 
 #: A session's first turn is claimed moments after the row is created. One that is still at
@@ -297,8 +332,15 @@ class StuckSessionSweeper(_BackgroundTask):
     whose turns run ~3.5h: the row was flipped to ENDED at the 10-minute mark while its
     worker computed happily for another three hours, which both lied about session state
     and released the ``parallelism="skip"`` gate, letting the next cron tick start a
-    second concurrent run. A live lease (heartbeated by the worker, expiring within one
-    TTL of its death) is the signal that actually distinguishes the two cases.
+    second concurrent run. The lease table is the signal that actually distinguishes the
+    two cases: a started or queued session HAS a lease row (claimed and heartbeated, or
+    armed and waiting for a worker, or claimed by a worker that has since died and awaiting
+    reclaim), and only a session whose claim was LOST has none. The check is for the row,
+    not for a live claim: ``has_live_lease`` is False for an armed lease no worker has
+    claimed yet, so a fresh first turn waiting more than ten minutes behind a saturated
+    pool used to be ended while its lease sat in the queue. A session whose worker died
+    keeps its row, and the claim loop reclaims it and re-runs the turn, which is the
+    system's ordinary at-least-once recovery; ending it here would defeat that.
     """
 
     role = ROLE_STUCK_SESSION_SWEEPER
@@ -337,12 +379,12 @@ class StuckSessionSweeper(_BackgroundTask):
             # which case the turn is now running and must not be ended.
             if fresh is None or not _never_started(fresh, self._grace):
                 continue
-            # The decisive check, and the last one before a destructive write: a live
-            # lease means a worker is mid-turn on this session right now. Done per
-            # candidate rather than as a bulk filter because the candidate list is
-            # already narrow (turn_no == 0 past the grace) and the read must be as
-            # close to the write as possible.
-            if await self._has_live_lease(fresh.id):
+            # The decisive check, and the last one before a destructive write: a lease
+            # row means the session is running, queued, or awaiting reclaim; only a lost
+            # claim has none. Done per candidate rather than as a bulk filter because the
+            # candidate list is already narrow (turn_no == 0 past the grace) and the read
+            # must be as close to the write as possible.
+            if await self._has_lease(fresh.id):
                 continue
             await self._storage.update(fresh.model_copy(update={
                 "status": SessionStatus.ENDED,
@@ -357,8 +399,8 @@ class StuckSessionSweeper(_BackgroundTask):
             )
         return reaped
 
-    async def _has_live_lease(self, session_id: str) -> bool:
-        """Whether a worker is mid-turn on *session_id*.
+    async def _has_lease(self, session_id: str) -> bool:
+        """Whether *session_id* still has a SESSION lease row (running, queued or reclaimable).
 
         Errs toward "yes" on both no-engine and error paths. Skipping a genuinely stuck
         session costs one more poll interval; ending a live one destroys a running job.
@@ -366,7 +408,7 @@ class StuckSessionSweeper(_BackgroundTask):
         if self._claim_engine is None:
             return True
         try:
-            return await self._claim_engine.has_live_lease(ClaimKind.SESSION, session_id)
+            return await self._claim_engine.has_lease(ClaimKind.SESSION, session_id)
         except Exception as exc:  # noqa: BLE001 - an unreadable lease must not authorise a reap
             logger.warning(
                 "stuck-session-sweeper: lease lookup failed for %s, leaving it alone: %s",

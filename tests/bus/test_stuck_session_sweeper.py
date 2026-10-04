@@ -28,18 +28,25 @@ from primer.model.workspace_session import (
 
 
 class _FakeClaimEngine:
-    """Just the one method the sweeper calls, over a set of leased session ids."""
+    """Just the one method the sweeper calls, over a set of session ids that have a lease ROW.
+
+    ``has_live_lease`` is poisoned on purpose: the sweeper must ask whether a lease row
+    exists (queued, running or awaiting reclaim), not whether a worker holds a live claim.
+    """
 
     def __init__(self, leased: set[str] | None = None, *, raises: bool = False) -> None:
         self.leased = leased or set()
         self.raises = raises
         self.calls: list[tuple[ClaimKind, str]] = []
 
-    async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+    async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
         self.calls.append((kind, entity_id))
         if self.raises:
             raise RuntimeError("lease table unreachable")
         return entity_id in self.leased
+
+    async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+        raise AssertionError("the sweeper must not key on a LIVE claim, only on a lease row")
 
 
 def _sweeper(storage, *, leased=None, raises=False, **kw):
@@ -102,8 +109,8 @@ async def test_leaves_a_first_turn_that_is_still_running(fake_storage_provider):
 
 
 @pytest.mark.asyncio
-async def test_reaps_once_the_lease_expires(fake_storage_provider):
-    """A worker that dies stops heartbeating, so its lease lapses and the row is reapable.
+async def test_reaps_once_the_lease_row_is_gone(fake_storage_provider):
+    """A lost claim leaves no lease row, so the session is reapable.
 
     This is the other half of the lease check: it must not turn the sweeper off for the
     abandoned sessions it exists to clean up.
@@ -258,3 +265,71 @@ async def test_still_reaps_a_first_turn_whose_park_was_cleared(fake_storage_prov
     row = await storage.get("se-cleared")
     assert row.status == SessionStatus.ENDED
     assert row.ended_detail == "never_started"
+
+
+# The check is for a lease ROW, not a live claim. A row means the session is running,
+# queued behind a busy pool, or awaiting reclaim after its worker died; the claim loop will
+# run it. These use the real in-memory engine so they cannot drift from its semantics.
+
+
+def _real_sweeper(storage, engine):
+    return StuckSessionSweeper(session_storage=storage, claim_engine=engine)
+
+
+@pytest.mark.asyncio
+async def test_leaves_a_first_turn_queued_behind_a_busy_pool_alone(fake_storage_provider):
+    """An armed lease nobody has claimed yet is not a live claim, but it is not lost either.
+
+    A fresh first turn can wait more than the grace period behind a saturated pool; ending
+    it as never_started while its lease sat in the queue was a second false positive.
+    """
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-queued", age_seconds=3600, turn_no=0))
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.SESSION, "se-queued")
+    assert await engine.has_live_lease(ClaimKind.SESSION, "se-queued") is False
+
+    reaped = await _real_sweeper(storage, engine)._tick()
+
+    assert reaped == 0
+    assert (await storage.get("se-queued")).status == SessionStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_leaves_a_first_turn_whose_worker_died_to_the_claim_loop(fake_storage_provider):
+    """A dead worker's lease row survives until reclaimed; the next worker re-runs the turn
+    (the system's ordinary at-least-once recovery) instead of the sweeper ending it."""
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-dead-worker", age_seconds=3600, turn_no=0))
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.SESSION, "se-dead-worker")
+    await engine.claim_due("worker-A", max_count=1)
+    engine._leases[(ClaimKind.SESSION, "se-dead-worker")].expires_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=5)
+    )
+    assert await engine.has_live_lease(ClaimKind.SESSION, "se-dead-worker") is False
+
+    reaped = await _real_sweeper(storage, engine)._tick()
+
+    assert reaped == 0
+    assert (await storage.get("se-dead-worker")).status == SessionStatus.RUNNING
+    (reclaimed,) = await engine.claim_due("worker-B", max_count=1)
+    assert reclaimed.entity_id == "se-dead-worker"
+
+
+@pytest.mark.asyncio
+async def test_reaps_a_first_turn_whose_claim_was_lost(fake_storage_provider):
+    """No lease row at all is what a lost claim looks like."""
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-lost", age_seconds=3600, turn_no=0))
+
+    reaped = await _real_sweeper(storage, InMemoryClaimEngine(adapters={}))._tick()
+
+    assert reaped == 1
+    assert (await storage.get("se-lost")).ended_detail == "never_started"
