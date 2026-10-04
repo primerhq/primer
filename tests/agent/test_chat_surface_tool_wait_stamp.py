@@ -126,3 +126,51 @@ async def test_run_loop_does_not_overwrite_an_already_stamped_park(
     assert excinfo.value.llm_messages == [
         Message(role="assistant", parts=[TextPart(text="fresh turn content")])
     ]
+
+
+async def _invoke_raising(tmp_path: Path, monkeypatch, exc: BaseException):
+    """Run one workspace turn whose inner loop raises ``exc``; return ``(session, what the turn raised)``."""
+    _backend, _workspace, session = await _build_session(tmp_path)
+    mgr = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
+    ex = WorkspaceAgentExecutor(
+        agent=_agent(system_prompt=["base"]),
+        llm=_FakeLLM(scripts=[]),  # type: ignore[arg-type]
+        llm_model=_model(),
+        tool_manager=mgr,
+        session=session,
+    )
+    import primer.agent.loop as loop_mod
+
+    async def _spy(*, messages_out, **kwargs):
+        raise exc
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(loop_mod, "run_agent_turn", _spy)
+    with pytest.raises(type(exc)) as raised:
+        async for _ev in ex.invoke([Message(role="user", parts=[TextPart(text="hi")])]):
+            pass
+    return session, raised.value
+
+
+@pytest.mark.asyncio
+async def test_a_tool_wait_park_does_not_end_the_session_slot_as_failed(tmp_path: Path, monkeypatch) -> None:
+    """A claimable tool batch hands the turn back to the worker to park, exactly like a YieldToWorker. The failure
+    arm used to catch it (ToolWaitPark is a plain Exception) and mark the slot ENDED/failed BEFORE dispatch could
+    park the session, so the resume hit "cannot commit state on ENDED session"."""
+    from primer.model.workspace_session import SessionStatus
+
+    park = ToolWaitPark(outstanding_task_ids=["x:tool:0:1"], event_key="tool_wait:x:tool:0:1")
+    session, raised = await _invoke_raising(tmp_path, monkeypatch, park)
+
+    assert raised is park
+    assert await session.status() != SessionStatus.ENDED, "the park killed the session slot"
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_failure_still_ends_the_session_slot_as_failed(tmp_path: Path, monkeypatch) -> None:
+    """The control: the arm that spares a park must not spare a real error."""
+    from primer.model.workspace_session import SessionStatus
+
+    session, _ = await _invoke_raising(tmp_path, monkeypatch, RuntimeError("boom"))
+
+    assert await session.status() == SessionStatus.ENDED

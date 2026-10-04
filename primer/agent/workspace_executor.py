@@ -32,7 +32,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     _UserInputWaiting,
 )
-from primer.model.yield_ import YieldToWorker
+from primer.model.yield_ import ToolWaitPark, YieldToWorker
 
 
 if TYPE_CHECKING:
@@ -377,7 +377,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 if ev.type == "done":
                     last_done_reason = ev.stop_reason  # type: ignore[union-attr]
                 yield ev
-        except YieldToWorker:
+        except (YieldToWorker, ToolWaitPark):
             # A park (tool approval, ask_user, subscribe_to_trigger,
             # watch_files, sleep) is NOT a failure: the base executor raises
             # YieldToWorker to hand the turn back to the worker, which parks
@@ -386,6 +386,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             # at the gate and the resuming claim (especially a cross-process
             # worker that rehydrates the slot) hits "cannot commit state on
             # ENDED session" on inject_resume_messages (see FINDINGS F10/F10c).
+            # ToolWaitPark (a claimable tool batch parked by the 7a flag) is the
+            # same kind of hand-back, and is a plain Exception: without this arm
+            # it fell through to the failure branch below.
             raise
         except Exception:
             try:
