@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import enum
-from typing import Annotated, Any, Optional, Union
+import typing
+from typing import Annotated, Any, Literal, Optional, TypeVar, Union
 
 from pydantic import BaseModel, Field, SecretStr
 
@@ -29,6 +30,15 @@ def test_accepts_none_reads_every_way_a_field_can_be_nullable():
     assert _accepts_none(Optional[int]) and _accepts_none(Union[int, str, None])  # noqa: UP007, UP045
     assert _accepts_none(Annotated[int | None, "meta"]) and _accepts_none(None)
     assert not _accepts_none(int) and not _accepts_none(Annotated[str, "meta"]) and not _accepts_none(list[int])
+    assert not _accepts_none(dict[str, int]) and not _accepts_none(_Color) and not _accepts_none(Literal["a", "b"])
+
+
+def test_a_form_that_is_not_positively_non_nullable_counts_as_nullable():
+    """Wrong in the "not nullable" direction lets a stale guard match a newer null, so unknown forms are nullable."""
+    assert _accepts_none(Literal["a", None]) and _accepts_none(object)
+    assert _accepts_none(TypeVar("T")), "a type variable: unknown"
+    alias = typing.TypeAliasType("MaybeInt", int | None)
+    assert _accepts_none(alias), "a PEP 695 alias: unknown, so nullable"
 
 
 class _Color(str, enum.Enum):

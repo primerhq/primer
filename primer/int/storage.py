@@ -227,11 +227,13 @@ class Storage(ABC, Generic[ModelT]):
             won the race" and "the row is gone" need different handling.
         ValueError
             The spec is malformed: a patch or path root that is not a field of the model (unless the
-            model allows extras), a ``set_paths`` leaf the validated model does not carry, an empty
-            ``patch``/``set_paths``, an empty ``where`` or one naming ``id``, a ``where`` value that is not a list of JSON scalars (a bare string is rejected),
+            model allows extras), an empty ``patch``/``set_paths``, an empty ``where`` or one naming
+            ``id``, a ``where`` value that is not a list of JSON scalars (a bare string is rejected),
             a bad path (too deep, forbidden characters, a prefix of another), or more than 32 patch
             keys, 16 leaves or 4 distinct parent objects. Rejected identically on every backend,
-            before any SQL.
+            before any SQL. One more is raised only AFTER the guarded write, so only a caller whose
+            guard matched sees it: a ``set_paths`` leaf the validated model does not carry (a typo
+            under a typed sub-model); that write is rolled back.
         pydantic.ValidationError
             The document the write would produce no longer validates against the model. The write is
             rolled back (a savepoint inside a caller's transaction) and the row is unchanged. It is a

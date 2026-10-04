@@ -121,15 +121,23 @@ def json_identical(a: Any, b: Any) -> bool:
 
 
 def _accepts_none(annotation: Any) -> bool:
-    """Whether a field annotation admits ``None`` (``X | None``, ``Optional[X]``, ``Any``, ``None``)."""
-    if annotation is None or annotation is Any or annotation is type(None):
+    """Whether a field annotation MAY hold ``None``. Conservative: only a form positively known not to is False.
+
+    Wrong in the "not nullable" direction is the unsafe one (a stale guard on the default would then match a newer
+    stored null), so anything unrecognised (a PEP 695 alias, a TypeVar, ``object``) counts as nullable.
+    """
+    if annotation is None or annotation is Any or annotation is type(None) or annotation is object:
         return True
     origin = typing.get_origin(annotation)
     if origin is typing.Annotated:
         return _accepts_none(typing.get_args(annotation)[0])
     if origin is typing.Union or origin is types.UnionType:
         return any(_accepts_none(arg) for arg in typing.get_args(annotation))
-    return False
+    if origin is typing.Literal:
+        return None in typing.get_args(annotation)
+    if origin is not None:
+        return not isinstance(origin, type)     # list[int], dict[str, X]: a real class; anything else: unknown
+    return not isinstance(annotation, type)     # int, str, an Enum, a BaseModel: a class; anything else: unknown
 
 
 def _default_as_stored(model_cls: Any, field: str) -> Any:
