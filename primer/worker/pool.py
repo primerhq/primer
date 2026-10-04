@@ -344,15 +344,28 @@ class WorkerPool:
                     await self._scheduler.heartbeat_worker(self._worker_id)
                     # Engine path: heartbeat all in-flight leases via engine.
                     if self._in_flight:
+                        # Decide "lost" from what was SENT, never from the live set
+                        # after the await: a key dispatched while this round trip is
+                        # outstanding was not sent, so it is not in ``confirmed`` and
+                        # would be reported lost and cancelled at its start. Capture
+                        # the scopes now as well, for the same reason: a key that
+                        # finishes and is dispatched again during the round trip owns
+                        # a NEW scope, and the cancel must hit the execution whose
+                        # lease was actually checked.
+                        sent = {
+                            kind_id: self._active_scopes.get(kind_id)
+                            for kind_id in self._in_flight
+                        }
                         confirmed = await self._engine.heartbeat(
-                            self._worker_id, list(self._in_flight),
+                            self._worker_id, list(sent),
                         )
                         confirmed_set = set(confirmed)
-                        lost = self._in_flight - confirmed_set
-                        for kind_id in lost:
-                            scope = self._active_scopes.get(kind_id)
-                            if scope is not None:
-                                scope.cancel("preempted")
+                        for kind_id, scope in sent.items():
+                            if kind_id in confirmed_set or scope is None:
+                                continue
+                            # Unconditional on purpose (see _CancelScope): a lease lost
+                            # mid-turn must be able to push a turn that is stuck unwinding.
+                            scope.cancel("preempted")
                 except Exception:
                     logger.exception("heartbeat_loop iteration failed")
         except asyncio.CancelledError:
