@@ -6,9 +6,12 @@ Phase 3 stage 7a (docs/superpowers/2026-08-29-phase3-execution-topology-design.m
 exactly, at task granularity instead of session granularity: a gated
 tool call has no bus/event-key wake path of its own to publish onto (a
 task's own ``gate_event_key`` is a record of WHICH gate it is waiting
-on, not a channel anything subscribes to) - the RESPOND endpoint calls
-this helper directly, the same way the session-level respond endpoints
-call :func:`~primer.session.yields.durably_wake_session`.
+on, not a channel anything subscribes to) - so the intended caller is
+the respond endpoint for a task-level gate, calling this helper
+directly, the same way the session-level respond endpoints call
+:func:`~primer.session.yields.durably_wake_session`. NOT WIRED: no
+production code calls this helper yet (only tests do), and nothing can
+produce a GATED task until the claim worker is built.
 
 Unlike the session version, there is no ``ToolCallTaskState`` value
 equivalent to ``"resumable"``: :class:`~primer.claim.adapters.tool_calls.
@@ -22,8 +25,10 @@ read exclusively from records) does NOT happen here: it happens when the
 task is re-claimed and its resumed gate is actually processed, mirroring
 how the session-level write happens in the RESUME coordinator
 (``primer.worker.session_resume_coordinator``), not in
-``durably_wake_session`` itself. That resume-time write lands with the
-executor-seam split's own task-resume-coordinator analogue.
+``durably_wake_session`` itself. That resume-time write does not exist
+yet: ``primer.worker.tool_wait_resume_coordinator`` only reads
+terminal tasks and has no ``ToolApprovalRecord`` write, because no
+GATED task can occur until the claim worker exists.
 """
 
 from __future__ import annotations
