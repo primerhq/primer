@@ -99,6 +99,10 @@ function SH_createVerbRegistry() {
       // an explicit whitelist, so a field that is not listed here is
       // silently dropped and any gate reading it never fires.
       requiresLive: !!verb.requiresLive,
+      // Optional predicate over the ranking context ({docKind, session, ...}): the verb is offered only
+      // while it returns true. Interrupt uses it (a Stop only does something on a running, non-parked
+      // turn). Listed here for the same reason as requiresLive: this shape is an explicit whitelist.
+      available: typeof verb.available === "function" ? verb.available : null,
       surfaces: surfaces,
       chord: verb.chord || null,
       run: verb.run,
@@ -163,6 +167,7 @@ function SH_rankVerbs(registry, query, ctx) {
   for (var i = 0; i < all.length; i++) {
     var verb = all[i];
     if (verb.contexts && verb.contexts.indexOf(context.docKind) < 0) continue;
+    if (verb.available && !verb.available(context)) continue;
     var fuzzy = SH_bestFuzzy(verb, query);
     if (query && fuzzy <= 0) continue;
     var score = verb.weight * fuzzy;
