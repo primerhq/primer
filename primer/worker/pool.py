@@ -144,6 +144,11 @@ class WorkerPool:
         self._unstarted_releases: set[asyncio.Task] = set()
         self._claims_returned_on_drain_total: int = 0
         self._claim_returns_failed_on_drain_total: int = 0
+        # A release that has not finished in this long is abandoned (see ``_release_lease``): one lease TTL after which a
+        # hung release's lease has expired anyway, and a second for a release that is slow but alive (its lease keeps
+        # being heartbeated until the key leaves ``_in_flight``).
+        self._release_timeout_seconds: float = 2.0 * float(config.lease_ttl_seconds)
+        self._release_timeouts_total: int = 0
         # How long drain waits for the claim loop to finish the iteration it is in (and for hand-backs).
         self._claim_stop_grace_seconds: float = 5.0
         self._wake = asyncio.Event()
@@ -384,6 +389,7 @@ class WorkerPool:
             "primer_worker_duplicate_claims_total": self._duplicate_claims_total,
             "primer_worker_claims_returned_on_drain_total": self._claims_returned_on_drain_total,
             "primer_worker_claim_returns_failed_on_drain_total": self._claim_returns_failed_on_drain_total,
+            "primer_worker_release_timeouts_total": self._release_timeouts_total,
             "primer_session_turns_total": dict(self._turns_total_by_result),
             "primer_session_turn_duration_seconds": {
                 "count": self._turn_duration_count,
@@ -1057,11 +1063,29 @@ class WorkerPool:
         before the call returns to this task, and the release's own post-commit hooks (the tool-call
         wake) must not be cancelled either. If the release itself fails the lease is still held and
         still heartbeated until the wrapper discards the key, which follows immediately.
+
+        The release is BOUNDED (``_release_timeout_seconds``). Once the scope is marked, a lost-lease verdict can no
+        longer push a release that hangs (a stuck connection after the lease was genuinely lost), so without a bound
+        only the drain timeout would end it. On timeout the release is cancelled (its transaction rolls back), the
+        failure is counted and logged, and the ``TimeoutError`` propagates: the caller treats it like any failed
+        release. The key then leaves ``_in_flight``, nothing heartbeats the lease, it expires after one TTL and a
+        peer re-claims it (slower, not lost: the same outcome as a failed drain hand-back).
         """
         scope = self._active_scopes.get((lease.kind, lease.entity_id))
         if scope is not None:
             scope.mark_lease_returned()
-        await self._engine.release(lease, outcome=outcome)
+        try:
+            async with asyncio.timeout(self._release_timeout_seconds) as bound:
+                await self._engine.release(lease, outcome=outcome)
+        except TimeoutError:
+            if not bound.expired():
+                raise  # the engine's own timeout (a command timeout), not this bound: not ours to count
+            self._release_timeouts_total += 1
+            logger.error(
+                "releasing %s/%s did not finish within %.1fs; abandoning it (the lease expires and a peer re-claims it)",
+                lease.kind, lease.entity_id, self._release_timeout_seconds,
+            )
+            raise
 
     async def _maybe_rearm_session(self, session_id: str) -> None:
         """Re-arm a fresh SESSION claim lease if a turn is still queued.
