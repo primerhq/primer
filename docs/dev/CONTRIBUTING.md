@@ -137,9 +137,9 @@ a one-line reason; it may not simply be omitted.
   Postgres capability: `tests/testconfig.yaml` expands `${VAR}` from the
   environment itself, and its example uses a different variable,
   `PRIMER_TEST_E2E_POSTGRES_DSN`. The gated fixtures are destructive (they DROP
-  tables and DELETE leases in the schema they are given), so the gate refuses to
-  open on database `primer_e2e`'s public schema, which belongs to a live e2e
-  server.
+  tables and DELETE leases, and some statements are unqualified, so a `?schema=`
+  does not redirect them), so the gate refuses to open on the database
+  `primer_e2e`, whatever the schema; it belongs to a live e2e server.
 
   The lane sets `PRIMER_REQUIRE_POSTGRES_TESTS=1`, the anti-silent-skip guard
   (`tests/conftest.py`). In that mode a Postgres-gated test that skips fails

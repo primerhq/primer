@@ -51,29 +51,28 @@ LANE_DIRS = (
 )
 
 # The e2e server's own database. Its bringup script creates it and a live
-# server uses its public schema. The gated fixtures are destructive (they DROP
-# and DELETE from the tables of whatever schema they are pointed at), so the
-# gate refuses to open on it: an old alias exported for the e2e capability
-# (PRIMER_TEST_PG_DSN used to be exactly that) must not silently become
-# permission to wipe a running server.
+# server uses it. The gated fixtures are destructive and several of them issue
+# UNQUALIFIED statements (the scheduler's DDL, the coordinator's DELETEs), which
+# a ``?schema=`` on the URL does not redirect, so no schema makes this database
+# safe to point the gate at. The gate refuses it WHATEVER the schema: an old alias
+# exported for the e2e capability (PRIMER_TEST_PG_DSN used to be exactly that)
+# must not silently become permission to wipe a running server.
 _SHARED_E2E_DATABASE = "primer_e2e"
 
 
 def _refuse_shared_database(url: str, source: str) -> None:
-    from urllib.parse import parse_qs, urlparse
+    from urllib.parse import urlparse
 
-    parts = urlparse(url)
-    database = (parts.path or "").lstrip("/")
-    schema = parse_qs(parts.query).get("schema", ["public"])[0]
-    if database == _SHARED_E2E_DATABASE and schema == "public":
+    database = (urlparse(url).path or "").lstrip("/")
+    if database == _SHARED_E2E_DATABASE:
         raise RuntimeError(
-            f"{source} points the Postgres test gate at {_SHARED_E2E_DATABASE!r} "
-            "(public schema), the e2e server's own database: the gated "
-            "fixtures DROP tables and DELETE leases there. Use a throwaway "
-            "database, or add ?schema=<name> for a private schema. If this "
-            "variable is meant for the e2e server's Postgres capability, "
-            "rename it (tests/testconfig.example.yaml uses "
-            "PRIMER_TEST_E2E_POSTGRES_DSN)."
+            f"{source} points the Postgres test gate at the database "
+            f"{_SHARED_E2E_DATABASE!r}, the e2e server's own: the gated fixtures "
+            "DROP tables and DELETE leases there, and some of their statements "
+            "are unqualified, so a ?schema= does not make it safe. Use a "
+            "throwaway database. If this variable is meant for the e2e "
+            "server's Postgres capability, rename it "
+            "(tests/testconfig.example.yaml uses PRIMER_TEST_E2E_POSTGRES_DSN)."
         )
 
 
