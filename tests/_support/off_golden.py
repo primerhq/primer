@@ -333,83 +333,111 @@ async def boundary_turn(root: Path, llm: ScriptedLLM, name: str, delta: int) -> 
 
 # ---------------------------------------------------------------- the scenario
 
-async def run_scenario() -> dict[str, Any]:
-    """Run the four turns and return everything the golden pins."""
-    with tempfile.TemporaryDirectory(prefix="primer-off-golden-") as tmp:
-        backend, workspace, session = await open_session(Path(tmp))
-        llm = ScriptedLLM()
+async def recorded_turn(
+    root: Path, llm: ScriptedLLM, name: str, seed, steps: list[Events | Raise | Gate], *, during=None,
+) -> dict[str, Any]:
+    """One turn on ITS OWN fresh session: seed it, script the model, run the turn, record what happened.
+
+    Every turn owns its session so that a turn's record depends only on its own seed and on the code, never on
+    what an earlier turn left behind: a change to one turn's behaviour cannot cascade into the next, which is
+    what lets a re-capture declare exactly the turns that may change (``scripts/capture_off_golden.py``).
+    ``during`` replaces the plain run for a turn that needs something to happen while it is in flight.
+    """
+    backend, workspace, session = await open_session(root)
+    try:
         llm.session_id = session.session_id
+        await seed(workspace, session)
+        llm.extend(steps)
+        before = len(llm.calls)
+        if during is None:
+            await run_turn(session, llm)
+        else:
+            await during(workspace, session)
+        path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+        return {
+            "turn": name,
+            "llm_calls": len(llm.calls) - before,
+            "file": capture_file(path.read_text(encoding="utf-8"), session.session_id),
+        }
+    finally:
+        await session.aclose()
+        await backend.aclose()
+
+
+async def run_scenario() -> dict[str, Any]:
+    """Run the six turns, each on its own session, and return everything the golden pins."""
+    with tempfile.TemporaryDirectory(prefix="primer-off-golden-") as tmp:
+        root = Path(tmp)
+        llm = ScriptedLLM()
         turns: list[dict[str, Any]] = []
-        messages_path = (
-            workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
-        )
 
-        def record(name: str, calls_before: int) -> None:
-            turns.append({
-                "turn": name,
-                "llm_calls": len(llm.calls) - calls_before,
-                "file": capture_file(messages_path.read_text(encoding="utf-8"), session.session_id),
-            })
-
-        try:
-            # Turn 1, tier 1: 4 x ~22.5k-token tool results (total ~90k, over the 40k total and the 82.6k trigger).
+        # Turn 1, tier 1: 4 x ~22.5k-token tool results (total ~90k, over the 40k total and the 82.6k trigger).
+        async def seed_1(workspace, session) -> None:
             for i in range(4):
                 await append_messages(workspace, session, *tool_round(i))
             await append_messages(workspace, session, user_message("turn 1: go on"))
-            llm.extend([Events(text_events("turn-1-ok"))])
-            before = len(llm.calls)
-            await run_turn(session, llm)
-            record("1-tier1-prune", before)
 
-            # Turn 2, tier 2: user text pruning cannot shrink. Four big exchanges the model answered, then the
-            # input this turn answers: input the model has not answered is never summarised, so a history of nothing
-            # but unanswered user text (what this turn used to be) is not compactable.
+        turns.append(await recorded_turn(root, llm, "1-tier1-prune", seed_1, [Events(text_events("turn-1-ok"))]))
+
+        # Turn 2, tier 2: user text pruning cannot shrink. The history turn 1 leaves (its tool rounds and its
+        # reply), then four big exchanges the model answered, then the input this turn answers: input the model
+        # has not answered is never summarised, so a history of nothing but unanswered user text is not
+        # compactable.
+        async def seed_2(workspace, session) -> None:
+            await seed_1(workspace, session)
+            await append_messages(workspace, session, assistant_message("turn-1-ok"))
             for i in range(4):
                 await append_messages(
                     workspace, session, user_message(chr(ord("A") + i) * BIG_USER_CHARS), assistant_message(f"turn 2 reply {i}"),
                 )
             await append_messages(workspace, session, user_message("turn 2: next"))
-            llm.extend([Events(text_events("SUMMARY-2")), Events(text_events("turn-2-ok"))])
-            before = len(llm.calls)
-            await run_turn(session, llm)
-            record("2-tier2-summary", before)
 
-            # Turn 3, overflow replay: the turn's own call is rejected as a context overflow and the forced
-            # compaction replays it. The history now is the turn-2 summary and the tail turn 2's marker kept,
-            # the turn-2 reply, and five answered exchanges, then this turn's input (the pending suffix, kept
-            # whatever happens), so the forced compaction has a head to summarise.
-            for i in range(5):
-                await append_messages(workspace, session, user_message(f"turn 3 filler {i}: " + ("f" * 2000)), assistant_message(f"turn 3 reply {i}"))
+        turns.append(await recorded_turn(
+            root, llm, "2-tier2-summary", seed_2, [Events(text_events("SUMMARY-2")), Events(text_events("turn-2-ok"))],
+        ))
+
+        # Turn 3, overflow replay: the turn's own call is rejected as a context overflow and the forced
+        # compaction replays it. Seven answered exchanges, then this turn's input (the pending suffix, kept
+        # whatever happens), so the forced compaction has a head to summarise.
+        async def seed_3(workspace, session) -> None:
+            for i in range(7):
+                await append_messages(
+                    workspace, session, user_message(f"turn 3 filler {i}: " + ("f" * 2000)), assistant_message(f"turn 3 reply {i}"),
+                )
             await append_messages(workspace, session, user_message("turn 3: next"))
-            llm.extend([
-                Raise(BadRequestError("This model's maximum context length is 100000 tokens, however you requested more")),
-                Events(text_events("SUMMARY-3")),
-                Events(text_events("turn-3-ok")),
-            ])
-            before = len(llm.calls)
-            await run_turn(session, llm)
-            record("3-overflow-replay", before)
 
-            # Turn 4, deferred steers: two steers land while the summary call is in flight. Four answered big
-            # exchanges end the history (no pending input), so the tail shrinks to its budget and a head is
-            # summarised; a history with nothing before the unanswered input is reported unreducible instead
-            # (see the tier-2 tests).
+        overflow = BadRequestError("This model's maximum context length is 100000 tokens, however you requested more")
+        turns.append(await recorded_turn(
+            root, llm, "3-overflow-replay", seed_3,
+            [Raise(overflow), Events(text_events("SUMMARY-3")), Events(text_events("turn-3-ok"))],
+        ))
+
+        # Turn 4, deferred steers: two steers land while the summary call is in flight. Four answered big
+        # exchanges end the history (no pending input), so the tail shrinks to its budget and a head is
+        # summarised; a history with nothing before the unanswered input is reported unreducible instead (see
+        # the tier-2 tests).
+        async def seed_4(workspace, session) -> None:
             for i in range(4):
-                await append_messages(workspace, session, user_message(chr(ord("W") + i) * BIG_USER_CHARS), assistant_message(f"turn 4 reply {i}"))
-            entered, release = asyncio.Event(), asyncio.Event()
-            llm.extend([Gate(entered, release, text_events("SUMMARY-4")), Events(text_events("turn-4-ok"))])
-            before = len(llm.calls)
+                await append_messages(
+                    workspace, session, user_message(chr(ord("W") + i) * BIG_USER_CHARS), assistant_message(f"turn 4 reply {i}"),
+                )
+
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def during_4(workspace, session) -> None:
             task = asyncio.create_task(run_turn(session, llm))
             await asyncio.wait_for(entered.wait(), timeout=30)
             await session.append_instruction("STEER-DURING-COMPACTION-1")
             await session.append_instruction("STEER-DURING-COMPACTION-2")
             release.set()
             await asyncio.wait_for(task, timeout=30)
-            record("4-deferred-steers", before)
-        finally:
-            await session.aclose()
-            await backend.aclose()
-        # Turns 5 and 6: the boundary, each on its own session (the main one's history is not under our control).
-        turns.append(await boundary_turn(Path(tmp), llm, "5-one-under-the-trigger", -1))
-        turns.append(await boundary_turn(Path(tmp), llm, "6-exactly-at-the-trigger", 0))
+
+        turns.append(await recorded_turn(
+            root, llm, "4-deferred-steers", seed_4,
+            [Gate(entered, release, text_events("SUMMARY-4")), Events(text_events("turn-4-ok"))], during=during_4,
+        ))
+
+        # Turns 5 and 6: the boundary, each on its own session.
+        turns.append(await boundary_turn(root, llm, "5-one-under-the-trigger", -1))
+        turns.append(await boundary_turn(root, llm, "6-exactly-at-the-trigger", 0))
         return {"call_count": len(llm.calls), "calls": llm.calls, "turns": turns}
