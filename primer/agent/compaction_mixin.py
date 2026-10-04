@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -55,6 +55,14 @@ class CompactionResult:
     replaced_to_seq: int | None = None
     pruned_tool_outputs: int = 0
     head_messages_replaced: int = 0
+    kept_tail: list[Message] = field(default_factory=list)
+    """The messages kept verbatim after the summary (``new_history`` without its first message)."""
+    unreducible: str | None = None
+    """``CompactedTurn.unreducible``: why nothing (more) could be summarised, else ``None``."""
+    outcome: str = "summarised"
+    """``CompactedTurn.outcome``: ``summarised``, ``unreducible`` or ``insufficient``."""
+    trigger_tokens: int | None = None
+    """The trigger the compaction was measured against, in estimated tokens."""
 
 
 async def should_compact(
@@ -105,6 +113,7 @@ def _clone_strategy_for_apply(
         trigger_ratio=strategy.trigger_ratio,
         reserved_output_tokens=strategy.reserved_output_tokens,
         tail_turns=effective_tail,
+        tail_budget_fraction=strategy.tail_budget_fraction,
         prune_per_output_tokens=strategy.prune_per_output_tokens,
         prune_total_threshold=strategy.prune_total_threshold,
         summary_max_tokens=strategy.summary_max_tokens,
@@ -176,6 +185,12 @@ async def apply_compaction(
         replaced_to_seq=None,
         pruned_tool_outputs=compacted.pruned_tool_outputs,
         head_messages_replaced=compacted.head_messages_replaced,
+        kept_tail=(
+            list(compacted.new_messages[1:]) if summary_msg is not None else []
+        ),
+        unreducible=compacted.unreducible,
+        outcome=compacted.outcome,
+        trigger_tokens=compacted.trigger_tokens,
     )
 
 

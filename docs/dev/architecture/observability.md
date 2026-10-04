@@ -96,6 +96,13 @@ The instrumentation plumbing lives in `primer/observability/`:
   Call sites bind the module (`import primer.observability.metrics as _metrics`)
   rather than the names, because `reset_for_test` REBINDS the globals and a
   `from`-import would keep writing to the dead registry after any reset.
+- `compaction_outcomes_total{outcome}` is incremented by `CompactionStrategy` (`primer/agent/compaction.py`) once per
+  compaction: `pruned` (tier 1 sufficed), `summarised`, `unreducible` (nothing could be summarised, so no marker was
+  written) or `insufficient` (summarised, and the result is still at or over the trigger). The last two also log a
+  WARNING and are in the session record (the marker's payload, or a `compaction_note` record when there is no marker).
+  A rising `unreducible` rate means sessions whose prompt is mostly input the model has not answered. It does NOT
+  detect a fixed part (system prompt, tool schemas) too large for the context: the trigger, the tail budget and the
+  re-measure count messages only until task 01a10914 lands. `outcome` is a closed enum, so the label stays bounded.
 - `metrics.ALLOWED_LABEL_NAMES` plus `metrics.registered_label_names()` are the
   cardinality guard. Every label on every instrument must be a reviewed name, and
   `session_id` is in neither set: a per-session dimension would grow the series

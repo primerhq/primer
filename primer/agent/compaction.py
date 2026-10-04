@@ -14,7 +14,11 @@ Two tiers:
 2. **Full compaction (expensive)** -- replace the head of the history
    with one assistant-role summary message produced by calling the
    same LLM with the agent's :attr:`Agent.compaction_prompt` (or the
-   system default).
+   system default). The tail is kept verbatim: it is bounded by size, it
+   never splits a tool call from its results, and it always contains the
+   input the model has not answered yet (see :func:`split_for_compaction`).
+   When nothing can be summarised, or the prompt is still over the trigger
+   afterwards, the result says so (``CompactedTurn.unreducible``).
 
 Token counting uses a conservative character heuristic (``_estimate_tokens``).
 
@@ -35,7 +39,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
-from primer.agent.tail import tail_split
+from primer.agent.tail import split_for_compaction
 from primer.model.chat import (
     Error,
     ExtendedEvent,
@@ -54,6 +58,7 @@ from primer.model.chat import (
 )
 from primer.model.except_ import ServerError
 from primer.model.media_tokens import media_tokens
+from primer.observability import metrics as _metrics
 
 
 if TYPE_CHECKING:
@@ -184,6 +189,31 @@ class CompactedTurn(BaseModel):
     )
     estimated_tokens_before: int = Field(..., ge=0)
     estimated_tokens_after: int = Field(..., ge=0)
+    unreducible: str | None = Field(
+        default=None,
+        description=(
+            "Why the prompt could not be brought under the trigger. "
+            "``empty_head``: nothing precedes the part that may not be "
+            "summarised. ``protected_over_trigger``: that protected part alone "
+            "(the current turn's unanswered input, or the newest unit) is at or "
+            "over the trigger, so no summary can help. In both ``new_messages`` is "
+            "the history unchanged, no summariser call was made and no marker is "
+            "written. ``over_trigger``: summarised (a marker IS written) and still "
+            "over. ``None`` when compaction did what it was asked."
+        ),
+    )
+    outcome: str = Field(
+        default="summarised",
+        description=(
+            "The labelled outcome counted by ``compaction_outcomes_total``: "
+            "``pruned`` (tier 1 sufficed), ``summarised``, ``unreducible`` (no "
+            "marker) or ``insufficient`` (summarised, still over the trigger)."
+        ),
+    )
+    trigger_tokens: int | None = Field(
+        default=None,
+        description="The trigger this compaction was measured against, in estimated tokens.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +239,7 @@ class CompactionStrategy:
     DEFAULT_TRIGGER_RATIO: float = 0.90
     DEFAULT_RESERVED_OUTPUT: int = 8192
     DEFAULT_TAIL_TURNS: int = 4
+    DEFAULT_TAIL_BUDGET_FRACTION: float = 0.5
     DEFAULT_PRUNE_PER_OUTPUT: int = 20_000
     DEFAULT_PRUNE_TOTAL_THRESHOLD: int = 40_000
     DEFAULT_SUMMARY_MAX_TOKENS: int = 4096
@@ -219,6 +250,7 @@ class CompactionStrategy:
         trigger_ratio: float = DEFAULT_TRIGGER_RATIO,
         reserved_output_tokens: int = DEFAULT_RESERVED_OUTPUT,
         tail_turns: int = DEFAULT_TAIL_TURNS,
+        tail_budget_fraction: float = DEFAULT_TAIL_BUDGET_FRACTION,
         prune_per_output_tokens: int = DEFAULT_PRUNE_PER_OUTPUT,
         prune_total_threshold: int = DEFAULT_PRUNE_TOTAL_THRESHOLD,
         summary_max_tokens: int = DEFAULT_SUMMARY_MAX_TOKENS,
@@ -231,9 +263,14 @@ class CompactionStrategy:
             raise ValueError("reserved_output_tokens must be >= 0")
         if tail_turns < 0:
             raise ValueError("tail_turns must be >= 0")
+        if not 0 <= tail_budget_fraction <= 1:
+            raise ValueError(
+                f"tail_budget_fraction must be in [0, 1], got {tail_budget_fraction!r}"
+            )
         self.trigger_ratio = trigger_ratio
         self.reserved_output_tokens = reserved_output_tokens
         self.tail_turns = tail_turns
+        self.tail_budget_fraction = tail_budget_fraction
         self.prune_per_output_tokens = prune_per_output_tokens
         self.prune_total_threshold = prune_total_threshold
         self.summary_max_tokens = summary_max_tokens
@@ -276,6 +313,7 @@ class CompactionStrategy:
         after_prune = self._estimate_tokens([*pruned_history, *new_messages])
         if after_prune < trigger:
             # Pruning sufficed; rewrite history but skip the LLM summarisation.
+            self._count("pruned")
             return CompactedTurn(
                 new_messages=pruned_history,
                 summary_message=None,
@@ -283,6 +321,8 @@ class CompactionStrategy:
                 head_messages_replaced=0,
                 estimated_tokens_before=before,
                 estimated_tokens_after=after_prune,
+                outcome="pruned",
+                trigger_tokens=trigger,
             )
 
         # Tier 2: full compaction.
@@ -341,24 +381,100 @@ class CompactionStrategy:
         :class:`CompactedTurn` result. Shared by :meth:`maybe_compact`
         (tier-2 fall-through) and :meth:`force_compact` (always-tier-2)
         to keep the result shape identical between the two paths."""
-        compacted_messages, summary_msg, head_count = await self._full_compact(
-            history=pruned_history,
-            agent=agent,
-            llm=llm,
-            model=model,
-            tool_manager=tool_manager,
-            event_sink=event_sink,
-            max_tool_turns=max_tool_turns,
-            principal=principal,
+        trigger = int(self.trigger_ratio * self._effective_budget(model))
+        history = pruned_history
+        history_tokens = self._estimate_tokens(history)
+
+        def unreducible(reason: str) -> CompactedTurn:
+            self._count("unreducible")
+            self._warn(reason, tokens=history_tokens, trigger=trigger)
+            return CompactedTurn(
+                new_messages=list(history),
+                summary_message=None,
+                pruned_tool_outputs=pruned_count,
+                head_messages_replaced=0,
+                estimated_tokens_before=before,
+                estimated_tokens_after=history_tokens,
+                unreducible=reason,
+                outcome="unreducible",
+                trigger_tokens=trigger,
+            )
+
+        # The smallest tail the split may keep: the current turn's unanswered input (and
+        # the newest unit). No summary can take the prompt below it.
+        floor = self._split(history, tail_budget_tokens=0)
+        if floor.reason is not None:
+            # Nothing precedes the part that may not be summarised: summarising
+            # "everything" would fold the question into the summary.
+            return unreducible(floor.reason)
+        if self._estimate_tokens(floor.tail) >= trigger:
+            # The protected part alone is over the trigger: a summariser call would cost a
+            # model call and write a marker that copies the oversized input, to no effect.
+            return unreducible("protected_over_trigger")
+
+        split = self._split(history, tail_budget_tokens=self._tail_budget(trigger))
+        summary_msg = await self._full_compact(
+            head=split.head, agent=agent, llm=llm, model=model, tool_manager=tool_manager,
+            event_sink=event_sink, max_tool_turns=max_tool_turns, principal=principal,
         )
+        compacted_messages = [summary_msg, *split.tail]
         after = self._estimate_tokens(compacted_messages)
+        if after >= trigger and len(floor.tail) < len(split.tail):
+            # Measure again: still over the trigger. One bounded escalation, in memory: summarise
+            # again with only the protected part kept. TEXT-ONLY (no tool manager, no sink): a
+            # tool-enabled summariser would run its tools a second time, and the marker is written
+            # once, for the result that is returned.
+            split = floor
+            summary_msg = await self._full_compact(head=split.head, agent=agent, llm=llm, model=model)
+            compacted_messages = [summary_msg, *split.tail]
+            after = self._estimate_tokens(compacted_messages)
+        insufficient = after >= trigger
+        outcome = "insufficient" if insufficient else "summarised"
+        self._count(outcome)
+        if insufficient:
+            self._warn("over_trigger", tokens=after, trigger=trigger)
         return CompactedTurn(
             new_messages=compacted_messages,
             summary_message=summary_msg,
             pruned_tool_outputs=pruned_count,
-            head_messages_replaced=head_count,
+            head_messages_replaced=len(split.head),
             estimated_tokens_before=before,
             estimated_tokens_after=after,
+            unreducible="over_trigger" if insufficient else None,
+            outcome=outcome,
+            trigger_tokens=trigger,
+        )
+
+    def _split(self, history: list[Message], *, tail_budget_tokens: int):
+        return split_for_compaction(
+            history,
+            tail_turns=self.tail_turns,
+            tail_budget_tokens=tail_budget_tokens,
+            size=self._estimate_tokens,
+        )
+
+    def _tail_budget(self, trigger: int) -> int:
+        """What the kept tail may weigh: ``min(tail_budget_fraction * trigger, trigger -
+        summary_max_tokens)``, so a summary of the full allowance plus the tail stays under the
+        trigger. It is 0 whenever the trigger is no larger than the summary allowance (a model
+        with a context under about 4.6k tokens at the defaults): the tail then shrinks to its
+        floor and the result is usually ``insufficient``, which is the honest verdict. The
+        budget counts MESSAGES only: the fixed overhead (system prompt, tool schemas) is not
+        in it (task 01a10914, R2)."""
+        return max(0, min(int(self.tail_budget_fraction * trigger), trigger - self.summary_max_tokens))
+
+    @staticmethod
+    def _count(outcome: str) -> None:
+        _metrics.compaction_outcomes_total.labels(outcome=outcome).inc()
+
+    @staticmethod
+    def _warn(reason: str, *, tokens: int, trigger: int) -> None:
+        """A compaction that cannot reduce the prompt is a decision to send it anyway: say so."""
+        logger.warning(
+            "compaction unreducible (%s): the prompt is about %d tokens against a trigger of %d "
+            "and nothing more can be summarised without dropping input the model has not answered",
+            reason, tokens, trigger,
+            extra={"reason": reason, "estimated_tokens": tokens, "trigger_tokens": trigger},
         )
 
     def _effective_budget(self, model: "ResolvedModel") -> int:
@@ -479,7 +595,7 @@ class CompactionStrategy:
     async def _full_compact(
         self,
         *,
-        history: list[Message],
+        head: list[Message],
         agent: "Agent",
         llm: "LLM",
         model: "ResolvedModel",
@@ -487,12 +603,9 @@ class CompactionStrategy:
         event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
         max_tool_turns: int | None = None,
         principal: str | None = None,
-    ) -> tuple[list[Message], Message | None, int]:
-        head, tail = tail_split(history, tail_turns=self.tail_turns)
-        if not head:
-            # Nothing to summarise; pruning alone is the only lever.
-            return list(tail), None, 0
-
+    ) -> Message:
+        """Summarise ``head`` into one assistant-role message. The split (what is head,
+        what is kept) is decided by the caller: see :func:`split_for_compaction`."""
         compaction_prompt = (
             "\n\n".join(agent.compaction_prompt)
             if agent.compaction_prompt
@@ -542,7 +655,7 @@ class CompactionStrategy:
                 )
             ],
         )
-        return [summary_msg, *tail], summary_msg, len(head)
+        return summary_msg
 
     async def _summarise_text_only(
         self,

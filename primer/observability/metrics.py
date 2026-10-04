@@ -259,6 +259,14 @@ llm_tokenizer_ready = Gauge(
     registry=registry,
 )
 
+compaction_outcomes_total = Counter(
+    "compaction_outcomes_total",
+    "Compactions by outcome: pruned (tier 1 sufficed), summarised, unreducible "
+    "(nothing could be summarised; no marker) or insufficient (summarised, still over the trigger).",
+    ["outcome"],
+    registry=registry,
+)
+
 sessions_active = Gauge(
     "sessions_active",
     "Sessions currently executing a turn, by workspace.",
@@ -372,6 +380,7 @@ def reset_for_test() -> None:
     global session_interrupts_via_poll_total  # noqa: PLW0603
     global session_interrupt_publish_failures_total  # noqa: PLW0603
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
+    global compaction_outcomes_total  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
 
@@ -545,6 +554,13 @@ def reset_for_test() -> None:
         ["name"],
         registry=registry,
     )
+    compaction_outcomes_total = Counter(
+        "compaction_outcomes_total",
+        "Compactions by outcome: pruned (tier 1 sufficed), summarised, unreducible "
+        "(nothing could be summarised; no marker) or insufficient (summarised, still over the trigger).",
+        ["outcome"],
+        registry=registry,
+    )
     sessions_active = Gauge(
         "sessions_active",
         "Sessions currently executing a turn, by workspace.",
@@ -603,6 +619,7 @@ __all__ = [
     "turn_duration_seconds",
     "llm_calls_total",
     "llm_profile_tokens_total",
+    "compaction_outcomes_total",
     "sessions_active",
     # Stop (interrupt)
     "session_interrupts_via_poll_total",

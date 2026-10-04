@@ -184,6 +184,10 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         summary_message: "Message | None" = None,
         tokens_before: int = 0,
         tokens_after: int = 0,
+        outcome: str = "summarised",
+        unreducible: str | None = None,
+        trigger_tokens: int | None = None,
+        snapshot: "list[Message] | None" = None,
     ) -> None:
         """Record a compaction by APPENDING one ``compaction_marker`` record.
 
@@ -210,10 +214,19 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         interleave with a concurrent O_APPEND event row or another full-file
         rewriter. The lock is NOT held across the compaction LLM call (that
         already completed before this hook runs).
+
+        Message lines written AFTER ``snapshot`` was taken (a steer drained after an
+        earlier marker in the same turn, a mid-turn steer before an overflow's forced
+        compaction) are not in ``compacted``, and the marker folds every line before
+        it: they are read again here, under the lock, and appended to the marker's kept
+        tail, after the strategy's own tail.
         """
-        del compacted  # the marker carries the summary text, not the message list
         if summary_message is None:
             return
+        # ``compacted`` is ``[summary, *kept_tail]`` (CompactionStrategy._tier2): the
+        # marker must carry the tail too, or the next load folds it into the summary
+        # along with every line before the marker (including the turn's own input).
+        kept_tail = compacted[1:] if compacted and compacted[0] is summary_message else []
         summary_text = "".join(
             part.text
             for part in summary_message.parts
@@ -224,12 +237,19 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         async with self._session.messages_lock:
             existing = await self._read_messages_jsonl_text()
             boundary_seq = _max_event_log_seq(existing)
+            kept_tail = [*kept_tail, *await self._lines_after_snapshot(existing, snapshot)]
             now = datetime.now(timezone.utc)
             marker = SessionMessageRecord(
                 seq=boundary_seq + 1,
                 kind=SessionMessageKind.COMPACTION_MARKER,
                 payload={
                     "summary": summary_text,
+                    # Serialised exactly as a Message line is (model_dump_json), so
+                    # the reader validates them with the same model.
+                    **(
+                        {"kept_tail_messages": [json.loads(m.model_dump_json()) for m in kept_tail]}
+                        if kept_tail else {}
+                    ),
                     "replaced_from_seq": 1,
                     # Message lines are seqless, so physical position in the
                     # append-only file IS the boundary; ``replaced_to_seq`` is
@@ -239,6 +259,11 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     "model": self._model.model_name,
                     "tokens_before": tokens_before,
                     "tokens_after": tokens_after,
+                    # The verdict, in the record: ``insufficient`` means the summary stands and
+                    # the compacted prompt is still at or over ``trigger_tokens``.
+                    "outcome": outcome,
+                    "unreducible": unreducible,
+                    "trigger_tokens": trigger_tokens,
                     "created_at": now.isoformat(),
                 },
                 created_at=now,
@@ -251,6 +276,31 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 op="message",
                 files={"messages.jsonl": new_jsonl},
             )
+
+    async def _lines_after_snapshot(
+        self, existing: str, snapshot: "list[Message] | None",
+    ) -> list["Message"]:
+        """The Message lines in the persisted history that ``snapshot`` does not hold.
+
+        ``snapshot`` is the history the compaction was computed from, which is a prefix of
+        what the reader returns now unless something rewrote the history meanwhile (another
+        marker, a rewind); the roles are compared to notice that, and then nothing is added
+        rather than something wrong."""
+        if not snapshot:
+            return []
+        from primer.workspace.session import reconstruct_compacted_history
+
+        current = await asyncio.to_thread(reconstruct_compacted_history, existing.splitlines())
+        if len(current) <= len(snapshot):
+            return []
+        if [m.role for m in current[: len(snapshot)]] != [m.role for m in snapshot]:
+            logger.warning(
+                "session %s: the history changed under a compaction (another marker or a rewind); "
+                "not carrying lines written since its snapshot",
+                self._session.session_id,
+            )
+            return []
+        return list(current[len(snapshot):])
 
     async def _open_compaction_window(self) -> list["Message"]:
         """Set the ``compacting`` flag AND snapshot history atomically.

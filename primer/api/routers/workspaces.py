@@ -1320,6 +1320,14 @@ async def compact_session_endpoint(
         "\n\n".join(prompt_field) if prompt_field else DEFAULT_COMPACTION_PROMPT
     )
 
+    async def _reload():
+        """The history as the reader sees it now: a steer can land while the summariser runs."""
+        fresh_raw = await workspace.read_file(rel)
+        fresh_text = (
+            fresh_raw.decode("utf-8", errors="replace") if isinstance(fresh_raw, bytes) else fresh_raw
+        )
+        return reconstruct_compacted_history(fresh_text.splitlines())
+
     async def _run(hist):
         return await force_compact(
             llm=llm,
@@ -1343,6 +1351,7 @@ async def compact_session_endpoint(
     fresh = await sessions.get(session_id) or row
     outcome = await compact_session(
         row=fresh, workspace_io=io_shim, history=history, run_compaction=_run,
+        reload_history=_reload,
     )
     await sessions.update(
         fresh.model_copy(update={"last_seq": outcome.compaction_marker_seq})

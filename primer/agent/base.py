@@ -60,6 +60,7 @@ from primer.model.chat import (
     ToolCallPart,
     ToolResultPart,
     Usage,
+    _CompactionNote,
     output_to_message,
 )
 from primer.model.except_ import (
@@ -72,6 +73,8 @@ from primer.model.graph import build_execution_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from primer.agent.compaction import CompactedTurn
 
     from primer.int.artifact_storage import ArtifactStorage
     from primer.int.llm import LLM
@@ -194,13 +197,22 @@ class _BaseAgentExecutor(ABC):
         summary_message: Message | None = None,
         tokens_before: int = 0,
         tokens_after: int = 0,
+        outcome: str = "summarised",
+        unreducible: str | None = None,
+        trigger_tokens: int | None = None,
+        snapshot: list[Message] | None = None,
     ) -> None:
         """Replace the persisted history with the compacted form.
 
         ``summary_message`` is the assistant-role summary the strategy
         produced (``None`` for pruning-only compaction, where nothing was
         summarised); ``tokens_before`` / ``tokens_after`` are the strategy's
-        telemetry. Surfaces that record compaction as an append-only marker
+        telemetry, and ``outcome`` / ``unreducible`` / ``trigger_tokens`` its
+        verdict (``insufficient`` when the summary stands and the prompt is
+        still over the trigger). ``snapshot`` is the history the compaction
+        was computed from: lines written to the persisted history after it
+        was taken (a steer, say) are not in ``compacted`` and must survive
+        the fold. Surfaces that record compaction as an append-only marker
         (the workspace executor) use these to build the marker payload;
         surfaces that rewrite in place (the chat/thread executor) ignore them.
         """
@@ -258,6 +270,7 @@ class _BaseAgentExecutor(ABC):
         # no await when compaction does not fire, and pruning-only is
         # synchronous, so steers on non-compaction turns are never deferred.
         snapshot = await self._open_compaction_window()
+        notes: list[ExtendedEvent] = []
         try:
             history = (
                 snapshot if snapshot is not None else await self._load_history()
@@ -276,7 +289,12 @@ class _BaseAgentExecutor(ABC):
                     summary_message=compacted.summary_message,
                     tokens_before=compacted.estimated_tokens_before,
                     tokens_after=compacted.estimated_tokens_after,
+                    outcome=compacted.outcome,
+                    unreducible=compacted.unreducible,
+                    trigger_tokens=compacted.trigger_tokens,
+                    snapshot=history,
                 )
+                notes += self._compaction_notes(compacted)
                 history = compacted.new_messages
                 logger.info(
                     "AgentExecutor: compaction fired",
@@ -290,6 +308,9 @@ class _BaseAgentExecutor(ABC):
                 )
         finally:
             await self._close_compaction_window()
+        for note in notes:
+            await self._emit(note)
+            yield note
 
         try:
             async for ev in self._run_loop(
@@ -322,16 +343,40 @@ class _BaseAgentExecutor(ABC):
                     summary_message=forced.summary_message,
                     tokens_before=forced.estimated_tokens_before,
                     tokens_after=forced.estimated_tokens_after,
+                    outcome=forced.outcome,
+                    unreducible=forced.unreducible,
+                    trigger_tokens=forced.trigger_tokens,
+                    snapshot=history,
                 )
+                notes = self._compaction_notes(forced)
                 history = forced.new_messages
             finally:
                 await self._close_compaction_window()
+            for note in notes:
+                await self._emit(note)
+                yield note
             async for ev in self._run_loop(
                 history=history,
                 new_messages=messages,
                 response_format=response_format,
             ):
                 yield ev
+
+    @staticmethod
+    def _compaction_notes(compacted: "CompactedTurn") -> list[ExtendedEvent]:
+        """The session-record entry for a compaction that wrote no marker and could not help.
+
+        A compaction that summarised and was still over the trigger says so in its marker's
+        payload; one that summarised nothing writes no marker, so this event (persisted as a
+        ``compaction_note`` record by the dispatch path) is where it is visible."""
+        if compacted.outcome != "unreducible" or compacted.unreducible is None:
+            return []
+        return [ExtendedEvent(extended=_CompactionNote(
+            outcome=compacted.outcome,
+            reason=compacted.unreducible,
+            estimated_tokens=compacted.estimated_tokens_after,
+            trigger_tokens=compacted.trigger_tokens,
+        ))]
 
     def bind_scoped_call_resolver(
         self, resolver: "Callable[[str], tuple[str, int]] | None",
