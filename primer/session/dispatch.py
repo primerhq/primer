@@ -1683,6 +1683,16 @@ def _post_turn_status(
     # Executor-set WAITING (e.g. assistant asked a question heuristic).
     if agent_status == SessionStatus.WAITING:
         return (SessionStatus.WAITING, None)
+    # The model kept asking for tools and max_tool_turns stopped the turn. Its last model
+    # event was Done(tool_use), which the mapping below reads as "the executor will queue
+    # the next turn itself" (RUNNING); nothing does after a cap trip, and boot recovery
+    # re-arms every RUNNING row, so it must NOT map there. An interactive session rests
+    # WAITING (the user can send another message); an autonomous one has nobody to resume
+    # it and ENDS with its own reason, as it does after a clean turn.
+    if last_done_reason == "tool_turn_cap":
+        if autonomous:
+            return (SessionStatus.ENDED, "tool_turn_cap")
+        return (SessionStatus.WAITING, None)
     # Stop-reason mapping.
     if last_done_reason is None:
         return (SessionStatus.ENDED, "completed")

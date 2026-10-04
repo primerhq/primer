@@ -153,6 +153,11 @@ class _BaseAgentExecutor(ABC):
         # returns cleanly, so there is no exception to read). Reset at the start of
         # every invoke; dispatch reads it after the event stream ends.
         self.was_interrupted: bool = False
+        # True when the LATEST invoke() ended because the model asked for another tool
+        # round at ``agent.max_tool_turns``. The model's last event is still
+        # Done(tool_use), so the post-turn status mapper cannot tell this from a turn
+        # that is mid-chain without this flag. Reset like ``was_interrupted``.
+        self.hit_tool_turn_cap: bool = False
         # Ambient run context exposed to the system prompt as ``ctx``. Base is
         # surface-agnostic -> memory default; subclasses override with the real
         # surface (AgentExecutor -> "chat", WorkspaceAgentExecutor -> "workspace").
@@ -412,7 +417,9 @@ class _BaseAgentExecutor(ABC):
         full_turn_messages: list[Message] = list(new_messages)
         prompt = self._build_prompt(history, new_messages)
         self.was_interrupted = False
+        self.hit_tool_turn_cap = False
         interrupted_holder: list[bool] = []
+        capped_holder: list[bool] = []
 
         # Shared helper handles the LLM+tool dispatch loop. We tap
         # every event into our subscriber fan-out + caller stream;
@@ -436,6 +443,7 @@ class _BaseAgentExecutor(ABC):
                 resolve_scoped_call=self._resolve_scoped_call,
                 interrupt=self._interrupt_event,
                 interrupted_out=interrupted_holder,
+                capped_out=capped_holder,
             ):
                 await self._emit(event)
                 yield event
@@ -470,6 +478,7 @@ class _BaseAgentExecutor(ABC):
         # (assistant + tool rounds, always paired); the interrupted round's partial
         # assistant text never became a message, so it never reaches the history.
         self.was_interrupted = bool(interrupted_holder)
+        self.hit_tool_turn_cap = bool(capped_holder)
 
         # Persist only when the loop actually produced an assistant
         # message (helper appends it on the first non-tool stop or
