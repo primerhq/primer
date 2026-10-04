@@ -642,8 +642,11 @@ re-parks until every pending decision is resolved, then advances.
   registered at app startup; inspectors see only the `callable_id`.
 - **One workspace per graph session.** Every node runs in the same
   workspace; files written by node A are visible to node B.
-- **Auto-compaction is per-agent-node.** Each agent node compacts its
-  own history independently; there is no graph-wide compaction.
+- **Agent nodes do not auto-compact.** Auto-compaction runs only in
+  interactive session turns. A graph agent node calls the model loop
+  directly, so its history (kept per node instance) is sent as-is on every
+  iteration: nothing summarises or prunes it. Bound a looping node's tool
+  output and iteration count yourself.
 - **Human-in-the-loop parks the whole graph, not just one node.** When
   a node hits an `ask_user` (value-yield) or a tool-approval gate, the
   executor checkpoints the run, parks the session WAITING, and resumes
