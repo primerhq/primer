@@ -24,6 +24,19 @@ Semantics of the nested part (identical on both backends)
    intermediate value is not a container, and a JSON null is not SQL NULL, so ``COALESCE`` alone is wrong.
 3. Path elements are bound, never spliced into SQL text (Postgres: a ``text[]`` parameter; SQLite: a
    quoted key inside a ``$`` path, which is why quotes, backslashes and control characters are rejected).
+
+Canonical storage (identical on every backend)
+----------------------------------------------
+A patch value is JSON the CALLER wrote (``"5"`` for an int field, a ``+00:00`` timestamp, a mixed-case value
+a validator lower-cases). The database stores what it is given, while a read re-dumps the validated model,
+so without more a guard built from a read (:func:`raw_generation`) could never match what a patch wrote.
+:func:`canonical_fixup` closes that: after the write the document is validated, and every top-level field the
+patch touched is rewritten, in the same transaction and under the same row lock, to the model's own canonical
+dump. Stored therefore equals canonical for every field a patch wrote.
+
+The other half is a document that lacks a field the model now defaults (a row older than the field):
+:func:`normalise_where` lets a guard that names the default also match the absent field, which is how the
+model reads it.
 """
 
 from __future__ import annotations
@@ -31,6 +44,8 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+from pydantic_core import to_jsonable_python
 
 from primer.model.common import dump_for_storage
 
@@ -61,16 +76,105 @@ def raw_generation(entity: Any, field: str) -> Any:
     trip that matches. A caller must never build the comparison value itself (``dt.isoformat()`` differs
     from pydantic's ``Z`` form and would make the compare-and-set reject forever).
 
-    It is "what the backend stores" for a row that was written from a model dump. It is NOT for a field
-    whose stored text is not the model's own canonical form: a timestamp written through ``patch`` or by a
-    legacy writer as ``+00:00`` (a read re-dumps it as ``Z``), a field absent from an old document that the
-    model now defaults, or a field a validator normalises. Guard on such a field only after a canonical
-    write, and keep the generation fields (the ones a hook reads back) written by this layer.
+    That holds for every field a patch or a whole-document write put there (the patch path canonicalises, see
+    the module docstring) and for a field the document lacks that the model defaults (``normalise_where``). The
+    one thing it cannot know is a document that WAS written in a non-canonical form by something other than this
+    layer (direct SQL, an older build that dumped a timestamp as ``+00:00``): such a guard is refused for ever,
+    which :func:`primer.storage.cas.patch_if_checked` turns into an ERROR and a counter.
     """
     dumped = dump_for_storage(entity)
     if field not in dumped:
         raise ValueError(f"{type(entity).__name__} has no stored field {field!r}")
     return dumped[field]
+
+
+_MISSING = object()
+
+
+def json_equal(a: Any, b: Any) -> bool:
+    """JSON-typed equality, the rule ``where`` uses: ``True`` is not ``1`` and not ``"true"``, ``1`` equals ``1.0``,
+    objects and arrays compare element by element."""
+    if a is None or b is None:
+        return a is None and b is None
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a == b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(json_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(json_equal(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
+
+
+def _default_as_stored(model_cls: Any, field: str) -> Any:
+    """The JSON form of ``field``'s default on ``model_cls``, or ``_MISSING`` (required, unknown, or a factory
+    that needs validated data)."""
+    info = getattr(model_cls, "model_fields", {}).get(field)
+    if info is None or info.is_required():
+        return _MISSING
+    try:
+        default = info.get_default(call_default_factory=True)
+    except (TypeError, ValueError):
+        return _MISSING
+    return to_jsonable_python(default)
+
+
+def normalise_where(model_cls: Any, where: Mapping[str, Sequence[Any]]) -> dict[str, list[Any]]:
+    """``where`` with each guard that names a field's DEFAULT also matching the field being absent.
+
+    A document written before the model gained a defaulted field has no such key; the model reads it as the
+    default, and a guard built from that read (``raw_generation`` returns the default) must match it. The
+    database compares the stored document, where the key is absent, so ``None`` is added to the allowed values
+    (``None`` matches absent or null). Fields without a default, unknown fields and guards that already allow
+    ``None`` are left alone.
+    """
+    out: dict[str, list[Any]] = {}
+    for field, allowed in where.items():
+        values = list(allowed)
+        default = _default_as_stored(model_cls, field)
+        if (
+            default is not _MISSING
+            and not any(v is None for v in values)
+            and any(json_equal(v, default) for v in values)
+        ):
+            values.append(None)
+        out[field] = values
+    return out
+
+
+def check_known_fields(
+    model_cls: Any, patch: Mapping[str, Any], set_paths: Mapping[tuple[str, ...], Any],
+) -> None:
+    """Reject a patch or path root that is not a field of the model (unless the model allows extras).
+
+    A typo would otherwise write a key nothing reads and report success.
+    """
+    config = getattr(model_cls, "model_config", {})
+    if config.get("extra") == "allow":
+        return
+    known = set(getattr(model_cls, "model_fields", {}))
+    unknown = sorted({*patch, *(path[0] for path in set_paths)} - known)
+    if unknown:
+        raise ValueError(f"{model_cls.__name__} has no field {unknown[0]!r} (patch_if writes known fields only)")
+
+
+def canonical_fixup(
+    entity: Any, stored: Mapping[str, Any], patch: Mapping[str, Any], set_paths: Mapping[tuple[str, ...], Any],
+) -> dict[str, Any]:
+    """The top-level fields a patch wrote whose stored form differs from the model's canonical dump.
+
+    ``stored`` is the document the write produced and ``entity`` the model validated from it. The result maps
+    each such field to its canonical value, to be written back in the same transaction (empty when the patch
+    was already canonical, the common case).
+    """
+    canonical = dump_for_storage(entity)
+    roots = {*patch, *(path[0] for path in set_paths)}
+    return {
+        key: canonical[key]
+        for key in sorted(roots)
+        if key in canonical and not json_equal(stored.get(key), canonical[key])
+    }
 
 
 def _check_key(key: Any, what: str) -> None:

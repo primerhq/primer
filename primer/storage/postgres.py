@@ -95,7 +95,13 @@ from primer.model.storage import (
     Predicate,
 )
 from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_options
-from primer.storage._patch import compile_postgres, validate_patch
+from primer.storage._patch import (
+    canonical_fixup,
+    check_known_fields,
+    compile_postgres,
+    normalise_where,
+    validate_patch,
+)
 from primer.storage._cursor import (
     _decode_cursor,
     _encode_cursor_for,
@@ -883,6 +889,8 @@ class PostgresStorage(Storage[ModelT]):
         # (re-checked after a concurrent writer commits), so there is no read-modify-write and no
         # separate lock. See primer.storage._patch for the semantics and the compiler.
         patch_d, paths_d, where_d = validate_patch(patch, set_paths, where)
+        check_known_fields(self._model, patch_d, paths_d)
+        where_d = normalise_where(self._model, where_d)
         await self._ensure_table()
         event_kind = kind_for_model(self._model)
         if event_kind is not None:
@@ -906,7 +914,22 @@ class PostgresStorage(Storage[ModelT]):
                 async with c.transaction():
                     row = await c.fetchrow(sql, id, *params)
                     if row is not None:
+                        stored = row["data"]
+                        stored = json.loads(stored) if isinstance(stored, str) else dict(stored)
                         entity = self._from_row(row)
+                        # The caller's JSON is not necessarily the model's canonical form ("5" for an int,
+                        # a +00:00 timestamp, a validator-normalised value). Rewrite what the patch touched
+                        # to the canonical dump, under the row lock this transaction already holds, so a
+                        # guard built from a read (raw_generation) always matches what is stored.
+                        fixup = canonical_fixup(entity, stored, patch_d, paths_d)
+                        if fixup:
+                            fix_expr, _, fix_params = compile_postgres(fixup, {}, {}, first_param=2)
+                            row = await c.fetchrow(
+                                f'UPDATE {self._qualified} SET data = {fix_expr}, updated_at = now() '
+                                f'WHERE id = $1 RETURNING id, data',
+                                id, *fix_params,
+                            )
+                            entity = self._from_row(row)
                         if event_kind is not None:
                             await _append_crud_event(
                                 c, self._provider.schema,

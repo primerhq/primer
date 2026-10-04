@@ -322,6 +322,12 @@ async def test_patch_if_contract(provider: StorageProvider, scenario: Any) -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", _ps.RAW, ids=lambda f: f.__name__)
+async def test_patch_if_raw_document_contract(provider: StorageProvider, scenario: Any) -> None:
+    await scenario(_ps.ProviderEnv(provider))
+
+
+@pytest.mark.asyncio
 async def test_patch_if_appends_the_updated_event_for_a_registered_kind(
     provider: StorageProvider, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

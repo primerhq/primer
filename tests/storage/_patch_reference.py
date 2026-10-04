@@ -52,3 +52,57 @@ def apply_patch(
             cur = cur[part]
         cur[path[-1]] = copy.deepcopy(set_paths[path])
     return out
+
+
+def where_with_defaults(model_cls: Any, where: Mapping[str, Sequence[Any]]) -> dict[str, list[Any]]:
+    """A guard that names a field's default also matches the field being ABSENT (how the model reads it)."""
+    from pydantic_core import to_jsonable_python
+
+    out: dict[str, list[Any]] = {}
+    for field, allowed in where.items():
+        values = list(allowed)
+        info = model_cls.model_fields.get(field)
+        if info is not None and not info.is_required() and not any(v is None for v in values):
+            try:
+                default = to_jsonable_python(info.get_default(call_default_factory=True))
+            except (TypeError, ValueError):
+                default = None
+            if default is not None and any(typed_equal(v, default) for v in values):
+                values.append(None)
+        out[field] = values
+    return out
+
+
+def patch_if_reference(
+    model_cls: Any,
+    id: str,  # noqa: A002
+    raw_doc: Mapping[str, Any],
+    patch: Mapping[str, Any] | None,
+    *,
+    where: Mapping[str, Sequence[Any]],
+    set_paths: Mapping[tuple[str, ...], Any] | None = None,
+) -> tuple[dict[str, Any], Any] | None:
+    """The whole ``patch_if`` pipeline over the RAW stored document: ``None`` when ``where`` rejects it, else
+    ``(new stored document, validated model)``.
+
+    Mirrors what the backends do, in plain Python: validate the spec, refuse unknown fields, guard against the raw
+    document (with defaulted-absent fields matching), apply the patch to the raw document (so keys the model does
+    not read survive), validate the result, and rewrite every field the patch touched to the model's canonical dump.
+    """
+    from primer.model.common import dump_for_storage
+    from primer.storage._patch import validate_patch
+
+    patch_d, paths_d, where_d = validate_patch(patch, set_paths, where)
+    if model_cls.model_config.get("extra") != "allow":
+        unknown = sorted({*patch_d, *(p[0] for p in paths_d)} - set(model_cls.model_fields))
+        if unknown:
+            raise ValueError(f"{model_cls.__name__} has no field {unknown[0]!r}")
+    if not doc_matches(raw_doc, where_with_defaults(model_cls, where_d)):
+        return None
+    produced = apply_patch(raw_doc, patch_d, paths_d)
+    entity = model_cls.model_validate({**produced, "id": id})
+    canonical = {k: v for k, v in dump_for_storage(entity).items() if k != "id"}
+    for key in {*patch_d, *(p[0] for p in paths_d)}:
+        if key in canonical and not typed_equal(produced.get(key), canonical[key]):
+            produced[key] = canonical[key]
+    return produced, entity

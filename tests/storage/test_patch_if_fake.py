@@ -19,3 +19,11 @@ async def test_the_fake_satisfies_the_patch_if_contract(
     fake_storage_provider: Any, scenario: Any,
 ) -> None:
     await scenario(fake_storage_provider.get_storage(ps.PatchDoc))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ps.RAW, ids=lambda f: f.__name__)
+async def test_the_fake_satisfies_the_raw_document_patch_if_contract(
+    fake_storage_provider: Any, scenario: Any,
+) -> None:
+    await scenario(ps.FakeEnv(fake_storage_provider))
