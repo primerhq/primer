@@ -31,6 +31,7 @@ from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph._node_identity import current_graph_node_id
 from primer.graph._node_refs import (
+    _fanout_scope,
     _NodeDone,
     _PendingAgentYield,
     _ToolDispatchBarrier,
@@ -367,8 +368,13 @@ class _AgentNodeMixin:
         llm, llm_model = await self._resolve_node_llm(node, agent)
         tool_manager = await self._select_node_tool_manager(node, agent)
 
+        # The same scope the first dispatch rendered with (``_stream_node``): a parked fan-out
+        # instance's template uses fanout_index / fanout_item, and the checkpoint restores the
+        # instance (``_fanout_instances``) before this runs. Passing none made the render fail
+        # on the undefined name, or quietly gave the model a different prompt.
         rendered = render_input_template(
-            node.input_template, context=context, extra_scope=None
+            node.input_template, context=context,
+            extra_scope=_fanout_scope(self._fanout_instances.get(pending.node_id)),
         )
         new_user_msg = Message(role="user", parts=[TextPart(text=rendered)])
         # 01a05935 item 3: pending.node_id is the fan-out-instance-
