@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("PRIMER_TEST_POSTGRES_URL"),
-    reason="needs PRIMER_TEST_POSTGRES_URL set",
-)
+from tests.pg_gate import postgres_marks
+
+pytestmark = postgres_marks("Postgres leader-elector tests")
 
 
 @pytest.mark.asyncio

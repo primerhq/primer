@@ -41,11 +41,14 @@ server:
   storage:
     backend: sqlite            # sqlite | postgres
     # Used when backend: postgres. Also used by the distributed lane.
-    postgres_dsn: "${PRIMER_TEST_PG_DSN}"   # postgresql://primer:primer@127.0.0.1:5432/primer_e2e
+    # NOT the Postgres test gate (PRIMER_TEST_POSTGRES_URL): that one opens
+    # destructive suites (they DROP tables and DELETE leases), and must never
+    # point at this server's own database.
+    postgres_dsn: "${PRIMER_TEST_E2E_POSTGRES_DSN}"   # postgresql://primer:primer@127.0.0.1:5432/primer_e2e
   vector_store:
     backend: lance             # lance | pgvector | pgvectorscale
     # Used when backend is a pgvector flavour (can reuse postgres_dsn).
-    postgres_dsn: "${PRIMER_TEST_PG_DSN}"
+    postgres_dsn: "${PRIMER_TEST_E2E_POSTGRES_DSN}"
 
 # LLM behavior selector.
 #   mode: scripted -> deterministic in-repo mock LLM (no model server needed;

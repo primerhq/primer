@@ -147,6 +147,35 @@ reason rather than skipping it silently.
 
   Add `-n0` to run a single module serially while debugging.
 
+- **Live-Postgres suites** (`tests/claim`, `tests/scheduler`, `tests/storage`,
+  `tests/coordinator`, `tests/vector`) skip unless a database is configured. The
+  single gate is `PRIMER_TEST_POSTGRES_URL=postgresql://user:pw@host:port/db[?schema=name]`;
+  `PRIMER_TEST_PG_DSN` and `PRIMER_PG_TEST_DSN` are deprecated aliases that
+  warn. Test code reads the gate only through `tests/pg_gate.py` (a static test
+  fails on any other `os.environ` read of a gate name); it is NOT the e2e
+  server's Postgres capability, which uses `PRIMER_TEST_E2E_POSTGRES_DSN`, and
+  it refuses to open on database `primer_e2e`'s public schema because the
+  gated fixtures DROP tables and DELETE leases. CI runs these in a dedicated
+  `postgres` job (one pytest process per suite) against a
+  `pgvector/pgvector:pg16` service with `PRIMER_REQUIRE_POSTGRES_TESTS=1`: in
+  that mode a Postgres-gated test that SKIPS fails, a module skipped at
+  collection under those directories fails, the run refuses to start without the
+  URL, and a suite in which no gated test passed fails. Locally, point at a
+  throwaway container on a private port, never a shared or host Postgres:
+
+  ```bash
+  docker run --rm -d --name pg-test -e POSTGRES_USER=primer -e POSTGRES_PASSWORD=primer \
+    -e POSTGRES_DB=primer_test -p 127.0.0.1:55512:5432 pgvector/pgvector:pg16
+  PRIMER_TEST_POSTGRES_URL=postgresql://primer:primer@127.0.0.1:55512/primer_test \
+  PRIMER_REQUIRE_POSTGRES_TESTS=1 uv run pytest tests/claim -o addopts= -n 0 -v \
+    --timeout=120 --timeout-method=thread   # then tests/scheduler, storage, coordinator, vector
+  ```
+
+  Wait for a real query to succeed (the image's `pg_isready` answers during its
+  init phase, before the final restart). New Postgres-gated tests get their
+  gate and marker from `tests/pg_gate.py` (`postgres_marks`, `needs_postgres`,
+  `require_postgres_url`), never from a raw `os.environ` read.
+
 - **E2E suite saturates all CPU cores and must run EXCLUSIVELY.** Before any
   e2e run, check for an already-running one and kill it first:
 

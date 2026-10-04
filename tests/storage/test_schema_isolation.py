@@ -9,7 +9,6 @@ other's data.  Skipped unless PRIMER_TEST_POSTGRES_URL is set.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -26,8 +25,9 @@ from primer.model.provider import (
 )
 from primer.storage.postgres import PostgresStorageProvider
 from primer.storage.sqlite import SqliteStorageProvider
+from tests.pg_gate import CANONICAL_ENV, require_postgres_url
 
-_POSTGRES_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
+_POSTGRES_URL_ENV = CANONICAL_ENV
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +108,7 @@ async def test_sqlite_schema_override_has_no_effect(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_postgres_two_schemas_are_isolated() -> None:
     """Providers using different Postgres schemas don't see each other's rows.
@@ -115,9 +116,7 @@ async def test_postgres_two_schemas_are_isolated() -> None:
     One widget is written via schema_a; schema_b must return None for the
     same id.  Skipped unless PRIMER_TEST_POSTGRES_URL is set.
     """
-    url = os.environ.get(_POSTGRES_URL_ENV)
-    if not url:
-        pytest.skip(f"set {_POSTGRES_URL_ENV} to run Postgres schema-isolation tests")
+    url = require_postgres_url("Postgres schema-isolation tests")
 
     cfg_a = _parse_postgres_url(url, schema="test_iso_a")
     cfg_b = _parse_postgres_url(url, schema="test_iso_b")
@@ -154,15 +153,14 @@ async def test_postgres_two_schemas_are_isolated() -> None:
         await provider_b.aclose()
 
 
+@pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_postgres_db_schema_env_override() -> None:
     """PRIMER_DB_SCHEMA env var flows through AppConfig into the Postgres provider.
 
     Skipped unless PRIMER_TEST_POSTGRES_URL is set.
     """
-    url = os.environ.get(_POSTGRES_URL_ENV)
-    if not url:
-        pytest.skip(f"set {_POSTGRES_URL_ENV} to run Postgres schema-isolation tests")
+    url = require_postgres_url("Postgres schema-isolation tests")
 
     p = urlparse(url)
     from primer.api.config import AppConfig

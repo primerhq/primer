@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from urllib.parse import parse_qs, urlparse
 
 import pytest_asyncio
@@ -10,9 +9,10 @@ import pytest_asyncio
 from primer.model.except_ import ConfigError
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage.postgres import PostgresStorageProvider
+from tests.pg_gate import CANONICAL_ENV, require_postgres_url
 
 
-_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
+_URL_ENV = CANONICAL_ENV
 
 
 def _parse_url(url: str) -> PostgresConfig:
@@ -40,10 +40,7 @@ async def postgres_storage_provider():
     Drops and recreates the ``rate_limit_lease`` table on entry so each
     test starts clean.
     """
-    url = os.environ.get(_URL_ENV)
-    if not url:
-        import pytest
-        pytest.skip(f"set {_URL_ENV} to run Postgres coordinator tests")
+    url = require_postgres_url("Postgres coordinator tests")
 
     cfg = _parse_url(url)
     sp = PostgresStorageProvider(cfg)

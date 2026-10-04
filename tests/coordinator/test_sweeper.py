@@ -8,15 +8,12 @@ the in-memory bus and proves the in-memory fall-through is gone).
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
+from tests.pg_gate import needs_postgres
 
-pytestmark_pg = pytest.mark.skipif(
-    not os.environ.get("PRIMER_TEST_POSTGRES_URL"),
-    reason="needs PRIMER_TEST_POSTGRES_URL set",
-)
+
+pytestmark_pg = needs_postgres("Postgres sweeper tests")
 
 
 @pytestmark_pg

@@ -1,13 +1,12 @@
 """Parametrised :class:`Storage` contract — runs against every backend.
 
-Each scenario is asserted on both Postgres (when ``PRIMER_TEST_PG_DSN``
+Each scenario is asserted on both Postgres (when ``PRIMER_TEST_POSTGRES_URL``
 is set) and SQLite. The point is to catch a semantic divergence the
 moment it appears, not to re-test the per-backend translator.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -34,6 +33,7 @@ from primer.model.storage import (
 )
 from primer.storage.factory import StorageProviderFactory
 from primer.storage.postgres import PostgresStorageProvider
+from tests.pg_gate import postgres_url, require_postgres_url
 
 
 class _Thing(Identifiable):
@@ -43,13 +43,13 @@ class _Thing(Identifiable):
     workspace_id: str = "w"
 
 
-_BACKENDS: list[str] = ["sqlite"]
-if os.environ.get("PRIMER_TEST_PG_DSN"):
-    _BACKENDS.append("postgres")
+_BACKENDS: list = ["sqlite"]
+if postgres_url():
+    _BACKENDS.append(pytest.param("postgres", marks=pytest.mark.postgres))
 
 
 def _pg_config_for_test() -> "StorageProviderConfig":
-    """Build a Postgres config from PRIMER_TEST_PG_DSN with a unique schema.
+    """Build a Postgres config from PRIMER_TEST_POSTGRES_URL with a unique schema.
 
     Each test gets its own schema (created by ``initialize``) so the
     contract runs in isolation against a shared test database.
@@ -59,7 +59,7 @@ def _pg_config_for_test() -> "StorageProviderConfig":
 
     from primer.model.provider import PoolConfig, PostgresConfig
 
-    u = urlparse(os.environ["PRIMER_TEST_PG_DSN"])
+    u = urlparse(require_postgres_url())
     return StorageProviderConfig(
         provider=StorageProviderType.POSTGRES,
         config=PostgresConfig(

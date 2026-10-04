@@ -650,6 +650,115 @@ def _no_swallowed_counter_bugs(request: pytest.FixtureRequest):
     )
 
 
+# ---------------------------------------------------------------------------
+# Postgres lane anti-silent-skip guard (see tests/pg_gate.py)
+# ---------------------------------------------------------------------------
+#
+# The live-Postgres suites skip when no database is configured. That is right
+# on a laptop and wrong in the CI lane built to run them: a lane that goes
+# green while skipping everything is worse than no lane. With
+# PRIMER_REQUIRE_POSTGRES_TESTS=1:
+#   * the run refuses to start without the gate URL;
+#   * a Postgres-gated test (marked ``postgres``, or skipped with the gate's
+#     reason prefix) that SKIPS is turned into a failure naming it;
+#   * a gated module that is SKIPPED AT COLLECTION (a module-level
+#     pytest.skip / importorskip) under the lane's directories fails the run
+#     too: a skip at that stage produces no test reports for the hooks above
+#     to see, so without this a whole file could vanish and the lane stay green;
+#   * a run in which no gated test passed at all fails the session. The lane
+#     runs each suite as its own pytest process, so this applies per suite.
+
+from tests.pg_gate import (  # noqa: E402
+    CANONICAL_ENV,
+    GATE_REASON_PREFIX,
+    LANE_DIRS,
+    REQUIRE_ENV,
+    postgres_required,
+    postgres_url,
+)
+
+_pg_gated_passed = 0
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "postgres: needs a live Postgres (gate: PRIMER_TEST_POSTGRES_URL); "
+        "fails instead of skipping when PRIMER_REQUIRE_POSTGRES_TESTS=1",
+    )
+    if postgres_required() and postgres_url() is None:
+        raise pytest.UsageError(
+            f"{REQUIRE_ENV}=1 but {CANONICAL_ENV} is not set: this run would "
+            "skip every Postgres test and still report success"
+        )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    outcome = yield
+    if not postgres_required():
+        return
+    rep = outcome.get_result()
+    if not rep.skipped or hasattr(rep, "wasxfail"):
+        return
+    detail = str(rep.longrepr)
+    if item.get_closest_marker("postgres") is not None or GATE_REASON_PREFIX in detail:
+        rep.outcome = "failed"
+        rep.longrepr = (
+            f"{REQUIRE_ENV}=1: Postgres-gated test was SKIPPED instead of run "
+            f"({detail}). A required Postgres lane must execute it."
+        )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector: pytest.Collector):
+    outcome = yield
+    if not postgres_required():
+        return
+    rep = outcome.get_result()
+    if rep.skipped and rep.nodeid.startswith(tuple(f"{d}/" for d in LANE_DIRS)):
+        rep.outcome = "failed"
+        rep.longrepr = (
+            f"{REQUIRE_ENV}=1: {rep.nodeid} was SKIPPED at collection "
+            f"({rep.longrepr}). A module under a Postgres lane directory must "
+            "be collected and run, not skipped away."
+        )
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    global _pg_gated_passed
+    if (
+        postgres_required()
+        and report.when == "call"
+        and report.passed
+        and "postgres" in report.keywords
+    ):
+        _pg_gated_passed += 1
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
+    if postgres_required():
+        terminalreporter.write_line(
+            f"postgres lane: {_pg_gated_passed} Postgres-gated test(s) passed "
+            f"({REQUIRE_ENV}=1)"
+        )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if (
+        postgres_required()
+        and not hasattr(session.config, "workerinput")
+        and not session.config.option.collectonly
+        and _pg_gated_passed == 0
+        and exitstatus == 0
+    ):
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        print(
+            f"\n{REQUIRE_ENV}=1 but no Postgres-gated test passed: the lane "
+            "ran nothing it exists to run"
+        )
+
+
 __all__ = [
     "_FakeStorageProvider",
     "_FakeLLM",

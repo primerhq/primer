@@ -142,6 +142,7 @@ markers = [
     "real_tiktoken_loader: opt a test out of the autouse offline_tiktoken fixture so it exercises primer.llm._tokenizer._tiktoken_offline itself",
     "allow_fallback_bug: this test provokes an unexpected token-counter error on purpose; opts out of the root guard that fails any test during which primer.llm.counting recorded outcome=fallback_bug",
     "ui_e2e: Playwright journey against a live console; the lane selects tests/ui_e2e by path, so this marks intent and keeps a typo in it from passing unnoticed",
+    "postgres: needs a live Postgres (gate: PRIMER_TEST_POSTGRES_URL, tests/pg_gate.py); fails instead of skipping when PRIMER_REQUIRE_POSTGRES_TESTS=1 (the CI Postgres lane)",
 ]
 
 
@@ -163,7 +164,7 @@ omit = [
     # functions are exercised by tests/test_cli.py via a CliRunner with
     # uvicorn patched out.
     # Postgres scheduler — exercised by tests/scheduler/test_postgres.py
-    # which gates on PRIMER_PG_TEST_DSN. Without a live Postgres the
+    # which gates on PRIMER_TEST_POSTGRES_URL. Without a live Postgres the
     # tests skip and this file shows ~25% coverage; same treatment as
     # the primer/storage/postgres.py family in CI-with-DSN runs.
     "primer/scheduler/postgres.py",

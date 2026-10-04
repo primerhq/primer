@@ -116,6 +116,51 @@ a one-line reason; it may not simply be omitted.
   not survive being split across workers. To debug a single test serially,
   override with `-n0`.
 
+- The live-Postgres suites run in their own CI lane. `tests/claim`,
+  `tests/scheduler`, `tests/storage`, `tests/coordinator` and `tests/vector`
+  contain tests that need a real database and skip without one, so the
+  narrowed sweep above does not exercise them. The `postgres` job in
+  `.github/workflows/ci.yml` does, against a `pgvector/pgvector:pg16` service,
+  running each suite as its own pytest process (a hang kills only its own
+  process, so one suite cannot erase the others' results). The one gate is
+  `PRIMER_TEST_POSTGRES_URL` (`postgresql://user:pw@host:port/db`, optional
+  `?schema=name`); the former `PRIMER_TEST_PG_DSN` and `PRIMER_PG_TEST_DSN` are
+  deprecated aliases that warn. Test code reads the gate in exactly one place,
+  `tests/pg_gate.py`, and a static test fails if any other test file reads a
+  gate name, or a constant aliasing one, from `os.environ`. A new gated test
+  takes its marker and skip from that module (`postgres_marks`,
+  `needs_postgres`, `require_postgres_url`). The gate is not the e2e server's
+  Postgres capability: `tests/testconfig.yaml` expands `${VAR}` from the
+  environment itself, and its example uses a different variable,
+  `PRIMER_TEST_E2E_POSTGRES_DSN`. The gated fixtures are destructive (they DROP
+  tables and DELETE leases in the schema they are given), so the gate refuses to
+  open on database `primer_e2e`'s public schema, which belongs to a live e2e
+  server.
+
+  The lane sets `PRIMER_REQUIRE_POSTGRES_TESTS=1`, the anti-silent-skip guard
+  (`tests/conftest.py`). In that mode a Postgres-gated test that skips fails
+  the run, a module under a lane directory that is skipped at collection fails
+  it, the run refuses to start without the URL, and a suite in which no gated
+  test passed fails. Check the `postgres lane: N Postgres-gated test(s)
+  passed` line in each suite's log, not just the job status. A per-test
+  `--timeout` (thread method) and a job `timeout-minutes` bound a hang, such as
+  a leaked LISTEN watcher at teardown, to minutes; the lane runs with `-v` so the
+  last node id printed before a timeout dump names the test that hung.
+
+  To run it locally, use a throwaway container on a private loopback port,
+  never a shared or host Postgres:
+
+  ```bash
+  docker run --rm -d --name pg-test -e POSTGRES_USER=primer -e POSTGRES_PASSWORD=primer \
+    -e POSTGRES_DB=primer_test -p 127.0.0.1:55512:5432 pgvector/pgvector:pg16
+  PRIMER_TEST_POSTGRES_URL=postgresql://primer:primer@127.0.0.1:55512/primer_test \
+  PRIMER_REQUIRE_POSTGRES_TESTS=1 uv run pytest tests/claim -o addopts= -n 0 -v \
+    --timeout=120 --timeout-method=thread   # then tests/scheduler, storage, coordinator, vector
+  ```
+
+  Wait for a real query to succeed before running: the image's `pg_isready`
+  answers during its init phase, before the final restart.
+
 ### Docs
 
 - Update the relevant subsystem doc under `docs/dev/subsystems/` and any

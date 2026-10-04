@@ -51,9 +51,10 @@ jobs:
       # intercepted in-process, and tests/llm/conftest.py fails any test that
       # reaches the real network. It was once excluded as "needs a real LLM",
       # which was false, and an SDK upgrade broke its mocks unnoticed. The
-      # Postgres-gated tests skip without PRIMER_PG_TEST_DSN, so
-      # this job needs no database service. The release workflow runs the
-      # Postgres-backed boot smoke before publishing.
+      # Postgres-gated tests skip without PRIMER_TEST_POSTGRES_URL, so this
+      # job needs no database service: they run, and are required not to
+      # skip, in the dedicated `postgres` job below. The release workflow
+      # runs the Postgres-backed boot smoke before publishing.
       #
       # Coverage is produced in this same run (pytest-cov -> coverage.xml) so
       # the suite is not run twice. The in-job gate is 80% (--cov-fail-under=80,
@@ -77,6 +78,109 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  postgres:
+    # The live-Postgres suites (claim engine, scheduler, storage, coordinator)
+    # skip when no database is configured, and for a long time no job gave
+    # them one. So a claim engine that could not pass its own tests, a
+    # purge_dead_workers with no passing coverage, and a scheduler LISTEN
+    # watcher whose teardown hangs forever all sat on main unseen.
+    #
+    # PRIMER_REQUIRE_POSTGRES_TESTS=1 is the anti-silent-skip guard
+    # (tests/conftest.py): a Postgres-gated test that SKIPS fails the job, a
+    # gated module skipped at collection fails it, the run refuses to start
+    # without the URL, and a suite in which no gated test passed fails. A lane
+    # that goes green while skipping everything would be worse than no lane. Read the "postgres lane: N Postgres-gated test(s)
+    # passed" line in the log, not just the job colour.
+    #
+    # Hang containment: a per-test --timeout (thread method: dumps every
+    # stack, then exits that suite's process) turns a regression like the
+    # LISTEN hang into a failure in about two minutes without taking the other
+    # suites with it; timeout-minutes is the backstop for a test stuck somewhere
+    # the thread timeout cannot reach.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: primer
+          POSTGRES_PASSWORD: primer
+          POSTGRES_DB: primer_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U primer -d primer_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PRIMER_TEST_POSTGRES_URL: postgresql://primer:primer@localhost:5432/primer_test
+      PRIMER_REQUIRE_POSTGRES_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - name: Sync
+        run: uv sync --all-extras --dev
+      - name: Wait for Postgres (a real query, not just pg_isready)
+        # pg_isready answers during the image's init phase, before the server
+        # restarts into its final state; a real round trip does not.
+        run: |
+          uv run python - <<'PY'
+          import asyncio, os, time
+          import asyncpg
+
+          async def main():
+              deadline = time.time() + 60
+              while True:
+                  try:
+                      conn = await asyncpg.connect(os.environ["PRIMER_TEST_POSTGRES_URL"])
+                      await conn.fetchval("select 1")
+                      await conn.close()
+                      return
+                  except Exception:
+                      if time.time() > deadline:
+                          raise
+                      await asyncio.sleep(1)
+
+          asyncio.run(main())
+          PY
+      # One pytest process PER SUITE, each `if: !cancelled()`: the thread-method
+      # timeout kills the whole process (os._exit), so a hang in one suite must
+      # not take the others down with it (their results, their "postgres lane: N"
+      # line and their FAILED list would never be printed). It also makes the
+      # guard's "at least one gated test passed" check per suite, which is
+      # stricter. -v so the last node id printed before a timeout dump names
+      # the test that hung; under -q the dump shows only fixture-finalizer frames.
+      - name: Postgres-gated suite, claim engine (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/claim
+          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          --timeout=120 --timeout-method=thread
+      - name: Postgres-gated suite, scheduler (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/scheduler
+          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          --timeout=120 --timeout-method=thread
+      - name: Postgres-gated suite, storage (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/storage
+          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          --timeout=120 --timeout-method=thread
+      - name: Postgres-gated suite, coordinator (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/coordinator
+          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          --timeout=120 --timeout-method=thread
+      - name: Postgres-gated suite, pgvector / halfvec (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/vector
+          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          --timeout=120 --timeout-method=thread
 
   core-install:
     # Boundary rule 1 enforcement (modular-monolith): a core-only install

@@ -3,7 +3,7 @@
 Exposes a parametric ``scheduler`` fixture that runs each consuming
 test against both :class:`InMemoryScheduler` and
 :class:`PostgresScheduler`. The Postgres parametrisation is skipped
-automatically when ``PRIMER_PG_TEST_DSN`` is unset, so the suite stays
+automatically when ``PRIMER_TEST_POSTGRES_URL`` is unset, so the suite stays
 green on machines without a live database.
 
 A companion ``pg_storage_or_none`` fixture yields a real
@@ -21,7 +21,6 @@ therefore intentionally distinct from the optional one here).
 
 from __future__ import annotations
 
-import os
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -32,9 +31,10 @@ from primer.model.scheduler import PostgresSchedulerConfig
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.scheduler.postgres import PostgresScheduler
 from primer.storage.postgres import PostgresStorageProvider
+from tests.pg_gate import CANONICAL_ENV, postgres_url, require_postgres_url
 
 
-_DSN_ENV = "PRIMER_PG_TEST_DSN"
+_DSN_ENV = CANONICAL_ENV
 
 
 def _parse_dsn(dsn: str) -> PostgresConfig:
@@ -58,7 +58,7 @@ def _parse_dsn(dsn: str) -> PostgresConfig:
 
 @pytest.fixture
 async def pg_storage_or_none():
-    """Yield a :class:`PostgresStorageProvider` when ``PRIMER_PG_TEST_DSN``
+    """Yield a :class:`PostgresStorageProvider` when ``PRIMER_TEST_POSTGRES_URL``
     is set, otherwise ``None``.
 
     Mirrors the table-cleanup pattern from ``test_postgres.py``: drops
@@ -66,7 +66,7 @@ async def pg_storage_or_none():
     synthetic rows there too) on entry and exit so each test starts
     and ends clean.
     """
-    dsn = os.environ.get(_DSN_ENV)
+    dsn = postgres_url()
     if not dsn:
         yield None
         return
@@ -86,10 +86,12 @@ async def pg_storage_or_none():
         await sp.aclose()
 
 
-@pytest.fixture(params=["in_memory", "postgres"])
+@pytest.fixture(
+    params=["in_memory", pytest.param("postgres", marks=pytest.mark.postgres)],
+)
 async def scheduler(request, pg_storage_or_none):
     """Yield an initialised Scheduler. The ``postgres`` param is
-    skipped when ``PRIMER_PG_TEST_DSN`` is unset."""
+    skipped when ``PRIMER_TEST_POSTGRES_URL`` is unset."""
     if request.param == "in_memory":
         s = InMemoryScheduler()
         await s.initialize()
@@ -101,9 +103,8 @@ async def scheduler(request, pg_storage_or_none):
 
     # postgres
     if pg_storage_or_none is None:
-        pytest.skip(
-            f"set {_DSN_ENV} to run the PostgresScheduler parametrisation"
-        )
+        # Skips with the gate reason, or FAILS in the required lane.
+        require_postgres_url("the PostgresScheduler parametrisation")
     s = PostgresScheduler(
         storage_provider=pg_storage_or_none,
         config=PostgresSchedulerConfig(),
