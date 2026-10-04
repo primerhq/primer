@@ -242,6 +242,39 @@ def test_http_is_accepted_only_for_loopback():
             pass
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.invalid/x",
+        "http://127.0.0.1@example.invalid/x",  # userinfo that LOOKS like loopback
+        "http://localhost@example.invalid/x",
+        # urlparse itself refuses a bracketed userinfo (a ValueError of CPython's own
+        # wording), before the gate's check runs: still refused, still no connection.
+        pytest.param("http://[::1]@example.invalid/x", id="bracketed-userinfo"),
+        "http://example.invalid#@127.0.0.1/x",  # loopback hidden in the fragment
+        "http://127.0.0.1.example.invalid/x",  # a lookalike subdomain
+        "http://localhost.example.invalid/x",
+        "ftp://127.0.0.1/x",
+        "file:///etc/hosts",
+        "//127.0.0.1/x",
+        "",
+    ],
+)
+def test_anything_but_https_or_loopback_http_is_refused_before_any_connection(monkeypatch, url):
+    """The scheme gate must read the host the connection would really use. A prefix
+    check on the url, or on the netloc, would pass the userinfo trick (the part
+    before the ``@`` is a credential, the host is what follows). urlopen is replaced
+    by a failure so a refused url cannot reach the network in this test either."""
+    def no_network(*_a, **_k):
+        raise AssertionError("a refused url reached urlopen")
+
+    monkeypatch.setattr(bake_mod.urllib.request, "urlopen", no_network)
+    with pytest.raises(ValueError) as caught:
+        bake_mod.fetch(url, timeout_s=1)
+    if "[" not in url:
+        assert "refusing a non-https vocabulary url" in str(caught.value), "the gate, not something else, refused it"
+
+
 def test_check_passes_on_verified_files_and_never_downloads(tmp_path, monkeypatch):
     for pin in (GOOD, OTHER):
         bake_mod.cache_path(tmp_path, pin.url).write_bytes(pin.payload)

@@ -317,6 +317,32 @@ class TestForce:
         out = prune_prompt(_rounds(BIG, BIG, BIG), shed_tokens=1, force=True)
         assert out.added.omitted and not out.added.truncated
 
+    def test_phase_two_never_truncates_a_result_phase_one_already_omitted(self) -> None:
+        """Phase 2 only considers what no earlier decision touched. Without that, the
+        old result phase 1 replaced by a placeholder would be re-decided as a
+        truncation of its RAW text and recorded twice (omitted AND truncated)."""
+        msgs = _rounds(BIG, BIG, BIG)  # tool messages 2, 4, 6; the newest two are protected
+        keys = result_keys(msgs)
+        out = prune_prompt(msgs, shed_tokens=10**9, force=True, truncate_chars=4_000)
+        assert out.added.omitted == {keys[(2, 0)]}
+        assert set(out.added.truncated) == {keys[(4, 0)], keys[(6, 0)]}, "only the protected rounds are cut"
+        assert _is_placeholder(_outputs(out.messages)[0]), "the omitted result stays a placeholder"
+
+    def test_phase_two_leaves_what_the_sticky_set_already_reduced_alone(self) -> None:
+        """A sticky omit stays a placeholder and a sticky truncation keeps ITS length
+        (3000), not the new truncate_chars (4000): re-deciding either would change
+        what was sent before and double-count what was shed."""
+        msgs = _rounds(BIG, BIG, BIG)
+        keys = result_keys(msgs)
+        sticky = PruneSet(omitted=frozenset({keys[(2, 0)]}), truncated={keys[(4, 0)]: 3_000})
+        out = prune_prompt(msgs, sticky=sticky, shed_tokens=10**9, force=True, truncate_chars=4_000)
+        outs = _outputs(out.messages)
+        assert _is_placeholder(outs[0])
+        assert 3_000 < len(outs[1]) < 3_200, "the sticky cut is not re-cut at the new length"
+        assert out.applied.omitted == {keys[(2, 0)]}
+        assert dict(out.applied.truncated) == {keys[(4, 0)]: 3_000}
+        assert set(out.added.truncated) == {keys[(6, 0)]}, "only the undecided newest round is new"
+
     def test_force_cannot_conjure_a_saving_there_is_none_to_make(self) -> None:
         msgs = [_user(), _call("c1"), _result("c1", "tiny")]
         out = prune_prompt(msgs, shed_tokens=10_000, force=True)

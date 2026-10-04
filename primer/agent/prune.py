@@ -24,6 +24,14 @@ already-reduced text:
   repeat from the result that was pruned, so a recorded prune never lands on a
   fresh identical result. A result in the newest ``keep_rounds`` tool messages is
   also never replaced by a recorded placeholder.
+* **Valid for one append-only raw sequence.** A key's occurrence index is counted
+  in prompt order, so a recorded :class:`PruneSet` describes the raw prompt it was
+  recorded against and its later appends. It is NOT valid across a history rewrite
+  (a compaction, a rewind, anything that removes or inserts an earlier tool result
+  with the same id and output): the indices shift, and a recorded key can then land
+  on a different, fresh result. The caller must discard the set at any such
+  rewrite. (Results with a distinct id or output are keyed apart and unaffected;
+  the hazard is the identical pair.)
 * **Sized by the caller.** How big a result is, is the caller's function
   (:data:`SizeFn`). The default is the character heuristic, which undercounts
   dense content (UUIDs, hashes, JSON numbers, base64) by up to ~2.75x; a caller
@@ -97,6 +105,9 @@ class PruneSet:
 
     ``omitted`` results are replaced by a placeholder; ``truncated`` maps a
     result to the number of characters kept (head 2/3, tail 1/3).
+
+    Valid only for the raw sequence it was recorded against and its appends (see
+    the module docstring): discard it on a compaction or any history rewrite.
     """
 
     omitted: frozenset[str] = frozenset()

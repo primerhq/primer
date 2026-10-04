@@ -10,6 +10,7 @@
 #   3. uv sync --no-install-project      - slow; cached on dep bumps only
 #   4. project source                    - changes on every code edit
 #   5. uv sync (installs project itself) - fast
+#   6. baked tokenizer vocabularies      - cheap; last, so it never busts 3
 #
 # The console UI is resolved by `_resolve_ui_dir()` in primer/api/app.py:
 # it prefers the packaged copy (`primer/_ui`, force-included into the wheel)
@@ -102,11 +103,13 @@ RUN chmod +x /usr/local/bin/primer-entrypoint.sh
 RUN uv sync ${UV_SYNC_EXTRAS} --frozen --no-dev
 
 # ----- Baked tokenizer vocabularies (see the tokenizer-vocab stage above) -----
-# Deliberately AFTER both uv sync layers: a change to the bake script or the pins
-# rebuilds only this stage and these three layers, never the dependency install
-# (the slow layer). The check re-verifies the bytes in THIS stage's filesystem, so
-# a bad COPY fails the build; the same command works inside a running container
-# as a readiness check.
+# Deliberately AFTER both uv sync layers, so that no change to the bake script or
+# the pins can invalidate the dependency install (layer 3, the slow one). What it
+# does cost: vocab_pins.py lives under primer/, so a pins change also invalidates
+# layers 4 and 5 (the fast ones), and any source edit re-runs the instructions
+# below; they are cheap (a few MB of COPY and a hash check). The check re-verifies
+# the bytes in THIS stage's filesystem, so a bad COPY fails the build; the same
+# command works inside a running container as a readiness check.
 COPY --from=tokenizer-vocab /opt/primer/tiktoken-cache /opt/primer/tiktoken-cache
 COPY --from=tokenizer-vocab /bake /opt/primer/bake
 ENV TIKTOKEN_CACHE_DIR=/opt/primer/tiktoken-cache
