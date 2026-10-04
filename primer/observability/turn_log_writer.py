@@ -108,6 +108,7 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
                 extensions={
                     "exception_class": type(exc).__name__,
                     "traceback": tb_text,
+                    **(getattr(exc, "problem_extensions", None) or {}),
                 },
             )
     return ProblemDetails(

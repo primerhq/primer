@@ -127,3 +127,77 @@ class TestTheCut:
         assert split.head + split.tail == messages
         assert len(split.head) in {0, *unit_starts(messages)}
         assert len(split.head) <= pending_from(messages) or len(split.head) == len(messages)
+
+
+def _turn(rounds: int, *, before: list[Message] | None = None, users: int = 1, size: int = 400) -> list[Message]:
+    """``before`` history, then ``users`` opening user messages, then ``rounds`` tool rounds of ``size`` chars each."""
+    out = list(before or [])
+    out += [_m("user", f"U{i}") for i in range(users)]
+    for i in range(rounds):
+        out += [_call(i), Message(role="tool", parts=[ToolResultPart(id=f"c{i}", output="r" * size)])]
+    return out
+
+
+def _answered(messages) -> bool:
+    calls = {p.id for m in messages for p in m.parts if isinstance(p, ToolCallPart)}
+    results = {p.id for m in messages for p in m.parts if isinstance(p, ToolResultPart)}
+    return calls == results
+
+
+class TestInsideTheCurrentTurn:
+    """The opening user run and the NEWEST round are protected; the rounds between them can be summarised."""
+
+    def test_the_floor_is_the_user_run_and_the_newest_round(self) -> None:
+        history = _turn(6, before=[_m("user", "old"), _m("assistant", "old reply")])
+        split = _split(history, turns=4, budget=0)
+        assert [t.parts[0].text if isinstance(t.parts[0], TextPart) else t.role for t in split.tail] == ["U0", "assistant", "tool"]
+        assert split.tail[1].parts[0].id == "c5", "the newest round"
+        assert split.summary_after == 1, "the summary goes after the one user message"
+
+    def test_the_head_is_what_came_before_the_turn_plus_its_early_rounds_in_order(self) -> None:
+        history = _turn(4, before=[_m("user", "old"), _m("assistant", "old reply")])
+        split = _split(history, turns=4, budget=0)
+        assert split.head == [*history[:2], *history[3:9]], "the two old messages, then rounds 0-2 (U0 stays)"
+        assert split.reason is None
+
+    def test_the_summariser_reads_the_question_with_the_rounds_it_summarises(self) -> None:
+        history = _turn(4, before=[_m("user", "old"), _m("assistant", "old reply")])
+        split = _split(history, turns=4, budget=0)
+        assert split.summary_input == history[:9], "everything up to the last replaced round, the user run included"
+
+    def test_rounds_are_removed_oldest_first_only_as_far_as_the_budget_needs(self) -> None:
+        history = _turn(10, size=4_000)  # about 1,000 tokens a round
+        split = _split(history, turns=4, budget=3_500)
+        kept_ids = [p.id for m in split.tail for p in m.parts if isinstance(p, ToolCallPart)]
+        assert kept_ids == [f"c{i}" for i in range(10 - len(kept_ids), 10)], "the newest rounds, contiguous"
+        assert 2 <= len(kept_ids) <= 4 and SIZE(split.tail) <= 3_500
+
+    def test_a_single_runaway_turn_with_nothing_before_it_can_still_be_shrunk(self) -> None:
+        """[U, R1..Rk] used to be entirely protected: an empty head, unreducible, however big it grew."""
+        split = _split(_turn(8), turns=4, budget=0)
+        assert split.head and split.reason is None and len(split.tail) == 3
+
+    def test_a_turn_within_the_budget_is_left_whole_and_the_summary_goes_in_front(self) -> None:
+        history = _turn(3, before=[_m("user", "old"), _m("assistant", "old reply")])
+        split = _split(history, turns=1, budget=10**9)
+        assert split.summary_after == 0 and split.head == history[:2] and len(split.tail) == 7
+
+    def test_every_queued_user_message_of_the_turn_stays_verbatim_before_the_summary(self) -> None:
+        split = _split(_turn(5, users=2), turns=4, budget=0)
+        assert [t.parts[0].text for t in split.tail[:2]] == ["U0", "U1"] and split.summary_after == 2
+
+    def test_a_turn_without_a_user_run_puts_the_summary_in_front(self) -> None:
+        """After a compaction a resumed turn can start with a summary and no user message of its own."""
+        history = [_m("assistant", "[summary]"), *_turn(4, users=0)[0:]]
+        split = _split(history, turns=4, budget=0)
+        assert split.summary_after == 0 and len(split.tail) == 2
+
+    @pytest.mark.parametrize("budget", [0, 600, 1_500, 3_000, 10**6])
+    @pytest.mark.parametrize("turns", [0, 2, 4])
+    def test_every_cut_is_provider_valid_with_the_summary_in_place(self, budget: int, turns: int) -> None:
+        history = _turn(9, before=[_m("user", "o1"), _m("assistant", "a1"), _m("user", "o2"), _m("assistant", "a2")], size=2_000)
+        split = _split(history, turns=turns, budget=budget)
+        assembled = [*split.tail[: split.summary_after], _m("assistant", "SUMMARY"), *split.tail[split.summary_after:]]
+        assert _answered(split.tail) and _answered(split.head) and _answered(assembled)
+        assert split.tail[: split.summary_after] == [t for t in split.tail if t.role == "user"][: split.summary_after]
+        assert sorted(map(id, split.head + split.tail)) == sorted(map(id, history)), "a partition of the history"

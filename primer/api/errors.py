@@ -147,6 +147,9 @@ def _make_primer_error_handler(status: int, type_uri: str, title: str):
         extensions: dict[str, Any] | None = None
         if isinstance(exc, AuthRequiredError):
             extensions = {"auth_url": exc.auth_url}
+        extra = getattr(exc, "problem_extensions", None)
+        if extra:
+            extensions = {**(extensions or {}), **extra}
         return _problem_response(
             request=request,
             status=status,

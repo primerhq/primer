@@ -230,6 +230,46 @@ class TestVerdictsAndSteers:
         assert "MID-TURN-STEER" in texts, "the steer was folded into the summary and is gone from the next turn"
         assert texts.index(QUESTION) < texts.index("MID-TURN-STEER") < texts.index("done")
 
+    def test_a_steer_drained_after_the_proactive_marker_survives_the_forced_one_in_the_same_turn(self) -> None:
+        """Marker 1 (proactive) is written, the steer deferred during its window is drained AFTER it, and then the
+        turn's call overflows and a second marker (forced) is written from an in-memory history that does not hold
+        the steer. The second marker must carry it, or it is folded into a summary that never saw it. (The reader
+        cannot catch this: what a marker carries is decided when it is written.)"""
+        from primer.model.except_ import BadRequestError
+
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                for i in range(6):
+                    await g.append_messages(workspace, session, g.user_message(chr(ord("A") + i) * g.BIG_USER_CHARS), g.assistant_message(f"reply {i}"))
+                await g.append_messages(workspace, session, g.user_message(QUESTION))
+                entered, release = asyncio.Event(), asyncio.Event()
+                overflow = BadRequestError("This model's maximum context length is 100000 tokens, however you requested more")
+                llm.extend([
+                    g.Gate(entered, release, g.text_events("SUMMARY-1")),   # the proactive compaction's summariser
+                    g.Raise(overflow),                                       # the turn's own call is rejected
+                    g.Events(g.text_events("SUMMARY-2")),                    # the forced compaction's summariser
+                    g.Events(g.text_events("done")),                         # the replay
+                ])
+                task = asyncio.create_task(g.run_turn(session, llm))
+                await asyncio.wait_for(entered.wait(), timeout=30)
+                await session.append_instruction("STEER-DEFERRED-BY-THE-FIRST-WINDOW")  # drained after marker 1
+                release.set()
+                await asyncio.wait_for(task, timeout=30)
+                path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+                markers = [r for r in map(json.loads, path.read_text().splitlines()) if r.get("kind") == "compaction_marker"]
+                return [_text(m) for m in await _history(session, llm)], len(markers)
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        texts, markers = _run(scenario)
+        assert markers == 2, "one proactive and one forced marker"
+        assert "STEER-DEFERRED-BY-THE-FIRST-WINDOW" in texts, "the second marker folded the steer into a summary"
+        assert texts.index(QUESTION) < texts.index("STEER-DEFERRED-BY-THE-FIRST-WINDOW") < texts.index("done")
+
     def test_a_line_written_during_the_summariser_call_survives_the_proactive_compaction_too(self) -> None:
         """The compaction window defers ``append_instruction`` steers, but any other writer of a Message line is
         not deferred. The marker folds every line before it, so the proactive path carries the line as well."""
@@ -522,13 +562,89 @@ class TestTheStrategy:
         assert result.outcome == "summarised" and _text(result.new_messages[-1]) == QUESTION
         assert result.head_messages_replaced > 0
 
-    def test_a_turn_in_flight_keeps_its_question_and_its_rounds(self) -> None:
-        """A resumed turn, [.., user, assistant tool call, tool result], is the CURRENT turn: all three stay."""
-        history = [m for i in range(6) for m in (_msg("user", f"q{i}"), _msg("assistant", f"a{i}"))]
-        history += [_msg("user", QUESTION), *_round(99)]
-        result, _ = self._compact(history)
+    def test_a_turn_in_flight_keeps_its_question_and_its_round_and_earlier_ended_turns_are_summarised(self) -> None:
+        """A resumed turn, [.., user, assistant tool call, tool result], is the CURRENT turn: all three stay. The
+        two turns before it ended without a final reply (a Stop, the tool-turn cap), so their rounds are ordinary
+        history: if they were treated as pending the whole history would be protected, the head empty, and this
+        would come back unreducible (the regression the first version of the pending rule had)."""
+        history = [m for i in range(3) for m in (_msg("user", f"q{i}"), _msg("assistant", f"a{i}"))]
+        history += [_msg("user", "ended turn 1"), *_round(0), *_round(1)]       # no final reply
+        history += [_msg("user", "ended turn 2"), *_round(2)]                   # no final reply
+        history += [_msg("user", QUESTION), *_round(99)]                        # the turn in flight
+        result, summariser = self._compact(history)
+        assert result.summary_message is not None and result.unreducible is None
         assert [m.role for m in result.new_messages[-3:]] == ["user", "assistant", "tool"]
         assert _text(result.new_messages[-3]) == QUESTION
+        summarised = " ".join(_text(m) for m in summariser.requests[0])
+        assert "ended turn 1" in summarised, "an ended turn's input went into the summary (it is history, not pending)"
+
+
+def _answered(messages) -> bool:
+    calls = {p.id for m in messages for p in m.parts if isinstance(p, ToolCallPart)}
+    results = {p.id for m in messages for p in m.parts if isinstance(p, ToolResultPart)}
+    return calls == results
+
+
+class TestAParkedTurnWithManyRounds:
+    """The canonical single-turn runaway (one turn that reads many files) must be shrinkable: only the opening user
+    run and the NEWEST round are protected, the rounds between are summarised, and the summary sits after the
+    question: [.., user run (verbatim), summary, newest rounds]."""
+
+    @staticmethod
+    def _history(rounds: int = 30, size: int = 12_000) -> list[Message]:
+        old = [m for i in range(3) for m in (_msg("user", f"old question {i}"), _msg("assistant", f"old answer {i}"))]
+        return [*old, _msg("user", QUESTION), *[m for i in range(rounds) for m in _round(i, size=size)]]
+
+    def test_the_early_rounds_are_summarised_and_the_question_and_the_newest_round_stay(self) -> None:
+        history = self._history()
+        summariser = _Summariser()
+        result = asyncio.run(CompactionStrategy().maybe_compact(
+            agent=g.make_agent(), llm=summariser, model=_model(), history=history, new_messages=[],
+        ))
+        assert result is not None and summariser.calls == 1 and result.outcome == "summarised"
+        assert result.estimated_tokens_after < int(0.9 * (100_000 - 8_192))
+        out = result.new_messages
+        assert _text(out[0]) == QUESTION, "the question stays first and verbatim"
+        assert _text(out[1]).endswith("THE SUMMARY") and out[1].role == "assistant"
+        assert out[-1].parts[0].id == "c29" and out[-2].parts[0].id == "c29", "the newest round is last"
+        assert _answered(out), "no tool call without its result"
+        assert result.summary_after == 1 and result.head_messages_replaced > 6
+
+    def test_the_summariser_is_shown_the_question_with_the_rounds_it_summarises(self) -> None:
+        summariser = _Summariser()
+        asyncio.run(CompactionStrategy().maybe_compact(
+            agent=g.make_agent(), llm=summariser, model=_model(), history=self._history(), new_messages=[],
+        ))
+        request = summariser.requests[0]
+        assert any(_text(m) == QUESTION for m in request), "the question is read as the context of the rounds"
+
+    def test_a_runaway_with_nothing_before_it_is_shrunk_too(self) -> None:
+        history = [_msg("user", QUESTION), *[m for i in range(30) for m in _round(i, size=12_000)]]
+        result = asyncio.run(CompactionStrategy().maybe_compact(
+            agent=g.make_agent(), llm=_Summariser(), model=_model(), history=history, new_messages=[],
+        ))
+        assert result is not None and result.outcome == "summarised" and _text(result.new_messages[0]) == QUESTION
+
+    def test_reload_keeps_that_order_and_the_next_turn_is_valid(self) -> None:
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                await g.append_messages(workspace, session, *self._history())
+                llm.extend([g.Events(g.text_events("SUMMARY OF THE EARLY ROUNDS")), g.Events(g.text_events("the answer"))])
+                await g.run_turn(session, llm)
+                return await _history(session, llm), llm.calls[1]["messages"]
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        shown, turn_prompt = _run(scenario)
+        texts = [_text(m) for m in shown]
+        assert texts[texts.index(QUESTION) + 1].endswith("SUMMARY OF THE EARLY ROUNDS"), "the summary follows the question"
+        assert shown[-1].role == "assistant" and _text(shown[-1]) == "the answer"
+        assert _answered(shown)
+        assert [m["role"] for m in turn_prompt[1:]] == [m.role for m in shown[:-1]], "the turn was sent what a reload returns"
 
 
 class TestTheManualAndMixinPath:
@@ -551,6 +667,13 @@ class TestTheManualAndMixinPath:
         assert [_text(m) for m in result.kept_tail] == ["a1", QUESTION]
         assert result.new_history[1:] == result.kept_tail
         assert result.unreducible is None
+
+    def test_the_result_says_where_the_summary_goes_when_a_turns_early_rounds_were_summarised(self) -> None:
+        history = [_msg("user", "q0"), _msg("assistant", "a0"), _msg("user", QUESTION), *[m for i in range(6) for m in _round(i)]]
+        result = self._force(history, tail_budget_fraction=0.0)
+        assert result.summary_after == 1
+        assert [_text(m) for m in result.kept_tail[:1]] == [QUESTION] and all(m.role != "assistant" or m.parts[0].type == "tool_call" for m in result.kept_tail)
+        assert result.new_history[1].role == "assistant" and result.new_history[0] is result.kept_tail[0]
 
     def test_the_tail_budget_survives_the_clone_the_mixin_makes_for_an_explicit_request(self) -> None:
         """``_clone_strategy_for_apply`` rebuilds the strategy to clamp ``tail_turns``: it must carry the budget too."""

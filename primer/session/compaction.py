@@ -13,6 +13,7 @@ survives for audit while the prompt shrinks.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -24,6 +25,30 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.session.persistence import WorkspaceMessageWriter
+
+
+_NOTHING_TO_COMPACT = {
+    "empty_head": "there is no earlier history that can be summarised without dropping input the model has not answered",
+    "protected_over_budget": "the input the model has not answered already fills the context window",
+    "fixed_over_budget": "the system prompt and tool schemas alone fill the context window",
+}
+
+
+class NothingToCompact(ValidationError):
+    """A manual compaction could not summarise anything (422). ``reason`` is the strategy's verdict
+    (``CompactedTurn.unreducible``) and travels in the problem details' ``extensions``."""
+
+    def __init__(self, reason: str | None) -> None:
+        why = _NOTHING_TO_COMPACT.get(reason or "", "there is nothing it can summarise")
+        super().__init__(f"nothing to compact ({reason or 'unknown'}): {why}")
+        self.reason = reason
+
+    @property
+    def problem_extensions(self) -> dict[str, str | None]:
+        return {"reason": self.reason}
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -86,19 +111,24 @@ async def compact_session(
         # Nothing could be summarised (the history is the input the model has not
         # answered, or too short to have a head): a marker with no summary would
         # fold the whole history into nothing.
-        raise ValidationError(
-            "nothing to compact: there is no earlier history that can be "
-            "summarised without dropping input the model has not answered"
-        )
+        raise NothingToCompact(getattr(result, "unreducible", None))
 
     # Seeded from the row's last_seq at write time: the summarising call
     # takes seconds, so the caller re-reads the row first and a
     # concurrent write may have moved the cursor.
     kept_tail = list(getattr(result, "kept_tail", None) or [])
+    summary_after = int(getattr(result, "summary_after", 0) or 0)
     if reload_history is not None:
         current = await reload_history()
-        if len(current) > len(history) and [m.role for m in current[: len(history)]] == [m.role for m in history]:
-            kept_tail += list(current[len(history):])
+        if len(current) > len(history):
+            if [m.role for m in current[: len(history)]] == [m.role for m in history]:
+                kept_tail += list(current[len(history):])
+            else:
+                logger.warning(
+                    "session %s: the history changed under a manual compaction (another marker or a rewind); "
+                    "not carrying the lines written since its snapshot",
+                    row.id,
+                )
     replaced_to = row.last_seq
     writer = WorkspaceMessageWriter(
         workspace_io=workspace_io,
@@ -128,6 +158,7 @@ async def compact_session(
                 {"kept_tail_messages": [json.loads(m.model_dump_json()) for m in kept_tail]}
                 if kept_tail else {}
             ),
+            **({"summary_after": summary_after} if summary_after and kept_tail else {}),
         },
         created_at=datetime.now(UTC),
     ))
