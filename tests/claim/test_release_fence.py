@@ -416,3 +416,92 @@ async def test_triggers_adapter_forwards_conn():
     )
     assert storage.get_conns == [sentinel]
     assert storage.update_conns == [sentinel]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_entity_noop_release_skips_on_release_and_only_moves_the_lease():
+    """A lease-only release: the kind's ``on_release`` is not called (the entity is neither read nor
+    written), and the lease is requeued or dropped as the outcome says."""
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    calls = []
+
+    class _Adapter:
+        kind = ClaimKind.HARNESS
+        entity_table = "chat"
+
+        def eligibility_sql(self):
+            return "true"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            calls.append(entity_id)
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _Adapter()})
+    for key in ("requeue", "drop"):
+        await engine.upsert(ClaimKind.HARNESS, key)
+    leases = {lease.entity_id: lease for lease in await engine.claim_due("worker-A", max_count=8)}
+
+    await engine.release(leases["requeue"], outcome=ReleaseOutcome(success=True, entity_noop=True))
+    await engine.release(
+        leases["drop"], outcome=ReleaseOutcome(success=True, entity_noop=True, drop_lease=True),
+    )
+
+    assert calls == [], "entity_noop must not call on_release"
+    assert engine._leases[(ClaimKind.HARNESS, "requeue")].claimed_by is None      # claimable again
+    assert (ClaimKind.HARNESS, "drop") not in engine._leases
+    reclaimed = await engine.claim_due("worker-B", max_count=8)
+    assert [x.entity_id for x in reclaimed] == ["requeue"]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_entity_noop_requeue_leaves_attempt_count_and_last_error_alone():
+    """A hand-back is not a run: it must not reset a failing lease's history (a task at attempt 4 of 5
+    that is handed back would otherwise start again at 0) and must not push it behind its peers."""
+    from datetime import timedelta
+
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    class _Adapter:
+        kind = ClaimKind.HARNESS
+        entity_table = "chat"
+
+        def eligibility_sql(self):
+            return "true"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            return None
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _Adapter()})
+    await engine.upsert(ClaimKind.HARNESS, "c")
+    for _ in range(3):                                   # three real failures
+        [lease] = await engine.claim_due("worker-A", max_count=1)
+        await engine.release(lease, outcome=ReleaseOutcome(success=False, last_error="boom"))
+    row = engine._leases[(ClaimKind.HARNESS, "c")]
+    assert (row.attempt_count, row.last_error) == (3, "boom")
+    before = row.next_attempt_at
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+
+    await engine.release(lease, outcome=ReleaseOutcome(success=True, entity_noop=True))
+
+    assert (row.attempt_count, row.last_error) == (3, "boom")
+    assert row.claimed_by is None and row.next_attempt_at == before
+    [again] = await engine.claim_due("worker-B", max_count=1)
+    await engine.release(
+        again, outcome=ReleaseOutcome(success=True, entity_noop=True, requeue_after=timedelta(seconds=60)),
+    )
+    assert row.next_attempt_at > before and row.attempt_count == 3
+
+
+def test_entity_noop_cannot_be_combined_with_a_park():
+    from datetime import timedelta
+
+    from primer.int.claim import ParkRequest
+
+    park = ParkRequest(
+        parked_state={}, parked_event_key="k", parked_until=None, parked_at=_now(),
+    )
+    with pytest.raises(ValueError):
+        ReleaseOutcome(success=True, entity_noop=True, park=park)
+    with pytest.raises(ValueError):
+        ReleaseOutcome(success=True, entity_noop=True, preserve_park=True)
+    assert ReleaseOutcome(success=True, entity_noop=True, requeue_after=timedelta(seconds=1)).entity_noop

@@ -58,6 +58,20 @@ class ReleaseOutcome:
     # so the lease drops but the park is retained for a later /resume to
     # replay. Mutually exclusive with ``park`` (which re-parks instead).
     preserve_park: bool = False
+    # When True, the ENGINE gives the lease back (drop it with ``drop_lease``, or requeue it) and
+    # does NOT call the kind's ``adapter.on_release`` at all: the entity row is not read or written.
+    # For a lease that never reached its handler (a claim that landed after shutdown began) or one the
+    # handler is handing back without having touched the entity. Any ``on_release`` is wrong there:
+    # the session adapter's non-park branch would clear a resumable session's park and bump
+    # ``turn_no`` for a turn that never ran. Honoured by every engine, so no adapter needs to know.
+    # Lease-neutral on a requeue: ``attempt_count`` and ``last_error`` are left as they were (a hand-back
+    # is not a run, successful or not), and so is ``next_attempt_at`` unless ``requeue_after`` is given.
+    # Cannot be combined with ``park`` or ``preserve_park`` (those are entity writes).
+    entity_noop: bool = False
+
+    def __post_init__(self) -> None:
+        if self.entity_noop and (self.park is not None or self.preserve_park):
+            raise ValueError("ReleaseOutcome(entity_noop=True) cannot carry a park or preserve_park")
 
 
 @dataclass(frozen=True)

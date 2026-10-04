@@ -388,16 +388,24 @@ class PostgresClaimEngine(ClaimEngine):
                         f"       claimed_at         = NULL,"
                         f"       last_heartbeat_at  = NULL,"
                         f"       expires_at         = NULL,"
-                        f"       next_attempt_at    = now() + ($3 || ' seconds')::interval,"
-                        f"       attempt_count      = CASE WHEN $4 THEN 0"
+                        f"       next_attempt_at    = CASE WHEN $8 THEN next_attempt_at"
+                        f"                                 ELSE now() + ($3 || ' seconds')::interval END,"
+                        f"       attempt_count      = CASE WHEN $7 THEN attempt_count"
+                        f"                                 WHEN $4 THEN 0"
                         f"                                 ELSE attempt_count + 1 END,"
-                        f"       last_error         = CASE WHEN $4 THEN NULL"
+                        f"       last_error         = CASE WHEN $7 THEN last_error"
+                        f"                                 WHEN $4 THEN NULL"
                         f"                                 ELSE $5 END"
                         f" WHERE kind = $1 AND entity_id = $2 AND claimed_by = $6"
                         f" RETURNING 1",
                         lease.kind.value, lease.entity_id,
                         str(requeue_secs), outcome.success, outcome.last_error,
                         lease.claimed_by,
+                        # entity_noop is a lease-only hand-back: it must not look like a run, so it
+                        # leaves attempt_count/last_error alone and, without an explicit requeue
+                        # delay, next_attempt_at too (the row keeps its place in line).
+                        outcome.entity_noop,
+                        outcome.entity_noop and outcome.requeue_after is None,
                     )
                 # Fence: if no row matched our claimed_by, the lease was
                 # re-claimed by another worker (or deleted). Skip on_release
@@ -410,7 +418,7 @@ class PostgresClaimEngine(ClaimEngine):
                     )
                     return
                 adapter = self._adapters.get(lease.kind)
-                if adapter is not None:
+                if adapter is not None and not outcome.entity_noop:
                     wake_signal = await adapter.on_release(
                         conn, lease.entity_id, outcome=outcome,
                     )
