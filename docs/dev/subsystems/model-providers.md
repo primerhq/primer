@@ -234,6 +234,12 @@ members, and wrapping it would retry the whole pool before trying the next
 member. Its members resolve through the same factory, so each is wrapped
 individually.
 
+### Baked tokenizer vocabularies
+
+The OpenAI-family token counter needs two tiktoken vocabularies (`o200k_base`, `cl100k_base`). tiktoken's own loader fetches them over the network, with no timeout, whenever its cache misses or fails its hash check, whatever `TIKTOKEN_CACHE_DIR` says. The Docker image therefore bakes them: a `tokenizer-vocab` stage in the `Dockerfile` runs `scripts/bake_tokenizers.py`, which downloads each file under a total deadline, verifies its sha256 against the pins in `primer/llm/_tokenizer/vocab_pins.py` (directly, not through tiktoken) and writes it atomically in tiktoken's own cache layout (`sha1(url)` file names). The final stage copies the directory to `/opt/primer/tiktoken-cache`, sets `TIKTOKEN_CACHE_DIR` to it and re-runs the script with `--check`, which verifies bytes on disk and never touches the network. `python3 /opt/primer/bake/bake_tokenizers.py --check` also works inside a running container as a readiness check. A stock `tiktoken.get_encoding` loads both encodings offline from that directory.
+
+The pins mirror `tiktoken_ext.openai_public`; `tests/tooling/test_bake_tokenizers.py` fails if the installed tiktoken disagrees, so a tiktoken bump that moves a vocabulary is caught in CI, not at runtime. Re-pin by updating `vocab_pins.py` from the new `openai_public` source. The full image build itself runs only at release (`release.yml`, after the PyPI publish); `docker build --target tokenizer-vocab .` exercises the bake alone in seconds. Installs outside the image (pip, `uv run primer api`) do not get the baked directory.
+
 ## 6. Lifecycle
 
 An adapter is built lazily by `ProviderRegistry` on first lookup of a provider row, cached under the row id, and dropped (with `aclose()`) when the row is invalidated. A single `stream()` call walks the validate, translate, acquire, iterate, classify sequence below. Pre-stream exceptions are classified and re-raised; once the iterator has opened, mid-stream exceptions are classified and yielded as a terminal `Error(fatal=True)` so the consumer's `async for` always closes cleanly.
