@@ -306,3 +306,226 @@ async def test_find_multi_clause_and_predicate_matches(
     assert got == {"m0", "m1", "m2"}, got
     assert "other-status" not in got  # matched only the workspace clause
     assert "other-ws" not in got      # matched only the status clause
+
+
+# ---------------------------------------------------------------------------
+# Storage.patch_if: field-scoped compare-and-set, on every backend
+# ---------------------------------------------------------------------------
+
+from tests.storage import _patch_scenarios as _ps  # noqa: E402
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", _ps.ALL, ids=lambda f: f.__name__)
+async def test_patch_if_contract(provider: StorageProvider, scenario: Any) -> None:
+    await scenario(provider.get_storage(_ps.PatchDoc))
+
+
+@pytest.mark.asyncio
+async def test_patch_if_appends_the_updated_event_for_a_registered_kind(
+    provider: StorageProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same CRUD event as ``update``: ``<kind>.updated``, payload = the stored document after the write."""
+    from primer.events import registry
+
+    monkeypatch.setitem(registry._EVENT_KINDS, "patchdoc", _ps.PatchDoc)
+    monkeypatch.setitem(registry._KIND_BY_MODEL, _ps.PatchDoc, "patchdoc")
+    store = provider.get_storage(_ps.PatchDoc)
+    await store.create(_ps.PatchDoc(id="ev1", status="created", state={}))
+    assert await store.patch_if("ev1", {"status": "done"}, where={"status": ["running"]}) is None
+    out = await store.patch_if(
+        "ev1", {"status": "done"}, where={"status": ["created"]},
+        set_paths={("state", "k"): 1},
+    )
+    assert out is not None
+    events = await provider.get_event_store().read_after(0)
+    updated = [e for e in events if e.event_type == "patchdoc.updated"]
+    assert len(updated) == 1, "a rejected patch must not emit an event, an applied one must emit exactly one"
+    assert updated[0].entity_id == "ev1"
+    assert updated[0].payload["status"] == "done" and updated[0].payload["state"] == {"k": 1}
+
+
+@pytest.mark.asyncio
+async def test_patch_if_accepts_conn_and_rolls_back_with_the_caller_transaction(
+    provider: StorageProvider,
+) -> None:
+    store = provider.get_storage(_ps.PatchDoc)
+    await store.create(_ps.PatchDoc(id="tx1", status="created"))
+    assert await store.patch_if("tx1", {"count": 1}, where={"status": ["created"]}, conn=None) is not None
+    if isinstance(provider, PostgresStorageProvider):
+        async with provider.pool.acquire() as conn:
+            tx = conn.transaction()
+            await tx.start()
+            out = await store.patch_if(
+                "tx1", {"status": "inside"}, where={"status": ["created"]}, conn=conn,
+            )
+            assert out is not None and out.status == "inside"
+            await tx.rollback()
+        fresh = await store.get("tx1")
+        assert fresh is not None and fresh.status == "created"
+
+
+@pytest.mark.asyncio
+async def test_patch_if_two_writers_to_different_leaves_of_one_object_both_survive(
+    provider: StorageProvider,
+) -> None:
+    """Two connections write different leaves of the SAME nested object; the second blocks on the
+    first's row lock and then re-evaluates against the first's committed version, so neither erases the
+    other (a whole-document write from a snapshot would)."""
+    if not isinstance(provider, PostgresStorageProvider):
+        pytest.skip("two real connections are a Postgres property")
+    import asyncio
+
+    store = provider.get_storage(_ps.PatchDoc)
+    await store.create(_ps.PatchDoc(id="race", state={"ps": {}}))
+    async with provider.pool.acquire() as c1, provider.pool.acquire() as c2:
+        tx1 = c1.transaction()
+        await tx1.start()
+        first = await store.patch_if(
+            "race", None, where={"status": ["created"]}, set_paths={("state", "ps", "a"): 1}, conn=c1,
+        )
+        assert first is not None
+
+        async def second() -> Any:
+            return await store.patch_if(
+                "race", None, where={"status": ["created"]},
+                set_paths={("state", "ps", "b"): 2}, conn=c2,
+            )
+
+        task = asyncio.create_task(second())
+        await _wait_until_blocked_by(provider, c1)
+        assert not task.done(), "the second writer should be waiting on the first's row lock"
+        await tx1.commit()
+        out = await asyncio.wait_for(task, timeout=5)
+    assert out is not None
+    fresh = await store.get("race")
+    assert fresh is not None and fresh.state == {"ps": {"a": 1, "b": 2}}
+
+
+async def _wait_until_blocked_by(provider: PostgresStorageProvider, blocker_conn: Any) -> None:
+    """Poll until some backend is waiting on a lock held by ``blocker_conn``'s backend (not a sleep,
+    and not any unrelated lock wait on the server)."""
+    import asyncio
+
+    blocker_pid = blocker_conn.get_server_pid()
+    async with provider.pool.acquire() as probe:
+        for _ in range(100):
+            waiting = await probe.fetchval(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE $1 = ANY(pg_blocking_pids(pid)) AND pid <> pg_backend_pid()",
+                blocker_pid,
+            )
+            if waiting:
+                return
+            await asyncio.sleep(0.05)
+    raise AssertionError("no writer ever blocked on the first writer's row lock")
+
+
+@pytest.mark.asyncio
+async def test_patch_if_reevaluates_the_guard_against_the_version_a_blocked_writer_waited_for(
+    provider: StorageProvider,
+) -> None:
+    """The CAS property itself: writer 1 changes the GUARDED field and commits while writer 2 waits
+    on the row lock holding the OLD guard. Postgres re-checks writer 2's WHERE against writer 1's
+    committed version, so writer 2 is rejected (None) instead of overwriting."""
+    if not isinstance(provider, PostgresStorageProvider):
+        pytest.skip("two real connections are a Postgres property")
+    import asyncio
+
+    store = provider.get_storage(_ps.PatchDoc)
+    await store.create(_ps.PatchDoc(id="flip", status="created", count=0))
+    async with provider.pool.acquire() as c1, provider.pool.acquire() as c2:
+        tx1 = c1.transaction()
+        await tx1.start()
+        first = await store.patch_if(
+            "flip", {"status": "done"}, where={"status": ["created"]}, conn=c1,
+        )
+        assert first is not None
+
+        async def second() -> Any:
+            return await store.patch_if(
+                "flip", {"count": 99}, where={"status": ["created"]}, conn=c2,
+            )
+
+        task = asyncio.create_task(second())
+        await _wait_until_blocked_by(provider, c1)
+        assert not task.done(), "writer 2 must be blocked on writer 1's row lock, or the re-check is untested"
+        await tx1.commit()
+        out = await asyncio.wait_for(task, timeout=5)
+    assert out is None, "the stale-guard writer overwrote the committed change"
+    fresh = await store.get("flip")
+    assert fresh is not None and (fresh.status, fresh.count) == ("done", 0)
+
+
+@pytest.mark.asyncio
+async def test_patch_if_inside_the_sqlite_transaction_rolls_back_with_it(tmp_path: Path) -> None:
+    """SQLite-only (its own provider, not the parametrised one: a skip under the Postgres parameter
+    would trip the lane's anti-silent-skip guard)."""
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "txn.sqlite"))
+    await provider.initialize()
+    try:
+        store = provider.get_storage(_ps.PatchDoc)
+        await store.create(_ps.PatchDoc(id="tx-sqlite", status="created"))
+        with pytest.raises(RuntimeError):
+            async with provider.transaction():
+                out = await store.patch_if(
+                    "tx-sqlite", {"status": "inside"}, where={"status": ["created"]},
+                )
+                assert out is not None and out.status == "inside"
+                raise RuntimeError("abort the surrounding transaction")
+        fresh = await store.get("tx-sqlite")
+        assert fresh is not None and fresh.status == "created"
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_patch_if_with_a_registered_kind_inside_a_rolled_back_transaction_emits_no_event(
+    provider: StorageProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not isinstance(provider, PostgresStorageProvider):
+        pytest.skip("conn passthrough is a Postgres property")
+    from primer.events import registry
+
+    monkeypatch.setitem(registry._EVENT_KINDS, "patchdoc", _ps.PatchDoc)
+    monkeypatch.setitem(registry._KIND_BY_MODEL, _ps.PatchDoc, "patchdoc")
+    store = provider.get_storage(_ps.PatchDoc)
+    await store.create(_ps.PatchDoc(id="evtx", status="created"))
+    async with provider.pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        assert await store.patch_if(
+            "evtx", {"status": "x"}, where={"status": ["created"]}, conn=conn,
+        ) is not None
+        await tx.rollback()
+    events = await provider.get_event_store().read_after(0)
+    assert [e for e in events if e.event_type == "patchdoc.updated"] == []
+    fresh = await store.get("evtx")
+    assert fresh is not None and fresh.status == "created"
+
+
+@pytest.mark.asyncio
+async def test_patch_if_failing_validation_inside_a_sqlite_transaction_leaves_no_trace(tmp_path: Path) -> None:
+    """A caller may catch the ValidationError and carry on inside its transaction: the bad document
+    must not survive into the commit, and the transaction's other writes must."""
+    from pydantic import ValidationError
+
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "np1.sqlite"))
+    await provider.initialize()
+    try:
+        store = provider.get_storage(_ps.PatchDoc)
+        await store.create(_ps.PatchDoc(id="np1", status="created", count=1))
+        async with provider.transaction():
+            assert await store.patch_if("np1", {"token": "before"}, where={"status": ["created"]}) is not None
+            with pytest.raises(ValidationError):
+                await store.patch_if("np1", {"count": "not-a-number"}, where={"status": ["created"]})
+            assert await store.patch_if("np1", {"flag": True}, where={"status": ["created"]}) is not None
+        fresh = await store.get("np1")                 # reads fine: the bad write was undone
+        assert fresh is not None
+        assert (fresh.count, fresh.token, fresh.flag) == (1, "before", True)
+    finally:
+        await provider.aclose()

@@ -27,10 +27,11 @@ import logging
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar
 
 import aiosqlite
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from primer.int.document_content import (
     FulltextHit,
@@ -56,6 +57,7 @@ from primer.model.storage import (
     PageRequest,
     Predicate,
 )
+from primer.storage._patch import compile_sqlite, validate_patch
 from primer.storage._cursor import (
     _decode_cursor,
     _encode_cursor_for,
@@ -844,6 +846,88 @@ class SqliteStorage(Storage[ModelT]):
                 )
             return None
         return self._from_row(row[0], row[1])
+
+    async def patch_if(
+        self,
+        id: str,  # noqa: A002
+        patch: Mapping[str, Any] | None = None,
+        *,
+        where: Mapping[str, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None = None,
+        conn: object | None = None,
+    ) -> ModelT | None:
+        # SQLite serialises all writes through one shared connection under _write_guard(), so the
+        # guard-then-write is atomic by construction, same reasoning as update_unless() above. The
+        # statement is one UPDATE whose SET expression and WHERE both read the row's own ``data``.
+        del conn
+        patch_d, paths_d, where_d = validate_patch(patch, set_paths, where)
+        await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
+        set_expr, set_params, where_sql, where_params = compile_sqlite(
+            patch_d, paths_d, where_d,
+        )
+        guard = f" AND {where_sql}" if where_sql else ""
+        sql = (
+            f'UPDATE "{self._table}" '
+            f"SET data = {set_expr}, updated_at = datetime('now') "
+            f"WHERE id = ?{guard} "
+            f"RETURNING id, data"
+        )
+        entity: ModelT | None = None
+        conn_ = self._provider.connection
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                # Standalone, the guard rolls the whole write back on any exception. Inside the
+                # caller's own transaction it deliberately does not (the transaction owns the
+                # rollback), so a failure AFTER the UPDATE (the unreadable-document check below)
+                # would leave the bad document in a transaction that may carry on and commit. A
+                # savepoint makes this statement atomic on its own in both cases.
+                savepoint = not should_commit
+                if savepoint:
+                    await conn_.execute("SAVEPOINT patch_if")
+                try:
+                    cur = await conn_.execute(sql, (*set_params, id, *where_params))
+                    row = await cur.fetchone()
+                    if row is not None:
+                        # Validate the document the write produced BEFORE it commits: a patch that
+                        # leaves the row unreadable raises here and the write is rolled back.
+                        entity = self._from_row(row[0], row[1])
+                    if event_kind is not None and row is not None:
+                        await _append_crud_event(
+                            conn_,
+                            event_type=f"{event_kind}.updated",
+                            entity_kind=event_kind, entity_id=id,
+                            payload_json=row[1],
+                        )
+                    exists = None
+                    if row is None:
+                        exists = await (await conn_.execute(
+                            f'SELECT 1 FROM "{self._table}" WHERE id = ?', (id,),
+                        )).fetchone()
+                except BaseException:
+                    if savepoint:
+                        await conn_.execute("ROLLBACK TO patch_if")
+                        await conn_.execute("RELEASE patch_if")
+                    raise
+                if savepoint:
+                    await conn_.execute("RELEASE patch_if")
+                if should_commit:
+                    await conn_.commit()
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name=self._model.__name__, op="update",
+            ) from exc
+        if entity is None:
+            if not exists:
+                raise NotFoundError(
+                    f"{self._model.__name__} with id {id!r} not found"
+                )
+            return None
+        return entity
 
     async def delete(self, id: str, *, conn: object | None = None) -> None:  # noqa: A002
         # SQLite uses a single shared connection so there is nothing to

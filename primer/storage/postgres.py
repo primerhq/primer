@@ -52,6 +52,7 @@ import logging
 import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar
 
 import asyncpg
@@ -60,7 +61,7 @@ from primer.storage._ddl import (
     CONCURRENT_CREATE_RACE,
     execute_create_idempotent,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from primer.int.document_content import (
     FulltextHit,
@@ -94,6 +95,7 @@ from primer.model.storage import (
     Predicate,
 )
 from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_options
+from primer.storage._patch import compile_postgres, validate_patch
 from primer.storage._cursor import (
     _decode_cursor,
     _encode_cursor_for,
@@ -866,6 +868,69 @@ class PostgresStorage(Storage[ModelT]):
                 )
             return None
         return self._from_row(row)
+
+    async def patch_if(
+        self,
+        id: str,
+        patch: Mapping[str, Any] | None = None,
+        *,
+        where: Mapping[str, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None = None,
+        conn: Any | None = None,
+    ) -> ModelT | None:
+        # The new document is ONE expression over the row's own ``data`` column, and the guard is
+        # part of the UPDATE's WHERE: Postgres evaluates both against the row's current version
+        # (re-checked after a concurrent writer commits), so there is no read-modify-write and no
+        # separate lock. See primer.storage._patch for the semantics and the compiler.
+        patch_d, paths_d, where_d = validate_patch(patch, set_paths, where)
+        await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
+        set_expr, where_sql, params = compile_postgres(
+            patch_d, paths_d, where_d, first_param=2,
+        )
+        guard = f' AND {where_sql}' if where_sql else ''
+        sql = (
+            f'UPDATE {self._qualified} '
+            f'SET data = {set_expr}, updated_at = now() '
+            f'WHERE id = $1{guard} '
+            f'RETURNING id, data'
+        )
+        entity: ModelT | None = None
+        try:
+            async with self._acquire_or_use(conn) as c:
+                # Always in a transaction (a savepoint when the caller's is open): the document the
+                # write produced is validated against the model BEFORE it commits, so a patch that
+                # leaves the row unreadable is rolled back instead of poisoning every later read.
+                async with c.transaction():
+                    row = await c.fetchrow(sql, id, *params)
+                    if row is not None:
+                        entity = self._from_row(row)
+                        if event_kind is not None:
+                            await _append_crud_event(
+                                c, self._provider.schema,
+                                event_type=f"{event_kind}.updated",
+                                entity_kind=event_kind, entity_id=id,
+                                payload_json=row["data"],
+                            )
+                if row is None:
+                    # Disambiguates the shape of the answer only; the write was already decided
+                    # atomically by the WHERE clause above.
+                    exists = await c.fetchval(
+                        f'SELECT 1 FROM {self._qualified} WHERE id = $1', id,
+                    )
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
+        if entity is None:
+            if not exists:
+                raise NotFoundError(
+                    f"{self._model.__name__} with id {id!r} not found"
+                )
+            return None
+        return entity
 
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         await self._ensure_table()
