@@ -17,11 +17,13 @@ read-back is in test_postgres_tcp_keepalive_live.py.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import socket
 from types import SimpleNamespace
 
+import asyncpg
 import pytest
 from pydantic import ValidationError
 
@@ -34,13 +36,20 @@ _LOGGER = "primer.storage._pg_pool"
 
 
 class _Sock:
-    def __init__(self, *, family=socket.AF_INET, fail: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        family=socket.AF_INET,
+        fail: Exception | None = None,
+        fail_option: int | None = None,
+    ) -> None:
         self.family = family
         self._fail = fail
+        self._fail_option = fail_option  # fail only when this option is set (None: fail every call)
         self.calls: list[tuple[int, int, int]] = []
 
     def setsockopt(self, level: int, option: int, value: int) -> None:
-        if self._fail is not None:
+        if self._fail is not None and self._fail_option in (None, option):
             raise self._fail
         self.calls.append((level, option, value))
 
@@ -82,6 +91,22 @@ def test_nonsensical_timings_are_rejected(field, value):
         PoolConfig(**{field: value})
 
 
+@pytest.mark.parametrize(
+    "field, limit",
+    [
+        ("tcp_keepalive_idle_seconds", 32767),
+        ("tcp_keepalive_interval_seconds", 32767),
+        ("tcp_keepalive_count", 127),
+    ],
+)
+def test_the_timings_are_bounded_by_the_linux_limits(field, limit):
+    """An out-of-range value used to pass validation, apply partially, and then
+    be reported as "keepalive is off" while SO_KEEPALIVE was in fact on."""
+    assert getattr(PoolConfig(**{field: limit}), field) == limit  # the limit itself is valid
+    with pytest.raises(ValidationError):
+        PoolConfig(**{field: limit + 1})
+
+
 def test_a_config_saved_before_these_fields_existed_still_loads():
     cfg = PoolConfig.model_validate(
         {"min_size": 1, "max_size": 4, "acquire_timeout": 30.0, "max_idle": 300.0, "max_lifetime": 3600.0}
@@ -102,12 +127,67 @@ async def test_it_sets_keepalive_with_the_configured_timings():
 
     await hook(_conn(sock))
 
+    # SO_KEEPALIVE last: keepalive is only switched on once its timings are in place.
     assert sock.calls == [
-        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
         (socket.IPPROTO_TCP, _IDLE_OPT, 45),
         (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 7),
         (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4),
+        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
     ]
+
+
+@pytest.mark.parametrize(
+    "failing, name",
+    [(_IDLE_OPT, "TCP_KEEPIDLE"), (socket.TCP_KEEPINTVL, "TCP_KEEPINTVL"),
+     (socket.TCP_KEEPCNT, "TCP_KEEPCNT"), (socket.SO_KEEPALIVE, "SO_KEEPALIVE")],
+)
+async def test_a_failing_option_is_named_and_leaves_keepalive_off(failing, name, caplog):
+    """One option failing must not leave keepalive switched on with the kernel's
+    default timings while the warning says it is off, and the warning must say
+    WHICH option failed."""
+    hook = keepalive_init_hook(PoolConfig(), pool_name="storage")
+    sock = _Sock(fail=OSError("invalid argument"), fail_option=failing)
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        await hook(_conn(sock))
+
+    (warning,) = _warnings(caplog)
+    assert name in warning.getMessage()
+    assert "NOT enabled" in warning.getMessage()
+    assert (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1) not in sock.calls, (
+        "SO_KEEPALIVE was switched on although a timing failed: keepalive would run on kernel defaults"
+    )
+
+
+async def test_the_options_land_on_a_real_tcp_socket():
+    """Runs in CI (no database): a real asyncio TCP connection, the real hook,
+    and the options read back with getsockopt."""
+    server = await asyncio.start_server(lambda reader, writer: None, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        hook = keepalive_init_hook(
+            PoolConfig(tcp_keepalive_idle_seconds=45, tcp_keepalive_interval_seconds=7, tcp_keepalive_count=4),
+            pool_name="storage",
+        )
+        await hook(SimpleNamespace(_transport=writer.transport))
+
+        sock = writer.transport.get_extra_info("socket")
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+        assert sock.getsockopt(socket.IPPROTO_TCP, _IDLE_OPT) == 45
+        assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL) == 7
+        assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT) == 4
+    finally:
+        writer.close()
+        server.close()
+
+
+def test_asyncpg_still_exposes_the_private_transport_the_hook_reaches_through():
+    """The hook reads the socket from ``Connection._transport``, a private
+    attribute. This is the check CI runs without a database (the live test reads
+    the options back from a real pooled connection): an asyncpg upgrade that
+    renames or drops it fails here instead of silently turning keepalive off."""
+    assert "_transport" in asyncpg.connection.Connection.__slots__
 
 
 def test_the_hook_is_a_coroutine_function_as_asyncpg_requires():
