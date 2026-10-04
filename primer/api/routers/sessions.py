@@ -431,6 +431,14 @@ async def delete_session(
             "evict an orphaned row"
         )
     if s.status == SessionStatus.RUNNING and force:
+        # Flag the row BEFORE the key goes out: the worker's cancel arm tells a
+        # Stop from a Cancel by cancel_requested alone (not set means a Stop, which
+        # lands the row WAITING), and it re-reads the row when the signal arrives.
+        # Without the flag this delete preempted the turn as a Stop and WAITING was
+        # written over ENDED/force_deleted until the row delete landed.
+        s.cancel_requested = True
+        s.cancel_requested_at = datetime.now(timezone.utc)
+        await sessions.update(s)
         # Publish cancel so any worker actually holding the lease
         # preempts cleanly before its complete_turn CAS. Best-effort -
         # if the bus publish fails we still proceed with the delete
