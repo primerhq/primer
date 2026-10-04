@@ -275,7 +275,10 @@ Read the description + system_prompt to confirm fit.
 - **`max_tool_turns` is a safety cap, not a quality control.** It
   caps tool-call rounds within a turn to stop runaways. Setting it
   too low causes legitimate multi-step work to fail; too high lets
-  pathological loops burn tokens. The default is 50.
+  pathological loops burn tokens. The default is 50. When the cap
+  trips, the tool calls of the round that would exceed it are not run;
+  each is answered with an error result ("not executed: tool-turn cap
+  reached") so the session stays usable and the next message works.
 - **Tool calls can yield.** A tool returning `Yielded(...)` parks
   the agent. See [yielding](yielding.md) for what happens then.
   Outside primer (over MCP) yielding tools are invisible.

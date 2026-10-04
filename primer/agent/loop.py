@@ -27,7 +27,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING, Any, Protocol
 
 import primer.observability.metrics as _metrics
@@ -66,28 +66,33 @@ logger = logging.getLogger(__name__)
 
 # The synthetic result a tool call gets when a Stop landed before the loop dispatched its round.
 _STOPPED_REFUSAL = "not run: stopped by user"
+# ... and when the round it asked for is the one that hit ``max_tool_turns``.
+_TOOL_CAP_REFUSAL = "not executed: tool-turn cap reached"
 
 
 def _answer_undispatched(
-    tool_calls: list[ToolCallPart], text: str,
-) -> tuple[Message, list[ExtendedEvent]]:
+    tool_calls: list[ToolCallPart],
+    text: str,
+    messages_out: list[Message] | None,
+) -> Iterator[ExtendedEvent]:
     """Answer every call of a round the loop is NOT going to run with a synthetic ERROR result.
 
     A tool call that no result answers leaves the persisted history invalid for the provider (Anthropic
     400s every later request, OpenAI Chat Completions rejects an assistant ``tool_calls`` no tool message
-    follows), so a turn that ends without dispatching a round must still answer it. Returns the one
-    ``tool`` message for the caller to append to ``messages_out`` (the model's history) and the events to
-    yield (the durable log), so both stay paired. An error result, rather than dropping the call, keeps
-    the model told that it asked and was refused.
+    follows), so a turn that ends without dispatching a round must still answer it. This does BOTH halves
+    so a caller cannot do one and forget the other: it appends the one ``tool`` message to ``messages_out``
+    (the model's history; first, before any event is yielded, so closing the generator early cannot leave
+    the history unpaired) and yields an ``_ExecutorToolResult`` event per call (the durable log). Callers
+    iterate it and yield what it yields: ``for ev in _answer_undispatched(...): yield ev``. An error
+    result, rather than dropping the call, keeps the model told that it asked and was refused.
     """
     parts = [ToolResultPart(id=call.id, output=text, error=True) for call in tool_calls]
-    events = [
-        ExtendedEvent(
-            extended=_ExecutorToolResult(call_id=p.id, output=p.output, error=True, metadata=None)
+    if messages_out is not None:
+        messages_out.append(Message(role="tool", parts=parts))
+    for part in parts:
+        yield ExtendedEvent(
+            extended=_ExecutorToolResult(call_id=part.id, output=part.output, error=True, metadata=None)
         )
-        for p in parts
-    ]
-    return Message(role="tool", parts=parts), events
 
 
 class PromptGuard(Protocol):
@@ -519,10 +524,7 @@ async def run_agent_turn(
             # destructive one now would make Stop a lie. None of the round runs; each call is answered so
             # the history stays valid for the next request. A call that has already STARTED is another
             # matter (slice B): this only covers a Stop that lands before the batch begins.
-            answered, answer_events = _answer_undispatched(tool_calls, _STOPPED_REFUSAL)
-            if messages_out is not None:
-                messages_out.append(answered)
-            for answer_event in answer_events:
+            for answer_event in _answer_undispatched(tool_calls, _STOPPED_REFUSAL, messages_out):
                 yield answer_event
             if interrupted_out is not None:
                 interrupted_out.append(True)
@@ -541,6 +543,14 @@ async def run_agent_turn(
                 "(agent_id=%s, max_tool_turns=%s, tool_round=%d)",
                 getattr(agent, "id", None), agent.max_tool_turns, tool_round,
             )
+            # The assistant message with these tool calls is already in messages_out and
+            # will be persisted. Left unanswered it makes every later request invalid
+            # (Anthropic and OpenAI chat both reject a tool_use / tool_calls with no
+            # tool_result after it) and nothing recovers it. Answer each call with an
+            # error result instead of dropping it: the model is told its call was not
+            # run, and the same result is yielded so the durable log stays paired too.
+            for answer_event in _answer_undispatched(tool_calls, _TOOL_CAP_REFUSAL, messages_out):
+                yield answer_event
             return
 
         client_actions: list[_ClientAction] = []
