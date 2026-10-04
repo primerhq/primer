@@ -396,10 +396,22 @@ class StuckSessionSweeper(_BackgroundTask):
 
 
 def _never_started(session, grace_seconds: float) -> bool:
-    """Whether *session* is non-terminal and its first turn never ran, past the grace."""
+    """Whether *session* is non-terminal and its first turn never ran, past the grace.
+
+    A session PARKED in its first turn did start. A park neither bumps ``turn_no`` (that is
+    bumped only by a completed turn) nor leaves a lease behind (the park releases it), so
+    such a row is indistinguishable from a never-started one by the two checks this
+    function and its caller make: ``turn_no == 0`` and no live lease. Without this guard a
+    first turn waiting on a human approval, ``ask_user`` or a timer for ten minutes was
+    ended ``failed`` / ``never_started`` while the human was still deciding. A park has its
+    own bound: the dispatch and resume park writers all set ``parked_until``, and
+    ``TimeoutSweeper`` / ``TimerScheduler`` wake it when that passes.
+    """
     if session.status == SessionStatus.ENDED:
         return False
     if session.turn_no > 0:
+        return False
+    if session.parked_status is not None:
         return False
     ref = session.started_at or session.created_at
     if ref is None:
