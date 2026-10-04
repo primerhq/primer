@@ -99,6 +99,19 @@ class TestDerivedFrames:
         assert frame["summary"] == "folded"
         assert frame["replaced_to_seq"] == 1
         assert frame["marker_seq"] == 2
+        assert (frame["outcome"], frame["unreducible"], frame["trigger_tokens"]) == (None, None, None), "an old marker"
+
+    def test_compaction_frame_carries_the_verdict_the_marker_recorded(self):
+        from primer.api.routers.tap import build_compaction_frame
+
+        line = json.dumps({"seq": 2, "kind": "compaction_marker", "created_at": "2026-10-05T00:00:00+00:00", "payload": {
+            "summary": "s", "outcome": "insufficient", "unreducible": "over_trigger", "trigger_tokens": 82627,
+            "fixed_overhead_tokens": 3113,
+        }})
+        frame = build_compaction_frame([line])
+        assert (frame["outcome"], frame["unreducible"], frame["trigger_tokens"], frame["fixed_overhead_tokens"]) == (
+            "insufficient", "over_trigger", 82627, 3113,
+        )
 
     def test_pending_frame_lists_unrealized_steers_with_their_parts(self):
         from primer.api.routers.tap import build_pending_steer_frame

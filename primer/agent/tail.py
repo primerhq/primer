@@ -14,7 +14,7 @@ over the trigger).
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from primer.model.chat import Message, ToolCallPart
 
@@ -111,15 +111,24 @@ def pending_from(messages: Sequence[Message]) -> int:
 class CompactionSplit:
     """``messages`` cut for compaction: summarise ``head``, keep ``tail`` verbatim.
 
-    ``reason`` is ``"empty_head"`` when nothing precedes the part that may not be
-    summarised (the history IS the unanswered input, or a single message), so there
-    is nothing to compact; ``None`` otherwise.
+    ``head`` is what the summary replaces, in order; it is a prefix of the history except when the
+    current turn's EARLIER tool rounds are replaced too (see :func:`split_for_compaction`). ``tail``
+    is what stays, in order. ``summary_after`` says where the summary goes in the compacted history:
+    after that many kept messages (``0``, the usual, puts it in front; a turn whose early rounds are
+    summarised puts it AFTER the user run that opened the turn, so the question stays first and
+    verbatim). ``summary_input`` is what the summariser reads: everything up to the last message the
+    summary replaces, the verbatim user run included, so the rounds are read with their question.
+
+    ``reason`` is ``"empty_head"`` when there is nothing to replace, so there is nothing to compact;
+    ``None`` otherwise.
     """
 
     head: list[Message]
     tail: list[Message]
     pending_from: int
     reason: str | None
+    summary_after: int = 0
+    summary_input: list[Message] = field(default_factory=list)
 
 
 def split_for_compaction(
@@ -134,21 +143,28 @@ def split_for_compaction(
     The tail starts at the ``tail_turns``-th most recent assistant message, as
     :func:`tail_split` does, and then:
 
-    * never starts after the PENDING suffix (:func:`pending_from`): unanswered
-      input is always in the tail;
+    * never starts after the PENDING suffix (:func:`pending_from`): the current turn's
+      unanswered input is always kept;
     * only ever starts at an atomic unit boundary (:func:`unit_starts`);
     * is bounded by ``tail_budget_tokens``: while it is larger, its OLDEST unit moves
       into the head, down to the pending suffix and never past the newest unit (the
-      shrink only advances to unit starts). The pending suffix itself can exceed the
-      budget; it is kept regardless.
+      shrink only advances to unit starts). ``tail_turns=0`` asks for no tail at all, so
+      on an idle history it leaves nothing, the newest unit included.
 
-    With fewer assistant messages than ``tail_turns`` the turn-based tail is the whole
-    history, so the budget alone decides what is summarised: an oversized history is
-    no longer returned unchanged. When the budget leaves NOTHING before the tail (a history
-    that fits it, on a path that asked to compact anyway) the tail shrinks to its floor, the
-    pending suffix or the newest unit, so there is something to summarise.
+    Inside the pending suffix (the user run that opened the current turn, then its tool rounds)
+    only the opening user run and the NEWEST round are protected. Once the tail has shrunk to the
+    pending suffix and is still over budget, the turn's EARLIER rounds are summarised too, oldest
+    first, each as a whole unit: a single turn that reads many files can then be shrunk, which
+    protecting every round of it could not. The summary goes after the user run
+    (``summary_after``), so the compacted history reads ``[user run, summary, newest rounds]``.
 
-    ``reason`` is ``"empty_head"`` only when even the floor leaves nothing before it.
+    With fewer assistant messages than ``tail_turns`` the turn-based tail is the whole history, so
+    the budget alone decides what is summarised. When that leaves NOTHING to replace (a history
+    that fits its budget, on a path that asked to compact anyway) the tail shrinks to its floor, the
+    user run plus the newest round (or the newest unit of an idle history), so there is something
+    to summarise.
+
+    ``reason`` is ``"empty_head"`` only when even the floor replaces nothing.
     """
     if tail_turns < 0:
         raise ValueError(f"tail_turns must be >= 0, got {tail_turns!r}")
@@ -178,14 +194,36 @@ def split_for_compaction(
 
     start = cut(start, tail_budget_tokens)
     if start == 0:
-        # Nothing before the tail: shrink it to its floor (the pending suffix, or the newest unit)
-        # so there is something to summarise. A history that fits its budget is still compacted
-        # when compaction was asked for (the force path); over the trigger it never gets here.
+        # Nothing before the tail: shrink it to its floor so there is something to summarise.
+        # A history that fits its budget is still compacted when compaction was asked for (the
+        # force path); over the trigger it never gets here.
         start = cut(start, 0)
 
-    head, tail = msgs[:start], msgs[start:]
+    # Inside the current turn: protect the opening user run and the newest round, summarise the
+    # rounds between them, oldest first, while the tail is over budget (or there is nothing else
+    # to replace).
+    removed: list[tuple[int, int]] = []
+    user_end = start
+    if start == pending and pending < n:
+        user_end = pending
+        while user_end < n and msgs[user_end].role == "user":
+            user_end += 1
+        rounds = [(a, b) for a, b in zip(starts, [*starts[1:], n]) if a >= user_end]
+        for a, b in rounds[:-1]:
+            kept = [i for i in range(start, n) if not any(x <= i < y for x, y in removed)]
+            if size([msgs[i] for i in kept]) <= tail_budget_tokens and (start > 0 or removed):
+                break
+            removed.append((a, b))
+
+    kept_indices = [i for i in range(start, n) if not any(a <= i < b for a, b in removed)]
+    head_indices = [*range(start), *(i for a, b in removed for i in range(a, b))]
+    head = [msgs[i] for i in head_indices]
+    tail = [msgs[i] for i in kept_indices]
+    summary_after = (user_end - start) if removed else 0
+    reads_to = removed[-1][1] if removed else start
     return CompactionSplit(
         head=head, tail=tail, pending_from=pending, reason=None if head else "empty_head",
+        summary_after=summary_after, summary_input=msgs[:reads_to],
     )
 
 
