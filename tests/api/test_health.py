@@ -149,6 +149,9 @@ async def test_health_surfaces_worker_pool_metrics_when_attached(
         # Cancels that reached a running turn through the session row because their
         # NOTIFY was lost: without this counter such a miss is invisible.
         assert metrics["primer_worker_cancels_reconciled_total"] == 0
+        # Same-worker duplicate claims skipped while the first execution is still in flight
+        # (a heartbeat stalled past the lease TTL): invisible without this counter.
+        assert metrics["primer_worker_duplicate_claims_total"] == 0
     finally:
         app.state.worker_pool = None
 
