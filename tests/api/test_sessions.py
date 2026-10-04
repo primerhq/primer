@@ -866,6 +866,49 @@ async def test_force_delete_running_session_evicts_orphan(
     assert await storage.get(sid) is None
 
 
+async def test_force_delete_sets_cancel_requested_before_it_publishes_the_cancel_key(
+    sessions_client, seeded_workspace, seeded_agent, app, monkeypatch,
+):
+    """The worker's cancel arm decides Stop-vs-Cancel from ``cancel_requested`` alone ("not set" means a Stop,
+    which lands the row WAITING). Force-delete published the cancel key without setting it, so the turn it was
+    preempting read it as a Stop and wrote WAITING over ENDED/force_deleted until the row delete landed. The
+    flag must already be on the row when the key goes out, because the worker re-reads the row on the signal."""
+    from primer.model.workspace_session import WorkspaceSession
+
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "auto_start": True},
+    )
+    sid = create.json()["id"]
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    # The fake storage hands back the same object it stores, so an in-memory flag would look persisted: record
+    # the ORDER of the writes and of the publish instead, each with the flag as it was at that call.
+    order: list[tuple[str, bool]] = []
+    update, publish = storage.update, app.state.event_bus.publish
+
+    async def spy_update(row):
+        order.append(("update", bool(row.cancel_requested)))
+        return await update(row)
+
+    async def spy_publish(key: str, payload: dict) -> None:
+        if key == f"session:{sid}:cancel":
+            order.append(("publish", True))
+        await publish(key, payload)
+
+    monkeypatch.setattr(storage, "update", spy_update)
+    monkeypatch.setattr(app.state.event_bus, "publish", spy_publish)
+
+    resp = await sessions_client.delete(f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}?force=true")
+
+    assert resp.status_code == 204, resp.text
+    assert ("publish", True) in order
+    before_publish = order[: order.index(("publish", True))]
+    assert ("update", True) in before_publish, (
+        "force-delete published the cancel key before it wrote cancel_requested=True to the row "
+        f"(order {order}): the worker re-reads the row on the signal and would read it as a Stop"
+    )
+
+
 async def test_pause_running_sets_pause_requested_flag(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
