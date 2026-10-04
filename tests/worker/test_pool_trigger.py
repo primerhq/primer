@@ -268,3 +268,105 @@ async def test_run_engine_trigger_catchup_all_replays_missed_ticks(
     )
     # All fires must reference our trigger.
     assert all(c[0] == "tr-cron" for c in captured_calls)
+
+
+@pytest.mark.asyncio
+async def test_run_engine_trigger_catchup_failed_deliveries_are_recorded_and_reported(
+    fake_storage_provider, fake_provider_registry, monkeypatch,
+):
+    """01a08bfb item 2, end to end through the real fire_trigger.
+
+    A catchup='all' run replays several missed ticks and then fires the
+    current one. Every delivery fails. Before this, fire_trigger returned
+    the failures (it never raises for them), the handler never read them,
+    ``success`` was set the moment the last call returned, and each fire
+    overwrote the trigger's last_fire_error - so nothing survived.
+
+    What is asserted, and why these are the load-bearing pieces:
+    * one trigger.delivery_failed event per failed delivery (the HISTORY
+      that answers "did that tick ever arrive");
+    * the subscription row carries latest-state last_fired_at /
+      last_fire_error (what triggers.jsx renders);
+    * the lease is released success=False with a summary. That flag alone
+      would be cosmetic - TriggerClaimAdapter advances next_fire_at
+      whatever the outcome - so it is asserted only as honest bookkeeping,
+      alongside the records that are the actual fix.
+    """
+    import primer.trigger.dispatch as _dispatch_mod
+    from primer.model.trigger import SessionAppendSubConfig, Subscription
+    from primer.trigger.subscribers import SubscriptionDispatchResult
+
+    bus = InMemoryEventBus()
+    await bus.initialize()
+    scheduler = InMemoryScheduler(storage_provider=fake_storage_provider)
+    engine = ClaimEngineFactory.create(
+        storage_provider=fake_storage_provider, event_bus=bus,
+    )
+
+    last_fired = _now() - timedelta(minutes=3, seconds=10)
+    await fake_storage_provider.get_storage(Trigger).create(Trigger(
+        id="tr-cron", slug="tr-cron", name="c", description=None,
+        config=ScheduledTriggerConfig(
+            cron="* * * * *", timezone="UTC", catchup="all",
+        ),
+        enabled=True, next_fire_at=_now(),
+        last_fired_at=last_fired, created_at=last_fired,
+    ))
+    await fake_storage_provider.get_storage(Subscription).create(Subscription(
+        id="sb-1", trigger_id="tr-cron",
+        config=SessionAppendSubConfig(session_id="s-1"),
+        enabled=True, created_at=last_fired,
+    ))
+
+    class _AlwaysFails:
+        async def dispatch(self, sub, **_kw):
+            return SubscriptionDispatchResult(
+                ok=False, error_code="dispatch_failed", error_message="target down",
+            )
+
+    monkeypatch.setattr(_dispatch_mod, "get_dispatcher", lambda kind: _AlwaysFails())
+
+    pool = WorkerPool(
+        config=WorkerConfig(
+            concurrency=2, claim_batch_size=1, heartbeat_interval_seconds=5,
+            lease_ttl_seconds=15, poll_interval_seconds=1,
+            drain_timeout_seconds=2,
+        ),
+        scheduler=scheduler, storage=fake_storage_provider,
+        workspace_registry=None, provider_registry=fake_provider_registry,
+        event_bus=bus, engine=engine,
+    )
+    pool._worker_id = "wrk-test"
+
+    released: list = []
+    real_release = engine.release
+
+    async def _capture(lease, *, outcome):
+        released.append(outcome)
+        return await real_release(lease, outcome=outcome)
+
+    monkeypatch.setattr(engine, "release", _capture)
+
+    await engine.upsert(ClaimKind.TRIGGER, "tr-cron", priority=10)
+    [lease] = await engine.claim_due("wrk-test", max_count=1)
+    await pool._run_engine_trigger(lease)
+    await bus.aclose()
+
+    events = [
+        e for e in await fake_storage_provider.get_event_store().read_after(0)
+        if e.event_type == "trigger.delivery_failed"
+    ]
+    scheduled = [e for e in events if e.payload["scheduled_for"] is not None]
+    current = [e for e in events if e.payload["scheduled_for"] is None]
+    assert len(scheduled) >= 2, f"replayed failures not recorded: {events}"
+    assert len(current) == 1
+    assert len({e.payload["fire_id"] for e in events}) == len(events)
+
+    sub = await fake_storage_provider.get_storage(Subscription).get("sb-1")
+    assert sub.last_fired_at is not None
+    assert "target down" in sub.last_fire_error
+
+    [outcome] = released
+    assert outcome.success is False
+    assert outcome.last_error is not None
+    assert f"{len(events)} subscription delivery" in outcome.last_error

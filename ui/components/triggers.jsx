@@ -904,6 +904,16 @@ function TR_FireErrorChip({ error, testId }) {
   if (!error) return null;
   let code = null;
   let msg = null;
+  // The backend stores last_fire_error as a JSON-ENCODED string
+  // ({code, message, ...}) on both Trigger and Subscription rows, so a
+  // string that decodes to an object is the structured shape, not prose.
+  // Without this the chip printed the raw JSON text as its message.
+  if (typeof error === "string") {
+    try {
+      const parsed = JSON.parse(error);
+      if (parsed && typeof parsed === "object") error = parsed;
+    } catch (_e) { /* plain-string message: render as-is */ }
+  }
   if (typeof error === "string") {
     msg = error;
   } else if (error && typeof error === "object") {

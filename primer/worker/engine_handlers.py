@@ -112,7 +112,19 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
         event_bus=pool._event_bus,
     )
 
+    def _failed_deliveries(fire_result) -> int:
+        # fire_trigger isolates every per-subscription failure and
+        # RETURNS it (ok=False) instead of raising, so "it returned"
+        # says nothing about whether anything was delivered.
+        return sum(
+            1 for r in getattr(fire_result, "results", None) or []
+            if not r.get("ok")
+        )
+
     success = False
+    failed_deliveries = 0
+    replay_errors = 0
+    last_error: str | None = None
     try:
         # Catchup replay for scheduled triggers with catchup='all'.
         # Best-effort: any failure in the backlog walk falls through
@@ -146,24 +158,44 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
                 missed = []
             for missed_ts in missed:
                 try:
-                    await fire_trigger(
+                    replayed = await fire_trigger(
                         trigger_id=engine_lease.entity_id,
                         scheduled_for=missed_ts,
                         deps=deps,
                     )
+                    failed_deliveries += _failed_deliveries(replayed)
                 except Exception:
+                    replay_errors += 1
                     logger.exception(
                         "trigger %s: catchup fire at %s raised; "
                         "skipping to next",
                         engine_lease.entity_id, missed_ts.isoformat(),
                     )
 
-        await fire_trigger(
+        current = await fire_trigger(
             trigger_id=engine_lease.entity_id,
             scheduled_for=None,
             deps=deps,
         )
-        success = True
+        failed_deliveries += _failed_deliveries(current)
+        if failed_deliveries or replay_errors:
+            # Honest claim-row bookkeeping only: TriggerClaimAdapter
+            # advances next_fire_at whatever the outcome, so this does
+            # not retry anything. The findable record of each failed
+            # delivery is the trigger.delivery_failed event plus the
+            # subscription's own last_fire_error (primer/trigger/
+            # dispatch.py); this just stops the release reporting a
+            # clean run over them.
+            last_error = (
+                f"{failed_deliveries} subscription delivery(ies) failed, "
+                f"{replay_errors} catchup fire(s) raised"
+            )
+            logger.warning(
+                "trigger %s: %s (see trigger.delivery_failed events)",
+                engine_lease.entity_id, last_error,
+            )
+        else:
+            success = True
     except Exception:
         logger.exception(
             "engine trigger fire for %s raised",
@@ -172,5 +204,7 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
     finally:
         await pool._engine.release(
             engine_lease,
-            outcome=ReleaseOutcome(success=success, drop_lease=False),
+            outcome=ReleaseOutcome(
+                success=success, drop_lease=False, last_error=last_error,
+            ),
         )

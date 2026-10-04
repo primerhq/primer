@@ -177,6 +177,16 @@ the server was down across a fire window:
 - `catchup: none` - skip missed fires entirely; schedule next fire
   for the next future instance.
 
+Missed instances are replayed once each; a failed delivery is not
+retried. To find out whether a given delivery arrived, look at the
+subscription's `last_fired_at` / `last_fire_error` (latest outcome
+only: a later clean delivery clears the error) and, for history, the
+platform event log: one `trigger.delivery_failed` event is recorded per
+failed delivery, with `fire_id`, `subscription_id`, `scheduled_for`
+(the missed tick, or null for the current fire), `error_code` and a
+scrubbed `error_message`. Read it with `GET /v1/events?event_type=trigger.delivery_failed`
+(admin only).
+
 ## MCP tools
 
 The two surfaces are equivalent for most operations. Use
