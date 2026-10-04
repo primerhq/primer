@@ -43,18 +43,63 @@ def _wired(root: Path = ROOT) -> list[str]:
     return wired
 
 
+def _returns_the_heuristic_as_a_count(source: str) -> bool:
+    """True if some ``return`` hands back ``count_tokens_char_fallback(...)``.
+
+    That is the swallowing pattern: a counter that catches its own failure and
+    returns the heuristic as if it were a count. Using the heuristic to ADD an
+    estimated component to a real count (Gemini's system and tool estimates) is a
+    different thing and is not flagged.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Return) and node.value is not None:
+            for sub in ast.walk(node.value):
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Name)
+                    and sub.func.id == "count_tokens_char_fallback"
+                ):
+                    return True
+    return False
+
+
 def test_wiring_the_wrapper_requires_counters_that_raise():
     wired = _wired()
     if not wired:
         return
     still_swallowing = [
         name for name in _SWALLOWERS
-        if "count_tokens_char_fallback"
-        in (ROOT / "primer" / "llm" / "_tokenizer" / name).read_text()
+        if _returns_the_heuristic_as_a_count(
+            (ROOT / "primer" / "llm" / "_tokenizer" / name).read_text()
+        )
     ]
     assert not still_swallowing, (
         f"{wired} wire primer.llm.counting while {still_swallowing} still return the "
         "character heuristic as a count; land the adapter-hardening slice (S2) first"
+    )
+
+
+def test_the_swallowing_scanner_flags_a_return_but_not_an_added_estimate():
+    swallow = "def f():\n    try:\n        return real()\n    except Exception:\n        return count_tokens_char_fallback(messages=[])\n"
+    nested = "def f(tok):\n    if tok is None:\n        return 1 + count_tokens_char_fallback(messages=[])\n"
+    adds_estimate = "def f():\n    total = real()\n    total += count_tokens_char_fallback(messages=[])\n    return total\n"
+    assert _returns_the_heuristic_as_a_count(swallow)
+    assert _returns_the_heuristic_as_a_count(nested)
+    assert not _returns_the_heuristic_as_a_count(adds_estimate)
+
+
+def test_the_current_swallowers_are_detected_until_s2_lands():
+    """Pins the scanner against the real files: today (before S2) it must see the
+    three counters that swallow, or the gate above would pass vacuously."""
+    flagged = [
+        name for name in _SWALLOWERS
+        if _returns_the_heuristic_as_a_count(
+            (ROOT / "primer" / "llm" / "_tokenizer" / name).read_text()
+        )
+    ]
+    assert flagged == list(_SWALLOWERS), (
+        "after S2 this test is deleted (the counters no longer swallow); "
+        f"before it, all three must be detected, got {flagged}"
     )
 
 
