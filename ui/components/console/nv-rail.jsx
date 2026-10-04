@@ -128,15 +128,19 @@ function NV_Rail_SessionContextMenu(props) {
     }),
   ];
   if (!over) {
-    rows.push(act("Interrupt", function () {
-      // The shared Stop path: toasts the acknowledgement or the failure (this used to fire the
-      // request with no feedback and no error handling) and ignores a click while one is pending.
-      window.NV_doInterrupt(wid, sid, props.onChanged, function (msg) {
-        if (window.primerApi && window.primerApi.toastPush) {
-          window.primerApi.toastPush({ kind: "info", text: String(msg), requestId: null });
-        }
-      });
-    }));
+    // A parked session has no turn to stop (the server answers 409), so the row is not offered;
+    // Park and End below stay.
+    if (!s.parked_status) {
+      rows.push(act("Interrupt", function () {
+        // The shared Stop path: toasts the acknowledgement or the failure (this used to fire the
+        // request with no feedback and no error handling) and ignores a click while one is pending.
+        window.NV_doInterrupt(wid, sid, props.onChanged, function (msg) {
+          if (window.primerApi && window.primerApi.toastPush) {
+            window.primerApi.toastPush({ kind: "info", text: String(msg), requestId: null });
+          }
+        });
+      }));
+    }
     rows.push(act("Park", function () {
       SH_api.pause(wid, sid).then(props.onChanged);
     }));

@@ -150,9 +150,12 @@ function SH_scrollDecision(input) {
 // Close (Cancel), which ENDS the session. The state is derived from the SERVED flag:
 // interrupt_requested is true from the moment the request is recorded until the worker lands
 // the Stop (it then clears it and the session reads "waiting"). An ended session is never
-// still stopping, whatever a stale flag on it says.
+// still stopping, whatever a stale flag on it says, and neither is a PARKED one: no turn is
+// running while it waits, and the server refuses a Stop on it (409), so a leftover flag there
+// is not a state the operator is waiting on.
 function SH_isStopping(session) {
-  return !!session && session.interrupt_requested === true && session.status !== "ended";
+  return !!session && session.interrupt_requested === true
+    && session.status !== "ended" && !session.parked_status;
 }
 
 // Verbs that mean "waiting on the model" (or an unknown phase): a Stop interrupts that wait
