@@ -877,6 +877,7 @@ class GeminiLLM(LLM):
         """
         return await count_tokens_gemini_detailed(
             client=self._get_client(), model=model, messages=messages, tools=tools,
+            messages_to_contents=_messages_to_gemini,
         )
 
     def _get_client(self) -> genai.Client:

@@ -1,14 +1,13 @@
 """The one place that turns a token count into a labelled number, never an error.
 
-Counters (``LLM.count_tokens_detailed``) are meant to raise on failure: a typed
-``TokenCounterUnavailable``, or a mapped provider error. (The OpenAI-family
-counters and the aggregated profile do. The Anthropic, Gemini and HF counters
-still swallow their own errors and return the character heuristic until the
-adapter-hardening slice lands; they have not been taught to declare what they
-counted, so this wrapper reports their numbers as ``estimate`` /
-``legacy_counter``, never as native. No turn path may call this wrapper before
-that slice lands: ``tests/llm/test_counting_not_wired.py`` fails if one does.)
-This wrapper is what a turn path calls. It
+Counters (``LLM.count_tokens_detailed``) raise on failure: a typed
+``TokenCounterUnavailable``, or a mapped provider error. Every shipped adapter now
+does; the only undeclared path is the ABC default (an adapter or fake that has
+only ``count_tokens``), which this wrapper reports as ``estimate`` /
+``legacy_counter``, never as native.
+``tests/llm/test_counting_not_wired.py`` keeps a returned heuristic out of the
+counters if a turn path ever wires this wrapper. This wrapper is what a turn path
+calls. It
 
 * never raises (``CancelledError`` excepted) and never blocks past a backstop,
 * falls back to an estimate and says so (``source="estimate"`` plus an

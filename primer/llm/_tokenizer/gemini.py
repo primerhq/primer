@@ -25,53 +25,48 @@ built without one, so an unbounded call would otherwise be possible.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Callable, Sequence
 from typing import Any
 
+import aiohttp
+import httpx
+
 from primer.common.google_errors import classify_google_exception
+from primer.llm._tokenizer._errors import promote_unclassified_4xx
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
-from primer.model.chat import (
-    Message,
-    TextPart,
-    Tool,
-    ToolCallPart,
-    ToolResultPart,
+from primer.model.chat import Message, Tool
+from primer.model.except_ import (
+    NetworkError,
+    PrimerError,
+    ProviderTimeoutError,
+    TokenCounterUnavailable,
 )
-from primer.model.except_ import PrimerError, TokenCounterUnavailable
-from primer.model.media_tokens import media_tokens
+from primer.model.media_tokens import split_media
 from primer.model.token_count import EstimatedComponent, TokenCount
 
 COUNT_TIMEOUT_S = 3.0
 
+MessagesToContents = Callable[[list[Message]], "tuple[str | None, list[Any]]"]
 
-def _to_gemini_contents(messages: Sequence[Message]) -> list[dict[str, Any]]:
-    """Translate to the google-genai ``contents`` shape (system and media excluded)."""
-    out: list[dict[str, Any]] = []
-    for msg in messages:
-        if msg.role == "system":
-            continue
-        role = "model" if msg.role == "assistant" else msg.role
-        parts: list[dict[str, Any]] = []
-        for part in msg.parts:
-            if isinstance(part, TextPart):
-                parts.append({"text": part.text})
-            elif isinstance(part, ToolCallPart):
-                parts.append({
-                    "function_call": {
-                        "name": part.name,
-                        "args": part.arguments,
-                    }
-                })
-            elif isinstance(part, ToolResultPart):
-                parts.append({
-                    "function_response": {
-                        "name": part.id,
-                        "response": {"result": part.output},
-                    }
-                })
-        if parts:
-            out.append({"role": role, "parts": parts})
-    return out
+
+def _map_error(exc: Exception) -> PrimerError:
+    """google-genai 2.x makes its async calls through aiohttp (a core dependency),
+    so a stalled count raises the builtin ``TimeoutError`` (or an aiohttp subclass
+    of it) and an unreachable host raises ``aiohttp.ClientConnectorError``, neither of
+    which ``classify_google_exception`` (httpx only) knows. Left alone both became a
+    bare ``ProviderError``: outcome ``fallback_bug``, an ERROR with a traceback, and
+    never negative-cached, so every count re-stalled for the full timeout."""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
+        return ProviderTimeoutError(
+            f"gemini count_tokens timed out ({type(exc).__name__})", cause=exc,
+        )
+    if isinstance(exc, aiohttp.ClientError):
+        return NetworkError(
+            f"gemini count_tokens network failure: {type(exc).__name__}",
+            code="network_error", cause=exc,
+        )
+    return promote_unclassified_4xx(classify_google_exception(exc))
 
 
 async def count_tokens_gemini_detailed(
@@ -80,15 +75,20 @@ async def count_tokens_gemini_detailed(
     model: str,
     messages: Sequence[Message],
     tools: Sequence[Tool] | None = None,
+    messages_to_contents: MessagesToContents,
     timeout_s: float = COUNT_TIMEOUT_S,
 ) -> TokenCount:
     """Prompt-token count via Gemini's count-tokens endpoint, contents only.
 
-    The system prompt, the tool schemas and any media are estimated, never sent,
-    and named in ``estimated_components``. Raises a mapped provider error, or
-    :class:`TokenCounterUnavailable` when there is no natively countable content.
+    The contents are built by the live ``stream()`` translator (passed in by the
+    adapter): tool results become user-role ``function_response`` parts and the
+    roles are the ones the API accepts. The system prompt, the tool schemas and any
+    media are estimated, never sent, and named in ``estimated_components``. Raises
+    a mapped provider error, or :class:`TokenCounterUnavailable` when there is no
+    natively countable content.
     """
-    contents = _to_gemini_contents(messages)
+    stripped, media = split_media(list(messages))
+    _system, contents = messages_to_contents(stripped)
     if not contents:
         raise TokenCounterUnavailable(
             "gemini count_tokens: no natively countable content (the endpoint "
@@ -105,12 +105,6 @@ async def count_tokens_gemini_detailed(
     if tools:
         estimated += count_tokens_char_fallback(messages=[], tools=tools)
         components.append("tools")
-    media = sum(
-        estimate
-        for msg in messages
-        for part in msg.parts
-        if (estimate := media_tokens(part)) is not None
-    )
     if media:
         estimated += media
         components.append("media")
@@ -125,7 +119,7 @@ async def count_tokens_gemini_detailed(
     except PrimerError:
         raise
     except Exception as exc:
-        raise classify_google_exception(exc) from exc
+        raise _map_error(exc) from exc
     return TokenCount(
         total=counted + estimated,
         exact=True,
