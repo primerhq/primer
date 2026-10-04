@@ -36,6 +36,9 @@ class _InMemoryStorage(Generic[_T]):
     def __init__(self, model_cls: type[_T]) -> None:
         self._cls = model_cls
         self._data: dict[str, _T] = {}
+        # Stored documents that differ from a fresh dump of the model (see ``patch_if`` / ``seed_raw``). A
+        # whole-document write replaces the stored document with the model's dump, so it drops the entry.
+        self._raw: dict[str, tuple[_T, dict[str, Any]]] = {}
 
     async def get(self, id: str, *, conn=None) -> _T | None:
         return self._data.get(id)
@@ -44,12 +47,14 @@ class _InMemoryStorage(Generic[_T]):
         if entity.id in self._data:
             raise ConflictError(f"id {entity.id!r} already exists")
         self._data[entity.id] = entity
+        self._raw.pop(entity.id, None)
         return entity
 
     async def update(self, entity: _T, *, conn=None) -> _T:
         if entity.id not in self._data:
             raise NotFoundError(f"no entity with id {entity.id!r}")
         self._data[entity.id] = entity
+        self._raw.pop(entity.id, None)
         return entity
 
     async def update_unless(
@@ -61,32 +66,60 @@ class _InMemoryStorage(Generic[_T]):
         if _resolve_field(current, field) == forbidden:
             return None
         self._data[entity.id] = entity
+        self._raw.pop(entity.id, None)
         return entity
 
     async def patch_if(
         self, id: str, patch=None, *, where, set_paths=None, conn=None,
     ) -> _T | None:
-        """The pure-Python statement of ``Storage.patch_if`` (see tests/storage/_patch_reference.py)."""
-        from primer.model.common import dump_for_storage
-        from primer.storage._patch import validate_patch
-        from tests.storage._patch_reference import apply_patch, doc_matches
+        """The pure-Python statement of ``Storage.patch_if`` (see tests/storage/_patch_reference.py).
 
-        patch_d, paths_d, where_d = validate_patch(patch, set_paths, where)
+        Like the backends it works on the RAW stored document: keys the model does not read survive a patch,
+        a guard is evaluated against what is stored (not a re-dump of the model), and the fields a patch wrote
+        are stored in canonical form.
+        """
+        from tests.storage._patch_reference import patch_if_reference
+
         current = self._data.get(id)
         if current is None:
+            # the spec is validated first on every backend, then the row is looked up
+            from primer.storage._patch import validate_patch
+
+            validate_patch(patch, set_paths, where)
             raise NotFoundError(f"no entity with id {id!r}")
-        doc = dump_for_storage(current)
-        doc_no_id = {k: v for k, v in doc.items() if k != "id"}   # the id is a column, not stored data
-        if not doc_matches(doc_no_id, where_d):
+        out = patch_if_reference(
+            self._cls, id, self._raw_doc(id, current), patch, where=where, set_paths=set_paths,
+        )
+        if out is None:
             return None
-        updated = self._cls.model_validate({**apply_patch(doc_no_id, patch_d, paths_d), "id": id})
+        produced, updated = out
         self._data[id] = updated
+        self._raw[id] = (updated, produced)
         return updated
+
+    def _raw_doc(self, id: str, current: _T) -> dict[str, Any]:
+        """What a backend would hold for this row: the raw document if a patch or a seed wrote one, else the
+        model's own dump (which is what ``create`` and ``update`` store)."""
+        entry = self._raw.get(id)
+        if entry is not None and entry[0] is current:      # a direct ``_data[id] = ...`` assignment invalidates it
+            return entry[1]
+        from primer.model.common import dump_for_storage
+
+        return {k: v for k, v in dump_for_storage(current).items() if k != "id"}
+
+    def seed_raw(self, id: str, doc: dict[str, Any]) -> _T:
+        """Install a stored document exactly as given (a row written by an older build, with keys the model no
+        longer reads or without keys it now defaults)."""
+        entity = self._cls.model_validate({**doc, "id": id})
+        self._data[id] = entity
+        self._raw[id] = (entity, dict(doc))
+        return entity
 
     async def delete(self, id: str, *, conn=None) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
         del self._data[id]
+        self._raw.pop(id, None)
 
     async def list(self, page, *, order_by=None):
         items = list(self._data.values())

@@ -57,7 +57,13 @@ from primer.model.storage import (
     PageRequest,
     Predicate,
 )
-from primer.storage._patch import compile_sqlite, validate_patch
+from primer.storage._patch import (
+    canonical_fixup,
+    check_known_fields,
+    compile_sqlite,
+    normalise_where,
+    validate_patch,
+)
 from primer.storage._cursor import (
     _decode_cursor,
     _encode_cursor_for,
@@ -861,6 +867,8 @@ class SqliteStorage(Storage[ModelT]):
         # statement is one UPDATE whose SET expression and WHERE both read the row's own ``data``.
         del conn
         patch_d, paths_d, where_d = validate_patch(patch, set_paths, where)
+        check_known_fields(self._model, patch_d, paths_d)
+        where_d = normalise_where(self._model, where_d)
         await self._ensure_table()
         event_kind = kind_for_model(self._model)
         if event_kind is not None:
@@ -894,6 +902,18 @@ class SqliteStorage(Storage[ModelT]):
                         # Validate the document the write produced BEFORE it commits: a patch that
                         # leaves the row unreadable raises here and the write is rolled back.
                         entity = self._from_row(row[0], row[1])
+                        # Rewrite what the patch touched to the model's canonical dump (see the
+                        # Postgres backend and primer.storage._patch): stored == canonical.
+                        fixup = canonical_fixup(entity, json.loads(row[1]), patch_d, paths_d)
+                        if fixup:
+                            fix_expr, fix_params, _, _ = compile_sqlite(fixup, {}, {})
+                            cur = await conn_.execute(
+                                f'UPDATE "{self._table}" SET data = {fix_expr}, '
+                                f"updated_at = datetime('now') WHERE id = ? RETURNING id, data",
+                                (*fix_params, id),
+                            )
+                            row = await cur.fetchone()
+                            entity = self._from_row(row[0], row[1])
                     if event_kind is not None and row is not None:
                         await _append_crud_event(
                             conn_,

@@ -2,18 +2,20 @@
 
 ``tests/storage/test_storage_contract.py`` runs each against SQLite and (gated) Postgres;
 ``tests/storage/test_patch_if_fake.py`` runs the same ones against the in-memory fake in
-``tests/conftest.py``, so the fake that the rest of the suite leans on cannot drift from the backends.
+``tests/conftest.py``: a fake that diverges from the backends fails a scenario here instead of quietly
+misleading every test that uses it (the fake keeps the RAW stored document, as the backends do).
 Each scenario creates its own rows and takes only a ``Storage[PatchDoc]``.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
-from pydantic import ConfigDict, SecretStr, ValidationError
+from pydantic import AfterValidator, ConfigDict, SecretStr, ValidationError
 
 from primer.int.storage import Storage
 from primer.model.common import Identifiable
@@ -40,6 +42,17 @@ class PatchDoc(Identifiable):
     ratio: float = 0.0
     phase: Phase = Phase.ALPHA
     secret: SecretStr | None = None
+
+
+class StrictDoc(Identifiable):
+    """The usual shape: unknown stored keys are IGNORED on read, and a validator normalises `tag`."""
+
+    status: str = "created"
+    count: int = 0
+    gen: int = 0  # a defaulted generation field: documents older than it do not have the key
+    flag: bool = False
+    stamp: datetime | None = None
+    tag: Annotated[str, AfterValidator(str.lower)] = ""
 
 
 Store = Storage[PatchDoc]
@@ -297,6 +310,136 @@ async def an_array_parent_is_replaced_like_any_non_object(store: Store) -> None:
         "a", None, where={"status": ["created"]}, set_paths={("state", "k"): 1},
     )
     assert out is not None and out.state == {"k": 1}
+
+
+# ---- canonical storage: stored == what a read re-dumps -------------------------------------------
+#
+# These take an ``Env`` (a storage factory plus a way to plant a RAW stored document), because the cases are
+# about what the database holds, which no write through the model can produce.
+
+
+class Env:
+    """What a raw scenario needs from an implementation."""
+
+    def store(self, model: type[Identifiable]) -> Storage[Any]:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    async def seed_raw(self, model: type[Identifiable], id_: str, doc: dict[str, Any]) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+
+class ProviderEnv(Env):
+    """SQLite or Postgres: the raw document is inserted with SQL, bypassing the model."""
+
+    def __init__(self, provider: Any) -> None:
+        self._provider = provider
+
+    def store(self, model):
+        return self._provider.get_storage(model)
+
+    async def seed_raw(self, model, id_, doc):
+        store = self.store(model)
+        await store._ensure_table()
+        if hasattr(self._provider, "pool"):          # Postgres
+            async with self._provider.pool.acquire() as conn:
+                await conn.execute(
+                    f"INSERT INTO {store._qualified} (id, data) VALUES ($1, $2::jsonb)", id_, json.dumps(doc),
+                )
+        else:                                         # SQLite
+            conn = self._provider.connection
+            await conn.execute(f'INSERT INTO "{store._table}" (id, data) VALUES (?, ?)', (id_, json.dumps(doc)))
+            await conn.commit()
+
+
+class FakeEnv(Env):
+    def __init__(self, provider: Any) -> None:
+        self._provider = provider
+
+    def store(self, model):
+        return self._provider.get_storage(model)
+
+    async def seed_raw(self, model, id_, doc):
+        self.store(model).seed_raw(id_, doc)
+
+
+async def a_loosely_typed_patch_is_stored_canonical_so_a_guard_built_from_a_read_matches(env: Env) -> None:
+    """The write path stores what the caller wrote; a read re-dumps the validated model. Without the
+    canonicalising rewrite, patch {count: "5"} stored a string and ``raw_generation`` (5) never matched it."""
+    store = env.store(StrictDoc)
+    await store.create(StrictDoc(id="a", count=1))
+    out = await store.patch_if(
+        "a", {"count": "5", "flag": 1, "stamp": "2026-10-04T12:30:45+00:00", "tag": "MiXeD"},
+        where={"status": ["created"]},
+    )
+    assert out is not None and (out.count, out.flag, out.tag) == (5, True, "mixed")
+    row = await store.get("a")
+    assert row is not None
+    guard = {f: [raw_generation(row, f)] for f in ("count", "flag", "stamp", "tag")}
+    assert guard["count"] == [5] and guard["flag"] == [True] and guard["tag"] == ["mixed"]
+    assert guard["stamp"][0].endswith("Z")
+    assert await store.patch_if("a", {"status": "x"}, where=guard) is not None, "the read-back guard must match"
+    # only the canonical spelling is stored: the loose ones never match
+    assert await store.patch_if("a", {"status": "y"}, where={"count": ["5"]}) is None
+    assert await store.patch_if("a", {"status": "y"}, where={"flag": [1]}) is None, "a bool is not a number"
+    assert await store.patch_if("a", {"status": "y"}, where={"tag": ["MiXeD"]}) is None
+    assert await store.patch_if("a", {"status": "y"}, where={"stamp": ["2026-10-04T12:30:45+00:00"]}) is None
+
+
+async def a_patch_that_is_already_canonical_is_not_rewritten_or_changed(env: Env) -> None:
+    store = env.store(StrictDoc)
+    await store.create(StrictDoc(id="a", count=2, tag="ok"))
+    out = await store.patch_if("a", {"count": 3, "tag": "fine"}, where={"count": [2]})
+    assert out is not None and (out.count, out.tag, out.status) == (3, "fine", "created")
+    assert await store.patch_if("a", {"status": "x"}, where={"count": [3], "tag": ["fine"]}) is not None
+
+
+async def a_document_missing_a_defaulted_field_reads_as_the_default_in_a_guard(env: Env) -> None:
+    """A row older than the field has no key; the model reads the default and raw_generation returns it, so a
+    guard built from that read must match the document that lacks the key."""
+    store = env.store(StrictDoc)
+    await env.seed_raw(StrictDoc, "old", {"status": "created"})
+    row = await store.get("old")
+    assert row is not None and (row.gen, row.count) == (0, 0)
+    guard = {"gen": [raw_generation(row, "gen")], "count": [raw_generation(row, "count")]}
+    assert guard == {"gen": [0], "count": [0]}
+    assert await store.patch_if("old", {"status": "x"}, where=guard) is not None
+    assert await store.patch_if("old", {"status": "y"}, where={"gen": [1]}) is None
+    assert await store.patch_if("old", {"status": "z"}, where={"gen": [None]}) is not None, "absent still reads as None"
+    # once written, the key exists and is compared like any other
+    assert await store.patch_if("old", {"gen": 1}, where={"gen": [0]}) is not None
+    assert await store.patch_if("old", {"gen": 2}, where={"gen": [0]}) is None
+    assert await store.patch_if("old", {"gen": 2}, where={"gen": [1]}) is not None
+
+
+async def a_key_the_model_ignores_survives_a_patch_and_is_dropped_by_a_whole_document_update(env: Env) -> None:
+    store = env.store(StrictDoc)
+    await env.seed_raw(StrictDoc, "x", {"status": "created", "legacy": "v"})
+    assert await store.patch_if("x", {"count": 1}, where={"status": ["created"]}) is not None
+    assert await store.patch_if("x", {"count": 2}, where={"legacy": ["v"]}) is not None, "the patch kept the key"
+    row = await store.get("x")
+    assert row is not None
+    await store.update(row)
+    assert await store.patch_if("x", {"count": 3}, where={"legacy": ["v"]}) is None, "update re-dumps the model"
+
+
+async def patching_a_field_the_model_does_not_have_is_rejected(env: Env) -> None:
+    store = env.store(StrictDoc)
+    await store.create(StrictDoc(id="a"))
+    with pytest.raises(ValueError):
+        await store.patch_if("a", {"cnt": 1}, where={"status": ["created"]})
+    with pytest.raises(ValueError):
+        await store.patch_if("a", None, where={"status": ["created"]}, set_paths={("cnt", "k"): 1})
+    row = await store.get("a")
+    assert row is not None and row.count == 0
+
+
+RAW = [
+    a_loosely_typed_patch_is_stored_canonical_so_a_guard_built_from_a_read_matches,
+    a_patch_that_is_already_canonical_is_not_rewritten_or_changed,
+    a_document_missing_a_defaulted_field_reads_as_the_default_in_a_guard,
+    a_key_the_model_ignores_survives_a_patch_and_is_dropped_by_a_whole_document_update,
+    patching_a_field_the_model_does_not_have_is_rejected,
+]
 
 
 ALL = [
