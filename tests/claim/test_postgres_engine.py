@@ -1029,3 +1029,49 @@ async def test_default_lease_ttl_is_60_seconds():
     await engine.claim_due("worker-A", max_count=1)
     _query, args = conn.fetch_calls[-1]
     assert args[-1] == "60"
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_has_lease_counts_armed_claimed_and_expired_rows(
+    pg_storage, entity_seeder,
+):
+    """has_lease is the row, has_live_lease is the live claim; they differ for an armed
+    lease nobody has claimed and for a claim that has expired (the claim loop reclaims it)."""
+    from primer.int.claim import ClaimAdapter
+
+    class _NoJoinAdapter(ClaimAdapter):
+        kind = ClaimKind.HARNESS
+        entity_table = "chats"
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome): ...
+
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: adapter},
+    )
+    await entity_seeder.seed(adapter.entity_table, ["h-1"])
+
+    assert await engine.has_lease(ClaimKind.HARNESS, "h-1") is False
+
+    await engine.upsert(ClaimKind.HARNESS, "h-1")
+    assert await engine.has_lease(ClaimKind.HARNESS, "h-1") is True
+    assert await engine.has_live_lease(ClaimKind.HARNESS, "h-1") is False
+
+    (lease,) = await engine.claim_due("worker-A", max_count=1)
+    assert await engine.has_lease(ClaimKind.HARNESS, "h-1") is True
+    assert await engine.has_live_lease(ClaimKind.HARNESS, "h-1") is True
+
+    async with pg_storage.pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE {pg_storage.leases_table} SET expires_at = now() - interval '1 second' "
+            f"WHERE kind = 'harness' AND entity_id = 'h-1'"
+        )
+    assert await engine.has_live_lease(ClaimKind.HARNESS, "h-1") is False
+    assert await engine.has_lease(ClaimKind.HARNESS, "h-1") is True
+
+    await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
+    assert await engine.has_lease(ClaimKind.HARNESS, "h-1") is False
