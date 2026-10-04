@@ -211,9 +211,12 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         rewriter. The lock is NOT held across the compaction LLM call (that
         already completed before this hook runs).
         """
-        del compacted  # the marker carries the summary text, not the message list
         if summary_message is None:
             return
+        # ``compacted`` is ``[summary, *kept_tail]`` (CompactionStrategy._tier2): the
+        # marker must carry the tail too, or the next load folds it into the summary
+        # along with every line before the marker (including the turn's own input).
+        kept_tail = compacted[1:] if compacted and compacted[0] is summary_message else []
         summary_text = "".join(
             part.text
             for part in summary_message.parts
@@ -230,6 +233,12 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 kind=SessionMessageKind.COMPACTION_MARKER,
                 payload={
                     "summary": summary_text,
+                    # Serialised exactly as a Message line is (model_dump_json), so
+                    # the reader validates them with the same model.
+                    **(
+                        {"kept_tail_messages": [json.loads(m.model_dump_json()) for m in kept_tail]}
+                        if kept_tail else {}
+                    ),
                     "replaced_from_seq": 1,
                     # Message lines are seqless, so physical position in the
                     # append-only file IS the boundary; ``replaced_to_seq`` is

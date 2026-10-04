@@ -348,9 +348,14 @@ async def run_scenario() -> dict[str, Any]:
             await run_turn(session, llm)
             record("1-tier1-prune", before)
 
-            # Turn 2, tier 2: user text pruning cannot shrink.
+            # Turn 2, tier 2: user text pruning cannot shrink. Four big exchanges the model answered, then the
+            # input this turn answers: input the model has not answered is never summarised, so a history of nothing
+            # but unanswered user text (what this turn used to be) is not compactable.
             for i in range(4):
-                await append_messages(workspace, session, user_message(chr(ord("A") + i) * BIG_USER_CHARS))
+                await append_messages(
+                    workspace, session, user_message(chr(ord("A") + i) * BIG_USER_CHARS), assistant_message(f"turn 2 reply {i}"),
+                )
+            await append_messages(workspace, session, user_message("turn 2: next"))
             llm.extend([Events(text_events("SUMMARY-2")), Events(text_events("turn-2-ok"))])
             before = len(llm.calls)
             await run_turn(session, llm)

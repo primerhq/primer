@@ -12,11 +12,12 @@ survives for audit while the prompt shrinks.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from primer.model.except_ import ConflictError
+from primer.model.except_ import ConflictError, ValidationError
 from primer.model.workspace_session import (
     SessionMessageKind,
     SessionMessageRecord,
@@ -73,10 +74,19 @@ async def compact_session(
     the router and makes this path testable in milliseconds.
     """
     result = await run_compaction(history)
+    if not result.summary_text:
+        # Nothing could be summarised (the history is the input the model has not
+        # answered, or too short to have a head): a marker with no summary would
+        # fold the whole history into nothing.
+        raise ValidationError(
+            "nothing to compact: there is no earlier history that can be "
+            "summarised without dropping input the model has not answered"
+        )
 
     # Seeded from the row's last_seq at write time: the summarising call
     # takes seconds, so the caller re-reads the row first and a
     # concurrent write may have moved the cursor.
+    kept_tail = list(getattr(result, "kept_tail", None) or [])
     replaced_to = row.last_seq
     writer = WorkspaceMessageWriter(
         workspace_io=workspace_io,
@@ -96,6 +106,12 @@ async def compact_session(
             "tokens_before": result.tokens_before,
             "tokens_after": result.tokens_after,
             "created_at": datetime.now(UTC).isoformat(),
+            # The tail kept verbatim after the summary: without it the fold
+            # would drop it (see reconstruct_compacted_history).
+            **(
+                {"kept_tail_messages": [json.loads(m.model_dump_json()) for m in kept_tail]}
+                if kept_tail else {}
+            ),
         },
         created_at=datetime.now(UTC),
     ))

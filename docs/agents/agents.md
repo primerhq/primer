@@ -99,8 +99,10 @@ The executor responsibilities, per turn:
 Auto-compaction:
 before each LLM call, the executor counts tokens. If over 90% of
 the model's context window, run a compaction strategy - typically
-summarise the head, keep the tail. The resulting summary replaces
-the elided range in the reconstructed history. The original
+summarise the head, keep the tail. The tail always includes the
+input the model has not answered yet and never splits a tool call
+from its results. The resulting summary replaces the elided range in
+the reconstructed history, followed by the kept tail. The original
 messages stay in storage; the substitution happens at history-
 reconstruction time.
 

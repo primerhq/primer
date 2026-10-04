@@ -251,6 +251,14 @@ llm_tokenizer_ready = Gauge(
     registry=registry,
 )
 
+compaction_unreducible_total = Counter(
+    "compaction_unreducible_total",
+    "Compactions that could not bring the prompt under the trigger, by reason "
+    "(empty_head: nothing could be summarised; over_trigger: summarised and still over).",
+    ["reason"],
+    registry=registry,
+)
+
 sessions_active = Gauge(
     "sessions_active",
     "Sessions currently executing a turn, by workspace.",
@@ -285,6 +293,8 @@ ALLOWED_LABEL_NAMES = frozenset({
     # What a token figure stands on (usage_calibrated/native/native_approx/
     # native_plus_estimated/estimate): a closed enum, so bounded.
     "source",
+    # Why a compaction could not reduce the prompt (empty_head/over_trigger): a closed enum.
+    "reason",
 })
 """Every label name any Primer instrument is permitted to carry.
 
@@ -338,6 +348,7 @@ def reset_for_test() -> None:
     global turns_total, turn_duration_seconds  # noqa: PLW0603
     global llm_calls_total, llm_profile_tokens_total, sessions_active  # noqa: PLW0603
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
+    global compaction_unreducible_total  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
 
@@ -504,6 +515,13 @@ def reset_for_test() -> None:
         ["name"],
         registry=registry,
     )
+    compaction_unreducible_total = Counter(
+        "compaction_unreducible_total",
+        "Compactions that could not bring the prompt under the trigger, by reason "
+        "(empty_head: nothing could be summarised; over_trigger: summarised and still over).",
+        ["reason"],
+        registry=registry,
+    )
     sessions_active = Gauge(
         "sessions_active",
         "Sessions currently executing a turn, by workspace.",
@@ -546,5 +564,6 @@ __all__ = [
     "turn_duration_seconds",
     "llm_calls_total",
     "llm_profile_tokens_total",
+    "compaction_unreducible_total",
     "sessions_active",
 ]

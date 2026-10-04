@@ -96,6 +96,13 @@ The instrumentation plumbing lives in `primer/observability/`:
   Call sites bind the module (`import primer.observability.metrics as _metrics`)
   rather than the names, because `reset_for_test` REBINDS the globals and a
   `from`-import would keep writing to the dead registry after any reset.
+- `compaction_unreducible_total{reason}` is incremented by `CompactionStrategy._report_unreducible`
+  (`primer/agent/compaction.py`) each time a compaction could not bring the prompt under the
+  trigger: `reason` is `empty_head` (nothing before the unanswered input could be summarised)
+  or `over_trigger` (summarised, and still over). Each also logs a WARNING. A rising rate means
+  sessions whose prompt is mostly input the model has not answered, or a fixed part (system
+  prompt, tool schemas) too large for the model's context. `reason` is a closed enum, so the
+  label stays bounded.
 - `metrics.ALLOWED_LABEL_NAMES` plus `metrics.registered_label_names()` are the
   cardinality guard. Every label on every instrument must be a reviewed name, and
   `session_id` is in neither set: a per-session dimension would grow the series

@@ -210,9 +210,10 @@ class TestWhatMaybeCompactDoes:
         assert result.estimated_tokens_after < 82_627 <= result.estimated_tokens_before
 
     @pytest.mark.asyncio
-    async def test_when_pruning_is_not_enough_it_summarises_and_the_kept_tail_can_leave_the_prompt_over_the_trigger(self) -> None:
-        """LIMITATION pinned (F14b): the strategy never re-checks the result against the trigger. Big user text
-        in the kept tail survives, so a compaction that fired can still hand the model an over-trigger prompt."""
+    async def test_when_pruning_is_not_enough_it_summarises_and_the_kept_tail_is_bounded_under_the_trigger(self) -> None:
+        """FIXED (was F14b, pinned as a limitation): the kept tail is bounded by size and the result is
+        measured again, so big user text in the tail no longer leaves a compacted prompt over the trigger.
+        Before, four 30k-token user turns in the tail kept it at >= 82_627."""
         big = lambda c: Message(role="user", parts=[TextPart(text=c * 120_000)])  # noqa: E731  (30k tokens each)
         history: list[Message] = []
         for i in range(6):
@@ -222,14 +223,19 @@ class TestWhatMaybeCompactDoes:
             agent=_agent(), llm=llm, model=_model(), history=history, new_messages=[],  # type: ignore[arg-type]
         )
         assert result is not None and result.summary_message is not None and llm.calls == 1
-        assert result.head_messages_replaced > 0
-        assert result.estimated_tokens_after >= 82_627, "four 30k-token user turns in the tail keep it over the trigger"
+        assert result.head_messages_replaced > 4, "more than the turn-based head: the tail was shrunk to its size budget"
+        assert result.estimated_tokens_after < 82_627
+        assert result.unreducible is None
 
 
 class TestTheSilentNoOp:
-    """LIMITATION pinned (F14a): tier 2 has nothing to summarise unless something precedes the ``tail_turns``-th most
-    recent ASSISTANT message. With NO assistant message the head is everything (the opposite case); with fewer than
-    ``tail_turns`` it is empty; with exactly that many it is empty only when the oldest kept one is the first message."""
+    """What ``tail_split`` does (unchanged), and what tier 2 now does with it (F14a, fixed).
+
+    ``tail_split`` has nothing to summarise unless something precedes the ``tail_turns``-th most recent ASSISTANT
+    message. With NO assistant message the head is everything (the opposite case); with fewer than ``tail_turns`` it
+    is empty; with exactly that many it is empty only when the oldest kept one is the first message. Tier 2 no longer
+    stops there: ``split_for_compaction`` bounds the tail by size, so a history that is over the trigger is
+    summarised whatever its assistant count, and one with nothing summarisable is reported ``unreducible``."""
 
     @staticmethod
     def _turns(assistants: int, *, starts_with_assistant: bool = False) -> list[Message]:
@@ -262,15 +268,33 @@ class TestTheSilentNoOp:
         assert (len(head), len(tail)) == (head_len, tail_len)
 
     @pytest.mark.asyncio
-    async def test_a_history_far_over_the_trigger_but_with_few_assistant_messages_is_returned_unchanged(self) -> None:
+    async def test_few_assistant_messages_no_longer_mean_nothing_is_summarised(self) -> None:
+        """FIXED (was F14a: the whole history returned unchanged and over the trigger): with fewer assistant
+        messages than ``tail_turns`` the turn-based tail is everything, so the size budget now decides, down to the
+        input the model has not answered. That input (here three 30k-token user messages after the one reply) is
+        kept whatever it weighs, so the prompt is still over the trigger and the result says so."""
         history: list[Message] = []
         for i in range(5):
             history.append(Message(role="user", parts=[TextPart(text=chr(ord("A") + i) * 120_000)]))  # 150k tokens
         history.insert(2, Message(role="assistant", parts=[TextPart(text="one reply")]))
+        llm = _SummaryLLM()
+        result = await CompactionStrategy().maybe_compact(
+            agent=_agent(), llm=llm, model=_model(), history=history, new_messages=[],  # type: ignore[arg-type]
+        )
+        assert result is not None and llm.calls == 1
+        assert result.summary_message is not None and result.head_messages_replaced == 3
+        assert result.new_messages[1:] == history[3:], "everything after the reply is unanswered input: kept verbatim"
+        assert result.unreducible == "over_trigger"
+
+    @pytest.mark.asyncio
+    async def test_no_assistant_message_at_all_is_reported_unreducible_instead_of_summarised(self) -> None:
+        """FIXED (was: head = everything, so the question was folded into the summary and the prompt ended in
+        no question): all of it is unanswered input, so nothing is summarised and the result says so."""
+        history = [Message(role="user", parts=[TextPart(text=c * 120_000)]) for c in "ABC"]
         result = await CompactionStrategy().maybe_compact(
             agent=_agent(), llm=_NoLLM(), model=_model(), history=history, new_messages=[],  # type: ignore[arg-type]
         )
-        assert result is not None, "the trigger fired"
+        assert result is not None
         assert result.summary_message is None and result.head_messages_replaced == 0
-        assert result.new_messages == history, "nothing was shortened"
-        assert result.estimated_tokens_after >= 82_627, "and the oversized prompt goes out as it is"
+        assert result.new_messages == history
+        assert result.unreducible == "empty_head"

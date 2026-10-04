@@ -26,6 +26,7 @@ def test_documents_every_gap_instrument() -> None:
         "turn_duration_seconds",
         "llm_calls_total",
         "llm_profile_tokens_total",
+        "compaction_unreducible_total",
         "sessions_active",
     ):
         assert name in text, f"{name} undocumented"
