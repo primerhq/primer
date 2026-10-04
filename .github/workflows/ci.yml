@@ -45,9 +45,13 @@ jobs:
         run: uv run lint-imports
       - name: Docs hygiene
         run: uv run pytest tests/docs/ -q --tb=short
-      # Narrowed unit sweep: excludes e2e / distributed / ui_e2e / integration /
-      # llm (those need a live server, multi-process Postgres, Playwright, or a
-      # real LLM). The Postgres-gated tests skip without PRIMER_PG_TEST_DSN, so
+      # Narrowed unit sweep: excludes e2e / distributed / ui_e2e / integration
+      # (those need a live server, multi-process Postgres, or Playwright).
+      # tests/llm is INCLUDED: it is adapter unit tests with every request
+      # intercepted in-process, and tests/llm/conftest.py fails any test that
+      # reaches the real network. It was once excluded as "needs a real LLM",
+      # which was false, and an SDK upgrade broke its mocks unnoticed. The
+      # Postgres-gated tests skip without PRIMER_PG_TEST_DSN, so
       # this job needs no database service. The release workflow runs the
       # Postgres-backed boot smoke before publishing.
       #
@@ -59,7 +63,7 @@ jobs:
         run: >-
           uv run pytest tests/ -q
           --ignore=tests/distributed --ignore=tests/ui_e2e
-          --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
+          --ignore=tests/e2e --ignore=tests/integration
           --cov=primer --cov-report=xml --cov-report=term-missing
           --cov-fail-under=80
       # Upload to Codecov so it posts the PR comment + project/patch status.

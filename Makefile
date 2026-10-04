@@ -10,8 +10,7 @@ PYTEST_IGNORES := \
 	--ignore=tests/distributed \
 	--ignore=tests/ui_e2e \
 	--ignore=tests/e2e \
-	--ignore=tests/integration \
-	--ignore=tests/llm
+	--ignore=tests/integration
 
 .PHONY: help setup test lint fmt cov docs-hygiene serve docker-build docker-build-slim docker-build-all
 

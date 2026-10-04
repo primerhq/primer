@@ -142,7 +142,7 @@ reason rather than skipping it silently.
 
   ```bash
   uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e \
-    --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
+    --ignore=tests/e2e --ignore=tests/integration
   ```
 
   Add `-n0` to run a single module serially while debugging.
