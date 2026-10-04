@@ -113,3 +113,57 @@ async def test_sqlite_provider_creates_leases_table(tmp_path: Path):
         assert row is not None, "leases table should exist after initialize()"
     finally:
         await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ping_succeeds_on_a_live_connection(tmp_path: Path):
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "data.sqlite"))
+    await provider.initialize()
+    try:
+        await provider.ping()
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ping_raises_when_the_connection_is_dead(tmp_path: Path):
+    """The provider object still exists and still thinks it is initialised;
+    the backend behind it is gone. ping() must surface that rather than
+    answer from in-process state - that is the entire point of it."""
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "data.sqlite"))
+    await provider.initialize()
+    await provider.connection.close()
+    with pytest.raises(Exception):
+        await provider.ping()
+
+
+@pytest.mark.asyncio
+async def test_ping_raises_before_initialize(tmp_path: Path):
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "x.sqlite"))
+    with pytest.raises(ConfigError):
+        await provider.ping()
+
+
+@pytest.mark.asyncio
+async def test_abc_default_ping_does_a_real_round_trip():
+    """A subclass that predates ping() must get a genuine round-trip from
+    the default (via get_system_state), never a silent pass."""
+    from types import SimpleNamespace
+
+    from primer.int.storage_provider import StorageProvider
+
+    reached = []
+
+    async def _state():
+        reached.append(True)
+
+    stub = SimpleNamespace(get_system_state=_state)
+    await StorageProvider.ping(stub)  # type: ignore[arg-type]
+    assert reached == [True]
+
+    async def _dead():
+        raise OSError("gone")
+
+    dead = SimpleNamespace(get_system_state=_dead)
+    with pytest.raises(OSError):
+        await StorageProvider.ping(dead)  # type: ignore[arg-type]

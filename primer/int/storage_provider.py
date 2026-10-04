@@ -103,6 +103,19 @@ class StorageProvider(ABC):
         during :meth:`initialize`).  Never raises :class:`NotFoundError`.
         """
 
+    async def ping(self) -> None:
+        """Round-trip the backend once; raise if it cannot answer.
+
+        A liveness check for the DATABASE, not for this object: it must
+        reach the backend, so a provider that was initialised and has
+        since lost its server fails here rather than reporting stale
+        in-process state. Backends should override with the cheapest
+        real round-trip (``SELECT 1``). The default falls back to
+        :meth:`get_system_state` so a subclass that predates this method
+        still gets a genuine round-trip instead of a silent pass.
+        """
+        await self.get_system_state()
+
     @abstractmethod
     async def set_default_agent_id(self, agent_id: str | None) -> None:
         """Set the agent a binding-less session create resolves to.

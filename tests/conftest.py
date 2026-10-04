@@ -446,6 +446,10 @@ class _FakeStorageProvider:
     async def aclose(self) -> None:
         return
 
+    async def ping(self) -> None:
+        """In-memory backend: always answers. Tests that need a dead
+        database replace this on the instance (see tests/api/test_health.py)."""
+
     async def get_system_state(self) -> Any:
         from primer.model.system_state import SystemState
         return SystemState(

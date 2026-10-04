@@ -156,7 +156,7 @@ Three wiring facts are load-bearing:
 - **Startup recovery makes persisted state usable across restarts.** Before the pool starts, the lifespan scans non-ENDED `WorkspaceSession` rows and re-arms their `ClaimEngine` leases (and notifies the scheduler), so a process restart does not strand entities in a running state with no owner.
 - **Cancel is dual-pathed.** The cancel API persists `cancel_requested_at` and publishes on `session:{sid}:cancel` for the engine-path `_cancel_watcher`, and also calls `scheduler.signal_cancel` (legacy `NOTIFY session_cancel`) which `_cancel_loop` fans out to local `_active_scopes`. Storage is the durable signal; the bus is the fast wake.
 
-In `RuntimeMode.WORKER` the same FastAPI binary boots but `_mount_routers` mounts only `/v1/health`, `/v1/workers`, and `/v1/auth/*`; entity routers 404. Operators observe and control the pool through `GET /v1/workers` and `POST /v1/workers/{id}/drain`, and the `/v1/health` probe inlines `scheduler` and `worker_pool` snapshots (alive flag, in-flight / capacity counters, full `metrics_snapshot` dicts, degrading to empty dicts on instrumentation failure).
+In `RuntimeMode.WORKER` the same FastAPI binary boots but `_mount_routers` mounts only `/v1/health`, `/v1/ready`, `/v1/workers`, and `/v1/auth/*`; entity routers 404. Operators observe and control the pool through `GET /v1/workers` and `POST /v1/workers/{id}/drain`, and the `/v1/health` probe inlines `scheduler` and `worker_pool` snapshots (alive flag, in-flight / capacity counters, full `metrics_snapshot` dicts, degrading to empty dicts on instrumentation failure).
 
 ## 7. Testing patterns
 

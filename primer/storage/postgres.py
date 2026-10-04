@@ -365,6 +365,16 @@ class PostgresStorageProvider(StorageProvider):
         self._handles[model_class] = handle
         return handle
 
+    async def ping(self) -> None:
+        """One ``SELECT 1`` on a pooled connection.
+
+        Goes through ``pool.acquire()`` rather than inspecting pool
+        state, because a pool object that still exists says nothing
+        about whether the server behind it is reachable.
+        """
+        async with self.pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+
     async def get_system_state(self) -> SystemState:
         """Return the singleton ``system_state`` row."""
         sql = (

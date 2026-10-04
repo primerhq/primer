@@ -463,6 +463,11 @@ class SqliteStorageProvider(StorageProvider):
         self._handles[model_class] = handle
         return handle
 
+    async def ping(self) -> None:
+        """One ``SELECT 1`` on the shared connection."""
+        cur = await self.connection.execute("SELECT 1")
+        await cur.fetchone()
+
     async def get_system_state(self) -> SystemState:
         """Return the singleton ``system_state`` row."""
         sql = (

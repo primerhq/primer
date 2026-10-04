@@ -196,6 +196,9 @@ async def test_worker_only_mode_does_not_mount_entity_routers(
     app = create_app(cfg)
     paths = set(app.openapi()["paths"].keys())
     assert any("/v1/health" in p for p in paths)
+    # /v1/ready rides the same always-on router: a worker-mode process
+    # has a database to be unable to reach too.
+    assert any("/v1/ready" in p for p in paths)
     assert any("/v1/workers" in p for p in paths)
     assert not any("/v1/workspaces" in p for p in paths)
     assert not any("/v1/sessions" in p for p in paths)
