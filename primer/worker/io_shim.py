@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 
+from primer.model.except_ import NotFoundError, PrimerError
+
 logger = logging.getLogger(__name__)
 
 
@@ -131,19 +133,34 @@ class _WorkspaceIOShim:
     ) -> bytes:
         """Read ``<workspace.state_path>/<state_relative_path>`` from the workspace.
 
-        Returns ``b""`` when the workspace is gone, the path doesn't
-        exist, or any other backend error fires. Used by the turn-log
-        writer's lazy bootstrap so the same path-resolution rule
-        applies to both reads and writes.
+        Returns ``b""`` ONLY when there is genuinely nothing to read: no
+        registry is configured (``append_state_line`` drops its bytes in
+        that case too, so there is no log to mis-number), or the file does
+        not exist (both workspace backends raise :class:`NotFoundError`).
+
+        A workspace the registry cannot resolve and any other read failure
+        RAISE. They used to collapse into ``b""``, which the turn-log
+        writer's lazy bootstrap reads as "brand-new log" and seeds its seq
+        counter at 0 -- so a transient failure here made the next append
+        write ``seq=1`` after lines already holding higher seqs. The
+        workspace lookup is repeated on every append, so "not found" now can
+        be "found" a moment later (hot reload): that case must not be
+        mistaken for an absent file. Used by the writer's bootstrap so the
+        same path-resolution rule applies to both reads and writes.
         """
         if self._registry is None:
             return b""
         workspace = await self._registry.get_workspace(workspace_id)
         if workspace is None:
-            return b""
+            # Deliberately NOT NotFoundError: the writer treats that as an
+            # absent file.
+            raise PrimerError(
+                f"workspace {workspace_id!r} could not be resolved while "
+                f"reading {state_relative_path!r}"
+            )
         state_path = getattr(workspace, "state_path", ".state")
         full_path = f"{state_path}/{state_relative_path}"
         try:
             return await workspace.read_file(full_path)
-        except Exception:  # noqa: BLE001
+        except NotFoundError:
             return b""

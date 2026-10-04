@@ -142,6 +142,75 @@ class TestWorkspaceTurnLogWriter:
         assert seq == 1
 
     @pytest.mark.asyncio
+    async def test_failed_read_aborts_the_append_and_is_retried(self):
+        """01a08bfb item 4: a failed read is NOT "brand-new log".
+
+        The old bootstrap swallowed any read error, seeded seq at 0 and
+        wrote seq=1 after lines already holding higher seqs (breaking
+        since_seq pagination). A real read failure must propagate without
+        writing anything and without marking the bootstrap done, so the
+        next append retries the read and seeds from the real file.
+        """
+        captured: list[bytes] = []
+        reads = 0
+
+        async def fake_append(line: bytes) -> None:
+            captured.append(line)
+
+        async def flaky_read() -> bytes:
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                raise ConnectionError("runtime websocket dropped")
+            return b'{"seq":1,"kind":"started"}\n{"seq":2,"kind":"completed"}\n'
+
+        w = WorkspaceTurnLogWriter(
+            append_line=fake_append, read_existing=flaky_read,
+        )
+        with pytest.raises(ConnectionError):
+            await w.append(TurnLogStarted(
+                seq=0, ts=_now(), model="m", input_message_count=1,
+            ))
+        assert captured == []  # nothing written over the unread log
+
+        seq = await w.append(TurnLogStarted(
+            seq=0, ts=_now(), model="m", input_message_count=1,
+        ))
+        assert seq == 3  # seeded from the real file, not restarted at 1
+        assert json.loads(captured[0].decode())["seq"] == 3
+        assert reads == 2
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_appends_share_one_bootstrap(self):
+        """Two appends racing the first bootstrap must not both skip it
+        (the second used to see the flag already set and use seq 0)."""
+        import asyncio
+
+        captured: list[bytes] = []
+        reads = 0
+
+        async def fake_append(line: bytes) -> None:
+            captured.append(line)
+
+        async def slow_read() -> bytes:
+            nonlocal reads
+            reads += 1
+            await asyncio.sleep(0.01)
+            return b'{"seq":1,"kind":"started"}\n{"seq":2,"kind":"completed"}\n'
+
+        w = WorkspaceTurnLogWriter(
+            append_line=fake_append, read_existing=slow_read,
+        )
+        seqs = await asyncio.gather(*(
+            w.append(TurnLogStarted(
+                seq=0, ts=_now(), model="m", input_message_count=1,
+            ))
+            for _ in range(2)
+        ))
+        assert sorted(seqs) == [3, 4]
+        assert reads == 1
+
+    @pytest.mark.asyncio
     async def test_bootstrap_skips_bogus_lines(self):
         captured: list[bytes] = []
 
