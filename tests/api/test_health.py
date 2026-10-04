@@ -148,3 +148,107 @@ async def test_health_surfaces_worker_pool_metrics_when_attached(
         assert "primer_session_turn_duration_seconds" in metrics
     finally:
         app.state.worker_pool = None
+
+
+# --- /v1/ready: the database check /v1/health deliberately does not do ------
+
+
+@pytest.mark.asyncio
+async def test_ready_reports_ok_when_the_database_answers(client) -> None:
+    response = await client.get("/v1/ready")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["version"] == APP_VERSION
+    db = body["checks"]["database"]
+    assert db["ok"] is True
+    assert db["error"] is None
+    assert db["latency_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_ready_is_503_with_the_failing_check_named_when_the_db_is_down(
+    app, client,
+) -> None:
+    """The case /v1/health cannot see. 503 so a monitor reading only the
+    status code (curl -f) gets the truth, and the body says which check
+    failed."""
+
+    async def _dead() -> None:
+        raise ConnectionRefusedError("connect to db-host.internal:5432 refused")
+
+    app.state.storage_provider.ping = _dead
+    response = await client.get("/v1/ready")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "not_ready"
+    db = body["checks"]["database"]
+    assert db["ok"] is False
+    assert db["error"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_ready_does_not_leak_the_exception_text(app, client) -> None:
+    """The route is unauthenticated: connection errors carry hostnames,
+    ports and usernames, so only a stable code may reach the response."""
+
+    async def _dead() -> None:
+        raise ConnectionRefusedError(
+            "connect to secret-db-host.internal:5432 as svc_user refused"
+        )
+
+    app.state.storage_provider.ping = _dead
+    response = await client.get("/v1/ready")
+    assert response.status_code == 503
+    assert "secret-db-host" not in response.text
+    assert "svc_user" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_ready_times_out_on_a_hung_database(app, client, monkeypatch) -> None:
+    """A database that accepts the connection and never answers must read
+    as a timeout, not hang the monitor for the pool's 30s acquire bound."""
+    import asyncio
+
+    import primer.api.routers.health as health_mod
+
+    async def _hang() -> None:
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(health_mod, "_READY_DB_TIMEOUT_S", 0.05)
+    app.state.storage_provider.ping = _hang
+    response = await client.get("/v1/ready")
+    assert response.status_code == 503
+    db = response.json()["checks"]["database"]
+    assert db["ok"] is False
+    assert db["error"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_ready_is_503_when_no_storage_provider_is_wired(app, client) -> None:
+    real = app.state.storage_provider
+    app.state.storage_provider = None
+    try:
+        response = await client.get("/v1/ready")
+        assert response.status_code == 503
+        assert response.json()["status"] == "not_ready"
+    finally:
+        app.state.storage_provider = real
+
+
+@pytest.mark.asyncio
+async def test_health_stays_200_while_the_database_is_down(app, client) -> None:
+    """The contrast that justifies /v1/ready existing at all: /v1/health
+    reads in-process state only, so it reports ok with the database gone.
+    If this ever starts failing, /v1/health has begun checking the
+    database and the readiness/probe reasoning in /v1/ready's docstring
+    needs revisiting."""
+
+    async def _dead() -> None:
+        raise ConnectionRefusedError("down")
+
+    app.state.storage_provider.ping = _dead
+    assert (await client.get("/v1/ready")).status_code == 503
+    health = await client.get("/v1/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"

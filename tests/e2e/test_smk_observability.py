@@ -43,6 +43,18 @@ async def test_health_snapshot_metrics(authed_client):
     assert "capacity" in body["worker_pool"]
 
 
+async def test_ready_reports_a_live_database_round_trip(authed_client):
+    """/v1/ready against the real bringup Postgres: 200, database ok.
+    (The database-DOWN case is covered at unit level in tests/api/
+    test_health.py; killing the shared e2e Postgres mid-run would take
+    the rest of the suite with it.)"""
+    r = await authed_client.get("/v1/ready")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "ready"
+    assert body["checks"]["database"]["ok"] is True
+
+
 @smk("SMK-OBS-07")
 async def test_workers_status(authed_client):
     r = await authed_client.get("/v1/workers")
