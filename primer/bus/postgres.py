@@ -164,28 +164,39 @@ class _PostgresSubscription(EventSubscription):
         (about one per session turn) would add one more to a hot pooled
         connection until that connection is eventually closed, and then call
         them all at once. A dropped connection has already released and
-        cleared everything, so there the removal fails and is only logged."""
+        cleared everything, so there the removal fails and is only logged.
+
+        The release runs on EVERY exit, in a ``finally``. ``remove_listener`` is
+        an UNLISTEN round trip on a connection that is still alive, and a
+        further cancel landing there raises CancelledError, which is not an
+        ``Exception`` and so is not caught below. Without the ``finally`` that
+        skipped the release and stranded the connection: the pool kept it for
+        good and ``Pool.close()`` (which waits for every acquired connection,
+        with no timeout) hung shutdown. Same shape as the scheduler's
+        ``_close_listener``."""
         if conn is None:
             return
-        if on_termination is not None:
+        try:
+            if on_termination is not None:
+                try:
+                    conn.remove_termination_listener(on_termination)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "PostgresEventBus remove_termination_listener failed: %s", exc,
+                    )
             try:
-                conn.remove_termination_listener(on_termination)
+                await conn.remove_listener(YIELD_EVENTS_CHANNEL, self._on_notify)
+            except Exception:  # noqa: BLE001 -- best-effort on a dropped conn
+                pass
+        finally:
+            try:
+                await self._release(conn)
             except Exception as exc:  # noqa: BLE001
-                logger.debug(
-                    "PostgresEventBus remove_termination_listener failed: %s", exc,
+                logger.warning(
+                    "PostgresEventBus LISTEN pool.release failed: %s -- "
+                    "connection may leak",
+                    exc,
                 )
-        try:
-            await conn.remove_listener(YIELD_EVENTS_CHANNEL, self._on_notify)
-        except Exception:  # noqa: BLE001 -- best-effort on a dropped conn
-            pass
-        try:
-            await self._release(conn)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "PostgresEventBus LISTEN pool.release failed: %s -- "
-                "connection may leak",
-                exc,
-            )
 
     async def _run(self) -> None:
         """Supervise the LISTEN connection, reconnecting on drop.
@@ -197,6 +208,11 @@ class _PostgresSubscription(EventSubscription):
         back off, and loop to reconnect. Both also take their termination
         callback off the connection when they release it, because asyncpg
         leaves it attached across a release to the pool.
+
+        ``self._conn`` means "fully listening": it is set only once LISTEN has
+        succeeded. A connection that is acquired but not yet listening (or
+        whose LISTEN failed) is released by the arms around the LISTEN call,
+        not by the final cleanup.
         """
         first_attempt = True
         # The current iteration's termination callback, kept here (not just in
@@ -204,12 +220,25 @@ class _PostgresSubscription(EventSubscription):
         on_termination = None
         try:
             while not self._closed:
+                conn = None
                 try:
                     conn = await self._acquire()
                     await conn.add_listener(YIELD_EVENTS_CHANNEL, self._on_notify)
                 except asyncio.CancelledError:
+                    # Cancelled during acquire or the LISTEN round trip. The
+                    # connection is not published to self._conn until LISTEN
+                    # succeeds, so the final cleanup below cannot release it;
+                    # do it here (a no-op when acquire itself was cancelled,
+                    # as conn is still None). _safe_release swallows its own
+                    # failures, so nothing here can replace the cancellation.
+                    await self._safe_release(conn)
                     raise
                 except Exception as exc:  # noqa: BLE001
+                    # LISTEN failed on a connection that may still be live (a
+                    # dropped one releases itself). Give it back before the
+                    # retry, or every attempt would strand one pooled
+                    # connection until the pool ran dry.
+                    await self._safe_release(conn)
                     logger.warning(
                         "PostgresEventBus LISTEN reconnect: %s", exc,
                     )

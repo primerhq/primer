@@ -32,6 +32,14 @@ class FakeListenConn:
         self.calls: list[str] = []
         # Method names that raise RuntimeError("boom: <name>") when called.
         self.fail_methods: set[str] = set()
+        # When set, add_listener signals ``add_listener_entered`` and then waits
+        # on this Event, like a LISTEN round trip that is still in flight.
+        self.add_listener_gate: asyncio.Event | None = None
+        self.add_listener_entered = asyncio.Event()
+        # The same for remove_listener, which on a real connection is an UNLISTEN
+        # round trip while the connection is still alive.
+        self.remove_listener_gate: asyncio.Event | None = None
+        self.remove_listener_entered = asyncio.Event()
 
     def _call(self, name: str) -> None:
         self.calls.append(name)
@@ -53,10 +61,16 @@ class FakeListenConn:
 
     async def add_listener(self, channel: str, callback: Callable[..., None]) -> None:
         self._call("add_listener")
+        self.add_listener_entered.set()
+        if self.add_listener_gate is not None:
+            await self.add_listener_gate.wait()
         self.listeners[channel] = callback
 
     async def remove_listener(self, channel: str, callback: Callable[..., None]) -> None:
         self._call("remove_listener")
+        self.remove_listener_entered.set()
+        if self.remove_listener_gate is not None:
+            await self.remove_listener_gate.wait()
         self.listeners.pop(channel, None)
 
     def notify(self, channel: str, payload: str) -> None:
@@ -81,27 +95,46 @@ class FakeListenPool:
     over and over; anything a user leaves attached to it accumulates.
     """
 
-    def __init__(self, *, reuse_connection: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        reuse_connection: bool = False,
+        configure: Callable[[FakeListenConn], None] | None = None,
+    ) -> None:
         self.conns: list[FakeListenConn] = []
         self.released: list[FakeListenConn] = []
         self._acquire_failures: list[BaseException] = []
         self._reuse = reuse_connection
+        # Applied to every freshly created connection (e.g. to give it an
+        # add_listener gate, or a method that fails).
+        self._configure = configure
+        # When set, acquire() waits on this Event (a pool with no free connection).
+        self.acquire_gate: asyncio.Event | None = None
+        # When set, release() records the connection and then raises this
+        # (asyncpg re-raises errors from reset or from waiting out a cancelled query).
+        self.release_exc: Exception | None = None
 
     def fail_next_acquires(self, *excs: BaseException) -> None:
         """The next acquire() calls raise these, in order (a server that is down)."""
         self._acquire_failures.extend(excs)
 
     async def acquire(self) -> FakeListenConn:
+        if self.acquire_gate is not None:
+            await self.acquire_gate.wait()
         if self._acquire_failures:
             raise self._acquire_failures.pop(0)
         if self._reuse and self.conns:
             return self.conns[0]
         conn = FakeListenConn()
+        if self._configure is not None:
+            self._configure(conn)
         self.conns.append(conn)
         return conn
 
     async def release(self, conn: FakeListenConn) -> None:
         self.released.append(conn)
+        if self.release_exc is not None:
+            raise self.release_exc
 
 
 async def eventually(
