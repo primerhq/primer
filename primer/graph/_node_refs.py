@@ -963,4 +963,6 @@ class _PendingToolWait:
     notifying_results: list[tuple[str, dict[str, Any]]]
     llm_messages: list[dict[str, Any]]
     iteration: int
+    # scoped call id -> the provider's raw id for every call of this node's batch (S1b); see ``ToolWaitPark.call_ids``.
+    call_ids: dict[str, str] = field(default_factory=dict)
 

@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.int.claim import ClaimKind
-from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState, tool_call_task_id
 from primer.model.workspace_session import (
     AgentSessionBinding, SessionStatus, WorkspaceSession,
 )
@@ -56,7 +56,14 @@ def _pending_tool_wait(node_id: str, outstanding: list[str], notifying: tuple[st
         "notifying_results": [
             (nid, {"id": nid, "output": "inline", "error": False}) for nid in notifying
         ],
+        # the provider's raw id of each call, as the graph executor stamps it
+        "call_ids": {i: f"raw_{i}" for i in [*outstanding, *notifying]},
     }
+
+
+def _q(scoped_id: str) -> str:
+    """The session-qualified row id of ``scoped_id`` in session ``s1`` (S1b)."""
+    return tool_call_task_id("s1", scoped_id)
 
 
 @pytest.mark.asyncio
@@ -83,14 +90,16 @@ async def test_creates_per_node_scoped_batch_task_ids() -> None:
         ],
     )
 
-    task_a = await task_storage.get("A:tool:0:1")
-    task_b = await task_storage.get("B:tool:0:1")
+    task_a = await task_storage.get(_q("A:tool:0:1"))
+    task_b = await task_storage.get(_q("B:tool:0:1"))
     assert task_a.state == ToolCallTaskState.QUEUED
-    assert task_a.batch_task_ids == ["A:tool:0:1"]
-    assert task_b.batch_task_ids == ["B:tool:0:1"]
+    assert task_a.batch_task_ids == [_q("A:tool:0:1")]
+    assert task_b.batch_task_ids == [_q("B:tool:0:1")]
+    assert (task_a.call_id, task_b.call_id) == ("raw_A:tool:0:1", "raw_B:tool:0:1")
+    assert (task_a.scoped_call_id, task_b.scoped_call_id) == ("A:tool:0:1", "B:tool:0:1")
     assert wake_keys == ["tool_wait:s1:0:A", "tool_wait:s1:0:B"]
     assert set(claim_engine.upserted) == {
-        (ClaimKind.TOOL_CALL, "A:tool:0:1"), (ClaimKind.TOOL_CALL, "B:tool:0:1"),
+        (ClaimKind.TOOL_CALL, _q("A:tool:0:1")), (ClaimKind.TOOL_CALL, _q("B:tool:0:1")),
     }
     # Armed at the RESUME priority (50), never the fresh-work default: a tool call continues a turn a
     # human is waiting on and must not queue behind fresh sessions.
@@ -116,14 +125,15 @@ async def test_notifying_result_creates_terminal_row_no_claim_upsert() -> None:
         [_pending_tool_wait("A", ["A:tool:0:1"], notifying=("A:tool:0:2",))],
     )
 
-    task = await task_storage.get("A:tool:0:2")
+    task = await task_storage.get(_q("A:tool:0:2"))
     assert task.state == ToolCallTaskState.DONE
     assert task.result_state == {"id": "A:tool:0:2", "output": "inline", "error": False}
+    assert task.call_id == "raw_A:tool:0:2"
     # batch_task_ids on the notifying row still carries the FULL node
     # batch (claimable + notifying), not just itself.
-    assert task.batch_task_ids == ["A:tool:0:1", "A:tool:0:2"]
+    assert task.batch_task_ids == [_q("A:tool:0:1"), _q("A:tool:0:2")]
     # Only the claimable id gets a claim-engine lease.
-    assert claim_engine.upserted == [(ClaimKind.TOOL_CALL, "A:tool:0:1")]
+    assert claim_engine.upserted == [(ClaimKind.TOOL_CALL, _q("A:tool:0:1"))]
 
 
 @pytest.mark.asyncio
@@ -183,15 +193,15 @@ async def test_non_strict_mode_skips_unminted_entries_instead_of_raising() -> No
     )
 
     assert wake_keys == ["tool_wait:s1:0:A", "tool_wait:s1:0:B"]
-    assert await task_storage.get("A:tool:0:1") is not None
-    assert await task_storage.get("B:tool:0:1") is None
+    assert await task_storage.get(_q("A:tool:0:1")) is not None
+    assert await task_storage.get(_q("B:tool:0:1")) is None
 
 
 def _task(*, record_seq: int) -> ToolCallTask:
     return ToolCallTask(
-        id="A:tool:0:1", session_id="s1", turn_no=0, tool_name="t",
+        id=_q("A:tool:0:1"), session_id="s1", turn_no=0, tool_name="t",
         state=ToolCallTaskState.QUEUED, record_seq=record_seq,
-        created_at=datetime.now(timezone.utc), batch_task_ids=["A:tool:0:1"],
+        created_at=datetime.now(timezone.utc), batch_task_ids=[_q("A:tool:0:1")],
     )
 
 
@@ -233,5 +243,83 @@ async def test_strict_false_treats_existing_row_as_replay_without_comparing_reco
     )
 
     # The original row is untouched - this is a no-op, not an update.
-    existing = await task_storage.get("A:tool:0:1")
+    existing = await task_storage.get(_q("A:tool:0:1"))
     assert existing.record_seq == 1
+
+
+@pytest.mark.asyncio
+async def test_the_entries_are_stored_back_in_the_qualified_form() -> None:
+    """The dict inside the checkpoint is what gets parked: after materialization it names the rows by the id they
+    have, so a resume reading the blob finds them (and a carried-over, already qualified entry passes unchanged)."""
+    storage_provider = _FakeStorageProvider()
+    session = _session()
+    cs = _CoalesceState()
+    for tid in ("A:tool:0:1", "A:tool:0:2"):
+        cs.tool_call_record_seq[tid] = 1
+        cs.tool_call_record_name[tid] = "t"
+    entry = _pending_tool_wait("A", ["A:tool:0:1"], notifying=("A:tool:0:2",))
+    carried = _pending_tool_wait("B", [_q("B:tool:0:1")])
+
+    await materialize_pending_tool_wait_rows(
+        storage_provider, None, session.id, session.turn_no, cs, datetime.now(timezone.utc),
+        [entry, carried], strict=False,
+    )
+
+    assert entry["outstanding_task_ids"] == [_q("A:tool:0:1")]
+    assert [i for i, _ in entry["notifying_results"]] == [_q("A:tool:0:2")]
+    assert carried["outstanding_task_ids"] == [_q("B:tool:0:1")], "an already qualified id is left alone"
+
+    again = [dict(entry)]
+    await materialize_pending_tool_wait_rows(
+        storage_provider, None, session.id, session.turn_no, cs, datetime.now(timezone.utc),
+        again, strict=False,
+    )
+    assert again[0]["outstanding_task_ids"] == [_q("A:tool:0:1")], "qualifying twice does not double the prefix"
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_materializing_the_same_scoped_batch_get_separate_rows_and_leases() -> None:
+    """The bug S1b closes: every agent session's first call of turn 0 is `x:tool:0:1`, and a row id is a global
+    primary key. Two sessions must not share a row, a batch list or a lease."""
+    storage_provider = _FakeStorageProvider()
+    task_storage = storage_provider.get_storage(ToolCallTask)
+    claim_engine = _RecordingClaimEngine()
+    for session_id, result_text in (("sess-A", "inline A"), ("sess-B", "inline B")):
+        cs = _CoalesceState()
+        for tid in ("x:tool:0:1", "x:tool:0:2"):
+            cs.tool_call_record_seq[tid] = 1
+            cs.tool_call_record_name[tid] = "t"
+        entry = {
+            "node_id": "x", "outstanding_task_ids": ["x:tool:0:1"],
+            "notifying_results": [("x:tool:0:2", {"id": "raw2", "output": result_text, "error": False})],
+            "call_ids": {"x:tool:0:1": "raw1", "x:tool:0:2": "raw2"},
+        }
+        await materialize_pending_tool_wait_rows(
+            storage_provider, claim_engine, session_id, 0, cs, datetime.now(timezone.utc), [entry],
+        )
+
+    a = await task_storage.get("sess-A/x:tool:0:2")
+    b = await task_storage.get("sess-B/x:tool:0:2")
+    assert (a.session_id, b.session_id) == ("sess-A", "sess-B")
+    assert (a.result_state["output"], b.result_state["output"]) == ("inline A", "inline B")
+    assert a.batch_task_ids == ["sess-A/x:tool:0:1", "sess-A/x:tool:0:2"]
+    assert b.batch_task_ids == ["sess-B/x:tool:0:1", "sess-B/x:tool:0:2"]
+    assert set(claim_engine.upserted) == {
+        (ClaimKind.TOOL_CALL, "sess-A/x:tool:0:1"), (ClaimKind.TOOL_CALL, "sess-B/x:tool:0:1"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_row_of_another_session_under_the_same_id_is_never_adopted_as_a_replay() -> None:
+    """Ids are session-qualified, so this is unreachable by construction; the guard is for a bug that makes it
+    reachable. Adopting the row (record_seq happening to match) would hand this session that session's result."""
+    storage_provider = _FakeStorageProvider()
+    task_storage = storage_provider.get_storage(ToolCallTask)
+    other = _task(record_seq=1).model_copy(update={"session_id": "someone-else"})
+    await task_storage.create(other)
+
+    for strict in (True, False):
+        with pytest.raises(RuntimeError, match="cross-session id collision"):
+            await _create_tool_call_task_idempotent(
+                task_storage, _task(record_seq=1), session_id="s1", strict=strict,
+            )

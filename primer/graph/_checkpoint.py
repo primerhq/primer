@@ -115,8 +115,10 @@ class _CheckpointMixin:
         """
         outstanding: list[str] = []
         notifying: list[tuple[str, ToolResultPart]] = []
+        call_ids: dict[str, str] = {}
         for p in self._pending_tool_waits:
             outstanding.extend(p.outstanding_task_ids)
+            call_ids.update(p.call_ids)
             for scoped_id, result_dict in p.notifying_results:
                 notifying.append(
                     (scoped_id, ToolResultPart.model_validate(result_dict))
@@ -125,6 +127,7 @@ class _CheckpointMixin:
             outstanding_task_ids=outstanding,
             event_key=f"tool_wait:{outstanding[0]}",
             notifying_results=notifying,
+            call_ids=call_ids,
         )
         park.graph_checkpoint = self.snapshot_state()  # type: ignore[attr-defined]
         return park
@@ -276,6 +279,7 @@ class _CheckpointMixin:
                     ],
                     "llm_messages": list(p.llm_messages),
                     "iteration": p.iteration,
+                    "call_ids": dict(p.call_ids),
                 }
                 for p in self._pending_tool_waits
             ],
@@ -442,6 +446,7 @@ class _CheckpointMixin:
                 ],
                 llm_messages=list(raw.get("llm_messages") or []),
                 iteration=raw["iteration"],
+                call_ids=dict(raw.get("call_ids") or {}),
             )
             for raw in (payload.get("pending_tool_waits") or [])
         ]

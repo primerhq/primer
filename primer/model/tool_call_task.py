@@ -28,6 +28,31 @@ from pydantic import Field
 from primer.model.common import Identifiable
 
 
+def tool_call_task_id(session_id: str, scoped_call_id: str) -> str:
+    """The row id of a task: ``<session_id>/<scoped_call_id>``.
+
+    The scoped call id (``<node|x>:tool:<turn_no>:<seq>``, see ``primer.tap.delta.scoped_tool_call_id``) is unique
+    within ONE session only: every agent session's first call of turn 0 is ``x:tool:0:1``. A task row id is a
+    GLOBAL primary key and a lease key, so it is qualified with the session. The qualified form is INTERNAL (row
+    id, lease ``entity_id``, park blobs); the transcript's TOOL_CALL/TOOL_RESULT records and every external surface
+    keep the scoped id (:func:`external_call_id` strips the qualification). Idempotent: an id that already carries
+    this session's qualification is returned unchanged, so a seam that sees both fresh and carried-over entries
+    can qualify them all.
+    """
+    prefix = f"{session_id}/"
+    return scoped_call_id if scoped_call_id.startswith(prefix) else f"{prefix}{scoped_call_id}"
+
+
+def external_call_id(task_id: str, session_id: str) -> str:
+    """The scoped call id of ``task_id``: ``task_id`` without its ``<session_id>/`` qualification.
+
+    The ONE place the qualification is stripped. A bare scoped id passes through unchanged (the prefix is matched
+    exactly, never guessed from a ``/``, because graph node ids are free-form).
+    """
+    prefix = f"{session_id}/"
+    return task_id[len(prefix):] if task_id.startswith(prefix) else task_id
+
+
 class ToolCallTaskState(StrEnum):
     """Mirrors the design doc's own enum exactly: queued|gated|running|done|failed."""
 
@@ -75,6 +100,12 @@ class ToolCallTask(Identifiable):
     # mismatch means this invariant broke somewhere upstream, which is a
     # bug worth surfacing, not papering over.
     record_seq: int = Field(..., ge=1)
+
+    # The provider's own id for this call, the only id on the LLM wire: the assistant message in the parked history
+    # carries it, so every ToolResultPart handed back to the model (a real result, a poison or orphan synthesis, the
+    # coordinator's fallbacks) must carry it too. ``None`` on a row written before this field existed, which the
+    # readers treat as "use the scoped id" (the previous behaviour).
+    call_id: str | None = None
 
     # Every id (claimable + notifying) created from the SAME ToolWaitPark
     # batch as this row, THIS row's own id included (01a0518b, mixed-park
@@ -177,5 +208,15 @@ class ToolCallTask(Identifiable):
     started_at: datetime | None = None
     finished_at: datetime | None = None
 
+    @property
+    def scoped_call_id(self) -> str:
+        """The id this call has in the transcript and on every external surface (``id`` without the session)."""
+        return external_call_id(self.id, self.session_id)
 
-__all__ = ["ToolCallTask", "ToolCallTaskState"]
+    @property
+    def wire_call_id(self) -> str:
+        """The id the LLM knows this call by: the provider's raw id, else the scoped id for a legacy row."""
+        return self.call_id or self.scoped_call_id
+
+
+__all__ = ["ToolCallTask", "ToolCallTaskState", "external_call_id", "tool_call_task_id"]

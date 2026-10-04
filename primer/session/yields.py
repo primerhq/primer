@@ -127,7 +127,11 @@ def tool_wait_event_key(
     anything, see that class's own docstring) - this is the FUNCTIONAL
     key the wake mechanism actually keys on.
     """
-    node_segment = scoped_task_id.split(":", 1)[0]
+    # The id may be the session-qualified task id (``<session_id>/<scoped>``, S1b); the node segment is the
+    # scoped id's, so strip the qualification first or every key would start with the session id.
+    from primer.model.tool_call_task import external_call_id
+
+    node_segment = external_call_id(scoped_task_id, session_id).split(":", 1)[0]
     return f"tool_wait:{session_id}:{turn_no}:{node_segment}"
 
 

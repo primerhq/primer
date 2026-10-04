@@ -83,7 +83,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from primer.int.claim import Lease as ClaimLease
@@ -92,6 +92,19 @@ if TYPE_CHECKING:
     from primer.worker.pool import WorkerPool
 
 logger = logging.getLogger(__name__)
+
+
+def _result_part_for(task: "ToolCallTask") -> "Any":
+    """The ``ToolResultPart`` the model is shown for a terminal task that has a ``result_state``.
+
+    Handed back under the provider's raw id (``call_id``) when the row has one: the assistant message in the parked
+    history carries only that id, so a result stamped with the scoped or qualified id would never pair with its
+    tool_use. A row without ``call_id`` (written before the field existed) keeps the id its result already has.
+    """
+    from primer.model.chat import ToolResultPart
+
+    part = ToolResultPart.model_validate(task.result_state)
+    return part.model_copy(update={"id": task.call_id}) if task.call_id else part
 
 
 async def resolve_ready_graph_tool_waits(
@@ -147,16 +160,14 @@ async def resolve_ready_graph_tool_waits(
         result_parts: list[ToolResultPart] = []
         for task in tasks:
             if task.result_state is not None:
-                result_parts.append(
-                    ToolResultPart.model_validate(task.result_state)
-                )
+                result_parts.append(_result_part_for(task))
             else:
                 # A FAILED task with no result_state (a poisoned claim
                 # that never ran) still owes the LLM a tool_result for
                 # its tool_use - synthesise an error one, mirroring the
                 # agent-only path's own identical guard.
                 result_parts.append(ToolResultPart(
-                    id=task.id,
+                    id=task.wire_call_id,
                     output=task.last_error or "tool call failed",
                     error=True,
                 ))
@@ -239,7 +250,7 @@ async def resume_engine_tool_wait(
     result_parts: list[ToolResultPart] = []
     for task in tasks:
         if task.result_state is not None:
-            result_parts.append(ToolResultPart.model_validate(task.result_state))
+            result_parts.append(_result_part_for(task))
         else:
             # A FAILED task with no result_state (e.g. a poisoned claim
             # that never ran) still owes the LLM a tool_result for its
@@ -247,7 +258,7 @@ async def resume_engine_tool_wait(
             # than dropping the id, which would leave a dangling tool_use
             # with no pair.
             result_parts.append(ToolResultPart(
-                id=task.id,
+                id=task.wire_call_id,
                 output=task.last_error or "tool call failed",
                 error=True,
             ))
@@ -446,7 +457,8 @@ async def persist_resume_tool_result_records(
                 seq=1,  # overwritten by the writer's monotonic counter
                 kind=SessionMessageKind.TOOL_RESULT,
                 payload={
-                    "call_id": task.id,
+                    # The transcript's id (the scoped call id), not the session-qualified row id.
+                    "call_id": task.scoped_call_id,
                     "output": result.get("output", task.last_error),
                     "error": result.get("error", task.state == "failed"),
                 },

@@ -202,3 +202,19 @@ def test_tool_wait_event_key_same_batch_same_key() -> None:
         tool_wait_event_key("s1", 0, scoped_task_id="A:tool:0:1")
         == tool_wait_event_key("s1", 0, scoped_task_id="A:tool:0:2")
     )
+
+
+def test_tool_wait_event_key_is_the_same_for_the_scoped_and_the_session_qualified_id() -> None:
+    """S1b: a task id is `<session_id>/<scoped>`. The key's node segment comes from the SCOPED part, so every site
+    gets the same key whichever form it holds (mutation: split the qualified id as is, node segment = "s1/x")."""
+    for scoped in ("x:tool:3:1", "workerNode:tool:3:2", "worker[0]:tool:0:1"):
+        assert (
+            tool_wait_event_key("s1", 3, scoped_task_id=f"s1/{scoped}")
+            == tool_wait_event_key("s1", 3, scoped_task_id=scoped)
+        )
+    assert tool_wait_event_key("s1", 3, scoped_task_id="s1/x:tool:3:1") == "tool_wait:s1:3:x"
+
+
+def test_tool_wait_event_key_does_not_strip_another_sessions_prefix() -> None:
+    """Only the exact `<this session>/` prefix is the qualification; a node id that merely contains a slash is not."""
+    assert tool_wait_event_key("s1", 0, scoped_task_id="a/b:tool:0:1") == "tool_wait:s1:0:a/b"

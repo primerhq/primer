@@ -205,8 +205,9 @@ def scoped_tool_call_id(node_id: str | None, turn_no: int, seq: int) -> str:
     (primer/session/persistence.py, for the durable ``TOOL_CALL`` record's
     ``id`` and its live delta frames). Phase 3 stage 7a
     (docs/superpowers/2026-08-29-phase3-execution-topology-design.md,
-    01a0518b) needs the SAME id at the dispatch seam too (``ToolCallTask.id``,
-    the approval-gate ``event_key``, resume matching) - raw provider call
+    01a0518b) needs the SAME id at the dispatch seam too (the scoped part of
+    ``ToolCallTask.id``, which the seam qualifies with the session, the
+    approval-gate ``event_key``, resume matching) - raw provider call
     ids collide across fan-out siblings and multi-round turns (the
     94fc2460 bug), which is exactly the failure this id was designed to
     avoid. Extracted here as the single source of truth so both layers

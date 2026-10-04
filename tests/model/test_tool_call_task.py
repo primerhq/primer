@@ -96,3 +96,46 @@ def test_the_new_fields_round_trip_through_the_stored_json() -> None:
     task = _task(attempts=3, claim_token="wrk-1:2026-10-05T00:00:00+00:00:ab12cd34", gate_seq=2,
                  materialized_at=_now())
     assert ToolCallTask.model_validate(task.model_dump(mode="json")) == task
+
+
+# ---- session-qualified identity (S1b) -------------------------------------------------------------------
+
+
+def test_the_row_id_is_the_session_qualified_scoped_id_and_the_qualification_is_idempotent() -> None:
+    from primer.model.tool_call_task import external_call_id, tool_call_task_id
+
+    qualified = tool_call_task_id("sess-1", "x:tool:0:1")
+    assert qualified == "sess-1/x:tool:0:1"
+    assert tool_call_task_id("sess-1", qualified) == qualified, "qualifying twice does not double the prefix"
+    assert tool_call_task_id("sess-2", "x:tool:0:1") != qualified, "two sessions' first calls never share an id"
+    assert external_call_id(qualified, "sess-1") == "x:tool:0:1"
+    assert external_call_id("x:tool:0:1", "sess-1") == "x:tool:0:1", "a bare scoped id passes through"
+
+
+def test_only_the_exact_session_prefix_is_stripped() -> None:
+    from primer.model.tool_call_task import external_call_id
+
+    assert external_call_id("sess-2/x:tool:0:1", "sess-1") == "sess-2/x:tool:0:1"
+    assert external_call_id("a/b:tool:0:1", "sess-1") == "a/b:tool:0:1", "graph node ids are free-form: a slash is not a prefix"
+    assert external_call_id("sess-1/a/b:tool:0:1", "sess-1") == "a/b:tool:0:1"
+
+
+def test_the_task_exposes_the_scoped_id_and_the_id_the_llm_knows_it_by() -> None:
+    from primer.model.tool_call_task import tool_call_task_id
+
+    task = ToolCallTask(
+        id=tool_call_task_id("sess-1", "x:tool:0:1"), session_id="sess-1", turn_no=0, tool_name="t",
+        record_seq=1, created_at=_now(), call_id="call_9f2",
+    )
+    assert task.scoped_call_id == "x:tool:0:1"
+    assert task.wire_call_id == "call_9f2"
+    legacy = task.model_copy(update={"call_id": None})
+    assert legacy.wire_call_id == "x:tool:0:1", "a row written before call_id existed falls back to the scoped id"
+
+
+def test_a_row_stored_without_call_id_loads() -> None:
+    stored = ToolCallTask(
+        id="sess-1/x:tool:0:1", session_id="sess-1", turn_no=0, tool_name="t", record_seq=1, created_at=_now(),
+    ).model_dump(mode="json")
+    del stored["call_id"]
+    assert ToolCallTask.model_validate(stored).call_id is None
