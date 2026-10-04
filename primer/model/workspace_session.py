@@ -479,7 +479,9 @@ class WorkspaceSession(Identifiable):
             "instead of ENDED, so the user can keep chatting "
             "(studio-agents-interact §4.4). The worker learns of it from a "
             "bus message and, as a durable fallback, by re-reading this "
-            "flag every couple of seconds. Cleared by the worker."
+            "flag every couple of seconds while the turn runs. Never set "
+            "on a parked session (the route refuses it), and cleared by "
+            "the worker, by resuming a park, and by a human's later message."
         ),
     )
 

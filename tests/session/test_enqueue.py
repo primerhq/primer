@@ -424,3 +424,60 @@ async def test_missing_session_raises_not_found():
             human_intent=True,
             deps=deps,
         )
+
+
+# ---- an earlier Stop does not outlive a later explicit human message ------------------------------
+# A human who sends a message after pressing Stop has re-engaged: that message wins. Left on the row,
+# the flag would stop the very turn their message starts (before its first token).
+
+
+async def _wake_with_flag(row, *, human_intent=True, instruction="carry on"):
+    row.interrupt_requested = True
+    deps, *_ = _deps(row)
+    return await wake_session(
+        workspace_id="ws-1", session_id="sess-1", instruction=instruction,
+        human_intent=human_intent, deps=deps,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_human_message_clears_an_earlier_stop_on_a_session_that_is_waiting():
+    out = await _wake_with_flag(_row(SessionStatus.WAITING))
+    assert out.interrupt_requested is False
+
+
+@pytest.mark.asyncio
+async def test_a_human_message_clears_an_earlier_stop_on_a_parked_session():
+    row = _row(SessionStatus.RUNNING)
+    row.parked_status = "parked"
+    out = await _wake_with_flag(row)
+    assert out.interrupt_requested is False
+
+
+@pytest.mark.asyncio
+async def test_a_human_message_clears_a_stop_recorded_while_the_next_turn_was_queued():
+    row = _row(SessionStatus.RUNNING)
+    row.turn_status = "claimable"
+    out = await _wake_with_flag(row)
+    assert out.interrupt_requested is False
+
+
+@pytest.mark.asyncio
+async def test_a_message_sent_while_a_turn_is_executing_does_not_cancel_the_stop_aimed_at_it():
+    """The Stop is for the RUNNING turn; a steer queued behind it is not a reason to drop it."""
+    row = _row(SessionStatus.RUNNING)
+    row.turn_status = "running"
+    out = await _wake_with_flag(row)
+    assert out.interrupt_requested is True
+
+
+@pytest.mark.asyncio
+async def test_an_automated_wake_does_not_override_a_humans_stop():
+    out = await _wake_with_flag(_row(SessionStatus.WAITING), human_intent=False)
+    assert out.interrupt_requested is True
+
+
+@pytest.mark.asyncio
+async def test_a_wake_with_no_message_leaves_the_flag_alone():
+    out = await _wake_with_flag(_row(SessionStatus.WAITING), instruction=None)
+    assert out.interrupt_requested is True

@@ -245,6 +245,13 @@ async def wake_session(
         # operator returning to the session can see that their pause was
         # superseded, and by what.
         was_paused = row.pause_requested
+        # A human who writes after pressing Stop has re-engaged, so that message wins over the
+        # earlier Stop: left on the row, the flag would stop the very turn their message starts,
+        # before its first token. Only when no turn is executing: a message sent WHILE a turn runs
+        # is queued behind it, and the Stop is aimed at that running turn. And only a human's
+        # message, never an automated wake (a trigger must not override a human's Stop).
+        if human_intent and instruction and row.turn_status != "running":
+            row.interrupt_requested = False
         row.turn_status = "claimable"
         row.pause_requested = False
         row.pause_requested_at = None

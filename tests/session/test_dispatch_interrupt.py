@@ -27,7 +27,7 @@ import pytest
 import primer.observability.metrics as metrics
 import primer.session.dispatch as dispatch
 from primer.agent.interrupt import Interrupted, interruptible
-from primer.model.chat import ExtendedEvent, TextDelta, _ExecutorToolResult
+from primer.model.chat import Done, ExtendedEvent, TextDelta, _ExecutorToolResult
 from primer.model.workspace_session import SessionMessageKind, SessionStatus, WorkspaceSession
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
 from tests.session.test_dispatch import (  # noqa: F401  (fixtures are used by name)
@@ -45,6 +45,10 @@ def _reset_metrics():
     metrics.reset_for_test()
     yield
     metrics.reset_for_test()
+
+
+def _poll_catches(reason: str) -> float:
+    return metrics.session_interrupts_via_poll_total.labels(reason)._value.get()
 
 
 class _StopAwareExecutor:
@@ -173,6 +177,73 @@ class TestStopReachesAnExecutorThatIsNotYielding:
         assert [r["kind"] for r in records][-1] == SessionMessageKind.CANCELLED
 
 
+class TestACancelThatLandsAfterTheModelFinished:
+    """An executor that owns the Stop event no longer has dispatch break on a set event, so a Cancel
+    that arrives after the model's terminal event used to find the stream already ending: the turn
+    completed WAITING with cancel_requested still set ("I cancelled it and nothing happened")."""
+
+    async def _cancel_lands(self, storage, bus, sid: str) -> None:
+        sessions = storage.get_storage(WorkspaceSession)
+        row = await sessions.get(sid)
+        row.cancel_requested = True
+        await sessions.update(row)
+        await bus.publish(f"session:{sid}:cancel", {})
+
+    async def test_it_ends_the_session_as_cancelled(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+
+        async def cancel_lands_after_the_answer() -> None:
+            await self._cancel_lands(fake_storage_provider, fake_event_bus, sid)
+
+        executor = _StopAwareExecutor([
+            TextDelta(text="the full answer", index=0), cancel_lands_after_the_answer,
+            Done(stop_reason="stop", raw_reason="stop"),
+        ])
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled", (
+            f"a Cancel after the model finished left the session {row.status!r}"
+        )
+        assert SessionMessageKind.CANCELLED in [r["kind"] for r in _records(fake_workspace_io, sid)]
+
+    async def test_it_ends_the_session_even_when_it_lands_just_before_the_completion_transition(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        """The residual window: after dispatch last looked at the row, before it takes the lifecycle
+        lock to land the completion. The status must still not land WAITING."""
+        sid = seeded_session.id
+        cancel_lands = self._cancel_lands
+
+        async def read_status_then_cancel_lands(executor):
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            return None
+
+        monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+        executor = _StopAwareExecutor([
+            TextDelta(text="the full answer", index=0), Done(stop_reason="stop", raw_reason="stop"),
+        ])
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled"
+
+    async def test_without_a_cancel_the_turn_completes_as_before(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+        executor = _StopAwareExecutor([
+            TextDelta(text="the full answer", index=0), Done(stop_reason="stop", raw_reason="stop"),
+        ])
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status != SessionStatus.ENDED or row.ended_reason != "cancelled"
+        assert SessionMessageKind.CANCELLED not in [r["kind"] for r in _records(fake_workspace_io, sid)]
+
+
 class TestAStopIsNeverLostToTheBus:
     async def test_a_stop_whose_publish_never_arrives_is_delivered_by_the_row_poll(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
@@ -189,7 +260,11 @@ class TestAStopIsNeverLostToTheBus:
         assert outcome.success is True
         kinds = [r["kind"] for r in _records(fake_workspace_io, sid)]
         assert SessionMessageKind.CANCELLED in kinds
-        assert metrics.session_interrupts_via_poll_total._value.get() == 1.0
+        assert _poll_catches("missed_while_running") == 1.0, (
+            "a Stop requested while the turn ran, whose bus message never came, is the case that "
+            "means the bus is dropping Stops"
+        )
+        assert _poll_catches("queued_before_turn") == 0.0
 
     async def test_a_stop_delivered_by_the_bus_is_not_counted_as_a_poll_catch(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
@@ -202,7 +277,7 @@ class TestAStopIsNeverLostToTheBus:
         await _request_stop(fake_storage_provider, fake_event_bus, sid)
         await turn
 
-        assert metrics.session_interrupts_via_poll_total._value.get() == 0.0
+        assert _poll_catches("missed_while_running") == 0.0 and _poll_catches("queued_before_turn") == 0.0
 
     async def test_a_stop_recorded_before_the_turn_began_is_honoured_by_the_first_poll(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
@@ -216,6 +291,9 @@ class TestAStopIsNeverLostToTheBus:
 
         assert outcome.success is True
         assert SessionMessageKind.CANCELLED in [r["kind"] for r in _records(fake_workspace_io, sid)]
+        # Not a bus failure: the flag was simply already there when the turn began. It must not
+        # read as "the bus is dropping Stops".
+        assert _poll_catches("queued_before_turn") == 1.0 and _poll_catches("missed_while_running") == 0.0
 
     async def test_a_bus_that_cannot_subscribe_does_not_cost_the_stop(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,

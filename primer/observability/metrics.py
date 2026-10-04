@@ -268,9 +268,12 @@ sessions_active = Gauge(
 
 session_interrupts_via_poll_total = Counter(
     "session_interrupts_via_poll_total",
-    "Stop requests the dispatch watcher found on the session row because the bus "
-    "message never arrived (a failed publish, a degraded bus, a Stop recorded before "
-    "the turn began). Non-zero means the bus is dropping Stops.",
+    "Stop requests the dispatch watcher found on the session row instead of on the bus. "
+    "reason=queued_before_turn: the flag was already set when the turn began (a Stop "
+    "recorded while the session was queued; not a fault). reason=missed_while_running: "
+    "the Stop was requested while the turn ran and its bus message never arrived (a "
+    "failed publish or a degraded bus); this is the one that means the bus is dropping Stops.",
+    ["reason"],
     registry=registry,
 )
 
@@ -310,6 +313,9 @@ ALLOWED_LABEL_NAMES = frozenset({
     "source",
     # Entity model class name (storage_cas_drift_total): bounded by the set of model classes.
     "model",
+    # Why a Stop was found on the session row (queued_before_turn / missed_while_running):
+    # a closed enum, so bounded.
+    "reason",
 })
 """Every label name any Primer instrument is permitted to carry.
 
@@ -547,9 +553,12 @@ def reset_for_test() -> None:
     )
     session_interrupts_via_poll_total = Counter(
         "session_interrupts_via_poll_total",
-        "Stop requests the dispatch watcher found on the session row because the bus "
-        "message never arrived (a failed publish, a degraded bus, a Stop recorded before "
-        "the turn began). Non-zero means the bus is dropping Stops.",
+        "Stop requests the dispatch watcher found on the session row instead of on the bus. "
+        "reason=queued_before_turn: the flag was already set when the turn began (a Stop "
+        "recorded while the session was queued; not a fault). reason=missed_while_running: "
+        "the Stop was requested while the turn ran and its bus message never arrived (a "
+        "failed publish or a degraded bus); this is the one that means the bus is dropping Stops.",
+        ["reason"],
         registry=registry,
     )
     session_interrupt_publish_failures_total = Counter(

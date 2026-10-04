@@ -33,6 +33,9 @@ from primer.channel.reply_binding import resolve_reply_binding
 
 _log = logging.getLogger(__name__)
 
+# The records that end a turn's window of assistant text (see derive_session_final_text).
+_WINDOW_BOUNDARY_KINDS = ("done", "cancelled", "error")
+
 
 def _count_reached(results: list) -> int:
     """Count dispatcher results that reached a channel (non-error dicts)."""
@@ -112,8 +115,14 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     surface: ``records`` is the ordered list of parsed ``messages.jsonl`` rows
     (dicts with ``kind`` + ``payload``). The text relayed is the joined
     ``assistant_token`` text of the LAST completed turn, i.e. the rows between
-    the previous and final ``done`` rows. Returns ``None`` when there is no
-    completed turn or the window carries no assistant text.
+    the previous terminal record and the final ``done`` row. Returns ``None``
+    when there is no completed turn or the window carries no assistant text.
+
+    A terminal record is a ``done``, a ``cancelled`` or an ``error``. A turn
+    that was stopped or failed has no ``done``, but what it had streamed is
+    written as ``assistant_token`` records before its ``cancelled`` / ``error``
+    record (``flush_partial_output``), and that text must not be joined onto the
+    NEXT turn's reply.
 
     Session assistant tokens carry their text under ``payload['text']`` (the
     coalesced buffer; see :mod:`primer.session.persistence`).
@@ -124,12 +133,12 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     )
     if last_done is None:
         return None
-    prev_done = max(
-        (i for i in range(last_done) if records[i].get("kind") == "done"),
+    prev_boundary = max(
+        (i for i in range(last_done) if records[i].get("kind") in _WINDOW_BOUNDARY_KINDS),
         default=-1,
     )
     chunks: list[str] = []
-    for r in records[prev_done + 1:last_done]:
+    for r in records[prev_boundary + 1:last_done]:
         if r.get("kind") == "assistant_token":
             text = (r.get("payload") or {}).get("text")
             if isinstance(text, str):

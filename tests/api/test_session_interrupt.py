@@ -127,6 +127,53 @@ async def test_interrupt_publish_success_counts_no_failure(running_session_clien
     assert metrics.session_interrupt_publish_failures_total._value.get() == 0.0
 
 
+@pytest.mark.parametrize("parked_status", ["parked", "resumable"])
+async def test_interrupt_on_a_parked_session_is_refused_and_records_nothing(
+    running_session_client, fake_storage_provider, parked_status,
+):
+    """No turn is running while a session is parked (it waits for a human decision, an answer or a
+    timer), so there is nothing for a Stop to stop. Recording the flag anyway would let it outlive
+    the park and kill the continuation after a later approval: Stop while parked on an approval,
+    approve hours later, the approved tool RUNS, then the continuation is killed before its first
+    token. A later explicit human action wins over an earlier Stop, so the Stop is refused."""
+    from primer.model.workspace_session import WorkspaceSession
+
+    client, ctx = running_session_client
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(ctx.session_id)
+    row.parked_status = parked_status
+    await sessions.update(row)
+
+    resp = await client.post(
+        f"/v1/workspaces/{ctx.workspace_id}/sessions/{ctx.session_id}/interrupt", json={},
+    )
+
+    assert resp.status_code == 409, resp.text
+    detail = resp.json().get("detail", "")
+    assert "no turn is running" in detail and "Cancel" in detail, detail
+    after = await sessions.get(ctx.session_id)
+    assert after.interrupt_requested is False, "a refused Stop must not leave a flag behind"
+
+
+async def test_interrupt_on_a_queued_session_is_still_recorded(running_session_client, fake_storage_provider):
+    """Queued, not parked: the next turn is about to run, so a Stop recorded now is honoured by the
+    first poll of that turn (the behaviour this slice keeps)."""
+    from primer.model.workspace_session import WorkspaceSession
+
+    client, ctx = running_session_client
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(ctx.session_id)
+    row.turn_status = "claimable"
+    await sessions.update(row)
+
+    resp = await client.post(
+        f"/v1/workspaces/{ctx.workspace_id}/sessions/{ctx.session_id}/interrupt", json={},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert (await sessions.get(ctx.session_id)).interrupt_requested is True
+
+
 async def test_interrupt_ended_session_409(ended_session_client):
     client, ctx = ended_session_client
     resp = await client.post(

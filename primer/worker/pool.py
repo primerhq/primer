@@ -41,7 +41,11 @@ from primer.worker.identity import stable_worker_label
 from primer.worker._toolset_ids import _toolset_ids_from_scoped  # noqa: F401  re-export
 
 import primer.observability.metrics as _metrics
-from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
+from primer.session.dispatch import (
+    SessionDispatchDeps,
+    clear_interrupt_for_resume,
+    run_one_session_turn,
+)
 
 if TYPE_CHECKING:
     from primer.agent.approval import ApprovalResolver
@@ -928,6 +932,12 @@ class WorkerPool:
                     # bypasses that function, so re-check here (e2e t0867).
                     outcome = await self._pause_session(session_row)
                 else:
+                    # A park is being resolved (an approval or an answer, a tool_wait batch, or
+                    # either on a graph session; all of them pass through here). A Stop recorded
+                    # before that must not outlive it: it would be honoured by the first poll of
+                    # the continuation and kill it before its first token. A later explicit
+                    # human action wins over an earlier Stop.
+                    await clear_interrupt_for_resume(session_storage, sid)
                     handler = self._select_resume_handler(session_row)
                     outcome = await handler(engine_lease, session_row)
             else:
