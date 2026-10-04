@@ -218,3 +218,68 @@ def test_real_vocabulary_matches_stock_tiktoken(name):
     assert ours.special_tokens_set == stock.special_tokens_set
     for sample in ("hello world", "日本語のテキスト", "😀 emoji 🚀", "a <|endoftext|> b", '{"k": [1, 2]}'):
         assert ours.encode_ordinary(sample) == stock.encode_ordinary(sample)
+
+
+# ---- the ready gauge and transient OS errors -------------------------------
+
+
+def _ready(name: str):
+    import primer.observability.metrics as metrics
+
+    return metrics.registry.get_sample_value("llm_tokenizer_ready", {"name": name})
+
+
+@pytest.fixture
+def fresh_metrics():
+    import primer.observability.metrics as metrics
+
+    metrics.reset_for_test()
+    yield
+    metrics.reset_for_test()
+
+
+def test_the_ready_gauge_is_set_on_a_load_and_on_every_memoised_hit(vocab, fresh_metrics):
+    import primer.observability.metrics as metrics
+
+    pin, _path, cache_dir = vocab
+    _load(pin, cache_dir)
+    assert _ready("fake_base") == 1.0
+    metrics.reset_for_test()  # the loader's memo outlives a metrics reset
+    _load(pin, cache_dir)
+    assert _ready("fake_base") == 1.0
+
+
+def test_the_ready_gauge_is_zero_for_an_unavailable_vocabulary_and_stays_zero(tmp_path, fresh_metrics):
+    pin = VocabPin("fake_base", URL, "0" * 64)
+    with pytest.raises(TokenCounterUnavailable):
+        _load(pin, tmp_path)
+    assert _ready("fake_base") == 0.0
+    with pytest.raises(TokenCounterUnavailable):  # the memoised failure
+        _load(pin, tmp_path)
+    assert _ready("fake_base") == 0.0
+
+
+def test_a_transient_os_error_is_reported_but_not_remembered(vocab, monkeypatch, caplog):
+    """EMFILE, EACCES, EIO: one bad moment must not disable counting for the
+    life of the process. Only an absent file is remembered."""
+    pin, path, cache_dir = vocab
+    real = Path.read_bytes
+
+    def flaky(self):
+        if self == path:
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    with pytest.raises(TokenCounterUnavailable) as exc:
+        _load(pin, cache_dir)
+    assert exc.value.transient is True
+    monkeypatch.setattr(Path, "read_bytes", real)
+    assert _load(pin, cache_dir), "the next call retried, because the failure was not memoised"
+
+
+def test_an_absent_file_is_still_remembered_not_transient(tmp_path):
+    pin = VocabPin("fake_base", URL, "0" * 64)
+    with pytest.raises(TokenCounterUnavailable) as exc:
+        _load(pin, tmp_path)
+    assert exc.value.transient is False

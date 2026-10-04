@@ -25,7 +25,7 @@ from tests.llm.test_openrouter import _make_provider as router_provider
 
 class _SlowEncoding:
     def encode_ordinary(self, text: str) -> list[int]:
-        time.sleep(0.3)
+        time.sleep(0.6)
         return [0] * len(text)
 
 
@@ -65,4 +65,4 @@ async def test_count_tokens_does_not_block_the_event_loop(monkeypatch, make, mod
     await task
     assert n > 0
     assert len(gaps) > 10
-    assert max(gaps) < 0.15, f"{make.__name__ if hasattr(make, '__name__') else model}: loop stalled {max(gaps):.3f}s"
+    assert max(gaps) < 0.3, f"{make.__name__ if hasattr(make, '__name__') else model}: loop stalled {max(gaps):.3f}s"

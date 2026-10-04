@@ -43,6 +43,19 @@ def counter_executor() -> ThreadPoolExecutor:
         return _executor
 
 
+def shutdown_counter_executor(*, wait: bool = False) -> None:
+    """Stop the counter threads (app teardown; a no-op if no count ever ran).
+
+    ``cancel_futures`` drops counts that have not started; one that is running
+    finishes (it is finite CPU work on a loaded vocabulary).
+    """
+    global _executor  # noqa: PLW0603
+    with _lock:
+        executor, _executor = _executor, None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
+
+
 async def run_counter(
     fn: Callable[..., T],
     *args: Any,
@@ -76,4 +89,10 @@ async def run_counter(
     return await future
 
 
-__all__ = ["DEFAULT_QUEUE_WAIT_S", "MAX_WORKERS", "counter_executor", "run_counter"]
+__all__ = [
+    "DEFAULT_QUEUE_WAIT_S",
+    "MAX_WORKERS",
+    "counter_executor",
+    "run_counter",
+    "shutdown_counter_executor",
+]

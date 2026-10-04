@@ -18,7 +18,9 @@ class TokenCount(BaseModel):
     the call, is a good approximation and says so. ``estimated_components``
     names parts of the prompt that were estimated rather than counted (media
     blocks, or system/tools for a vendor endpoint that cannot take them), so a
-    count is never presented as more certain than it is.
+    count is never presented as more certain than it is. ``declared`` is the
+    complement: a figure from an adapter that declares nothing is never presented
+    as native at all.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -37,6 +39,16 @@ class TokenCount(BaseModel):
     )
     encoding: str | None = Field(
         default=None, description="Tokenizer or encoding name, when there is one.",
+    )
+    declared: bool = Field(
+        default=True,
+        description=(
+            "The counter vouches for how this figure was produced. False only on "
+            "the base-class default (``LLM.count_tokens_detailed`` wrapping an "
+            "adapter that has not been taught to say what it counted): such a "
+            "number may be a heuristic, so the wrapper labels it an estimate "
+            "rather than a native count."
+        ),
     )
 
 

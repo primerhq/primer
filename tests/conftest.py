@@ -570,6 +570,57 @@ def fake_llm() -> _FakeLLM:
 
 
 @pytest.fixture(autouse=True)
+def offline_tiktoken(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> list[str]:
+    """Serve tiktoken encodings from memory instead of loading real vocabularies.
+
+    ROOT-level and autouse on purpose. It used to live in tests/llm/conftest.py,
+    so a test anywhere else (tests/llm_adapters, tests/observability, ...) that
+    reached the real loader passed on a developer machine with a warm cache and
+    failed on a cold CI runner. A test cannot opt into correctness by living in the
+    right directory.
+
+    Counting normally goes through ``primer.llm._tokenizer._tiktoken_offline``,
+    which reads a verified vocabulary file from the cache directory. Those
+    files are ~5 MB, absent on a cold CI runner, and not what these tests are
+    about. The seam ``_tiktoken_offline.load_encoding`` is therefore replaced
+    by a real ``tiktoken.Encoding`` over a byte-level vocabulary: the real
+    class and ``encode_ordinary`` contract, a deterministic synthetic
+    vocabulary (one token per UTF-8 byte). What this keeps testing is primer's
+    own logic: which encoding a model name maps to, how messages and tools are
+    serialised, the per-message overhead, and that adapters route
+    ``count_tokens`` through it. What it deliberately does not test is tiktoken's
+    real tokenisation, which is tiktoken's behaviour, not ours.
+
+    A test of the loader itself marks ``@pytest.mark.real_tiktoken_loader`` to
+    opt out and exercise the real code (against files it builds in ``tmp_path``).
+
+    Returns the encoding names requested, in order, so a test can assert the
+    selection (e.g. gpt-4 -> cl100k_base) rather than only "n > 0".
+    """
+    requested: list[str] = []
+    if request.node.get_closest_marker("real_tiktoken_loader"):
+        return requested
+
+    import tiktoken
+
+    from primer.llm._tokenizer import _tiktoken_offline
+
+    def _load_encoding(name: str, **_kwargs) -> tiktoken.Encoding:
+        requested.append(name)
+        return tiktoken.Encoding(
+            name=f"offline-{name}",
+            pat_str=r"(?s:.)",
+            mergeable_ranks={bytes([i]): i for i in range(256)},
+            special_tokens={},
+        )
+
+    monkeypatch.setattr(_tiktoken_offline, "load_encoding", _load_encoding)
+    return requested
+
+
+@pytest.fixture(autouse=True)
 def _no_swallowed_counter_bugs(request: pytest.FixtureRequest):
     """Fail any test during which a token counter raised an UNEXPECTED error.
 
