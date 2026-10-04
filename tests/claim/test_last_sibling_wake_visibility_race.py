@@ -47,7 +47,9 @@ import pytest
 
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.int.claim import ReleaseOutcome
+from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from tests.storage._patch_reference import patch_model
 
 
 def _now() -> datetime:
@@ -57,9 +59,17 @@ def _now() -> datetime:
 def _task(task_id: str, batch: list[str]) -> ToolCallTask:
     return ToolCallTask(
         id=task_id, session_id="s1", turn_no=0, tool_name="t",
-        state=ToolCallTaskState.QUEUED, record_seq=1, created_at=_now(),
-        batch_task_ids=batch,
+        state=ToolCallTaskState.RUNNING, record_seq=1, created_at=_now(),
+        batch_task_ids=batch, claim_token=_token(task_id),
     )
+
+
+def _token(task_id: str) -> str:
+    return f"tok-{task_id}"
+
+
+def _release(task_id: str) -> ReleaseOutcome:
+    return ReleaseOutcome(success=True, drop_lease=True, claim_token=_token(task_id))
 
 
 class _PerConnVisibilityStorage:
@@ -84,6 +94,16 @@ class _PerConnVisibilityStorage:
             self._committed[entity.id] = entity
         return entity
 
+    async def patch_if(self, task_id: str, patch=None, *, where, set_paths=None, conn=None):
+        """READ COMMITTED: the write sees this conn's own pending row, else the committed one."""
+        current = await self.get(task_id, conn=conn)
+        if current is None:
+            raise NotFoundError(f"no entity with id {task_id!r}")
+        updated = patch_model(current, patch, where=where, set_paths=set_paths)
+        if updated is not None:
+            await self.update(updated, conn=conn)
+        return updated
+
     def commit(self, conn) -> None:
         for task_id, entity in self._pending.pop(conn, {}).items():
             self._committed[task_id] = entity
@@ -103,12 +123,8 @@ async def test_concurrent_last_two_releases_under_read_committed_isolation_lose_
     adapter = ToolCallClaimAdapter(task_storage=storage)
     conn_a, conn_b = object(), object()
 
-    signal_a = await adapter.on_release(
-        conn_a, "A", outcome=ReleaseOutcome(success=True, drop_lease=True),
-    )
-    signal_b = await adapter.on_release(
-        conn_b, "B", outcome=ReleaseOutcome(success=True, drop_lease=True),
-    )
+    signal_a = await adapter.on_release(conn_a, "A", outcome=_release("A"))
+    signal_b = await adapter.on_release(conn_b, "B", outcome=_release("B"))
 
     # Neither release observed the other as terminal - the exact race.
     # PINNED, not desired: accept-and-document disposition (7a gate
@@ -143,13 +159,9 @@ async def test_sequential_releases_do_not_race_the_second_one_fires() -> None:
     adapter = ToolCallClaimAdapter(task_storage=storage)
     conn_a, conn_b = object(), object()
 
-    signal_a = await adapter.on_release(
-        conn_a, "A", outcome=ReleaseOutcome(success=True, drop_lease=True),
-    )
+    signal_a = await adapter.on_release(conn_a, "A", outcome=_release("A"))
     storage.commit(conn_a)  # A's transaction commits before B's even starts.
-    signal_b = await adapter.on_release(
-        conn_b, "B", outcome=ReleaseOutcome(success=True, drop_lease=True),
-    )
+    signal_b = await adapter.on_release(conn_b, "B", outcome=_release("B"))
 
     assert signal_a is None
     assert signal_b is not None
@@ -177,6 +189,15 @@ async def test_in_memory_engine_concurrent_release_never_loses_the_wake() -> Non
             self._data[entity.id] = entity
             return entity
 
+        async def patch_if(self, task_id: str, patch=None, *, where, set_paths=None, conn=None):
+            current = self._data.get(task_id)
+            if current is None:
+                raise NotFoundError(f"no entity with id {task_id!r}")
+            updated = patch_model(current, patch, where=where, set_paths=set_paths)
+            if updated is not None:
+                self._data[task_id] = updated
+            return updated
+
     storage = _Storage()
     adapter = ToolCallClaimAdapter(task_storage=storage)
     engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: adapter})
@@ -193,9 +214,7 @@ async def test_in_memory_engine_concurrent_release_never_loses_the_wake() -> Non
     engine.bind_post_release_hook(_hook)
 
     await asyncio.gather(*[
-        engine.release(
-            lease_by_id[tid], outcome=ReleaseOutcome(success=True, drop_lease=True),
-        )
+        engine.release(lease_by_id[tid], outcome=_release(tid))
         for tid in batch
     ])
 

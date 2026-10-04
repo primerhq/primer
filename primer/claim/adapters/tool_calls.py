@@ -8,6 +8,11 @@ the ToolCallTask rows and upsert the TOOL_CALL leases this adapter
 governs, and ``on_release`` below is the gate / terminal / retry
 bookkeeping plus the last-sibling wake.
 
+Every ``on_release`` branch is ONE field-scoped ``Storage.patch_if``, fenced on the row still
+being QUEUED or RUNNING and still carrying the releaser's per-claim ``claim_token``. A release
+whose claim was cancelled, deleted or taken over underneath it writes nothing and wakes nothing,
+and a release with no token never matches.
+
 NOT BUILT: nothing claims and runs a task. ``WorkerPool`` registers no
 TOOL_CALL handler, so on main only tests ever release a TOOL_CALL lease
 and the transitions below are exercised by hand. See "Tool-call claims:
@@ -16,11 +21,32 @@ built and not built" in docs/dev/architecture/claim-machine.md.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
+from typing import Any
+
+from pydantic_core import to_jsonable_python
 
 from primer.int.claim import ClaimAdapter, ClaimKind, PostReleaseWake, ReleaseOutcome
 from primer.int.storage import Storage
+from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+
+logger = logging.getLogger(__name__)
+
+# The rows a release may move: not yet finished, not gated away. Everything else (gated, done,
+# failed) is somebody else's state and a release leaves it alone.
+_LIVE_STATES = [ToolCallTaskState.QUEUED.value, ToolCallTaskState.RUNNING.value]
+
+# What a handler may put in ``ReleaseOutcome.entity_update``, per branch. ``state``, ``claim_token``, the gate
+# fields and ``finished_at`` belong to the branches below (the adapter stamps ``finished_at`` itself, one clock);
+# letting a caller write them would defeat the fence. A requeue clears ``result_state`` on purpose, so it may not
+# supply one; a clean gate changes neither the result nor the unclean-execution count, so it takes nothing.
+_ENTITY_UPDATE_KEYS = {
+    "gated": frozenset(),
+    "terminal": frozenset({"result_state", "attempts", "last_error"}),
+    "retry": frozenset({"attempts", "last_error"}),
+}
 
 
 class ToolCallClaimAdapter(ClaimAdapter):
@@ -62,6 +88,19 @@ class ToolCallClaimAdapter(ClaimAdapter):
             f"ON {qualified_table} ((data->>'session_id'), (data->>'turn_no'))",
         ]
 
+    def dead_lease_sql(self) -> str | None:
+        # A lease of a finished task can never be claimed again (the eligibility filter above
+        # excludes it), so it is garbage. A GATED task is NOT dead: its lease is re-armed when
+        # the gate flips back to QUEUED, and the engine's own missing-entity rule covers a task
+        # row that is gone.
+        return "e.data->>'state' IN ('done', 'failed')"
+
+    async def is_dead(self, entity_id: str) -> bool:
+        if self._storage is None:
+            return False
+        task = await self._storage.get(entity_id)
+        return task is None or task.state in (ToolCallTaskState.DONE, ToolCallTaskState.FAILED)
+
     async def on_release(
         self, conn, entity_id: str, *, outcome: ReleaseOutcome,
     ) -> "PostReleaseWake | None":
@@ -69,10 +108,22 @@ class ToolCallClaimAdapter(ClaimAdapter):
             raise RuntimeError(
                 "task_storage is None - cannot run on_release without a storage backend"
             )
-        task = await self._storage.get(entity_id, conn=conn)
-        if task is None:
-            return
-
+        # Validated before anything else, so a malformed update is loud even on a path that
+        # would otherwise not write.
+        branch = "gated" if outcome.park is not None else "terminal" if outcome.drop_lease else "retry"
+        update = self._entity_update(outcome, branch)
+        token = outcome.claim_token
+        if token is None:
+            # A None token never matches a fence. Reading it as "absent or null" in the predicate
+            # would let a token-less release FAIL a fresh QUEUED row, so no row write is attempted.
+            # A caller that only wants its lease back uses ``ReleaseOutcome(entity_noop=True)``,
+            # which never reaches an adapter.
+            logger.warning(
+                "tool-call release of %s carries no claim token: the row is left untouched",
+                entity_id,
+            )
+            return None
+        fence = {"state": list(_LIVE_STATES), "claim_token": [token]}
         now = datetime.now(timezone.utc)
 
         # Gate branch: the tool call hit an approval/yield gate mid-
@@ -84,8 +135,17 @@ class ToolCallClaimAdapter(ClaimAdapter):
         # longer blocks its siblings.
         if outcome.park is not None:
             p = outcome.park
-            gated = task.model_copy(update={
-                "state": ToolCallTaskState.GATED,
+            # gate_seq is a counter: a read, then a write that names the value read, so a
+            # concurrent change rejects the write instead of being lost. A row stored before
+            # the field existed has no ``gate_seq`` key and reads as 0; ``patch_if`` lets a guard
+            # naming the default of a field that cannot hold null (``[0]`` here) also match the
+            # absent key, so such a row can still be gated (tests pin it on the fake and on real
+            # SQLite). Nothing else writes the counter while the row is RUNNING under our token.
+            current = await self._read(entity_id, conn)
+            if current is None:
+                return None
+            patch = {
+                "state": ToolCallTaskState.GATED.value,
                 "gate_event_key": p.parked_event_key,
                 "gate_until": p.parked_until,
                 # Ruling 3 (01a0518b): the gate's live payload blob - same
@@ -94,9 +154,16 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 # durable home to point at. Cleared on every other branch
                 # below so it never survives past the gate it belongs to.
                 "gate_state": p.parked_state,
-            })
-            await self._storage.update(gated, conn=conn)
-            return
+                "gate_seq": current.gate_seq + 1,
+                # Nobody owns a gated row: the token dies with the claim, so the releaser
+                # cannot write it again once the gate flips it back to QUEUED.
+                "claim_token": None,
+                **update,
+            }
+            await self._patch(
+                entity_id, patch, {**fence, "gate_seq": [current.gate_seq]}, conn,
+            )
+            return None
 
         # Terminal branch: the caller has already decided this task is
         # done (whether the underlying tool call itself succeeded or
@@ -108,38 +175,82 @@ class ToolCallClaimAdapter(ClaimAdapter):
         # failure (retry cap) has no write side yet, only the resume
         # side's synthesised error part.
         if outcome.drop_lease:
-            updated = task.model_copy(update={
+            patch = {
                 "state": (
                     ToolCallTaskState.DONE if outcome.success
                     else ToolCallTaskState.FAILED
-                ),
+                ).value,
                 "finished_at": now,
                 "last_error": None if outcome.success else outcome.last_error,
                 "gate_state": None,
-            })
-            await self._storage.update(updated, conn=conn)
+                **update,
+            }
+            updated = await self._patch(entity_id, patch, fence, conn)
+            if updated is None:
+                return None
             return await self._last_sibling_wake_signal(updated, conn=conn)
 
         # Retryable branch: not gated, not terminal - a transient failure
-        # (reclaim, worker crash) or an explicit requeue. Reset to QUEUED
+        # (reclaim, worker crash), a drain requeue or an explicit requeue. Reset to QUEUED
         # so the next claim (this worker or another) picks it up again;
         # the engine's own lease.attempt_count is the authoritative retry
-        # counter (see WorkerConfig.max_attempts) - this row does not
-        # duplicate that bookkeeping, it only needs to stop reading
-        # RUNNING once nobody is actually running it.
+        # counter for the LEASE (see WorkerConfig.max_attempts); the row's ``attempts`` counts
+        # unclean executions and arrives, when it changes, through ``entity_update``.
         # result_state is also cleared here: a task reaching this branch
         # was RUNNING (a live lease existed and either expired or the
         # caller explicitly requeued it) - any result_state already
         # written by that attempt is from a run that never reached a
         # clean release and must not survive into the next attempt as
         # if it were authoritative.
-        retried = task.model_copy(update={
-            "state": ToolCallTaskState.QUEUED,
+        patch = {
+            "state": ToolCallTaskState.QUEUED.value,
             "started_at": None,
             "gate_state": None,
             "result_state": None,
-        })
-        await self._storage.update(retried, conn=conn)
+            "claim_token": None,
+            **update,
+        }
+        await self._patch(entity_id, patch, fence, conn)
+        return None
+
+    @staticmethod
+    def _entity_update(outcome: ReleaseOutcome, branch: str) -> dict[str, Any]:
+        raw = outcome.entity_update
+        if not raw:
+            return {}
+        allowed = _ENTITY_UPDATE_KEYS[branch]
+        unknown = set(raw) - allowed
+        if unknown:
+            raise ValueError(
+                f"a {branch} ToolCallClaimAdapter release takes entity_update keys {sorted(allowed)}, "
+                f"got {sorted(unknown)}"
+            )
+        return dict(raw)
+
+    async def _read(self, entity_id: str, conn) -> ToolCallTask | None:
+        task = await self._storage.get(entity_id, conn=conn)
+        if task is None:
+            logger.warning("tool-call release of %s: the row is gone, nothing written", entity_id)
+        return task
+
+    async def _patch(
+        self, entity_id: str, patch: dict[str, Any], where: dict[str, list[Any]], conn,
+    ) -> ToolCallTask | None:
+        """One fenced ``patch_if``; a rejected or missing row logs and returns ``None``."""
+        try:
+            updated = await self._storage.patch_if(
+                entity_id, to_jsonable_python(patch), where=where, conn=conn,
+            )
+        except NotFoundError:
+            logger.warning("tool-call release of %s: the row is gone, nothing written", entity_id)
+            return None
+        if updated is None:
+            logger.warning(
+                "tool-call release of %s rejected by its fence: cancelled, finished or "
+                "taken over by another claim; nothing written, no wake",
+                entity_id,
+            )
+        return updated
 
     async def _last_sibling_wake_signal(
         self, task: ToolCallTask, *, conn,

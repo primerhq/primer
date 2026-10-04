@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, AsyncIterator, Callable
+from collections.abc import Awaitable, AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -68,10 +68,25 @@ class ReleaseOutcome:
     # is not a run, successful or not), and so is ``next_attempt_at`` unless ``requeue_after`` is given.
     # Cannot be combined with ``park`` or ``preserve_park`` (those are entity writes).
     entity_noop: bool = False
+    # Fields the adapter writes onto the entity in the SAME fenced release transaction,
+    # as one field-scoped ``Storage.patch_if`` (never a whole-document update). Which keys
+    # an adapter accepts is its own contract; ``ToolCallClaimAdapter`` validates them PER
+    # BRANCH (terminal: ``result_state``, ``attempts``, ``last_error``; retry: ``attempts``,
+    # ``last_error``; gated: none) and raises ``ValueError`` on any other key rather than
+    # letting a handler overwrite ``state``, ``claim_token`` or ``finished_at``.
+    entity_update: Mapping[str, Any] | None = None
+    # The per-claim token the releaser holds. ``ToolCallClaimAdapter`` writes the entity only
+    # while the row still carries it, and refuses the write when it is ``None``: a ``None``
+    # token never matches, so a token-less release cannot move a row someone else now owns.
+    claim_token: str | None = None
 
     def __post_init__(self) -> None:
         if self.entity_noop and (self.park is not None or self.preserve_park):
             raise ValueError("ReleaseOutcome(entity_noop=True) cannot carry a park or preserve_park")
+        if self.entity_noop and (self.entity_update or self.claim_token is not None):
+            # A lease-only release never reaches the adapter, so a fenced entity write (an entity_update, or the
+            # claim_token that fences one) would be silently dropped: that is a caller bug, refused here.
+            raise ValueError("ReleaseOutcome(entity_noop=True) cannot carry an entity_update or a claim_token")
 
 
 @dataclass(frozen=True)
@@ -167,6 +182,21 @@ class ClaimAdapter(ABC):
         """
         return []
 
+    def dead_lease_sql(self) -> str | None:
+        """SQL predicate marking a lease of this kind as garbage, or ``None`` (the default).
+
+        A predicate over an EXISTING entity row aliased ``e`` (like :meth:`eligibility_sql`), true when the
+        entity is finished and its lease can never usefully be claimed again. The engine adds the
+        missing-entity case itself (no row at all), so the predicate never has to name it. ``None`` opts the
+        kind out: nothing of it is ever pruned, missing entities included. :meth:`is_dead` is the same
+        rule, missing entity included, for engines with no SQL, and the two must agree.
+        """
+        return None
+
+    async def is_dead(self, entity_id: str) -> bool:
+        """The in-process twin of :meth:`dead_lease_sql`: the entity is missing or finished."""
+        return False
+
 
 class ClaimEngine(ABC):
     # 01a0518b review: class-level default (not set in __init__) so
@@ -261,6 +291,28 @@ class ClaimEngine(ABC):
         nothing.
         """
         return True
+
+    async def lease_exists(self, kind: ClaimKind, entity_ids: Sequence[str]) -> set[str]:
+        """The subset of ``entity_ids`` that has a lease ROW of ``kind``: armed, claimed or expired.
+
+        The batch form of :meth:`has_lease` (one query, not one per id), for a caller deciding which
+        of a set of QUEUED entities still needs arming.
+
+        Concrete, not abstract, and the default is ALL of ``entity_ids`` on purpose, for the same
+        reason as :meth:`has_lease`: the caller acts on the ids that are NOT in the answer (it arms
+        them), so an engine that cannot answer must make it do nothing.
+        """
+        return set(entity_ids)
+
+    async def prune_dead_leases(self, kind: ClaimKind) -> int:
+        """Delete lease rows of ``kind`` whose entity is missing or finished; return how many.
+
+        "Dead" is the adapter's call (:meth:`ClaimAdapter.dead_lease_sql` / :meth:`~ClaimAdapter.is_dead`);
+        a kind whose adapter does not define one is never pruned. A lease a worker currently holds
+        (claimed and unexpired) is never deleted: its holder's release owns it. Concrete, with a
+        default of ``0``: an engine that cannot answer prunes nothing.
+        """
+        return 0
 
     async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
         """Whether a worker currently holds an unexpired lease on (kind, entity_id).

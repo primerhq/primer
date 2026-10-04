@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -242,6 +242,54 @@ class PostgresClaimEngine(ClaimEngine):
                 kind.value, entity_id,
             )
         return row is not None
+
+    async def lease_exists(self, kind: ClaimKind, entity_ids: Sequence[str]) -> set[str]:
+        """The subset of ``entity_ids`` with a lease ROW of ``kind``, claimed or not, in one query.
+
+        See :meth:`~primer.int.claim.ClaimEngine.lease_exists`.
+        """
+        ids = list(dict.fromkeys(entity_ids))
+        if not ids:
+            return set()
+        async with self._storage.pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT entity_id FROM {self._table} "
+                f"WHERE kind = $1 AND entity_id = ANY($2::text[])",
+                kind.value, ids,
+            )
+        return {r["entity_id"] for r in rows}
+
+    async def prune_dead_leases(self, kind: ClaimKind) -> int:
+        """Delete the unheld lease rows of ``kind`` whose entity is missing or finished.
+
+        One statement. "Finished" is the adapter's :meth:`~primer.int.claim.ClaimAdapter.dead_lease_sql`;
+        "missing" is the engine's own anti-join against the entity table. A kind whose adapter
+        defines no predicate is not pruned at all, so the missing-entity rule cannot delete a lease
+        whose entity this engine has no business judging. A held lease (claimed and unexpired) is
+        never touched.
+
+        The entity table is read under the statement's own snapshot: an entity reset from finished
+        to queued by a concurrent writer inside that window loses its lease row, and the
+        reconciler's re-arm pass restores it.
+        """
+        adapter = self._adapters.get(kind)
+        dead = adapter.dead_lease_sql() if adapter is not None else None
+        if adapter is None or dead is None:
+            return 0
+        entity = self._qualified_entity(adapter.entity_table)
+        async with self._storage.pool.acquire() as conn:
+            if not self._entity_tables_ensured:
+                await self._ensure_entity_tables(conn)
+            rows = await conn.fetch(
+                f"DELETE FROM {self._table} l"
+                f" WHERE l.kind = $1"
+                f"   AND (l.claimed_by IS NULL OR l.expires_at < now())"
+                f"   AND (NOT EXISTS (SELECT 1 FROM {entity} e WHERE e.id = l.entity_id)"
+                f"        OR EXISTS (SELECT 1 FROM {entity} e WHERE e.id = l.entity_id AND ({dead})))"
+                f" RETURNING 1",
+                kind.value,
+            )
+        return len(rows)
 
     async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
         """Whether a worker holds an unexpired lease on (kind, entity_id) right now.

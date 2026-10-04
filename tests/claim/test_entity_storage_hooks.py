@@ -206,6 +206,9 @@ async def test_harness_on_release_none_storage_raises(sqlite_provider):
 # Storage layer (JSONB serialization, table auto-creation on first write).
 # ---------------------------------------------------------------------------
 
+_TOKEN = "wrk-test:2026-10-05T00:00:00+00:00:cafe0001"
+
+
 def _make_tool_call_task(id: str = "worker:tool:1:1") -> ToolCallTask:
     return ToolCallTask(
         id=id,
@@ -214,6 +217,7 @@ def _make_tool_call_task(id: str = "worker:tool:1:1") -> ToolCallTask:
         tool_name="workspace__write",
         state=ToolCallTaskState.RUNNING,
         record_seq=1,
+        claim_token=_TOKEN,
         created_at=datetime.now(UTC),
         started_at=datetime.now(UTC),
     )
@@ -226,7 +230,10 @@ async def test_tool_call_on_release_success_sets_done(sqlite_provider):
     await storage.create(task)
 
     adapter = ToolCallClaimAdapter(task_storage=storage)
-    outcome = ReleaseOutcome(success=True, drop_lease=True)
+    outcome = ReleaseOutcome(
+        success=True, drop_lease=True, claim_token=_TOKEN,
+        entity_update={"result_state": {"id": task.id, "output": "ok", "error": False}, "attempts": 2},
+    )
     await adapter.on_release(conn=None, entity_id=task.id, outcome=outcome)
 
     updated = await storage.get(task.id)
@@ -234,6 +241,8 @@ async def test_tool_call_on_release_success_sets_done(sqlite_provider):
     assert updated.state == ToolCallTaskState.DONE
     assert updated.finished_at is not None
     assert updated.last_error is None
+    assert updated.result_state == {"id": task.id, "output": "ok", "error": False}
+    assert updated.attempts == 2
 
 
 @pytest.mark.asyncio
@@ -244,11 +253,11 @@ async def test_tool_call_on_release_gate_sets_gated(sqlite_provider):
 
     adapter = ToolCallClaimAdapter(task_storage=storage)
     outcome = ReleaseOutcome(
-        success=False, drop_lease=True,
+        success=False, drop_lease=True, claim_token=_TOKEN,
         park=ParkRequest(
             parked_state={"kind": "approval"},
             parked_event_key="tool_approval:sess-1:worker:tool:1:1",
-            parked_until=None,
+            parked_until=datetime(2026, 10, 5, 12, 30, 15, 123456, tzinfo=UTC),
             parked_at=datetime.now(UTC),
         ),
     )
@@ -259,13 +268,16 @@ async def test_tool_call_on_release_gate_sets_gated(sqlite_provider):
     assert updated.state == ToolCallTaskState.GATED
     assert updated.gate_event_key == "tool_approval:sess-1:worker:tool:1:1"
     assert updated.gate_state == {"kind": "approval"}
+    assert updated.gate_until == datetime(2026, 10, 5, 12, 30, 15, 123456, tzinfo=UTC)
+    assert updated.gate_seq == 1
+    assert updated.claim_token is None
 
 
 @pytest.mark.asyncio
 async def test_tool_call_on_release_missing_entity_returns_silently(sqlite_provider):
     storage = sqlite_provider.get_storage(ToolCallTask)
     adapter = ToolCallClaimAdapter(task_storage=storage)
-    outcome = ReleaseOutcome(success=True, drop_lease=True)
+    outcome = ReleaseOutcome(success=True, drop_lease=True, claim_token=_TOKEN)
     await adapter.on_release(conn=None, entity_id="nonexistent", outcome=outcome)
 
 
@@ -275,3 +287,34 @@ async def test_tool_call_on_release_none_storage_raises(sqlite_provider):
     outcome = ReleaseOutcome(success=True)
     with pytest.raises(RuntimeError, match="task_storage"):
         await adapter.on_release(conn=None, entity_id="worker:tool:1:1", outcome=outcome)
+
+
+@pytest.mark.asyncio
+async def test_tool_call_gate_release_lands_on_a_row_stored_without_gate_seq(sqlite_provider):
+    """Rows the park handlers wrote before gate_seq existed have no such key in the stored JSON. The fence names
+    the value the model reads (0), and patch_if lets that match the absent key; otherwise the gate write was a
+    silent no-op (the lease already dropped, the row left RUNNING with its token)."""
+    storage = sqlite_provider.get_storage(ToolCallTask)
+    task = _make_tool_call_task()
+    await storage.create(task)
+    conn = sqlite_provider.connection
+    await conn.execute(
+        f'UPDATE "{storage._table}" SET data = json_remove(data, \'$.gate_seq\', \'$.attempts\') WHERE id = ?',
+        (task.id,),
+    )
+    await conn.commit()
+
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    await adapter.on_release(
+        conn=None, entity_id=task.id,
+        outcome=ReleaseOutcome(
+            success=False, drop_lease=True, claim_token=_TOKEN,
+            park=ParkRequest(
+                parked_state={"kind": "approval"}, parked_event_key="k", parked_until=None,
+                parked_at=datetime.now(UTC),
+            ),
+        ),
+    )
+    updated = await storage.get(task.id)
+    assert updated is not None
+    assert (updated.state, updated.gate_seq, updated.claim_token) == (ToolCallTaskState.GATED, 1, None)

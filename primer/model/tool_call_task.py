@@ -149,6 +149,30 @@ class ToolCallTask(Identifiable):
     # claimable call is not built.
     result_state: dict[str, Any] | None = None
 
+    # Unclean executions so far: a claim that found the row RUNNING (the previous
+    # holder died mid-run) and an explicit failed release. A clean GATED release, a gate
+    # resume and a drain requeue do not count. The executor poisons the task when this
+    # reaches ``max_attempts``. Read-then-write from a FENCED read (``patch_if`` with the
+    # old value in ``where``), so a concurrent increment rejects the write instead of
+    # being lost.
+    attempts: int = Field(0, ge=0)
+
+    # The per-CLAIM fence for every row write the executor makes. Minted by the claiming
+    # handler (``worker:claimed_at:random``) and written with the RUNNING patch, which
+    # overwrites the previous holder's token; ``ToolCallClaimAdapter.on_release`` writes
+    # only while the row still carries the releaser's token, so a release that outlived
+    # its claim cannot move a row someone else now owns. ``None`` never matches a fence.
+    claim_token: str | None = None
+
+    # Bumped by every GATED release; a REST/channel decision carries the value the
+    # resolver returned and flips the gate only while it still matches, so a decision
+    # for an earlier gate of the same call cannot resume a later one.
+    gate_seq: int = Field(0, ge=0)
+
+    # Stamped by the resume coordinator when it persists this task's TOOL_RESULT record.
+    # Retention never prunes a terminal row that has not been materialized.
+    materialized_at: datetime | None = None
+
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
