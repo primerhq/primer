@@ -141,21 +141,21 @@ class ScriptedLLM:
 
 # ------------------------------------------------------------------- the session
 
-def _agent() -> Agent:
+def make_agent() -> Agent:
     return Agent(
         id="golden", description="golden", model=AgentModel(profile_id="p--m"),
         system_prompt=["Be terse."],
     )
 
 
-def _model() -> ResolvedModel:
+def make_model() -> ResolvedModel:
     return ResolvedModel(
         profile_id="golden-profile", provider_id="golden-provider", model_name="golden-model",
         context_length=CONTEXT_LENGTH, config=ModelProfileConfig(),
     )
 
 
-async def _open_session(root: Path):
+async def open_session(root: Path):
     backend = WorkspaceBackendFactory.create(WorkspaceProvider(
         id="local-1", provider=WorkspaceProviderType.LOCAL,
         config=LocalWorkspaceConfig(root_path=str(root / "wsroot")),
@@ -171,7 +171,7 @@ async def _open_session(root: Path):
     return backend, workspace, session
 
 
-async def _append(workspace, session, *messages: Message) -> None:
+async def append_messages(workspace, session, *messages: Message) -> None:
     """Seed history: append whole Message lines, as the executor itself would persist them.
 
     ``append_message_line`` takes the session's messages lock itself, so it is NOT wrapped in one
@@ -181,7 +181,7 @@ async def _append(workspace, session, *messages: Message) -> None:
         await workspace.append_message_line(session.session_id, (message.model_dump_json() + "\n").encode())
 
 
-def _tool_round(i: int) -> list[Message]:
+def tool_round(i: int) -> list[Message]:
     call = ToolCallPart(id=f"call_{i}", name="exec", arguments={"cmd": f"cat part_{i}"})
     return [
         Message(role="assistant", parts=[call]),
@@ -189,19 +189,19 @@ def _tool_round(i: int) -> list[Message]:
     ]
 
 
-def _user(text: str) -> Message:
+def user_message(text: str) -> Message:
     return Message(role="user", parts=[TextPart(text=text)])
 
 
-def _assistant(text: str) -> Message:
+def assistant_message(text: str) -> Message:
     return Message(role="assistant", parts=[TextPart(text=text)])
 
 
-async def _run_turn(session, llm: ScriptedLLM) -> None:
+async def run_turn(session, llm: ScriptedLLM) -> None:
     manager = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
     executor = WorkspaceAgentExecutor(
-        agent=_agent(), llm=llm,  # type: ignore[arg-type]
-        llm_model=_model(), tool_manager=manager, session=session,
+        agent=make_agent(), llm=llm,  # type: ignore[arg-type]
+        llm_model=make_model(), tool_manager=manager, session=session,
         compaction=CompactionStrategy(),
     )
     async for _event in executor.invoke([]):
@@ -259,7 +259,7 @@ def capture_file(text: str, session_id: str) -> dict[str, Any]:
 async def run_scenario() -> dict[str, Any]:
     """Run the four turns and return everything the golden pins."""
     with tempfile.TemporaryDirectory(prefix="primer-off-golden-") as tmp:
-        backend, workspace, session = await _open_session(Path(tmp))
+        backend, workspace, session = await open_session(Path(tmp))
         llm = ScriptedLLM()
         llm.session_id = session.session_id
         turns: list[dict[str, Any]] = []
@@ -277,44 +277,44 @@ async def run_scenario() -> dict[str, Any]:
         try:
             # Turn 1, tier 1: 4 x ~22.5k-token tool results (total ~90k, over the 40k total and the 82.6k trigger).
             for i in range(4):
-                await _append(workspace, session, *_tool_round(i))
-            await _append(workspace, session, _user("turn 1: go on"))
+                await append_messages(workspace, session, *tool_round(i))
+            await append_messages(workspace, session, user_message("turn 1: go on"))
             llm.extend([Events(text_events("turn-1-ok"))])
             before = len(llm.calls)
-            await _run_turn(session, llm)
+            await run_turn(session, llm)
             record("1-tier1-prune", before)
 
             # Turn 2, tier 2: user text pruning cannot shrink.
             for i in range(4):
-                await _append(workspace, session, _user(chr(ord("A") + i) * BIG_USER_CHARS))
+                await append_messages(workspace, session, user_message(chr(ord("A") + i) * BIG_USER_CHARS))
             llm.extend([Events(text_events("SUMMARY-2")), Events(text_events("turn-2-ok"))])
             before = len(llm.calls)
-            await _run_turn(session, llm)
+            await run_turn(session, llm)
             record("2-tier2-summary", before)
 
             # Turn 3, overflow replay: the turn's own call is rejected as a context overflow. A "turn" for the
             # tail split is an ASSISTANT message, and the head is empty (nothing to summarise, no LLM call)
             # unless there are more than 4 of them, so the history carries assistant replies.
             for i in range(5):
-                await _append(workspace, session, _user(f"turn 3 filler {i}: " + ("f" * 2000)), _assistant(f"turn 3 reply {i}"))
-            await _append(workspace, session, _user("turn 3: next"))
+                await append_messages(workspace, session, user_message(f"turn 3 filler {i}: " + ("f" * 2000)), assistant_message(f"turn 3 reply {i}"))
+            await append_messages(workspace, session, user_message("turn 3: next"))
             llm.extend([
                 Raise(BadRequestError("This model's maximum context length is 100000 tokens, however you requested more")),
                 Events(text_events("SUMMARY-3")),
                 Events(text_events("turn-3-ok")),
             ])
             before = len(llm.calls)
-            await _run_turn(session, llm)
+            await run_turn(session, llm)
             record("3-overflow-replay", before)
 
             # Turn 4, deferred steers: two steers land while the summary call is in flight. Again more than 4
             # assistant messages, or the strategy silently does nothing (see the characterisation tests).
             for i in range(4):
-                await _append(workspace, session, _user(chr(ord("W") + i) * BIG_USER_CHARS), _assistant(f"turn 4 reply {i}"))
+                await append_messages(workspace, session, user_message(chr(ord("W") + i) * BIG_USER_CHARS), assistant_message(f"turn 4 reply {i}"))
             entered, release = asyncio.Event(), asyncio.Event()
             llm.extend([Gate(entered, release, text_events("SUMMARY-4")), Events(text_events("turn-4-ok"))])
             before = len(llm.calls)
-            task = asyncio.create_task(_run_turn(session, llm))
+            task = asyncio.create_task(run_turn(session, llm))
             await asyncio.wait_for(entered.wait(), timeout=30)
             await session.append_instruction("STEER-DURING-COMPACTION-1")
             await session.append_instruction("STEER-DURING-COMPACTION-2")
