@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,16 @@ CREATE TABLE IF NOT EXISTS workers (
 """
 
 
+@dataclass(eq=False)
+class _Listener:
+    """One dedicated pooled connection with a LISTEN callback attached."""
+
+    conn: "asyncpg.Connection"
+    channel: str
+    callback: Callable[..., None]
+    queue: "asyncio.Queue[str]"
+
+
 class PostgresScheduler(Scheduler):
     """Postgres impl. Tasks 9-11 fill in claim/LISTEN."""
 
@@ -55,7 +66,10 @@ class PostgresScheduler(Scheduler):
         self._storage = storage_provider
         self._config = config
         self._lease_ttl_seconds: int = 30
-        self._listen_tasks: list[asyncio.Task] = []
+        # Every LISTEN connection currently checked out of the pool, so
+        # aclose() can release the ones whose watcher was abandoned without
+        # being closed (see _close_listener).
+        self._listeners: set[_Listener] = set()
         # ---- metrics (spec §14) ----
         self._notify_received_total: int = 0
         self._listen_reconnects_total: int = 0
@@ -95,14 +109,23 @@ class PostgresScheduler(Scheduler):
             ) from exc
 
     async def aclose(self) -> None:
-        for task in self._listen_tasks:
-            task.cancel()
-        for task in self._listen_tasks:
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self._listen_tasks.clear()
+        """Release every LISTEN connection still checked out of the pool.
+
+        A watcher's own ``finally`` releases its connection whenever the
+        generator is closed. A consumer that returns from ``async for``
+        leaves the generator suspended rather than closed; if nothing
+        references it any more, asyncio's async-generator finalizer closes it
+        on the next loop iteration, which is how the production consumer
+        (``WorkerPool._cancel_loop``) is cleaned up, well before the pool
+        closes. This method is defence in depth for a suspended generator
+        that something STILL references: the finalizer never fires for it,
+        its connection stays acquired, and ``Pool.close()`` waits forever for
+        acquired connections. So the scheduler releases what it handed out;
+        a watcher that is closed later finds its listener already gone and
+        does nothing.
+        """
+        for listener in list(self._listeners):
+            await self._close_listener(listener)
 
     # ---- methods filled in by Task 9 -----------------------------------
 
@@ -180,15 +203,14 @@ class PostgresScheduler(Scheduler):
 
     # ---- LISTEN/NOTIFY (Task 11) ----------------------------------------
 
-    async def _open_listen_connection(
-        self, channel: str,
-    ) -> tuple["asyncpg.Connection", asyncio.Queue]:
+    async def _open_listen_connection(self, channel: str) -> _Listener:
         """Acquire a dedicated connection from the pool and add a LISTEN
         callback that pushes payloads onto an asyncio.Queue.
 
-        The connection is held by the caller — they must release it via
-        ``self._storage.pool.release(conn)`` when the iterator is closed
-        or the connection drops.
+        The returned listener is registered with the scheduler. The caller
+        must hand it back to :meth:`_close_listener` when the iterator is
+        closed or the connection drops; :meth:`aclose` does so for any that
+        were abandoned.
         """
         queue: asyncio.Queue[str] = asyncio.Queue()
         conn = await self._storage.pool.acquire()
@@ -196,8 +218,56 @@ class PostgresScheduler(Scheduler):
         def _on_notify(_conn, _pid, _ch, payload):
             queue.put_nowait(payload)
 
-        await conn.add_listener(channel, _on_notify)
-        return conn, queue
+        try:
+            await conn.add_listener(channel, _on_notify)
+        except BaseException:
+            # Not registered yet, so nothing else will ever release it. The
+            # release can itself fail (asyncpg re-raises errors from reset or
+            # from waiting out a cancelled query); that must be logged and
+            # swallowed so the bare `raise` below always re-raises the ORIGINAL
+            # exception. A CancelledError replaced by an ordinary Exception
+            # would be treated by the watcher as "open failed, retry", using up
+            # the task's single cancel() and hanging drain_and_stop.
+            try:
+                await self._storage.pool.release(conn)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "scheduler LISTEN pool.release on %s failed after a "
+                    "failed LISTEN setup: %s - connection may leak",
+                    channel, exc,
+                )
+            raise
+        listener = _Listener(conn, channel, _on_notify, queue)
+        self._listeners.add(listener)
+        return listener
+
+    async def _close_listener(self, listener: _Listener) -> None:
+        """Remove the LISTEN callback and give the connection back to the pool.
+
+        Idempotent: the watcher's ``finally`` and :meth:`aclose` may both
+        reach the same listener, and only the first does anything. Failures
+        are logged and swallowed so a release error cannot mask the original
+        cause of a watcher exiting.
+        """
+        if listener not in self._listeners:
+            return
+        self._listeners.discard(listener)
+        try:
+            await listener.conn.remove_listener(listener.channel, listener.callback)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "scheduler LISTEN remove_listener on %s failed: %s",
+                listener.channel, exc,
+            )
+        finally:
+            try:
+                await self._storage.pool.release(listener.conn)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "scheduler LISTEN pool.release on %s failed: %s - "
+                    "connection may leak",
+                    listener.channel, exc,
+                )
 
     def watch_ready(self, worker_id: str) -> AsyncIterator[str]:
         """Stream session_ids from ``pg_notify('session_ready', ...)``.
@@ -219,26 +289,13 @@ class PostgresScheduler(Scheduler):
     def _watch_channel(self, channel: str) -> AsyncIterator[str]:
         """Generic LISTEN-backed iterator with reconnect on drop."""
         config = self._config
-        storage = self._storage
         scheduler = self
-
-        async def _safe_release(conn) -> None:
-            """Release the LISTEN connection back to the pool; log + swallow
-            failures so a release error doesn't mask the original cause."""
-            try:
-                await storage.pool.release(conn)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "scheduler LISTEN pool.release on %s failed: %s — "
-                    "connection may leak",
-                    channel, exc,
-                )
 
         async def _iter() -> AsyncIterator[str]:
             first_attempt = True
             while True:
                 try:
-                    conn, queue = await self._open_listen_connection(channel)
+                    listener = await self._open_listen_connection(channel)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -258,22 +315,26 @@ class PostgresScheduler(Scheduler):
                 first_attempt = False
                 try:
                     while True:
-                        payload = await queue.get()
+                        payload = await listener.queue.get()
                         scheduler._notify_received_total += 1
                         yield payload
                 except asyncio.CancelledError:
-                    await _safe_release(conn)
                     raise
                 except Exception as exc:
                     logger.warning(
                         "scheduler LISTEN dropped on %s: %s — reconnecting",
                         channel, exc,
                     )
-                    await _safe_release(conn)
-                    try:
-                        await asyncio.sleep(config.listen_reconnect_seconds)
-                    except asyncio.CancelledError:
-                        raise
+                finally:
+                    # CancelledError, a dropped connection, AND GeneratorExit
+                    # (a consumer that stops iterating, or aclose()) all land
+                    # here. The release used to live in the except arms, which
+                    # GeneratorExit skips, leaking the pooled connection.
+                    await scheduler._close_listener(listener)
+                try:
+                    await asyncio.sleep(config.listen_reconnect_seconds)
+                except asyncio.CancelledError:
+                    raise
 
         return _iter()
 

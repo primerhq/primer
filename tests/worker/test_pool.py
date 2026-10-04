@@ -769,6 +769,47 @@ async def test_turn_driver_drains_async_generator():
     assert driver.last_done_reason == "end_turn"
 
 
+async def test_cancel_loop_closes_its_iterator_when_it_returns_on_stopping():
+    """The cancel loop returns from `async for` when the worker is stopping.
+    That abandons a SUSPENDED async generator, whose cleanup (releasing the
+    scheduler's pooled LISTEN connection) would otherwise be left to
+    asyncio's async-generator finalizer, which closes an unreferenced
+    generator on the NEXT loop iteration. That is early enough in production,
+    but it is timing the loop should not depend on: it must close the
+    iterator itself, inline, before it returns."""
+    closed: list[str] = []
+
+    class _Scheduler:
+        def watch_cancel(self, worker_id):
+            pool_ref = pool  # set below, before the loop starts
+
+            async def _iter():
+                try:
+                    pool_ref._stopping.set()  # drain has begun
+                    yield "sess-cancelled-during-drain"
+                    await asyncio.Event().wait()
+                finally:
+                    closed.append("closed")
+
+            return _iter()
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1, poll_interval_seconds=0.1),
+        scheduler=_Scheduler(),                        # type: ignore[arg-type]
+        storage=None,                                  # type: ignore[arg-type]
+        workspace_registry=None,                       # type: ignore[arg-type]
+        provider_registry=None,                        # type: ignore[arg-type]
+        engine=None,                                   # type: ignore[arg-type]
+    )
+    pool._worker_id = "wrk-test"
+
+    await asyncio.wait_for(pool._cancel_loop(), timeout=2.0)
+
+    # No sleep, no gc.collect(): the finalizer path has not had a chance to
+    # run yet, so only an explicit close by the loop itself can satisfy this.
+    assert closed == ["closed"]
+
+
 async def test_cancel_loop_routes_to_active_scope(scheduler, engine, monkeypatch):
     """Session claims dispatch to run_one_session_turn; the claim loop
     picks up the session and calls the new handler (cancel wiring is
