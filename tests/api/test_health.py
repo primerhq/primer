@@ -146,6 +146,9 @@ async def test_health_surfaces_worker_pool_metrics_when_attached(
         assert metrics["primer_worker_capacity"] == 5
         assert "primer_session_turns_total" in metrics
         assert "primer_session_turn_duration_seconds" in metrics
+        # Cancels that reached a running turn through the session row because their
+        # NOTIFY was lost: without this counter such a miss is invisible.
+        assert metrics["primer_worker_cancels_reconciled_total"] == 0
     finally:
         app.state.worker_pool = None
 
