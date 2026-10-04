@@ -14,6 +14,7 @@ See ``docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import socket
@@ -989,13 +990,21 @@ class WorkerPool:
         backoff = 1.0
         while not self._stopping.is_set():
             try:
-                cancel_iter = self._cancel_iter()
-                async for sid in cancel_iter:
-                    scope = self._active_scopes.get((ClaimKind.SESSION, sid))
-                    if scope is not None:
-                        scope.cancel("user_signal")
-                    if self._stopping.is_set():
-                        return
+                # aclosing: the early return below (or any other exit from
+                # the loop body) would otherwise abandon a SUSPENDED async
+                # generator. CPython's async-generator finalizer would still
+                # close it on the next loop iteration once nothing references
+                # it, so the scheduler's pooled LISTEN connection is released
+                # either way; aclosing makes that release deterministic and
+                # inline instead of one loop tick late, and does not depend
+                # on refcount-driven finalization.
+                async with contextlib.aclosing(self._cancel_iter()) as cancel_iter:
+                    async for sid in cancel_iter:
+                        scope = self._active_scopes.get((ClaimKind.SESSION, sid))
+                        if scope is not None:
+                            scope.cancel("user_signal")
+                        if self._stopping.is_set():
+                            return
             except asyncio.CancelledError:
                 return
             except Exception:

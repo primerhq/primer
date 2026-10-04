@@ -223,3 +223,134 @@ async def test_signal_cancel_yields_to_watcher(sched):
     await sched.signal_cancel("s-cancel-1")
     sid = await asyncio.wait_for(task, timeout=2.0)
     assert sid == "s-cancel-1"
+
+
+# ---------------------------------------------------------------------------
+# LISTEN watcher: the pooled connection must always go back
+# ---------------------------------------------------------------------------
+# A watcher holds one pooled connection for its LISTEN. asyncpg's Pool.close()
+# waits for every acquired connection to be released, with no timeout, so a
+# leaked one hangs shutdown forever. It used to be released only on
+# CancelledError / Exception, not when the consumer stops iterating
+# (GeneratorExit), and PostgresScheduler.aclose() could not release it because
+# it tracked nothing. These tests build their own provider (not the `sched`
+# fixture, whose teardown would hang the whole suite on a regression) and
+# bound every pool close.
+
+
+async def _fresh_pair():
+    sp = PostgresStorageProvider(_parse_dsn(os.environ[_DSN_ENV]))
+    await sp.initialize()
+    async with sp.pool.acquire() as conn:
+        await conn.execute("DROP TABLE IF EXISTS workers")
+    s = PostgresScheduler(storage_provider=sp, config=PostgresSchedulerConfig())
+    await s.initialize()
+    return sp, s
+
+
+def _held(sp) -> int:
+    """Connections currently acquired from the pool (leaked LISTEN conns)."""
+    return sp.pool.get_size() - sp.pool.get_idle_size()
+
+
+async def _close_pool_bounded(sp) -> None:
+    held = _held(sp)
+    try:
+        await asyncio.wait_for(sp.aclose(), 5.0)
+    except TimeoutError:
+        sp.pool.terminate()
+        pytest.fail(
+            f"pool.close() hung: a LISTEN connection was never released ({held} still held)"
+        )
+
+
+async def _consume_one_then_stop(sched, iterator) -> str:
+    """Consume exactly one item and return, abandoning the iterator."""
+
+    async def consume():
+        async for sid in iterator:
+            return sid
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.2)  # let LISTEN attach
+    await sched.signal_cancel("s-leak")
+    return await asyncio.wait_for(task, timeout=3.0)
+
+
+async def test_explicitly_closed_watcher_releases_its_listen_connection():
+    sp, sched = await _fresh_pair()
+    try:
+        it = sched._watch_cancel("w1")
+        assert await _consume_one_then_stop(sched, it) == "s-leak"
+        assert _held(sp) == 1  # the abandoned watcher still holds its LISTEN conn
+        await it.aclose()
+        assert _held(sp) == 0, "closing the generator must release its connection"
+    finally:
+        await _close_pool_bounded(sp)
+
+
+async def test_collected_watcher_releases_its_listen_connection():
+    """The production shape: the consumer returns, nothing references the
+    generator, and asyncio's finalizer closes it, so its `finally` must run
+    GeneratorExit and release the connection. This is the real bug fix (1)
+    closes; on main the finally was missing and this leaked and hung."""
+    import gc
+
+    sp, sched = await _fresh_pair()
+    try:
+        it = sched._watch_cancel("w1")
+        assert await _consume_one_then_stop(sched, it) == "s-leak"
+        del it
+        gc.collect()
+        await asyncio.sleep(0.3)  # let the asyncgen finalizer's aclose() run
+        assert _held(sp) == 0, "a garbage-collected watcher must release its connection"
+    finally:
+        await _close_pool_bounded(sp)
+
+
+async def test_scheduler_aclose_releases_an_abandoned_watcher():
+    """An abandoned watcher that something still REFERENCES.
+
+    When a consumer returns from `async for`, the suspended generator is
+    normally closed by asyncio's async-generator finalizer on the next loop
+    iteration once nothing references it (test_collected_watcher_releases_...
+    pins that; it is the production shape, and fix (1) alone covers it). If
+    something DOES keep a reference, that finalizer never fires, the
+    connection stays acquired and Pool.close() waits forever.
+    PostgresScheduler.aclose() is defence in depth for that case: the iterator
+    is deliberately kept alive here, with no close and no gc, so only aclose()
+    can rescue the connection."""
+    sp, sched = await _fresh_pair()
+    try:
+        it = sched._watch_cancel("w1")
+        assert await _consume_one_then_stop(sched, it) == "s-leak"
+        assert _held(sp) == 1
+        await sched.aclose()
+        assert _held(sp) == 0, "PostgresScheduler.aclose() must release live listeners"
+        # The abandoned generator is closed later; its release must be a no-op.
+        await it.aclose()
+        assert _held(sp) == 0
+    finally:
+        await _close_pool_bounded(sp)
+
+
+async def test_cancelled_watcher_releases_its_listen_connection():
+    """Control: cancelling the consumer while parked in the generator
+    (the pool's normal shutdown path) always released correctly."""
+    sp, sched = await _fresh_pair()
+    try:
+        it = sched._watch_cancel("w1")
+
+        async def consume():
+            async for _ in it:
+                pass
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.3)
+        assert _held(sp) == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert _held(sp) == 0
+    finally:
+        await _close_pool_bounded(sp)
