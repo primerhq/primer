@@ -20,8 +20,12 @@ The base class owns:
 * Streaming-tap fan-out -- :meth:`subscribe` registers a callback
   that receives every :class:`StreamEvent` concurrently with the
   caller's iterator.
-* Hard-overflow recovery -- catch a context-overflow
-  :class:`BadRequestError` from the LLM, force-compact, retry once.
+* Hard-overflow recovery -- catch a RAISED :class:`BadRequestError` that
+  :func:`primer.common.context_overflow.is_context_overflow` classifies as
+  a context overflow, force-compact, retry once. A YIELDED overflow (Ollama,
+  Gemini: a ``TurnStreamFailure``) is classified by the same function but
+  not recovered here: the replay restarts the turn from scratch, which would
+  re-run executed tools.
 
 Subclasses provide three abstract hooks:
 
@@ -60,7 +64,6 @@ from primer.model.chat import (
     TextPart,
     ToolCallPart,
     ToolResultPart,
-    TurnStreamFailure,
     Usage,
     _CompactionNote,
     output_to_message,
@@ -297,9 +300,11 @@ class _BaseAgentExecutor(ABC):
                 response_format=response_format,
             ):
                 yield ev
-        except (BadRequestError, TurnStreamFailure) as exc:
-            # A raised BadRequestError (Anthropic, OpenAI-compatible) or a yielded bad_request Error
-            # the loop turned into a TurnStreamFailure (Ollama, Gemini): see is_context_overflow.
+        except BadRequestError as exc:
+            # Only a RAISED BadRequestError is recovered here. A yielded overflow (Ollama, Gemini)
+            # reaches this point as a TurnStreamFailure and is classified by is_context_overflow, but
+            # deliberately NOT recovered: this replay starts the turn again from scratch, which would
+            # re-run side-effecting tools, and the yielded Error has already been streamed and recorded.
             if not is_context_overflow(exc):
                 raise
             logger.warning(

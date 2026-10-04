@@ -175,6 +175,11 @@ it, so the last member's own `BadRequestError` is re-raised instead (for a
 member that YIELDED its 400, one is built from the `Error`). Any other mix of
 failures, a rate limit or a missing member among them, stays the aggregated
 `RateLimitError`. An overflow on a single member still fails over to the next.
+Because the re-raised `BadRequestError` is what the executor's hard-overflow
+recovery catches, an aggregated pool now takes the same replay-from-scratch
+recovery as an eager adapter, and shares its exposure to re-running tools the
+turn already executed, until the overflow-replay unit lands (see
+`docs/dev/subsystems/agents.md`).
 
 **Safety constraint.** Clean failover is only possible before the first
 non-terminal event reaches the subscriber; retrying after partial output

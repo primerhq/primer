@@ -90,6 +90,24 @@ NOT_OVERFLOWS = [
     pytest.param("max_output_tokens is above the token limit", id="budget-phrase-max-output-tokens"),
     pytest.param("maxOutputTokens is above the token limit", id="budget-phrase-maxoutputtokens"),
     pytest.param("max_completion_tokens is above the token limit", id="budget-phrase-max-completion-tokens"),
+    # vLLM: the OUTPUT cap is "too large", and the message quotes the context length while saying so.
+    pytest.param(
+        "'max_tokens' or 'max_completion_tokens' is too large: 100000. This model's maximum context length "
+        "is 8192 tokens and your request has 50 input tokens (100000 > 8192 - 50).",
+        id="vllm-max-tokens-too-large",
+    ),
+    # One per output parameter, so each name in the veto is pinned on its own (the same shape, synthetic).
+    pytest.param("max_tokens is too large for this model's context length of 8192 tokens", id="veto-max-tokens"),
+    pytest.param(
+        "max_completion_tokens is too large for this model's context length of 8192 tokens",
+        id="veto-max-completion-tokens",
+    ),
+    pytest.param(
+        "max_output_tokens is too large for this model's context length of 8192 tokens", id="veto-max-output-tokens",
+    ),
+    pytest.param(
+        "maxOutputTokens is too large for this model's context length of 8192 tokens", id="veto-maxoutputtokens",
+    ),
     pytest.param("Invalid 'metadata.key': string too long. Expected at most 64 characters.", id="bare-too-long"),
     pytest.param("messages: text content blocks must be non-empty", id="unrelated-400"),
 ]
