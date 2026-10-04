@@ -121,6 +121,11 @@ class WorkerPool:
         # their NOTIFY never arrived (see _reconcile_cancels). Exposed as
         # primer_worker_cancels_reconciled_total.
         self._cancels_reconciled_total: int = 0
+        # Claims of a (kind, id) this pool already has in flight, skipped without
+        # touching the lease (see _reserve_and_dispatch). Exposed as
+        # primer_worker_duplicate_claims_total; a rate above zero typically means a
+        # heartbeat stalled past the lease TTL while a turn was still running.
+        self._duplicate_claims_total: int = 0
 
         # Unified in-flight tracking — one set for all claim kinds.
         # (ClaimKind, entity_id) tuples for all kinds.
@@ -319,6 +324,7 @@ class WorkerPool:
             "primer_worker_claims_total": self._claims_total,
             "primer_worker_claims_empty_total": self._claims_empty_total,
             "primer_worker_cancels_reconciled_total": self._cancels_reconciled_total,
+            "primer_worker_duplicate_claims_total": self._duplicate_claims_total,
             "primer_session_turns_total": dict(self._turns_total_by_result),
             "primer_session_turn_duration_seconds": {
                 "count": self._turn_duration_count,
@@ -437,12 +443,68 @@ class WorkerPool:
         (01a0518b) reserved-split loop below can share it verbatim -
         the reserve-then-dispatch bookkeeping is identical either way,
         only WHICH leases get claimed differs.
+
+        A lease whose ``(kind, id)`` is ALREADY in ``_in_flight`` is a duplicate
+        claim and is skipped, and nothing else is done with it: no dispatch, no
+        scope, no release, no requeue. ``claim_due`` re-claims any lease whose
+        ``expires_at`` has passed, including this worker's own claim, so when a
+        heartbeat stalls past the lease TTL while a turn is still running, this
+        pool's claim loop claims the same row again. ``worker_id`` is minted per
+        pool start, so that can only ever happen here, in the pool still running
+        the first execution. Dispatching it would run a second copy of the turn
+        and replace the first one's cancel scope. Releasing or requeueing it would
+        be worse: a requeue clears ``claimed_by``, the next heartbeat (fenced on
+        ``claimed_by``) reports the in-flight key lost and cancels the only
+        executor. The re-claim already re-stamped the very row the in-flight
+        execution's heartbeat keeps alive, so leaving it alone is the whole fix.
+
+        Pool invariant this relies on, and what keeps the engine's release fence
+        at ``claimed_by`` only (no ``claimed_at`` term): a handler's
+        ``engine.release`` of its lease completes BEFORE its key leaves
+        ``_in_flight`` (the handler releases from inside itself, before
+        :meth:`_run_engine`'s ``finally``). So there is never a second in-process
+        executor for one key, and an older ``claimed_at`` on a release means the
+        sole execution is finishing, not a zombie. It holds on every normal and
+        exception path. On abnormal paths (a release that raises, a second cancel
+        landing inside the handler's ``finally``, a handler that exits before it
+        releases) the key is discarded without the release; no concurrent executor
+        results because the task is dead, and the lease, still claimed by this
+        worker but no longer heartbeated, expires after one lease TTL and is claimed
+        again.
+
+        Residual 1, accepted and bounded by one lease TTL of latency, no work lost:
+        a duplicate that lands between the release commit and the discard (the
+        window spans the session handler's re-arm) is skipped and leaves a claimed
+        lease with no executor; it expires and is claimed again.
+
+        Residual 2, NOT bounded by a TTL and it CAN lose work (tracked as task
+        01a1084f): a preempted execution that is still unwinding keeps its key in
+        flight. If a peer meanwhile finished the work and re-armed the row, and THIS
+        worker's claim loop claimed that fresh row, the duplicate is skipped here and
+        the unwinding handler's release (``success=False, drop_lease=True``) then
+        matches the fresh row on ``claimed_by`` alone and DELETES it. A session
+        recovers only if something re-arms it; a harness lease has no re-arm. It
+        needs a stalled heartbeat, a peer's claim and a full claim cycle inside the
+        unwind window, so it is rare, and before this change the same sequence ran a
+        second executor instead.
         """
         # Reserve in_flight slots immediately before dispatching so
         # back-to-back claim iterations see the correct free count.
+        fresh: list[ClaimLease] = []
         for lease in leases:
-            self._in_flight.add((lease.kind, lease.entity_id))
-        for lease in leases:
+            key = (lease.kind, lease.entity_id)
+            if key in self._in_flight:
+                self._duplicate_claims_total += 1
+                logger.warning(
+                    "duplicate claim of %s/%s skipped: this worker already has it "
+                    "in flight (typically its heartbeat stalled past the lease "
+                    "TTL); the lease is left untouched",
+                    lease.kind, lease.entity_id,
+                )
+                continue
+            self._in_flight.add(key)
+            fresh.append(lease)
+        for lease in fresh:
             handler = self._dispatch.get(lease.kind)
             if handler is None:
                 logger.error(
@@ -549,7 +611,12 @@ class WorkerPool:
     ) -> None:
         """Wrapper that manages _in_flight bookkeeping + a cancel scope
         around a handler call. The scope lets the heartbeat loop preempt a
-        running turn of ANY kind when its lease is lost."""
+        running turn of ANY kind when its lease is lost.
+
+        Invariant (see :meth:`_reserve_and_dispatch`): a handler releases its
+        lease before this wrapper's ``finally`` discards the key (on every normal
+        and exception path), so at most one execution per ``(kind, id)`` exists
+        in this pool at any time."""
         key = (lease.kind, lease.entity_id)
         scope = _CancelScope()
         self._active_scopes[key] = scope

@@ -552,6 +552,129 @@ async def test_postgres_release_drop_lease_deletes_row(pg_storage, entity_seeder
 
 @_needs_pg
 @pytest.mark.asyncio
+async def test_postgres_release_with_a_stale_claimed_at_still_runs_on_release(
+    pg_storage, entity_seeder,
+):
+    """The release fence is ``claimed_by`` only; ``claimed_at`` is NOT part of it.
+
+    A worker's heartbeat stalls, the lease expires, and the SAME worker claims the row again
+    (``worker_id`` is per pool start, and the pool skips the duplicate, so the first execution
+    is still the only one). Its release carries the OLD ``claimed_at`` and must still run
+    ``on_release``: a ``claimed_at`` term would drop the park write or the tool result.
+    """
+    from primer.int.claim import ClaimAdapter
+
+    calls: list[str] = []
+
+    class _NoJoinAdapter(ClaimAdapter):
+        kind = ClaimKind.HARNESS
+        entity_table = "chats"
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            calls.append(entity_id)
+
+    adapter = _NoJoinAdapter()
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.HARNESS: adapter},
+    )
+
+    await entity_seeder.seed(adapter.entity_table, ["rel-stale"])
+    await engine.upsert(ClaimKind.HARNESS, "rel-stale")
+    [first] = await engine.claim_due("worker-A", max_count=1)
+    async with pg_storage.pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE {pg_storage.leases_table} SET expires_at = now() - interval '1 second' "
+            f"WHERE kind = 'harness' AND entity_id = 'rel-stale'"
+        )
+    [second] = await engine.claim_due("worker-A", max_count=1)
+    assert second.claimed_by == first.claimed_by == "worker-A"
+    assert second.claimed_at != first.claimed_at
+
+    await engine.release(first, outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+    assert calls == ["rel-stale"], "a release with an older claimed_at was fenced out"
+    async with pg_storage.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT 1 FROM {pg_storage.leases_table} "
+            f"WHERE kind = 'harness' AND entity_id = 'rel-stale'"
+        )
+    assert row is None
+
+
+@_needs_pg
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [ClaimKind.SESSION, ClaimKind.HARNESS])
+async def test_postgres_pool_same_worker_reclaim_neither_preempts_nor_redispatches(
+    kind, pg_storage, entity_seeder,
+):
+    """Pool level on the Postgres engine: see tests/worker/_duplicate_claim_scenario.py."""
+    from primer.int.claim import ClaimAdapter
+    from primer.model.scheduler import WorkerConfig
+    from primer.scheduler.in_memory import InMemoryScheduler
+    from primer.worker.pool import WorkerPool
+    from tests.worker._duplicate_claim_scenario import run_reclaim_scenario
+
+    released: list[str] = []
+
+    class _SpyAdapter(ClaimAdapter):
+        entity_table = "dupclaim_spy"
+
+        def __init__(self, k: ClaimKind) -> None:
+            self.kind = k
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            released.append(entity_id)
+
+    adapter = _SpyAdapter(kind)
+    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters={kind: adapter})
+    await entity_seeder.seed(adapter.entity_table, ["dup", "other"])
+    scheduler = InMemoryScheduler()
+    await scheduler.initialize()
+    pool = WorkerPool(
+        config=WorkerConfig(
+            concurrency=4, claim_batch_size=4, heartbeat_interval_seconds=1,
+            lease_ttl_seconds=5, poll_interval_seconds=0.1, drain_timeout_seconds=5,
+        ),
+        scheduler=scheduler, storage=pg_storage,
+        workspace_registry=None,  # type: ignore[arg-type]
+        provider_registry=None,  # type: ignore[arg-type]
+        engine=engine,
+    )
+
+    async def _force_expired(k: ClaimKind, entity_id: str) -> None:
+        async with pg_storage.pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE {pg_storage.leases_table} SET expires_at = now() - interval '1 second' "
+                f"WHERE kind = $1 AND entity_id = $2",
+                k.value, entity_id,
+            )
+
+    async def _lease_state(k: ClaimKind, entity_id: str):
+        async with pg_storage.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT claimed_by, claimed_at FROM {pg_storage.leases_table} "
+                f"WHERE kind = $1 AND entity_id = $2",
+                k.value, entity_id,
+            )
+        return None if row is None else (row["claimed_by"], row["claimed_at"])
+
+    try:
+        await run_reclaim_scenario(
+            kind=kind, pool=pool, engine=engine, released=released,
+            ids=("dup", "other"), force_expired=_force_expired, lease_state=_lease_state,
+        )
+    finally:
+        await scheduler.aclose()
+
+
+@_needs_pg
+@pytest.mark.asyncio
 async def test_postgres_release_without_drop_clears_claim_fields(pg_storage, entity_seeder):
     """release without drop_lease clears claimed_by and makes row reclaimable."""
     from primer.int.claim import ClaimAdapter

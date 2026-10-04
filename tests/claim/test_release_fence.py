@@ -132,6 +132,47 @@ async def test_in_memory_release_runs_when_still_owned():
 
 
 @pytest.mark.asyncio
+async def test_in_memory_release_with_a_stale_claimed_at_still_runs_on_release():
+    """The fence is ``claimed_by`` only; ``claimed_at`` is NOT part of it.
+
+    ``worker_id`` is per pool start and the pool never runs a second executor for a key it
+    already has in flight (a same-worker duplicate claim is skipped), so a same-worker release
+    that carries an older ``claimed_at`` is the sole in-flight execution finishing, not a
+    zombie. A ``claimed_at`` term in the fence would drop its ``on_release`` (the park write,
+    the tool result) and lose the work.
+    """
+    from datetime import timedelta
+
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    calls = []
+
+    class _Adapter:
+        kind = ClaimKind.HARNESS
+        entity_table = "chat"
+
+        def eligibility_sql(self):
+            return "true"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            calls.append(entity_id)
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _Adapter()})
+    await engine.upsert(ClaimKind.HARNESS, "c3")
+    first = (await engine.claim_due("worker-A", max_count=1))[0]
+    # Its heartbeat stalls: the lease expires and the SAME worker claims the row again.
+    engine._leases[(ClaimKind.HARNESS, "c3")].expires_at = _now() - timedelta(seconds=1)
+    second = (await engine.claim_due("worker-A", max_count=1))[0]
+    assert second.claimed_by == first.claimed_by == "worker-A"
+    assert second.claimed_at != first.claimed_at
+
+    await engine.release(first, outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+    assert calls == ["c3"], "a release with an older claimed_at was fenced out"
+    assert (ClaimKind.HARNESS, "c3") not in engine._leases
+
+
+@pytest.mark.asyncio
 async def test_in_memory_release_fires_post_release_hook_after_mutation():
     """01a0518b review, required test: the bound hook must fire strictly
     AFTER release()'s own lease mutation is applied - "post-commit"
