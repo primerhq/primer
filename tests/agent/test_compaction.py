@@ -401,29 +401,6 @@ class TestMaybeCompact:
                 new_messages=[],
             )
 
-    @pytest.mark.asyncio
-    async def test_last_known_input_tokens_overrides_underestimate(self) -> None:
-        history = [_u("tiny")]
-        strat = CompactionStrategy(reserved_output_tokens=0, tail_turns=0)
-        llm = _FakeLLM(
-            script=[
-                TextDelta(text="forced summary", index=0),
-                Done(stop_reason="stop", raw_reason="stop"),
-            ]
-        )
-        # Budget = 1000; trigger = 850. last_known_input_tokens=900 > 850.
-        # tail_turns=0 -> head=full, tail=[]; full_compact runs, summary produced.
-        result = await strat.maybe_compact(
-            agent=_agent(),
-            llm=llm,
-            model=_model(context_length=1000),
-            history=history,
-            new_messages=[],
-            last_known_input_tokens=900,
-        )
-        assert result is not None
-        assert result.summary_message is not None
-
 
 # ===========================================================================
 # force_compact
@@ -478,3 +455,36 @@ class TestDefaultConstants:
     def test_default_summary_max_tokens_is_4096(self) -> None:
         from primer.agent.compaction import CompactionStrategy
         assert CompactionStrategy.DEFAULT_SUMMARY_MAX_TOKENS == 4096
+
+
+class TestPruneIsNotFloored:
+    """The trigger used to take ``max(estimate, last_known_input_tokens)`` for BOTH
+    the decision and the post-prune check, so a real provider figure above the
+    trigger floored the post-prune estimate too and tier 1 could never succeed.
+    With the floor gone, pruning that really does bring the prompt under the
+    trigger is enough and the summariser is never called. The first test pins that
+    behaviour; the second is the one that fails against the old signature (a later
+    slice re-introduces a precomputed signal, on a basis that does not floor the
+    post-prune estimate, and re-tests the dense-content case)."""
+
+    @pytest.mark.asyncio
+    async def test_pruning_that_fits_the_prompt_avoids_the_llm_summary(self) -> None:
+        history = [_u("go"), _t("call_0", "x" * 200_000), _u("again"), _t("call_1", "tiny")]
+        strat = CompactionStrategy(reserved_output_tokens=0, tail_turns=0)
+        llm = _FakeLLM(script=[])
+        result = await strat.maybe_compact(
+            agent=_agent(), llm=llm, model=_model(context_length=50_000),
+            history=history, new_messages=[],
+        )
+        assert result is not None
+        assert result.summary_message is None, "pruning sufficed: no tier 2"
+        assert result.pruned_tool_outputs == 1
+        assert llm.calls == [], "the summariser must never be called"
+        assert result.estimated_tokens_after < result.estimated_tokens_before
+
+    def test_the_removed_parameter_is_really_gone(self) -> None:
+        import inspect
+
+        assert "last_known_input_tokens" not in inspect.signature(
+            CompactionStrategy.maybe_compact
+        ).parameters

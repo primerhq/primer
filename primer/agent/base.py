@@ -167,7 +167,6 @@ class _BaseAgentExecutor(ABC):
         self._execution_context = build_execution_context()
         self._subscribers: dict[str, AgentEventSubscriber] = {}
         self._subscriber_lock = asyncio.Lock()
-        self._last_input_tokens: int | None = None
 
     # ---- Subclass hooks --------------------------------------------------
 
@@ -261,7 +260,6 @@ class _BaseAgentExecutor(ABC):
                 model=self._model,
                 history=history,
                 new_messages=messages,
-                last_known_input_tokens=self._last_input_tokens,
                 **self._compaction_tool_kwargs(),
             )
             if compacted is not None:
@@ -370,7 +368,6 @@ class _BaseAgentExecutor(ABC):
         # the helper writes the assistant + tool-result messages
         # directly into ``full_turn_messages`` for end-of-turn
         # persistence below.
-        last_input_tokens_holder: list[int | None] = []
         from primer.model.yield_ import ToolWaitPark, YieldToWorker
         try:
             async for event in run_agent_turn(
@@ -382,7 +379,6 @@ class _BaseAgentExecutor(ABC):
                 response_format=response_format,
                 principal=self._principal,
                 messages_out=full_turn_messages,
-                last_input_tokens_out=last_input_tokens_holder,
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
                 tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
@@ -416,9 +412,6 @@ class _BaseAgentExecutor(ABC):
             # YieldToWorker's precedent exactly.
             exc.llm_messages = list(full_turn_messages[len(new_messages):])
             raise
-
-        if last_input_tokens_holder:
-            self._last_input_tokens = last_input_tokens_holder[0]
 
         # Persist only when the loop actually produced an assistant
         # message (helper appends it on the first non-tool stop or

@@ -16,8 +16,7 @@ Two tiers:
    same LLM with the agent's :attr:`Agent.compaction_prompt` (or the
    system default).
 
-Token counting uses a conservative character heuristic refined by the
-running ``Usage.input_tokens`` from the most recent turn.
+Token counting uses a conservative character heuristic (``_estimate_tokens``).
 
 See ``docs/superpowers/specs/2026-05-03-agent-executor-design.md`` for
 the surrounding design and ``research/compaction.md`` for the
@@ -249,7 +248,6 @@ class CompactionStrategy:
         model: "ResolvedModel",
         history: list[Message],
         new_messages: list[Message],
-        last_known_input_tokens: int | None = None,
         tool_manager: "CompactionToolExecutor | None" = None,
         event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
         max_tool_turns: int | None = None,
@@ -263,10 +261,7 @@ class CompactionStrategy:
         activity is streamed to ``event_sink`` but never enters the compacted
         history. When it is ``None`` the call is plain text-only summarisation.
         """
-        before = max(
-            self._estimate_tokens([*history, *new_messages]),
-            last_known_input_tokens or 0,
-        )
+        before = self._estimate_tokens([*history, *new_messages])
         budget = self._effective_budget(model)
         trigger = int(self.trigger_ratio * budget)
         if before < trigger:
@@ -278,10 +273,7 @@ class CompactionStrategy:
             per_output_threshold=self.prune_per_output_tokens,
             total_threshold=self.prune_total_threshold,
         )
-        after_prune = max(
-            self._estimate_tokens([*pruned_history, *new_messages]),
-            last_known_input_tokens or 0,
-        )
+        after_prune = self._estimate_tokens([*pruned_history, *new_messages])
         if after_prune < trigger:
             # Pruning sufficed; rewrite history but skip the LLM summarisation.
             return CompactedTurn(
