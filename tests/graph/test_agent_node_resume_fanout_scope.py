@@ -35,10 +35,13 @@ from primer.model.graph import (
     _FanOutNode,
     _StaticEdge,
 )
+from primer.graph.workspace_executor import WorkspaceGraphExecutor
 from primer.model.model_profile import ModelProfileConfig
+from primer.model.yield_ import Yielded, YieldToWorker
 from primer.model_profile import ResolvedModel
 
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
+from tests.graph.test_workspace_executor import _make_state_repo
 
 
 class _RecordingLLM:
@@ -189,3 +192,92 @@ def test_the_first_dispatch_and_the_resume_build_the_scope_with_one_function() -
     assert _fanout_scope(None) is None
     tee = _FanoutInstance(synthesized_id="b", target_node_id="b", fanout_index=None, fanout_item="x")
     assert _fanout_scope(tee) == {"fanout_index": None, "fanout_item": "x"}
+
+
+class _ParkInstanceOnce:
+    """Stands in for ``run_agent_turn``. It records the user prompt of every call; the FIRST
+    call whose prompt carries ``park_marker`` raises a bare ``YieldToWorker`` (as an ask_user
+    or approval yield does), every other call answers."""
+
+    def __init__(self, park_marker: str) -> None:
+        self.park_marker = park_marker
+        self.parked = False
+        self.calls: list[tuple[str, bool]] = []  # (user text, was it the call that parked)
+
+    async def __call__(self, *, prompt, messages_out, **_kwargs):
+        user_text = _user_texts(prompt)[0]
+        parks = self.park_marker in user_text and not self.parked
+        self.calls.append((user_text, parks))
+        if parks:
+            self.parked = True
+            raise YieldToWorker(
+                Yielded(tool_name="ask_user", event_key="ask_user:t:tc1", resume_metadata={"prompt": "ok?"}),
+                tool_call_id="tc1",
+            )
+        messages_out.append(Message(role="assistant", parts=[TextPart(text="done")]))
+        yield TextDelta(text="done", index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+
+async def test_a_parked_fanout_instance_resumes_with_the_prompt_it_started_with(tmp_path, monkeypatch) -> None:
+    """End to end through real executors and the real checkpoint: worker[1] parks on its first
+    dispatch, a fresh executor resumes it, and the prompt it is handed is the one it started
+    with. Before the fix the resume failed the node: 'fanout_index' is undefined."""
+    import primer.graph._agent_node as agent_node_mod
+
+    graph = Graph(
+        id="g-fanout-park", description="begin -> fo -> worker x2 -> fi -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _FanOutNode(id="fo", specs=[FanOutSpec(kind="broadcast", target_node_id="worker", count=2)]),
+            _AgentNodeRef(id="worker", agent_id="ag", input_template="idx={{ fanout_index }}"),
+            _FanInNode(id="fi", aggregate_template="{{ nodes.worker | length }}"),
+            _EndNode(id="end", output_template="{{ nodes.fi.text }}"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="fo"),
+            _StaticEdge(from_node="worker", to_node="fi"),
+            _StaticEdge(from_node="fi", to_node="end"),
+        ],
+    )
+    turn = _ParkInstanceOnce(park_marker="idx=1")
+    monkeypatch.setattr(agent_node_mod, "run_agent_turn", turn)
+
+    async def build() -> WorkspaceGraphExecutor:
+        repo = await _make_state_repo(tmp_path)
+
+        async def agent_resolver(agent_id: str) -> Agent:
+            return Agent(id=agent_id, description="x", model=AgentModel(profile_id="p--m"), system_prompt=[])
+
+        async def llm_resolver(agent: Agent):
+            return (object(), ResolvedModel(
+                profile_id="test-profile", provider_id="test-provider", model_name="m",
+                context_length=128_000, config=ModelProfileConfig(),
+            ))
+
+        return WorkspaceGraphExecutor(
+            graph=graph, agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            state_repo=repo, graph_session_id="gsid-fanout-park",
+        )
+
+    first = await build()
+    parked: YieldToWorker | None = None
+    try:
+        async for _ev in first.invoke([]):
+            pass
+    except YieldToWorker as exc:
+        parked = exc
+    assert parked is not None and parked.graph_checkpoint is not None, "worker[1] must park the graph"
+
+    resumed = await build()
+    answer = Message(role="tool", parts=[ToolResultPart(id="tc1", output="yes")])
+    async for _ev in resumed.resume_from_checkpoint(parked.graph_checkpoint, resumed_tcid="tc1", agent_tool_result=answer):
+        pass
+
+    idx1 = [text for text, _parks in turn.calls if "idx=1" in text]
+    assert idx1 == ["idx=1", "idx=1"], f"first dispatch and resume must carry the same user input, got {idx1}"
+    assert not any("idx=1" not in text and "idx=0" not in text for text, _ in turn.calls)
+    state = await resumed.load_state()
+    assert state is not None and state["status"] == "ended" and state["ended_reason"] == "completed"
+    assert state["node_states"]["worker[1]"]["status"] == "ended"
