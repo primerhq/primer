@@ -693,21 +693,30 @@ class WorkerPool:
                 tool_call_free = reserve - tool_call_in_flight
 
                 claimed_any = False
+                failed_any = False
                 if general_free > 0:
-                    claimed_any |= await self._claim_slice(
+                    got = await self._claim_slice(
                         kinds=[k for k in self._dispatch if k != ClaimKind.TOOL_CALL],
                         max_count=min(self.config.claim_batch_size, general_free),
                     )
+                    claimed_any |= got is True
+                    failed_any |= got is None
                 # Claim tool calls only while something here can run them: a claimed lease with no
                 # handler would be logged and abandoned to expire, then claimed again, for ever.
                 tool_call_can_claim = tool_call_free > 0 and ClaimKind.TOOL_CALL in self._dispatch
                 if tool_call_can_claim and not self._stopping.is_set():
-                    claimed_any |= await self._claim_slice(
+                    got = await self._claim_slice(
                         kinds=[ClaimKind.TOOL_CALL],
                         max_count=min(self.config.claim_batch_size, tool_call_free),
                     )
+                    claimed_any |= got is True
+                    failed_any |= got is None
 
                 if not claimed_any:
+                    if failed_any:
+                        # A failed claim_due is not an empty poll, and ``_claim_slice`` already backed off for
+                        # one poll interval after it: counting it as empty and waiting again slept twice.
+                        continue
                     # Only count as an "empty poll" when at least one
                     # slice actually had free capacity to claim into -
                     # mirrors the unified loop's own free>0-but-empty
@@ -730,12 +739,13 @@ class WorkerPool:
 
     async def _claim_slice(
         self, *, kinds: list[ClaimKind], max_count: int,
-    ) -> bool:
+    ) -> bool | None:
         """One claim_due call restricted to ``kinds``, then dispatch.
 
-        Returns True if anything was claimed (drives the reserved
-        loop's empty-poll backoff, mirroring the unified loop's own
-        "if not leases" branch).
+        Returns True if anything was claimed, False if the poll came back empty (the reserved loop's
+        empty-poll backoff, mirroring the unified loop's own "if not leases" branch), and None if
+        ``claim_due`` FAILED: it has already slept one poll interval, and the caller must neither count
+        an empty poll nor wait again.
         """
         try:
             leases = await self._engine.claim_due(
@@ -746,7 +756,7 @@ class WorkerPool:
                 "engine claim_loop_reserved iteration failed (kinds=%r)", kinds,
             )
             await asyncio.sleep(self.config.poll_interval_seconds)
-            return False
+            return None
         if not leases:
             return False
         self._claims_total += len(leases)
