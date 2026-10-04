@@ -110,6 +110,35 @@ def _normalise_path(path: str) -> str:
     return PurePosixPath(path.replace("\\", "/")).as_posix()
 
 
+UNREADABLE_TAIL_NOTE = (
+    "[note: the most recent messages kept after the summary above could not be read and were dropped; "
+    "if the user's last request is not clear from the summary, ask them to repeat it]"
+)
+
+
+def _kept_tail(payload: dict) -> list[Message]:
+    """The messages a compaction marker kept verbatim, or ``[]``.
+
+    All or nothing: a tail with one unreadable entry could hold a tool call
+    without its result, which providers reject, so it is dropped whole and the
+    summary stands alone (what every marker did before the tail was recorded).
+    The model is told, in a synthetic note after the summary, that messages were
+    dropped, rather than being left to assume the summary is all there was.
+    """
+    raw = payload.get("kept_tail_messages")
+    if not isinstance(raw, list):
+        return []
+    try:
+        return [Message.model_validate(m) for m in raw]
+    except ValueError:  # pydantic.ValidationError is a ValueError
+        logger.warning(
+            "compaction marker carries an unreadable kept tail (%d entries); "
+            "dropping it and keeping the summary",
+            len(raw),
+        )
+        return [Message(role="assistant", parts=[TextPart(text=UNREADABLE_TAIL_NOTE)])]
+
+
 def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
     """Rebuild the LLM history from ``messages.jsonl`` lines, honoring markers.
 
@@ -122,7 +151,8 @@ def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
     When the session has been compacted, a ``compaction_marker`` event-log
     record is appended. Every Message line PHYSICALLY BEFORE the LAST marker is
     replaced by a single synthetic assistant summary carrying the marker's
-    ``summary`` payload (mirrors the chat surface's positional
+    ``summary`` payload, followed by the marker's ``kept_tail_messages`` (the
+    tail the compactor kept verbatim, when the marker records one) (mirrors the chat surface's positional
     ``rows[last_marker_idx + 1:]`` reassembly in primer/chat/executor.py).
     Message lines are seqless, so physical position in the append-only file IS
     the ``replaced_to_seq`` boundary. A later marker supersedes an earlier one
@@ -155,10 +185,15 @@ def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
         if isinstance(seq, int):
             seen_seq = seq
         if obj.get("kind") == marker_kind:
-            # A marker replaces everything read so far (head AND tail).
-            summary_text = (obj.get("payload") or {}).get("summary") or None
+            # A marker replaces everything read so far EXCEPT the tail it was
+            # written with: the compactor kept those messages verbatim (the last
+            # few turns and the input the model had not answered), and they are
+            # carried at the marker's own seq so a rewind treats them as written
+            # with it.
+            payload = obj.get("payload") or {}
+            summary_text = payload.get("summary") or None
             summary_seq = seen_seq
-            carried = []
+            carried = [(seen_seq, m) for m in _kept_tail(payload)]
             continue
         if obj.get("kind") == rewind_kind:
             to_seq = (obj.get("payload") or {}).get("to_seq")

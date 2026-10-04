@@ -692,11 +692,10 @@ class TestCompactionPreservesEventLog:
                 )
             await writer.flush()
 
-            # Seed enough Message-line history (big user turns) to trip the
-            # compaction trigger for the tiny-context model below.
-            for i in range(3):
-                await session.append_instruction("PRE-COMPACTION-" + ("x" * 900))
-                del i
+            # Seed enough Message-line history (big, answered user turns, then the
+            # input the turn will answer) to trip the compaction trigger for the
+            # tiny-context model below.
+            await _seed_compactable_history(workspace, session)
 
             llm = _FakeLLM(
                 scripts=[
@@ -756,6 +755,7 @@ class TestCompactionPreservesEventLog:
                 if getattr(p, "type", None) == "text"
             )
             assert "PRE-COMPACTION-" not in joined  # folded into the summary
+            assert _PENDING_INPUT in joined  # the input the turn answers is NOT
         finally:
             await session.aclose()
             await backend.aclose()
@@ -792,9 +792,22 @@ class _BlockingCompactionLLM:
         yield Done(stop_reason="stop", raw_reason="stop")
 
 
-async def _seed_compactable_history(session) -> None:
+_PENDING_INPUT = "THE-INPUT-THE-TURN-ANSWERS"
+
+
+async def _seed_compactable_history(workspace, session) -> None:
+    """Three big exchanges, then one more user input the model has not answered.
+
+    The compactor never summarises input the model has not answered, so a history of
+    nothing but user lines has no head to compact: the earlier turns have to be answered.
+    """
     for _ in range(3):
         await session.append_instruction("PRE-COMPACTION-" + ("x" * 900))
+        await workspace.append_message_line(
+            session.session_id,
+            (Message(role="assistant", parts=[TextPart(text="an earlier reply")]).model_dump_json() + "\n").encode(),
+        )
+    await session.append_instruction(_PENDING_INPUT)
 
 
 class TestSteerDeferredDuringCompaction:
@@ -807,7 +820,7 @@ class TestSteerDeferredDuringCompaction:
     ) -> None:
         backend, workspace, session = await _build_session(tmp_path)
         try:
-            await _seed_compactable_history(session)
+            await _seed_compactable_history(workspace, session)
             entered = asyncio.Event()
             release = asyncio.Event()
             llm = _BlockingCompactionLLM(
@@ -876,7 +889,7 @@ class TestSteerDeferredDuringCompaction:
     ) -> None:
         backend, workspace, session = await _build_session(tmp_path)
         try:
-            await _seed_compactable_history(session)
+            await _seed_compactable_history(workspace, session)
             entered = asyncio.Event()
             release = asyncio.Event()
             llm = _BlockingCompactionLLM(
@@ -928,7 +941,7 @@ class TestSteerDeferredDuringCompaction:
         and the compacting flag is still cleared (not stranded)."""
         backend, workspace, session = await _build_session(tmp_path)
         try:
-            await _seed_compactable_history(session)
+            await _seed_compactable_history(workspace, session)
             entered = asyncio.Event()
             release = asyncio.Event()
             llm = _BlockingCompactionLLM(

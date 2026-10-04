@@ -1545,6 +1545,30 @@ class _LlmCall(BaseModel):
         ),
     )
 
+class _CompactionNote(BaseModel):
+    """Synthetic event: a compaction ran and could not bring the prompt under the trigger.
+
+    Reachable only through :class:`ExtendedEvent`. Emitted by
+    :meth:`primer.agent.base._BaseAgentExecutor.invoke` when a compaction came back
+    ``unreducible`` (nothing summarised, so NO compaction marker is written and the
+    prompt goes out as it is), so the verdict is in the session record and not only in a
+    log. A compaction that summarised and was still over the trigger records the same
+    facts in its marker's payload instead. Not produced by any LLM adapter.
+    """
+
+    type: Literal["compaction_note"] = Field(
+        default="compaction_note",
+        description="Discriminator tag identifying this as a compaction-verdict event.",
+    )
+    outcome: str = Field(..., description="The counted outcome (``unreducible``).")
+    reason: str = Field(
+        ...,
+        description="Why: ``empty_head`` or ``protected_over_trigger`` (see CompactedTurn.unreducible).",
+    )
+    estimated_tokens: int = Field(..., ge=0, description="The history's estimated size, in tokens.")
+    trigger_tokens: int | None = Field(default=None, description="The trigger it was measured against.")
+
+
 ExtendedStreamContent = Annotated[
     RawReasoningDelta
     | RefusalDelta
@@ -1557,6 +1581,7 @@ ExtendedStreamContent = Annotated[
     | _ExecutorToolResult
     | _ClientAction
     | _LlmCall
+    | _CompactionNote
     | _GraphNodeEvent,
     Field(discriminator="type"),
 ]

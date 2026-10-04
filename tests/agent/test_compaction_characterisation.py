@@ -109,8 +109,8 @@ class TestTheHeuristic:
         assert CompactionStrategy._estimate_tokens([document]) == 8 + DOCUMENT_TOKENS
 
     def test_it_measures_messages_only_never_the_system_prompt_or_the_tool_schemas(self) -> None:
-        """LIMITATION pinned: the fixed part of a prompt (system prompt + tool schemas, about 3k tokens for a
-        workspace agent) is invisible to the trigger, so a small-context model overflows while 'under' it."""
+        """LIMITATION pinned (task 01a10914, R2): the fixed part of a prompt (system prompt + tool schemas, about 3k
+        tokens for a workspace agent) is invisible to the trigger, so a small-context model overflows while 'under' it."""
         assert list(inspect.signature(CompactionStrategy._estimate_tokens).parameters) == ["messages"]
         assert "tools" not in inspect.signature(CompactionStrategy.maybe_compact).parameters
 
@@ -177,7 +177,7 @@ class TestTierOneRule:
         assert pruned[0] is history[0], "messages without a pruned result are passed through untouched"
 
     def test_the_decision_depends_only_on_the_totals_now_so_it_flips_back_when_they_shrink(self) -> None:
-        """LIMITATION pinned (N1): nothing is remembered. The same raw results are pruned while the total is
+        """LIMITATION pinned (N1; the prompt-budget work's sticky prune, task 01a10685-84cb): nothing is remembered. The same raw results are pruned while the total is
         over the threshold and sent whole once it is not, which is why a send-time record is needed."""
         big = _history(30_000, 30_000)
         assert self._prune(big)[1] == 2
@@ -210,9 +210,10 @@ class TestWhatMaybeCompactDoes:
         assert result.estimated_tokens_after < 82_627 <= result.estimated_tokens_before
 
     @pytest.mark.asyncio
-    async def test_when_pruning_is_not_enough_it_summarises_and_the_kept_tail_can_leave_the_prompt_over_the_trigger(self) -> None:
-        """LIMITATION pinned (F14b): the strategy never re-checks the result against the trigger. Big user text
-        in the kept tail survives, so a compaction that fired can still hand the model an over-trigger prompt."""
+    async def test_when_pruning_is_not_enough_it_summarises_and_the_kept_tail_is_bounded_under_the_trigger(self) -> None:
+        """FIXED (was F14b, pinned as a limitation): the kept tail is bounded by size and the result is
+        measured again, so big user text in the tail no longer leaves a compacted prompt over the trigger.
+        Before, four 30k-token user turns in the tail kept it at >= 82_627."""
         big = lambda c: Message(role="user", parts=[TextPart(text=c * 120_000)])  # noqa: E731  (30k tokens each)
         history: list[Message] = []
         for i in range(6):
@@ -222,14 +223,19 @@ class TestWhatMaybeCompactDoes:
             agent=_agent(), llm=llm, model=_model(), history=history, new_messages=[],  # type: ignore[arg-type]
         )
         assert result is not None and result.summary_message is not None and llm.calls == 1
-        assert result.head_messages_replaced > 0
-        assert result.estimated_tokens_after >= 82_627, "four 30k-token user turns in the tail keep it over the trigger"
+        assert result.head_messages_replaced > 4, "more than the turn-based head: the tail was shrunk to its size budget"
+        assert result.estimated_tokens_after < 82_627
+        assert result.unreducible is None
 
 
 class TestTheSilentNoOp:
-    """LIMITATION pinned (F14a): tier 2 has nothing to summarise unless something precedes the ``tail_turns``-th most
-    recent ASSISTANT message. With NO assistant message the head is everything (the opposite case); with fewer than
-    ``tail_turns`` it is empty; with exactly that many it is empty only when the oldest kept one is the first message."""
+    """What ``tail_split`` does (unchanged), and what tier 2 now does with it (F14a, fixed).
+
+    ``tail_split`` has nothing to summarise unless something precedes the ``tail_turns``-th most recent ASSISTANT
+    message. With NO assistant message the head is everything (the opposite case); with fewer than ``tail_turns`` it
+    is empty; with exactly that many it is empty only when the oldest kept one is the first message. Tier 2 no longer
+    stops there: ``split_for_compaction`` bounds the tail by size, so a history that is over the trigger is
+    summarised whatever its assistant count, and one with nothing summarisable is reported ``unreducible``."""
 
     @staticmethod
     def _turns(assistants: int, *, starts_with_assistant: bool = False) -> list[Message]:
@@ -262,7 +268,30 @@ class TestTheSilentNoOp:
         assert (len(head), len(tail)) == (head_len, tail_len)
 
     @pytest.mark.asyncio
-    async def test_a_history_far_over_the_trigger_but_with_few_assistant_messages_is_returned_unchanged(self) -> None:
+    async def test_fewer_assistant_messages_than_tail_turns_no_longer_mean_nothing_is_summarised(self) -> None:
+        """FIXED (was F14a: the whole history returned unchanged and over the trigger): with three answered 30k-token
+        exchanges (fewer than ``tail_turns``) the turn-based tail is everything, so the size budget decides, and the
+        history is summarised down to what fits (the last reply, the last exchange)."""
+        history: list[Message] = []
+        for i in range(3):
+            history += [
+                Message(role="user", parts=[TextPart(text=chr(ord("A") + i) * 120_000)]),
+                Message(role="assistant", parts=[TextPart(text=f"reply {i}")]),
+            ]
+        llm = _SummaryLLM()
+        result = await CompactionStrategy().maybe_compact(
+            agent=_agent(), llm=llm, model=_model(), history=history, new_messages=[],  # type: ignore[arg-type]
+        )
+        assert result is not None and llm.calls == 1 and result.summary_message is not None
+        assert result.outcome == "summarised" and result.estimated_tokens_after < 82_627
+        assert result.new_messages[1:] == history[3:], "what fits the tail budget is kept verbatim, newest last"
+        assert result.head_messages_replaced == 3
+
+    @pytest.mark.asyncio
+    async def test_unanswered_input_over_the_trigger_is_never_summarised_and_makes_no_model_call(self) -> None:
+        """FIXED (was F14a, the other half): input the model has not answered is protected. Here three 30k-token user
+        messages follow the one reply: 90k tokens of protected input is already over the trigger, so no summary can
+        help and the compaction says so before spending a model call."""
         history: list[Message] = []
         for i in range(5):
             history.append(Message(role="user", parts=[TextPart(text=chr(ord("A") + i) * 120_000)]))  # 150k tokens
@@ -270,7 +299,19 @@ class TestTheSilentNoOp:
         result = await CompactionStrategy().maybe_compact(
             agent=_agent(), llm=_NoLLM(), model=_model(), history=history, new_messages=[],  # type: ignore[arg-type]
         )
-        assert result is not None, "the trigger fired"
+        assert result is not None and result.summary_message is None
+        assert result.new_messages == history
+        assert (result.outcome, result.unreducible) == ("unreducible", "protected_over_trigger")
+
+    @pytest.mark.asyncio
+    async def test_no_assistant_message_at_all_is_reported_unreducible_instead_of_summarised(self) -> None:
+        """FIXED (was: head = everything, so the question was folded into the summary and the prompt ended in
+        no question): all of it is unanswered input, so nothing is summarised and the result says so."""
+        history = [Message(role="user", parts=[TextPart(text=c * 120_000)]) for c in "ABC"]
+        result = await CompactionStrategy().maybe_compact(
+            agent=_agent(), llm=_NoLLM(), model=_model(), history=history, new_messages=[],  # type: ignore[arg-type]
+        )
+        assert result is not None
         assert result.summary_message is None and result.head_messages_replaced == 0
-        assert result.new_messages == history, "nothing was shortened"
-        assert result.estimated_tokens_after >= 82_627, "and the oversized prompt goes out as it is"
+        assert result.new_messages == history
+        assert (result.outcome, result.unreducible) == ("unreducible", "empty_head")

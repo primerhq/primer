@@ -60,6 +60,10 @@ var SA_SKIP_IN_TRANSCRIPT = {
   // Only this renderer skips it, so it cannot fall through to the
   // generic "lifecycle" bubble the mapper gives every unmapped kind.
   llm_call: true,
+  // A compaction that could not reduce the prompt and wrote no marker
+  // (primer/agent/compaction.py): session-record visibility for operators
+  // and the paged /messages read; not conversation.
+  compaction_note: true,
 };
 
 var SA_KIND_TO_TRANSCRIPT = {

@@ -76,6 +76,7 @@ class Gate:
     entered: asyncio.Event
     release: asyncio.Event
     events: list[StreamEvent]
+    error: Exception | None = None  # raised after the release instead of streaming ``events``
 
 
 def text_events(text: str) -> list[StreamEvent]:
@@ -150,6 +151,8 @@ class ScriptedLLM:
         if isinstance(step, Gate):
             step.entered.set()
             await step.release.wait()
+            if step.error is not None:
+                raise step.error
         for event in step.events:
             yield event
 
@@ -212,15 +215,17 @@ def assistant_message(text: str) -> Message:
     return Message(role="assistant", parts=[TextPart(text=text)])
 
 
-async def run_turn(session, llm: ScriptedLLM) -> None:
+async def run_turn(session, llm: ScriptedLLM, *, collect: list | None = None) -> None:
+    """One turn on the real executor; ``collect`` receives every event the turn yields."""
     manager = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
     executor = WorkspaceAgentExecutor(
         agent=make_agent(), llm=llm,  # type: ignore[arg-type]
         llm_model=make_model(), tool_manager=manager, session=session,
         compaction=CompactionStrategy(),
     )
-    async for _event in executor.invoke([]):
-        pass
+    async for event in executor.invoke([]):
+        if collect is not None:
+            collect.append(event)
     assert llm.unused() == 0, f"{llm.unused()} scripted LLM step(s) were never used this turn"
 
 
@@ -258,7 +263,15 @@ def capture_file(text: str, session_id: str) -> dict[str, Any]:
             if obj["kind"] == "compaction_marker":
                 payload = dict(obj["payload"])
                 summary = payload.pop("summary", "")
-                markers.append({"seq": obj["seq"], **payload, "summary_len": len(summary), "summary_sha": _digest(summary)})
+                kept = payload.pop("kept_tail_messages", None)
+                marker = {"seq": obj["seq"], **payload, "summary_len": len(summary), "summary_sha": _digest(summary)}
+                if kept is not None:
+                    # the tail the marker keeps verbatim, by label, size and digest (the texts are 120k chars)
+                    marker["kept_tail"] = [
+                        {"message": m.get("role"), "preview": _preview(m), "len": len(json.dumps(m)), "sha": _digest(json.dumps(m, sort_keys=True))}
+                        for m in kept
+                    ]
+                markers.append(marker)
         else:
             lines.append({"message": obj.get("role"), "preview": _preview(obj), "len": len(line), "sha": _digest(line)})
     return {
@@ -348,19 +361,23 @@ async def run_scenario() -> dict[str, Any]:
             await run_turn(session, llm)
             record("1-tier1-prune", before)
 
-            # Turn 2, tier 2: user text pruning cannot shrink.
+            # Turn 2, tier 2: user text pruning cannot shrink. Four big exchanges the model answered, then the
+            # input this turn answers: input the model has not answered is never summarised, so a history of nothing
+            # but unanswered user text (what this turn used to be) is not compactable.
             for i in range(4):
-                await append_messages(workspace, session, user_message(chr(ord("A") + i) * BIG_USER_CHARS))
+                await append_messages(
+                    workspace, session, user_message(chr(ord("A") + i) * BIG_USER_CHARS), assistant_message(f"turn 2 reply {i}"),
+                )
+            await append_messages(workspace, session, user_message("turn 2: next"))
             llm.extend([Events(text_events("SUMMARY-2")), Events(text_events("turn-2-ok"))])
             before = len(llm.calls)
             await run_turn(session, llm)
             record("2-tier2-summary", before)
 
-            # Turn 3, overflow replay: the turn's own call is rejected as a context overflow. The tail split
-            # treats an ASSISTANT message as a turn boundary and the head is whatever precedes the 4th most
-            # recent one; with fewer than 4 (or that one first in the history) it is empty, nothing is
-            # summarised and no LLM call is made. This history starts with a user message and carries 7
-            # assistant replies, so the head exists.
+            # Turn 3, overflow replay: the turn's own call is rejected as a context overflow and the forced
+            # compaction replays it. The history now is the turn-2 summary and the tail turn 2's marker kept,
+            # the turn-2 reply, and five answered exchanges, then this turn's input (the pending suffix, kept
+            # whatever happens), so the forced compaction has a head to summarise.
             for i in range(5):
                 await append_messages(workspace, session, user_message(f"turn 3 filler {i}: " + ("f" * 2000)), assistant_message(f"turn 3 reply {i}"))
             await append_messages(workspace, session, user_message("turn 3: next"))
@@ -373,9 +390,10 @@ async def run_scenario() -> dict[str, Any]:
             await run_turn(session, llm)
             record("3-overflow-replay", before)
 
-            # Turn 4, deferred steers: two steers land while the summary call is in flight. Again something
-            # must precede the 4th most recent assistant message, or the strategy silently does nothing (see
-            # the characterisation tests).
+            # Turn 4, deferred steers: two steers land while the summary call is in flight. Four answered big
+            # exchanges end the history (no pending input), so the tail shrinks to its budget and a head is
+            # summarised; a history with nothing before the unanswered input is reported unreducible instead
+            # (see the tier-2 tests).
             for i in range(4):
                 await append_messages(workspace, session, user_message(chr(ord("W") + i) * BIG_USER_CHARS), assistant_message(f"turn 4 reply {i}"))
             entered, release = asyncio.Event(), asyncio.Event()

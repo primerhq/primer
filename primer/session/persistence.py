@@ -41,6 +41,7 @@ from primer.model.chat import (
     ToolCallStart,
     Usage,
     _ClientAction,
+    _CompactionNote,
     _ExecutorToolResult,
     _GraphNodeEvent,
     _LlmCall,
@@ -347,6 +348,7 @@ def translate_stream_event(
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
     | ExtendedEvent(_ClientAction)       | CLIENT_ACTION                  |
     | ExtendedEvent(_LlmCall)            | LLM_CALL                       |
+    | ExtendedEvent(_CompactionNote)     | COMPACTION_NOTE                |
     | ExtendedEvent(_GraphNodeEvent) | reconstruct inner StreamEvent and    |
     |                      |   recurse with node_id=event.extended.node_id   |
     | Done                 | flush reasoning + text buffers, then DONE       |
@@ -624,6 +626,21 @@ def translate_stream_event(
         if len(records) == 1:
             return records[0]
         return records
+
+    if isinstance(event, ExtendedEvent) and isinstance(event.extended, _CompactionNote):
+        note = event.extended
+        return SessionMessageRecord(
+            seq=1,  # WorkspaceMessageWriter overwrites
+            kind=SessionMessageKind.COMPACTION_NOTE,
+            payload={
+                "outcome": note.outcome,
+                "reason": note.reason,
+                "estimated_tokens": note.estimated_tokens,
+                "trigger_tokens": note.trigger_tokens,
+            },
+            node_id=node_id,
+            created_at=now,
+        )
 
     if isinstance(event, ExtendedEvent) and isinstance(event.extended, _LlmCall):
         call = event.extended

@@ -1,16 +1,27 @@
 """Today's compaction behaviour, pinned byte for byte, for the prompt-budget work's ``off`` mode.
 
+``off`` means "today minus the standalone live-defect fixes", so the fixture moves with each such fix.
+History of the fixture (``captured_from`` is the ``primer/`` tree hash it was captured against):
+
+1. captured from the code at ``e22fd42b``;
+2. re-captured by the commit that made tier 2 keep its tail and the turn's own input (task 01a1089e): that
+   fix changes what a tier-2 turn's marker records and what the next turn is handed, and the scenario's
+   turn 2 needed answered history to compact (see ``off_golden.py``). Only turns 2 to 4 (the turns with a
+   tier-2 marker) and what they feed changed; turns 1, 5 and 6 and calls 0, 5, 8 and 9 are byte-identical.
+
 ``tests/_support/off_golden.py`` runs one scripted session through every path the budget work
 touches (tier 1 pruning, tier 2 summarising, the overflow replay, steers deferred during a
-compaction window). ``fixtures/off_mode_golden.json`` is what that session produced on the code at
-the pinned commit, captured by ``scripts/capture_off_golden.py`` from a clean checkout of it. These
-tests fail when a fresh run differs from it: in any prompt sent to the model, any marker, the number
-of LLM calls, or a single byte of the persisted ``messages.jsonl`` after any turn.
+compaction window). ``fixtures/off_mode_golden.json`` is what that session produced, captured by
+``scripts/capture_off_golden.py`` (its docstring has the recipe, including how to reproduce an old
+fixture). These tests fail when a fresh run differs from it: in any prompt sent to the model, any
+marker, the number of LLM calls, or a single byte of the persisted ``messages.jsonl`` after any turn.
 
 Timestamps and the session id are the only values normalised (they differ between runs); everything
-else is compared exactly. A change that is MEANT to alter ``off`` behaviour (there should be none in
-the prompt-budget work, which has one intended recorded-figure difference outside this path) means
-re-capturing the fixture from a clean checkout in the same commit, and saying why in its message.
+else is compared exactly. A change that is MEANT to alter ``off`` behaviour means re-capturing the
+fixture in the same commit and saying why in its message. The mechanical guard for that (the lead's R11:
+declare which turns may change, refuse any other difference, record the reason, reproduce the old fixture on
+the merge base) is NOT built yet and must land before the next re-capture: until then, compare the old and
+new fixture turn by turn.
 """
 
 from __future__ import annotations
@@ -64,14 +75,15 @@ class TestTheGolden:
     def test_a_fresh_run_matches_the_fixture_exactly(self, runs, golden) -> None:
         difference = _first_difference(runs[0], {k: v for k, v in golden.items() if k != "captured_from"})
         assert difference is None, (
-            f"mode `off` no longer behaves as it did at {golden['captured_from'][:8]}: first difference at {difference}"
+            f"mode `off` no longer behaves as it did for primer/ tree {golden['captured_from'][:8]}: first difference at {difference}"
         )
 
     def test_the_scenario_is_deterministic(self, runs) -> None:
         """The comparison above is only meaningful if two runs of today's code agree."""
         assert _first_difference(runs[0], runs[1]) is None
 
-    def test_the_fixture_names_the_commit_it_was_captured_from(self, golden) -> None:
+    def test_the_fixture_names_the_primer_tree_it_was_captured_from(self, golden) -> None:
+        """A tree hash, not a commit SHA: rebase-merge orphans commit SHAs (see scripts/capture_off_golden.py)."""
         assert len(golden["captured_from"]) == 40 and set(golden["captured_from"]) <= set("0123456789abcdef")
 
 
@@ -97,6 +109,15 @@ class TestTheFixtureCrossesWhatItPins:
         assert len(turn["file"]["markers"]) == 1
         summariser, answer = golden["calls"][1], golden["calls"][2]
         assert summariser["tool_ids"] == [] and answer["tool_ids"] != []
+
+    def test_the_tier_2_marker_keeps_the_tail_and_the_input_the_turn_answers(self, golden) -> None:
+        marker = golden["turns"][1]["file"]["markers"][0]
+        kept = marker["kept_tail"]
+        assert kept[-1]["preview"] == "turn 2: next", "the unanswered input is the last thing the marker keeps"
+        assert [k["message"] for k in kept] == ["assistant", "user", "assistant", "user"][-len(kept):]
+        assert 2 <= len(kept) < 9, "a tail, bounded by size: not the whole history and not nothing"
+        later = golden["turns"][2]["file"]["markers"]
+        assert all("kept_tail" in m for m in later), "every tier-2 marker records its tail"
 
     def test_the_overflow_replay_force_compacts_and_reruns_the_loop(self, golden) -> None:
         turn = golden["turns"][2]

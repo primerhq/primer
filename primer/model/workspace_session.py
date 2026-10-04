@@ -850,6 +850,15 @@ class SessionMessageKind(StrEnum):
     # history), and transcript renderers hide it - it is Trace-tab
     # material. Carries ``node_id`` when the call ran inside a graph node.
     LLM_CALL = "llm_call"
+    # A compaction ran and could not reduce the prompt, and wrote NO marker
+    # (nothing was summarised). Payload: ``{"outcome": "unreducible",
+    # "reason": "empty_head" | "protected_over_trigger", "estimated_tokens":
+    # int, "trigger_tokens": int | None}``. Written through the normal event
+    # path (primer/session/persistence.py), so it carries a real seq. A
+    # compaction that summarised and was still over the trigger records
+    # ``outcome: "insufficient"`` in its marker's payload instead. Display and
+    # derivation only: never history, and the transcript renderers hide it.
+    COMPACTION_NOTE = "compaction_note"
     # 01a08c08: written by wake_session whenever an operator's pause is
     # touched by an incoming wake, so a superseded pause is never silent.
     # Payload: ``{"action": "cleared" | "queued", "pending_id": str | None}``.

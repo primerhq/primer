@@ -12,11 +12,12 @@ survives for audit while the prompt shrinks.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from primer.model.except_ import ConflictError
+from primer.model.except_ import ConflictError, ValidationError
 from primer.model.workspace_session import (
     SessionMessageKind,
     SessionMessageRecord,
@@ -64,6 +65,7 @@ async def compact_session(
     workspace_io: Any,
     history: list,
     run_compaction: Any,
+    reload_history: Any = None,
 ) -> CompactionOutcome:
     """Summarise ``history`` and append the marker that folds it.
 
@@ -71,12 +73,32 @@ async def compact_session(
     returning an object with summary_text, tokens_before, tokens_after
     and optionally model_name. Injecting it keeps the provider wiring in
     the router and makes this path testable in milliseconds.
+
+    The summarising call takes seconds, and a steer can land in that time. The marker folds
+    every line before it, so ``reload_history`` (an async callable returning the history as
+    the reader sees it NOW) is read again just before the write and the Message lines that
+    are not in ``history`` are appended to the marker's kept tail. (A line written in the
+    milliseconds between that read and the append is not covered: this path has no handle on
+    the session's messages lock.)
     """
     result = await run_compaction(history)
+    if not result.summary_text:
+        # Nothing could be summarised (the history is the input the model has not
+        # answered, or too short to have a head): a marker with no summary would
+        # fold the whole history into nothing.
+        raise ValidationError(
+            "nothing to compact: there is no earlier history that can be "
+            "summarised without dropping input the model has not answered"
+        )
 
     # Seeded from the row's last_seq at write time: the summarising call
     # takes seconds, so the caller re-reads the row first and a
     # concurrent write may have moved the cursor.
+    kept_tail = list(getattr(result, "kept_tail", None) or [])
+    if reload_history is not None:
+        current = await reload_history()
+        if len(current) > len(history) and [m.role for m in current[: len(history)]] == [m.role for m in history]:
+            kept_tail += list(current[len(history):])
     replaced_to = row.last_seq
     writer = WorkspaceMessageWriter(
         workspace_io=workspace_io,
@@ -95,7 +117,17 @@ async def compact_session(
             "model": getattr(result, "model_name", None),
             "tokens_before": result.tokens_before,
             "tokens_after": result.tokens_after,
+            # The verdict, as the executor's marker records it.
+            "outcome": getattr(result, "outcome", "summarised"),
+            "unreducible": getattr(result, "unreducible", None),
+            "trigger_tokens": getattr(result, "trigger_tokens", None),
             "created_at": datetime.now(UTC).isoformat(),
+            # The tail kept verbatim after the summary: without it the fold
+            # would drop it (see reconstruct_compacted_history).
+            **(
+                {"kept_tail_messages": [json.loads(m.model_dump_json()) for m in kept_tail]}
+                if kept_tail else {}
+            ),
         },
         created_at=datetime.now(UTC),
     ))

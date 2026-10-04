@@ -3,7 +3,7 @@
 When a turn's own LLM call is rejected as a context overflow, ``_BaseAgentExecutor.invoke`` force-compacts
 the pre-turn history and re-runs ``_run_loop`` FROM SCRATCH. These tests pin what that means in practice,
 on the real ``WorkspaceAgentExecutor`` over a real local workspace, including the parts that are
-limitations (the proposed L1 and L2 layers exist to change exactly these):
+limitations (task 01a10893-ef41 changes exactly these; the proposed L1 and L2 layers are its general form):
 
 * tools the rejected attempt already ran run AGAIN, and the first attempt's tool call and result are not
   in the persisted history, so one effect happened twice and the record shows it once;
