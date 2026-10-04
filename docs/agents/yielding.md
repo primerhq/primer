@@ -250,9 +250,11 @@ session.
   session is meant to wake by itself when its tool tasks finish. The
   feature is unfinished: on current builds nothing runs the queued tool
   calls, so by the code such a session sits parked until the
-  hard-coded one-hour timeout and then ends failed (an operator
-  cancel, pause or binding switch interrupts the wait sooner). If you meet one,
-  report it to the operator instead of waiting on it.
+  hard-coded one-hour timeout and then ends failed. Only a binding
+  switch closes such a park immediately; an operator cancel or pause
+  only sets a flag that is read at that timeout wake, so it does not
+  take effect sooner. If you meet one, report it to the operator
+  instead of waiting on it.
 
 ## Related
 
