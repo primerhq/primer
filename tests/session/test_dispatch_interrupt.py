@@ -99,14 +99,17 @@ def _deps(storage, io, bus, executor) -> SessionDispatchDeps:
 
 
 class _RecordingTurnLog(NoopTurnLogWriter):
-    """Remembers the class name of every turn-log event appended."""
+    """Remembers the class name of every turn-log event appended, and the reason of a cancelled one."""
 
     def __init__(self) -> None:
         super().__init__()
         self.kinds: list[str] = []
+        self.cancel_reasons: list[str | None] = []
 
     async def append(self, event) -> int:
         self.kinds.append(type(event).__name__)
+        if type(event).__name__ == "TurnLogCancelled":
+            self.cancel_reasons.append(event.reason)
         return await super().append(event)
 
 
@@ -340,6 +343,77 @@ class TestACancelThatLandsAfterTheModelFinished:
         row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
         assert row.status != SessionStatus.ENDED or row.ended_reason != "cancelled"
         assert SessionMessageKind.CANCELLED not in [r["kind"] for r in _records(fake_workspace_io, sid)]
+
+
+class TestTheCancelledRecordSaysWhichOneItWas:
+    """A Stop and a Cancel both write a CANCELLED record; its ``reason`` is what tells them apart (the console
+    labels "operator_interrupt" as "stopped" and anything else as "cancelled"). The cancel arm used a constant
+    "operator_interrupt" for BOTH, so a hard Cancel that landed through it read as a Stop."""
+
+    async def _run_with_turn_log(self, storage, io, bus, executor, sid: str) -> _RecordingTurnLog:
+        turn_log = _RecordingTurnLog()
+        deps = SessionDispatchDeps(
+            storage_provider=storage, workspace_io=io, event_bus=bus,
+            build_executor=_build_returning(executor), turn_log_writer_factory=lambda _io, _sid: turn_log,
+        )
+        await asyncio.wait_for(run_one_session_turn(_make_lease(sid), deps), 3.0)
+        return turn_log
+
+    def _cancelled(self, io, sid: str) -> dict:
+        return next(r for r in _records(io, sid) if r["kind"] == SessionMessageKind.CANCELLED)
+
+    async def test_a_stop_is_recorded_as_operator_interrupt(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+
+        async def stop_lands() -> None:
+            await _request_stop(fake_storage_provider, fake_event_bus, sid)
+            await asyncio.sleep(0.1)
+
+        turn_log = await self._run_with_turn_log(
+            fake_storage_provider, fake_workspace_io, fake_event_bus, _StopAwareExecutor([stop_lands, "BLOCK"]), sid,
+        )
+
+        assert self._cancelled(fake_workspace_io, sid)["payload"]["reason"] == "operator_interrupt"
+        assert turn_log.cancel_reasons == ["operator_interrupt"]
+
+    async def test_a_cancel_that_lands_as_the_stream_ends_is_recorded_as_operator_cancel(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def cancel_lands_after_the_answer() -> None:
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+
+        executor = _StopAwareExecutor([
+            TextDelta(text="the full answer", index=0), cancel_lands_after_the_answer,
+            Done(stop_reason="stop", raw_reason="stop"),
+        ])
+        turn_log = await self._run_with_turn_log(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        assert self._cancelled(fake_workspace_io, sid)["payload"]["reason"] == "operator_cancel"
+        assert turn_log.cancel_reasons == ["operator_cancel"]
+
+    async def test_a_cancel_inside_the_completion_lock_is_recorded_as_operator_cancel(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        sid = seeded_session.id
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def read_status_then_cancel_lands(executor):
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            return None
+
+        monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+        executor = _StopAwareExecutor([
+            TextDelta(text="the full answer", index=0), Done(stop_reason="stop", raw_reason="stop"),
+        ])
+        turn_log = await self._run_with_turn_log(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        assert self._cancelled(fake_workspace_io, sid)["payload"]["reason"] == "operator_cancel"
+        assert turn_log.cancel_reasons == ["operator_cancel"]
 
 
 class TestAStopFollowedByAHumanSteer:

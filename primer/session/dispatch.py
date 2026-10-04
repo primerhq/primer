@@ -420,7 +420,6 @@ async def run_one_session_turn(
     # (post_prompt) or a non-empty final result.
 
     cancel_requested = False
-    cancel_reason: str = "operator_interrupt"
 
     cancel_event = asyncio.Event()
     cancel_task = asyncio.create_task(
@@ -1186,15 +1185,16 @@ async def run_one_session_turn(
         # typed. A genuine Cancel is never downgraded to a Stop.
         fresh = await session_storage.get(session_id)
         is_interrupt = bool(fresh is not None and not fresh.cancel_requested)
+        # The record's reason is what tells a Stop from a Cancel (the console labels the first
+        # "stopped" and the second "cancelled"): it must follow the decision above.
+        cancel_reason = _STOP_REASON if is_interrupt else _CANCEL_REASON
         await _safe_turn_log(turn_log, TurnLogCancelled(
             seq=0,
             ts=_now(),
             turn_no=session.turn_no,
-            reason="operator_interrupt" if is_interrupt else cancel_reason,
+            reason=cancel_reason,
         ))
-        rec = _cancelled_record(
-            "operator_interrupt" if is_interrupt else cancel_reason
-        )
+        rec = _cancelled_record(cancel_reason)
         seq = await writer.append(rec)
         await writer.flush()
         await deps.event_bus.publish(
@@ -1271,7 +1271,7 @@ async def run_one_session_turn(
             # covers it and a reader never sees ENDED before the record that explains it.
             late_cancel = True
             new_status, ended_reason = SessionStatus.ENDED, "cancelled"
-            late_seq = await writer.append(_cancelled_record(cancel_reason))
+            late_seq = await writer.append(_cancelled_record(_CANCEL_REASON))
             await writer.flush()
         await _transition_session_status(
             session_storage,
@@ -1291,7 +1291,7 @@ async def run_one_session_turn(
         # the answer to the channel after the user said cancel.
         await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": late_seq})
         await _safe_turn_log(turn_log, TurnLogCancelled(
-            seq=0, ts=_now(), turn_no=session.turn_no, reason=cancel_reason,
+            seq=0, ts=_now(), turn_no=session.turn_no, reason=_CANCEL_REASON,
         ))
         await _publish_terminal(deps, session, new_status, ended_reason)
         await turn_log.aclose()
@@ -1533,6 +1533,12 @@ def _tool_wait_yielded_record(tool_wait: ToolWaitPark) -> SessionMessageRecord:
         },
         created_at=_now(),
     )
+
+
+# The ``reason`` of a CANCELLED record / TurnLogCancelled. A Stop (the session stays alive) and a Cancel (it
+# ends) are told apart by this alone, e.g. by the console's lifecycle label.
+_STOP_REASON = "operator_interrupt"
+_CANCEL_REASON = "operator_cancel"
 
 
 def _cancelled_record(reason: str) -> SessionMessageRecord:
