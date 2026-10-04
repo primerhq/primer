@@ -55,6 +55,7 @@ from primer.model.provider import (
     OpenChatConfig,
     OpenChatFlavor,
 )
+from primer.model.token_count import TokenCount
 from primer.observability import tracing as _tracing
 
 
@@ -150,11 +151,23 @@ class OpenChatLLM(LLM):
         tools: list[Tool] | None = None,
     ) -> int:
         """Delegate to ``primer.llm._tokenizer.openai`` (tiktoken)."""
-        from primer.llm._tokenizer._executor import run_counter
-        from primer.llm._tokenizer.openai import count_tokens_openai
-        return await run_counter(
-            count_tokens_openai, model=model, messages=messages, tools=tools,
-        )
+        return (
+            await self.count_tokens_detailed(
+                model=model, messages=messages, tools=tools,
+            )
+        ).total
+
+    async def count_tokens_detailed(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> TokenCount:
+        """tiktoken count off the event loop, labelled exact only for a known model."""
+        from primer.llm._tokenizer.openai import count_openai_family
+
+        return await count_openai_family(model=model, messages=messages, tools=tools)
 
     def _get_client(self) -> AsyncOpenAI:
         """Construct the AsyncOpenAI client lazily on first use."""

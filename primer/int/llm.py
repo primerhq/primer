@@ -27,6 +27,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
+from primer.model.token_count import TokenCount
 
 
 
@@ -213,6 +214,31 @@ class LLM(ABC):
         network-based counters (Anthropic, Gemini) MUST cache
         aggressively.
         """
+
+    async def count_tokens_detailed(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> TokenCount:
+        """Like :meth:`count_tokens`, but says how far the figure can be trusted.
+
+        Adapters that know what they counted override this: ``exact`` is True
+        only for the model's own tokenizer or a vendor count endpoint, and
+        ``estimated_components`` names any part (media, system, tools) that was
+        estimated rather than counted. The default wraps :meth:`count_tokens`
+        and claims nothing (``exact=False``), so a count from an adapter that
+        has not been taught to say otherwise is never labelled native-exact.
+
+        Callers that must never fail a turn use
+        :func:`primer.llm.counting.count_prompt_tokens`, which owns timeout,
+        fallback and labelling; this method may raise
+        :class:`~primer.model.except_.TokenCounterUnavailable` or a mapped
+        provider error.
+        """
+        total = await self.count_tokens(model=model, messages=messages, tools=tools)
+        return TokenCount(total=total, exact=False)
 
     async def aclose(self) -> None:
         """Release backend resources held by this adapter.

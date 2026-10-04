@@ -13,18 +13,14 @@ import json
 from collections.abc import Sequence
 
 from primer.model.chat import (
-    AudioPart,
-    DocumentPart,
-    ExtendedPart,
-    ImagePart,
     Message,
     Part,
     TextPart,
     Tool,
     ToolCallPart,
     ToolResultPart,
-    VideoPart,
 )
+from primer.model.media_tokens import media_tokens
 
 
 def _estimate_part(part: Part) -> int:
@@ -35,15 +31,9 @@ def _estimate_part(part: Part) -> int:
         return 50 + len(part.name) + -(-args_len // 4)
     if isinstance(part, ToolResultPart):
         return 20 + -(-len(part.output) // 4)
-    if isinstance(part, ImagePart):
-        return 1_000
-    if isinstance(part, DocumentPart):
-        return 2_000
-    if isinstance(part, ExtendedPart):
-        inner = part.extended
-        if isinstance(inner, (AudioPart, VideoPart)):
-            return 1_500
-        return 500
+    media = media_tokens(part)
+    if media is not None:
+        return media
     return 200
 
 

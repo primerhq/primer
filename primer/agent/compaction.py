@@ -38,12 +38,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
 from primer.agent.tail import tail_split
 from primer.model.chat import (
-    AudioPart,
-    DocumentPart,
     Error,
     ExtendedEvent,
-    ExtendedPart,
-    ImagePart,
     Message,
     Part,
     StreamEvent,
@@ -54,11 +50,11 @@ from primer.model.chat import (
     ToolCallPart,
     ToolCallStart,
     ToolResultPart,
-    VideoPart,
     _ExecutorToolResult,
     output_to_message,
 )
 from primer.model.except_ import ServerError
+from primer.model.media_tokens import media_tokens
 
 
 if TYPE_CHECKING:
@@ -421,15 +417,9 @@ class CompactionStrategy:
             return 50 + len(part.name) + -(-args_len // 4)
         if isinstance(part, ToolResultPart):
             return 20 + -(-len(part.output) // 4)
-        if isinstance(part, ImagePart):
-            return 1_000
-        if isinstance(part, DocumentPart):
-            return 2_000
-        if isinstance(part, ExtendedPart):
-            inner = part.extended
-            if isinstance(inner, (AudioPart, VideoPart)):
-                return 1_500
-            return 500
+        media = media_tokens(part)
+        if media is not None:
+            return media
         # Unknown / future part -- be conservative.
         return 200
 

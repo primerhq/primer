@@ -942,9 +942,11 @@ class TestAdapterLifecycle:
 
     async def test_count_tokens_delegates(self) -> None:
         llm = OpenResponsesLLM(_make_provider())
+        from primer.model.token_count import TokenCount
+
         with patch(
-            "primer.llm._tokenizer.openai.count_tokens_openai",
-            return_value=42,
+            "primer.llm._tokenizer.openai.count_tokens_openai_detailed",
+            return_value=TokenCount(total=42, exact=True),
         ) as mock_count:
             n = await llm.count_tokens(
                 model="gpt-4o-mini",

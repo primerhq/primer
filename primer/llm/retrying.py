@@ -23,6 +23,7 @@ from primer.int.llm import LLM
 from primer.llm._retry import stream_with_retry
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
 from primer.model.provider import LLMProvider
+from primer.model.token_count import TokenCount
 
 
 class RetryingLLM(LLM):
@@ -89,9 +90,22 @@ class RetryingLLM(LLM):
         messages: list[Message],
         tools: list[Tool] | None = None,
     ) -> int:
-        # Not retried: it is a best-effort estimate on the compaction hot
-        # path that already falls back to a char heuristic on failure.
+        # Not retried: counting is best-effort and the counter wrapper
+        # (primer.llm.counting) owns timeout, fallback and negative caching.
         return await self._inner.count_tokens(
+            model=model, messages=messages, tools=tools,
+        )
+
+    async def count_tokens_detailed(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> TokenCount:
+        # Forwarded explicitly: the ABC default would call count_tokens above
+        # and drop what the inner adapter knows about its own exactness.
+        return await self._inner.count_tokens_detailed(
             model=model, messages=messages, tools=tools,
         )
 
