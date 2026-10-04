@@ -80,9 +80,11 @@ class PoolConfig(BaseModel):
     tcp_keepalive_idle_seconds: int = Field(
         default=60,
         ge=0,
+        le=32767,
         description=(
             "Seconds a pooled connection may sit idle before the kernel starts "
-            "sending TCP keepalive probes on it. 0 turns keepalive off. An idle "
+            "sending TCP keepalive probes on it. 0 turns keepalive off; the "
+            "maximum is 32767 (the Linux limit). An idle "
             "connection (above all a LISTEN connection, which a worker holds "
             "for its whole life) sends no packets, so when its peer vanishes "
             "without a FIN or RST (a conntrack or NAT idle timeout, a network "
@@ -97,16 +99,20 @@ class PoolConfig(BaseModel):
     )
     tcp_keepalive_interval_seconds: PositiveInt = Field(
         default=10,
+        le=32767,
         description=(
             "Seconds between TCP keepalive probes once the idle time has "
-            "passed with no answer. Ignored when tcp_keepalive_idle_seconds is 0."
+            "passed with no answer. At most 32767 (the Linux limit). Ignored "
+            "when tcp_keepalive_idle_seconds is 0."
         ),
     )
     tcp_keepalive_count: PositiveInt = Field(
         default=3,
+        le=127,
         description=(
             "Unanswered TCP keepalive probes after which the connection is "
-            "declared dead. Ignored when tcp_keepalive_idle_seconds is 0."
+            "declared dead. At most 127 (the Linux limit). Ignored when "
+            "tcp_keepalive_idle_seconds is 0."
         ),
     )
 

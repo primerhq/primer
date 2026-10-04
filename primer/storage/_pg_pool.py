@@ -100,6 +100,16 @@ def keepalive_init_hook(
         family for family in (getattr(sm, "AF_INET", None), getattr(sm, "AF_INET6", None))
         if family is not None
     )
+    # SO_KEEPALIVE goes LAST. Switching it on first and then failing on a timing
+    # would leave keepalive on with the kernel's default timings (2 hours idle),
+    # while the warning below says it is not enabled. This order makes that
+    # statement true: keepalive is only switched on once its timings are in place.
+    options = (
+        ("TCP_KEEPIDLE", sm.IPPROTO_TCP, idle_opt, idle),
+        ("TCP_KEEPINTVL", sm.IPPROTO_TCP, sm.TCP_KEEPINTVL, interval),
+        ("TCP_KEEPCNT", sm.IPPROTO_TCP, sm.TCP_KEEPCNT, count),
+        ("SO_KEEPALIVE", sm.SOL_SOCKET, sm.SO_KEEPALIVE, 1),
+    )
     warned = False
 
     def _warn_once(reason: str) -> None:
@@ -108,13 +118,14 @@ def keepalive_init_hook(
             return
         warned = True
         logger.warning(
-            "%s pool: could not enable TCP keepalive on a connection (%s), so this pool will "
-            "not detect a peer that vanished without a FIN or RST; set "
+            "%s pool: could not enable TCP keepalive on a connection (%s), so it is NOT enabled "
+            "there and this pool may not detect a peer that vanished without a FIN or RST; set "
             "tcp_keepalive_idle_seconds=0 to silence this",
             pool_name, reason,
         )
 
     async def _init(conn: Any) -> None:
+        step = "reading the connection's socket"
         try:
             sock = conn._transport.get_extra_info("socket")
             if sock is None:
@@ -122,11 +133,10 @@ def keepalive_init_hook(
                 return
             if sock.family not in tcp_families:
                 return  # a unix-socket connection: TCP options do not apply to it
-            sock.setsockopt(sm.SOL_SOCKET, sm.SO_KEEPALIVE, 1)
-            sock.setsockopt(sm.IPPROTO_TCP, idle_opt, idle)
-            sock.setsockopt(sm.IPPROTO_TCP, sm.TCP_KEEPINTVL, interval)
-            sock.setsockopt(sm.IPPROTO_TCP, sm.TCP_KEEPCNT, count)
+            for name, level, option, value in options:
+                step = f"setting {name}"
+                sock.setsockopt(level, option, value)
         except Exception as exc:  # noqa: BLE001 - an init hook that raises fails pool creation
-            _warn_once(f"{type(exc).__name__}: {exc}")
+            _warn_once(f"{step}: {type(exc).__name__}: {exc}")
 
     return _init
