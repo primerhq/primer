@@ -93,6 +93,7 @@ from primer.model.storage import (
     PageRequest,
     Predicate,
 )
+from primer.storage._pg_pool import keepalive_init_hook
 from primer.storage._cursor import (
     _decode_cursor,
     _encode_cursor_for,
@@ -232,6 +233,10 @@ class PostgresStorageProvider(StorageProvider):
                 timeout=cfg.pool.acquire_timeout,
                 max_inactive_connection_lifetime=cfg.pool.max_idle,
                 command_timeout=cfg.pool.acquire_timeout,
+                # Kernel TCP keepalive on every connection, so an idle LISTEN
+                # connection whose peer vanished without a FIN or RST is
+                # detected instead of staying deaf. None when switched off.
+                init=keepalive_init_hook(cfg.pool, pool_name="storage"),
             )
         except Exception as exc:
             raise ProviderError(

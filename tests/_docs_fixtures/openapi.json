@@ -6127,41 +6127,62 @@
         "type": "object"
       },
       "PoolConfig": {
-        "description": "Connection pool settings shared by Postgres-backed providers.\n\nMaps directly onto asyncpg's :func:`asyncpg.create_pool` parameters.\nDefaults are tuned for a small-to-medium application; large\ndeployments should raise ``max_size`` to match expected concurrency.",
+        "description": "Connection pool settings shared by Postgres-backed providers.\n\nMaps onto asyncpg's :func:`asyncpg.create_pool` parameters, except the\n``tcp_keepalive_*`` fields: asyncpg has no keepalive option, so those are\napplied to every new connection's socket by the pool's ``init`` hook\n(:mod:`primer.storage._pg_pool`).\nDefaults are tuned for a small-to-medium application; large\ndeployments should raise ``max_size`` to match expected concurrency.",
         "properties": {
           "acquire_timeout": {
             "default": 30.0,
             "description": "Seconds a caller will wait to acquire a connection before raising.",
-            "exclusiveMinimum": 0.0,
+            "exclusiveMinimum": 0,
             "title": "Acquire Timeout",
             "type": "number"
           },
           "max_idle": {
             "default": 300.0,
             "description": "Seconds an idle connection may stay in the pool before being closed.",
-            "exclusiveMinimum": 0.0,
+            "exclusiveMinimum": 0,
             "title": "Max Idle",
             "type": "number"
           },
           "max_lifetime": {
             "default": 3600.0,
             "description": "Seconds a connection may live before being recycled (defends against leaks).",
-            "exclusiveMinimum": 0.0,
+            "exclusiveMinimum": 0,
             "title": "Max Lifetime",
             "type": "number"
           },
           "max_size": {
             "default": 25,
             "description": "Maximum number of connections the pool will open. asyncpg opens connections lazily up to this ceiling and closes idle ones, so a high ceiling costs nothing for a quiet process. The default accounts for a worker/coordinator process, which pins several long-lived LISTEN connections from this same pool (scheduler session_ready + session_cancel, claim engine claim_ready, and one per event-bus subscriber: yield listener, session/chat tick forwarders, mcp-task bridge, watchers) on top of per-turn storage and rate-limiter acquires at worker concurrency. With the old default of 10 those persistent listeners starved per-turn acquires and a turn could block on pool.acquire. Large deployments should raise this further to match expected concurrency.",
-            "exclusiveMinimum": 0.0,
+            "exclusiveMinimum": 0,
             "title": "Max Size",
             "type": "integer"
           },
           "min_size": {
             "default": 1,
             "description": "Minimum number of connections kept open in the pool.",
-            "exclusiveMinimum": 0.0,
+            "exclusiveMinimum": 0,
             "title": "Min Size",
+            "type": "integer"
+          },
+          "tcp_keepalive_count": {
+            "default": 3,
+            "description": "Unanswered TCP keepalive probes after which the connection is declared dead. Ignored when tcp_keepalive_idle_seconds is 0.",
+            "exclusiveMinimum": 0,
+            "title": "Tcp Keepalive Count",
+            "type": "integer"
+          },
+          "tcp_keepalive_idle_seconds": {
+            "default": 60,
+            "description": "Seconds a pooled connection may sit idle before the kernel starts sending TCP keepalive probes on it. 0 turns keepalive off. An idle connection (above all a LISTEN connection, which a worker holds for its whole life) sends no packets, so when its peer vanishes without a FIN or RST (a conntrack or NAT idle timeout, a network partition) nothing ever notices and the watcher on it stays deaf for good. The probes make that an ordinary connection loss within idle + interval * count seconds (90 with the defaults), and they also keep a NAT or conntrack entry alive (kube-proxy expires idle ones after 24 hours). Applied through an asyncpg pool init hook, because asyncpg has no keepalive option. On a platform without the socket options it is skipped with one warning.",
+            "minimum": 0,
+            "title": "Tcp Keepalive Idle Seconds",
+            "type": "integer"
+          },
+          "tcp_keepalive_interval_seconds": {
+            "default": 10,
+            "description": "Seconds between TCP keepalive probes once the idle time has passed with no answer. Ignored when tcp_keepalive_idle_seconds is 0.",
+            "exclusiveMinimum": 0,
+            "title": "Tcp Keepalive Interval Seconds",
             "type": "integer"
           }
         },
