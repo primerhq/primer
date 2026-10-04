@@ -240,6 +240,19 @@ session.
   failed channel post does NOT prevent the park - the prompt is
   effectively lost from the user's perspective. Operators monitoring
   channel-forward failures should treat them as user-visible bugs.
+- **A `yielded` record with `kind: "tool_wait"` is not a yielding
+  tool.** Behind an off-by-default worker flag
+  (`tool_calls_as_claims_enabled`), a batch of tool calls can park the
+  session as a batch instead of running in-process. You can see it as a
+  `yielded` record whose payload carries `outstanding_task_ids` and
+  `notifying_task_ids`, and as a session that reads `parked`. There is
+  nothing to respond to: no approve or reject endpoint applies, and the
+  session is meant to wake by itself when its tool tasks finish. The
+  feature is unfinished: on current builds nothing runs the queued tool
+  calls, so by the code such a session sits parked until the
+  hard-coded one-hour timeout and then ends failed (an operator
+  cancel, pause or binding switch interrupts the wait sooner). If you meet one,
+  report it to the operator instead of waiting on it.
 
 ## Related
 
