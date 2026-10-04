@@ -68,17 +68,22 @@ def apply_patch(
 
 
 def _nullable(annotation: Any) -> bool:
+    """May this annotation hold None? Unknown forms count as nullable (the safe direction)."""
     import types
     import typing
 
-    if annotation is None or annotation is Any or annotation is type(None):
+    if annotation is None or annotation is Any or annotation is type(None) or annotation is object:
         return True
     origin = typing.get_origin(annotation)
     if origin is typing.Annotated:
         return _nullable(typing.get_args(annotation)[0])
     if origin is typing.Union or origin is types.UnionType:
         return any(_nullable(a) for a in typing.get_args(annotation))
-    return False
+    if origin is typing.Literal:
+        return None in typing.get_args(annotation)
+    if origin is not None:
+        return not isinstance(origin, type)
+    return not isinstance(annotation, type)
 
 
 def where_with_defaults(model_cls: Any, where: Mapping[str, Sequence[Any]]) -> dict[str, list[Any]]:

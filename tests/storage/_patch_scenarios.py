@@ -440,6 +440,9 @@ async def patching_a_field_the_model_does_not_have_is_rejected(env: Env) -> None
         await store.patch_if("a", None, where={"status": ["created"]}, set_paths={("cnt", "k"): 1})
     row = await store.get("a")
     assert row is not None and row.count == 0
+    # the field names are checked before the row is looked up, so a missing row does not mask the mistake
+    with pytest.raises(ValueError):
+        await store.patch_if("nope", {"cnt": 1}, where={"status": ["created"]})
 
 
 async def a_stale_guard_on_a_nullable_field_with_a_default_is_not_applied_over_a_newer_null(env: Env) -> None:
