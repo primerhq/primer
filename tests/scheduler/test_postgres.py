@@ -238,12 +238,14 @@ async def test_signal_cancel_yields_to_watcher(sched):
 # bound every pool close.
 
 
-async def _fresh_pair():
+async def _fresh_pair(**scheduler_config):
     sp = PostgresStorageProvider(_parse_dsn(os.environ[_DSN_ENV]))
     await sp.initialize()
     async with sp.pool.acquire() as conn:
         await conn.execute("DROP TABLE IF EXISTS workers")
-    s = PostgresScheduler(storage_provider=sp, config=PostgresSchedulerConfig())
+    s = PostgresScheduler(
+        storage_provider=sp, config=PostgresSchedulerConfig(**scheduler_config),
+    )
     await s.initialize()
     return sp, s
 
@@ -353,4 +355,59 @@ async def test_cancelled_watcher_releases_its_listen_connection():
             await task
         assert _held(sp) == 0
     finally:
+        await _close_pool_bounded(sp)
+
+
+# ---------------------------------------------------------------------------
+# LISTEN watcher: the server connection dying must be noticed
+# ---------------------------------------------------------------------------
+# asyncpg never raises into the NOTIFY queue when the backend goes away (a
+# Postgres restart or failover, a network blip). Without a termination
+# listener the watcher parks forever and every later user cancel is silently
+# never delivered. The no-DB twin is test_postgres_listen_drop.py.
+
+
+async def _eventually(predicate, *, timeout: float = 10.0, what: str) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            pytest.fail(f"timed out after {timeout}s waiting for: {what}")
+        await asyncio.sleep(0.02)
+
+
+async def test_watcher_resubscribes_after_its_listen_backend_is_terminated():
+    sp, sched = await _fresh_pair(listen_reconnect_seconds=0.1)
+    got: list[str] = []
+    it = sched._watch_cancel("w1")
+
+    async def consume():
+        async for sid in it:
+            got.append(sid)
+
+    task = asyncio.create_task(consume())
+    try:
+        await _eventually(lambda: len(sched._listeners) == 1, what="the first LISTEN")
+        (first,) = sched._listeners
+        old_pid = first.conn.get_server_pid()
+        await sched.signal_cancel("before-drop")
+        await _eventually(lambda: got == ["before-drop"], what="the pre-drop cancel")
+
+        async with sp.pool.acquire() as conn:
+            assert await conn.fetchval("SELECT pg_terminate_backend($1)", old_pid)
+
+        await _eventually(
+            lambda: sched._listeners and first not in sched._listeners,
+            what="a replacement LISTEN connection",
+        )
+        (second,) = sched._listeners
+        assert second.conn.get_server_pid() != old_pid
+        await sched.signal_cancel("after-drop")
+        await _eventually(lambda: got == ["before-drop", "after-drop"], what="the post-drop cancel")
+        assert sched._listen_reconnects_total == 1
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
         await _close_pool_bounded(sp)

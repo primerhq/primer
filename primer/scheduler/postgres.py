@@ -19,7 +19,7 @@ from primer.int.scheduler import (
     Scheduler,
     WorkerInfo,
 )
-from primer.model.except_ import ProviderError
+from primer.model.except_ import ListenConnectionLost, ProviderError
 from primer.model.scheduler import PostgresSchedulerConfig
 from primer.storage._ddl import CONCURRENT_CREATE_RACE
 
@@ -46,12 +46,19 @@ CREATE TABLE IF NOT EXISTS workers (
 
 @dataclass(eq=False)
 class _Listener:
-    """One dedicated pooled connection with a LISTEN callback attached."""
+    """One dedicated pooled connection with a LISTEN callback attached.
+
+    ``queue`` carries NOTIFY payloads, plus a single ``None`` when the server
+    connection is lost (pushed by ``on_termination``): asyncpg never raises
+    into a NOTIFY queue, so without that marker the watcher would park on
+    ``queue.get()`` forever.
+    """
 
     conn: "asyncpg.Connection"
     channel: str
     callback: Callable[..., None]
-    queue: "asyncio.Queue[str]"
+    queue: "asyncio.Queue[str | None]"
+    on_termination: Callable[..., None]
 
 
 class PostgresScheduler(Scheduler):
@@ -212,15 +219,25 @@ class PostgresScheduler(Scheduler):
         closed or the connection drops; :meth:`aclose` does so for any that
         were abandoned.
         """
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
         conn = await self._storage.pool.acquire()
 
         def _on_notify(_conn, _pid, _ch, payload):
             queue.put_nowait(payload)
 
+        def _on_termination(_conn):
+            # Called by asyncpg when the server connection is lost (a Postgres
+            # restart or failover, a network blip, pg_terminate_backend). It
+            # is the ONLY signal: nothing is ever raised into the NOTIFY queue.
+            queue.put_nowait(None)
+
         try:
+            # Attached before LISTEN so a drop during the LISTEN round trip is
+            # reported too.
+            conn.add_termination_listener(_on_termination)
             await conn.add_listener(channel, _on_notify)
         except BaseException:
+            self._forget_termination(conn, _on_termination, channel)
             # Not registered yet, so nothing else will ever release it. The
             # release can itself fail (asyncpg re-raises errors from reset or
             # from waiting out a cancelled query); that must be logged and
@@ -237,9 +254,21 @@ class PostgresScheduler(Scheduler):
                     channel, exc,
                 )
             raise
-        listener = _Listener(conn, channel, _on_notify, queue)
+        listener = _Listener(conn, channel, _on_notify, queue, _on_termination)
         self._listeners.add(listener)
         return listener
+
+    @staticmethod
+    def _forget_termination(conn, callback, channel: str) -> None:
+        """Detach a termination callback, tolerating a connection that is
+        already gone (asyncpg raises InterfaceError on a released proxy)."""
+        try:
+            conn.remove_termination_listener(callback)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "scheduler LISTEN remove_termination_listener on %s failed: %s",
+                channel, exc,
+            )
 
     async def _close_listener(self, listener: _Listener) -> None:
         """Remove the LISTEN callback and give the connection back to the pool.
@@ -252,6 +281,11 @@ class PostgresScheduler(Scheduler):
         if listener not in self._listeners:
             return
         self._listeners.discard(listener)
+        # asyncpg leaves a termination listener attached when a healthy
+        # connection goes back to the pool, so without this a later close of
+        # that pooled connection would call it and push a drop marker into a
+        # queue nobody reads any more.
+        self._forget_termination(listener.conn, listener.on_termination, listener.channel)
         try:
             await listener.conn.remove_listener(listener.channel, listener.callback)
         except Exception as exc:  # noqa: BLE001
@@ -287,7 +321,22 @@ class PostgresScheduler(Scheduler):
         return self._watch_channel("session_cancel")
 
     def _watch_channel(self, channel: str) -> AsyncIterator[str]:
-        """Generic LISTEN-backed iterator with reconnect on drop."""
+        """Generic LISTEN-backed iterator with reconnect on drop.
+
+        A dropped server connection is detected through asyncpg's termination
+        listener (see :class:`_Listener`): the watcher logs a WARNING naming the
+        channel, releases the dead connection, waits ``listen_reconnect_seconds``,
+        and reopens. ``listen_reconnects_total`` counts every open ATTEMPT after
+        the first one, failed or successful, so an outage that outlasts several
+        intervals reads as several reconnects, not one.
+
+        NOTIFYs sent while it is down are lost (Postgres does not replay them).
+        For ``session_ready`` that costs nothing, because claims also poll. For
+        ``session_cancel`` it costs the hard preempt of a running turn: the
+        cancel is still recorded on the session row (honored at the next turn
+        boundary) and is also published on the event bus, which has its own
+        LISTEN supervisor.
+        """
         config = self._config
         scheduler = self
 
@@ -316,13 +365,18 @@ class PostgresScheduler(Scheduler):
                 try:
                     while True:
                         payload = await listener.queue.get()
+                        if payload is None:
+                            # Everything received before the drop has been
+                            # yielded (the queue is FIFO); now take the
+                            # "dropped ... reconnecting" arm below.
+                            raise ListenConnectionLost("server connection terminated")
                         scheduler._notify_received_total += 1
                         yield payload
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     logger.warning(
-                        "scheduler LISTEN dropped on %s: %s — reconnecting",
+                        "scheduler LISTEN dropped on %s: %s - reconnecting",
                         channel, exc,
                     )
                 finally:
