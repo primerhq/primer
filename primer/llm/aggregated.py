@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from primer.int.llm import LLM
+from primer.llm.counting import TRANSIENT_ERRORS
 from primer.model.chat import Error as ChatError
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
 from primer.model.except_ import (
@@ -49,6 +50,7 @@ from primer.model.except_ import (
     ProviderTimeoutError,
     RateLimitError,
     ServerError,
+    TokenCounterUnavailable,
 )
 from primer.model.model_profile import (
     FailoverClasses,
@@ -56,6 +58,7 @@ from primer.model.model_profile import (
     ModelProfile,
     RoutingStrategy,
 )
+from primer.model.token_count import TokenCount
 
 # Deferred: primer.model_profile.resolver (home of ResolvedModel and the
 # resolve_llm function that constructs THIS class) imports AggregatedLLM
@@ -338,8 +341,29 @@ class AggregatedLLM(LLM):
         messages: list[Message],
         tools: list[Tool] | None = None,
     ) -> int:
-        # Best-effort: delegate to the first resolvable member. Token
-        # counts across members differ; documented.
+        return (
+            await self.count_tokens_detailed(
+                model=model, messages=messages, tools=tools,
+            )
+        ).total
+
+    async def count_tokens_detailed(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> TokenCount:
+        """Count with the first member that can; never claims the count is exact.
+
+        Token counts differ across members and the member that counted may not
+        be the one that serves the call, so the result is always
+        ``exact=False``. A member that cannot count (``TokenCounterUnavailable``,
+        a ``ConfigError``, a provider or network error) is skipped and the next
+        is tried; if none can, the failure is ``TokenCounterUnavailable`` (never
+        a ``ConfigError``), transient when any member's failure was.
+        """
+        failures: list[BaseException] = []
         for member_id in self._members:
             try:
                 llm, resolved = await self._resolve(member_id)
@@ -347,16 +371,36 @@ class AggregatedLLM(LLM):
                 continue
             if isinstance(llm, AggregatedLLM):
                 # INTENTIONAL divergence from stream()'s hard BadRequestError
-                # on a nested/self-referential member: count_tokens is a
-                # best-effort hot-path estimate, so we skip and try the next
-                # member rather than raising strict validation here.
+                # on a nested/self-referential member: counting is best-effort,
+                # so we skip and try the next member rather than raising strict
+                # validation here.
                 continue
-            return await llm.count_tokens(
-                model=resolved.model_name, messages=messages, tools=tools,
-            )
-        raise ConfigError(
-            f"aggregated model profile {self._profile.id!r} has no resolvable "
-            f"member for count_tokens",
+            detailed = getattr(llm, "count_tokens_detailed", None)
+            try:
+                if detailed is not None:
+                    counted = await detailed(
+                        model=resolved.model_name, messages=messages, tools=tools,
+                    )
+                else:
+                    counted = TokenCount(
+                        total=await llm.count_tokens(
+                            model=resolved.model_name, messages=messages, tools=tools,
+                        ),
+                        exact=False,
+                    )
+            except (TokenCounterUnavailable, ConfigError, ProviderError, NetworkError, TimeoutError) as exc:
+                failures.append(exc)
+                continue
+            return counted.model_copy(update={"exact": False})
+        transient = any(
+            getattr(exc, "transient", False) or isinstance(exc, TRANSIENT_ERRORS)
+            for exc in failures
+        )
+        detail = "; ".join(f"{type(exc).__name__}: {exc}" for exc in failures)
+        raise TokenCounterUnavailable(
+            f"aggregated model profile {self._profile.id!r} has no member that can "
+            f"count tokens" + (f" ({detail})" if detail else ""),
+            transient=transient,
         )
 
     async def aclose(self) -> None:

@@ -36,6 +36,8 @@ from primer.model.chat import (
     ToolResultPart,
     VideoPart,
 )
+from primer.model.media_tokens import media_tokens
+from primer.model.token_count import TokenCount
 
 
 # o200k_base: gpt-4o, gpt-4o-mini, o1, o1-mini, o3, o3-mini, o4-mini
@@ -72,14 +74,12 @@ def _part_text(part: Part) -> str:
     if isinstance(part, ToolResultPart):
         return f"[result:{part.id}] {part.output}"
     if isinstance(part, ImagePart):
-        return "[image] " + ("x" * 4000)
+        return "[image]"
     if isinstance(part, DocumentPart):
-        return "[document] " + ("x" * 8000)
+        return "[document]"
     if isinstance(part, ExtendedPart):
         inner = part.extended
-        if isinstance(inner, (AudioPart, VideoPart)):
-            return "[av] " + ("x" * 6000)
-        return "[extended] " + ("x" * 2000)
+        return "[av]" if isinstance(inner, (AudioPart, VideoPart)) else "[extended]"
     return "[unknown]"
 
 
@@ -90,6 +90,16 @@ def _serialise_messages(messages: Sequence[Message]) -> str:
         for part in msg.parts:
             chunks.append(_part_text(part))
     return "\n".join(chunks)
+
+
+def _media_estimate(messages: Sequence[Message]) -> int:
+    """Flat estimate for the media blocks, which a text tokenizer cannot see."""
+    return sum(
+        estimate
+        for msg in messages
+        for part in msg.parts
+        if (estimate := media_tokens(part)) is not None
+    )
 
 
 def _serialise_tools(tools: Sequence[Tool] | None) -> str:
@@ -111,29 +121,77 @@ def _serialise_tools(tools: Sequence[Tool] | None) -> str:
     return "\n".join(out)
 
 
-def count_tokens_openai(
+def is_exact_model(model: str) -> bool:
+    """True when ``model`` maps to its own encoding (not the o200k default)."""
+    return model.lower().split("/")[-1] in _MODEL_TO_ENCODING
+
+
+def count_tokens_openai_detailed(
     *,
     model: str,
     messages: Sequence[Message],
     tools: Sequence[Tool] | None = None,
-) -> int:
-    """Token count via the model's tiktoken encoding.
+) -> TokenCount:
+    """Token count via the model's tiktoken encoding, with its provenance.
 
-    Per-message overhead of 4 tokens covers role + envelope markers,
-    matching OpenAI's published cookbook recipe.
+    Per-message overhead of 4 tokens covers role + envelope markers, matching
+    OpenAI's published cookbook recipe. Media blocks are estimated with the
+    shared flat constants (``primer.model.media_tokens``) and reported as an
+    estimated component; ``exact`` is only True for a model that maps to its own
+    encoding, so the ``o200k_base`` default for an unknown model (LM Studio,
+    most OpenRouter models) is an approximation and says so.
+
+    Raises :class:`~primer.model.except_.TokenCounterUnavailable` if the
+    vocabulary is unavailable; never returns a heuristic number.
     """
-    encoding = _tiktoken_offline.load_encoding(resolve_encoding_name(model))
+    encoding_name = resolve_encoding_name(model)
+    encoding = _tiktoken_offline.load_encoding(encoding_name)
     payload = _serialise_messages(messages)
     tools_payload = _serialise_tools(tools)
     tokens = len(encoding.encode_ordinary(payload))
     if tools_payload:
         tokens += len(encoding.encode_ordinary(tools_payload))
     tokens += 4 * len(messages)
-    return tokens
+    media = _media_estimate(messages)
+    return TokenCount(
+        total=tokens + media,
+        exact=is_exact_model(model),
+        estimated_components=("media",) if media else (),
+        encoding=encoding_name,
+    )
+
+
+def count_tokens_openai(
+    *,
+    model: str,
+    messages: Sequence[Message],
+    tools: Sequence[Tool] | None = None,
+) -> int:
+    """Token count via the model's tiktoken encoding (see the detailed form)."""
+    return count_tokens_openai_detailed(
+        model=model, messages=messages, tools=tools,
+    ).total
+
+
+async def count_openai_family(
+    *,
+    model: str,
+    messages: Sequence[Message],
+    tools: Sequence[Tool] | None = None,
+) -> TokenCount:
+    """The adapters' shared entry point: count off the event loop."""
+    from primer.llm._tokenizer._executor import run_counter
+
+    return await run_counter(
+        count_tokens_openai_detailed, model=model, messages=messages, tools=tools,
+    )
 
 
 __all__ = [
+    "count_openai_family",
     "count_tokens_openai",
+    "count_tokens_openai_detailed",
+    "is_exact_model",
     "resolve_encoding_name",
     "_MODEL_TO_ENCODING",
 ]

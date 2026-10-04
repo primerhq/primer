@@ -61,6 +61,7 @@ from primer.model.provider import (
     LLMProviderType,
     OpenRouterConfig,
 )
+from primer.model.token_count import TokenCount
 from primer.observability import tracing as _tracing
 
 
@@ -151,11 +152,23 @@ class OpenRouterLLM(LLM):
         Counts are approximate for non-OpenAI upstreams; used by primer
         for context-window warning banners, not for billing.
         """
-        from primer.llm._tokenizer._executor import run_counter
-        from primer.llm._tokenizer.openai import count_tokens_openai
-        return await run_counter(
-            count_tokens_openai, model=model, messages=messages, tools=tools,
-        )
+        return (
+            await self.count_tokens_detailed(
+                model=model, messages=messages, tools=tools,
+            )
+        ).total
+
+    async def count_tokens_detailed(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> TokenCount:
+        """tiktoken count off the event loop, labelled exact only for a known model."""
+        from primer.llm._tokenizer.openai import count_openai_family
+
+        return await count_openai_family(model=model, messages=messages, tools=tools)
 
     async def stream(  # type: ignore[override]
         self,

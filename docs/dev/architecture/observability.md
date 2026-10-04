@@ -251,6 +251,18 @@ WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
   seam every executor shares, so instrumenting there counts every call exactly
   once. The pre-existing `llm_duration_seconds{provider}` keeps the per-provider
   view; the gap these close is the per-PROFILE dimension.
+- `llm_count_tokens_total{provider_id,source,outcome}` and
+  `llm_count_tokens_seconds{provider_id,source}` are written by
+  `count_prompt_tokens` in `primer/llm/counting.py`, the one wrapper that turns
+  a counter's result or failure into a labelled number. `source` is what the
+  figure stands on (`native`, `native_approx`, `native_plus_estimated`,
+  `estimate`); `outcome` is `ok` or why it fell back to an estimate
+  (`fallback_timeout`, `fallback_unavailable`, `fallback_transient`,
+  `fallback_rejected`, `negative_cached`, `no_counter`, `fallback_bug`). Alert on
+  `fallback_bug`: it means a counter raised something unexpected, and the test
+  suite fails on it too. `llm_tokenizer_ready{name}` (1/0) says whether a
+  tokenizer vocabulary is loaded and verified in this process. `source` is a
+  deliberately added label; it is a closed enum, so it stays bounded.
 
 Per-CALL resolution inside a multi-call turn is a RECORD, not a metric: the agent
 loop emits one `llm_call` event per model call, `translate_stream_event` persists

@@ -521,9 +521,27 @@ class _FakeLLM:
         self._reply_text = reply_text
         self._stream_factory = None  # optional: callable returning an async iterator
         self.calls: list[dict[str, Any]] = []
+        self.count_calls: list[dict[str, Any]] = []
+        self.count_tokens_result: int | BaseException | None = None
 
     async def list_models(self):
         return ["m"]
+
+    async def count_tokens(
+        self, *, model: str, messages: Any, tools: Any = None,
+    ) -> int:
+        """Scriptable counter: set ``count_tokens_result`` to an int, or to an
+        exception instance to raise it. The default is the character heuristic,
+        so a fake that is not told otherwise still behaves like a counter."""
+        from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
+
+        self.count_calls.append({"model": model, "messages": list(messages), "tools": tools})
+        result = self.count_tokens_result
+        if isinstance(result, BaseException):
+            raise result
+        if result is not None:
+            return result
+        return count_tokens_char_fallback(messages=messages, tools=tools)
 
     def stream(self, *, model: str, messages: Any, **kwargs: Any) -> Any:
         from primer.model.chat import Done, TextDelta
@@ -549,6 +567,36 @@ class _FakeLLM:
 def fake_llm() -> _FakeLLM:
     """Shared fake LLM visible to all test sub-packages."""
     return _FakeLLM()
+
+
+@pytest.fixture(autouse=True)
+def _no_swallowed_counter_bugs(request: pytest.FixtureRequest):
+    """Fail any test during which a token counter raised an UNEXPECTED error.
+
+    ``primer.llm.counting.count_prompt_tokens`` never raises: it turns a
+    counter failure into a labelled estimate. For the failures it expects
+    (unavailable vocabulary, timeout, provider error) that is the point. For
+    anything else (an AttributeError, a TypeError) it logs an ERROR and counts
+    ``fallback_bug``, because a catch-all that quietly estimated would hide a
+    programming error behind a plausible number. This turns that count into a
+    test failure; a test that provokes one on purpose opts out with
+    ``@pytest.mark.allow_fallback_bug``.
+    """
+    import sys
+
+    def count() -> int:
+        module = sys.modules.get("primer.llm.counting")
+        return module.fallback_bug_count() if module is not None else 0
+
+    before = count()
+    yield
+    if request.node.get_closest_marker("allow_fallback_bug"):
+        return
+    assert count() == before, (
+        "a token counter raised an unexpected error and was swallowed into an "
+        "estimate (outcome=fallback_bug); see the ERROR log. Fix the counter, or "
+        "mark a test that provokes this deliberately with allow_fallback_bug."
+    )
 
 
 __all__ = [

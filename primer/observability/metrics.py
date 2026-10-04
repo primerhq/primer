@@ -227,6 +227,30 @@ llm_profile_tokens_total = Counter(
     registry=registry,
 )
 
+llm_count_tokens_total = Counter(
+    "llm_count_tokens_total",
+    "Native token counts at the counter wrapper, by provider, what the figure "
+    "stands on (source) and outcome (ok or why it fell back to an estimate).",
+    ["provider_id", "source", "outcome"],
+    registry=registry,
+)
+
+llm_count_tokens_seconds = Histogram(
+    "llm_count_tokens_seconds",
+    "Time one native token count took, in seconds, by provider and source.",
+    ["provider_id", "source"],
+    buckets=(0.005, 0.025, 0.1, 0.5, 1, 3, 10),
+    registry=registry,
+)
+
+llm_tokenizer_ready = Gauge(
+    "llm_tokenizer_ready",
+    "1 when a tokenizer vocabulary is loaded and verified in this process, 0 when "
+    "it is unavailable (native counts fall back to an estimate).",
+    ["name"],
+    registry=registry,
+)
+
 sessions_active = Gauge(
     "sessions_active",
     "Sessions currently executing a turn, by workspace.",
@@ -258,6 +282,9 @@ ALLOWED_LABEL_NAMES = frozenset({
     "outcome",
     "event_type",
     "scope",
+    # What a token figure stands on (usage_calibrated/native/native_approx/
+    # native_plus_estimated/estimate): a closed enum, so bounded.
+    "source",
 })
 """Every label name any Primer instrument is permitted to carry.
 
@@ -310,6 +337,7 @@ def reset_for_test() -> None:
     global worker_tasks_total, worker_task_duration_seconds  # noqa: PLW0603
     global turns_total, turn_duration_seconds  # noqa: PLW0603
     global llm_calls_total, llm_profile_tokens_total, sessions_active  # noqa: PLW0603
+    global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
 
@@ -453,6 +481,27 @@ def reset_for_test() -> None:
         "Total LLM tokens by model profile and direction (in/out). The older "
         "llm_tokens_total keeps the provider-kind view.",
         ["profile_id", "direction"],
+        registry=registry,
+    )
+    llm_count_tokens_total = Counter(
+        "llm_count_tokens_total",
+        "Native token counts at the counter wrapper, by provider, what the figure "
+        "stands on (source) and outcome (ok or why it fell back to an estimate).",
+        ["provider_id", "source", "outcome"],
+        registry=registry,
+    )
+    llm_count_tokens_seconds = Histogram(
+        "llm_count_tokens_seconds",
+        "Time one native token count took, in seconds, by provider and source.",
+        ["provider_id", "source"],
+        buckets=(0.005, 0.025, 0.1, 0.5, 1, 3, 10),
+        registry=registry,
+    )
+    llm_tokenizer_ready = Gauge(
+        "llm_tokenizer_ready",
+        "1 when a tokenizer vocabulary is loaded and verified in this process, 0 when "
+        "it is unavailable (native counts fall back to an estimate).",
+        ["name"],
         registry=registry,
     )
     sessions_active = Gauge(
