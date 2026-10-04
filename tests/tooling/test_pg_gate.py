@@ -95,8 +95,9 @@ E2E_URL = "postgresql://primer:primer@127.0.0.1:5432/primer_e2e"
 
 
 def test_gate_refuses_the_e2e_servers_own_database(monkeypatch):
-    """The gated fixtures DROP tables and DELETE leases in whatever schema
-    they are given. primer_e2e's public schema belongs to a live e2e server."""
+    """The gated fixtures DROP tables and DELETE leases, and several statements
+    are unqualified (a ?schema= on the URL does not redirect them). The database
+    primer_e2e belongs to a live e2e server."""
     monkeypatch.setenv(CANONICAL_ENV, E2E_URL)
     with pytest.raises(RuntimeError, match="primer_e2e"):
         postgres_url()
@@ -114,9 +115,21 @@ def test_an_old_alias_exported_for_the_e2e_server_cannot_open_the_gate(
         postgres_url()
 
 
-def test_e2e_database_is_fine_with_a_private_schema(monkeypatch):
-    monkeypatch.setenv(CANONICAL_ENV, E2E_URL + "?schema=t_private")
-    assert postgres_url() == E2E_URL + "?schema=t_private"
+@pytest.mark.parametrize("suffix", ["", "?schema=public", "?schema=t_private"])
+def test_the_e2e_database_is_refused_whatever_the_schema(monkeypatch, suffix):
+    """A ?schema= is NOT an escape hatch: the scheduler's DDL and the
+    coordinator's DELETEs are unqualified, so they hit primer_e2e's public
+    tables regardless."""
+    monkeypatch.setenv(CANONICAL_ENV, E2E_URL + suffix)
+    with pytest.raises(RuntimeError, match="primer_e2e"):
+        postgres_url()
+
+
+def test_the_refusal_does_not_advise_a_schema(monkeypatch):
+    monkeypatch.setenv(CANONICAL_ENV, E2E_URL)
+    with pytest.raises(RuntimeError) as exc:
+        postgres_url()
+    assert "add ?schema" not in str(exc.value) and "private schema" not in str(exc.value)
 
 
 def test_a_throwaway_database_is_not_refused(monkeypatch):

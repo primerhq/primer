@@ -157,8 +157,9 @@ reason rather than skipping it silently.
   `"5432"`). Test code reads the gate only through `tests/pg_gate.py` (a
   static test fails on any other `os.environ` read of a gate name); it is NOT the e2e
   server's Postgres capability, which uses `PRIMER_TEST_E2E_POSTGRES_DSN`, and
-  it refuses to open on database `primer_e2e`'s public schema because the
-  gated fixtures DROP tables and DELETE leases. CI runs these in a dedicated
+  it refuses to open on the database `primer_e2e`, whatever the schema,
+  because the gated fixtures DROP tables and DELETE leases and some of their
+  statements are unqualified, so a `?schema=` does not protect it. CI runs these in a dedicated
   `postgres` job (one pytest process per suite) against a
   `pgvector/pgvector:pg16` service with `PRIMER_REQUIRE_POSTGRES_TESTS=1`: in
   that mode a Postgres-gated test that SKIPS fails, a module skipped at

@@ -98,15 +98,12 @@ def test_ci_has_a_postgres_lane_that_cannot_skip_silently():
 # Files where a port default is the BRINGUP's own contract, not a guess:
 # the e2e helpers talk to the database scripts/e2e/bringup.sh provisioned,
 # which publishes on ${PRIMER_DB_PORT:-5432}; tests/distributed builds its URL
-# from a container it starts itself (suite switched off everywhere); the rest
-# are this guard and the gate's own unit tests, which hold port numbers as data.
+# from a container it starts itself (suite switched off everywhere). Every entry
+# matches at least one file (a test pins that, so a dead entry cannot linger).
 _PORT_DEFAULT_ALLOWED = (
     "tests/e2e/",
     "tests/ui_e2e/test_approvals_journey.py",
     "tests/distributed/",
-    "tests/docs/test_postgres_lane.py",
-    "tests/tooling/test_pg_gate.py",
-    "tests/test_e2e_db_config_hygiene.py",
 )
 
 # The default SHAPES: `... or 5432` on a parsed URL, and a quoted "5432" as the
@@ -124,22 +121,43 @@ def _port_default_allowed(rel: str) -> bool:
     )
 
 
+def _port_default_hits() -> dict[str, list[str]]:
+    """Every test file that spells a port default, with the offending lines."""
+    hits: dict[str, list[str]] = {}
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        rel = path.relative_to(ROOT).as_posix()
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if _PORT_DEFAULT.search(line):
+                hits.setdefault(rel, []).append(f"{rel}:{lineno}: {line.strip()}")
+    return hits
+
+
 def test_no_test_defaults_a_postgres_port():
     """A live-connect path must use the gate URL (which must name its port) or
     skip: 5432 on a developer host is often their own database, and the gated
     fixtures drop tables. tests/vector/test_halfvec_e2e.py used to default to
     PRIMER_DB_PORT / 5432 and connect, so every local sweep probed it."""
-    offenders = []
-    for path in sorted((ROOT / "tests").rglob("*.py")):
-        rel = path.relative_to(ROOT).as_posix()
-        if _port_default_allowed(rel):
-            continue
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            if line.lstrip().startswith("#"):
-                continue
-            if _PORT_DEFAULT.search(line):
-                offenders.append(f"{rel}:{lineno}: {line.strip()}")
+    offenders = [
+        line for rel, lines in _port_default_hits().items()
+        if not _port_default_allowed(rel) for line in lines
+    ]
     assert not offenders, (
         "a test defaults a Postgres port; take it from tests.pg_gate "
         f"(explicit_port) or skip: {offenders}"
     )
+
+
+def test_every_port_default_allowlist_entry_matches_a_file():
+    """An allowlist entry that matches nothing is dead weight that would quietly
+    excuse a future offender, so the list stays minimal."""
+    hits = _port_default_hits()
+    dead = [
+        allowed for allowed in _PORT_DEFAULT_ALLOWED
+        if not any(
+            rel == allowed or (allowed.endswith("/") and rel.startswith(allowed))
+            for rel in hits
+        )
+    ]
+    assert not dead, f"allowlist entries that match no file: {dead}"
