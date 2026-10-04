@@ -106,6 +106,9 @@ function _SLS_Frame({ m }) {
   // this function would print a dim "llm_call" line per model call in
   // the session-detail live stream and the graph node inspector.
   if (kind === "llm_call") return null;
+  // A compaction that could not reduce the prompt and wrote no marker: session-record visibility for
+  // operators and the paged /messages read, not conversation.
+  if (kind === "compaction_note") return null;
 
   // Coalesced assistant blob.
   if (kind === "_assistant_message") {

@@ -56,7 +56,9 @@ class CompactionResult:
     pruned_tool_outputs: int = 0
     head_messages_replaced: int = 0
     kept_tail: list[Message] = field(default_factory=list)
-    """The messages kept verbatim after the summary (``new_history`` without its first message)."""
+    """The messages kept verbatim (``new_history`` without the summary)."""
+    summary_after: int = 0
+    """The summary goes after this many ``kept_tail`` messages (0: in front, the usual)."""
     unreducible: str | None = None
     """``CompactedTurn.unreducible``: why nothing (more) could be summarised, else ``None``."""
     outcome: str = "summarised"
@@ -186,8 +188,9 @@ async def apply_compaction(
         pruned_tool_outputs=compacted.pruned_tool_outputs,
         head_messages_replaced=compacted.head_messages_replaced,
         kept_tail=(
-            list(compacted.new_messages[1:]) if summary_msg is not None else []
+            [m for m in compacted.new_messages if m is not summary_msg] if summary_msg is not None else []
         ),
+        summary_after=compacted.summary_after if summary_msg is not None else 0,
         unreducible=compacted.unreducible,
         outcome=compacted.outcome,
         trigger_tokens=compacted.trigger_tokens,
