@@ -146,8 +146,9 @@ async def test_a_failed_resubscribe_is_a_warning_that_does_not_claim_a_loss(
     builtin ConnectionError or timeout, or with one of asyncpg's own errors
     (neither of which is an OSError): "starting up" (57P03), a connection that
     does not exist mid-LISTEN (08xxx), or a shutdown interrupting it (57P01 and
-    57P02). No connection existed to LOSE, so the line must say it could not
-    re-subscribe, give the cause, and carry no traceback."""
+    57P02). The watcher never reached a subscribed state, so this is not a
+    lost LISTEN connection: the line must say it could not re-subscribe, give
+    the cause, and carry no traceback."""
     with caplog.at_level(logging.DEBUG, logger="primer.worker.pool"):
         await _run([(0.1, failure)], fake_time)
 
