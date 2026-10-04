@@ -1,0 +1,1614 @@
+{
+ "call_count": 8,
+ "calls": [
+  {
+   "call": 1,
+   "kwargs": [
+    "max_output_tokens",
+    "response_format",
+    "temperature",
+    "tool_choice",
+    "tools"
+   ],
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       1247,
+       "de655d8144e3e255"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       33,
+       "083f9a86ebd7dc93"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "3456c07dd1220441"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "7a93ab52f8d3ef90"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "8a3a70f4c3a6aa73"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "87461bd28027cf0b"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "821f4b3b4089999d"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "87eff4f2d047f88a"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "5265161d624f4573"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "6bdf9a9d55afbe6c"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       41,
+       "88c96b81ee710451"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "tool_ids": [
+    "workspace__edit",
+    "workspace__exec",
+    "workspace__glob",
+    "workspace__grep",
+    "workspace__ls",
+    "workspace__read",
+    "workspace__write"
+   ]
+  },
+  {
+   "call": 2,
+   "kwargs": [
+    "max_output_tokens",
+    "temperature"
+   ],
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       667,
+       "0d2f887474b27f22"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       33,
+       "083f9a86ebd7dc93"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "3456c07dd1220441"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "7a93ab52f8d3ef90"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       109,
+       "fed840289ce76151"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "tool_ids": []
+  },
+  {
+   "call": 3,
+   "kwargs": [
+    "max_output_tokens",
+    "response_format",
+    "temperature",
+    "tool_choice",
+    "tools"
+   ],
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       1247,
+       "de655d8144e3e255"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       81,
+       "1704fa4b0a48fa53"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "8a3a70f4c3a6aa73"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "87461bd28027cf0b"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "821f4b3b4089999d"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "87eff4f2d047f88a"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "tool_call",
+       89,
+       "5265161d624f4573"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "tool_result",
+       202,
+       "6bdf9a9d55afbe6c"
+      ]
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       41,
+       "88c96b81ee710451"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       37,
+       "154ba5f141cf5c7c"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "c3f5292ad6024335"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "264d3f1e0a586caa"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "57352a1638866448"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "837782cd1cdf46ff"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "tool_ids": [
+    "workspace__edit",
+    "workspace__exec",
+    "workspace__glob",
+    "workspace__grep",
+    "workspace__ls",
+    "workspace__read",
+    "workspace__write"
+   ]
+  },
+  {
+   "call": 4,
+   "kwargs": [
+    "max_output_tokens",
+    "response_format",
+    "temperature",
+    "tool_choice",
+    "tools"
+   ],
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       1247,
+       "de655d8144e3e255"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       81,
+       "1704fa4b0a48fa53"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       37,
+       "0ed31ecb2f418f5a"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "b600e4850590b766"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "d9e4ca44162827ed"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "43eea0488e1e2b4f"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "da898ce0fe2e16dc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "a578d95d6d26b35d"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "da16e17bea047b16"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "c9d2ffb926b2d586"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "993400fa5a630edb"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "8bb269e38e83a199"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "ad6dbe76db8cf3bc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       40,
+       "24c53c448bc9b18f"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "tool_ids": [
+    "workspace__edit",
+    "workspace__exec",
+    "workspace__glob",
+    "workspace__grep",
+    "workspace__ls",
+    "workspace__read",
+    "workspace__write"
+   ]
+  },
+  {
+   "call": 5,
+   "kwargs": [
+    "max_output_tokens",
+    "temperature"
+   ],
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       667,
+       "0d2f887474b27f22"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       81,
+       "1704fa4b0a48fa53"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       37,
+       "0ed31ecb2f418f5a"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "b600e4850590b766"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "d9e4ca44162827ed"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "43eea0488e1e2b4f"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       109,
+       "fed840289ce76151"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "tool_ids": []
+  },
+  {
+   "call": 6,
+   "kwargs": [
+    "max_output_tokens",
+    "response_format",
+    "temperature",
+    "tool_choice",
+    "tools"
+   ],
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       1247,
+       "de655d8144e3e255"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       81,
+       "5f6193e97de2613e"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "da898ce0fe2e16dc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "a578d95d6d26b35d"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "da16e17bea047b16"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "c9d2ffb926b2d586"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "993400fa5a630edb"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       2045,
+       "8bb269e38e83a199"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "ad6dbe76db8cf3bc"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       40,
+       "24c53c448bc9b18f"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "tool_ids": [
+    "workspace__edit",
+    "workspace__exec",
+    "workspace__glob",
+    "workspace__grep",
+    "workspace__ls",
+    "workspace__read",
+    "workspace__write"
+   ]
+  },
+  {
+   "call": 7,
+   "kwargs": [
+    "max_output_tokens",
+    "temperature"
+   ],
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       667,
+       "0d2f887474b27f22"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       81,
+       "5f6193e97de2613e"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       37,
+       "6eda483240d52c9d"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "6c0e9cd1078f6a9e"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       109,
+       "fed840289ce76151"
+      ]
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "golden-model",
+   "tool_ids": []
+  },
+  {
+   "call": 8,
+   "kwargs": [
+    "max_output_tokens",
+    "response_format",
+    "temperature",
+    "tool_choice",
+    "tools"
+   ],
+   "messages": [
+    {
+     "parts": [
+      [
+       "text",
+       1247,
+       "de655d8144e3e255"
+      ]
+     ],
+     "role": "system"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       81,
+       "1211da39c67f6207"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "d6aea6fc9b90ce06"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "93229b1ebd40e22f"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "0ad9d0d4de72d395"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "2f5e999af911ed8a"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "4545ef582cfa42a7"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       120028,
+       "04c47799cd1959a7"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       42,
+       "c3e6ed4b078a8e93"
+      ]
+     ],
+     "role": "assistant"
+    }
+   ],
+   "model": "golden-model",
+   "tool_ids": [
+    "workspace__edit",
+    "workspace__exec",
+    "workspace__glob",
+    "workspace__grep",
+    "workspace__ls",
+    "workspace__read",
+    "workspace__write"
+   ]
+  }
+ ],
+ "captured_from": "e22fd42b7deef31b8352bbfeefaee948a163eb5b",
+ "turns": [
+  {
+   "file": {
+    "bytes": 361112,
+    "lines": [
+     {
+      "len": 56,
+      "message": "user",
+      "preview": "hello",
+      "sha": "d2713c5c5317c67f"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_0>",
+      "sha": "aee4a87d1f06ddbe"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_0 90000 chars>",
+      "sha": "13c1fdad3401a01c"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_1>",
+      "sha": "f0a22efee924f3d5"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_1 90000 chars>",
+      "sha": "5e1f94bfd6ceaa68"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_2>",
+      "sha": "c337faf9bc18fd10"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_2 90000 chars>",
+      "sha": "5ebd4ca098b68297"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_3>",
+      "sha": "6f9a6522a468da03"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_3 90000 chars>",
+      "sha": "4ddc1c9ca79b0f95"
+     },
+     {
+      "len": 64,
+      "message": "user",
+      "preview": "turn 1: go on",
+      "sha": "11e040681e0d1385"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-1-ok",
+      "sha": "f14fd9ebfee6c357"
+     }
+    ],
+    "markers": [],
+    "sha256": "4e57d7dee204de37c0df3e0a82dacc17b30b1987231aeaadee72f273352c674c"
+   },
+   "llm_calls": 1,
+   "turn": "1-tier1-prune"
+  },
+  {
+   "file": {
+    "bytes": 841666,
+    "lines": [
+     {
+      "len": 56,
+      "message": "user",
+      "preview": "hello",
+      "sha": "d2713c5c5317c67f"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_0>",
+      "sha": "aee4a87d1f06ddbe"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_0 90000 chars>",
+      "sha": "13c1fdad3401a01c"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_1>",
+      "sha": "f0a22efee924f3d5"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_1 90000 chars>",
+      "sha": "5e1f94bfd6ceaa68"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_2>",
+      "sha": "c337faf9bc18fd10"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_2 90000 chars>",
+      "sha": "5ebd4ca098b68297"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_3>",
+      "sha": "6f9a6522a468da03"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_3 90000 chars>",
+      "sha": "4ddc1c9ca79b0f95"
+     },
+     {
+      "len": 64,
+      "message": "user",
+      "preview": "turn 1: go on",
+      "sha": "11e040681e0d1385"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-1-ok",
+      "sha": "f14fd9ebfee6c357"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "sha": "2023b2c112b81b9c"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "sha": "408fe0d94351bcad"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "sha": "5273df69bf887f5c"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "sha": "a9c5ce65bc45f610"
+     },
+     {
+      "len": 279,
+      "record": "compaction_marker",
+      "seq": 1,
+      "sha": "4e90e64a44a5f9f5"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-2-ok",
+      "sha": "68d8d151470dd180"
+     }
+    ],
+    "markers": [
+     {
+      "created_at": "<ts>",
+      "model": "golden-model",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "seq": 1,
+      "summary_len": 51,
+      "summary_sha": "b6ebe312fb275ed4",
+      "tokens_after": 120444,
+      "tokens_before": 210449
+     }
+    ],
+    "sha256": "e7573e4420cdf7369787768dabf226dfa512bc1b5eb146ffe806f860e10b0339"
+   },
+   "llm_calls": 2,
+   "turn": "2-tier2-summary"
+  },
+  {
+   "file": {
+    "bytes": 852772,
+    "lines": [
+     {
+      "len": 56,
+      "message": "user",
+      "preview": "hello",
+      "sha": "d2713c5c5317c67f"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_0>",
+      "sha": "aee4a87d1f06ddbe"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_0 90000 chars>",
+      "sha": "13c1fdad3401a01c"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_1>",
+      "sha": "f0a22efee924f3d5"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_1 90000 chars>",
+      "sha": "5e1f94bfd6ceaa68"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_2>",
+      "sha": "c337faf9bc18fd10"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_2 90000 chars>",
+      "sha": "5ebd4ca098b68297"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_3>",
+      "sha": "6f9a6522a468da03"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_3 90000 chars>",
+      "sha": "4ddc1c9ca79b0f95"
+     },
+     {
+      "len": 64,
+      "message": "user",
+      "preview": "turn 1: go on",
+      "sha": "11e040681e0d1385"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-1-ok",
+      "sha": "f14fd9ebfee6c357"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "sha": "2023b2c112b81b9c"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "sha": "408fe0d94351bcad"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "sha": "5273df69bf887f5c"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "sha": "a9c5ce65bc45f610"
+     },
+     {
+      "len": 279,
+      "record": "compaction_marker",
+      "seq": 1,
+      "sha": "4e90e64a44a5f9f5"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-2-ok",
+      "sha": "68d8d151470dd180"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 0: fffffffffffffffffffffff",
+      "sha": "b5e25186e3042bb4"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 0",
+      "sha": "da3bfb53512c65c2"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 1: fffffffffffffffffffffff",
+      "sha": "b1e49568ff02349b"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 1",
+      "sha": "05d96da5b6d55653"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 2: fffffffffffffffffffffff",
+      "sha": "8c03488a8b0e8451"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 2",
+      "sha": "1a9495af29681c61"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 3: fffffffffffffffffffffff",
+      "sha": "fff55e5f8ad7a504"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 3",
+      "sha": "325b8e3de48a4f6a"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 4: fffffffffffffffffffffff",
+      "sha": "809cd0c7c84056c7"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 4",
+      "sha": "a773c5366207ab1f"
+     },
+     {
+      "len": 63,
+      "message": "user",
+      "preview": "turn 3: next",
+      "sha": "263b0d6170d662da"
+     },
+     {
+      "len": 275,
+      "record": "compaction_marker",
+      "seq": 2,
+      "sha": "d545df906d9f28a3"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-3-ok",
+      "sha": "241ee9de2ec90bfc"
+     }
+    ],
+    "markers": [
+     {
+      "created_at": "<ts>",
+      "model": "golden-model",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "seq": 1,
+      "summary_len": 51,
+      "summary_sha": "b6ebe312fb275ed4",
+      "tokens_after": 120444,
+      "tokens_before": 210449
+     },
+     {
+      "created_at": "<ts>",
+      "model": "golden-model",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 1,
+      "seq": 2,
+      "summary_len": 51,
+      "summary_sha": "8c49090b2ac9e12d",
+      "tokens_after": 1624,
+      "tokens_before": 2673
+     }
+    ],
+    "sha256": "919fe33ab08f6dbd24b11e66313aa27fc73b94842321d56ae66f433934e9eeba"
+   },
+   "llm_calls": 3,
+   "turn": "3-overflow-replay"
+  },
+  {
+   "file": {
+    "bytes": 1333763,
+    "lines": [
+     {
+      "len": 56,
+      "message": "user",
+      "preview": "hello",
+      "sha": "d2713c5c5317c67f"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_0>",
+      "sha": "aee4a87d1f06ddbe"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_0 90000 chars>",
+      "sha": "13c1fdad3401a01c"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_1>",
+      "sha": "f0a22efee924f3d5"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_1 90000 chars>",
+      "sha": "5e1f94bfd6ceaa68"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_2>",
+      "sha": "c337faf9bc18fd10"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_2 90000 chars>",
+      "sha": "5ebd4ca098b68297"
+     },
+     {
+      "len": 112,
+      "message": "assistant",
+      "preview": "<tool_call call_3>",
+      "sha": "6f9a6522a468da03"
+     },
+     {
+      "len": 90117,
+      "message": "tool",
+      "preview": "<tool_result call_3 90000 chars>",
+      "sha": "4ddc1c9ca79b0f95"
+     },
+     {
+      "len": 64,
+      "message": "user",
+      "preview": "turn 1: go on",
+      "sha": "11e040681e0d1385"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-1-ok",
+      "sha": "f14fd9ebfee6c357"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "sha": "2023b2c112b81b9c"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "sha": "408fe0d94351bcad"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "sha": "5273df69bf887f5c"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "sha": "a9c5ce65bc45f610"
+     },
+     {
+      "len": 279,
+      "record": "compaction_marker",
+      "seq": 1,
+      "sha": "4e90e64a44a5f9f5"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-2-ok",
+      "sha": "68d8d151470dd180"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 0: fffffffffffffffffffffff",
+      "sha": "b5e25186e3042bb4"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 0",
+      "sha": "da3bfb53512c65c2"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 1: fffffffffffffffffffffff",
+      "sha": "b1e49568ff02349b"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 1",
+      "sha": "05d96da5b6d55653"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 2: fffffffffffffffffffffff",
+      "sha": "8c03488a8b0e8451"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 2",
+      "sha": "1a9495af29681c61"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 3: fffffffffffffffffffffff",
+      "sha": "fff55e5f8ad7a504"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 3",
+      "sha": "325b8e3de48a4f6a"
+     },
+     {
+      "len": 2068,
+      "message": "user",
+      "preview": "turn 3 filler 4: fffffffffffffffffffffff",
+      "sha": "809cd0c7c84056c7"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 3 reply 4",
+      "sha": "a773c5366207ab1f"
+     },
+     {
+      "len": 63,
+      "message": "user",
+      "preview": "turn 3: next",
+      "sha": "263b0d6170d662da"
+     },
+     {
+      "len": 275,
+      "record": "compaction_marker",
+      "seq": 2,
+      "sha": "d545df906d9f28a3"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-3-ok",
+      "sha": "241ee9de2ec90bfc"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "sha": "2e8c716c2b9659af"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 4 reply 0",
+      "sha": "f88dd64870c19f29"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "sha": "3a418fea0f287623"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 4 reply 1",
+      "sha": "b8f594f9b86ca077"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY",
+      "sha": "8cedc3d10fe28627"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 4 reply 2",
+      "sha": "1c433301bd1b721d"
+     },
+     {
+      "len": 120051,
+      "message": "user",
+      "preview": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+      "sha": "57cce6b62d645a21"
+     },
+     {
+      "len": 70,
+      "message": "assistant",
+      "preview": "turn 4 reply 3",
+      "sha": "120309216c2494a6"
+     },
+     {
+      "len": 278,
+      "record": "compaction_marker",
+      "seq": 3,
+      "sha": "28bcfbeb2c934831"
+     },
+     {
+      "len": 76,
+      "message": "user",
+      "preview": "STEER-DURING-COMPACTION-1",
+      "sha": "43517cd844775259"
+     },
+     {
+      "len": 76,
+      "message": "user",
+      "preview": "STEER-DURING-COMPACTION-2",
+      "sha": "fcc479f4f6e4bc29"
+     },
+     {
+      "len": 65,
+      "message": "assistant",
+      "preview": "turn-4-ok",
+      "sha": "e5057cc18ef47f20"
+     }
+    ],
+    "markers": [
+     {
+      "created_at": "<ts>",
+      "model": "golden-model",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "seq": 1,
+      "summary_len": 51,
+      "summary_sha": "b6ebe312fb275ed4",
+      "tokens_after": 120444,
+      "tokens_before": 210449
+     },
+     {
+      "created_at": "<ts>",
+      "model": "golden-model",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 1,
+      "seq": 2,
+      "summary_len": 51,
+      "summary_sha": "8c49090b2ac9e12d",
+      "tokens_after": 1624,
+      "tokens_before": 2673
+     },
+     {
+      "created_at": "<ts>",
+      "model": "golden-model",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 2,
+      "seq": 3,
+      "summary_len": 51,
+      "summary_sha": "eac741dd554ebe61",
+      "tokens_after": 90098,
+      "tokens_before": 120117
+     }
+    ],
+    "sha256": "9adeaf76891a6e88ab415f16e9a501a8a8b51c9c24e7d712895f83a1fb472ab8"
+   },
+   "llm_calls": 2,
+   "turn": "4-deferred-steers"
+  }
+ ]
+}
