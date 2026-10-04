@@ -42,6 +42,18 @@ def test_run_view_gated_on_isgraph() -> None:
     assert "SD_GraphRunView" in DETAIL
 
 
+def test_run_view_surfaces_node_states_errors() -> None:
+    """01a08bfb: node_states answers 404/500 for an unreadable run instead
+    of 200 with every node pending. The run view must READ that error
+    (`states.error`) and show it, or a crashed run still renders as an idle
+    board an operator waits on indefinitely."""
+    start = DETAIL.index("function SD_GraphRunView")
+    body = DETAIL[start:]
+    assert "states.error" in body
+    banner = body[body.index("states.error"):]
+    assert "Couldn't read run state" in banner[:400]
+
+
 def test_bundle_transpiles_with_run_view() -> None:
     from primer.api._jsx_bundle import build_jsx_bundle
 

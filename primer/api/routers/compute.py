@@ -39,7 +39,7 @@ from primer.api.errors import common_responses
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.api.routers._crud import make_crud_router
 from primer.model.agent import Agent
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.graph import Graph
 from primer.model.workspace_session import GraphSessionBinding, WorkspaceSession
 
@@ -382,7 +382,14 @@ async def _load_run_node_states(
     """Return ``{node_id: {status, last_run_iteration, last_run_at, error}}``
     for ``run_id``, dispatching WorkspaceSession vs GraphThread exactly
     like :func:`_serve_graph_turn_log`. Raises NotFoundError when neither
-    backend knows ``run_id``."""
+    backend knows ``run_id``.
+
+    ``{}`` (every node renders ``pending``) is returned ONLY when the run
+    genuinely has no state yet: the state file does not exist. A missing
+    workspace, a failed read, and corrupt JSON are different facts that
+    must not look like "has not started" -- an operator watching a
+    crashed run would otherwise see a board of pending nodes and wait
+    indefinitely -- so each raises instead."""
     import json
 
     # 1. WorkspaceSession (workspace-backed graph): read state.json.
@@ -390,19 +397,41 @@ async def _load_run_node_states(
     if sess is not None and isinstance(sess.binding, GraphSessionBinding):
         workspace = await workspace_registry.get_workspace(sess.workspace_id)
         if workspace is None:
-            return {}
+            raise NotFoundError(
+                f"Workspace {sess.workspace_id!r} for graph run {run_id!r} "
+                "no longer exists; its node state cannot be read"
+            )
         state_path = getattr(workspace, "state_path", ".state")
         rel = f"{state_path}/graphs/{run_id}/state.json"
         try:
             raw = await workspace.read_file(rel)
-        except Exception:  # noqa: BLE001 -- missing file -> empty state
+        except NotFoundError:
+            # Both workspace backends raise NotFoundError for an absent
+            # file: the run has not written any state yet.
             return {}
+        except PrimerError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- surfaced, not swallowed
+            raise PrimerError(
+                f"Could not read node state for graph run {run_id!r}: "
+                f"{type(exc).__name__}: {exc}",
+                cause=exc,
+            ) from exc
         try:
             payload = json.loads(raw.decode("utf-8"))
-        except Exception:  # noqa: BLE001
-            return {}
-        node_states = payload.get("node_states")
-        return node_states if isinstance(node_states, dict) else {}
+        except ValueError as exc:  # JSONDecodeError + UnicodeDecodeError
+            raise PrimerError(
+                f"Node state for graph run {run_id!r} is corrupt "
+                f"({type(exc).__name__}: {exc})",
+                cause=exc,
+            ) from exc
+        node_states = payload.get("node_states") if isinstance(payload, dict) else None
+        if not isinstance(node_states, dict):
+            raise PrimerError(
+                f"Node state for graph run {run_id!r} is malformed: "
+                "expected an object with a 'node_states' mapping"
+            )
+        return node_states
 
     # 2. GraphThread (storage-backed graph): read thread.node_states.
     from primer.model.graph import GraphThread

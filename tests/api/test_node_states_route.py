@@ -297,3 +297,114 @@ async def test_node_states_404_for_unknown_run(
     )
     r = await client.get("/v1/graphs/g-4/runs/nope/node_states")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 01a08bfb item 1: only "no state file yet" may read as a board of pending
+# nodes. A crashed/unreadable run must not look identical to one that has not
+# started, or an operator waits indefinitely on something already dead.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_workspace_run(fake_storage_provider, app, gid, rid, ws):
+    from primer.model.graph import Graph
+    from primer.model.workspace_session import (
+        GraphSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
+
+    await fake_storage_provider.get_storage(Graph).create(
+        _seed_graph(fake_storage_provider, gid)
+    )
+    await fake_storage_provider.get_storage(WorkspaceSession).create(
+        WorkspaceSession(
+            id=rid,
+            workspace_id=f"ws-{rid}",
+            binding=GraphSessionBinding(graph_id=gid),
+            status=SessionStatus.RUNNING,
+            created_at=_now(),
+            turn_status="running",
+        )
+    )
+
+    async def _get(wid):
+        return ws if wid == f"ws-{rid}" else None
+
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+
+
+@pytest.mark.asyncio
+async def test_node_states_absent_state_file_is_a_run_not_started(
+    client: httpx.AsyncClient, app, fake_storage_provider,
+):
+    """The ONE case that legitimately renders all-pending: no state.json yet."""
+    await _seed_workspace_run(
+        fake_storage_provider, app, "g-nf", "run-nf", _FakeWorkspace(),
+    )
+    r = await client.get("/v1/graphs/g-nf/runs/run-nf/node_states")
+    assert r.status_code == 200, r.text
+    assert {it["status"] for it in r.json()["items"]} == {"pending"}
+
+
+@pytest.mark.asyncio
+async def test_node_states_read_failure_is_an_error_not_pending(
+    client: httpx.AsyncClient, app, fake_storage_provider,
+):
+    """A failed read (e.g. a network blip on a remote workspace) is not
+    "has not started": it must surface as an error."""
+
+    class _FlakyWorkspace(_FakeWorkspace):
+        async def read_file(self, path: str) -> bytes:
+            raise ConnectionError("runtime websocket dropped")
+
+    await _seed_workspace_run(
+        fake_storage_provider, app, "g-rf", "run-rf", _FlakyWorkspace(),
+    )
+    r = await client.get("/v1/graphs/g-rf/runs/run-rf/node_states")
+    assert r.status_code == 500, r.text
+    assert "run-rf" in r.json()["detail"]
+    assert "ConnectionError" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_node_states_corrupt_state_file_is_an_error_not_pending(
+    client: httpx.AsyncClient, app, fake_storage_provider,
+):
+    """A process that crashed mid-write leaves unparseable JSON."""
+    ws = _FakeWorkspace()
+    ws.write(".state/graphs/run-cj/state.json", '{"iteration":1,"node_sta')
+    await _seed_workspace_run(fake_storage_provider, app, "g-cj", "run-cj", ws)
+    r = await client.get("/v1/graphs/g-cj/runs/run-cj/node_states")
+    assert r.status_code == 500, r.text
+    assert "corrupt" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_node_states_malformed_payload_is_an_error_not_pending(
+    client: httpx.AsyncClient, app, fake_storage_provider,
+):
+    ws = _FakeWorkspace()
+    ws.write(".state/graphs/run-mp/state.json", '{"iteration":1}')
+    await _seed_workspace_run(fake_storage_provider, app, "g-mp", "run-mp", ws)
+    r = await client.get("/v1/graphs/g-mp/runs/run-mp/node_states")
+    assert r.status_code == 500, r.text
+    assert "malformed" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_node_states_missing_workspace_is_404_not_pending(
+    client: httpx.AsyncClient, app, fake_storage_provider,
+):
+    """The run's workspace is gone: its state is unreadable, not "pending"."""
+    await _seed_workspace_run(
+        fake_storage_provider, app, "g-mw", "run-mw", _FakeWorkspace(),
+    )
+
+    async def _none(wid):
+        return None
+
+    app.state.workspace_registry.get_workspace = _none  # type: ignore[assignment]
+    r = await client.get("/v1/graphs/g-mw/runs/run-mw/node_states")
+    assert r.status_code == 404, r.text
+    assert "ws-run-mw" in r.json()["detail"]

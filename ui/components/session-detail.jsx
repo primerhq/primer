@@ -519,6 +519,17 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast, onNodeSelect, hide
           </span>
         </div>
       </div>
+      {/* 01a08bfb: node_states now answers 404/500 when a run's state is
+          unreadable (workspace gone, read failed, state.json corrupt) instead
+          of 200 with every node "pending". Without this banner that error
+          would still render as an idle board - the same wait-forever lie. */}
+      {states.error && (
+        <Banner
+          kind="error"
+          title="Couldn't read run state"
+          detail={`${states.error.detail || states.error.message || "Unknown error"} - node statuses below are not current.`}
+        />
+      )}
       {/* fix #9 (studio): when hideInspector is set, the run view is the graph
           canvas alone at full width — the 360px node-event-stream inspector is
           dropped entirely (its content is redundant with the converged session
