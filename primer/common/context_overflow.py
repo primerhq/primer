@@ -13,8 +13,9 @@ turn. A false NEGATIVE leaves a recoverable overflow as a failed turn. So
 the matching is deliberately conservative: it prefers a provider error code,
 matches only phrases that are about the INPUT not fitting, never matches a
 bare ``max_tokens`` (the name of the OUTPUT cap), and treats a message that
-calls an output-cap parameter "too large" as an output-cap error even when it
-also quotes the context length.
+calls an output-cap parameter "too large" as an output-cap error unless its
+own numbers show the cap fits the context window (vLLM's normal overflow
+form), in which case the history is what does not fit.
 
 An overflow reaches the caller in three shapes, all classified here:
 
@@ -35,6 +36,8 @@ first shape rather than as a ``RateLimitError``.
 """
 
 from __future__ import annotations
+
+import re
 
 from primer.model.chat import Error, TurnStreamFailure
 from primer.model.except_ import BadRequestError, ServerError
@@ -85,17 +88,44 @@ _OUTPUT_WORDS: tuple[str, ...] = (
 )
 
 
-# The request's OUTPUT-cap parameters. A message that says one of them "is too large" is about the
-# request's own output budget, even when it also quotes the context length (vLLM: "'max_tokens' or
-# 'max_completion_tokens' is too large: 100000. This model's maximum context length is 8192 tokens and
-# your request has 50 input tokens (100000 > 8192 - 50)."). No compaction of the history can fix it.
-_OUTPUT_PARAMS: tuple[str, ...] = ("max_tokens", "max_completion_tokens", "max_output_tokens", "maxoutputtokens")
+# A message that says an OUTPUT-cap parameter "is too large" is about the request's own output budget.
+# Anchored to "<param> is too large" on purpose: the OpenAI SDK embeds the response body in the
+# exception text, so 'param': 'max_tokens' can sit next to an unrelated "too large".
+_OUTPUT_PARAM_TOO_LARGE = re.compile(
+    r"(?:max_tokens|max_completion_tokens|max_output_tokens|maxoutputtokens)['\"]?\s+is too large"
+)
+
+# vLLM (serving_engine.py) raises this whenever max_tokens is set and input + max_tokens > max_model_len:
+#   "'max_tokens' or 'max_completion_tokens' is too large: 4096. This model's maximum context length is
+#    32768 tokens and your request has 29000 input tokens (4096 > 32768 - 29000)."
+# Whether it is an output-cap error or a history that does not fit is ARITHMETIC: if the cap alone is
+# already >= the context length no compaction can help; if the cap fits and the request does not, the
+# history is what must shrink (and primer always sends a max_output_tokens, so this is the normal
+# overflow form on a vLLM-backed profile). OpenAI's "max_tokens is too large: N. This model supports at
+# most M completion tokens" carries no context length at all: that one is an output-cap error.
+_VLLM_TRAILER = re.compile(r"\((\d+)\s*>\s*(\d+)\s*-\s*(\d+)\)")
+_TOO_LARGE_CAP = re.compile(r"is too large:\s*(\d+)")
+_MAX_CONTEXT = re.compile(r"maximum context length is\s*(\d+)")
+
+
+def _cap_and_context(text: str) -> tuple[int, int] | None:
+    """The (output cap, context length) a message states, or None when it states no context length."""
+    trailer = _VLLM_TRAILER.search(text)
+    if trailer:
+        return int(trailer.group(1)), int(trailer.group(2))
+    cap, context = _TOO_LARGE_CAP.search(text), _MAX_CONTEXT.search(text)
+    if cap and context:
+        return int(cap.group(1)), int(context.group(1))
+    return None
 
 
 def _message_says_overflow(message: str | None) -> bool:
     text = (message or "").lower()
-    if "too large" in text and any(param in text for param in _OUTPUT_PARAMS):
-        return False
+    if _OUTPUT_PARAM_TOO_LARGE.search(text):
+        numbers = _cap_and_context(text)
+        if numbers is None or numbers[0] >= numbers[1]:
+            return False  # no context number, or the cap alone does not fit: an output-cap error
+        # The cap fits and the request still does not: fall through, the history is what is too big.
     if any(phrase in text for phrase in _INPUT_PHRASES):
         return True
     if any(phrase in text for phrase in _BUDGET_PHRASES):

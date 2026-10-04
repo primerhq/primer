@@ -54,6 +54,36 @@ REAL_OVERFLOWS = [
         "with context length of only 4096 tokens and cannot continue.",
         id="lm-studio",
     ),
+    # vLLM v0.11 serving_engine.py: raised whenever max_tokens is set and input + max_tokens > max_model_len.
+    # primer always sends max_output_tokens, so this is THE normal overflow form on a vLLM profile. The cap
+    # (4096) fits in the context (32768); it is the history (29000) that does not: compaction fixes it.
+    pytest.param(
+        "'max_tokens' or 'max_completion_tokens' is too large: 4096. This model's maximum context length is "
+        "32768 tokens and your request has 29000 input tokens (4096 > 32768 - 29000).",
+        id="vllm-cap-fits-the-history-does-not",
+    ),
+    # One below the boundary (the cap alone still fits), via the trailer only and via the two separate numbers.
+    pytest.param(
+        "'max_tokens' is too large: 8191. This model's maximum context length is 8192 tokens and your request "
+        "has 50 input tokens (8191 > 8192 - 50).",
+        id="vllm-cap-one-below-the-context",
+    ),
+    pytest.param(
+        "'max_tokens' is too large: 4096. This model's maximum context length is 32768 tokens.",
+        id="vllm-no-trailer-cap-fits",
+    ),
+    pytest.param(
+        "max_tokens is too large to leave room for the history; exceeds maximum context length (4096 > 32768 - 29000)",
+        id="synthetic-trailer-only",
+    ),
+    # The OpenAI SDK embeds the response body in the exception text, so an unrelated "too large" can sit next to
+    # 'param': 'max_tokens'. Only "<param> is too large" is the output-cap signal (synthetic).
+    pytest.param(
+        "Error code: 400 - {'error': {'message': \"This model's maximum context length is 8192 tokens. However, "
+        "your messages resulted in 9000 tokens. Please reduce the length of the messages. (request body too "
+        "large)\", 'type': 'invalid_request_error', 'param': 'max_tokens', 'code': None}}",
+        id="sdk-embedded-body-with-an-unrelated-too-large",
+    ),
     # Phrases the previous heuristic already matched: kept, so recall does not regress.
     pytest.param("Request is over the maximum context of this endpoint", id="legacy-maximum-context"),
     pytest.param("Total of 9000 tokens exceeds the limit for this model", id="legacy-tokens-exceeds"),
@@ -90,13 +120,22 @@ NOT_OVERFLOWS = [
     pytest.param("max_output_tokens is above the token limit", id="budget-phrase-max-output-tokens"),
     pytest.param("maxOutputTokens is above the token limit", id="budget-phrase-maxoutputtokens"),
     pytest.param("max_completion_tokens is above the token limit", id="budget-phrase-max-completion-tokens"),
-    # vLLM: the OUTPUT cap is "too large", and the message quotes the context length while saying so.
+    # vLLM, the OTHER case: the cap alone is >= the context length, so no history, however short, can fit.
     pytest.param(
         "'max_tokens' or 'max_completion_tokens' is too large: 100000. This model's maximum context length "
         "is 8192 tokens and your request has 50 input tokens (100000 > 8192 - 50).",
-        id="vllm-max-tokens-too-large",
+        id="vllm-cap-exceeds-the-context",
     ),
-    # One per output parameter, so each name in the veto is pinned on its own (the same shape, synthetic).
+    pytest.param(
+        "'max_tokens' is too large: 8192. This model's maximum context length is 8192 tokens and your request "
+        "has 50 input tokens (8192 > 8192 - 50).",
+        id="vllm-cap-equals-the-context",
+    ),
+    pytest.param(
+        "'max_tokens' is too large: 100000. This model's maximum context length is 8192 tokens.",
+        id="vllm-no-trailer-cap-exceeds-the-context",
+    ),
+    # One per output parameter, so each name in the veto is pinned on its own (no context number: synthetic).
     pytest.param("max_tokens is too large for this model's context length of 8192 tokens", id="veto-max-tokens"),
     pytest.param(
         "max_completion_tokens is too large for this model's context length of 8192 tokens",
