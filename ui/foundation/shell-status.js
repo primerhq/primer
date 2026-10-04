@@ -158,6 +158,13 @@ function SH_isStopping(session) {
     && session.status !== "ended" && !session.parked_status;
 }
 
+// Can a Stop do anything? The server's own condition: POST .../interrupt records a Stop only on a RUNNING row
+// that is not parked. Every other row answers 200 as a no-op (idle, waiting, paused, created) or 409 (parked,
+// ended), so offering Stop there is an error or a lie. Every Stop entry point gates on this.
+function SH_canStop(session) {
+  return !!session && session.status === "running" && !session.parked_status;
+}
+
 // Verbs that mean "waiting on the model" (or an unknown phase): a Stop interrupts that wait
 // at once, so the strip just says "stopping". Any other verb is a TOOL: until a running tool
 // can be cancelled a Stop lets it finish, and the line says so instead of implying it is instant.
@@ -186,6 +193,7 @@ function SH_lifecycleLabel(kind, payload) {
 window.SH_FOLLOW_PX = SH_FOLLOW_PX;
 window.SH_bareToolName = SH_bareToolName;
 window.SH_isStopping = SH_isStopping;
+window.SH_canStop = SH_canStop;
 window.SH_stoppingLine = SH_stoppingLine;
 window.SH_lifecycleLabel = SH_lifecycleLabel;
 window.SH_statusLine = SH_statusLine;

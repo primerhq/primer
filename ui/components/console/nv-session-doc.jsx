@@ -92,10 +92,20 @@ var NV_STOP_IN_FLIGHT = {};
 function NV_doInterrupt(wid, sid, refetchAll, toast) {
   if (NV_STOP_IN_FLIGHT[sid]) return NV_STOP_IN_FLIGHT[sid];
   var pending = SH_api.interrupt(wid, sid).then(function (row) {
-    toast("Stopping the turn");
-    return refetchAll(row);
+    // A 200 is not a Stop: POST .../interrupt answers 200 as a no-op on every row that is neither running nor
+    // parked (idle, waiting, paused, a turn that just finished). Only a row that carries the flag was stopped;
+    // anything else says so, and resolves {noop: true} so the click's pending state clears at once.
+    if (row && row.interrupt_requested === true) {
+      toast("Stopping the turn");
+      return refetchAll(row);
+    }
+    toast("Nothing to stop: no turn is running");
+    refetchAll(row);
+    return { noop: true };
   }, function (err) {
-    toast("Interrupt failed: " + (err.detail || err.message));
+    toast("Interrupt failed: " + (err.detail || err.message), {
+      kind: "error", requestId: err.requestId || err.request_id || null,
+    });
     return { failed: true };
   });
   NV_STOP_IN_FLIGHT[sid] = pending;
@@ -1286,13 +1296,15 @@ function NV_StatusStrip(props) {
       <span className="nv-dot-pulse" />
       <span className="nv-status-verb">{line}</span>
       <span style={{ flex: 1 }} />
-      <button type="button" className="nv-interrupt-btn"
-        data-testid="nv-interrupt" data-verb="session.interrupt"
-        data-pending={props.stopping ? "true" : "false"}
-        disabled={props.stopping}
-        onClick={props.onInterrupt}>
-        {props.stopping ? "◼ stopping…" : "◼ interrupt"}
-      </button>
+      {props.canStop || props.stopping ? (
+        <button type="button" className="nv-interrupt-btn"
+          data-testid="nv-interrupt" data-verb="session.interrupt"
+          data-pending={props.stopping ? "true" : "false"}
+          disabled={props.stopping}
+          onClick={props.onInterrupt}>
+          {props.stopping ? "◼ stopping…" : "◼ interrupt"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -1626,6 +1638,7 @@ function NV_Composer(props) {
       <div className="nv-composer-wrap" data-testid="nv-composer">
         <NV_StatusStrip shown={props.statusShown}
           stopping={props.stopping}
+          canStop={props.canStop}
           onInterrupt={props.onInterrupt} />
         {props.degraded ? (
           <div className="nv-status-strip" data-testid="nv-reconnect">
@@ -1737,7 +1750,7 @@ function NV_Composer(props) {
               </svg>
             </button>
           ) : null}
-          {props.running ? (
+          {props.running && (props.canStop || props.stopping) ? (
             <button type="button" className="nv-stop-btn"
               data-testid="nv-stop" data-verb="session.interrupt"
               data-pending={props.stopping ? "true" : "false"}
@@ -1972,6 +1985,8 @@ function NV_SessionDoc(props) {
     reg({
       id: "session.interrupt", label: "Interrupt Session",
       contexts: ["session"], requiresLive: true,
+      // Offered only while a Stop can do something: a running turn that is not parked.
+      available: function (ctx) { return window.SH_canStop(ctx.session); },
       surfaces: ["palette", "tab-menu"],
       run: function () {
         var f = focused(); if (!f) return;
@@ -2080,7 +2095,7 @@ function NV_SessionDoc(props) {
   // clears interrupt_requested when the Stop lands, which ends the state and brings the
   // button back). Kept below `degraded` on purpose: test_console_session_doc.py slices the
   // statements between `rowBusy` and `degraded` out and evaluates them on their own.
-  var stopping = stopPending || window.SH_isStopping(session);
+  var stopping = (stopPending && window.SH_canStop(session)) || window.SH_isStopping(session);
   React.useEffect(function () {
     // Hand over to the served flag as soon as it shows. And never stay pending on a request
     // that changed nothing (a 200 no-op on a session that was no longer running sets no flag).
@@ -2772,10 +2787,12 @@ function NV_SessionDoc(props) {
         terminal={NV_sessionIsOver(session)}
         micEnabled={!!(con.speech && con.speech.stt_configured)}
         stopping={stopping}
+        canStop={window.SH_canStop(session)}
         onInterrupt={function () {
           setStopPending(true);
           NV_doInterrupt(con.wid, sid, refetchAll, con.toast).then(function (res) {
-            if (res && res.failed) setStopPending(false);
+            // A failure or a no-op 200 changed nothing: do not sit in "stopping" for the 5s fallback.
+            if (res && (res.failed || res.noop)) setStopPending(false);
           });
         }}
         onSend={function (text, clientId, attachments) {
@@ -2815,6 +2832,14 @@ function NV_SessionDoc(props) {
 
 window.NV_SessionDoc = NV_SessionDoc;
 window.NV_doInterrupt = NV_doInterrupt;
+// The focused session tab's latest row, or null when the focused doc is not a session. The palette hands it to
+// the verb registry so a verb's `available` predicate (Interrupt: a running, non-parked turn) can decide.
+window.NV_focusedSessionRow = function () {
+  var c = NV_SESSION_CON_REF.current;
+  if (!c || !c.doc || c.doc.kind !== "session") return null;
+  var inst = NV_SESSION_INSTANCES[c.doc.ref];
+  return (inst && inst.session) || null;
+};
 window.NV_DecisionCard = NV_DecisionCard;
 window.NV_AskCard = NV_AskCard;
 window.NV_TraceSplit = NV_TraceSplit;
