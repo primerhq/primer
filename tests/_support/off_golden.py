@@ -14,8 +14,9 @@ change without failing a unit test:
   force-compacts and re-runs the loop;
 * turn 4, DEFERRED STEER: two steers arrive while the compaction summary call is in flight, are held
   back and land after the marker, in submission order;
-* turns 5 and 6, THE BOUNDARY: two small sessions whose history estimate is exactly one token under the
-  trigger and exactly at it, so the end-to-end golden pins whether the trigger fires at ``<`` or ``<=``
+* turns 5 and 6, THE BOUNDARY: two small sessions whose history estimate PLUS the fixed overhead (system
+  prompt and tool schemas, which count against the trigger) is exactly one token under the trigger and
+  exactly at it, so the end-to-end golden pins whether the trigger fires at ``<`` or ``<=``
   (tier 1 is in memory, so the difference shows in the prompt: raw tool results, then placeholders).
 
 For every turn it records the prompt of every LLM call, the markers, and the persisted
@@ -215,14 +216,30 @@ def assistant_message(text: str) -> Message:
     return Message(role="assistant", parts=[TextPart(text=text)])
 
 
-async def run_turn(session, llm: ScriptedLLM, *, collect: list | None = None) -> None:
-    """One turn on the real executor; ``collect`` receives every event the turn yields."""
+def make_executor(
+    session, llm, *, llm_model=None, compaction=None, wrap_tools=None,
+) -> WorkspaceAgentExecutor:
+    """The real executor over a real session. ``wrap_tools`` receives the real tool manager and returns the one to use."""
     manager = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
-    executor = WorkspaceAgentExecutor(
+    if wrap_tools is not None:
+        manager = wrap_tools(manager)
+    return WorkspaceAgentExecutor(
         agent=make_agent(), llm=llm,  # type: ignore[arg-type]
-        llm_model=make_model(), tool_manager=manager, session=session,
-        compaction=CompactionStrategy(),
+        llm_model=llm_model or make_model(), tool_manager=manager, session=session,
+        compaction=compaction or CompactionStrategy(),
     )
+
+
+async def fixed_overhead(session) -> int:
+    """The estimated size of the part of every prompt no history can give back, as the executor counts it."""
+    return await make_executor(session, ScriptedLLM()).fixed_overhead_tokens()
+
+
+async def run_turn(
+    session, llm: ScriptedLLM, *, collect: list | None = None, llm_model=None, compaction=None, wrap_tools=None,
+) -> None:
+    """One turn on the real executor; ``collect`` receives every event the turn yields."""
+    executor = make_executor(session, llm, llm_model=llm_model, compaction=compaction, wrap_tools=wrap_tools)
     async for event in executor.invoke([]):
         if collect is not None:
             collect.append(event)
@@ -286,11 +303,7 @@ def capture_file(text: str, session_id: str) -> dict[str, Any]:
 
 async def _history_estimate(session) -> int:
     """The heuristic's size of the history the executor would hand ``maybe_compact`` right now."""
-    manager = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
-    executor = WorkspaceAgentExecutor(
-        agent=make_agent(), llm=ScriptedLLM(),  # type: ignore[arg-type]
-        llm_model=make_model(), tool_manager=manager, session=session, compaction=CompactionStrategy(),
-    )
+    executor = make_executor(session, ScriptedLLM())
     return CompactionStrategy._estimate_tokens(await executor._read_messages_jsonl())
 
 
@@ -300,7 +313,7 @@ def trigger_tokens() -> int:
 
 
 async def boundary_turn(root: Path, llm: ScriptedLLM, name: str, delta: int) -> dict[str, Any]:
-    """One turn on a fresh session whose history estimate is EXACTLY ``trigger + delta`` tokens.
+    """One turn on a fresh session whose history estimate plus the fixed overhead is EXACTLY ``trigger + delta`` tokens.
 
     Three tool results over the per-output and total prune thresholds give tier 1 something to do; one
     trailing user message of computed length pads the estimate to the target. Below the trigger nothing
@@ -312,10 +325,11 @@ async def boundary_turn(root: Path, llm: ScriptedLLM, name: str, delta: int) -> 
         for i in range(3):
             await append_messages(workspace, session, *tool_round(i))
         target = trigger_tokens() + delta
-        padding_tokens = target - await _history_estimate(session) - 8  # 8 = the pad message's own overhead
+        fixed = await fixed_overhead(session)  # counted against the trigger too: target = history + fixed
+        padding_tokens = target - fixed - await _history_estimate(session) - 8  # 8 = the pad message's own overhead
         assert padding_tokens >= 1, "the seeded history is already past the target"
         await append_messages(workspace, session, user_message("p" * (4 * padding_tokens)))
-        assert await _history_estimate(session) == target, "the padding must land the estimate exactly on the target"
+        assert await _history_estimate(session) + fixed == target, "the padding must land the estimate exactly on the target"
         llm.extend([Events(text_events("boundary-ok"))])
         before = len(llm.calls)
         await run_turn(session, llm)

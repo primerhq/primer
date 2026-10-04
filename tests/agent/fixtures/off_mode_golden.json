@@ -1272,8 +1272,8 @@
      "parts": [
       [
        "text",
-       59308,
-       "696cfe6c42980c83"
+       46856,
+       "2d06b7bffeb1b815"
       ]
      ],
      "role": "user"
@@ -1420,8 +1420,8 @@
      "parts": [
       [
        "text",
-       59312,
-       "cf4cc856343662a5"
+       46860,
+       "a450ea75c1d2dbcd"
       ]
      ],
      "role": "user"
@@ -1477,7 +1477,7 @@
    ]
   }
  ],
- "captured_from": "648e26158fa256c41bdb216c3aa78acbe847e722",
+ "captured_from": "e48da28edfc7f7abf1c10e8c0476f146d028bff7",
  "recaptures": [
   {
    "changed_turns": [
@@ -1487,6 +1487,18 @@
    "previous_captured_from": "648e26158fa256c41bdb216c3aa78acbe847e722",
    "previous_fixture_sha256": "7fbab6401bd4b14e01ee1644855121bcf416f71d396ee70ce89c7f7eb357c464",
    "reason": "scenario: every turn owns its session (turns 3 and 4 no longer inherit turn 2's marker and tail), so a change to one turn cannot cascade into the next"
+  },
+  {
+   "changed_turns": [
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "previous_captured_from": "648e26158fa256c41bdb216c3aa78acbe847e722",
+   "previous_fixture_sha256": "2fea7ebaef86ee2cac943db6b891af7494a6aca8b1ba9ce990aff2f22069fb6c",
+   "reason": "R2 (task 01a10914): the fixed overhead (system prompt + tool schemas, 3,113 tokens for this agent) is counted. Turns 2-4: the marker's tokens_before/after include it (+3,113) and it gains fixed_overhead_tokens; every prompt is byte-identical. Turns 5-6: the boundary pad is 3,113 tokens shorter, since history + fixed must land on trigger-1 and trigger"
   }
  ],
  "turns": [
@@ -1569,7 +1581,7 @@
   },
   {
    "file": {
-    "bytes": 962359,
+    "bytes": 962388,
     "lines": [
      {
       "len": 56,
@@ -1692,10 +1704,10 @@
       "sha": "dc1adde5e40679c6"
      },
      {
-      "len": 120624,
+      "len": 120653,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "5404779b6f6456f0"
+      "sha": "5f8c90c0831f51d2"
      },
      {
       "len": 65,
@@ -1707,6 +1719,7 @@
     "markers": [
      {
       "created_at": "<ts>",
+      "fixed_overhead_tokens": 3113,
       "kept_tail": [
        {
         "len": 76,
@@ -1740,20 +1753,20 @@
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "b6ebe312fb275ed4",
-      "tokens_after": 30069,
-      "tokens_before": 210508,
+      "tokens_after": 33182,
+      "tokens_before": 213621,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "772d749f2157372836cf1a06d370cf10f49279d0a3a8cd288b38ccbb049b32af"
+    "sha256": "d091133ce74cabeb81f7e0670b056cc151c3092f62a6fca75166ebb03445ff63"
    },
    "llm_calls": 2,
    "turn": "2-tier2-summary"
   },
   {
    "file": {
-    "bytes": 22086,
+    "bytes": 22115,
     "lines": [
      {
       "len": 56,
@@ -1852,10 +1865,10 @@
       "sha": "263b0d6170d662da"
      },
      {
-      "len": 6918,
+      "len": 6947,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "e0b82661d348b061"
+      "sha": "62ebb8fca35e1e60"
      },
      {
       "len": 65,
@@ -1867,6 +1880,7 @@
     "markers": [
      {
       "created_at": "<ts>",
+      "fixed_overhead_tokens": 3113,
       "kept_tail": [
        {
         "len": 76,
@@ -1924,20 +1938,20 @@
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "8c49090b2ac9e12d",
-      "tokens_after": 1624,
-      "tokens_before": 3696,
+      "tokens_after": 4737,
+      "tokens_before": 6809,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "46db53a4c8eddb1cf23b8c10f41826ebfd4dfccfc12e1b94578a9b4edd3ef87c"
+    "sha256": "4396c2386c960b78c989f9b5a404c6dfb3564a34ab049e99cd94c6557c728958"
    },
    "llm_calls": 3,
    "turn": "3-overflow-replay"
   },
   {
    "file": {
-    "bytes": 601330,
+    "bytes": 601359,
     "lines": [
      {
       "len": 56,
@@ -1994,10 +2008,10 @@
       "sha": "120309216c2494a6"
      },
      {
-      "len": 120560,
+      "len": 120589,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "8ed94365e5e559f5"
+      "sha": "498916ff7630077b"
      },
      {
       "len": 76,
@@ -2021,6 +2035,7 @@
     "markers": [
      {
       "created_at": "<ts>",
+      "fixed_overhead_tokens": 3113,
       "kept_tail": [
        {
         "len": 76,
@@ -2048,20 +2063,20 @@
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "eac741dd554ebe61",
-      "tokens_after": 30058,
-      "tokens_before": 120090,
+      "tokens_after": 33171,
+      "tokens_before": 123203,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "67ada2b190104fbb46b50500c6f481b8bce1652719fd2256e4d84bc5c2cf9766"
+    "sha256": "c5fe586120e52e4f3798e5b0efd441eab280b0b0383a9df96bb2fde84b238246"
    },
    "llm_calls": 2,
    "turn": "4-deferred-steers"
   },
   {
    "file": {
-    "bytes": 330150,
+    "bytes": 317698,
     "lines": [
      {
       "len": 56,
@@ -2106,10 +2121,10 @@
       "sha": "5ebd4ca098b68297"
      },
      {
-      "len": 59331,
+      "len": 46879,
       "message": "user",
       "preview": "pppppppppppppppppppppppppppppppppppppppp",
-      "sha": "af75b065d532ac9e"
+      "sha": "b10a5d873a59c5af"
      },
      {
       "len": 67,
@@ -2119,7 +2134,7 @@
      }
     ],
     "markers": [],
-    "sha256": "bb8992ec6284027fb25fba5d366e7b548b7e0bd16b26f5cf8bdc79de020924ba"
+    "sha256": "610cf1740e8a134c83fc18331429aadd571f89c29b0bbbe8705514d4adecbb5a"
    },
    "llm_calls": 1,
    "target_estimate": 82626,
@@ -2127,7 +2142,7 @@
   },
   {
    "file": {
-    "bytes": 330154,
+    "bytes": 317702,
     "lines": [
      {
       "len": 56,
@@ -2172,10 +2187,10 @@
       "sha": "5ebd4ca098b68297"
      },
      {
-      "len": 59335,
+      "len": 46883,
       "message": "user",
       "preview": "pppppppppppppppppppppppppppppppppppppppp",
-      "sha": "277341e78da86e52"
+      "sha": "c46f6e028314d1a1"
      },
      {
       "len": 67,
@@ -2185,7 +2200,7 @@
      }
     ],
     "markers": [],
-    "sha256": "e90dd45ce0d0a880d37b70278448a4d5579819966481701bf9cfcd7ec3d94eb3"
+    "sha256": "00ab813210e9cb8c59475777e7af9fc91b6e6aa85dfb8b346b0be0b6cb0d0df9"
    },
    "llm_calls": 1,
    "target_estimate": 82627,

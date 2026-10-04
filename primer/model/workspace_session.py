@@ -860,7 +860,8 @@ class SessionMessageKind(StrEnum):
     LLM_CALL = "llm_call"
     # A compaction ran and could not reduce the prompt, and wrote NO marker
     # (nothing was summarised). Payload: ``{"outcome": "unreducible",
-    # "reason": "empty_head" | "protected_over_trigger", "estimated_tokens":
+    # "reason": "empty_head" | "fixed_over_budget" | "protected_over_budget",
+    # "estimated_tokens":
     # int, "trigger_tokens": int | None}``. Written through the normal event
     # path (primer/session/persistence.py), so it carries a real seq. A
     # compaction that summarised and was still over the trigger records
