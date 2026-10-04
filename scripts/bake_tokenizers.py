@@ -9,6 +9,10 @@ independent of) the dependency sync.
 
 The first form downloads whatever is missing or corrupt, verifies every file's
 sha256 against ``primer/llm/_tokenizer/vocab_pins.py`` and writes it atomically.
+The whole bake is bounded by one hard wall-clock deadline: each download runs on a
+daemon thread the script stops waiting for when the time is up, so a slow DNS
+lookup, a stalled TLS handshake or a server trickling one byte at a time cannot hold
+the build (a per-socket-operation timeout alone bounds none of those).
 The second only verifies what is on disk and NEVER touches the network; it is
 the build-time assertion in the image, and an operator can run it inside a
 running container as a readiness check. Both exit non-zero on any failure.
@@ -25,7 +29,9 @@ import hashlib
 import importlib.util
 import os
 import sys
+import threading
 import time
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -36,12 +42,13 @@ _PINS_CANDIDATES = (
     HERE.parent / "primer" / "llm" / "_tokenizer" / "vocab_pins.py",  # repo layout
 )
 
-# One socket operation may take this long; the TOTAL deadline below bounds the
-# whole download, because a per-operation timeout alone does not stop a slow
-# trickle from holding the build forever.
+# One socket operation may take this long. That alone bounds neither DNS, nor a
+# server that sends one byte just inside it forever; the hard wall-clock bound in
+# ``fetch`` is what limits the whole download.
 OPERATION_TIMEOUT_S = 10.0
 DEFAULT_DEADLINE_S = 120.0
 _CHUNK = 64 * 1024
+_LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def load_pins():
@@ -73,20 +80,36 @@ def is_verified(path: Path, sha256: str) -> bool:
     return path.is_file() and sha256_of(path) == sha256
 
 
-def fetch(url: str, *, deadline: float, clock: Callable[[], float] = time.monotonic) -> bytes:
-    """Download ``url`` over HTTPS, abandoning it once ``deadline`` has passed."""
-    if not url.startswith("https://"):
+def fetch(url: str, *, timeout_s: float) -> bytes:
+    """Download ``url``, giving up after ``timeout_s`` seconds of WALL-CLOCK time.
+
+    The bound is hard. The download runs on a daemon thread and this function stops
+    waiting for it when the time is up, so DNS, connect, the TLS handshake and a
+    server that trickles bytes are all bounded by the same clock (a per-socket
+    timeout bounds none of them). The abandoned thread dies with the process; the
+    caller is a build step that exits non-zero right after. HTTPS only, except a
+    loopback address (so a test can serve a file without TLS).
+    """
+    parts = urllib.parse.urlparse(url)
+    if parts.scheme != "https" and not (parts.scheme == "http" and parts.hostname in _LOOPBACK):
         raise ValueError(f"refusing a non-https vocabulary url: {url}")
-    chunks: list[bytes] = []
-    with urllib.request.urlopen(url, timeout=OPERATION_TIMEOUT_S) as response:  # noqa: S310
-        while True:
-            if clock() > deadline:
-                raise TimeoutError(f"download of {url} passed its total deadline")
-            chunk = response.read(_CHUNK)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    return b"".join(chunks)
+    outcome: dict[str, object] = {}
+
+    def download() -> None:
+        try:
+            with urllib.request.urlopen(url, timeout=OPERATION_TIMEOUT_S) as response:  # noqa: S310
+                outcome["data"] = response.read()
+        except BaseException as exc:  # noqa: BLE001 - handed to the waiting thread
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=download, name="vocab-fetch", daemon=True)
+    thread.start()
+    thread.join(max(0.0, timeout_s))
+    if thread.is_alive():
+        raise TimeoutError(f"download of {url} did not finish within {max(0.0, timeout_s):g}s")
+    if "error" in outcome:
+        raise outcome["error"]  # type: ignore[misc]
+    return outcome["data"]  # type: ignore[return-value]
 
 
 def _write_atomically(path: Path, data: bytes) -> None:
@@ -129,7 +152,7 @@ def bake(
             print(f"ok {pin.encoding} sha256={pin.sha256[:12]} (already present)")
             continue
         try:
-            data = fetcher(pin.url, deadline=deadline, clock=clock)
+            data = fetcher(pin.url, timeout_s=deadline - clock())
         except Exception as exc:  # noqa: BLE001 - reported, then non-zero exit
             problems.append(f"{pin.encoding}: download failed ({type(exc).__name__}: {exc})")
             continue
