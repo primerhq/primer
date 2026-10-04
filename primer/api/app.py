@@ -421,25 +421,61 @@ def create_test_app(
     # we expose explicit start/stop coroutines and let the test
     # fixture call them around the yield. Mirrors the
     # start_worker_pool pattern above.
+    #
+    # The mount's session manager runs an anyio task group, and anyio
+    # requires a cancel scope to be EXITED BY THE TASK THAT ENTERED IT.
+    # An async-generator fixture's setup and teardown run in different
+    # tasks, so entering in _start_mcp and exiting in _stop_mcp directly
+    # raised "Attempted to exit cancel scope in a different task" on every
+    # app, and anyio's module-level _task_states then pinned each finished
+    # setup task, and with it the whole app, for the life of the process.
+    # So one dedicated task owns the entire enter..exit span; _start_mcp
+    # waits until the mount is live and _stop_mcp releases the task and
+    # awaits it, which re-raises a failed teardown in the caller.
     app.state.mcp_session_manager = None
-    _mcp_teardown_holder: dict[str, object] = {"fn": None}
+    _mcp_runner: dict[str, object] = {"task": None, "release": None}
 
     async def _start_mcp() -> None:
-        if _mcp_teardown_holder["fn"] is not None:
+        if _mcp_runner["task"] is not None:
             return
-        _mcp_teardown_holder["fn"] = await _start_mcp_mount(
-            app,
-            storage_provider=storage_provider,
-            provider_registry=provider_registry,
-            approval_resolver=_test_approval_resolver,
-        )
+        live = asyncio.Event()
+        release = asyncio.Event()
+        start_error: list[Exception] = []
+
+        async def _own_mount() -> None:
+            try:
+                teardown = await _start_mcp_mount(
+                    app,
+                    storage_provider=storage_provider,
+                    provider_registry=provider_registry,
+                    approval_resolver=_test_approval_resolver,
+                )
+            except Exception as exc:
+                start_error.append(exc)
+                return
+            finally:
+                live.set()
+            try:
+                await release.wait()
+            finally:
+                await teardown()
+
+        task = asyncio.create_task(_own_mount(), name="test-app-mcp-mount")
+        await live.wait()
+        if start_error:
+            raise start_error[0]
+        _mcp_runner["task"] = task
+        _mcp_runner["release"] = release
 
     async def _stop_mcp() -> None:
-        fn = _mcp_teardown_holder["fn"]
-        if fn is None:
+        task = _mcp_runner["task"]
+        if task is None:
             return
-        _mcp_teardown_holder["fn"] = None
-        await fn()  # type: ignore[misc]
+        release = _mcp_runner["release"]
+        _mcp_runner["task"] = None
+        _mcp_runner["release"] = None
+        release.set()  # type: ignore[union-attr]
+        await task  # type: ignore[misc]
 
     app.state.start_mcp_mount = _start_mcp
     app.state.stop_mcp_mount = _stop_mcp
