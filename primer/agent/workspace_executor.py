@@ -75,20 +75,17 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # so the LLM sees workspace-tool documentation in its system
         # context. This produces a *new* Agent instance with the
         # combined prompt; the original agent definition is unchanged.
-        from primer.model.agent import Agent as _Agent
-
+        #
+        # Copy the agent and replace ONLY the system prompt. This used to rebuild
+        # it from eight named fields, so every other field fell back to its default:
+        # an operator-set ``max_tool_turns`` became 50 and ``compaction_tool_access``
+        # became False in every workspace session, silently. ``deep=True`` keeps the
+        # copy from sharing its lists with the registry entity it came from.
         composite_system_prompt = list(agent.system_prompt) + [
             session.system_prompt_fragment
         ]
-        composite_agent = _Agent(
-            id=agent.id,
-            description=agent.description,
-            model=agent.model,
-            temperature=agent.temperature,
-            max_output_tokens=agent.max_output_tokens,
-            tools=list(agent.tools),
-            system_prompt=composite_system_prompt,
-            compaction_prompt=list(agent.compaction_prompt),
+        composite_agent = agent.model_copy(
+            update={"system_prompt": composite_system_prompt}, deep=True,
         )
         super().__init__(
             agent=composite_agent,
