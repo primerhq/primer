@@ -56,7 +56,7 @@ async def _pool(engine, scheduler, handler) -> WorkerPool:
         engine=engine,
     )
     await pool.start()
-    engine.lease_ttl_seconds = 2     # start() applies the config's 5 s floor; a short TTL keeps the test short
+    engine.lease_ttl_seconds = 4     # start() applies the config's 5 s floor; 4 s against a 1 s heartbeat leaves a 3 s CI margin
     pool._dispatch[KIND] = handler
     return pool
 
@@ -89,7 +89,7 @@ async def test_a_turn_that_outlives_the_lease_ttl_during_a_drain_keeps_its_lease
         await _until(pool_a._stopping.is_set, "drain never started")
         pool_b = await _pool(engine, scheduler, handler_b)       # a peer, polling for expired leases
         try:
-            await asyncio.sleep(2.6)                              # past the ORIGINAL expiry (ttl 2 s)
+            await asyncio.sleep(4.6)                              # past the ORIGINAL expiry (ttl 4 s)
 
             for key in ("long-1", "long-2"):
                 row = engine._leases[(KIND, key)]
@@ -123,13 +123,16 @@ async def test_the_keepalive_stops_once_the_turns_are_done_so_drain_does_not_han
         for key in ("a", "b"):
             await engine.upsert(KIND, key)
         await _until(lambda: sorted(started) == ["a", "b"], "turns never started")
+        loops = list(pool._tasks)       # drain_and_stop clears ``_tasks``, so the loops are captured BEFORE it
+        assert loops, "the pool started no loops"
         drain = asyncio.create_task(pool.drain_and_stop(timeout=20))
         await _until(pool._stopping.is_set, "drain never started")
+        assert not any(t.done() for t in loops), "a keep-alive loop ended with the drain's first step"
         gate.set()
         await asyncio.wait_for(drain, timeout=5.0)
 
         assert pool._keepalive_done.is_set()
-        assert all(t.done() for t in pool._tasks) or pool._tasks == [], "a keep-alive loop outlived the drain"
+        assert all(t.done() for t in loops), "a keep-alive loop outlived the drain"
     finally:
         gate.set()
         await scheduler.aclose()
@@ -161,4 +164,79 @@ async def test_the_keepalive_is_bounded_even_if_a_turn_ignores_its_cancel():
     finally:
         pool._in_flight.clear()
         await pool.drain_and_stop(timeout=1)
+        await scheduler.aclose()
+
+
+class _SlowDrainScheduler(InMemoryScheduler):
+    """``drain_worker`` records the keep-alive deadline the pool has set by then, then takes ``delay`` seconds."""
+
+    def __init__(self, pool_ref: list, delay: float) -> None:
+        super().__init__()
+        self._pool_ref = pool_ref
+        self._delay = delay
+        self.seen_deadline: float | None = None
+
+    async def drain_worker(self, worker_id):
+        self.seen_deadline = self._pool_ref[0]._keepalive_deadline
+        await asyncio.sleep(self._delay)
+        return await super().drain_worker(worker_id)
+
+
+@pytest.mark.asyncio
+async def test_drain_and_stop_sets_the_keepalive_deadline_from_the_drain_start_and_the_timeout():
+    """Pins the value ``drain_and_stop`` ACTUALLY sets (the other tests overwrite the attribute): the drain's start
+    plus its timeout plus the 30 s keep-alive allowance."""
+    engine = InMemoryClaimEngine(adapters={KIND: _Adapter()})
+    ref: list = []
+    scheduler = _SlowDrainScheduler(ref, delay=0.0)
+    await scheduler.initialize()
+    pool = await _pool(engine, scheduler, handler=lambda lease: asyncio.sleep(0))
+    ref.append(pool)
+    try:
+        loop = asyncio.get_event_loop()
+        before = loop.time()
+        await pool.drain_and_stop(timeout=7.0)
+        after = loop.time()
+        assert scheduler.seen_deadline is not None
+        assert before + 7.0 + 30.0 <= scheduler.seen_deadline <= after + 7.0 + 30.0
+        assert pool._KEEPALIVE_EXTRA_SECONDS == 30.0
+    finally:
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_drain_worker_cannot_push_the_turn_wait_past_the_drains_own_clock():
+    """One clock for the keep-alive and the turn wait: with ``drain_worker`` taking 3 s and a 2 s drain timeout the turn wait
+    used to START after it (so the cancel arrived at about 5 s); it is capped at the drain's start + timeout + two
+    ``_stop_claiming`` waits, so the cancel arrives at about 3 s and the keep-alive (started + timeout + 30 s) still covers
+    the unwind."""
+    engine = InMemoryClaimEngine(adapters={KIND: _Adapter()})
+    ref: list = []
+    scheduler = _SlowDrainScheduler(ref, delay=3.0)
+    await scheduler.initialize()
+    cancelled_at: list[float] = []
+    started: list[str] = []
+    loop = asyncio.get_event_loop()
+
+    async def handler(lease):
+        started.append(lease.entity_id)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled_at.append(loop.time())
+            raise
+
+    pool = await _pool(engine, scheduler, handler)
+    ref.append(pool)
+    pool._claim_stop_grace_seconds = 0.2
+    try:
+        for key in ("a", "b"):
+            await engine.upsert(KIND, key)
+        await _until(lambda: sorted(started) == ["a", "b"], "turns never started")
+        t0 = loop.time()
+        await asyncio.wait_for(pool.drain_and_stop(timeout=2.0), timeout=15.0)
+        assert len(cancelled_at) == 2, "both turns must have been cancelled by the drain"
+        assert max(cancelled_at) - t0 < 4.0, f"the turn wait started after the slow drain_worker: cancel at +{max(cancelled_at) - t0:.1f}s"
+        assert min(cancelled_at) - t0 >= 2.9, "the cancel arrived before drain_worker even returned"
+    finally:
         await scheduler.aclose()

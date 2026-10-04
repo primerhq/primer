@@ -271,9 +271,9 @@ class WorkerPool:
             if timeout is not None
             else float(self.config.drain_timeout_seconds)
         )
-        self._keepalive_deadline = (
-            asyncio.get_event_loop().time() + drain_timeout + self._KEEPALIVE_EXTRA_SECONDS
-        )
+        # ONE clock for the drain: every deadline below is measured from here.
+        drain_started = asyncio.get_event_loop().time()
+        self._keepalive_deadline = drain_started + drain_timeout + self._KEEPALIVE_EXTRA_SECONDS
         self._stopping.set()
         # Wake any sleeping claim loops so they see the stopping flag.
         self._wake.set()
@@ -288,7 +288,13 @@ class WorkerPool:
             await self._scheduler.drain_worker(self._worker_id)
         except Exception:
             logger.exception("drain_worker failed for %s", self._worker_id)
-        deadline = asyncio.get_event_loop().time() + drain_timeout
+        # The turn wait normally lasts ``drain_timeout`` from here, but it is capped on the drain's own clock: a slow
+        # ``drain_worker`` (a database call) must not push it past what the keep-alive deadline covers, or the lease
+        # heartbeat could end while turns still run. The cap allows the two ``_stop_claiming`` waits and no more.
+        deadline = min(
+            asyncio.get_event_loop().time() + drain_timeout,
+            drain_started + drain_timeout + 2 * self._claim_stop_grace_seconds,
+        )
         while self._active_scopes and asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
         if self._active_scopes:
