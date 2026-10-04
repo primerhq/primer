@@ -6127,7 +6127,7 @@
         "type": "object"
       },
       "PoolConfig": {
-        "description": "Connection pool settings shared by Postgres-backed providers.\n\nMaps onto asyncpg's :func:`asyncpg.create_pool` parameters, except the\n``tcp_keepalive_*`` fields: asyncpg has no keepalive option, so those are\napplied to every new connection's socket by the pool's ``init`` hook\n(:mod:`primer.storage._pg_pool`).\nDefaults are tuned for a small-to-medium application; large\ndeployments should raise ``max_size`` to match expected concurrency.",
+        "description": "Connection pool settings shared by Postgres-backed providers.\n\nMaps onto asyncpg's :func:`asyncpg.create_pool` parameters, except the\n``tcp_keepalive_*`` fields: asyncpg has no keepalive option, so those are\napplied to every new connection's socket by the pool's ``init`` hook\n(:mod:`primer.storage._pg_pool`). ``max_lifetime`` is accepted but NOT\nenforced (see its description).\nDefaults are tuned for a small-to-medium application; large\ndeployments should raise ``max_size`` to match expected concurrency.",
         "properties": {
           "acquire_timeout": {
             "default": 30.0,
@@ -6145,7 +6145,7 @@
           },
           "max_lifetime": {
             "default": 3600.0,
-            "description": "Seconds a connection may live before being recycled (defends against leaks).",
+            "description": "NOT ENFORCED. Accepted so that a saved config which sets it still validates, but nothing reads it. asyncpg has no maximum connection age, and an age limit could only ever recycle idle pooled connections (which max_idle already closes), never the LISTEN connections a worker holds checked out for its whole life. Leave it at its default: a non-default value logs one warning when the pool is created.",
             "exclusiveMinimum": 0,
             "title": "Max Lifetime",
             "type": "number"

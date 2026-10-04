@@ -38,6 +38,26 @@ logger = logging.getLogger(__name__)
 InitHook = Callable[[Any], Awaitable[None]]
 
 
+def warn_unenforced_pool_options(pool_cfg: PoolConfig, *, pool_name: str) -> None:
+    """Warn once, at pool creation, about a PoolConfig option that does nothing.
+
+    ``max_lifetime`` was documented as recycling connections after an age
+    (defending against leaks) and nothing ever read it: asyncpg has no maximum
+    connection age, and an age limit could not reach the LISTEN connections a
+    worker holds checked out for its whole life anyway. The field is kept so a
+    saved config that sets it still validates; a non-default value, which means
+    somebody is relying on it, gets this warning.
+    """
+    default = PoolConfig.model_fields["max_lifetime"].default
+    if pool_cfg.max_lifetime != default:
+        logger.warning(
+            "%s pool: max_lifetime=%s is set but NOT enforced and has no effect (asyncpg cannot "
+            "recycle connections by age, and an age limit would never reach the LISTEN connections "
+            "a worker holds checked out); it is accepted only so existing configs keep validating",
+            pool_name, pool_cfg.max_lifetime,
+        )
+
+
 def keepalive_init_hook(
     pool_cfg: PoolConfig,
     *,
