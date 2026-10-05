@@ -480,6 +480,24 @@ class TestTheStrategy:
         assert result.estimated_tokens_after < trigger and result.unreducible is None
         assert result.outcome == "summarised"
 
+    def test_the_re_measure_after_an_escalation_counts_the_fixed_part_like_the_trigger_does(self) -> None:
+        """The population of the figure a marker records (``tokens_after``) is the trigger's: the compacted history, the
+        new messages AND the fixed part (system prompt and tool schemas). The escalation's own re-measure is a second
+        place that sum is made; without the fixed part it records a prompt smaller than the one that is sent, and judges
+        ``insufficient`` against the wrong size."""
+        history = [
+            m for i in range(12) for m in (_msg("user", chr(97 + i) * 40_000), _msg("assistant", f"r{i}"))
+        ] + [_msg("user", QUESTION)]
+        summariser = _Summariser(text="s" * 80_000)           # the first summary is too big: one bounded escalation
+        strategy = CompactionStrategy(tail_turns=8, tail_budget_fraction=1.0)
+        fixed = 5_000
+        result = asyncio.run(strategy.force_compact(
+            agent=g.make_agent(), llm=summariser, model=_model(100_000), history=history, fixed_overhead=fixed,
+        ))
+        assert summariser.calls == 2, "it escalated"
+        assert result.estimated_tokens_after == strategy._estimate_tokens(result.new_messages) + fixed  # noqa: SLF001
+        assert result.fixed_overhead_tokens == fixed
+
     def test_the_escalation_summarises_text_only_so_no_summariser_tool_runs_twice(self) -> None:
         """With ``compaction_tool_access`` on the first pass may call tools; the escalation must not re-run them."""
         from primer.model.chat import Done, TextDelta, ToolCallEnd, ToolCallStart
