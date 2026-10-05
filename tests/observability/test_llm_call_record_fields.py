@@ -19,7 +19,9 @@ from primer.agent.loop import run_agent_turn
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.llm._openai_compat import _build_usage
 from primer.model.agent import Agent
-from primer.model.chat import Done, ExtendedEvent, Message, TextDelta, TextPart, Usage, _LlmCall
+from primer.model.chat import (
+    Done, ExtendedEvent, Message, TextDelta, TextPart, ToolCallPart, ToolResultPart, Usage, _LlmCall,
+)
 from primer.model.model_profile import ModelProfileConfig
 from primer.model_profile import ResolvedModel
 from primer.session.persistence import _CoalesceState, translate_stream_event
@@ -53,11 +55,11 @@ def _model() -> ResolvedModel:
     )
 
 
-async def _call(events, *, budget=None) -> _LlmCall:
+async def _call(events, *, budget=None, prompt=PROMPT) -> _LlmCall:
     out = []
     async for ev in run_agent_turn(
         agent=Agent(id="ag-1", description="d", model={"profile_id": "prof-1"}), llm=_FakeLLM(events), llm_model=_model(),
-        tool_manager=ToolExecutionManager(toolset_providers={}, tools=[]), prompt=list(PROMPT), budget=budget,
+        tool_manager=ToolExecutionManager(toolset_providers={}, tools=[]), prompt=list(prompt), budget=budget,
     ):
         if isinstance(ev, ExtendedEvent) and isinstance(ev.extended, _LlmCall):
             out.append(ev.extended)
@@ -103,6 +105,21 @@ class TestTheEvent:
     async def test_a_guard_that_returns_a_new_list_of_the_same_messages_is_still_kept(self):
         """``ReplayGuard`` returns a new list whose unreduced messages keep their identity."""
         assert (await _call(_answer(None), budget=_Guard(lambda p: list(p)))).guard == "kept"
+
+    async def test_the_real_replay_guard_is_kept_on_a_prompt_it_does_not_reduce_and_reduced_on_one_it_does(self):
+        """The guard the loop actually gets (the replay after an overflow): a small prompt passes through with its messages
+        untouched; a huge tool result is replaced by a placeholder, which is a different message."""
+        from primer.agent.compaction import CompactionStrategy
+
+        guard = CompactionStrategy().replay_guard(_model(), fixed_overhead=0)
+        assert (await _call(_answer(None), budget=guard)).guard == "kept"
+        big = [
+            Message(role="user", parts=[TextPart(text="go")]),
+            Message(role="assistant", parts=[ToolCallPart(id="c1", name="t", arguments={})]),
+            Message(role="tool", parts=[ToolResultPart(id="c1", output="x" * 200_000)]),
+        ]
+        guard = CompactionStrategy().replay_guard(_model(), fixed_overhead=0)
+        assert (await _call(_answer(None), budget=guard, prompt=big)).guard == "reduced"
 
     async def test_a_guard_that_reduces_a_message_or_drops_one_is_reduced(self):
         shorter = lambda p: [Message(role="user", parts=[TextPart(text="short")])]  # noqa: E731
