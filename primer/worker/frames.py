@@ -574,8 +574,12 @@ async def apply_leaf(
         ResumeContext(
             tool_name=leaf.tool_name,
             tool_call_id=inner_frame.tool_call_id,
-            session_id=getattr(inner_frame, "session_id", None),
-            resolve_provider=getattr(services, "get_toolset", None),
+            # The session being resumed and the registry's toolset resolver,
+            # as the agent-session resume builds them. ``AgentFrame`` carries
+            # neither, so they come from the services bundle (``None`` only
+            # for a bundle built without a session or a registry).
+            session_id=services.session_id,
+            resolve_provider=services.resolve_provider,
         ),
     )
     if asyncio.iscoroutine(hook_result):

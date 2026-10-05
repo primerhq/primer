@@ -26,6 +26,8 @@ class _TM:
         return self._r
 
 class _Services:
+    session_id = "ses"
+    resolve_provider = None
     def __init__(self, tm): self._tm = tm
     async def build_subagent_toolmanager(self, ctx): return self._tm
 
@@ -66,7 +68,6 @@ def _real_services(registry):
     return build_invocation_services(pool, SimpleNamespace(id="ses"), None, None, SimpleNamespace())
 
 
-@pytest.mark.xfail(strict=True, reason="apply_leaf reads the session id off the frame and the resolver off services, neither of which has one")
 @pytest.mark.asyncio
 async def test_apply_leaf_hook_in_a_nested_subagent_gets_the_session_and_the_registry():
     """A yielding tool inside a NESTED SUBAGENT resumes through ``apply_leaf``; its hook gets a real ResumeContext."""
@@ -90,7 +91,6 @@ async def test_apply_leaf_hook_in_a_nested_subagent_gets_the_session_and_the_reg
     assert await ctx.resolve_provider("ts-any") == "ts-any", "the resolver does not reach the registry"
 
 
-@pytest.mark.xfail(strict=True, reason="apply_leaf reads the session id off the frame and the resolver off services, neither of which has one")
 @pytest.mark.asyncio
 async def test_apply_leaf_python_toolset_tool_in_a_nested_subagent_resumes():
     name = scoped_tool_name("ts-vy", "ask")
