@@ -111,7 +111,6 @@ class SummariserOverflow(ContextOverflowUnrecoverable):
     """
 
     CODE = "summariser_overflow"
-    CODE = "summariser_overflow"
 
     @property
     def problem_extensions(self) -> dict[str, object]:
