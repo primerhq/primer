@@ -254,11 +254,13 @@ class CompactedTurn(BaseModel):
     summary_input_reduced: dict[str, int] | None = Field(
         default=None,
         description=(
-            "Set when the summariser's own call overflowed and was made again, text only, on a reduced "
-            "input: ``pruned`` (tool results left out), ``folded_chunks`` (chunks of the rolling fold, 0 "
-            "for one call) and ``truncated_parts`` (parts cut head and tail, media replaced); all zero when "
-            "the retry needed nothing taken out. The marker records it as ``summary_input_reduced``. "
-            "``None`` when the first call was enough."
+            "Set when the summariser's own call overflowed: made again, text only, on a reduced "
+            "input (``pruned`` tool results left out, ``folded_chunks`` chunks of the rolling fold, 0 "
+            "for one call, and ``truncated_parts`` parts cut head and tail or media replaced; all zero when "
+            "the retry needed nothing taken out), or, for a tool-enabled summariser whose loop overflowed in "
+            "a later round, ended with the summary it had written (``tool_loop_cut_round``, the other "
+            "counts zero). The marker records it as ``summary_input_reduced``. ``None`` when no call "
+            "overflowed."
         ),
     )
     fixed_overhead_tokens: int = Field(

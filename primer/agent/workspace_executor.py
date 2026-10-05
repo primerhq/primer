@@ -304,8 +304,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     # ``tokens_before`` / ``tokens_after`` and the trigger count this part of the
                     # prompt too (system prompt and tool schemas): it is no history's to give back.
                     "fixed_overhead_tokens": fixed_overhead_tokens,
-                    # Only when the summariser's own call overflowed and its input was reduced (A.4): what
-                    # was done to it, so the summary is not read as a summary of the whole head.
+                    # Only when the summariser's own call overflowed (A.4): what was done about it (its input
+                    # reduced, or its tool loop ended early), so the summary is not read as a summary of the
+                    # whole head.
                     **({"summary_input_reduced": summary_input_reduced} if summary_input_reduced else {}),
                     "created_at": now.isoformat(),
                 },

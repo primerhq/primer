@@ -201,7 +201,10 @@ function SA_rowText(rec) {
 
 // " (summariser input reduced: ...)" for a compaction marker whose summariser
 // overflowed and was retried on less (summary_input_reduced: {pruned,
-// folded_chunks, truncated_parts}); "" for an ordinary compaction.
+// folded_chunks, truncated_parts}), " (summariser tool loop cut in round N)" for
+// a tool-enabled summariser whose loop overflowed in a later round
+// (tool_loop_cut_round; the retry and the cut are exclusive), "" for an ordinary
+// compaction.
 function SA_reducedInputNote(r) {
   if (!r) return "";
   var parts = [];
@@ -213,11 +216,9 @@ function SA_reducedInputNote(r) {
     parts.push(r.truncated_parts + (r.truncated_parts === 1 ? " part" : " parts") + " cut");
   }
   // a tool-enabled summariser's loop overflowed in a later round and ended with the summary it had written
-  var cut = r.tool_loop_cut_round > 0 ? "tool loop cut in round " + r.tool_loop_cut_round : "";
-  if (parts.length) {
-    return " (summariser input reduced: " + parts.join(", ") + (cut ? "; " + cut : "") + ")";
-  }
-  if (cut) return " (summariser " + cut + ")";
+  // (no retry ran then, so no reduction counts come with it)
+  if (r.tool_loop_cut_round > 0) return " (summariser tool loop cut in round " + r.tool_loop_cut_round + ")";
+  if (parts.length) return " (summariser input reduced: " + parts.join(", ") + ")";
   // all zero: the retry was text only on an input that needed nothing taken out
   return " (summariser retried without tools)";
 }
