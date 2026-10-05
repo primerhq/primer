@@ -44,6 +44,8 @@ MALFORMED = [
     dict(patch={"nope": 1}, where={"status": ["created"]}),                     # a field the model does not have
     dict(patch={"count": 1}, where={}),                                         # no guard
     dict(patch={"count": 1}, where={"status": []}),                             # a guard that can never match
+    dict(patch={'we"ird': 1}, where={"status": ["created"]}),                   # a quote in a key
+    dict(patch=None, set_paths={("sub", "typo"): 1}, where={"status": ["created"]}),  # a leaf the model drops
 ]
 
 
