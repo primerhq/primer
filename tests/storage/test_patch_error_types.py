@@ -94,6 +94,24 @@ async def test_a_string_that_cannot_be_encoded_is_a_patch_spec_error_and_writes_
     assert await sqlite_storage.get("a") == before, "SQLite: the row is untouched"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", SURROGATE_SPECS)
+async def test_a_string_that_cannot_be_encoded_is_refused_inside_a_sqlite_transaction_which_carries_on(
+    sqlite_provider, sqlite_storage, kwargs,
+):
+    """The same refusal when the call runs inside the caller's own transaction (where SQLite wraps the statement in a
+    savepoint): it is raised before any statement, so the transaction is untouched, carries on and commits its own
+    writes, and the refused value is nowhere in the row."""
+    async with sqlite_provider.transaction():
+        assert await sqlite_storage.patch_if("a", {"count": 1}, where={"status": ["created"]}) is not None
+        with pytest.raises(PatchSpecError) as excinfo:
+            await sqlite_storage.patch_if("a", **kwargs)
+        assert "surrogate" in str(excinfo.value)
+        assert await sqlite_storage.patch_if("a", {"gen": 1}, where={"status": ["created"]}) is not None
+    row = await sqlite_storage.get("a")
+    assert (row.status, row.count, row.gen) == ("created", 1, 1)
+
+
 class FloatSub(BaseModel):
     x: float = 0.0
 
