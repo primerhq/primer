@@ -6,9 +6,10 @@ replays the turn. Two defects made it wrong in both directions:
 * a bare ``max_tokens`` needle sent every Anthropic output-cap 400 ("max_tokens: N > M ... maximum allowed
   number of output tokens") into the compaction, which then hit the same 400 on the replay, on EVERY turn;
 * Ollama and Gemini open the request lazily, so their overflow is YIELDED as ``Error(code="bad_request")``
-  and surfaces as a ``TurnStreamFailure``, which the ``except BadRequestError`` handler never saw. The
-  classifier now recognises it, but ``invoke`` still does NOT recover it (the overflow-replay unit owns
-  that: a replay from scratch re-runs executed tools): a test below pins that boundary.
+  and used to surface as a ``TurnStreamFailure``, which the ``except BadRequestError`` handler never saw.
+  The classifier recognises it and ``invoke`` now recovers it like a raised one: the loop holds the
+  ``Error`` back (a yielded one is a terminal record) and raises ``TurnStreamOverflow``. The tests below
+  pin that, and that an error that is NOT an overflow is still left alone.
 
 These tests drive the real executor with a scripted LLM and a spy compaction strategy.
 """
@@ -170,22 +171,47 @@ async def test_a_raised_overflow_still_force_compacts_and_replays() -> None:
     assert "all good" in "".join(e.text for e in events if isinstance(e, TextDelta))
 
 
-async def test_a_yielded_overflow_is_classified_as_an_overflow_but_not_recovered_here() -> None:
-    """Ollama and Gemini: the 400 is yielded as Error(code='bad_request'), then raised as a TurnStreamFailure.
+async def test_a_yielded_overflow_is_recovered_like_a_raised_one_and_no_error_event_is_yielded() -> None:
+    """Ollama and Gemini: the 400 is yielded as Error(code='bad_request'). It is held back (a yielded Error is a
+    terminal record, and a recovered turn must end with exactly one), the history is force-compacted once and the
+    turn continues."""
+    spy = _SpyCompaction()
+    llm = _FailsThenAnswers(yields=Error(code="bad_request", message=GEMINI_OVERFLOW, fatal=True), failures=1)
+    executor = _Executor(llm, spy)
 
-    The classifier recognises it (the overflow-replay unit will recover it), but ``invoke`` does not: a
-    replay from scratch would re-run tools the turn already executed, and the yielded Error has already
-    been streamed and recorded. So today it propagates exactly as before this change."""
+    events = await _invoke(executor)
+
+    assert spy.forced == 1 and llm.calls == 2, "one forced compaction, then the replay answered"
+    assert [e for e in events if isinstance(e, Error)] == [], "the held-back Error never reached the caller"
+    assert isinstance(events[-1], Done), "the turn ends with its one real terminal"
+
+
+async def test_a_yielded_overflow_that_repeats_ends_the_turn_by_name_after_one_recovery() -> None:
     spy = _SpyCompaction()
     llm = _FailsThenAnswers(yields=Error(code="bad_request", message=GEMINI_OVERFLOW, fatal=True), failures=99)
     executor = _Executor(llm, spy)
 
-    with pytest.raises(TurnStreamFailure) as caught:
+    with pytest.raises(ContextOverflowUnrecoverable) as caught:
         await _invoke(executor)
 
-    assert is_context_overflow(caught.value) is True, "the classifier must still recognise a yielded overflow"
-    assert spy.forced == 0 and executor.replaced == [], "the history must not be force-compacted here"
-    assert llm.calls == 1, "and the turn must not be replayed from scratch"
+    assert isinstance(caught.value.__cause__, BadRequestError) and GEMINI_OVERFLOW in caught.value.__cause__.message
+    assert spy.forced == 1 and llm.calls == 2, "attempted once, not in a loop"
+
+
+def test_the_classifier_still_recognises_the_failure_a_yielded_overflow_becomes() -> None:
+    error = Error(code="bad_request", message=GEMINI_OVERFLOW, fatal=True)
+    assert is_context_overflow(TurnStreamFailure(error, partial_messages=[], rounds_completed=0)) is True
+
+
+async def test_a_yielded_error_that_is_not_an_overflow_is_left_alone() -> None:
+    spy = _SpyCompaction()
+    llm = _FailsThenAnswers(yields=Error(code="rate_limit", message=GEMINI_OVERFLOW, fatal=True), failures=99)
+    executor = _Executor(llm, spy)
+
+    with pytest.raises(TurnStreamFailure):
+        await _invoke(executor)
+
+    assert spy.forced == 0 and executor.replaced == [] and llm.calls == 1
 
 
 VLLM_OVERFLOW = (

@@ -119,7 +119,9 @@ could be summarised, for example when the system prompt and tool schemas alone
 fill the window; `skipped`: the trigger cannot be reached and the prompt still
 fits, or the last compaction already left it at about this size, so the
 summary is not summarised again before the prompt has grown; noted once per
-run, not every turn). If the provider still rejects a call as too large, the
+run, not every turn). If the provider still rejects a call as too large (a rejected request,
+or one a provider streams back as an error before any output; both are
+handled the same way), the
 turn is compacted once more and CONTINUED from the tool rounds it already ran
 (no tool runs twice; a long turn's early rounds are summarised, the question
 and the newest round are kept). If compaction cannot shrink the prompt, or the

@@ -34,6 +34,7 @@ import primer.observability.metrics as _metrics
 
 from primer.agent.interrupt import Interrupted, interruptible
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.common.context_overflow import is_context_overflow_error
 from primer.media.hydrate import hydrate_prompt_parts
 from primer.model.chat import (
     Done,
@@ -45,6 +46,7 @@ from primer.model.chat import (
     ToolCallPart,
     ToolResultPart,
     TurnStreamFailure,
+    TurnStreamOverflow,
     Usage,
     output_to_message,
     _ClientAction,
@@ -205,6 +207,7 @@ async def run_agent_turn(
     interrupt: "asyncio.Event | None" = None,
     interrupted_out: "list[bool] | None" = None,
     capped_out: "list[bool] | None" = None,
+    intercept_context_overflow: bool = False,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
 
@@ -362,6 +365,16 @@ async def run_agent_turn(
         so without this a caller cannot tell a cap trip from a turn that is
         mid-chain. A Stop that lands on the same round wins and is reported
         through ``interrupted_out`` only.
+    intercept_context_overflow
+        When True, a call whose stream is ONLY a fatal ``Error`` that classifies as a context
+        overflow (:func:`primer.common.context_overflow.is_context_overflow_error`: Ollama and Gemini
+        yield the provider's 400 instead of raising it) is not yielded: the ``llm_call`` telemetry
+        still is (the call did fail), then :class:`~primer.model.chat.TurnStreamOverflow` is raised.
+        For a caller that recovers from an overflow: the yielded ``Error`` is a terminal record, and
+        a turn that recovers must not carry one before its real end. A stream that streamed content
+        before the error is not intercepted (that content is already out): it fails as a
+        :class:`~primer.model.chat.TurnStreamFailure`, ``Error`` yielded, as before. ``False`` (the
+        default) changes nothing.
 
     Raises
     ------
@@ -476,6 +489,18 @@ async def run_agent_turn(
             )
             raise
         call_status = "error" if isinstance(held_done, Error) else "ok"
+        try:
+            assistant_msg = output_to_message(buffered)
+            no_content: ValueError | None = None
+        except ValueError as exc:
+            assistant_msg, no_content = None, exc
+        # An error-only overflow stream, for a caller that recovers: the Error is held back, not yielded.
+        intercepted = (
+            intercept_context_overflow
+            and no_content is not None
+            and isinstance(held_done, Error)
+            and is_context_overflow_error(held_done)
+        )
         if budget is not None:
             budget.after_call(call_usage)
         elapsed = _observe_llm_call(llm_model, call_t0, call_usage, call_status)
@@ -493,12 +518,17 @@ async def run_agent_turn(
                 status=call_status,
             )
         )
-        if held_done is not None:
+        if held_done is not None and not intercepted:
             yield held_done
 
-        try:
-            assistant_msg = output_to_message(buffered)
-        except ValueError as exc:
+        if no_content is not None:
+            exc = no_content
+            if intercepted:
+                raise TurnStreamOverflow(
+                    held_done,
+                    partial_messages=[],
+                    rounds_completed=tool_round,
+                ) from exc
             if isinstance(held_done, Error):
                 # 01a070d6: an error-only stream (e.g. an LLM connect
                 # failure) used to end here quietly - the ERROR record
