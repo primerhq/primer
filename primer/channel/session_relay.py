@@ -150,9 +150,22 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     # ``cancelled`` record is best-effort (skipped when the workspace does not take the write in time), and
     # without this the previous turn's ``done`` would stand for it and that turn's answer would be handed over
     # as this run's result. A user message after the ``done`` is not such a signal (a steer typed as the
-    # answer finished), and neither are tool results.
-    if any(r.get("kind") == "assistant_token" for r in records[last_done + 1:]):
-        return None
+    # answer finished), and neither are tool results. The exception is a graph End node's output: it is an
+    # ``assistant_token`` carrying ``end_node_id`` that is written AFTER the last node's ``done`` and is the
+    # graph's canonical result, so it is not an unfinished turn; it IS the text (a pass-through template
+    # writes no such record, and then the last node's answer below stands in).
+    end_outputs: list[str] = []
+    for r in records[last_done + 1:]:
+        if r.get("kind") != "assistant_token":
+            continue
+        payload = r.get("payload") or {}
+        if not payload.get("end_node_id"):
+            return None
+        text = payload.get("text")
+        if isinstance(text, str) and text.strip():
+            end_outputs.append(text.strip())
+    if end_outputs:
+        return "\n\n".join(end_outputs)
     prev_boundary = boundaries[-2] if len(boundaries) > 1 else -1
     chunks: list[str] = []
     for r in records[prev_boundary + 1:last_done]:
