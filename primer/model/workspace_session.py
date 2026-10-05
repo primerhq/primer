@@ -858,11 +858,14 @@ class SessionMessageKind(StrEnum):
     # history), and transcript renderers hide it - it is Trace-tab
     # material. Carries ``node_id`` when the call ran inside a graph node.
     LLM_CALL = "llm_call"
-    # A compaction ran and could not reduce the prompt, and wrote NO marker
-    # (nothing was summarised). Payload: ``{"outcome": "unreducible",
-    # "reason": "empty_head" | "fixed_over_budget" | "protected_over_budget",
+    # A compaction ran and could not reduce the prompt, or deliberately did
+    # nothing, and wrote NO marker (nothing was summarised). Payload:
+    # ``{"outcome": "unreducible" | "skipped",
+    # "reason": "empty_head" | "fixed_over_budget" | "protected_over_budget"
+    # (unreducible) | "cannot_reach_trigger" | "recently_compacted" (skipped),
     # "estimated_tokens":
-    # int, "trigger_tokens": int | None}``. Written through the normal event
+    # int, "trigger_tokens": int | None}``. A run of skips is noted once (until
+    # the next marker), not on every turn. Written through the normal event
     # path (primer/session/persistence.py), so it carries a real seq. A
     # compaction that summarised and was still over the trigger records
     # ``outcome: "insufficient"`` in its marker's payload instead. Display and

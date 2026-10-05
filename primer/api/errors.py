@@ -22,6 +22,7 @@ from primer.model.except_ import (
     AuthRequiredError,
     BadRequestError,
     ConfigError,
+    ContextOverflowUnrecoverable,
     ConflictError,
     DimensionMismatchError,
     PrimerError,
@@ -68,6 +69,9 @@ _PRIMER_ERROR_MAP: list[tuple[type[PrimerError], int, str, str]] = [
     (ServerError, 502, "/errors/provider-server-error", "Provider Server Error"),
     (ProviderError, 502, "/errors/provider-error", "Provider Error"),
     (NetworkError, 504, "/errors/network-error", "Network Error"),
+    # A prompt that cannot be made to fit the context window is not the service being unavailable:
+    # it says what is too large, and retrying the same turn cannot help. Before its base, ConfigError.
+    (ContextOverflowUnrecoverable, 413, "/errors/context-overflow-unrecoverable", "Context Overflow Unrecoverable"),
     (ConfigError, 503, "/errors/service-unavailable", "Service Unavailable"),
     (PrimerError, 500, "/errors/internal", "Internal Error"),
 ]

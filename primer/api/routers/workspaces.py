@@ -1257,8 +1257,11 @@ async def compact_session_endpoint(
     """
     from primer.agent.compaction import CompactionStrategy
     from primer.agent.compaction_mixin import force_compact
+    from primer.agent.prompt_render import render_system_prompt_or_raw
     from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
     from primer.model.agent import Agent
+    from primer.model.chat import Message, TextPart
+    from primer.model.graph import build_execution_context
     from primer.model_profile import resolve_llm
     from primer.session.compaction import compact_session, guard_compactable
     from primer.workspace.session import reconstruct_compacted_history
@@ -1328,6 +1331,17 @@ async def compact_session_endpoint(
         )
         return reconstruct_compacted_history(fresh_text.splitlines())
 
+    # The fixed part of the prompt, as far as this route can count it: the rendered system prompt. The tool
+    # schemas live behind the session's executor, which this route does not build, so they are NOT counted
+    # here (the figures are a floor; the marker's ``fixed_overhead_tokens`` says what they include).
+    system_messages = (
+        [Message(role="system", parts=[TextPart(text=render_system_prompt_or_raw(
+            agent.system_prompt, build_execution_context(),
+        ))])]
+        if agent.system_prompt else []
+    )
+    fixed_overhead = CompactionStrategy.estimate_fixed_overhead(system_messages, [])
+
     async def _run(hist):
         return await force_compact(
             llm=llm,
@@ -1344,6 +1358,7 @@ async def compact_session_endpoint(
             # profile's own id" fallback ruling (5) prescribes elsewhere.
             model_name=llm_model.model_name or llm_model.profile_id,
             context_length=llm_model.context_length,
+            fixed_overhead=fixed_overhead,
         )
 
     io_shim = _WorkspaceIOShim(workspace_registry=registry)

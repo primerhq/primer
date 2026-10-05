@@ -42,6 +42,7 @@ from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
 from primer.agent.tail import CompactionSplit, split_for_compaction
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.model.chat import (
+    CompactionSummary,
     Error,
     ExtendedEvent,
     Message,
@@ -204,6 +205,9 @@ class CompactedTurn(BaseModel):
             "smallest result, fixed + protected + the summary allowance, is at or over the "
             "trigger and the prompt still fits the window, so compacting would only repeat "
             "every turn; it is allowed again once the prompt no longer fits. "
+            "``skipped`` (``recently_compacted``): the same, for a prompt that does not fit the "
+            "budget but has not grown by a summary allowance since the last compaction left it "
+            "(summarising the summary would gain nothing). "
             "``over_trigger``: summarised (a marker IS written) and still over. "
             "``None`` when compaction did what it was asked."
         ),
@@ -221,6 +225,14 @@ class CompactedTurn(BaseModel):
     trigger_tokens: int | None = Field(
         default=None,
         description="The trigger this compaction was measured against, in estimated tokens.",
+    )
+    budget_tokens: int | None = Field(
+        default=None,
+        description=(
+            "The window allowance the prompt was measured against (the context minus the reserved "
+            "output), in estimated tokens: what ``estimated_tokens_after`` must stay under for the "
+            "prompt to fit at all. ``None`` when the producer did not say."
+        ),
     )
     summary_after: int = Field(
         default=0,
@@ -316,6 +328,7 @@ class CompactionStrategy:
         max_tool_turns: int | None = None,
         principal: str | None = None,
         fixed_overhead: int = 0,
+        last_compaction_tokens: int | None = None,
     ) -> CompactedTurn | None:
         """Decide whether to compact; if so, do it. Returns ``None`` if not.
 
@@ -323,6 +336,12 @@ class CompactionStrategy:
         history can give back (the rendered system prompt and the tool schemas; see
         :meth:`estimate_fixed_overhead`). The trigger compares ``history + new_messages +
         fixed_overhead`` and the result is measured again over the same population.
+
+        ``last_compaction_tokens`` is the prompt size the newest compaction left (its marker's
+        ``tokens_after``), when known. It is the strategy's only memory: when the trigger cannot be
+        reached, a prompt that does not fit the budget is compacted again only once it has grown by
+        a summary allowance beyond that size, so a compaction that bottoms out above the budget does
+        not summarise its own summary on every turn.
 
         When ``tool_manager`` is supplied (the agent has
         ``compaction_tool_access`` on), the tier-2 summarisation call carries
@@ -356,6 +375,7 @@ class CompactionStrategy:
                 estimated_tokens_after=after_prune,
                 outcome="pruned",
                 trigger_tokens=trigger,
+                budget_tokens=budget,
                 fixed_overhead_tokens=fixed_overhead,
             )
 
@@ -368,6 +388,7 @@ class CompactionStrategy:
             tool_manager=tool_manager, event_sink=event_sink,
             max_tool_turns=max_tool_turns, principal=principal,
             fixed_overhead=fixed_overhead, extra_tokens=new_tokens, forced=False,
+            last_compaction_tokens=last_compaction_tokens,
         )
 
     async def force_compact(
@@ -421,6 +442,7 @@ class CompactionStrategy:
         fixed_overhead: int = 0,
         extra_tokens: int = 0,
         forced: bool = True,
+        last_compaction_tokens: int | None = None,
     ) -> CompactedTurn:
         """Run the full LLM-driven compaction pass and assemble the
         :class:`CompactedTurn` result. Shared by :meth:`maybe_compact`
@@ -431,22 +453,23 @@ class CompactionStrategy:
         summarised, plus ``extra_tokens`` (the new messages, which are never summarised) and
         ``fixed_overhead``. ``forced`` is a compaction that was asked for or that the provider
         demanded (an overflow, the manual route): it does not skip itself for being unable to
-        reach the trigger, because the prompt is known not to fit."""
+        reach the trigger, because the prompt is known not to fit. ``last_compaction_tokens`` is
+        what the newest compaction left the prompt at (see :meth:`maybe_compact`); it only matters
+        on the path that may skip."""
         budget = self._effective_budget(model)
         trigger = int(self.trigger_ratio * budget)
         history = pruned_history
         extra = fixed_overhead + extra_tokens
         history_tokens = self._estimate_tokens(history) + extra
 
-        def unreducible(reason: str, outcome: str = "unreducible") -> CompactedTurn:
+        def unreducible(reason: str, outcome: str = "unreducible", detail: str = "") -> CompactedTurn:
             self._count(outcome)
             if outcome == "unreducible":
                 self._warn(reason, tokens=history_tokens, trigger=trigger)
             else:
                 logger.info(
-                    "compaction skipped (%s): the prompt is about %d tokens against a trigger of %d and fits "
-                    "the window; even the smallest result would still be over the trigger",
-                    reason, history_tokens, trigger,
+                    "compaction skipped (%s): the prompt is about %d tokens against a trigger of %d; %s",
+                    reason, history_tokens, trigger, detail,
                     extra={"reason": reason, "estimated_tokens": history_tokens, "trigger_tokens": trigger},
                 )
             return CompactedTurn(
@@ -459,9 +482,13 @@ class CompactionStrategy:
                 unreducible=reason,
                 outcome=outcome,
                 trigger_tokens=trigger,
+                budget_tokens=budget,
                 fixed_overhead_tokens=fixed_overhead,
             )
 
+        if fixed_overhead >= budget:
+            # Named first: it is the cause whatever the history looks like, and no history change helps.
+            return unreducible("fixed_over_budget")
         # The smallest tail the split may keep: the current turn's unanswered input (and
         # the newest unit). No summary can take the prompt below it.
         floor = self._split(history, tail_budget_tokens=0)
@@ -470,17 +497,29 @@ class CompactionStrategy:
             # "everything" would fold the question into the summary.
             return unreducible(floor.reason)
         floor_total = extra + self._estimate_tokens(floor.tail)
-        if fixed_overhead >= budget:
-            return unreducible("fixed_over_budget")
         if floor_total >= budget:
             # Not even a summary of everything else makes it fit: no model call, no marker that
             # copies the oversized input.
             return unreducible("protected_over_budget")
-        if not forced and floor_total + self.summary_max_tokens >= trigger and before < budget:
-            # The best case (fixed + protected + a summary of the full allowance) is still at or over
-            # the trigger, and the prompt still fits the window: compacting would only run again
-            # every turn. Skip it; it is allowed again once the prompt no longer fits.
-            return unreducible("cannot_reach_trigger", outcome="skipped")
+        if not forced and floor_total + self.summary_max_tokens >= trigger:
+            # The best case (fixed + protected + a summary of the full allowance) is at or over the
+            # trigger, so compacting cannot bring the prompt under it and would only run again every
+            # turn. It is still worth doing for a prompt that does not fit the budget, once.
+            if before < budget:
+                return unreducible(
+                    "cannot_reach_trigger", outcome="skipped",
+                    detail="the prompt fits the window and even the smallest result would still be over the trigger",
+                )
+            if last_compaction_tokens is not None and before < last_compaction_tokens + self.summary_max_tokens:
+                # The newest compaction already left the prompt at about this size (a summary and the
+                # protected input over the budget), and it has not grown by a summary allowance since:
+                # compacting again would summarise the summary for no gain. The overflow path is still
+                # there if the provider rejects the prompt.
+                return unreducible(
+                    "recently_compacted", outcome="skipped",
+                    detail=f"the last compaction left it at about {last_compaction_tokens} and it has not grown "
+                           f"by {self.summary_max_tokens} since",
+                )
 
         split = self._split(history, tail_budget_tokens=self._tail_budget(trigger - extra))
         summary_msg = await self._full_compact(
@@ -513,6 +552,7 @@ class CompactionStrategy:
             unreducible="over_trigger" if insufficient else None,
             outcome=outcome,
             trigger_tokens=trigger,
+            budget_tokens=budget,
             summary_after=split.summary_after,
             fixed_overhead_tokens=fixed_overhead,
         )
@@ -737,7 +777,7 @@ class CompactionStrategy:
             )
 
         marker_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        summary_msg = Message(
+        summary_msg = CompactionSummary(
             role="assistant",
             parts=[
                 TextPart(
