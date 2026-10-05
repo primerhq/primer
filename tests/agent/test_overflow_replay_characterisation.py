@@ -1510,6 +1510,81 @@ class TestAHardCancelDuringTheMarkerCommit:
             await session.aclose()
             await backend.aclose()
 
+    @staticmethod
+    async def _cancelled_then_the_lease_is_lost(
+        tmp_path, monkeypatch, *, preempted_first: bool, commit_fails_after: float | None,
+    ):
+        """One turn whose marker commit hangs (``commit_fails_after`` None) or fails after that many seconds, a 30s grace,
+        and the two cancels a worker delivers when a user cancel is followed by a lost lease (or the lost lease alone).
+        Returns the exception the turn ended with, the seconds from the LAST cancel to the end of the turn, the history
+        as it is once the commit has had time to fail, and the markers."""
+        import primer.agent.base as base
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 30.0)
+        backend, workspace, session = await open_session(tmp_path)
+        forever = asyncio.Event()
+        try:
+            await _seed(workspace, session)
+            entered = asyncio.Event()
+
+            def commit(executor) -> None:
+                async def run(*args, **kwargs):
+                    entered.set()
+                    if commit_fails_after is None:
+                        await forever.wait()
+                    await asyncio.sleep(commit_fails_after)
+                    raise OSError("the workspace mount went away")
+
+                executor._replace_compacted_head = run  # noqa: SLF001
+
+            loop = asyncio.get_running_loop()
+            task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=commit))
+            await asyncio.wait_for(entered.wait(), timeout=30)
+            if preempted_first:
+                task.cancel(CANCEL_REASON_PREEMPTED)
+            else:
+                task.cancel()                            # the user's hard cancel starts the wait ...
+                await asyncio.sleep(0.1)
+                task.cancel(CANCEL_REASON_PREEMPTED)     # ... and the lease is lost while it waits
+            last_cancel = loop.time()
+            with pytest.raises(asyncio.CancelledError) as ended:
+                await asyncio.wait_for(task, timeout=3)  # not the 30s grace
+            elapsed = loop.time() - last_cancel
+            if commit_fails_after is not None:
+                await asyncio.sleep(commit_fails_after + 0.4)    # the abandoned commit fails on its own
+            return ended.value, elapsed, await _reload(session), _markers(workspace, session)
+        finally:
+            forever.set()
+            await session.aclose()
+            await backend.aclose()
+
+    async def test_a_lost_lease_cancel_that_arrives_second_is_not_held_up_either(self, tmp_path, monkeypatch) -> None:
+        """The skip is for the lost lease whichever cancel it is. A user hard cancel lands first and starts the wait; the
+        lease is then lost and the heartbeat delivers ``CANCEL_REASON_PREEMPTED``. A loop that absorbed it held the turn
+        for the rest of the grace and then raised the FIRST cancel, so the chokepoint never saw the lost lease."""
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+        ended, elapsed, shown, markers = await self._cancelled_then_the_lease_is_lost(
+            tmp_path, monkeypatch, preempted_first=False, commit_fails_after=None,
+        )
+        assert elapsed < 2, f"the turn waited {elapsed:.1f}s after the lost lease"
+        assert ended.args[:1] == (CANCEL_REASON_PREEMPTED,), "the lost lease is what the chokepoint is told"
+        assert markers == [] and _tool_ids(shown) == ([], []), "a worker that lost the lease writes nothing"
+
+    async def test_a_lost_lease_after_a_cancel_does_not_let_the_turn_write_its_rounds_as_a_non_owner(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """The same order against a commit that FAILS inside the grace. The turn used to wait for it, see the failure,
+        keep the rounds in the record and re-raise the user's cancel: the chokepoint, told nothing about the lost lease,
+        wrote them after the session had passed to another worker."""
+        ended, elapsed, shown, markers = await self._cancelled_then_the_lease_is_lost(
+            tmp_path, monkeypatch, preempted_first=False, commit_fails_after=0.5,
+        )
+        assert elapsed < 2
+        assert markers == []
+        assert _tool_ids(shown) == ([], []), "the rounds were written by a worker that no longer owned the session"
+
     def test_the_marker_commit_grace_is_the_terminal_exit_grace(self) -> None:
         """Both are the bound on how long a cancelled turn may keep a drain waiting (they do not add up: a hard cancel
         during the stream skips the sheltered exit), and the pod budget in worker-system.md is built on that figure.
