@@ -243,6 +243,31 @@ async def test_a_second_cancel_while_the_kill_is_waiting_does_not_leave_the_shim
         _kill(child)
 
 
+@pytest.mark.parametrize("how", ["timeout", "cancel"])
+async def test_what_the_shim_started_is_already_gone_when_run_returns(tmp_path: Path, monkeypatch, how: str) -> None:
+    """The runner's twin of the exec lock-ordering test. The runner holds no lock, but the kill is still promised to have
+    TAKEN EFFECT by the time ``run`` returns: no polling here, so a kill deferred past the return (a ``call_later``, a task
+    nobody awaits) leaves the child running at this instant and fails."""
+    _shell_as_the_shim(monkeypatch, f"sleep 60 & echo $! > {tmp_path}/child; wait")
+    child = None
+    try:
+        run = asyncio.create_task(
+            LocalHardenedRunner().run(_req("sleeper", tmp_path / "unused"), timeout_seconds=1.0 if how == "timeout" else 60.0),
+        )
+        child = await _pid(tmp_path / "child")
+        if how == "timeout":
+            out = await run
+            assert out.ok is False and out.error["type"] == "TimeoutError"
+        else:
+            run.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await run
+
+        assert not _running(child), "the child was still running when run() returned: the kill was deferred"
+    finally:
+        _kill(child)
+
+
 async def test_a_shim_that_finishes_leaves_a_process_it_started_alone(tmp_path: Path, monkeypatch) -> None:
     """Nothing is killed on a normal finish."""
     _shell_as_the_shim(
