@@ -27,7 +27,8 @@ The rule (native-token-counting design v3.4, section 8):
   ``r = input_tokens / estimated_input_tokens``.
 * (1) Every material group (5% or more of the near-window calls) has ``p10(r) >= 0.85`` and ``p90(r) <= 1.10``: do NOT build
   Phase 1.
-* (2) Else, spread within every group small (``p90 / p10 <= 1.25``): build only Phase 1a (rung C x EMA kappa).
+* (2) Else, spread within every MATERIAL group small (``p90 / p10 <= 1.25``; a group below the material share cannot justify
+  building, as in rule 1): build only Phase 1a (rung C x EMA kappa).
 * (3) Else build Phase 1b (the anchor) only if, after kappa correction, ``p90 |r / kappa - 1| > 0.15`` for a material group AND
   there is a visible consequence: at least 1 overflow replay per 200 near-window turns, or at least 10% of the compactions
   the TRIGGER fired (``tokens_before >= trigger_tokens`` in the marker; manual and overflow-forced compactions are not
@@ -39,7 +40,11 @@ The rule (native-token-counting design v3.4, section 8):
   ``(delta usage / delta estimate)`` in ``[0.7, 1.4]``.
 
 A TURN ends at a ``done`` whose ``stop_reason`` is not ``tool_use`` (the loop writes a ``done`` after EVERY model call, tool
-rounds included), a ``cancelled`` or an ``error``, counted per ``(file, node_id)`` so graph nodes do not interleave.
+rounds included), a ``cancelled`` or an ``error``, counted per ``(file, node_id, delegate_tool_call_id)``: graph nodes do not
+interleave, and a delegated (subagent) run, which ``DelegationRecorder`` writes INLINE into the parent's log with
+``payload.delegated`` and the delegating call's id, is a turn of its own, so its final ``done`` does not end the parent's turn
+and a parent call is never paired with a child call. Turn segmentation is only as good as the adapters' stop reasons: an
+OpenAI-compatible server that finishes a tool round with ``stop`` (ticketed) would end the turn early for that provider.
 """
 
 from __future__ import annotations
@@ -82,7 +87,7 @@ class Call:
     estimated: int
     context_length: int | None
     guard: str | None
-    turn: tuple[str, str | None, int]          # (file, node_id, turn index within that node)
+    turn: tuple[str, str | None, str | None, int]   # (file, node_id, delegating call id, turn index within that run)
     segment: int                               # compaction markers seen so far in the file: a prompt does not append across one
     when: datetime | None
 
@@ -132,7 +137,7 @@ def read_corpus(roots: Iterable[Path]) -> Corpus:
     corpus = Corpus()
     for path in find_files(roots):
         corpus.files += 1
-        turns: dict[str | None, int] = defaultdict(int)
+        turns: dict[tuple[str | None, str | None], int] = defaultdict(int)
         segment = 0
         last_call: Call | None = None
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -147,6 +152,9 @@ def read_corpus(roots: Iterable[Path]) -> Corpus:
             kind = rec.get("kind")
             payload = rec.get("payload") or {}
             node = rec.get("node_id")
+            # A delegated run is its own run: its dones end ITS turns, and its calls pair only with each other.
+            delegated = bool(payload.get("delegated"))
+            run = (node, (payload.get("delegate_tool_call_id") or "") if delegated else None)
             if kind == "llm_call":
                 used, est = payload.get("input_tokens"), payload.get("estimated_input_tokens")
                 if not (isinstance(used, int) and used > 0 and isinstance(est, int) and est > 0):
@@ -157,11 +165,11 @@ def read_corpus(roots: Iterable[Path]) -> Corpus:
                     ctx = None
                 call = Call(
                     payload.get("provider_id"), payload.get("model"), used, est, ctx, payload.get("guard"),
-                    (str(path), node, turns[node]), segment, _when(rec.get("created_at")),
+                    (str(path), run[0], run[1], turns[run]), segment, _when(rec.get("created_at")),
                 )
                 corpus.calls.append(call)
-                if call.guard is None and ctx is not None:
-                    last_call = call
+                if call.guard is None and ctx is not None and not delegated:
+                    last_call = call          # the prompt a compaction marker followed: the parent's, not a subagent's, not a replay's
             elif kind == "compaction_marker":
                 before, trig = payload.get("tokens_before"), payload.get("trigger_tokens")
                 fired = isinstance(before, int) and isinstance(trig, int) and before >= trig
@@ -173,7 +181,7 @@ def read_corpus(roots: Iterable[Path]) -> Corpus:
                     )
                 segment += 1
             elif _is_terminal(kind, payload):
-                turns[node] += 1
+                turns[run] += 1
     return corpus
 
 
@@ -309,8 +317,8 @@ def decide(corpus: Corpus, groups: list[Group], min_days: float) -> dict:
         out["verdict"], out["reason"] = "INSUFFICIENT DATA", f"the rule needs {min_days:g} days of usable calls per material group ({short})"
     elif all(g.p10 >= P10_FLOOR and g.p90 <= P90_CEIL for g in material):
         out["verdict"], out["reason"] = "DO NOT BUILD PHASE 1", "rule 1: every material group is within [0.85, 1.10] at p10 and p90"
-    elif all(g.spread <= SPREAD_CEIL for g in groups if g.enough):
-        out["verdict"], out["reason"] = "BUILD PHASE 1a ONLY", "rule 2: the error is not small but its spread within each group is (p90/p10 <= 1.25)"
+    elif all(g.spread <= SPREAD_CEIL for g in material):
+        out["verdict"], out["reason"] = "BUILD PHASE 1a ONLY", "rule 2: the error is not small but its spread within each material group is (p90/p10 <= 1.25)"
     else:
         varies = [g for g in material if g.kappa_error > KAPPA_ERROR]
         consequence = replays_per_200 >= REPLAYS_PER_200 or premature_share >= PREMATURE_SHARE
