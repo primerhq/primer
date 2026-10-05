@@ -40,7 +40,7 @@ import asyncio
 import logging
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -451,15 +451,25 @@ class _BaseAgentExecutor(ABC):
                 fixed_overhead=fixed_overhead,
                 **self._compaction_tool_kwargs(),
             )
-            if self._replay_is_futile(forced):
+            if self._replay_is_futile(forced, rounds=rounds):
                 # Nothing can be shrunk (the fixed part, or the input the model has not answered,
-                # already fills the window): replaying the byte-identical prompt would be rejected
-                # the same way, so fail now, with a name, instead of spending a model call on it.
+                # already fills the window, or there is nothing before it to summarise): the replay would
+                # send the prompt that was just rejected, so fail now, with a name, instead of spending a
+                # model call on it. The rounds the turn completed are not lost: no marker was written, so
+                # they stay in the record and the chokepoint writes them on the way out.
+                undercounted = (
+                    forced.budget_tokens is not None and forced.estimated_tokens_after < forced.budget_tokens
+                )
                 raise ContextOverflowUnrecoverable(
                     f"the model rejected the prompt as too large and compaction cannot shrink it "
-                    f"({forced.unreducible}): about {forced.estimated_tokens_after} tokens, of which "
-                    f"{forced.fixed_overhead_tokens} are the system prompt and tool schemas, against a "
-                    f"context window of {self._model.context_length}",
+                    f"({forced.unreducible}): about {forced.estimated_tokens_after} tokens by our estimate, "
+                    f"of which {forced.fixed_overhead_tokens} are the system prompt and tool schemas, against "
+                    f"a context window of {self._model.context_length}"
+                    + (
+                        "; the estimate is under the budget, so it undercounts what the provider counted "
+                        "(images, documents and dense text are the usual causes)"
+                        if undercounted else ""
+                    ),
                     cause=exc,
                     forced_compaction=False,
                     replay_attempted=False,
@@ -600,19 +610,20 @@ class _BaseAgentExecutor(ABC):
         return self._compaction.estimate_fixed_overhead(self._build_prompt([], []), tools)
 
     @staticmethod
-    def _replay_is_futile(forced: "CompactedTurn") -> bool:
-        """Whether a forced compaction that came back ``unreducible`` proves that replaying the turn is hopeless.
+    def _replay_is_futile(forced: "CompactedTurn", *, rounds: "Sequence[Message]" = ()) -> bool:
+        """Whether a forced compaction that came back ``unreducible`` ends the turn instead of replaying it.
 
-        It does only when the replayed prompt would be the one the provider just rejected (the tier-1
-        prune changed no tool output) AND the character estimate agrees that it does not fit the window.
-        A prune that did shrink something makes the replay a different prompt, and an estimate under the
-        budget means the heuristic undercounts what the provider counted: either way one replay is worth
-        its call, and a second rejection surfaces as the provider's own error."""
-        return (
-            forced.outcome == "unreducible"
-            and forced.pruned_tool_outputs == 0
-            and (forced.budget_tokens is None or forced.estimated_tokens_after >= forced.budget_tokens)
-        )
+        It does when the replayed prompt would be the one the provider just rejected: nothing could be
+        summarised (``unreducible``) and the tier-1 prune changed no tool output. A prune that did shrink
+        something makes the replay a different prompt, so it gets its call. Our own estimate does NOT
+        decide it: an estimate under the budget only says the heuristic undercounts what the provider
+        counted (an image or a document is a flat guess, dense text runs over chars/4), and a byte-identical
+        prompt is rejected again whatever the estimate says. The error says so when they disagree.
+
+        With completed ``rounds`` it always does: an unreducible compaction wrote no marker, so continuing
+        would leave the folded rounds in memory only, and a replay that then failed would lose them. The
+        typed failure keeps them in the turn's record, where the persistence chokepoint writes them."""
+        return forced.outcome == "unreducible" and (bool(rounds) or forced.pruned_tool_outputs == 0)
 
     @staticmethod
     def _compaction_notes(compacted: "CompactedTurn", *, skip_noted: bool = False) -> list[ExtendedEvent]:

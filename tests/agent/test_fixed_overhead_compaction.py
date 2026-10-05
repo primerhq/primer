@@ -254,6 +254,33 @@ class TestTheBudgetRules:
         )
         assert summariser.calls == 1 and result.summary_message is not None
 
+    def test_the_skip_is_decided_on_the_prompt_that_is_sent_not_the_one_before_the_tier_1_prune(self) -> None:
+        """A turn that reads a big file: far over the budget (and the window) before tier 1 prunes the output, and
+        about what the last compaction left after it. The marker's ``tokens_after`` and the prompt that goes out are
+        both the pruned figure, so that is what the skip compares: on the unpruned one the summariser ran again for a
+        gain of a few hundred tokens, on the flagship case of this change."""
+        from primer.model.chat import CompactionSummary
+
+        summary = CompactionSummary(role="assistant", parts=[TextPart(text="[earlier conversation compacted]\n\n" + "s" * 2_000)])
+        history = [
+            summary, _msg("user", "Q"),
+            Message(role="assistant", parts=[ToolCallPart(id="c0", name="exec", arguments={"cmd": "cat big"})]),
+            Message(role="tool", parts=[ToolResultPart(id="c0", output="x" * 200_000)]),
+        ]
+        strategy = CompactionStrategy()
+        pruned, count = strategy._prune_tool_outputs(  # noqa: SLF001
+            history, per_output_threshold=strategy.prune_per_output_tokens, total_threshold=strategy.prune_total_threshold,
+        )
+        sent = strategy._estimate_tokens(pruned) + self.FIXED  # noqa: SLF001
+        unpruned = strategy._estimate_tokens(history) + self.FIXED  # noqa: SLF001
+        budget = strategy._effective_budget(_model(self.WINDOW))  # noqa: SLF001
+        assert count == 1 and sent < budget < self.WINDOW < unpruned, "the shape: fits after the prune, not before"
+        result, summariser = _maybe(
+            strategy, history=history, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=sent - 100,
+        )
+        assert summariser.calls == 0 and result.outcome == "skipped"
+        assert result.new_messages == pruned, "and what is returned is the pruned history, the one that is sent"
+
     def test_a_prompt_that_fits_the_budget_is_skipped_as_before_whatever_the_last_compaction_left(self) -> None:
         """A stale or small figure (the fixed part has grown since) must not turn the skip into a compaction: a prompt
         that fits the window is left alone because its trigger cannot be reached, not because of the memory."""
@@ -291,10 +318,11 @@ def _run(coro_factory):
 
 
 class TestWhenAReplayIsHopeless:
-    """``_replay_is_futile``: a forced compaction that came back unreducible fails the turn with a name only when the
-    replay would be the prompt the provider just rejected AND the estimate agrees it does not fit. (In ``invoke`` the
-    proactive pass has pruned the same outputs first, so the prune clause bites on a history that grew after it: the
-    in-turn history of an overflow in the middle of a turn.)"""
+    """``_replay_is_futile``: a forced compaction that came back unreducible fails the turn with a name when the
+    replay would send the prompt the provider just rejected: nothing could be summarised and the tier-1 prune changed
+    no tool output. Our estimate does not decide it (an estimate under the budget means the heuristic undercounts, and
+    an identical prompt is rejected again whatever the estimate says); a prune that did change something makes the
+    replay a different prompt, so it gets its call."""
 
     @staticmethod
     def _forced(*, outcome="unreducible", pruned=0, after=150_000, budget: int | None = 100_000) -> CompactedTurn:
@@ -309,8 +337,8 @@ class TestWhenAReplayIsHopeless:
         [
             (dict(), True),
             (dict(pruned=3), False),                    # the prune changed what would be sent
-            (dict(after=50_000), False),                # our estimate says it fits: the estimate is what is wrong
-            (dict(budget=None), True),                  # the producer did not say: judged on what is known
+            (dict(after=50_000), True),                 # the estimate says it fits, but the prompt is the same one
+            (dict(budget=None), True),                  # the estimate plays no part
             (dict(outcome="summarised"), False),
             (dict(outcome="insufficient"), False),
             (dict(outcome="skipped"), False),
@@ -437,57 +465,28 @@ class TestTheExecutor:
         assert len(calls) == 2, "the pruned prompt was replayed"
         assert result_len(calls[1]) < result_len(calls[0]) // 10, "the replay carries the placeholder, not the output"
 
-    def test_a_forced_compaction_that_changed_nothing_but_whose_estimate_fits_is_replayed_once(self) -> None:
-        """Our estimate says the prompt fits the window although the provider rejected it, so the estimate is the
-        thing that is wrong and nothing proves a replay hopeless: it gets its one call (a second rejection reaches the
-        caller as the provider's own error, unchanged)."""
+    def test_an_identical_replay_is_not_spent_even_when_our_estimate_says_the_prompt_fits(self) -> None:
+        """The provider rejected a prompt our estimate puts far under the budget (an image or a document is a flat
+        guess; dense text runs over chars/4). Compaction can change nothing, so the replay would send the same prompt
+        and be rejected again: it fails by name, without the second call, and says that the estimate disagrees."""
         async def scenario(root):
             backend, workspace, session = await g.open_session(root)
             llm = g.ScriptedLLM()
             llm.session_id = session.session_id
             try:
                 await g.append_messages(workspace, session, g.user_message("Q"))
-                llm.extend([g.Raise(BadRequestError(OVERFLOW)), g.Events(g.text_events("done"))])
-                await g.run_turn(session, llm)
-                return len(llm.calls)
+                llm.extend([g.Raise(BadRequestError(OVERFLOW))])        # no second step: a replay would fail the run
+                with pytest.raises(ContextOverflowUnrecoverable) as failed:
+                    await g.run_turn(session, llm)
+                return failed.value, len(llm.calls)
             finally:
                 await session.aclose()
                 await backend.aclose()
 
-        assert _run(scenario) == 2
-
-    def test_a_compaction_that_bottoms_out_over_the_budget_is_not_repeated_on_the_next_turn(self) -> None:
-        """End to end: turn 1 compacts and the prompt (real fixed part + a 1,500-token summary + the question) is still
-        over a 4,096-token budget. Turn 2 reads the marker back and does not summarise the summary: its scripted LLM
-        has a step for the turn's own call only, so a second compaction would fail the run."""
-        async def scenario(root):
-            backend, workspace, session = await g.open_session(root)
-            llm = g.ScriptedLLM()
-            llm.session_id = session.session_id
-            try:
-                per_pair = 500
-                for i in range(3):
-                    await g.append_messages(
-                        workspace, session, g.user_message(chr(97 + i) * (4 * (per_pair - 20))), g.assistant_message(f"r{i}"),
-                    )
-                await g.append_messages(workspace, session, g.user_message("Q1"))
-                llm.extend([g.Events(g.text_events("s" * 6_000)), g.Events(g.text_events("done 1"))])
-                await g.run_turn(session, llm, llm_model=_model(8_192))
-                path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
-                marker = [r for r in map(json.loads, path.read_text().splitlines()) if r.get("kind") == "compaction_marker"][-1]
-                after_turn_one = len(llm.calls)
-                await g.append_messages(workspace, session, g.user_message("Q2"))
-                llm.extend([g.Events(g.text_events("done 2"))])
-                await g.run_turn(session, llm, llm_model=_model(8_192))
-                return marker["payload"], after_turn_one, len(llm.calls)
-            finally:
-                await session.aclose()
-                await backend.aclose()
-
-        payload, after_turn_one, calls = _run(scenario)
-        assert after_turn_one == 2, "turn 1: one summariser call and the turn's own"
-        assert payload["outcome"] == "insufficient" and payload["tokens_after"] >= payload["trigger_tokens"]
-        assert calls - after_turn_one == 1, "turn 2 made the turn's own call only: the summary was not summarised again"
+        error, calls = _run(scenario)
+        assert calls == 1, "no replay of a byte-identical prompt"
+        assert isinstance(error.__cause__, BadRequestError) and error.code == "context_overflow_unrecoverable"
+        assert "empty_head" in str(error) and "undercounts" in str(error)
 
     def test_a_run_of_skipped_compactions_is_noted_in_the_session_record_once(self) -> None:
         """A skip writes no marker, so it was invisible: an agent whose prompt sat between the trigger and the budget
