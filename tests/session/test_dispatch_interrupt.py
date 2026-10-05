@@ -633,6 +633,109 @@ class TestTheCancelledRecordWriteIsBoundedInTheLock:
 
         assert seq is None
 
+    @pytest.mark.parametrize("record_write", ["lands", "hangs too"])
+    @pytest.mark.parametrize("hangs_in", ["set_status", "status"])
+    async def test_a_slot_mirror_that_never_returns_does_not_wedge_a_cancel(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,
+        record_write, hangs_in,
+    ) -> None:
+        """A Cancel ENDS the session, and the ENDED transition mirrors that onto the executor's on-disk slot
+        (``AgentSession.set_status`` commits ``session.json`` through the same runtime connection). When that
+        connection is dead the commit never returns, inside the lifecycle lock: the clear-interrupt, the cursor,
+        the terminal publish and the release never run and every later action on the session waits on the lock.
+        The mirror is best-effort, so it is bounded and a timeout is logged and skipped."""
+        sid = seeded_session.id
+        ref = dispatch._binding_ref(await fake_storage_provider.get_storage(WorkspaceSession).get(sid))
+        monkeypatch.setattr(dispatch, "_SLOT_MIRROR_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(dispatch, "_CANCELLED_RECORD_WRITE_TIMEOUT_S", 0.2)
+        loop = asyncio.get_running_loop()
+        mirror_hung = asyncio.Event()
+        published: list[str] = []
+        publish = fake_event_bus.publish
+
+        async def spy_publish(key: str, payload: dict) -> None:
+            published.append(key)
+            await publish(key, payload)
+
+        monkeypatch.setattr(fake_event_bus, "publish", spy_publish)
+
+        class _DeadSlot:
+            """Both calls go over the runtime connection, so either can be the one that hangs."""
+
+            async def status(self) -> SessionStatus:
+                if hangs_in == "status":
+                    mirror_hung.set()
+                    await asyncio.Event().wait()       # the runtime socket is down and never comes back
+                return SessionStatus.RUNNING
+
+            async def set_status(self, status, *, ended_reason=None) -> None:
+                mirror_hung.set()
+                await asyncio.Event().wait()
+
+        if record_write == "hangs too":
+            real_append = fake_workspace_io.append_message_line
+
+            async def append_or_hang(session_id: str, line: bytes) -> None:
+                if self._NEEDLE.encode() in line:
+                    await asyncio.Event().wait()
+                await real_append(session_id, line)
+
+            monkeypatch.setattr(fake_workspace_io, "append_message_line", append_or_hang)
+        waited: dict[str, float] = {}
+
+        async def another_operation_on_the_session() -> None:
+            await mirror_hung.wait()
+            started = loop.time()
+            async with dispatch.session_lifecycle_lock().acquire(sid):
+                waited["s"] = loop.time() - started
+
+        probe = asyncio.ensure_future(another_operation_on_the_session())
+        executor = _StopAwareExecutor(self._script("cancel", sid, fake_storage_provider, fake_event_bus))
+        executor.session = _DeadSlot()
+        turn_log = _RecordingTurnLog()
+        deps = SessionDispatchDeps(
+            storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus,
+            build_executor=_build_returning(executor), turn_log_writer_factory=lambda _io, _sid: turn_log,
+        )
+        with caplog.at_level(logging.WARNING):
+            outcome = await asyncio.wait_for(run_one_session_turn(_make_lease(sid), deps), 5.0)
+        await asyncio.wait_for(probe, 2.0)
+
+        assert mirror_hung.is_set(), "the test never reached the slot mirror"
+        assert waited["s"] < 2.0, f"another operation on the session waited {waited['s']:.1f}s for the lifecycle lock"
+        assert outcome.success and outcome.drop_lease
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled"
+        assert not row.interrupt_requested, "the flag was not cleared"
+        assert row.last_seq >= 1 and row.next_unprocessed_seq == row.last_seq + 1, "the exit did not finish its tail"
+        assert turn_log.cancel_reasons == ["operator_cancel"], "the turn log entry was lost"
+        assert f"session:{sid}:terminal" in published, "the terminal event was lost"
+        assert metrics.turns_total.labels(ref, "cancelled")._value.get() == 1.0
+        assert any("slot" in r.getMessage() and "not confirmed" in r.getMessage() for r in caplog.records), (
+            "the skipped mirror was not logged"
+        )
+
+    async def test_a_slow_but_healthy_slot_mirror_still_lands(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        sid = seeded_session.id
+        monkeypatch.setattr(dispatch, "_SLOT_MIRROR_TIMEOUT_S", 2.0)
+        mirrored: list[tuple[SessionStatus, str | None]] = []
+
+        class _SlowSlot:
+            async def status(self) -> SessionStatus:
+                return SessionStatus.RUNNING
+
+            async def set_status(self, status, *, ended_reason=None) -> None:
+                await asyncio.sleep(0.3)               # well inside the bound
+                mirrored.append((status, ended_reason))
+
+        executor = _StopAwareExecutor(self._script("cancel", sid, fake_storage_provider, fake_event_bus))
+        executor.session = _SlowSlot()
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid, timeout=5.0)
+
+        assert mirrored == [(SessionStatus.ENDED, "cancelled")], "the bound cut a healthy mirror short"
+
     async def test_a_write_that_fails_outright_is_not_swallowed(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
     ) -> None:
