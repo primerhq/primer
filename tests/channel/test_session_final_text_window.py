@@ -130,6 +130,29 @@ def test_a_failed_turn_does_not_hide_the_next_turns_reply() -> None:
     assert derive_session_final_text(records) == "Second try."
 
 
+def test_assistant_text_after_the_last_terminal_record_means_the_latest_turn_did_not_finish() -> None:
+    """The CANCELLED record of a stopped turn is best-effort: when the workspace did not take the write in time it is
+    missing, and what the turn streamed sits after the PREVIOUS turn's ``done``. Reading that ``done`` as "the latest
+    turn completed" would hand the previous turn's answer to the webhook hold as this run's result."""
+    records = [USER, _tok("The previous answer."), _done(), USER, _tok("a partial of the stopped turn")]
+
+    assert derive_session_final_text(records) is None
+
+
+def test_a_user_message_after_the_last_done_does_not_hide_the_answer() -> None:
+    """A steer typed the instant an answer finished lands after its ``done``: that is not an unfinished turn, and the
+    answer must still be relayed."""
+    records = [USER, _tok("The answer."), _done(), USER]
+
+    assert derive_session_final_text(records) == "The answer."
+
+
+def test_tool_results_after_a_done_do_not_count_as_assistant_text() -> None:
+    records = [USER, _tok("Let me check."), _done("tool_use"), {"kind": "tool_result", "payload": {}}]
+
+    assert derive_session_final_text(records) == "Let me check."
+
+
 def test_a_reply_cut_off_by_the_token_limit_is_still_relayed() -> None:
     """``max_tokens`` is a truncated answer, not a failure: it is the turn's result and the session rests WAITING."""
     records = [USER, _tok("a long answer that was cut"), _done("max_tokens")]

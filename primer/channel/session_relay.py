@@ -146,6 +146,13 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     # that ``done`` is a terminal record but the turn did not complete, and its partial text is not a result.
     if (records[last_done].get("payload") or {}).get("stop_reason") == "error":
         return None
+    # Assistant text AFTER the last terminal record is a turn that streamed output and never ended. Its
+    # ``cancelled`` record is best-effort (skipped when the workspace does not take the write in time), and
+    # without this the previous turn's ``done`` would stand for it and that turn's answer would be handed over
+    # as this run's result. A user message after the ``done`` is not such a signal (a steer typed as the
+    # answer finished), and neither are tool results.
+    if any(r.get("kind") == "assistant_token" for r in records[last_done + 1:]):
+        return None
     prev_boundary = boundaries[-2] if len(boundaries) > 1 else -1
     chunks: list[str] = []
     for r in records[prev_boundary + 1:last_done]:
