@@ -502,11 +502,31 @@
      "parts": [
       [
        "text",
-       33,
-       "083f9a86ebd7dc93"
+       118,
+       "ce0cf0256d55ddc0"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       51,
+       "fb6fd648428a77d5"
       ]
      ],
      "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       49,
+       "3f78178b058fefc7"
+      ]
+     ],
+     "role": "assistant"
     },
     {
      "parts": [
@@ -729,11 +749,31 @@
      "parts": [
       [
        "text",
-       33,
-       "083f9a86ebd7dc93"
+       118,
+       "ce0cf0256d55ddc0"
+      ]
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       51,
+       "fb6fd648428a77d5"
       ]
      ],
      "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       49,
+       "3f78178b058fefc7"
+      ]
+     ],
+     "role": "assistant"
     },
     {
      "parts": [
@@ -1477,7 +1517,8 @@
    ]
   }
  ],
- "captured_from": "eeb4853eb8bc9216301761fc165509b2979bb896",
+ "captured_from": "76a176c028bcf9420e14292746e67020ab5c8412",
+ "captured_from_subject": "fix(compaction): a summary is transparent to the pending turn, a bottomed-out compaction is not repeated, a forced raise needs proof",
  "recaptures": [
   {
    "changed_turns": [
@@ -1499,6 +1540,14 @@
    "previous_captured_from": "648e26158fa256c41bdb216c3aa78acbe847e722",
    "previous_fixture_sha256": "2fea7ebaef86ee2cac943db6b891af7494a6aca8b1ba9ce990aff2f22069fb6c",
    "reason": "R2 (task 01a10914): the fixed overhead (system prompt + tool schemas, 3,113 tokens for this agent) is counted. Turns 2-4: the marker's tokens_before/after include it (+3,113) and it gains fixed_overhead_tokens; every prompt is byte-identical. Turns 5-6: the boundary pad is 3,113 tokens shorter, since history + fixed must land on trigger-1 and trigger"
+  },
+  {
+   "changed_turns": [
+    3
+   ],
+   "previous_captured_from": "eeb4853eb8bc9216301761fc165509b2979bb896",
+   "previous_fixture_sha256": "5ed8340820c80344321f42cf81ce32cc5e9bb59f03af8d717c4541a7ea4a7d45",
+   "reason": "scenario: turn 3 is seeded with a prior compaction marker and its kept tail, so the forced compaction runs over a reconstructed [summary, *tail, ...] and folds the old summary into the new one (the chained-compaction coverage the per-turn sessions had dropped: markers per turn were [0,1,1,1,0,0], turn 3 now writes two). Every other turn is byte-identical."
   }
  ],
  "turns": [
@@ -1766,13 +1815,19 @@
   },
   {
    "file": {
-    "bytes": 22115,
+    "bytes": 22700,
     "lines": [
      {
       "len": 56,
       "message": "user",
       "preview": "hello",
       "sha": "d2713c5c5317c67f"
+     },
+     {
+      "len": 584,
+      "record": "compaction_marker",
+      "seq": 1,
+      "sha": "6c3bbb008f2671f6"
      },
      {
       "len": 2068,
@@ -1867,8 +1922,8 @@
      {
       "len": 6947,
       "record": "compaction_marker",
-      "seq": 1,
-      "sha": "62ebb8fca35e1e60"
+      "seq": 2,
+      "sha": "eab0403c292fa72e"
      },
      {
       "len": 65,
@@ -1878,6 +1933,35 @@
      }
     ],
     "markers": [
+     {
+      "created_at": "<ts>",
+      "fixed_overhead_tokens": 3113,
+      "kept_tail": [
+       {
+        "len": 80,
+        "message": "user",
+        "preview": "turn 3 earlier question",
+        "sha": "20294407782dd285"
+       },
+       {
+        "len": 83,
+        "message": "assistant",
+        "preview": "turn 3 earlier answer",
+        "sha": "357c25ca1b8144a8"
+       }
+      ],
+      "model": "golden-model",
+      "outcome": "summarised",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "seq": 1,
+      "summary_len": 88,
+      "summary_sha": "910d1cf32c0af5ec",
+      "tokens_after": 20000,
+      "tokens_before": 90000,
+      "trigger_tokens": 82627,
+      "unreducible": null
+     },
      {
       "created_at": "<ts>",
       "fixed_overhead_tokens": 3113,
@@ -1934,17 +2018,17 @@
       "model": "golden-model",
       "outcome": "summarised",
       "replaced_from_seq": 1,
-      "replaced_to_seq": 0,
-      "seq": 1,
+      "replaced_to_seq": 1,
+      "seq": 2,
       "summary_len": 51,
       "summary_sha": "8c49090b2ac9e12d",
       "tokens_after": 4737,
-      "tokens_before": 6809,
+      "tokens_before": 6863,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "4396c2386c960b78c989f9b5a404c6dfb3564a34ab049e99cd94c6557c728958"
+    "sha256": "b2d3ce912bad9ab923a4fb11fe9f64caaf4c2e6503db0ed24364522575038b9e"
    },
    "llm_calls": 3,
    "turn": "3-overflow-replay"

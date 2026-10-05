@@ -73,7 +73,16 @@ class TestTheComparison:
         assert sorted(changed_turns(_with_turn_text(old, 2, "different"), old)) == [2]
 
     def test_a_different_number_of_turns_is_reported_as_the_scenario_changing_shape(self) -> None:
-        assert list(changed_turns(_fixture(1, 1), _fixture(1, 1, 1))) == [0]
+        assert list(changed_turns(_fixture(1, 1), _fixture(1, 1, 1))) == [0], "a removed turn: only the shape"
+
+    def test_a_new_turn_is_reported_as_new_beside_the_shape(self) -> None:
+        assert list(changed_turns(_fixture(1, 1, 1), _fixture(1, 1))) == [0, 3]
+
+    def test_a_shape_change_does_not_hide_a_change_to_a_turn_both_fixtures_have(self) -> None:
+        """Turn 0 used to stand for "everything": declaring it rebaselined every turn unseen."""
+        old = _fixture(1, 1)
+        new = _with_turn_text(_fixture(1, 1, 1), 1, "different")
+        assert sorted(changed_turns(new, old)) == [0, 1, 3]
 
     def test_metadata_is_not_behaviour(self) -> None:
         fixture = {**_fixture(1), "recaptures": [{"x": 1}]}
@@ -121,6 +130,13 @@ class TestTheDecision:
         old = _fixture(1, 1)
         assert self._decide(old=old, new=_with_turn_text(old, 2, "z"), declared=[2]) == "refuse:declared changes need --reason"
 
+    def test_declaring_turn_zero_does_not_excuse_the_turns_that_changed_with_the_shape(self) -> None:
+        old = _fixture(1, 1)
+        new = _with_turn_text(_fixture(1, 1, 1), 1, "different")
+        decision = self._decide(old=old, new=new, declared=[0], reason="why")
+        assert decision.startswith("refuse:") and "[1, 3]" in decision and "not declared" in decision
+        assert self._decide(old=old, new=new, declared=[0, 1, 3], reason="why") == "write-new"
+
     def test_exactly_the_declared_change_with_a_reason_is_written(self) -> None:
         old = _fixture(1, 1)
         assert self._decide(old=old, new=_with_turn_text(old, 2, "z"), declared=[2], reason="why") == "write-new"
@@ -131,7 +147,9 @@ class TestMain:
     def env(self, tmp_path, monkeypatch):
         path = tmp_path / "golden.json"
         monkeypatch.setattr(script, "FIXTURE", path)
-        monkeypatch.setattr(script, "_git", lambda *args: "b" * 40 if args[0] == "rev-parse" else "")
+        monkeypatch.setattr(
+            script, "_git", lambda *args: "b" * 40 if args[0] == "rev-parse" else "the commit that made it" if args[0] == "log" else "",
+        )
         state = {"result": _fixture(1, 1)}
         monkeypatch.setattr(script, "run_scenario", lambda: _coro(state["result"]))
         return path, state
@@ -145,6 +163,7 @@ class TestMain:
         assert script.main(["--expect-changed", "2", "--reason", "turn 2 now keeps its tail"]) == 0
         written = json.loads(path.read_text())
         assert written["captured_from"] == "b" * 40
+        assert written["captured_from_subject"] == "the commit that made it", "the handle that survives a rebase"
         assert written["recaptures"] == [{
             "previous_fixture_sha256": hashlib.sha256(old_bytes.encode()).hexdigest(),
             "previous_captured_from": "a" * 40,
@@ -170,6 +189,20 @@ class TestMain:
         written = json.loads(path.read_text())
         assert written["captured_from"] == "b" * 40 and written["recaptures"] == [{"reason": "earlier"}]
         assert behaviour(written) == behaviour(old)
+
+    def test_check_with_no_fixture_fails_instead_of_looking_like_a_pass(self, env, capsys) -> None:
+        path, state = env
+        ran: list[int] = []
+        state["result"] = _fixture(1, 1)
+        original = script.run_scenario
+        script.run_scenario = lambda: (ran.append(1), original())[1]
+        try:
+            assert script.main(["--check"]) == 2
+            assert script.main(["--check", "--expect-changed", "1"]) == 2
+        finally:
+            script.run_scenario = original
+        assert not path.exists() and ran == [], "nothing written, and the scenario was not even run"
+        assert "no fixture to compare with" in capsys.readouterr().err
 
     def test_check_never_writes_and_reports_by_exit_code(self, env, capsys) -> None:
         path, state = env
