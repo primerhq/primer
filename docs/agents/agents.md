@@ -136,9 +136,15 @@ note that the calls already ran) and the turn ends with
 `context_overflow_unrecoverable` instead of being replayed unchanged: shorten
 the system prompt, give the agent fewer tools, or use a larger-context model.
 The turn ends the same way, without compacting anything, when the agent's
-`max_output_tokens` is not below the model's context window: no history, however
-short, fits beside that cap, so lower `max_output_tokens` (or use a model with a
-larger window).
+`max_output_tokens` is not below the model's context window and the provider
+rejects the call as a prompt that does not fit (for example with the
+`context_length_exceeded` code): no history, however short, fits beside that
+cap, so lower `max_output_tokens` (or use a model with a larger window). A
+provider that words the same situation as an output-cap error (vLLM's
+`'max_tokens' is too large: 32768 ... maximum context length is 32768`,
+Anthropic's `max_tokens: N > M`) is not an overflow at all: nothing is compacted
+either, but the turn ends with the provider's own `bad_request` error, not
+`context_overflow_unrecoverable`.
 
 Streaming: subscribers (the WS connection, internal taps) see token
 events in the order the LLM produces them. Persisted state is the
