@@ -30,9 +30,9 @@ def _node(state: _CoalesceState, node_id: str, text: str) -> list[dict]:
     return _as_dicts(translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state, node_id=node_id, turn_no=1))
 
 
-def _end(state: _CoalesceState, end_node_id: str, text: str) -> list[dict]:
+def _end(state: _CoalesceState, end_node_id: str, text: str, nested: bool = False) -> list[dict]:
     return _as_dicts(translate_stream_event(
-        _GraphEndOutputEvent(text=text, parsed=None, end_node_id=end_node_id), state, turn_no=1,
+        _GraphEndOutputEvent(text=text, parsed=None, end_node_id=end_node_id, nested=nested), state, turn_no=1,
     ))
 
 
@@ -98,3 +98,47 @@ def test_an_end_output_followed_by_a_cancelled_record_is_not_a_result() -> None:
     ]
 
     assert derive_session_final_text(records) is None
+
+
+def test_a_nested_end_output_is_marked_in_the_transcript() -> None:
+    state = _CoalesceState()
+    records = _end(state, "inner-exit", "Inner: raw", nested=True)
+
+    assert records[0]["payload"]["nested"] is True and records[0]["payload"]["end_node_id"] == "inner-exit"
+    assert "nested" not in _end(_CoalesceState(), "end1", "x")[0]["payload"], "a top-level End output is not marked"
+
+
+def test_a_nested_subgraph_end_is_not_joined_into_the_parents_result() -> None:
+    """A subgraph node forwards the child's End output (nested) and the parent's own End then writes its output: the
+    run's result is the parent's alone, not 'Inner: raw' followed by 'Outer: ...'."""
+    state = _CoalesceState()
+    records = [
+        USER, *_node(state, "worker", "raw"),
+        *_end(state, "inner-exit", "Inner: raw", nested=True), *_end(state, "exit", "Outer: Inner: raw"),
+    ]
+
+    assert [r["payload"].get("nested") for r in records if r["kind"] == "assistant_token"][1:] == [True, None]
+    assert derive_session_final_text(records) == "Outer: Inner: raw"
+
+
+def test_a_passthrough_parent_end_after_a_nested_end_keeps_the_nested_text_as_the_result() -> None:
+    """The parent's End echoes the subgraph's output: its record is suppressed as a duplicate of the nested one that
+    immediately precedes it, so the nested record's text IS the parent End's output, not the inner agent's raw answer."""
+    state = _CoalesceState()
+    records = [
+        USER, *_node(state, "worker", "raw"),
+        *_end(state, "inner-exit", "Inner: raw", nested=True), *_end(state, "exit", "Inner: raw"),
+    ]
+
+    assert [r["kind"] for r in records].count("assistant_token") == 2, "the pass-through End was written"
+    assert derive_session_final_text(records) == "Inner: raw"
+
+
+def test_two_top_level_ends_around_a_nested_one_are_joined_without_the_nested_text() -> None:
+    state = _CoalesceState()
+    records = [
+        USER, *_node(state, "worker", "raw"), *_end(state, "endA", "First: raw"),
+        *_end(state, "inner-exit", "Inner: raw", nested=True), *_end(state, "endB", "Second: raw"),
+    ]
+
+    assert derive_session_final_text(records) == "First: raw\n\nSecond: raw"

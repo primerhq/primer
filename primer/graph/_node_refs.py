@@ -730,6 +730,9 @@ class _GraphEndOutputEvent:
     text: str
     parsed: dict[str, Any] | None
     end_node_id: str
+    # True on an End output a PARENT graph forwarded from a subgraph it ran: it still reaches the taps and the
+    # transcript, but it is not the run's result (that is the TOP-LEVEL End's output).
+    nested: bool = False
 
 
 @dataclass(frozen=True)

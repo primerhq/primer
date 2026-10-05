@@ -737,6 +737,58 @@ class TestSubgraphExecution:
         # The subgraph's End output (not its inner agent chatter, not empty).
         assert outer_end[-1].text == "outer-got:INNER_END_OUTPUT"
 
+    async def test_a_forwarded_inner_end_output_is_marked_nested_and_the_outers_is_not(
+        self, tmp_path: Path
+    ) -> None:
+        """The parent forwards the child's End-output event so taps see it, and it is persisted as an
+        ``assistant_token`` with the inner End's ``end_node_id``. The session's final text is the TOP-LEVEL End's
+        output, so the forwarded one must say it is nested, or it is joined into the result."""
+        from primer.graph.base import _GraphEndOutputEvent
+
+        inner_graph = Graph(
+            id="inner",
+            description="agent then a shaped end output",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="inner-A", agent_id="x"),
+                _EndNode(id="inner-exit", output_template="Inner: {{ nodes['inner-A'].text }}"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="inner-A"),
+                _StaticEdge(from_node="inner-A", to_node="inner-exit"),
+            ],
+        )
+        outer_graph = Graph(
+            id="outer",
+            description="subgraph then consume its output",
+            nodes=[
+                _BeginNode(id="begin"),
+                _GraphNodeRef(id="SUB", graph_id="inner"),
+                _EndNode(id="exit", output_template="Outer: {{ nodes.SUB.text }}"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="SUB"),
+                _StaticEdge(from_node="SUB", to_node="exit"),
+            ],
+        )
+        llm = _FakeLLM(scripts=[[TextDelta(text="raw", index=0), Done(stop_reason="stop", raw_reason="stop")]])
+
+        async def graph_resolver(graph_id: str) -> Graph:
+            return inner_graph
+
+        repo = await _make_state_repo(tmp_path)
+        executor = await _build_executor(
+            graph=outer_graph, llm=llm, state_repo=repo, graph_session_id="gsid-outer-nested",
+            agents={"x": _agent("x")}, graph_resolver=graph_resolver,
+        )
+        events = await _drain(executor.invoke([]))
+
+        ends = {e.end_node_id: e for e in events if isinstance(e, _GraphEndOutputEvent)}
+        assert set(ends) == {"inner-exit", "exit"}, f"unexpected End outputs: {sorted(ends)}"
+        assert ends["inner-exit"].nested is True, "the forwarded inner End output is not marked nested"
+        assert ends["exit"].nested is False
+        assert ends["exit"].text == "Outer: Inner: raw"
+
     async def test_failed_subgraph_fails_the_parent(
         self, tmp_path: Path
     ) -> None:

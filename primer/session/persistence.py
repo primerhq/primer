@@ -25,7 +25,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import TypeAdapter
 
@@ -488,14 +488,18 @@ def translate_stream_event(
         if state.last_assistant_token == (turn_no, event.text):
             return None
         state.last_assistant_token = (turn_no, event.text)
+        end_payload: dict[str, Any] = {
+            "text": event.text,
+            "parsed": event.parsed,
+            "end_node_id": event.end_node_id,
+        }
+        if event.nested:
+            # A subgraph's End output forwarded by its parent: kept in the transcript, but not the run's result.
+            end_payload["nested"] = True
         return SessionMessageRecord(
             seq=1,  # WorkspaceMessageWriter overwrites
             kind=SessionMessageKind.ASSISTANT_TOKEN,
-            payload={
-                "text": event.text,
-                "parsed": event.parsed,
-                "end_node_id": event.end_node_id,
-            },
+            payload=end_payload,
             node_id=event.end_node_id,
             created_at=now,
         )

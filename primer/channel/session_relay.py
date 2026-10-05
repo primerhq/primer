@@ -154,7 +154,13 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     # ``assistant_token`` carrying ``end_node_id`` that is written AFTER the last node's ``done`` and is the
     # graph's canonical result, so it is not an unfinished turn; it IS the text (a pass-through template
     # writes no such record, and then the last node's answer below stands in).
+    # Only TOP-LEVEL End outputs are the result. A subgraph's End output forwarded by its parent is marked
+    # ``nested`` and is left out (joining it would read "Inner: ...\n\nOuter: ..."). The one exception: when no
+    # top-level End output was written at all, the last nested one stands in, because the parent's End that
+    # echoed it was suppressed as a duplicate of it (see persistence's _GraphEndOutputEvent branch), so it
+    # carries exactly that End's text.
     end_outputs: list[str] = []
+    nested_outputs: list[str] = []
     for r in records[last_done + 1:]:
         if r.get("kind") != "assistant_token":
             continue
@@ -163,9 +169,11 @@ def derive_session_final_text(records: list[dict]) -> str | None:
             return None
         text = payload.get("text")
         if isinstance(text, str) and text.strip():
-            end_outputs.append(text.strip())
+            (nested_outputs if payload.get("nested") else end_outputs).append(text.strip())
     if end_outputs:
         return "\n\n".join(end_outputs)
+    if nested_outputs:
+        return nested_outputs[-1]
     prev_boundary = boundaries[-2] if len(boundaries) > 1 else -1
     chunks: list[str] = []
     for r in records[prev_boundary + 1:last_done]:
