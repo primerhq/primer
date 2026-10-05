@@ -1825,7 +1825,10 @@ async def _land_cancelled_turn(
 async def _cancel_the_stopped_external_call(
     deps: "SessionDispatchDeps", session: "WorkspaceSession", executor: Any,
 ) -> None:
-    """Cancel the pending ``ExternalToolCall`` row of an ``external_tool`` park that a Stop ended instead of parking.
+    """Cancel the pending ``ExternalToolCall`` row of an ``external_tool`` call that a Stop ended instead of parking.
+
+    That is a park the Stop ended (``executor.stopped_park``), or a call of an invoker-supplied tool that the Stop
+    cancelled or abandoned before it reached its yield (``executor.stopped_calls``, stop slice B1).
 
     The invoker-supplied tool provider writes the row BEFORE it yields (``primer/agent/external_tools.py``), and a turn
     that ends instead of parking would leave it listed as pending (``GET .../external_tools/pending``, the global list)
@@ -1835,12 +1838,18 @@ async def _cancel_the_stopped_external_call(
     that has ended; it is bounded by ``_BEST_EFFORT_IO_TIMEOUT_S``, so a slow storage delays the publish by at most
     that, and it never fails the exit.
     """
-    park = getattr(executor, "stopped_park", None)
-    if not isinstance(park, YieldToWorker):
-        return
-    from primer.agent.external_tools import external_event_key
+    from primer.agent.external_tools import external_event_key, is_external_tool_name
 
-    if not (park.yielded.event_key or "").startswith(external_event_key(session.id, "")):
+    park = getattr(executor, "stopped_park", None)
+    ended_an_external_park = isinstance(park, YieldToWorker) and (park.yielded.event_key or "").startswith(
+        external_event_key(session.id, ""),
+    )
+    # A call the Stop CANCELLED (or abandoned) never reached its yield, but its provider may already have written the
+    # row (stop slice B1: cancelling is now the default for a call that is running when the Stop lands).
+    cancelled_an_external_call = any(
+        is_external_tool_name(getattr(call, "name", "") or "") for call in (getattr(executor, "stopped_calls", None) or [])
+    )
+    if not (ended_an_external_park or cancelled_an_external_call):
         return
     from primer.model.external_tool import ExternalToolCall
     from primer.session.external_tools import cancel_pending_external

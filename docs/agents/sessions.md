@@ -196,28 +196,60 @@ intact, so the next message continues it:
 - It takes effect at the next wait for the model: before the first token
   as well as between chunks. If the model had just asked for tool calls
   when you pressed Stop, none of them run: each is answered "not run:
-  stopped by user". A tool call that is already running is not cancelled;
-  it finishes and its result is recorded, but the calls after it in the
-  same batch that have not started do not run: each is answered "not run:
-  stopped by user" too, and the turn ends before the next model call. Only
-  the call that is running when you press Stop can ask the session to park.
-  If it waits on no person (a timer, a trigger, a remote task, a batch of
+  stopped by user".
+- A tool call that is already running when you press Stop is stopped too.
+  The call is cancelled and given up to 2 seconds to unwind (so whatever
+  cleanup the tool does when it is cancelled has run before the turn moves
+  on, and a subagent has stopped; what stops with a command is described in
+  the workspaces doc), and it is answered "interrupted: stopped by
+  user (the call may have run, and its result was not recorded)". A call
+  that finishes before the Stop, at the same moment, or while the Stop is
+  being handled keeps its real result: a Stop never throws a real result
+  away. The calls after it in the same batch that have not started do not
+  run: each is answered "not run: stopped by user", and the turn ends
+  before the next model call.
+- A few tools are not cancelled, because cancelling them could leave work
+  half done: a file write (`write`, `edit`, `write_workspace_file`,
+  `delete_workspace_file`) on a local workspace runs in a thread under the
+  workspace lock, so cancelling the wait would release the lock while the
+  write still runs (on a container workspace a cancel cannot undo a write
+  already sent, so it would only throw away the real result), and the
+  document tools (`create_document`, `update_document`,
+  `move_document`, `delete_document` in the collections toolset, and
+  `put_document`) commit a database transaction and then update the search
+  index, so cancelling between the two would leave the index stale. A Stop
+  waits for such a call, up to 5 seconds, and records its real result. If it
+  takes longer the turn ends anyway: the call is answered "interrupted:
+  stopped by user ..." and runs on to its end in the background, so it can
+  still complete after the Stop. Each tool declares this with the
+  `interruptible` flag (false for the tools above, true for every other
+  tool). It is served next to `yields` wherever tools are listed: the
+  `interruptible` field of each tool in `GET /v1/tools` and the toolset
+  tool listings, and the MCP exposure table.
+- A call that is cancelled never gets to ask the session to park. A call
+  that asks to park at the very moment of the Stop is handled as follows. If
+  it waits on no person (a timer, a trigger, a remote task, a batch of
   tool calls handed to workers), the Stop ends the turn instead: the session
   lands in `waiting` and every call of that round is answered in the
   transcript (the calls that finished before the one that asked to wait keep
   their real results, "interrupted: stopped by user ..." for the call that
   asked to wait, whose result was not recorded, and "not run: stopped by user"
   for the ones after it). A pending call to a tool you supplied yourself
-  (`external_tool`) is cancelled too, so it no longer shows as pending. What
-  else that tool already started (a remote task it submitted, a timer it
+  (`external_tool`) is cancelled too, so it no longer shows as pending,
+  whether the Stop ended its park or cancelled the call before it parked.
+  What else that tool already started (a remote task it submitted, a timer it
   set) is not cancelled. If it is
   asking a person (a tool approval, an `ask_user` question), the session
   parks as before and the Stop is dropped, because the answer wins; Stop is
   then refused with 409 and Cancel is the way out. Calls later in the batch
   are refused, so they cannot park. Cancel refuses the calls that have not
-  started in the same way (and then ends the session). Graph
-  sessions and the context-compaction call that can run first are not
-  interruptible yet.
+  started in the same way (and then ends the session). A call that needs
+  sign-in (an MCP tool asking for consent) when the Stop lands is answered
+  "interrupted" instead of sending you to the consent page. A subagent call
+  (`invoke_agent`) that is cancelled and does not stop in time is given up
+  on: what it still emits is not added to the session log after the call's
+  "interrupted" answer. Graph sessions and the context-compaction call that
+  can run first are not interruptible yet.
 - What the model had already written is kept in the transcript. The model
   itself does not see that partial text on the next turn, and is not told
   it was stopped (apart from the "not run: stopped by user" results

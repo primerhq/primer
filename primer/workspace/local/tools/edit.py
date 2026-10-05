@@ -41,6 +41,7 @@ class Edit(WorkspaceTool):
     """
 
     id: ClassVar[str] = "edit"
+    interruptible: ClassVar[bool] = False   # the write runs in a thread under the scope lock: a Stop waits, it never cancels
     description: ClassVar[str] = (
         "Replace a substring in a file. By default old_string must be "
         "unique; pass replace_all=true to replace every occurrence.\n\n"

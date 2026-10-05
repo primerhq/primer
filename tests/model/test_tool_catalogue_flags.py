@@ -32,6 +32,7 @@ def test_defaults_are_all_off() -> None:
         "requires_workspace": False,
         "tool_class": "standard",
         "required_role": None,
+        "interruptible": True,      # the one flag whose default is ON: a Stop may cancel a call unless the tool says not
     }
 
 
@@ -41,12 +42,14 @@ def test_carries_every_declared_flag() -> None:
         requires_workspace=True,
         tool_class="notifying",
         required_role="admin",
+        interruptible=False,
     ))
     assert flags == {
         "yields": True,
         "requires_workspace": True,
         "tool_class": "notifying",
         "required_role": "admin",
+        "interruptible": False,
     }
 
 
@@ -75,6 +78,7 @@ def test_reads_via_getattr_not_a_bound_method() -> None:
         "requires_workspace": False,
         "tool_class": "notifying",
         "required_role": "admin",
+        "interruptible": True,      # the double never set it: the tool default
     }
 
 
@@ -87,4 +91,5 @@ def test_missing_attributes_fall_back_to_the_tool_defaults() -> None:
         "requires_workspace": False,
         "tool_class": "standard",
         "required_role": None,
+        "interruptible": True,
     }

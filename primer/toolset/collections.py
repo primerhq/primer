@@ -432,6 +432,9 @@ def build_collections_toolset(
         make_tool(
             id="create_document",
             toolset_id=COLLECTIONS_TOOLSET_ID,
+            # A DB transaction, then the indexer on another store: a Stop that cancelled in between would leave the
+            # index stale, so it waits for the call (same for update, move and delete below).
+            interruptible=False,
             purpose="Create a document under a parent path.",
             when="Use to add a page to a wiki you own.",
             args_schema=_CreateArgs.model_json_schema(),
@@ -466,6 +469,7 @@ def build_collections_toolset(
         make_tool(
             id="update_document",
             toolset_id=COLLECTIONS_TOOLSET_ID,
+            interruptible=False,
             purpose="Replace a document's body and/or title.",
             when="Use to revise an existing page in place.",
             args_schema=_UpdateArgs.model_json_schema(),
@@ -499,6 +503,7 @@ def build_collections_toolset(
         make_tool(
             id="move_document",
             toolset_id=COLLECTIONS_TOOLSET_ID,
+            interruptible=False,
             purpose="Move a document and its subtree to a new parent or slug.",
             when="Use to reorganise a wiki; document ids survive the move.",
             args_schema=_MoveArgs.model_json_schema(),
@@ -532,6 +537,7 @@ def build_collections_toolset(
         make_tool(
             id="delete_document",
             toolset_id=COLLECTIONS_TOOLSET_ID,
+            interruptible=False,
             purpose="Delete a document, optionally with its subtree.",
             when="Use to remove a page; pass recursive for a whole branch.",
             args_schema=_DeleteArgs.model_json_schema(),

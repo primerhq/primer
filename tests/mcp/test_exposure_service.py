@@ -149,6 +149,8 @@ async def test_list_available_tools_shape(
         # Tool.catalogue_flags() -- this was the one catalogue consumer
         # that omitted them.
         "yields", "requires_workspace", "tool_class", "required_role",
+        # Stop slice B1: whether a Stop may CANCEL a running call of the tool (False for the file/document mutators).
+        "interruptible",
     }
     for r in rows:
         assert set(r.keys()) == expected_keys
@@ -156,11 +158,12 @@ async def test_list_available_tools_shape(
         assert r["exposable"] is True
         assert r["reason"] is None
         # fake_misc_tools declares neither tool with any non-default
-        # flag, so both should read back the four Tool() defaults.
+        # flag, so both should read back the Tool() defaults.
         assert r["yields"] is False
         assert r["requires_workspace"] is False
         assert r["tool_class"] == "standard"
         assert r["required_role"] is None
+        assert r["interruptible"] is True
 
     assert by_id["misc__uuid_v4"]["currently_allowed"] is True
     assert by_id["misc__now"]["currently_allowed"] is False

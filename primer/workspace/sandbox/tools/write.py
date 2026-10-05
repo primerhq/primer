@@ -18,6 +18,7 @@ class SandboxWrite(WorkspaceTool):
     """Create or replace a file via Sandbox (read-before-write rule)."""
 
     id: ClassVar[str] = "write"
+    interruptible: ClassVar[bool] = False   # a cancelled await cannot undo a write already sent: it would only drop the real result
     description: ClassVar[str] = (
         "Create or replace a file. Refuses to overwrite a file you "
         "haven't read this session unless force=True is set.\n\n"

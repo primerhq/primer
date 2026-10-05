@@ -338,6 +338,7 @@ class TestToolsetSmoke:
                 tool.requires_workspace = tn == "bar"
                 tool.tool_class = "standard"
                 tool.required_role = None
+                tool.interruptible = tn != "bar"       # stop slice B1: a Stop may not cancel "bar"
                 yield tool
 
         provider_mock = MagicMock()
@@ -351,11 +352,11 @@ class TestToolsetSmoke:
             "tools": [
                 {
                     "id": "foo", "yields": True, "requires_workspace": False,
-                    "tool_class": "standard", "required_role": None,
+                    "tool_class": "standard", "required_role": None, "interruptible": True,
                 },
                 {
                     "id": "bar", "yields": False, "requires_workspace": True,
-                    "tool_class": "standard", "required_role": None,
+                    "tool_class": "standard", "required_role": None, "interruptible": False,
                 },
             ]
         }

@@ -5,12 +5,12 @@ a model that had not produced its first token (a cold load has no timeout by def
 turn running however many times the operator pressed Stop. The loop now races the interrupt
 event against every ``stream.__anext__()``.
 
-A tool call that is already RUNNING is deliberately not interruptible here (slice B): a Stop that lands
-while it runs lets that call finish and yields its result (so the log stays paired). The calls of the same
-batch that have not STARTED are refused ("not run: stopped by user") instead of running, and the turn stops at
-the next LLM wait. ``test_a_stop_during_a_tool_waits_for_the_tool_...`` pins the running-call boundary so
-slice B changes it knowingly; ``TestAStopDuringACallStopsTheRestOfTheBatch`` and
-``TestWhatAStopMeansForTheCallsAfterTheRunningOne`` pin the rest.
+A tool call that is already RUNNING when a Stop lands (slice B1): an interruptible call is CANCELLED and answered
+"interrupted: stopped by user ..." (``TestAStopInterruptsARunningCall``); one that is not (a file write) is waited for
+and keeps its real result, or is abandoned if it outlasts the grace (``TestANonInterruptibleCallIsWaitedFor``). A call
+that finishes first, or in the same wake-up as the Stop, always keeps its real result. The calls of the same batch that
+have not STARTED are refused ("not run: stopped by user") instead of running, and the turn stops at the next LLM wait.
+``TestAStopDuringACallStopsTheRestOfTheBatch`` and ``TestWhatAStopMeansForTheCallsAfterTheRunningOne`` pin the rest.
 
 What the caller gets back: the loop returns CLEANLY (it does not raise), appends True to
 ``interrupted_out``, and leaves ``messages_out`` holding only COMPLETED rounds: the interrupted
@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+import primer.agent.stoppable_call as stoppable_call
 import primer.observability.metrics as metrics
 from primer.agent.loop import run_agent_turn
 from primer.model.agent import Agent, AgentModel
@@ -41,6 +42,7 @@ from primer.model.chat import (
     ToolResultPart,
     _ClientAction,
 )
+from primer.model.except_ import AuthRequiredError
 from primer.model.model_profile import ModelProfileConfig
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.model_profile import ResolvedModel
@@ -163,8 +165,15 @@ class _Manager:
         self, gate: asyncio.Event | None = None, on_start=None, parks: frozenset[str] = frozenset(),
         notifying: frozenset[str] = frozenset(), park_key_prefix: str = "timer:",
         park_tool_call_ids: dict[str, str] | None = None,
+        uninterruptible: frozenset[str] = frozenset(), cleanup_s: float = 0.0,
+        auth_required: frozenset[str] = frozenset(),
     ) -> None:
         self.gate = gate
+        self.uninterruptible = uninterruptible   # tool NAMES a Stop must not cancel (a file write)
+        self.cleanup_s = cleanup_s               # how long a cancelled call takes to unwind (a process-group kill)
+        self.auth_required = auth_required       # call ids whose execution raises AuthRequiredError
+        self.cancelled = 0                       # calls that were cancelled while blocked on the gate
+        self.cleaned = 0                         # ... and whose cleanup then ran to its end
         self.on_start = on_start
         self.parks = parks                       # call ids whose execution parks the session (YieldToWorker)
         # A nested yield (invoke_agent / invoke_graph) re-raises the INNER call's YieldToWorker, so its tool_call_id is
@@ -179,6 +188,9 @@ class _Manager:
 
     def is_notifying(self, tool_name: str) -> bool:
         return tool_name in self.notifying
+
+    def is_interruptible(self, tool_name: str) -> bool:
+        return tool_name not in self.uninterruptible
 
     async def list_tools(self, *, principal=None):
         return [TOOL]
@@ -199,8 +211,17 @@ class _Manager:
                 Yielded(tool_name=call.name, event_key=f"{self.park_key_prefix}{call.id}", resume_metadata={}),
                 tool_call_id=self.park_tool_call_ids.get(call.id, call.id),
             )
+        if call.id in self.auth_required:
+            raise AuthRequiredError("consent needed", auth_url="https://auth.example/x", state="s")
         if self.gate is not None:
-            await self.gate.wait()
+            try:
+                await self.gate.wait()
+            except asyncio.CancelledError:
+                self.cancelled += 1
+                if self.cleanup_s:
+                    await asyncio.sleep(self.cleanup_s)      # the call's own cleanup, e.g. killing a process group
+                self.cleaned += 1
+                raise
         self.finished += 1
         return ToolResultPart(id=call.id, output="ok", error=False)
 
@@ -289,11 +310,12 @@ class TestTheLlmWait:
 
 
 class TestARunningToolIsNotInterruptedHere:
-    async def test_a_stop_during_a_tool_waits_for_the_tool_then_stops_at_the_next_llm_wait(self) -> None:
-        """The boundary slice B owns. The tool finishes, its result is yielded and appended (the log
-        stays paired), and the loop stops BEFORE starting the next model call."""
+    async def test_a_stop_during_a_non_interruptible_tool_waits_for_it_then_stops_at_the_next_llm_wait(self) -> None:
+        """A tool that is not interruptible (a file write) is waited for, not cancelled (see
+        ``TestAStopInterruptsARunningCall`` for every other tool). The tool finishes, its real result is yielded and
+        appended (the log stays paired), and the loop stops BEFORE starting the next model call."""
         gate = asyncio.Event()
-        manager = _Manager(gate)
+        manager = _Manager(gate, uninterruptible=frozenset({"loop_tool"}))
         llm = _ScriptedLLM(_tool_round(1), [TextDelta(text="after", index=0), Done(stop_reason="stop", raw_reason="stop")])
         interrupt = asyncio.Event()
 
@@ -426,10 +448,10 @@ class TestAStopBeforeTheBatchStopsTheBatch:
         assert_anthropic_valid(history)
         assert_openai_valid(history)
 
-    async def test_a_stop_during_a_tool_is_unchanged_the_running_call_finishes(self) -> None:
-        """The boundary that stays slice B's: a call that has already STARTED is not cancelled."""
+    async def test_a_stop_during_a_non_interruptible_tool_lets_the_running_call_finish(self) -> None:
+        """A call that has already STARTED and is not interruptible is not cancelled: its real result is recorded."""
         gate = asyncio.Event()
-        manager = _Manager(gate)
+        manager = _Manager(gate, uninterruptible=frozenset({"loop_tool"}))
         interrupt = asyncio.Event()
         llm = _ScriptedLLM(_tool_round(1), [TextDelta(text="after", index=0), Done(stop_reason="stop", raw_reason="stop")])
 
@@ -497,14 +519,19 @@ _AFTER = [TextDelta(text="after", index=0), Done(stop_reason="stop", raw_reason=
 
 
 class TestAStopDuringACallStopsTheRestOfTheBatch:
-    """Calls of a batch run one after another. A Stop that lands while call 1 runs cannot cancel it (slice B), but
-    calls 2..N have not started: running a destructive one now would make Stop a lie, exactly as when the Stop lands
-    before the batch begins. They are answered ``not run: stopped by user`` instead, and the turn ends."""
+    """Calls of a batch run one after another. A Stop that lands while call 1 runs does not cancel a call that is not
+    interruptible (it finishes with its real result), and calls 2..N have not started: running a destructive one now
+    would make Stop a lie, exactly as when the Stop lands before the batch begins. They are answered ``not run:
+    stopped by user`` instead, and the turn ends. (An interruptible call 1 is cancelled instead:
+    ``TestAStopInterruptsARunningCall``.)"""
 
     async def _stop_during_the_first_call(self, n_calls: int):
         gate = asyncio.Event()
         interrupt = asyncio.Event()
-        manager = _Manager(gate, on_start=lambda call: interrupt.set() if call.id == "tcA-0" else None)
+        manager = _Manager(
+            gate, on_start=lambda call: interrupt.set() if call.id == "tcA-0" else None,
+            uninterruptible=frozenset({"loop_tool"}),
+        )
         llm = _ScriptedLLM(_calls_round(n_calls), _AFTER)
 
         async def release_the_first_call_later() -> None:
@@ -569,6 +596,142 @@ class TestAStopDuringACallStopsTheRestOfTheBatch:
 
         assert manager.executed == ["tcA-0", "tcA-1", "tcA-2"] and interrupted == []
         assert STOPPED not in [p.output for p in _tool_results(messages_out)]
+
+
+class TestAStopInterruptsARunningCall:
+    """Stop slice B1: a call that is RUNNING when the Stop lands is cancelled (an exec's process group dies, a subagent
+    unwinds), unless the tool says it must not be (see ``TestANonInterruptibleCallIsWaitedFor``). It is answered with the
+    same "interrupted" wording a Stop at a park uses (the call may have had effects and its result was not recorded), the
+    rest of the batch is refused, and the turn ends as a Stop before the next model call."""
+
+    async def _stop_while_the_first_call_blocks(self, n_calls: int = 1, *, manager: _Manager | None = None):
+        interrupt = asyncio.Event()
+        manager = manager or _Manager(asyncio.Event())     # a gate nobody opens: the call blocks until it is cancelled
+        llm = _ScriptedLLM(_calls_round(n_calls), _AFTER)
+
+        async def stop_during_the_call() -> None:
+            await manager.started.wait()
+            interrupt.set()
+
+        asyncio.get_running_loop().create_task(stop_during_the_call())
+        events, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+        return manager, llm, events, messages_out, interrupted
+
+    async def test_the_call_is_cancelled_and_answered_as_interrupted(self) -> None:
+        manager, llm, _, messages_out, interrupted = await self._stop_while_the_first_call_blocks()
+
+        assert manager.cancelled == 1 and manager.finished == 0
+        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [("tcA-0", PARKED_STOP, True)]
+        assert [m.role for m in messages_out] == ["assistant", "tool"], "one paired, completed round"
+        assert interrupted == [True] and llm.calls == 1, "the turn did not end as a Stop before the next model call"
+
+    async def test_the_rest_of_the_batch_is_refused_in_order(self) -> None:
+        manager, _, _, messages_out, _ = await self._stop_while_the_first_call_blocks(3)
+
+        assert manager.executed == ["tcA-0"], f"a call started after the Stop: {manager.executed}"
+        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [
+            ("tcA-0", PARKED_STOP, True), ("tcA-1", STOPPED, True), ("tcA-2", STOPPED, True),
+        ]
+
+    async def test_every_result_is_yielded_so_the_durable_log_is_paired_too(self) -> None:
+        _, _, events, _, _ = await self._stop_while_the_first_call_blocks(2)
+
+        results = [e.extended for e in events if isinstance(e, ExtendedEvent) and hasattr(e.extended, "call_id")]
+        assert [(r.call_id, r.output, r.error) for r in results] == [
+            ("tcA-0", PARKED_STOP, True), ("tcA-1", STOPPED, True),
+        ]
+
+    async def test_the_persisted_history_is_valid_for_both_providers(self) -> None:
+        _, _, _, messages_out, _ = await self._stop_while_the_first_call_blocks(3)
+        history = [Message(role="user", parts=[TextPart(text="go")]), *messages_out]
+
+        assert_anthropic_valid(history)
+        assert_openai_valid(history)
+
+    async def test_the_calls_own_cleanup_has_run_before_the_answer_is_recorded(self) -> None:
+        """What kills an exec's process group runs in the cancelled call's cleanup: the turn must not move on before."""
+        manager, _, _, _, _ = await self._stop_while_the_first_call_blocks(manager=_Manager(asyncio.Event(), cleanup_s=0.2))
+
+        assert manager.cancelled == 1 and manager.cleaned == 1
+
+    async def test_a_call_that_finishes_in_the_same_wake_up_as_the_stop_keeps_its_real_result(self) -> None:
+        interrupt = asyncio.Event()
+        manager = _Manager(on_start=lambda call: interrupt.set())     # no gate: it sets the Stop and returns at once
+        llm = _ScriptedLLM(_calls_round(1), _AFTER)
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert [(p.output, p.error) for p in _tool_results(messages_out)] == [("ok", False)]
+        assert interrupted == [True]
+
+    async def test_an_auth_error_raised_after_the_stop_is_answered_as_a_stop(self) -> None:
+        """Consistent with a park after a Stop: the consent page is no use to a turn that was stopped."""
+        interrupt = asyncio.Event()
+        manager = _Manager(on_start=lambda call: interrupt.set(), auth_required=frozenset({"tcA-0"}))
+        llm = _ScriptedLLM(_calls_round(2), _AFTER)
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert [(p.id, p.output) for p in _tool_results(messages_out)] == [("tcA-0", PARKED_STOP), ("tcA-1", STOPPED)]
+        assert interrupted == [True]
+
+    async def test_an_auth_error_without_a_stop_still_propagates(self) -> None:
+        manager = _Manager(auth_required=frozenset({"tcA-0"}))
+        llm = _ScriptedLLM(_calls_round(1), _AFTER)
+
+        with pytest.raises(AuthRequiredError):
+            await _drive(llm, interrupt=asyncio.Event(), manager=manager, stop_after=None)
+
+    async def test_a_hard_cancel_of_the_turn_cancels_the_call_and_waits_for_its_cleanup(self) -> None:
+        """The worker's Cancel is not a Stop: the CancelledError must never be swallowed, and the call's cleanup (the
+        process-group kill) must have run when it leaves the turn."""
+        manager = _Manager(asyncio.Event(), cleanup_s=0.2)
+        llm = _ScriptedLLM(_calls_round(1), _AFTER)
+
+        async def consume() -> None:
+            async for _ in run_agent_turn(
+                agent=AGENT, llm=llm, llm_model=MODEL, tool_manager=manager,
+                prompt=[Message(role="user", parts=[TextPart(text="go")])], interrupt=asyncio.Event(),
+            ):
+                pass
+
+        turn = asyncio.create_task(consume())
+        await asyncio.wait_for(manager.started.wait(), 3.0)
+        turn.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 3.0)
+        assert manager.cancelled == 1 and manager.cleaned == 1, "the cancellation left before the call's cleanup had run"
+
+
+class TestANonInterruptibleCallIsWaitedFor:
+    """A file write is not cancelled (cancelling the await releases the scope lock while its thread still writes): a Stop
+    waits for it up to the grace and records the REAL result (``TestARunningToolIsNotInterruptedHere``). Past the grace it
+    is abandoned: the loop moves on with the "interrupted" answer and the call runs on to its end on its own."""
+
+    async def test_a_call_that_outlasts_the_grace_is_answered_as_interrupted_and_left_to_finish(self, monkeypatch) -> None:
+        monkeypatch.setattr(stoppable_call, "NON_INTERRUPTIBLE_GRACE_S", 0.1)
+        gate = asyncio.Event()
+        manager = _Manager(gate, uninterruptible=frozenset({"loop_tool"}))
+        interrupt = asyncio.Event()
+        llm = _ScriptedLLM(_calls_round(1), _AFTER)
+
+        async def stop_during_the_call() -> None:
+            await manager.started.wait()
+            interrupt.set()
+
+        asyncio.get_running_loop().create_task(stop_during_the_call())
+        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [("tcA-0", PARKED_STOP, True)]
+        assert interrupted == [True]
+        assert manager.cancelled == 0, "a call that is not interruptible was cancelled"
+        assert len(stoppable_call._ABANDONED) == 1
+
+        gate.set()                                  # the write completes after the answer: nothing is torn
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert manager.finished == 1 and not stoppable_call._ABANDONED, "the abandoned call was not left to finish"
 
 
 def _round_of(*calls: tuple[str, str]) -> list[StreamEvent]:

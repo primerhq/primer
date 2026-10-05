@@ -184,6 +184,15 @@ class WorkspaceTool(ABC):
     because every workspace tool needs a session for state attribution
     and tmp-cache scoping."""
 
+    interruptible: ClassVar[bool] = True
+    """Whether a Stop may CANCEL a running call of this tool. False for the file
+    mutators (``write``, ``edit``, local and sandbox): their write runs in a
+    background thread under the scope lock, so cancelling the await releases the
+    lock while the thread still writes and a concurrent edit can lose an update
+    (a torn file is not the risk: the writes are temp-file-plus-rename). The loop
+    waits for such a call and records its real result, and abandons it only if
+    the grace expires. Everything else (``exec`` above all) is cancelled."""
+
     @abstractmethod
     def parameters(self) -> type[BaseModel]:
         """Return the Pydantic class describing this tool's arguments.

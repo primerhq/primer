@@ -367,6 +367,15 @@ session is outside the group, so it is not killed.
   has to be rebuilt for it too). To leave a daemon running past a call
   that may time out, both detach and redirect: `setsid cmd >log 2>&1 &`.
   (`nohup` alone does not detach.)
+- **A Stop waits for a file write and cancels a command.** Pressing Stop
+  while a session runs a tool cancels it, except the tools that must not be
+  cancelled mid-way: `write`, `edit` and the workspace file mutators
+  (`write_workspace_file`, `delete_workspace_file`) are waited for, up to 5
+  seconds, and keep their real result (cancelling one on a local workspace
+  would release the lock while its thread still writes). A cancelled `exec`
+  is answered "interrupted: stopped by user (the call may have run ...)"
+  and, like any call the Stop cancels, may have had effects before it was
+  cancelled. See the Stop section of `sessions.md`.
 
 ## Related
 

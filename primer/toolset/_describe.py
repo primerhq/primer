@@ -43,6 +43,7 @@ def make_tool(
     requires_workspace: bool = False,
     required_role: str | None = None,
     tool_class: Literal["standard", "notifying"] = "standard",
+    interruptible: bool = True,
 ) -> Tool:
     """Build a Tool with validated examples and the standard description anatomy.
 
@@ -61,6 +62,15 @@ def make_tool(
     to ``False`` and surface via :meth:`InternalToolsetProvider.is_yielding`
     / :meth:`InternalToolsetProvider.requires_workspace`, which the chat
     suppression choke point and the MCP exposure guard consult.
+
+    ``interruptible`` says whether a Stop may CANCEL a running call of this
+    tool (default True). Declare ``interruptible=False`` when the handler
+    performs two or more durable writes across stores or rows with no
+    transaction, or writes inside a lock that outlives the await: cancelling it
+    could leave the work half-done, so the loop waits for the call (a few
+    seconds) and records its real result instead. When unsure, a mutator is NOT
+    interruptible (the cost is a Stop that waits a few seconds; the opposite
+    mistake leaves a half-done write).
     """
     validator = Draft202012Validator(args_schema)
     for ex in examples:
@@ -76,4 +86,5 @@ def make_tool(
         requires_workspace=requires_workspace,
         required_role=required_role,
         tool_class=tool_class,
+        interruptible=interruptible,
     )

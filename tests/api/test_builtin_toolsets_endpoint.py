@@ -114,6 +114,22 @@ async def test_all_tools_carries_capability_badges(client):
 
 
 @pytest.mark.asyncio
+async def test_all_tools_carries_the_interruptible_flag(client):
+    """Stop slice B1: the fifth capability flag, ``interruptible``, is served wherever ``yields`` is (the same
+    ``tool_catalogue_flags`` seam). A tool a Stop must not cancel says ``false``; everything else ``true``."""
+    r = await client.get("/v1/tools")
+    by_id = {it["id"]: it for it in r.json()["items"]}
+    system_tools = {t["id"]: t for t in by_id["system"]["tools"]}
+    workspace_tools = {t["id"]: t for t in by_id["workspaces"]["tools"]}
+
+    assert system_tools["put_document"]["interruptible"] is False
+    assert workspace_tools["write_workspace_file"]["interruptible"] is False
+    assert workspace_tools["delete_workspace_file"]["interruptible"] is False
+    assert workspace_tools["read_workspace_file"]["interruptible"] is True
+    assert system_tools["ask_user"]["interruptible"] is True
+
+
+@pytest.mark.asyncio
 async def test_all_tools_marks_search_unavailable_without_ic(client):
     r = await client.get("/v1/tools")
     by_id = {it["id"]: it for it in r.json()["items"]}

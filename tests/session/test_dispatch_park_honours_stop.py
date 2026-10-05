@@ -79,12 +79,21 @@ class _Manager:
     """Tools answer at once, except ``parking``: while it RUNS a Stop (and optionally a Cancel) lands, then it asks
     to wait on ``key``. ``notify_tool`` is a notifying call (the runner answers it itself)."""
 
-    def __init__(self, *, parking: str | None, key: str, storage, bus, sid: str, also_cancel: bool = False) -> None:
+    def __init__(
+        self, *, parking: str | None, key: str, storage, bus, sid: str, also_cancel: bool = False,
+        interruptible: bool = False,
+    ) -> None:
         self.parking, self.key, self.storage, self.bus, self.sid, self.also_cancel = parking, key, storage, bus, sid, also_cancel
+        # False (the default here): the tests below drive the PARK path of a Stop that lands while a call runs, which a call
+        # the Stop cancels never reaches. ``TestAStopCancelsTheCallThatWouldPark`` passes True (a call a Stop cancels).
+        self.interruptible = interruptible
         self.executed: list[str] = []
 
     def is_notifying(self, tool_name: str) -> bool:
         return tool_name == "notify_tool"
+
+    def is_interruptible(self, tool_name: str) -> bool:
+        return self.interruptible
 
     async def list_tools(self, *, principal=None):
         return []
@@ -122,6 +131,7 @@ class _RealLoopExecutor:
         self._resolver = None
         self.was_interrupted = False
         self.stopped_park = None
+        self.stopped_calls: list[str] = []
 
     def bind_interrupt_event(self, event) -> None:
         self.event = event
@@ -132,17 +142,20 @@ class _RealLoopExecutor:
     async def invoke(self, messages: list[Any], **_kwargs: Any):
         holder: list[bool] = []
         stopped: list[Any] = []
+        stopped_calls: list[str] = []
         self.stopped_park = None
+        self.stopped_calls = []
         async for ev in run_agent_turn(
             agent=AGENT, llm=self.llm, llm_model=MODEL, tool_manager=self.manager,
             prompt=[Message(role="user", parts=[TextPart(text="go")])],
-            interrupt=self.event, interrupted_out=holder, stopped_park_out=stopped,
+            interrupt=self.event, interrupted_out=holder, stopped_park_out=stopped, stopped_calls_out=stopped_calls,
             tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
             resolve_scoped_call=self._resolver, await_dispatch_barrier=self.barrier,
         ):
             yield ev
         self.was_interrupted = bool(holder)
         self.stopped_park = stopped[0] if stopped else None
+        self.stopped_calls = list(stopped_calls)
 
 
 class _RecordingClaims:
@@ -446,6 +459,117 @@ class TestAStopThatEndsAnExternalToolPark:
         assert outcome.park is not None and outcome.park.parked_event_key == f"external_tool:{sid}:a"
         rows = await self._rows(fake_storage_provider, sid)
         assert [(r.tool_call_id, r.status) for r in rows] == [("a", "pending")]
+
+
+class TestAStopCancelsTheCallThatWouldPark:
+    """Slice B1: the call is still RUNNING when the Stop lands and its tool is interruptible, so the Stop CANCELS it
+    before it can ask to park (the tests above model a call that parks within the grace or in the same wake-up). The
+    session ends WAITING exactly as for a park a Stop ended, the round is paired, and nothing is left behind: above all
+    the pending ``ExternalToolCall`` row an invoker-supplied tool's provider writes BEFORE it yields (a cancel in that
+    window never reaches the yield, so the park-keyed cleanup alone would leave it listed as pending)."""
+
+    async def _rows(self, storage, sid: str) -> list[ExternalToolCall]:
+        page = await storage.get_storage(ExternalToolCall).find(
+            Q(ExternalToolCall).where("session_id", sid).build(), OffsetPage(offset=0, length=50),
+        )
+        return list(page.items)
+
+    async def test_a_timer_call_is_cancelled_and_the_turn_ends_waiting_with_the_log_paired(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        sid = seeded_session.id
+        seen = _Observed(monkeypatch, fake_event_bus, sid)
+        llm = _OneRoundLlm([("a", "wait"), ("b", "wait")])
+        manager = _Manager(
+            parking="a", key="timer:", storage=fake_storage_provider, bus=fake_event_bus, sid=sid, interruptible=True,
+        )
+
+        outcome = await _turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, _RealLoopExecutor(llm, manager),
+        )
+
+        assert outcome.success and outcome.drop_lease
+        assert outcome.park is None, "the session parked on a timer although a Stop cancelled the call"
+        assert manager.executed == ["a"] and llm.requests == 1
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status == SessionStatus.WAITING and row.ended_reason is None
+        assert row.interrupt_requested is False and row.parked_status is None
+        records = _records(fake_workspace_io, sid)
+        assert SessionMessageKind.YIELDED not in _kinds(records)
+        assert _kinds(records)[-1] == SessionMessageKind.CANCELLED
+        assert records[-1]["payload"]["reason"] == "operator_interrupt"
+        calls = _call_ids(records)
+        results = _results(records)
+        assert sorted(results) == sorted(calls) and len(calls) == 2, f"the round is not paired: {results}"
+        assert [(results[c]["output"], results[c]["error"]) for c in calls] == [(PARKED_STOP, True), (STOPPED, True)]
+        assert seen.terminal == [{"status": "waiting", "ended_reason": None}]
+        assert "session.parked" not in seen.emitted
+
+    async def test_the_pending_row_of_a_cancelled_external_call_is_cancelled(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+        llm = _OneRoundLlm([("a", "external__lookup")])
+        manager = _ExternalToolManager(
+            parking="a", key="", storage=fake_storage_provider, bus=fake_event_bus, sid=sid, interruptible=True,
+        )
+
+        outcome = await _turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, _RealLoopExecutor(llm, manager),
+        )
+
+        assert outcome.park is None
+        rows = await self._rows(fake_storage_provider, sid)
+        assert [(r.tool_call_id, r.status, r.is_error) for r in rows] == [("a", "cancelled", True)], (
+            f"the cancelled call's row was left behind: {[(r.tool_call_id, r.status) for r in rows]}"
+        )
+        assert rows[0].result == {"cancelled": True, "reason": "stopped by user"} and rows[0].resolved_at is not None
+
+    async def test_the_row_is_already_cancelled_when_the_terminal_event_goes_out(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+        seen_at_the_terminal: list[list[str]] = []
+        publish = fake_event_bus.publish
+
+        async def spy_publish(key: str, payload: dict) -> None:
+            if key == f"session:{sid}:terminal":
+                seen_at_the_terminal.append([r.status for r in await self._rows(fake_storage_provider, sid)])
+            await publish(key, payload)
+
+        fake_event_bus.publish = spy_publish
+        llm = _OneRoundLlm([("a", "external__lookup")])
+        manager = _ExternalToolManager(
+            parking="a", key="", storage=fake_storage_provider, bus=fake_event_bus, sid=sid, interruptible=True,
+        )
+
+        await _turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, _RealLoopExecutor(llm, manager),
+        )
+
+        assert seen_at_the_terminal == [["cancelled"]], f"a pending row was visible at the terminal event: {seen_at_the_terminal}"
+
+    async def test_a_cancelled_call_that_is_not_external_leaves_an_unrelated_pending_row_alone(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        """The cleanup is keyed on an EXTERNAL call having been cancelled, not run for every Stop."""
+        sid = seeded_session.id
+        other = ExternalToolCall(
+            session_id=sid, tool_call_id="zzz", tool_name="external__lookup", created_at=datetime.now(UTC),
+        )
+        await fake_storage_provider.get_storage(ExternalToolCall).create(other)
+        llm = _OneRoundLlm([("a", "wait")])
+        manager = _Manager(
+            parking="a", key="timer:", storage=fake_storage_provider, bus=fake_event_bus, sid=sid, interruptible=True,
+        )
+
+        outcome = await _turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, _RealLoopExecutor(llm, manager),
+        )
+
+        assert outcome.park is None
+        rows = await self._rows(fake_storage_provider, sid)
+        assert [(r.tool_call_id, r.status) for r in rows] == [("zzz", "pending")]
 
 
 class TestAStopPendingWhenABatchWouldParkAsClaims:

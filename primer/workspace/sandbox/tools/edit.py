@@ -19,6 +19,7 @@ class SandboxEdit(WorkspaceTool):
     """String-replace edit dispatched through Sandbox file ops."""
 
     id: ClassVar[str] = "edit"
+    interruptible: ClassVar[bool] = False   # a cancelled await cannot undo a write already sent: it would only drop the real result
     description: ClassVar[str] = (
         "Replace a substring in a file. By default old_string must be "
         "unique; pass replace_all=true to replace every occurrence.\n\n"
