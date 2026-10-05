@@ -525,7 +525,7 @@ class _BaseGraphExecutor(
                 # and feed the hook output back as the tool result -- mirrors
                 # how an agent-node ask_user yield is resumed via its hook.
                 try:
-                    result = _resume_value_yield_toolcall(
+                    result = await _resume_value_yield_toolcall(
                         tool_name=entry.tool_name or "",
                         resume_metadata=entry.resume_metadata or {},
                         tool_call_id=entry.tool_call_id,

@@ -294,7 +294,7 @@ def _is_value_yield_toolcall(entry: "_PendingToolCall") -> bool:
     return has_resume_hook(name)
 
 
-def _resume_value_yield_toolcall(
+async def _resume_value_yield_toolcall(
     *,
     tool_name: str,
     resume_metadata: dict[str, Any],
@@ -332,13 +332,9 @@ def _resume_value_yield_toolcall(
             resolve_provider=resolve_provider,
         ),
     )
-    # The resume hooks in-tree are synchronous; guard against an async hook
-    # to keep this helper usable if one is added later.
-    if asyncio.iscoroutine(hook_result):  # pragma: no cover -- all hooks sync
-        raise RuntimeError(
-            f"resume hook for {tool_name!r} is async; tool_call resume only "
-            "supports synchronous hooks"
-        )
+    # A python toolset's hook is async (it awaits ``ctx.resolve_provider``).
+    if asyncio.iscoroutine(hook_result):
+        hook_result = await hook_result
     return ToolResultPart(
         id=tool_call_id,
         output=hook_result.output,
