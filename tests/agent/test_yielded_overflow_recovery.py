@@ -20,7 +20,7 @@ from primer.agent.loop import run_agent_turn
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
     Done, Error, ExtendedEvent, Message, StreamEvent, TextDelta, TextPart, Tool, ToolResultPart, TurnStreamFailure,
-    TurnStreamOverflow, _LlmCall,
+    TurnStreamOverflow, Usage, _LlmCall,
 )
 from primer.model.except_ import BadRequestError, ContextOverflowUnrecoverable
 from primer.model.model_profile import ModelProfileConfig
@@ -92,6 +92,15 @@ class TestTheLoop:
         assert [c.status for c in calls] == ["error"], "the call did fail, and its trace row says so"
         assert type(failure) is TurnStreamOverflow and failure.error.message == GEMINI
         assert failure.ended_detail_code == "bad_request", "still a TurnStreamFailure to anything that handles those"
+
+    def test_events_that_are_not_content_before_the_error_do_not_stop_it_being_held_back(self) -> None:
+        """"Only a fatal Error" means no assistant CONTENT: a usage event before it was yielded as usual and does not
+        make the stream a content stream (the docs say so)."""
+        events = [Usage(input_tokens=130_000, output_tokens=0, cumulative=False), *_overflow()]
+        seen, failure = asyncio.run(self._run(events, intercept_context_overflow=True))
+        assert [e for e in seen if isinstance(e, Usage)], "the usage event was yielded as usual"
+        assert [e for e in seen if isinstance(e, Error)] == [], "and the Error was still held back"
+        assert type(failure) is TurnStreamOverflow
 
     def test_content_that_was_streamed_before_the_error_is_not_held_back(self) -> None:
         events = [TextDelta(text="partial", index=0), *_overflow()]

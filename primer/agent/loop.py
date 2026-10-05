@@ -370,8 +370,10 @@ async def run_agent_turn(
         overflow (:func:`primer.common.context_overflow.is_context_overflow_error`: Ollama and Gemini
         yield the provider's 400 instead of raising it) is not yielded: the ``llm_call`` telemetry
         still is (the call did fail), then :class:`~primer.model.chat.TurnStreamOverflow` is raised.
-        For a caller that recovers from an overflow: the yielded ``Error`` is a terminal record, and
-        a turn that recovers must not carry one before its real end. A stream that streamed content
+        "Only" means no assistant CONTENT: events that are not content (``Usage``, say) may come
+        before the ``Error`` and have been yielded as usual. For a caller that recovers from an
+        overflow: the yielded ``Error`` is a terminal record, and a turn that recovers must not carry
+        one before its real end. A stream that streamed content
         before the error is not intercepted (that content is already out): it fails as a
         :class:`~primer.model.chat.TurnStreamFailure`, ``Error`` yielded, as before. ``False`` (the
         default) changes nothing.
@@ -382,6 +384,9 @@ async def run_agent_turn(
         Propagated from a tool dispatch -- callers handle this
         (chat: terminal stream Error; workspace: WAITING transition;
         graph: per-node FAILED).
+    primer.model.chat.TurnStreamOverflow
+        With ``intercept_context_overflow``: the stream was only a fatal context-overflow ``Error``
+        (a :class:`~primer.model.chat.TurnStreamFailure` subclass, so a handler of those catches it).
     primer.model.chat.TurnStreamFailure
         The LLM stream ended in a terminal :class:`Error` for this call
         (e.g. a connect failure), whether or not it produced any
