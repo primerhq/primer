@@ -854,6 +854,55 @@ class TestAReplayThatParks:
 
 
 @POSIX
+class TestACompactionThatCanChangeNothing:
+    """``unreducible``: nothing could be summarised (here the fixed part fills the window, or there is nothing
+    before the question). The replay would send the prompt that was just rejected, so the turn ends by name; the
+    rounds it completed are not lost: no marker was written, so they stay in the record for the chokepoint."""
+
+    TINY = ResolvedModel(
+        profile_id="golden-profile", provider_id="golden-provider", model_name="golden-model",
+        context_length=4_000, config=ModelProfileConfig(),
+    )
+
+    async def test_with_a_completed_round_it_fails_by_name_without_a_replay_and_the_round_is_recorded_once(
+        self, tmp_path,
+    ) -> None:
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await _seed(workspace, session, n=2)
+            llm = FnLLM(_reactive())                                  # round a, then the next call overflows
+            with pytest.raises(ContextOverflowUnrecoverable) as failed:
+                await run_turn(session, llm, llm_model=self.TINY)
+            error = failed.value
+            assert "fixed_over_budget" in str(error) and isinstance(error.__cause__, BadRequestError)
+            assert (error.forced_compaction, error.replay_attempted, error.persisted_rounds) == (False, False, 1)
+            assert [c for c in llm.calls if _is_summariser(c["kwargs"])] == [], "nothing was summarised"
+            assert len(llm.calls) == 2, "the tool call and the rejected call: no replay of the rejected prompt"
+            assert _counter(workspace) == ["a"]
+            assert _tool_ids(await _reload(session)) == (["call_a"], ["call_a"]), "recorded once, by the chokepoint"
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+    async def test_with_nothing_run_and_an_estimate_under_the_budget_it_still_does_not_replay_an_identical_prompt(
+        self, tmp_path,
+    ) -> None:
+        """The question and nothing before it: empty_head. The provider rejected a prompt our estimate puts far under
+        the budget (an image or a document is a flat guess), and the replay would be that same prompt."""
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await append_messages(workspace, session, user_message(QUESTION))
+            llm = FnLLM(lambda n, messages, kwargs: BadRequestError(OVERFLOW))
+            with pytest.raises(ContextOverflowUnrecoverable) as failed:
+                await run_turn(session, llm)
+            assert len(llm.calls) == 1, "no second call"
+            assert "empty_head" in str(failed.value) and "undercounts" in str(failed.value)
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+
+@POSIX
 class TestWhatTheTypedFailureSaysAboutTheRounds:
     """``persisted_rounds`` is the rounds in the history as messages, ``summarised_rounds`` those only in the
     compaction's summary: both are final once the chokepoint has written (or failed to write)."""
