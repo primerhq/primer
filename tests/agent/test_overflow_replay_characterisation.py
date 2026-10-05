@@ -1585,6 +1585,21 @@ class TestAHardCancelDuringTheMarkerCommit:
         assert markers == []
         assert _tool_ids(shown) == ([], []), "the rounds were written by a worker that no longer owned the session"
 
+    @pytest.mark.parametrize("preempted_first", [True, False], ids=["lost_lease_first", "lost_lease_second"])
+    async def test_the_commit_a_lost_lease_cancel_abandons_is_still_consumed_and_logged(
+        self, tmp_path, monkeypatch, caplog, preempted_first,
+    ) -> None:
+        """The turn does not wait for the commit, but it still takes it over: a commit that fails afterwards is
+        retrieved and logged once (a WARNING, not asyncio's "exception was never retrieved")."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="primer.agent.base"):
+            await self._cancelled_then_the_lease_is_lost(
+                tmp_path, monkeypatch, preempted_first=preempted_first, commit_fails_after=0.4,
+            )
+        failed = [r for r in caplog.records if "abandoned compaction marker commit failed" in r.getMessage()]
+        assert len(failed) == 1 and failed[0].levelno == logging.WARNING, [r.getMessage() for r in caplog.records]
+
     def test_the_marker_commit_grace_is_the_terminal_exit_grace(self) -> None:
         """Both are the bound on how long a cancelled turn may keep a drain waiting (they do not add up: a hard cancel
         during the stream skips the sheltered exit), and the pod budget in worker-system.md is built on that figure.
@@ -1653,7 +1668,7 @@ class TestAHardCancelDuringTheMarkerCommit:
 
                 executor._replace_compacted_head = fail_late  # noqa: SLF001
 
-            with caplog.at_level(logging.ERROR, logger="primer.agent.base"):
+            with caplog.at_level(logging.WARNING, logger="primer.agent.base"):
                 task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=late_failure))
                 await asyncio.wait_for(entered.wait(), timeout=30)
                 task.cancel()
