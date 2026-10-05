@@ -47,6 +47,19 @@ Four rules make that safe:
   each carry the epoch they began under; the row rejects a write from an
   epoch it has moved past, so a turn finishing under a replaced binding
   cannot clobber the switch.
+- **An ENDED row keeps the reason it was ended with.** A turn writes its
+  outcome through `_transition_session_status`, and a session can be ended
+  by something else while the turn runs: a force-delete (ENDED/`force_deleted`),
+  the pool's preempt convergence (ENDED/`cancelled`), the reconciler
+  (ENDED/`workspace_lost`). The first terminal reason wins: the helper leaves a
+  row that is already ENDED alone (no new status or reason, no `ended_detail`,
+  no mirror onto the on-disk slot) and logs it at INFO. Before, only an
+  IDENTICAL write was skipped, so a clean completion landing a moment later
+  wrote ENDED/`completed` over ENDED/`force_deleted`, or a `WAITING` over an
+  ENDED row (resurrecting it with a stale reason). A turn never reopens a
+  session; that is `wake_session`'s job. The turn's later steps (the
+  `session.replied` event, the terminal event) still describe the outcome the
+  turn computed, not the row's: only the row and the slot are protected.
 - **One run per session.** A steer arriving while a turn is open becomes a
   seq-less `PendingSessionMessage`, realized at the checkpoint. Allocating
   a seq at receipt is what collided with in-flight token seqs on the older
