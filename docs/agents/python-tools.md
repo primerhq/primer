@@ -121,7 +121,10 @@ travel in the metadata:
 
 `@primer_tool(timeout_seconds=...)` per tool, defaulting to the toolset's
 setting (30s) and capped at 300s. The process is killed at the limit, so an
-infinite loop returns a timeout error rather than wedging a worker.
+infinite loop returns a timeout error rather than wedging a worker. It is
+also killed if the call is cancelled, and what it started goes with it
+(the whole process group), except a process it deliberately detaches into
+its own session.
 
 ## Gotchas
 

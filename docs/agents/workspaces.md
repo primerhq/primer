@@ -290,6 +290,14 @@ contention.
   paths instead of the whole working directory, for more parallelism
   with other writers in the same directory.
 
+On a local workspace, `exec` runs the command in its own process
+group. When it times out (`timeout_ms`) or is cancelled, everything
+the command started (children, pipelines, background jobs) is killed
+with it, and the write lock is released only after that. A process the
+command deliberately detached (for example with `setsid`) is not
+killed. Nothing is killed when the command finishes on its own, so a
+job it left running in the background keeps running.
+
 This is best-effort scoping, not a hard guarantee across arbitrary
 targets: a `write` to `a/f.txt` and an `exec` with `workdir="a"`
 serialize because they share the same directory scope, but a `write`
