@@ -246,22 +246,40 @@ class SandboxStateRepo:
         # Always mutated under the caller's messages_lock (the accessors below
         # take no lock of their own -- the non-reentrant messages_lock must not
         # be re-taken).
-        self._compaction_flags: dict[str, bool] = {}
+        #
+        # The flag is OWNED: ``begin_compaction`` returns a token and records it as the window that is open for the session;
+        # ``end_compaction(token)`` closes only that window. A close whose window is no longer the open one (a cancelled
+        # turn's deferred close, running after a later turn on the same session opened its own window) is a no-op, so it can
+        # neither clear the later turn's flag nor drain the steers deferred inside it.
+        self._compaction_owner: dict[str, int] = {}
+        self._compaction_tokens = 0
         self._pending_steers: dict[str, list["Message"]] = {}
 
     # ---- steer-deferral state (guarded by the caller's messages_lock) -----
 
-    def begin_compaction(self, session_id: str) -> None:
-        """Mark ``session_id`` as compacting. Caller MUST hold messages_lock."""
-        self._compaction_flags[session_id] = True
+    def begin_compaction(self, session_id: str) -> int:
+        """Mark ``session_id`` as compacting and return the token of THIS window. Caller MUST hold messages_lock."""
+        self._compaction_tokens += 1
+        self._compaction_owner[session_id] = self._compaction_tokens
+        return self._compaction_tokens
 
-    def end_compaction(self, session_id: str) -> None:
-        """Clear the compacting flag. Caller MUST hold messages_lock."""
-        self._compaction_flags[session_id] = False
+    def end_compaction(self, session_id: str, token: int) -> bool:
+        """Close the window ``token`` opened. Caller MUST hold messages_lock.
+
+        Returns whether the caller may go on to drain the deferred steers: ``True`` when ``token`` is the open window (the
+        flag is cleared) or when no window is open (nothing to clear; a close whose steers failed to persist retries them).
+        ``False`` when ANOTHER window is open: ``token`` is stale, the flag stays set, and the steers belong to the window
+        that is still open.
+        """
+        owner = self._compaction_owner.get(session_id)
+        if owner is not None and owner != token:
+            return False
+        self._compaction_owner.pop(session_id, None)
+        return True
 
     def is_compacting(self, session_id: str) -> bool:
         """Whether ``session_id`` is mid-compaction. Caller holds messages_lock."""
-        return self._compaction_flags.get(session_id, False)
+        return session_id in self._compaction_owner
 
     def add_pending_steer(self, session_id: str, message: "Message") -> None:
         """Record a steer deferred during compaction. Caller holds messages_lock."""
