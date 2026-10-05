@@ -1688,3 +1688,125 @@ async def test_prune_statement_shape_without_a_database():
     assert "EXISTS" not in query
     assert "e.data->>'state' IN ('done', 'failed')" in query
     assert "RETURNING" in query
+
+
+# ---------------------------------------------------------------------------
+# Tests - the session adapter's field-scoped release inside the REAL release transaction
+# ---------------------------------------------------------------------------
+#
+# SessionClaimAdapter.on_release writes only the fields it owns with one patch_if, fenced on the turn_no it read,
+# inside PostgresClaimEngine.release's transaction (the patch nests as a savepoint). These run it against a real
+# Postgres-backed WorkspaceSession storage and commit the competing write on ANOTHER pool connection, between the
+# adapter's read and its write, which is the window a whole-document update used to lose.
+
+
+async def _claimed_session(pg_storage, sid: str):
+    """A WorkspaceSession row in real storage, the engine over a SessionClaimAdapter on it, and a claimed lease."""
+    from datetime import UTC, datetime
+
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+
+    sessions = pg_storage.get_storage(WorkspaceSession)
+    try:
+        await sessions.delete(sid)          # a leftover from an interrupted run
+    except Exception:  # noqa: BLE001 - absent is the normal case
+        pass
+    await sessions.create(WorkspaceSession(
+        id=sid, workspace_id="ws-pg-release", binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.WAITING, created_at=datetime.now(UTC), turn_no=4, completed_turn_no=4,
+        last_seq=10, next_unprocessed_seq=11, turn_status="idle", last_worker_id="wk",
+    ))
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage,
+        adapters={ClaimKind.SESSION: SessionClaimAdapter(session_storage=sessions)},
+    )
+    await engine.upsert(ClaimKind.SESSION, sid)
+    [lease] = await engine.claim_due("wk-release", max_count=1, kinds=[ClaimKind.SESSION])
+    assert lease.entity_id == sid
+    return sessions, engine, lease
+
+
+def _between_read_and_write(sessions, write):
+    """Run ``write(current_row)`` on another connection right after each read the release makes inside its
+    transaction (a read with ``conn``), before the release writes. Returns the list of rows it wrote."""
+    real_get = sessions.get
+    written = []
+
+    async def get(id, *, conn=None):
+        row = await real_get(id, conn=conn)
+        if conn is not None and row is not None:
+            current = await real_get(id)                    # committed state, on a pool connection of its own
+            written.append(await sessions.update(current.model_copy(update=write(current))))
+        return row
+
+    sessions.get = get
+    return written
+
+
+async def _lease_claimed_by(pg_storage, sid: str):
+    async with pg_storage.pool.acquire() as conn:
+        return await conn.fetchval(
+            f"SELECT claimed_by FROM {pg_storage.leases_table} WHERE kind = 'session' AND entity_id = $1", sid,
+        )
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_session_release_keeps_a_wake_committed_between_its_read_and_its_write(pg_storage):
+    """A steer (wake_session: turn_status claimable, last_seq + 1, RUNNING) commits on another connection after the
+    release read the row: the release's patch writes only its own fields, so the wake survives, turn_no is bumped
+    exactly once from the value read, and the lease row is gone with the commit."""
+    from primer.model.workspace_session import SessionStatus
+
+    sid = "pg-release-wake"
+    sessions, engine, lease = await _claimed_session(pg_storage, sid)
+    fired = []
+
+    def wake(row):
+        if fired:
+            return {}
+        fired.append(True)
+        return {"turn_status": "claimable", "last_seq": row.last_seq + 1, "status": SessionStatus.RUNNING}
+
+    _between_read_and_write(sessions, wake)
+    try:
+        await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+        assert fired, "the competing write never ran: the release made no read inside its transaction"
+        row = await sessions.get(sid)
+        assert row.turn_status == "claimable", "the release put back the turn_status it read"
+        assert row.last_seq == 11, "the release put back the last_seq it read (the next writer would reuse seq 11)"
+        assert row.status == SessionStatus.RUNNING
+        assert row.turn_no == 5, "turn_no must be bumped exactly once"
+        assert row.last_turn_at is not None
+        assert row.last_worker_id is None
+        assert await _lease_claimed_by(pg_storage, sid) is None
+        assert not await engine.has_lease(ClaimKind.SESSION, sid), "the lease row must be gone"
+    finally:
+        await sessions.delete(sid)
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_session_release_that_loses_its_fence_twice_rolls_the_lease_back(pg_storage):
+    """turn_no moves (on another connection) before every write the release makes: the fenced bump is refused, the
+    re-read and retry is refused too, and the ConflictError rolls the WHOLE release transaction back: the lease row is
+    still claimed by the worker and the session row carries nothing the release wrote."""
+    from primer.model.except_ import ConflictError
+
+    sid = "pg-release-conflict"
+    sessions, engine, lease = await _claimed_session(pg_storage, sid)
+    written = _between_read_and_write(sessions, lambda row: {"turn_no": row.turn_no + 1})
+    try:
+        with pytest.raises(ConflictError):
+            await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+        assert len(written) == 2, f"expected one competing write per read (read, retry): {len(written)}"
+        assert await _lease_claimed_by(pg_storage, sid) == "wk-release", "the lease DELETE was not rolled back"
+        row = await sessions.get(sid)
+        assert row.turn_no == 6, "only the competing writes moved turn_no"
+        assert row.last_worker_id == "wk", "the release's own write was not rolled back"
+        assert row.last_turn_at is None
+        assert row.turn_status == "idle" and row.last_seq == 10
+    finally:
+        await sessions.delete(sid)
