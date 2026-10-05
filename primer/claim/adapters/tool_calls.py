@@ -33,6 +33,7 @@ from primer.int.claim import ClaimAdapter, ClaimKind, PostReleaseWake, ReleaseOu
 from primer.int.storage import Storage
 from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.storage import PatchSpecError
 
 logger = logging.getLogger(__name__)
 
@@ -123,10 +124,10 @@ class ToolCallClaimAdapter(ClaimAdapter):
             raise RuntimeError(
                 "task_storage is None - cannot run on_release without a storage backend"
             )
-        # A disallowed KEY, or a VALUE the model refuses, is a bug in the HANDLER, and raising here would roll back
-        # the release and leave the lease claimed until it expires, for the same handler to be claimed again and
-        # repeat it for ever. So the task is failed terminally instead (``_fail_rejected``): the failure is logged
-        # at ERROR, the session is woken as for any terminal task, and the model is told the call failed.
+        # A disallowed KEY, a VALUE the model refuses or one no backend can store is a bug in the HANDLER, and raising
+        # here would roll back the release and leave the lease claimed until it expires, for the same handler to be
+        # claimed again and repeat it for ever. So the task is failed terminally instead (``_fail_rejected``): the
+        # failure is logged at ERROR, the session is woken as for any terminal task, and the model is told the call failed.
         branch = "gated" if outcome.park is not None else "terminal" if outcome.drop_lease else "retry"
         try:
             update = self._entity_update(outcome, branch)
@@ -308,6 +309,11 @@ class ToolCallClaimAdapter(ClaimAdapter):
         unreadable (a pydantic ``ValidationError``: ``attempts=-1``, a ``result_state`` that is not an object) AND the
         handler supplied values, the handler's values are the cause and the release is rejected as invalid; with none
         supplied the cause is a corrupt stored row, which is not the handler's doing and propagates as before.
+
+        A ``PatchSpecError`` is about the values this write supplies, never the stored row, and every value here that
+        is not a constant of this adapter came from the handler's ``ReleaseOutcome`` (``entity_update``, ``last_error``,
+        the park): a value no backend can store (a lone surrogate, a non-finite number) is refused before any I/O, so
+        the release is rejected as invalid whether or not ``handler_values`` is empty.
         """
         try:
             updated = await self._storage.patch_if(
@@ -316,6 +322,11 @@ class ToolCallClaimAdapter(ClaimAdapter):
         except NotFoundError:
             logger.warning("tool-call release of %s: the row is gone, nothing written", entity_id)
             return None
+        except PatchSpecError as exc:
+            raise _InvalidEntityUpdate(
+                "it gave a value that cannot be stored as JSON (a non-finite number, or text that is not valid Unicode)",
+                detail=str(exc)[:300],
+            ) from exc
         except ValidationError as exc:
             if not handler_values:
                 raise
