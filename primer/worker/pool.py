@@ -148,6 +148,9 @@ class WorkerPool:
         self._claim_returns_failed_on_drain_total: int = 0
         # Claim or bus loops the drain abandoned because they did not stop within the grace (see _await_stopped_loop).
         self._loops_abandoned_on_drain_total: int = 0
+        # Strong references to those abandoned loops until they end: the drain drops its own and the event loop
+        # holds tasks only weakly, so one pending on something only it references would be garbage-collected.
+        self._abandoned_loops: set[asyncio.Task] = set()
         # A release that has not finished in this long is abandoned (see ``_release_lease``). A slow release does NOT
         # leave the worker's leases heartbeated meanwhile: on Postgres the heartbeat is ONE ``UPDATE`` over every lease
         # this worker holds, the key being released is among them (it stays in ``_in_flight`` until the release ends),
@@ -383,17 +386,20 @@ class WorkerPool:
         """Wait up to ``grace`` for a loop task that was cancelled (or has stopped) to finish.
 
         One that does not, because it is inside a call that ignores cancellation, is abandoned: a WARNING names it,
-        ``primer_worker_loops_abandoned_on_drain_total`` counts it, and the drain carries on without it.
+        ``primer_worker_loops_abandoned_on_drain_total`` counts it, ``_abandoned_loops`` keeps it alive until it ends,
+        and the drain carries on without it.
         """
         await asyncio.wait({task}, timeout=grace)
         if not task.done():
             self._loops_abandoned_on_drain_total += 1
+            self._abandoned_loops.add(task)
             logger.warning(
                 "drain: %s did not stop within %.1fs of being cancelled; abandoning it and carrying on with the drain",
                 task.get_name(), grace,
             )
         # Retrieve its outcome (now or, for an abandoned loop, whenever it ends) and log an exception it ended with.
         def _retrieve(t: asyncio.Task) -> None:
+            self._abandoned_loops.discard(t)
             if not t.cancelled() and t.exception() is not None:
                 logger.warning("drain: %s ended with an exception", t.get_name(), exc_info=t.exception())
 
