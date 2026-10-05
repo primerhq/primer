@@ -553,3 +553,45 @@ async def test_patch_if_failing_validation_inside_a_sqlite_transaction_leaves_no
         assert (fresh.count, fresh.token, fresh.flag) == (1, "before", True)
     finally:
         await provider.aclose()
+
+
+#: The scenarios whose calls ``patch_if`` refuses with a ``PatchSpecError`` (or a ``ValidationError``), picked from the
+#: shared tables as they are. A refusal raised AFTER the UPDATE (the model's canonical dump: a non-finite float, a leaf
+#: the model drops; an unreadable document) goes through the SQLite savepoint only when the call runs inside the caller's
+#: own transaction; standalone it is the write guard's rollback.
+_REFUSAL_SCENARIOS = [
+    _ps.malformed_specs_are_rejected_with_value_error,
+    _ps.an_empty_or_malformed_where_is_rejected,
+    _ps.a_patch_that_leaves_the_row_unreadable_is_rejected_and_rolled_back,
+    _ps.a_value_the_model_coerces_to_a_non_finite_float_is_refused_and_the_row_is_unchanged,
+]
+_RAW_REFUSAL_SCENARIOS = [
+    _ps.patching_a_field_the_model_does_not_have_is_rejected,
+    _ps.a_set_paths_leaf_under_a_typed_sub_model_is_canonicalised_and_a_typo_is_refused,
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario, raw",
+    [(s, False) for s in _REFUSAL_SCENARIOS] + [(s, True) for s in _RAW_REFUSAL_SCENARIOS],
+    ids=lambda v: v.__name__ if callable(v) else ("raw" if v else "store"),
+)
+async def test_patch_if_refusals_inside_a_sqlite_transaction_raise_and_leave_no_trace(
+    tmp_path: Path, scenario: Any, raw: bool,
+) -> None:
+    """The refusal scenarios, each run inside ``SqliteStorageProvider.transaction()``, the savepoint path: every refused
+    call still raises (as itself), the row reads unchanged within the transaction (the scenario's own checks), and the
+    transaction stays usable and commits its other writes. SQLite-only, on its own provider (see above)."""
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "refusals.sqlite"))
+    await provider.initialize()
+    try:
+        store = provider.get_storage(_ps.PatchDoc)
+        async with provider.transaction():
+            await scenario(_ps.ProviderEnv(provider) if raw else store)
+            await store.create(_ps.PatchDoc(id="after-the-refusals"))
+        assert await store.get("after-the-refusals") is not None, "the transaction did not commit after the refusals"
+    finally:
+        await provider.aclose()
