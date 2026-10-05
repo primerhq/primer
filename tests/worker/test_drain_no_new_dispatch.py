@@ -488,9 +488,11 @@ async def test_an_abandoned_loop_that_later_fails_has_its_exception_logged(caplo
         clean = asyncio.create_task(stops(), name="engine-bus-clean")
         await asyncio.sleep(0)
         with caplog.at_level(logging.WARNING, logger="primer.worker.pool"):
-            for task in (stuck, clean):
-                task.cancel()
-                await pool._await_stopped_loop(task, 0.2)
+            # Each wait ends within its 0.2 s grace; this bound makes an unbounded one FAIL instead of hanging the run.
+            async with asyncio.timeout(5.0):
+                for task in (stuck, clean):
+                    task.cancel()
+                    await pool._await_stopped_loop(task, 0.2)
             assert pool.metrics_snapshot()["primer_worker_loops_abandoned_on_drain_total"] == 1
             let_go.set()
             await asyncio.wait({stuck}, timeout=2.0)
