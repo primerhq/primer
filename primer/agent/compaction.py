@@ -203,11 +203,11 @@ class CompactedTurn(BaseModel):
             "part plus the protected input, the current turn's unanswered part and the "
             "newest unit, fills it). ``skipped`` (``cannot_reach_trigger``): even the "
             "smallest result, fixed + protected + the summary allowance, is at or over the "
-            "trigger and the prompt still fits the window, so compacting would only repeat "
-            "every turn; it is allowed again once the prompt no longer fits. "
-            "``skipped`` (``recently_compacted``): the same, for a prompt that does not fit the "
-            "budget but has not grown by a summary allowance since the last compaction left it "
-            "(summarising the summary would gain nothing). "
+            "trigger and the prompt (after the tier-1 prune) still fits the budget, so compacting "
+            "would only repeat every turn; it is allowed again once the prompt no longer fits the "
+            "budget. ``skipped`` (``recently_compacted``): the same, for a prompt that does not fit "
+            "the budget but fits the window and has not grown by a summary allowance since the last "
+            "compaction left it (summarising the summary would gain nothing). "
             "``over_trigger``: summarised (a marker IS written) and still over. "
             "``None`` when compaction did what it was asked."
         ),
@@ -218,8 +218,8 @@ class CompactedTurn(BaseModel):
             "The labelled outcome counted by ``compaction_outcomes_total``: "
             "``pruned`` (tier 1 sufficed), ``summarised``, ``unreducible`` (no "
             "marker; a failure), ``skipped`` (no marker; deliberately not compacted: the "
-            "trigger cannot be reached and the prompt fits) or ``insufficient`` "
-            "(summarised, still over the trigger)."
+            "trigger cannot be reached, and the prompt fits the budget or has not grown since "
+            "the last compaction left it) or ``insufficient`` (summarised, still over the trigger)."
         ),
     )
     trigger_tokens: int | None = Field(
@@ -505,15 +505,20 @@ class CompactionStrategy:
             # The best case (fixed + protected + a summary of the full allowance) is at or over the
             # trigger, so compacting cannot bring the prompt under it and would only run again every
             # turn. It is still worth doing for a prompt that does not fit the budget, once.
-            if before < budget:
+            #
+            # Every size here is ``history_tokens``: the prompt AFTER the tier-1 prune, which is what is
+            # sent (a skipped result carries the pruned history) and what a marker's ``tokens_after``
+            # measures. ``before`` is the size before the prune, a prompt that is never sent: a turn that
+            # reads a big file is far over the budget before the prune and under it after.
+            if history_tokens < budget:
                 return unreducible(
                     "cannot_reach_trigger", outcome="skipped",
                     detail="the prompt fits the window and even the smallest result would still be over the trigger",
                 )
             if (
                 last_compaction_tokens is not None
-                and before < last_compaction_tokens + self.summary_max_tokens
-                and before < model.context_length
+                and history_tokens < last_compaction_tokens + self.summary_max_tokens
+                and history_tokens < model.context_length
             ):
                 # The newest compaction already left the prompt at about this size (a summary and the
                 # protected input over the budget), and it has not grown by a summary allowance since:
