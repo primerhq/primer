@@ -144,10 +144,15 @@ class WorkerPool:
         self._unstarted_releases: set[asyncio.Task] = set()
         self._claims_returned_on_drain_total: int = 0
         self._claim_returns_failed_on_drain_total: int = 0
-        # A release that has not finished in this long is abandoned (see ``_release_lease``): one lease TTL after which a
-        # hung release's lease has expired anyway, and a second for a release that is slow but alive (its lease keeps
-        # being heartbeated until the key leaves ``_in_flight``).
-        self._release_timeout_seconds: float = 2.0 * float(config.lease_ttl_seconds)
+        # A release that has not finished in this long is abandoned (see ``_release_lease``). A slow release does NOT
+        # leave the worker's leases heartbeated meanwhile: on Postgres the heartbeat is ONE ``UPDATE`` over every lease
+        # this worker holds, the key being released is among them (it stays in ``_in_flight`` until the release ends),
+        # and that statement waits on the row lock the release transaction holds, so the WHOLE heartbeat stalls. Each
+        # other lease was last refreshed up to one heartbeat interval before the release began, so it can lapse
+        # ``lease_ttl - heartbeat_interval`` into the release: the bound is exactly that. ``WorkerConfig`` enforces
+        # ``lease_ttl >= 2 * heartbeat_interval``, so it is at least half a TTL: 3 s at the 5 s minimum TTL (heartbeat
+        # 2 s), 20 s at the defaults.
+        self._release_timeout_seconds: float = float(config.lease_ttl_seconds - config.heartbeat_interval_seconds)
         self._release_timeouts_total: int = 0
         # How long drain waits for the claim loop to finish the iteration it is in (and for hand-backs).
         self._claim_stop_grace_seconds: float = 5.0
@@ -1080,12 +1085,15 @@ class WorkerPool:
         wake) must not be cancelled either. If the release itself fails the lease is still held and
         still heartbeated until the wrapper discards the key, which follows immediately.
 
-        The release is BOUNDED (``_release_timeout_seconds``). Once the scope is marked, a lost-lease verdict can no
-        longer push a release that hangs (a stuck connection after the lease was genuinely lost), so without a bound
-        only the drain timeout would end it. On timeout the release is cancelled (its transaction rolls back), the
-        failure is counted and logged, and the ``TimeoutError`` propagates: the caller treats it like any failed
-        release. The key then leaves ``_in_flight``, nothing heartbeats the lease, it expires after one TTL and a
-        peer re-claims it (slower, not lost: the same outcome as a failed drain hand-back).
+        The release is BOUNDED (``_release_timeout_seconds``, the lease TTL minus one heartbeat interval). Once the
+        scope is marked, a lost-lease verdict can no longer push a release that hangs (a stuck connection after the
+        lease was genuinely lost), so without a bound only the drain timeout would end it. The bound is no longer than
+        that because a slow release is not harmless to the worker's OTHER leases: on Postgres the heartbeat's single
+        ``UPDATE`` waits on this release's row lock, so none of them is refreshed until the release ends, and each can
+        lapse one TTL after its last refresh (see ``__init__``). On timeout the release is cancelled (its transaction
+        rolls back), the failure is counted and logged, and the ``TimeoutError`` propagates: the caller treats it like
+        any failed release. The key then leaves ``_in_flight``, nothing heartbeats the lease, it expires after one TTL
+        and a peer re-claims it (slower, not lost: the same outcome as a failed drain hand-back).
         """
         scope = self._active_scopes.get((lease.kind, lease.entity_id))
         if scope is not None:
