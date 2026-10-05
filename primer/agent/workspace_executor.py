@@ -125,6 +125,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # and the newest assistant message this invoke persisted, for the end-of-turn question check
         # (no third read of the whole history to find it).
         self._window_last_compaction: "tuple[int | None, tuple[str, str] | None] | None" = None
+        # The token of the compaction window this executor opened last (see ``LocalStateRepo.begin_compaction``): the close of
+        # that window passes it back, so a close that outlives its turn cannot clear a later turn's window.
+        self._window_token: int = 0
         self._persisted_assistant: Message | None = None
         # The turn's event-log writer, bound by the dispatch layer when it has one (see
         # :meth:`bind_event_log`); ``None`` for an executor driven on its own.
@@ -358,7 +361,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         Returns the marker-aware history snapshot the base loop compacts.
         """
         async with self._session.messages_lock:
-            self._session._state.begin_compaction(self._session.session_id)
+            self._window_token = self._session._state.begin_compaction(self._session.session_id)
             text = await self._read_messages_jsonl_text()
             if not text:
                 self._window_last_compaction = (None, None)
@@ -388,7 +391,14 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         turn's own exception (this runs in ``invoke``'s ``finally``).
         """
         async with self._session.messages_lock:
-            self._session._state.end_compaction(self._session.session_id)
+            if not self._session._state.end_compaction(self._session.session_id, self._window_token):
+                # Not this window's to close: a later turn on the session has opened its own (this close was chained to a
+                # commit that outlasted its turn). Its flag stays set and the steers deferred so far belong to ITS close.
+                logger.info(
+                    "session %s: a stale compaction-window close is a no-op (a later window is open)",
+                    self._session.session_id,
+                )
+                return []
             pending = self._session._state.peek_pending_steers(
                 self._session.session_id
             )
