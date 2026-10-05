@@ -278,9 +278,10 @@ class PostgresClaimEngine(ClaimEngine):
 
         The entity table is read under the statement's own snapshot: an entity reset from finished to
         queued by a concurrent writer inside that window loses its lease row. Nothing restores it today
-        (the planned reconciler rule R2 re-arms a QUEUED task with no lease row and is not built), but
-        no writer resets a finished task to queued either: the adapter's retry branch only requeues a
-        live one.
+        (a planned reconciler rule that re-arms a QUEUED task with no lease row is not built), but no
+        production writer resets a finished task to queued either: the adapter's retry branch only
+        requeues a live one, and ``durably_mark_tool_call_task_resumable``, which can flip a FAILED row
+        from a stale GATED snapshot, has no production caller yet.
         """
         adapter = self._adapters.get(kind)
         dead = adapter.dead_lease_sql() if adapter is not None else None

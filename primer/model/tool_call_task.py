@@ -161,7 +161,8 @@ class ToolCallTask(Identifiable):
     # own scheduling lifecycle completed successfully (it always does,
     # once terminal; "failed" describes the tool call, not the task
     # bookkeeping). The durable TOOL_RESULT record is the actual error
-    # detail; this is a cheap, queryable summary only.
+    # detail; this is a cheap, queryable summary. It is also what the model is shown for a FAILED task that has no
+    # result (a poisoned task, or a handler's invalid release, which names the keys it got wrong).
     last_error: str | None = None
 
     # The tool-execution result (primer.model.chat.ToolResultPart's own
@@ -204,7 +205,7 @@ class ToolCallTask(Identifiable):
     # counter). CONTRACT for the decisions slice, not built: a REST/channel decision carries the
     # value the resolver returned and flips the gate only while it still matches, so a decision
     # for an earlier gate of the same call cannot resume a later one. Today the gated -> queued
-    # flip (``durably_mark_tool_call_task_resumable``) compares nothing.
+    # flip (``durably_mark_tool_call_task_resumable``) compares only ``state != done``.
     gate_seq: int = Field(0, ge=0)
 
     # CONTRACT, not built (nothing stamps it today): the resume coordinator stamps it when it
