@@ -615,6 +615,34 @@ class TestTheExecutor:
         assert len(notes(turn("skipped", "recently_compacted"), noted=verdict)) == 1, "another reason: a new run"
         assert len(notes(turn("unreducible", "cannot_reach_trigger"), noted=verdict)) == 1, "another outcome: a new run"
 
+    def test_a_turn_with_a_tool_round_that_ends_on_a_question_waits_for_the_newest_assistant_message(self) -> None:
+        """The turn persisted two assistant messages (the tool call, then the question). The end-of-turn check must look
+        at the NEWEST: the first has no text and would read as "no question"."""
+        from primer.model.chat import Done, ToolCallEnd, ToolCallStart
+        from primer.model.workspace_session import SessionStatus
+
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                await g.append_messages(workspace, session, g.user_message("clean it up"))
+                llm.extend([
+                    g.Events([
+                        ToolCallStart(id="c1", name="workspace__exec", index=0),
+                        ToolCallEnd(id="c1", arguments={"command": "true", "description": "noop"}, index=0),
+                        Done(stop_reason="tool_use", raw_reason="tool_use"),
+                    ]),
+                    g.Events(g.text_events("Should I delete the old branch too?")),
+                ])
+                await g.run_turn(session, llm)
+                return await session.status()
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        assert _run(scenario) == SessionStatus.WAITING
+
     def test_the_tool_catalogue_is_fetched_once_per_invoke(self) -> None:
         """The compaction needs it for the fixed part; the loop is handed the same list instead of fetching again."""
         class Counting:
