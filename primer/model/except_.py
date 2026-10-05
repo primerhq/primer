@@ -70,11 +70,13 @@ class ContextOverflowUnrecoverable(ConfigError):
         forced_compaction: bool = False,
         replay_attempted: bool = False,
         persisted_rounds: int = 0,
+        summarised_rounds: int = 0,
     ) -> None:
         super().__init__(message, code=self.CODE, cause=cause)
         self.forced_compaction = forced_compaction
         self.replay_attempted = replay_attempted
         self.persisted_rounds = persisted_rounds
+        self.summarised_rounds = summarised_rounds
 
     @property
     def ended_detail_code(self) -> str:
@@ -84,13 +86,15 @@ class ContextOverflowUnrecoverable(ConfigError):
     @property
     def problem_extensions(self) -> dict[str, object]:
         """What the ERROR record and the problem details say about how far recovery got:
-        whether a forced compaction ran, whether the turn was replayed after it, and how many
-        completed tool rounds of this turn are durable in the history (so the next turn does
-        not run them again)."""
+        whether a forced compaction ran, whether the turn was replayed after it, how many
+        completed tool rounds of this turn are in the history as messages (``persisted_rounds``) and
+        how many only as part of the compaction's summary (``summarised_rounds``): either way the
+        next turn does not run them again."""
         return {
             "forced_compaction": self.forced_compaction,
             "replay_attempted": self.replay_attempted,
             "persisted_rounds": self.persisted_rounds,
+            "summarised_rounds": self.summarised_rounds,
         }
 
 
