@@ -27,6 +27,7 @@ that remain on / are mixed into ``_BaseGraphExecutor``
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from typing import Any
 
@@ -579,7 +580,9 @@ class _NodeDispatchMixin:
         async for sub_event in sub_executor.invoke(sub_input):
             if isinstance(sub_event, _GraphEndOutputEvent):
                 end_output = sub_event
-                await queue.put(sub_event)  # type: ignore[arg-type]
+                # Forwarded for the taps and the transcript, but marked: it is the CHILD's result, not the
+                # run's (the session's final text is the top-level End's output).
+                await queue.put(dataclasses.replace(sub_event, nested=True))  # type: ignore[arg-type]
                 continue
             if isinstance(sub_event, _GraphErrorEvent):
                 sub_error = sub_event
