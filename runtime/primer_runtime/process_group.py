@@ -1,7 +1,11 @@
 """Stop a subprocess's whole PROCESS GROUP, not just the process asyncio holds.
 
 The runtime half of ``primer.common.process_group``. The runtime image is built from this directory alone, so it carries its
-own copy instead of importing ``primer``; keep the two in step.
+own copy instead of importing ``primer``; keep the two in step. They share ``_group_has_a_live_member``,
+``_live_member_of`` and ``_close_the_pipes`` (identical bodies) and differ on purpose: this copy sends SIGTERM, waits
+``TERM_GRACE_S`` and then sends SIGKILL (a command may clean up on SIGTERM), while the local copy sends SIGKILL at once; this
+copy reaches the leader through the group once and signals it directly only when it leads no group, while the local copy
+also signals the leader directly (harmless for SIGKILL); and only the local copy has a Windows branch.
 
 An ``exec`` runs ``/bin/sh -c ...``, which forks (dash does for ``sh -c "sleep 30"``), as does any pipeline or backgrounded
 job. Signalling only the shell left its children running, holding the stdout/stderr pipes and the Tier-B write lock for as

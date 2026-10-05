@@ -15,6 +15,7 @@ outside the group and survives, ``nohup`` alone does not detach, and nothing is 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -381,6 +382,149 @@ async def test_a_leader_the_group_stop_already_took_down_is_reported_as_it_died_
         assert not [r for r in caplog.records if "already read" in r.getMessage()], "the child was reaped behind asyncio's back"
     finally:
         _kill(proc.pid)
+
+
+@pytest.mark.parametrize("second_cancel_after", ["five-loop-spins", 0.3], ids=["five-loop-spins", "inside-the-grace"])
+async def test_a_second_cancel_inside_the_grace_still_kills_a_command_that_ignores_sigterm(
+    tmp_path: Path, monkeypatch, second_cancel_after,
+) -> None:
+    """The SIGKILL is sent in a ``finally`` and the first signal synchronously, so a consumer cancelled AGAIN while the stop
+    is waiting out the grace still delivers the kill: a command that ignores SIGTERM must not outlive the second cancel (it
+    would, with the lock released over it, if the SIGKILL were skipped by the second cancel or delayed behind an await)."""
+    from primer_runtime import process_group
+
+    monkeypatch.setattr(process_group, "TERM_GRACE_S", 2.0)
+    locks = WorkspaceLockTable()
+    child = None
+    task = asyncio.create_task(_drain(_exec(tmp_path, f"trap '' TERM; sleep 60 & echo $! > {tmp_path}/child; wait", locks)))
+    try:
+        child = await _pid(tmp_path / "child")
+        running_when_the_writer_got_in: list[bool] = []
+
+        async def writer() -> None:
+            async with locks.hold_scope(str(tmp_path.resolve())):
+                running_when_the_writer_got_in.append(_running(child))
+
+        queued = asyncio.create_task(writer())
+        await asyncio.sleep(0.05)
+        assert not queued.done()
+
+        task.cancel()                                     # the stop begins: SIGTERM is ignored, the grace starts
+        if second_cancel_after == "five-loop-spins":
+            for _ in range(5):
+                await asyncio.sleep(0)
+        else:
+            await asyncio.sleep(second_cancel_after)
+        task.cancel()                                     # ... and the consumer is cancelled again, inside the grace
+
+        start = asyncio.get_running_loop().time()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+        assert asyncio.get_running_loop().time() - start < 1.0, "the second cancel waited out the grace"
+        assert await _gone(child, within=1.0), "a command that ignores SIGTERM outlived the second cancel"
+        await asyncio.wait_for(queued, timeout=5.0)
+        assert running_when_the_writer_got_in == [False], "the lock was released while the command still ran"
+    finally:
+        _kill(child)
+
+
+async def test_a_command_that_needs_a_second_to_clean_up_after_sigterm_gets_to_finish(tmp_path: Path) -> None:
+    """Pins the SIGTERM grace at its documented length: a command that traps SIGTERM and needs about a second to clean up
+    must not be SIGKILLed first (a grace shorter than that cuts it off before the marker is written)."""
+    script = f"trap 'sleep 1; echo cleaned > {tmp_path}/marker; exit 0' TERM; sleep 60 & wait"
+
+    events = await asyncio.wait_for(_drain(_exec(tmp_path, script, WorkspaceLockTable(), timeout_s=1.0)), timeout=15.0)
+
+    assert events[-1].data == {"code": -1, "timed_out": True}
+    assert (tmp_path / "marker").exists(), "the command was cut off before it could clean up: the SIGTERM grace is too short"
+
+
+_BIG_STDIN = b"x" * (1024 * 1024)       # far more than a pipe holds, so a command that does not read it blocks the writer
+
+
+def _exec_with_stdin(tmp_path: Path, script: str, stdin: bytes, locks: WorkspaceLockTable, *, timeout_s: float):
+    args = {
+        "cmd": ["/bin/sh", "-c", script], "workdir": str(tmp_path), "timeout_s": timeout_s,
+        "stdin_b64": base64.b64encode(stdin).decode(),
+    }
+    return run_exec(1, args, str(tmp_path), locks)
+
+
+async def test_a_command_that_reads_its_stdin_still_gets_it(tmp_path: Path) -> None:
+    """The control for the three below: stdin that IS read arrives, whole."""
+    events = await asyncio.wait_for(
+        _drain(_exec_with_stdin(tmp_path, "cat", b"hello stdin", WorkspaceLockTable(), timeout_s=10.0)), timeout=15.0,
+    )
+
+    out = b"".join(base64.b64decode(e.data["data_b64"]) for e in events if e.event == "stdout")
+    assert out == b"hello stdin" and events[-1].data == {"code": 0}
+
+
+async def test_a_command_that_never_reads_a_large_stdin_still_times_out(tmp_path: Path) -> None:
+    """The stdin write used to sit outside the timeout: ``drain()`` blocked for as long as the command did not read, so the
+    timeout never fired and the exec hung."""
+    child = None
+    try:
+        start = time.monotonic()
+        events = await asyncio.wait_for(
+            _drain(_exec_with_stdin(
+                tmp_path, f"sleep 60 & echo $! > {tmp_path}/child; wait", _BIG_STDIN, WorkspaceLockTable(), timeout_s=1.0,
+            )),
+            timeout=15.0,
+        )
+        child = await _pid(tmp_path / "child")
+
+        assert events[-1].data == {"code": -1, "timed_out": True}
+        assert time.monotonic() - start < 8.0
+        assert await _gone(child), "the timed-out command kept running"
+    finally:
+        written = tmp_path / "child"      # a hung exec never returned the pid above: do not leak the command it started
+        _kill(child or (int(written.read_text().strip()) if written.exists() and written.read_text().strip() else None))
+
+
+async def test_a_cancel_while_the_stdin_is_still_being_written_kills_the_group_before_the_lock_is_released(
+    tmp_path: Path,
+) -> None:
+    """The stdin write also sat outside the ``finally``: a cancel there left the command running and released the lock."""
+    locks = WorkspaceLockTable()
+    child = None
+    task = asyncio.create_task(_drain(_exec_with_stdin(
+        tmp_path, f"sleep 60 & echo $! > {tmp_path}/child; wait", _BIG_STDIN, locks, timeout_s=60.0,
+    )))
+    try:
+        child = await _pid(tmp_path / "child")
+        running_when_the_writer_got_in: list[bool] = []
+
+        async def writer() -> None:
+            async with locks.hold_scope(str(tmp_path.resolve())):
+                running_when_the_writer_got_in.append(_running(child))
+
+        queued = asyncio.create_task(writer())
+        await asyncio.sleep(0.3)                          # the command is running and the stdin write is blocked
+        assert not queued.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=10.0)
+
+        assert await _gone(child), "a cancel during the stdin write left the command running"
+        await asyncio.wait_for(queued, timeout=10.0)
+        assert running_when_the_writer_got_in == [False], "the lock was released while the command still ran"
+    finally:
+        _kill(child)
+
+
+async def test_a_command_that_writes_a_lot_before_it_reads_stdin_does_not_deadlock(tmp_path: Path) -> None:
+    """The stdin is fed alongside the readers: the command below writes 3 MB to stdout (blocking until something reads
+    it) BEFORE it reads stdin. With the write done first and the readers started after, neither side could move."""
+    script = "head -c 3000000 /dev/zero; cat > /dev/null; echo done"
+
+    events = await asyncio.wait_for(
+        _drain(_exec_with_stdin(tmp_path, script, _BIG_STDIN, WorkspaceLockTable(), timeout_s=30.0)), timeout=10.0,
+    )
+
+    out = b"".join(base64.b64decode(e.data["data_b64"]) for e in events if e.event == "stdout")
+    assert events[-1].data == {"code": 0}
+    assert len(out) == 3_000_000 + len(b"done\n") and out.endswith(b"done\n")
 
 
 async def test_a_command_that_finishes_leaves_a_backgrounded_process_alone(tmp_path: Path) -> None:

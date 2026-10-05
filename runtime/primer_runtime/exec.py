@@ -136,15 +136,6 @@ async def run_exec(
             **NEW_SESSION,
         )
 
-        # Write stdin if provided, then close the pipe
-        if stdin_bytes is not None and proc.stdin is not None:
-            proc.stdin.write(stdin_bytes)
-            try:
-                await proc.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            proc.stdin.close()
-
         # Collect events in an async queue so stdout/stderr can be read concurrently
         queue: asyncio.Queue[Event | None] = asyncio.Queue()
 
@@ -170,6 +161,27 @@ async def run_exec(
 
         stdout_task = asyncio.create_task(_reader(proc.stdout, "stdout"))
         stderr_task = asyncio.create_task(_reader(proc.stderr, "stderr"))
+
+        async def _feed_stdin() -> None:
+            """Write the stdin and close the pipe, ALONGSIDE the readers and under the same timeout and ``finally`` as
+            the rest of the exec. It used to be written (and drained) before either started: a command that does not
+            read a large stdin blocked ``drain()`` for as long as it lived, with no timeout and nothing to stop it on a
+            cancel, and a command that writes a lot before it reads deadlocked against a writer waiting on it."""
+            assert proc.stdin is not None and stdin_bytes is not None
+            try:
+                proc.stdin.write(stdin_bytes)
+                await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:  # noqa: BLE001 - the transport may already be closed by the stop
+                    pass
+
+        helper_tasks = [stdout_task, stderr_task]
+        if stdin_bytes is not None and proc.stdin is not None:
+            helper_tasks.append(asyncio.create_task(_feed_stdin()))
 
         # We expect exactly two sentinels (one per reader)
         sentinels_remaining = 2
@@ -202,10 +214,10 @@ async def run_exec(
                 if not finished:
                     await stop_process_group(proc)
             finally:
-                stdout_task.cancel()
-                stderr_task.cancel()
+                for task in helper_tasks:
+                    task.cancel()
                 try:
-                    await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                    await asyncio.gather(*helper_tasks, return_exceptions=True)
                 except Exception:
                     pass
 
