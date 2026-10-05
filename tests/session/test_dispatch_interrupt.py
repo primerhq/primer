@@ -851,7 +851,7 @@ class TestTheCancelledExitSurvivesAHardPreempt:
         assert metrics.turns_total.labels(ref, "cancelled")._value.get() == 1.0, "the cancelled turn was not counted"
 
     async def test_repeated_cancels_while_the_exit_runs_are_all_absorbed(
-        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,
     ) -> None:
         """The heartbeat loop re-delivers the preempt every tick for as long as the lease reads lost."""
         sid = seeded_session.id
@@ -893,12 +893,74 @@ class TestTheCancelledExitSurvivesAHardPreempt:
             fake_storage_provider, fake_workspace_io, fake_event_bus, executor,
         )))
 
-        outcome = await asyncio.wait_for(outer["task"], 5.0)
+        with caplog.at_level(logging.INFO):
+            outcome = await asyncio.wait_for(outer["task"], 5.0)
 
         assert cancels["n"] == 2, "the second preempt never landed inside the exit"
         assert f"session:{sid}:terminal" in published, "a repeated preempt cut the exit"
         assert outcome.success and outcome.drop_lease, "the exit's own outcome was thrown away"
         assert outer["task"].cancelling() == 0, "an absorbed cancellation was left pending on the task"
+        absorbed_logs = [r for r in caplog.records if "finishing the exit first" in r.getMessage()]
+        assert len(absorbed_logs) == 1, f"an absorbed preempt must be logged once, not {len(absorbed_logs)} times"
+
+    async def test_it_consumes_only_the_cancellations_it_absorbed_during_the_exit(self) -> None:
+        """A task that was already cancelling when the exit started (an outer scope absorbed an earlier cancel
+        without ``uncancel``) keeps that count: only what arrived DURING the exit is consumed."""
+
+        async def the_exit() -> Any:
+            await asyncio.sleep(0.05)
+            return dispatch.ReleaseOutcome(success=True, drop_lease=True)
+
+        async def body() -> tuple[Any, int, int]:
+            me = asyncio.current_task()
+            me.cancel()
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                pass                                       # swallowed without uncancel(): the count stays at 1
+            before = me.cancelling()
+            asyncio.get_running_loop().call_later(0.01, me.cancel)    # the preempt, while the exit runs
+            outcome = await dispatch._finish_despite_cancel(the_exit())
+            return outcome, before, me.cancelling()
+
+        outcome, before, after = await asyncio.wait_for(asyncio.ensure_future(body()), 5.0)
+
+        assert outcome.success
+        assert (before, after) == (1, 1), f"cancelling() went {before} -> {after}; the entry count must be kept"
+
+    async def test_two_cancels_in_one_tick_are_both_consumed(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        """``cancelling()`` counts the REQUESTS, but two ``cancel()`` calls before the task runs again deliver ONE
+        ``CancelledError``. Consuming one per delivery would leave the task looking cancelled, which a later
+        ``asyncio.timeout`` in the pool's release path reads as its own cancellation."""
+        sid = seeded_session.id
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def read_status_then_cancel_lands(executor):
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            return None
+
+        monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+        outer: dict[str, asyncio.Task] = {}
+        real_transition = dispatch._transition_session_status
+
+        async def double_cancelling_transition(*args, **kwargs):
+            outer["task"].cancel()
+            outer["task"].cancel()                       # a NOTIFY and the row reconciler both reporting it
+            await asyncio.sleep(0.05)
+            return await real_transition(*args, **kwargs)
+
+        monkeypatch.setattr(dispatch, "_transition_session_status", double_cancelling_transition)
+        executor = _StopAwareExecutor([TextDelta(text="x", index=0), Done(stop_reason="stop", raw_reason="stop")])
+        outer["task"] = asyncio.ensure_future(run_one_session_turn(_make_lease(sid), _deps(
+            fake_storage_provider, fake_workspace_io, fake_event_bus, executor,
+        )))
+
+        outcome = await asyncio.wait_for(outer["task"], 5.0)
+
+        assert outcome.success and outcome.drop_lease
+        assert outer["task"].cancelling() == 0, "a cancellation request was left pending on the task"
 
     async def test_an_exit_that_hangs_is_abandoned_after_the_grace_so_a_drain_can_still_abort_it(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
