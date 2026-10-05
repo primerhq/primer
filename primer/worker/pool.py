@@ -161,7 +161,8 @@ class WorkerPool:
         # lookup that has not answered in a heartbeat interval counts as no answer, and the bound plus the probe stay
         # within one lease TTL.
         self._release_probe_timeout_seconds: float = float(config.heartbeat_interval_seconds)
-        # Timed-out releases whose probe found the lease row gone (they evidently committed); a subset of the above.
+        # Timed-out releases whose probe found the lease row gone (they evidently committed); a subset of the above. It
+        # UNDERCOUNTS: a committed release that keeps its row (``drop_lease=False``) reads as present (see _release_lease).
         self._release_timeouts_committed_total: int = 0
         # How long drain waits for the claim loop to finish the iteration it is in (and for hand-backs).
         self._claim_stop_grace_seconds: float = 5.0
@@ -387,8 +388,12 @@ class WorkerPool:
                 "drain: %s did not stop within %.1fs of being cancelled; abandoning it and carrying on with the drain",
                 task.get_name(), grace,
             )
-        # Retrieve its outcome (now or whenever it ends), so an exception is never logged as never retrieved.
-        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        # Retrieve its outcome (now or, for an abandoned loop, whenever it ends) and log an exception it ended with.
+        def _retrieve(t: asyncio.Task) -> None:
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning("drain: %s ended with an exception", t.get_name(), exc_info=t.exception())
+
+        task.add_done_callback(_retrieve)
 
     async def run_one_turn_now(self, session_id: str) -> None:
         """Test helper: claim and execute exactly one turn for ``session_id``.
@@ -1122,12 +1127,22 @@ class WorkerPool:
         ``UPDATE`` waits on this release's row lock, so none of them is refreshed until the release ends, and each can
         lapse one TTL after its last refresh (see ``__init__``). On timeout the release is cancelled and counted.
 
-        The bound is BEST-EFFORT, not firm. ``asyncio.timeout`` only cancels the awaiting task; asyncpg then cancels
-        the running statement best-effort (a cancel request to the server). A connection that ignores the
-        cancellation keeps this task inside the release, and the row lock held, until the statement completes or the
-        storage pool's ``command_timeout`` fires (``PoolConfig.acquire_timeout``, 30 s by default, the per-statement
-        default set in ``primer/storage/postgres.py``). Work ``on_release`` awaits that is not a statement (the
-        session adapter's terminal-record workspace write) stops only as far as that I/O honours cancellation.
+        The bound is BEST-EFFORT, not firm. ``asyncio.timeout`` only cancels the awaiting task. What asyncpg 0.31 then
+        does (read from its source, not exercised against a live server here): it stops the statement's own
+        ``command_timeout`` timer, sends the server a cancel request over a separate connection and lets the
+        ``CancelledError`` through; the release's ``conn.transaction()`` exit then sends ``ROLLBACK``, and asyncpg runs
+        no statement on that connection before the server has answered the cancelled one, a wait with NO timeout. So
+        this task stays inside the release, and the server keeps the row lock (the heartbeat stays stalled), until the
+        server answers (normally at once: the cancel aborts the statement). The storage pool's ``command_timeout``
+        (``PoolConfig.acquire_timeout``, 30 s by default, passed in ``primer/storage/postgres.py``) does not bound that
+        wait; it can end the release first only if one statement of it has already run for 30 s, which needs a bound
+        above 30 s, and then it is the engine's own ``TimeoutError``. For a server that has gone away, the backstop is
+        the kernel TCP keepalive ``keepalive_init_hook`` (``primer/storage/_pg_pool.py``) switches on for every storage
+        pool connection (``tcp_keepalive_idle_seconds`` 60, interval 10, count 3 by default: a vanished peer is noticed
+        within about 90 s; off when the idle setting is 0); it does nothing for a live server that is merely slow, and
+        asyncpg's connection-lost path fails the statement's waiter but, as read, not that cancel wait, so whether a
+        lost connection ends it is not established. Work ``on_release`` awaits that is not a statement (the session
+        adapter's terminal-record workspace write) stops only as far as that I/O honours cancellation.
 
         A timed-out release has an UNKNOWN outcome, not a failed one: the bound also covers what follows the commit
         (the post-release hook, the COMMIT's own reply), so the release may well have committed. One bounded probe
@@ -1138,9 +1153,27 @@ class WorkerPool:
         ``_release_timeouts_committed_total``. Lease row PRESENT, or the probe failed or timed out (unknown): the
         ``TimeoutError`` propagates and the caller treats it like any failed release (unless the caller is unwinding a
         cancel, releasing from its ``finally``: then that cancel propagates instead, so the task still ends cancelled
-        and ``worker_tasks_total`` labels it so, not ``error``). The key then leaves
-        ``_in_flight``, nothing heartbeats the lease, it expires after one TTL and a peer re-claims it (slower, not
-        lost: the same outcome as a failed drain hand-back).
+        and ``worker_tasks_total`` labels it so, not ``error``). The key then leaves ``_in_flight``, nothing heartbeats
+        the lease, it expires after one TTL and a peer (or this worker) re-claims it.
+
+        That is NOT a harmless retry when the work had finished, unlike a drain hand-back (an unstarted lease). A
+        bound that fired BEFORE the commit rolled back what ``on_release`` wrote (a session's ``turn_no`` bump and
+        ``last_turn_at``, or its park columns; a harness's cleared ``pending_operation``; a trigger's next fire time),
+        so the re-claim finds the entity runnable and does the work AGAIN: ``run_one_session_turn`` checks only
+        ENDED, cancel and pause, so it runs a NEW turn over the same history (a second model call and its tool runs);
+        a harness operation runs again; a trigger fires again. A failed session release's terminal ERROR record is a
+        workspace write the database transaction does not cover, so the rollback does not undo it and it can be
+        written twice. This is the cost of a bound below the lease TTL: a shorter bound abandons more releases that
+        are slow but alive, while the longer bound it replaced let a slow release stall the heartbeat long enough to
+        duplicate the turns of the worker's OTHER leases instead. Tracked: a guard against re-running a completed
+        turn.
+
+        The probe UNDERCOUNTS committed timeouts: the contract has no read of who holds a lease (``heartbeat`` would
+        tell, but it writes, refreshes the TTL and on Postgres waits on the very row lock an open release holds), so a
+        committed release that KEEPS its row (``drop_lease=False``: the trigger handler, a resumed session's
+        continuation) leaves it unclaimed, reads as present and is handled as abandoned. That is harmless for the
+        lease (the row is already claimable) but such a release is not counted as committed and gets no post-release
+        path (a trigger task is labelled ``error``).
         """
         in_flight = sys.exception()   # a cancel the caller's ``finally`` is unwinding, if it releases from one
         scope = self._active_scopes.get((lease.kind, lease.entity_id))

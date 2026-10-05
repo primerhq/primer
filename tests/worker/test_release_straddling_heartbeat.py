@@ -287,7 +287,11 @@ def _engine_release_calls(source: str, rel: str) -> set[tuple[str, str]]:
     module level. Alias tracking ignores control flow: a name assigned an engine anywhere in the function counts
     as one throughout it. NOT seen: an engine reached through a function call (``get_engine().release(...)``), a
     container (``engines[kind].release(...)``), or an attribute or alias whose name does not end in ``engine``
-    (``self.eng = self._engine`` then ``self.eng.release(...)``)."""
+    (``self.eng = self._engine`` then ``self.eng.release(...)``); ``getattr(engine, "release")(...)``; a bound-method
+    alias (``rel = engine.release``); ``functools.partial(engine.release, ...)``; ``type(e).release(e, ...)``; a
+    ``for`` or ``with`` target; a comprehension or lambda parameter; a function parameter whose name does not end in
+    ``engine``; a conditional receiver (``(a if c else b).release(...)``). It can flag a receiver that only LOOKS like
+    an engine (``speech_engine.release()``; none exists today): add its ``(file, function)`` to the allow-list."""
     import ast
 
     scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
