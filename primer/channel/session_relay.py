@@ -46,7 +46,9 @@ def _count_reached(results: list) -> int:
     )
 
 
-_RESOLVE = object()   # "work the binding out": the default for a caller that has not already
+# "Work the binding out": the default for a caller that has not already resolved it. A sentinel and not None, because
+# None is a resolved answer ("this session has no binding") that a caller may pass in to say so and skip the lookup.
+_RESOLVE = object()
 
 
 async def _post_lifecycle(
