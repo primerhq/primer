@@ -329,6 +329,16 @@ explicitly whenever a command's real write target lives outside its
 - **`watch_files` is invisible from MCP.** It's a yielding tool;
   the MCP exposability gate drops it. External agents wanting
   change-detection should poll `read_workspace_file` instead.
+- **A timed-out or cancelled `exec` kills everything it started
+  (container and k8s workspaces).** The command runs in its own
+  process group and a stop (the timeout, a cancel) signals the whole
+  group: SIGTERM first, so a command that traps it can clean up, then
+  SIGKILL after a few seconds. A background job the command left
+  behind (`server &`, `nohup server &`) is part of that group and is
+  killed with it; a command that FINISHES leaves its background jobs
+  alone. To leave a daemon running past a call that may time out, both
+  detach and redirect: `setsid cmd >log 2>&1 &`. (`nohup` alone does
+  not detach.)
 
 ## Related
 
