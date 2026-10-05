@@ -242,7 +242,7 @@ class TestTheBudgetRules:
     def test_a_prompt_that_does_not_fit_the_window_is_compacted_whatever_it_has_grown_by(self) -> None:
         """The memory holds a compaction back only while the provider can still take the prompt: past the budget but
         inside the window it is sent and the overflow path is the net; past the window it would be rejected."""
-        last = 33_000                                   # a stale or high figure: before is under last + 4,096
+        last = 31_000                                   # a high figure (inside the window): before is under last + 4,096
         inside = _history(5_000)                        # about 27k with the fixed part: over the budget, inside 32,000
         result, summariser = _maybe(
             CompactionStrategy(), history=inside, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=last,
@@ -253,6 +253,22 @@ class TestTheBudgetRules:
             CompactionStrategy(), history=beyond, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=last,
         )
         assert summariser.calls == 1 and result.summary_message is not None
+
+    def test_a_figure_left_under_a_larger_window_does_not_hold_back_a_compaction_this_window_needs(self) -> None:
+        """The session's profile was switched to a smaller window after its last compaction (which left the prompt at
+        200k under a 262k window). That figure says nothing about this prompt: trusting it skipped a compaction the 32k
+        window needs, for "has not grown since"."""
+        inside = _history(5_000)                        # about 27k with the fixed part: over the 23.8k budget, inside 32k
+        result, summariser = _maybe(
+            CompactionStrategy(), history=inside, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=200_000,
+        )
+        assert summariser.calls == 1 and result.summary_message is not None, "the stale figure was not trusted"
+        result, summariser = _maybe(
+            CompactionStrategy(), history=inside, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=28_000,
+        )
+        assert summariser.calls == 0 and (result.outcome, result.unreducible) == ("skipped", "recently_compacted"), (
+            "the control: a figure this window could have left still holds the compaction back"
+        )
 
     def test_the_skip_is_decided_on_the_prompt_that_is_sent_not_the_one_before_the_tier_1_prune(self) -> None:
         """A turn that reads a big file: far over the budget (and the window) before tier 1 prunes the output, and
