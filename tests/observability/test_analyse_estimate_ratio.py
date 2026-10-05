@@ -236,18 +236,19 @@ def test_one_material_inaccurate_group_blocks_do_not_build_whatever_the_others_d
 
 
 def test_the_near_window_gate_is_a_third_of_the_trigger(tmp_path):
-    """Calls with an estimate just under 0.33 x trigger are not near-window: a thousand wildly wrong ones change nothing."""
+    """Calls with an estimate one token under 0.33 x trigger are not near-window (a gate of 0.32 would admit them): hundreds of
+    wildly wrong ones change nothing; one token over, they decide."""
     s = Session()
     for i in range(300):
         s.turn([{"ratio": 1.0}], day=8.0 * i / 299)
     for i in range(300):
-        s.turn([{"ratio": 3.0, "est": int(0.32 * TRIGGER)}], day=8.0 * i / 299)
+        s.turn([{"ratio": 3.0, "est": int(0.33 * TRIGGER) - 1}], day=8.0 * i / 299)
     assert _run(s.write(tmp_path))["verdict"] == DNB
     t = Session()
     for i in range(300):
         t.turn([{"ratio": 1.0}], day=8.0 * i / 299)
     for i in range(300):
-        t.turn([{"ratio": 3.0, "est": int(0.34 * TRIGGER)}], day=8.0 * i / 299)
+        t.turn([{"ratio": 3.0, "est": int(0.33 * TRIGGER) + 1}], day=8.0 * i / 299)
     assert _run(t.write(tmp_path / "b"))["verdict"] != DNB
 
 
@@ -309,6 +310,18 @@ def test_only_compactions_the_trigger_fired_count_towards_premature(tmp_path):
         fired.turn([{"ratio": 1.0, "est": int(0.3 * TRIGGER)}], day=5.0)
         fired.marker(day=5.0, before=TRIGGER + 10)
     out = _run(fired.write(tmp_path / "b"))
+    assert out["facts"]["premature_compaction_share"] == 1.0 and out["verdict"] == BUILD_1B
+
+
+def test_occupancy_one_token_under_three_quarters_of_the_trigger_is_premature(tmp_path):
+    """ctx 16384: trigger 7372, three quarters 5529. 5528 is premature (a threshold of 0.65 to 0.74 would not call it so)."""
+    ctx = 16_384
+    trigger = rule.trigger_tokens(ctx)
+    s = _singles(_wide())
+    for _ in range(10):
+        s.turn([{"ratio": 1.0, "est": 5528, "used": 5528, "ctx": ctx}], day=5.0)
+        s.marker(day=5.0, before=trigger, trigger=trigger)
+    out = _run(s.write(tmp_path))
     assert out["facts"]["premature_compaction_share"] == 1.0 and out["verdict"] == BUILD_1B
 
 
@@ -609,6 +622,21 @@ def test_exactly_a_tenth_of_the_compactions_premature_is_a_visible_consequence_a
     five = _run(_fired_markers(_singles(_wide()), premature=1, calm=19).write(tmp_path / "b"))
     assert five["facts"]["premature_compaction_share"] == 0.05
     assert five["verdict"] == ONLY_1A and "no visible consequence" in five["reason"]
+
+
+def test_manual_and_forced_compactions_are_not_in_the_denominator_of_the_premature_share(tmp_path):
+    """The same 2 premature of 20 trigger-fired compactions, plus 8 manual or overflow-forced ones (tokens_before under the
+    trigger) after calls at HIGH occupancy: the share stays exactly 0.1 (build 1b). Counting the forced ones in the denominator
+    would make it 2/28 and flip the verdict to 1a; the earlier test put its forced markers at low occupancy, which pins
+    only the numerator."""
+    s = _fired_markers(_singles(_wide()), premature=2, calm=18)
+    for _ in range(8):
+        s.turn([{"est": int(0.2 * TRIGGER), "used": int(0.9 * TRIGGER)}], day=5.0)
+        s.marker(day=5.0, before=int(0.5 * TRIGGER))
+    out = _run(s.write(tmp_path))
+    assert out["facts"]["trigger_fired_compactions"] == 20 and out["facts"]["manual_or_forced_markers_not_counted"] == 8
+    assert out["facts"]["premature_compaction_share"] == 0.1
+    assert out["verdict"] == BUILD_1B, out["reason"]
 
 
 def test_a_compaction_after_a_call_at_six_tenths_of_the_trigger_is_premature_and_one_at_eight_tenths_is_not(tmp_path):
