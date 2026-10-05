@@ -173,8 +173,22 @@ def test_a_summariser_that_overflowed_maps_like_the_overflow_it_is_and_says_whic
     _mount_raiser(app, "/raise", SummariserOverflow("the compaction's summariser was rejected as too large"))
     response = TestClient(app, raise_server_exceptions=False).get("/raise")
     assert response.status_code == 413
-    assert response.json()["type"] == "/errors/context-overflow-unrecoverable"
+    body = response.json()
+    assert body["type"] == "/errors/context-overflow-unrecoverable"
     assert SummariserOverflow("x").ended_detail_code == SummariserOverflow("x").code == "summariser_overflow"
+    assert body["extensions"]["code"] == "summariser_overflow", "the client can tell it from the turn's own overflow"
+    assert "forced_compaction" not in body["extensions"], "no turn recovery ran, so none is described"
+
+
+def test_a_summariser_overflow_from_a_turns_forced_compaction_also_describes_the_recovery() -> None:
+    from primer.model.except_ import SummariserOverflow
+
+    app = _make_app()
+    failed = SummariserOverflow("the compaction's summariser was rejected as too large", forced_compaction=True, persisted_rounds=2)
+    _mount_raiser(app, "/raise", failed)
+    extensions = TestClient(app, raise_server_exceptions=False).get("/raise").json()["extensions"]
+    assert extensions["code"] == "summariser_overflow"
+    assert (extensions["forced_compaction"], extensions["replay_attempted"], extensions["persisted_rounds"]) == (True, False, 2)
 
 
 def test_an_exceptions_problem_extensions_are_merged_into_the_envelope() -> None:

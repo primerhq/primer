@@ -351,3 +351,39 @@ async def test_a_marker_of_a_summariser_that_did_not_overflow_has_no_reduction(c
     assert "summary_input_reduced" not in marker["payload"]
     assert r.json()["summary_input_reduced"] is None
 
+
+@pytest.mark.asyncio
+async def test_a_summariser_that_cannot_be_recovered_is_a_413_that_names_it_and_writes_no_marker(
+    client, app, fake_storage_provider, monkeypatch,
+):
+    """Through the route, not a mounted raiser: the summariser overflows and so does its retry (or there is nothing
+    to reduce), the compaction raises ``SummariserOverflow``, and the global handler answers 413 with the shared problem
+    type, the code that says it was the summariser, and none of the turn-recovery fields."""
+    from primer.model.except_ import BadRequestError
+
+    class _AlwaysOverflows(_StubLLM):
+        async def _stream_impl(self):
+            raise BadRequestError("This model's maximum context length is 128000 tokens, however you requested more")
+            yield  # pragma: no cover
+
+    big = [_msg("user", "q" * 80_000), _msg("assistant", "a" * 80_000)]
+    ws, llm = await _journey(app, fake_storage_provider, monkeypatch, llm=_AlwaysOverflows(),
+                             lines=[_rec(1, "user_input", text="hello"), big[0], _rec(2, "assistant_token", text="hi"), big[1], _rec(3, "done")])
+    r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
+    assert r.status_code == 413, r.text
+    body = r.json()
+    assert body["type"] == "/errors/context-overflow-unrecoverable"
+    assert body["extensions"]["code"] == "summariser_overflow" and "summariser" in body["detail"]
+    assert not {"forced_compaction", "replay_attempted", "persisted_rounds", "summarised_rounds"} & set(body["extensions"])
+    assert _marker(ws) == [], "nothing was summarised: no marker"
+    assert 1 <= len(llm.calls) <= 2, "one rejected call and at most its one retry"
+
+
+@pytest.mark.asyncio
+async def test_the_openapi_schema_shows_the_compact_response_and_the_413(app):
+    spec = app.openapi()
+    schema = spec["components"]["schemas"]["CompactSessionResponse"]
+    assert {"compaction_marker_seq", "summary", "tokens_before", "tokens_after", "summary_input_reduced"} <= set(schema["properties"])
+    post = spec["paths"]["/v1/workspaces/{workspace_id}/sessions/{session_id}/compact"]["post"]
+    assert "413" in post["responses"] and "200" in post["responses"]
+
