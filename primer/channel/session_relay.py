@@ -116,7 +116,9 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     (dicts with ``kind`` + ``payload``). The text relayed is the joined
     ``assistant_token`` text of the LAST completed turn, i.e. the rows between
     the previous terminal record and the final ``done`` row. Returns ``None``
-    when there is no completed turn or the window carries no assistant text.
+    when there is no completed turn, when the LATEST turn did not complete (the
+    last terminal record is a ``cancelled`` or an ``error``), or when the window
+    carries no assistant text.
 
     A terminal record is a ``done``, a ``cancelled`` or an ``error``. A turn
     that was stopped or failed has no ``done``, but what it had streamed is
@@ -127,16 +129,18 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     Session assistant tokens carry their text under ``payload['text']`` (the
     coalesced buffer; see :mod:`primer.session.persistence`).
     """
-    last_done = max(
-        (i for i, r in enumerate(records) if r.get("kind") == "done"),
-        default=None,
-    )
-    if last_done is None:
+    boundaries = [i for i, r in enumerate(records) if r.get("kind") in _WINDOW_BOUNDARY_KINDS]
+    if not boundaries:
         return None
-    prev_boundary = max(
-        (i for i in range(last_done) if records[i].get("kind") in _WINDOW_BOUNDARY_KINDS),
-        default=-1,
-    )
+    # The LATEST turn must have completed. If the last terminal record is a ``cancelled`` or an ``error``,
+    # the turn did not finish cleanly and there is no final text, even though an earlier ``done`` (the same
+    # turn's, when a Cancel landed after the model's terminal event: ``tokens, done, cancelled``; or an
+    # earlier turn's) is in the log. Handing that answer to the webhook hold would present the output of a
+    # run the user cancelled, or the previous turn's answer, as this run's result.
+    last_done = boundaries[-1]
+    if records[last_done].get("kind") != "done":
+        return None
+    prev_boundary = boundaries[-2] if len(boundaries) > 1 else -1
     chunks: list[str] = []
     for r in records[prev_boundary + 1:last_done]:
         if r.get("kind") == "assistant_token":

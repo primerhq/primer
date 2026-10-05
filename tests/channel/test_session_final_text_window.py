@@ -58,6 +58,52 @@ def test_a_stopped_turn_with_no_completed_turn_after_it_relays_nothing() -> None
     assert derive_session_final_text(records) is None
 
 
+CANCELLED = {"kind": "cancelled", "payload": {"reason": "operator_cancel"}}
+ERROR = {"kind": "error", "payload": {"message": "provider failed"}}
+
+
+def test_a_turn_cancelled_after_its_done_relays_nothing() -> None:
+    """A Cancel that lands after the model's terminal event ends the session as cancelled, and the transcript
+    reads ``tokens, done, cancelled``. The answer is in the log, but the user cancelled: it must not be handed
+    to the webhook hold (or any reader of the final text) as the run's result."""
+    assert derive_session_final_text([USER, _tok("The full answer."), _done(), CANCELLED]) is None
+
+
+def test_a_stopped_turn_after_a_completed_one_does_not_relay_the_earlier_answer() -> None:
+    """The latest turn did not complete, so there is no final text: the PREVIOUS turn's answer is not it."""
+    records = [USER, _tok("Old answer."), _done(), USER, _tok("partial"), CANCELLED]
+
+    assert derive_session_final_text(records) is None
+
+
+def test_a_failure_after_the_done_relays_nothing() -> None:
+    assert derive_session_final_text([USER, _tok("The answer."), _done(), ERROR]) is None
+
+
+def test_a_log_with_no_terminal_record_has_no_final_text() -> None:
+    """An empty log, and a turn that is still streaming (tokens, no done yet), have not completed a turn."""
+    assert derive_session_final_text([]) is None
+    assert derive_session_final_text([USER, _tok("still typing")]) is None
+
+
+def test_a_turn_that_completes_after_an_earlier_cancel_still_relays() -> None:
+    records = [USER, _tok("cut off"), CANCELLED, USER, _tok("Here you go."), _done()]
+
+    assert derive_session_final_text(records) == "Here you go."
+
+
+async def test_the_reader_applies_the_same_rule_to_a_late_cancelled_log() -> None:
+    import json
+
+    from primer.channel.session_relay import read_session_final_text
+
+    class _Io:
+        def read_lines(self, session_id: str) -> list[str]:
+            return [json.dumps(r) for r in [USER, _tok("The full answer."), _done(), CANCELLED]]
+
+    assert await read_session_final_text(_Io(), "s1") is None
+
+
 def test_a_completed_turn_after_a_stop_with_no_text_relays_nothing_not_the_partial() -> None:
     records = [USER, _tok("partial"), {"kind": "cancelled", "payload": {}}, USER, _done()]
 
