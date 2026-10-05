@@ -50,7 +50,7 @@ from primer.model.turn_log import (
     TurnLogStarted,
     TurnLogYielded,
 )
-from primer.model.yield_ import ToolWaitPark, YieldToWorker
+from primer.model.yield_ import YIELD_KIND_PREFIXES, ToolWaitPark, YieldToWorker
 from primer.session.autonomy import session_is_autonomous
 from primer.session.enqueue import SessionWakeDeps
 from primer.session.delegation import (
@@ -1491,10 +1491,9 @@ def _observe_turn(
 #   primer/toolset/trigger.py:703     "trigger:<tid>"
 # Order matches the most-specific prefix-first principle so "tool_approval:"
 # doesn't accidentally match an earlier shorter prefix.
-_YIELD_KIND_PREFIXES = (
-    ("tool_approval:", "approval"),
-    ("ask_user:", "ask_user"),
-)
+# The table itself lives with ``Yielded`` (primer.model.yield_.YIELD_KIND_PREFIXES): the agent loop reads the same
+# one to tell a human gate (still parks under a Stop) from a park that waits on no decision (ended by it).
+_YIELD_KIND_PREFIXES = YIELD_KIND_PREFIXES
 
 
 def _classify_yield_kind(park: YieldToWorker) -> str:

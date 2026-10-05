@@ -123,6 +123,22 @@ class Yielded:
         )
 
 
+#: The event-key prefixes of the parks that ask a PERSON to decide, with the turn-log ``yield_kind`` each is recorded
+#: as. Every other key waits on something that needs no decision (a timer, a trigger, a remote task). One table for
+#: the two readers that must agree on what a human gate is, the turn log's classifier in ``primer.session.dispatch``
+#: and the agent loop's Stop handling, so a new gate kind cannot be added to one of them only.
+YIELD_KIND_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("tool_approval:", "approval"),
+    ("ask_user:", "ask_user"),
+)
+
+
+def asks_a_person(yielded: Yielded) -> bool:
+    """True when ``yielded`` parks the session on a human decision (a tool approval or an answer to ask_user)."""
+    key = yielded.event_key or ""
+    return any(key.startswith(prefix) for prefix, _kind in YIELD_KIND_PREFIXES)
+
+
 # ===========================================================================
 # Synthetic resume payloads
 # ===========================================================================
@@ -424,4 +440,6 @@ __all__ = [
     "ToolContext",
     "YieldToWorker",
     "ToolWaitPark",
+    "YIELD_KIND_PREFIXES",
+    "asks_a_person",
 ]

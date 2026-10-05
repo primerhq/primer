@@ -27,7 +27,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
 import primer.observability.metrics as _metrics
@@ -55,7 +55,7 @@ from primer.model.chat import (
     _LlmCall,
 )
 from primer.model.except_ import AuthRequiredError, PrimerError
-from primer.model.yield_ import ToolWaitPark
+from primer.model.yield_ import ToolWaitPark, YieldToWorker, asks_a_person
 
 
 if TYPE_CHECKING:
@@ -71,14 +71,22 @@ logger = logging.getLogger(__name__)
 _STOPPED_REFUSAL = "not run: stopped by user"
 # ... and when the round it asked for is the one that hit ``max_tool_turns``.
 _TOOL_CAP_REFUSAL = "not executed: tool-turn cap reached"
+# ... and when a Stop landed while the call that asked to park (or one before it) was running: that call, and the ones
+# before it in the batch, started and their results went with the park exception, so it cannot say "not run".
+_PARK_STOPPED_REFUSAL = "interrupted: stopped by user (the call may have run, and its result was not recorded)"
 
 
 def _answer_undispatched(
     tool_calls: list[ToolCallPart],
     text: str,
     messages_out: list[Message] | None,
+    *,
+    results: Mapping[str, ToolResultPart] | None = None,
 ) -> Iterator[ExtendedEvent]:
     """Answer every call of a round the loop is NOT going to run with a synthetic ERROR result.
+
+    ``results`` gives the answer for the calls that have one of their own (a notifying call that already ran keeps
+    its real result; a call that was running when a Stop ended its park says so); every other call gets ``text``.
 
     A tool call that no result answers leaves the persisted history invalid for the provider (Anthropic
     400s every later request, OpenAI Chat Completions rejects an assistant ``tool_calls`` no tool message
@@ -89,13 +97,42 @@ def _answer_undispatched(
     iterate it and yield what it yields: ``for ev in _answer_undispatched(...): yield ev``. An error
     result, rather than dropping the call, keeps the model told that it asked and was refused.
     """
-    parts = [ToolResultPart(id=call.id, output=text, error=True) for call in tool_calls]
+    own = results or {}
+    parts = [own.get(call.id) or ToolResultPart(id=call.id, output=text, error=True) for call in tool_calls]
     if messages_out is not None:
         messages_out.append(Message(role="tool", parts=parts))
     for part in parts:
         yield ExtendedEvent(
-            extended=_ExecutorToolResult(call_id=part.id, output=part.output, error=True, metadata=None)
+            extended=_ExecutorToolResult(call_id=part.id, output=part.output, error=part.error, metadata=part.metadata)
         )
+
+
+def _answer_a_stopped_park(
+    park: "YieldToWorker | ToolWaitPark",
+    tool_calls: list[ToolCallPart],
+    client_actions: "list[_ClientAction]",
+    messages_out: list[Message] | None,
+) -> Iterator[ExtendedEvent]:
+    """Answer the round whose dispatch ended in a park that a Stop has since made pointless.
+
+    The client actions the batch already delivered go out first (tool_call -> client_action -> tool_result, as in the
+    normal path). For a ``tool_wait`` batch the notifying calls already RAN and keep their real results, and the
+    claimable ones never started. For an in-process park the call that asked to wait and every call before it ran (or
+    is running), with their results lost to the exception, and the calls after it never started.
+    """
+    for action in client_actions:
+        yield ExtendedEvent(extended=action)
+    own: dict[str, ToolResultPart] = {}
+    if isinstance(park, ToolWaitPark):
+        own = {result.id: result for _scoped_id, result in park.notifying_results}
+    else:
+        started = True
+        for call in tool_calls:
+            if started:
+                own[call.id] = ToolResultPart(id=call.id, output=_PARK_STOPPED_REFUSAL, error=True)
+            if call.id == park.tool_call_id:
+                started = False
+    yield from _answer_undispatched(tool_calls, _STOPPED_REFUSAL, messages_out, results=own)
 
 
 class PromptGuard(Protocol):
@@ -368,13 +405,19 @@ async def run_agent_turn(
         result in place of its real one. A Stop that has landed BEFORE a round's
         batch starts runs none of it, answered the same way (appended to
         ``messages_out`` and yielded), so the history stays valid for the next
-        request. Only the call that is RUNNING when the Stop lands can park
-        (a timer yield, an approval or answer gate, or a ``tool_wait`` park):
-        the batch then leaves the loop before it looks at the Stop, and the
-        dispatch clears the flag as it parks, so that Stop is dropped rather
-        than ending the turn (a known gap; a park honouring a pending Stop is
-        its own follow-up). Calls later in the batch are refused once the Stop
-        is set, so they can neither park nor deliver a client action. A Cancel
+        request. Only the call that is RUNNING when the Stop lands can ask to
+        park (a timer yield, an approval or answer gate, or a ``tool_wait``
+        park). A park that waits on no human decision is ended as a Stop: the
+        loop catches the park exception while the event is set, answers the
+        round (the call that asked to wait and every call before it say
+        ``interrupted: stopped by user ...`` because their results went with
+        the exception, the later ones ``not run: stopped by user``, and a
+        ``tool_wait`` batch keeps its notifying calls' real results), appends
+        to ``interrupted_out`` and returns. A park that asks a PERSON (see
+        :data:`primer.model.yield_.YIELD_KIND_PREFIXES`) still parks and the
+        Stop is dropped: what they answer later wins. Calls later in the batch
+        are refused once the Stop is set, so they can neither park nor deliver
+        a client action. A Cancel
         sets the same event and is treated the same way (the dispatch then ends
         the session instead of resting it). ``None`` (the default) changes
         nothing.
@@ -643,16 +686,34 @@ async def run_agent_turn(
             return
 
         client_actions: list[_ClientAction] = []
-        tool_result_msgs = await _dispatch_tool_calls(
-            tool_calls,
-            tool_manager=tool_manager,
-            principal=principal,
-            actions_out=client_actions,
-            tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
-            resolve_scoped_call=resolve_scoped_call,
-            await_dispatch_barrier=await_dispatch_barrier,
-            interrupt=interrupt,
-        )
+        try:
+            tool_result_msgs = await _dispatch_tool_calls(
+                tool_calls,
+                tool_manager=tool_manager,
+                principal=principal,
+                actions_out=client_actions,
+                tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
+                resolve_scoped_call=resolve_scoped_call,
+                await_dispatch_barrier=await_dispatch_barrier,
+                interrupt=interrupt,
+            )
+        except (YieldToWorker, ToolWaitPark) as park:
+            # A Stop that landed while the call that asks to wait was running (it cannot be cancelled here: slice
+            # B) would be dropped by parking: the console then offers no Stop, and the timer later runs the work
+            # the user tried to stop. A park that waits on no human decision ends the turn as a Stop instead: the
+            # round is answered, so the history stays valid, and the caller sees the interruption exactly as for
+            # a Stop before the batch. A park that asks a person still parks (what they answer later wins).
+            if (
+                interrupt is None
+                or not interrupt.is_set()
+                or (isinstance(park, YieldToWorker) and asks_a_person(park.yielded))
+            ):
+                raise
+            for answer_event in _answer_a_stopped_park(park, tool_calls, client_actions, messages_out):
+                yield answer_event
+            if interrupted_out is not None:
+                interrupted_out.append(True)
+            return
         # Delivery frames go out BEFORE the results so the session log
         # reads tool_call -> client_action -> tool_result, matching the
         # notifying contract (deliver, then answer).
@@ -731,7 +792,9 @@ async def _dispatch_tool_calls(
     that has NOT started is answered ``not run: stopped by user`` instead of running, so a
     Stop pressed during call 1 does not see calls 2..N execute. The batch is still
     answered in full, in order, so the history stays paired. The claims path
-    (:func:`_dispatch_as_claims`) parks the batch and is not covered.
+    (:func:`_dispatch_as_claims`) parks the batch and is not covered by this per-call check. A park raised by the
+    call that was RUNNING when the Stop landed leaves through the exception: ``run_agent_turn`` ends it as a Stop
+    (see its ``interrupt`` parameter).
 
     When ``tool_calls_as_claims_enabled`` and the batch has at least one
     CLAIMABLE call (see :func:`_partition_notifying`), routes to
