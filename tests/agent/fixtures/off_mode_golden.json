@@ -1517,8 +1517,8 @@
    ]
   }
  ],
- "captured_from": "11218825cdda833cb0af2d07df0453946aa97510",
- "captured_from_subject": "test(budget): the golden's provenance names this branch's primer/ tree",
+ "captured_from": "b215bb2ab5f48caa5bef669b78b2ba49a07bf354",
+ "captured_from_subject": "fix(agent): an overflow delivered as a yielded Error is recovered like a raised one, with one terminal record",
  "recaptures": [
   {
    "changed_turns": [
