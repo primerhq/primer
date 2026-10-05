@@ -204,10 +204,13 @@ intact, so the next message continues it:
   If it waits on no person (a timer, a trigger, a remote task, a batch of
   tool calls handed to workers), the Stop ends the turn instead: the session
   lands in `waiting` and every call of that round is answered in the
-  transcript ("interrupted: stopped by user ..." for the call that asked to
-  wait and the ones before it, whose results were not recorded, and "not run:
-  stopped by user" for the ones after it). What that tool already started
-  (a remote task it submitted, a timer it set) is not cancelled. If it is
+  transcript (the calls that finished before the one that asked to wait keep
+  their real results, "interrupted: stopped by user ..." for the call that
+  asked to wait, whose result was not recorded, and "not run: stopped by user"
+  for the ones after it). A pending call to a tool you supplied yourself
+  (`external_tool`) is cancelled too, so it no longer shows as pending. What
+  else that tool already started (a remote task it submitted, a timer it
+  set) is not cancelled. If it is
   asking a person (a tool approval, an `ask_user` question), the session
   parks as before and the Stop is dropped, because the answer wins; Stop is
   then refused with 409 and Cancel is the way out. Calls later in the batch
