@@ -293,6 +293,14 @@ session_interrupt_publish_failures_total = Counter(
     registry=registry,
 )
 
+session_completed_turn_noop_total = Counter(
+    "session_completed_turn_noop_total",
+    "Session claims that found the previous turn completed (completed_turn_no == turn_no) "
+    "but its release never committed (abandoned or rolled back), and released without "
+    "calling the model again. Each one is a turn that would otherwise have run twice.",
+    registry=registry,
+)
+
 
 # ---------------------------------------------------------------------------
 # Cardinality guard (S7 section 4, crosscheck m2)
@@ -380,6 +388,7 @@ def reset_for_test() -> None:
     global llm_calls_total, llm_profile_tokens_total, sessions_active  # noqa: PLW0603
     global session_interrupts_via_poll_total  # noqa: PLW0603
     global session_interrupt_publish_failures_total  # noqa: PLW0603
+    global session_completed_turn_noop_total  # noqa: PLW0603
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
     global compaction_outcomes_total  # noqa: PLW0603
 
@@ -585,6 +594,13 @@ def reset_for_test() -> None:
         "session row and the running worker recovers it by polling, so it is delayed, not lost.",
         registry=registry,
     )
+    session_completed_turn_noop_total = Counter(
+        "session_completed_turn_noop_total",
+        "Session claims that found the previous turn completed (completed_turn_no == turn_no) "
+        "but its release never committed (abandoned or rolled back), and released without "
+        "calling the model again. Each one is a turn that would otherwise have run twice.",
+        registry=registry,
+    )
 
 
 __all__ = [
@@ -626,4 +642,6 @@ __all__ = [
     # Stop (interrupt)
     "session_interrupts_via_poll_total",
     "session_interrupt_publish_failures_total",
+    # Completed-turn re-claim guard
+    "session_completed_turn_noop_total",
 ]
