@@ -22,9 +22,6 @@ import primer.model.workspace_session as ws_model
 from primer.model.common import dump_for_storage
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 
-_RED_FIRST = pytest.mark.xfail(strict=True, reason="red-first: the fields and status lists do not exist yet")
-
-
 def _session(**kw) -> WorkspaceSession:
     return WorkspaceSession(
         id="s1", workspace_id="w1", binding=AgentSessionBinding(agent_id="a1"),
@@ -37,7 +34,6 @@ def _session(**kw) -> WorkspaceSession:
 # ---------------------------------------------------------------------------
 
 
-@_RED_FIRST
 def test_both_fields_default_to_null_and_are_served() -> None:
     s = _session()
 
@@ -48,7 +44,6 @@ def test_both_fields_default_to_null_and_are_served() -> None:
     assert "resumable_at" in served and served["resumable_at"] is None
 
 
-@_RED_FIRST
 def test_a_marked_and_stamped_row_round_trips_through_json_and_storage() -> None:
     stamp = datetime(2026, 10, 5, 12, 30, tzinfo=timezone.utc)
     s = _session(parked_tool_batches=True, resumable_at=stamp)
@@ -62,7 +57,6 @@ def test_a_marked_and_stamped_row_round_trips_through_json_and_storage() -> None
     assert WorkspaceSession.model_validate(stored).resumable_at == stamp
 
 
-@_RED_FIRST
 def test_the_marker_is_cleared_to_null_and_false_is_refused() -> None:
     """``Literal[True] | None``: the only cleared value is ``None``; ``False`` would land in the partial index."""
     cleared = _session(parked_tool_batches=True).model_copy(update={"parked_tool_batches": None})
@@ -74,7 +68,6 @@ def test_the_marker_is_cleared_to_null_and_false_is_refused() -> None:
         WorkspaceSession.model_validate({**dump_for_storage(_session()), "parked_tool_batches": False})
 
 
-@_RED_FIRST
 def test_a_row_written_before_the_fields_existed_reads_them_as_null() -> None:
     stored = dump_for_storage(_session())
     del stored["parked_tool_batches"], stored["resumable_at"]
@@ -89,7 +82,6 @@ def test_a_row_written_before_the_fields_existed_reads_them_as_null() -> None:
 # ---------------------------------------------------------------------------
 
 
-@_RED_FIRST
 def test_non_ended_statuses_is_every_status_but_ended() -> None:
     statuses = ws_model.NON_ENDED_STATUSES()
 
@@ -99,7 +91,6 @@ def test_non_ended_statuses_is_every_status_but_ended() -> None:
     assert all(type(s) is str for s in statuses)
 
 
-@_RED_FIRST
 def test_non_ended_statuses_not_paused_is_every_status_but_ended_and_paused() -> None:
     statuses = ws_model.NON_ENDED_STATUSES_NOT_PAUSED()
 
@@ -109,7 +100,6 @@ def test_non_ended_statuses_not_paused_is_every_status_but_ended_and_paused() ->
     assert all(type(s) is str for s in statuses)
 
 
-@_RED_FIRST
 def test_both_lists_are_derived_at_call_time_so_a_new_status_is_included(monkeypatch) -> None:
     """A status added to the enum joins both lists with no edit: a hand-written list would leave it out, and a hook
     whose ``where`` named that list would silently refuse to wake a session in the new status."""
@@ -130,7 +120,6 @@ def test_both_lists_are_derived_at_call_time_so_a_new_status_is_included(monkeyp
     assert set(ws_model.NON_ENDED_STATUSES_NOT_PAUSED()) == {"created", "running", "waiting", "archiving"}
 
 
-@_RED_FIRST
 def test_each_call_returns_a_fresh_list() -> None:
     first = ws_model.NON_ENDED_STATUSES()
     first.append("ended")
