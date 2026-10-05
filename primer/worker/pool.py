@@ -154,6 +154,12 @@ class WorkerPool:
         # 2 s), 20 s at the defaults.
         self._release_timeout_seconds: float = float(config.lease_ttl_seconds - config.heartbeat_interval_seconds)
         self._release_timeouts_total: int = 0
+        # After a timed-out release, how long the one ``has_lease`` probe that decides its outcome may take: a primary-key
+        # lookup that has not answered in a heartbeat interval counts as no answer, and the bound plus the probe stay
+        # within one lease TTL.
+        self._release_probe_timeout_seconds: float = float(config.heartbeat_interval_seconds)
+        # Timed-out releases whose probe found the lease row gone (they evidently committed); a subset of the above.
+        self._release_timeouts_committed_total: int = 0
         # How long drain waits for the claim loop to finish the iteration it is in (and for hand-backs).
         self._claim_stop_grace_seconds: float = 5.0
         self._wake = asyncio.Event()
@@ -401,6 +407,7 @@ class WorkerPool:
             "primer_worker_claims_returned_on_drain_total": self._claims_returned_on_drain_total,
             "primer_worker_claim_returns_failed_on_drain_total": self._claim_returns_failed_on_drain_total,
             "primer_worker_release_timeouts_total": self._release_timeouts_total,
+            "primer_worker_release_timeouts_committed_total": self._release_timeouts_committed_total,
             "primer_session_turns_total": dict(self._turns_total_by_result),
             "primer_session_turn_duration_seconds": {
                 "count": self._turn_duration_count,
@@ -1090,10 +1097,18 @@ class WorkerPool:
         lease was genuinely lost), so without a bound only the drain timeout would end it. The bound is no longer than
         that because a slow release is not harmless to the worker's OTHER leases: on Postgres the heartbeat's single
         ``UPDATE`` waits on this release's row lock, so none of them is refreshed until the release ends, and each can
-        lapse one TTL after its last refresh (see ``__init__``). On timeout the release is cancelled (its transaction
-        rolls back), the failure is counted and logged, and the ``TimeoutError`` propagates: the caller treats it like
-        any failed release. The key then leaves ``_in_flight``, nothing heartbeats the lease, it expires after one TTL
-        and a peer re-claims it (slower, not lost: the same outcome as a failed drain hand-back).
+        lapse one TTL after its last refresh (see ``__init__``). On timeout the release is cancelled and counted.
+
+        A timed-out release has an UNKNOWN outcome, not a failed one: the bound also covers what follows the commit
+        (the post-release hook, the COMMIT's own reply), so the release may well have committed. One bounded probe
+        (``has_lease``, within ``_release_probe_timeout_seconds``) decides. Lease row ABSENT: the release evidently
+        committed (or something else removed the lease; either way there is no lease left to wait for), so this
+        returns normally and the caller runs exactly what it runs after a release that returned (the session handler
+        re-arms a queued steer, which would otherwise be stranded with no lease); counted again in
+        ``_release_timeouts_committed_total``. Lease row PRESENT, or the probe failed or timed out (unknown): the
+        ``TimeoutError`` propagates and the caller treats it like any failed release. The key then leaves
+        ``_in_flight``, nothing heartbeats the lease, it expires after one TTL and a peer re-claims it (slower, not
+        lost: the same outcome as a failed drain hand-back).
         """
         scope = self._active_scopes.get((lease.kind, lease.entity_id))
         if scope is not None:
@@ -1105,8 +1120,26 @@ class WorkerPool:
             if not bound.expired():
                 raise  # the engine's own timeout (a command timeout), not this bound: not ours to count
             self._release_timeouts_total += 1
+            try:
+                async with asyncio.timeout(self._release_probe_timeout_seconds):
+                    gone = not await self._engine.has_lease(lease.kind, lease.entity_id)
+            except Exception:  # the probe's own timeout too: the outcome stays unknown, treated as still there
+                logger.warning(
+                    "probing the lease of %s/%s after its release timed out failed", lease.kind, lease.entity_id,
+                    exc_info=True,
+                )
+                gone = False
+            if gone:
+                self._release_timeouts_committed_total += 1
+                logger.error(
+                    "releasing %s/%s did not finish within %.1fs; outcome unknown, but its lease row is gone, so it "
+                    "evidently committed: carrying on as after a release",
+                    lease.kind, lease.entity_id, self._release_timeout_seconds,
+                )
+                return
             logger.error(
-                "releasing %s/%s did not finish within %.1fs; abandoning it (the lease expires and a peer re-claims it)",
+                "releasing %s/%s did not finish within %.1fs; outcome unknown and its lease row is still there (or the "
+                "probe could not tell): abandoning it (the lease expires and a peer re-claims it)",
                 lease.kind, lease.entity_id, self._release_timeout_seconds,
             )
             raise
