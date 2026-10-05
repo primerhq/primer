@@ -348,6 +348,14 @@ class TestWhenAReplayIsHopeless:
     def test_the_decision(self, case, futile) -> None:
         assert _BaseAgentExecutor._replay_is_futile(self._forced(**case)) is futile
 
+    def test_with_completed_rounds_an_unreducible_result_always_ends_the_turn(self) -> None:
+        """The replay-continues recovery: an unreducible compaction wrote no marker, so continuing would hold the folded
+        rounds in memory only. (A prune with no rounds is the one case that still gets its replay.)"""
+        rounds = [_msg("assistant", "a round")]
+        assert _BaseAgentExecutor._replay_is_futile(self._forced(pruned=3), rounds=rounds) is True
+        assert _BaseAgentExecutor._replay_is_futile(self._forced(pruned=3)) is False
+        assert _BaseAgentExecutor._replay_is_futile(self._forced(outcome="summarised"), rounds=rounds) is False
+
     def test_the_strategy_states_the_budget_it_measured_against(self) -> None:
         """The decision reads it from the result, so every verdict has to carry it."""
         strategy = CompactionStrategy()
