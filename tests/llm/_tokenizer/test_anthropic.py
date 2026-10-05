@@ -192,11 +192,11 @@ class TestFailuresRaiseMappedErrors:
             await _count(_FakeClient(exc=exc))
 
     async def test_a_count_that_outlives_the_deadline_is_a_timeout_not_a_long_wait(self) -> None:
-        client, calls = _sleeping_client(3.0)
+        client, calls = _sleeping_client(30.0)
         started = time.monotonic()
         with pytest.raises(ProviderTimeoutError):
             await _count(client, timeout_s=0.1)
-        assert time.monotonic() - started < 1.0, "the call waited out the sleep"
+        assert time.monotonic() - started < 10.0, "the call waited out the sleep"
         assert calls["n"] == 1
 
     async def test_a_connection_failure_is_a_network_error(self) -> None:
@@ -279,7 +279,7 @@ class TestThroughTheWrapper:
         assert client.messages.count_tokens.await_count == 1
 
     async def test_a_slow_count_is_a_cached_timeout_through_the_wrapper(self) -> None:
-        client, calls = _sleeping_client(3.0)
+        client, calls = _sleeping_client(30.0)
         cache = NegativeCache()
         llm = self._Llm(client, timeout_s=0.1)
         started = time.monotonic()
@@ -287,7 +287,7 @@ class TestThroughTheWrapper:
         second = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
         assert (first.outcome, second.outcome) == ("fallback_timeout", "negative_cached")
         assert calls["n"] == 1
-        assert time.monotonic() - started < 1.0
+        assert time.monotonic() - started < 10.0
 
     async def test_a_working_client_is_labelled_native(self) -> None:
         result = await count_prompt_tokens(
@@ -304,7 +304,8 @@ class TestTheRealClientIsBounded:
     every byte: with the old code a ``timeout_s`` of 0.5 returned successfully after
     ~5 s (and 12 s at 1.0 against a slower trickle)."""
 
-    BODY = b'{"input_tokens": 7, "type": "message_tokens_count"}'
+    # Trailing JSON whitespace pads the body to ~300 bytes: at BYTE_DELAY_S each, a call with no deadline takes ~30s.
+    BODY = b'{"input_tokens": 7, "type": "message_tokens_count"}' + b" " * 250
     BYTE_DELAY_S = 0.1
 
     def _server(self):
@@ -346,7 +347,7 @@ class TestTheRealClientIsBounded:
         try:
             with pytest.raises(ProviderTimeoutError):
                 await _count(client, timeout_s=0.5)
-            assert time.monotonic() - started < 2.0, "the whole call must stop at timeout_s"
+            assert time.monotonic() - started < 10.0, "the whole call must stop at timeout_s"
         finally:
             stop.set()
             listener.close()
