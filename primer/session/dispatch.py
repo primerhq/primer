@@ -33,7 +33,6 @@ from primer.int.claim import (
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 import primer.observability.metrics as _metrics
-from primer.model.chat import TurnStreamFailure
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
@@ -1105,10 +1104,9 @@ async def run_one_session_turn(
                 # fallback), so monitoring can tell "the LLM was
                 # unreachable" apart from "some other internal error"
                 # instead of both reading as an undifferentiated "failed".
-                ended_detail=(
-                    exc.ended_detail_code
-                    if isinstance(exc, TurnStreamFailure) else None
-                ),
+                # Any exception that names why it ended the turn (a TurnStreamFailure, the executor's
+                # ContextOverflowUnrecoverable) carries its own code.
+                ended_detail=getattr(exc, "ended_detail_code", None),
                 executor=executor,
                 expected_epoch=session.binding_epoch,
             )

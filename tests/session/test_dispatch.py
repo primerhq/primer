@@ -27,6 +27,7 @@ from primer.model.chat import (
     ToolCallStart,
     TurnStreamFailure,
 )
+from primer.model.except_ import ContextOverflowUnrecoverable
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionMessageKind,
@@ -1122,6 +1123,43 @@ async def test_turn_stream_failure_ended_detail_falls_back_when_code_unset(
     row = await storage.get(seeded_session.id)
     assert row.ended_reason == "failed"
     assert row.ended_detail == "llm_stream_error"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "detail"),
+    [
+        (ContextOverflowUnrecoverable("the prompt is too large (fixed_over_budget)"), "context_overflow_unrecoverable"),
+        (RuntimeError("kaboom"), None),
+    ],
+    ids=["overflow-compaction-cannot-fix", "any-other-error"],
+)
+async def test_an_exception_that_names_why_it_ended_the_turn_sets_ended_detail(
+    failure: Exception,
+    detail: str | None,
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """The executor's ContextOverflowUnrecoverable carries its own code, so monitoring can tell "the prompt cannot
+    fit this model" apart from every other internal failure; an exception that names nothing leaves it unset."""
+    fake_executor = FakeExecutor([failure])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+
+    assert outcome.success is False
+    row = await fake_storage_provider.get_storage(WorkspaceSession).get(seeded_session.id)
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", detail)
 
 
 @pytest.mark.asyncio
