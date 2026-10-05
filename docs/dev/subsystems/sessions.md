@@ -57,9 +57,22 @@ Four rules make that safe:
   IDENTICAL write was skipped, so a clean completion landing a moment later
   wrote ENDED/`completed` over ENDED/`force_deleted`, or a `WAITING` over an
   ENDED row (resurrecting it with a stale reason). A turn never reopens a
-  session; that is `wake_session`'s job. The turn's later steps (the
-  `session.replied` event, the terminal event) still describe the outcome the
-  turn computed, not the row's: only the row and the slot are protected.
+  session; that is `wake_session`'s job. The guard is a CONDITIONAL write
+  (`update_unless`, forbidden status ENDED, as `yields.py` does for a park),
+  not a check on the helper's own snapshot: force-delete, the reconciler and
+  the pool's `_end_session` write without the lifecycle lock, so the row can
+  be ended between the helper's read and its write. The helper returns what the
+  row says afterwards (`_TerminalWrite`: whether it landed, the status and the
+  ended reason), and the callers that announce the outcome use that, not the
+  outcome they computed: the terminal event (and so `session.ended` in the
+  durable event log) carries the row's own reason, and the final-result relay
+  stays quiet for a session that was ended under the turn. The on-disk slot
+  follows the ROW when the write is skipped: the pool's `_end_session` ends a
+  row without touching the slot, so the reason is mirrored onto `session.json`
+  when the slot accepts it (`completed`, `failed`, `cancelled`,
+  `tool_turn_cap`); `force_deleted` and `workspace_lost` are not mirrored (the
+  slot of a deleted session is being removed, and an unknown reason would be
+  written as `completed`).
 - **One run per session.** A steer arriving while a turn is open becomes a
   seq-less `PendingSessionMessage`, realized at the checkpoint. Allocating
   a seq at receipt is what collided with in-flight token seqs on the older

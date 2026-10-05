@@ -24,7 +24,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NamedTuple, Protocol, runtime_checkable
 from collections.abc import Awaitable, Callable
 
 from primer.int.claim import (
@@ -576,7 +576,7 @@ async def run_one_session_turn(
                 session_id,
             )
         async with session_lifecycle_lock().acquire(session_id):
-            await _transition_session_status(
+            written = await _transition_session_status(
                 session_storage,
                 session,
                 new_status=SessionStatus.ENDED,
@@ -594,9 +594,9 @@ async def run_one_session_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
-        await _publish_terminal(
-            deps, session, SessionStatus.ENDED, "failed",
-        )
+        # What the ROW says: if the session was ended by something else while the turn failed, that is
+        # the reason the event log must carry (the turn's own failure is still counted below).
+        await _publish_terminal(deps, session, written.status, written.ended_reason)
         await turn_log.aclose()
         await _apply_pending_switch_at_checkpoint(deps, session)
         await _realize_pending_at_checkpoint(deps, session)
@@ -1261,6 +1261,7 @@ async def run_one_session_turn(
     # it here too -- every terminal path must, or it leaks into a future
     # turn and can downgrade a later genuine Cancel to a Stop.
     late_cancel = False
+    written: _TerminalWrite | None = None
     async with session_lifecycle_lock().acquire(session_id):
         # The Cancel route takes this same lock, so the row read here cannot be stale: a Cancel that
         # landed in the window since the check above wins over whatever the turn's own stop reason
@@ -1272,7 +1273,7 @@ async def run_one_session_turn(
             # relay), which re-decides and writes inside its own acquisition of this lock below.
             late_cancel = True
         else:
-            await _transition_session_status(
+            written = await _transition_session_status(
                 session_storage,
                 session,
                 new_status=new_status,
@@ -1290,6 +1291,11 @@ async def run_one_session_turn(
             started_at=_turn_started_at,
         ))
 
+    assert written is not None   # the only other branch above returned
+    # The row was ended by something else while the turn finished (a force-delete, the pool's preempt
+    # convergence, the reconciler) and the write was skipped: announce what the ROW says, so the durable
+    # event log does not contradict it, and relay no answer for a session that was ended under the turn.
+    overridden = not written.landed and (written.status, written.ended_reason) != (new_status, ended_reason)
     _observe_turn(
         session,
         "failed" if ended_reason == "failed" else "completed",
@@ -1305,7 +1311,7 @@ async def run_one_session_turn(
         },
     )
     await _publish_terminal(
-        deps, session, new_status, ended_reason,
+        deps, session, written.status, written.ended_reason,
     )
 
     # Every terminal exit drains, not just this one: a queued steer is
@@ -1349,7 +1355,7 @@ async def run_one_session_turn(
         and agent_status != SessionStatus.WAITING
         and last_done_reason in ("stop", "end_turn", "stop_sequence")
     )
-    if deps.channel_dispatcher is not None and (
+    if deps.channel_dispatcher is not None and not overridden and (
         relay_every_turn
         or (
             new_status == SessionStatus.ENDED
@@ -1710,7 +1716,7 @@ async def _land_cancelled_turn(
                 new_status, ended_reason = _interrupt_post_status()
             else:
                 new_status, ended_reason = SessionStatus.ENDED, "cancelled"
-            await _transition_session_status(
+            written = await _transition_session_status(
                 session_storage,
                 session,
                 new_status=new_status,
@@ -1718,6 +1724,9 @@ async def _land_cancelled_turn(
                 executor=executor,
                 expected_epoch=session.binding_epoch,
             )
+            # The row may have been ended between the decision above and the write by a writer that does
+            # not take this lock: announce what it says.
+            new_status, ended_reason = written.status, written.ended_reason
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
@@ -2316,6 +2325,58 @@ async def _write_agent_phase(
         )
 
 
+class _TerminalWrite(NamedTuple):
+    """What a turn's terminal write left on the row, for the callers that ANNOUNCE the outcome.
+
+    ``landed`` is True when this write changed the row. ``status`` / ``ended_reason`` are what the row now
+    says: the outcome the turn asked for when it landed or when there was nothing to protect (an identical
+    repeat, an epoch-voided write, a vanished row), and the row's OWN outcome when the row was already
+    ENDED and the write was skipped. A caller announces these, not the outcome it computed, so the durable
+    event log cannot contradict the row.
+    """
+
+    landed: bool
+    status: SessionStatus
+    ended_reason: str | None
+
+
+# The ended reasons the on-disk AgentSession slot accepts (see AgentSession.set_status).
+_SLOT_ENDED_REASONS = ("completed", "failed", "cancelled", "tool_turn_cap")
+
+
+async def _leave_ended_row_alone(
+    session: WorkspaceSession,
+    ended: WorkspaceSession,
+    new_status: SessionStatus,
+    ended_reason: str | None,
+    *,
+    executor: Any,
+    workspace_registry: Any | None,
+) -> _TerminalWrite:
+    """The first terminal reason wins: report the row's own outcome instead of writing the turn's.
+
+    Something else ended this session while the turn ran (a force-delete wrote ENDED/force_deleted, the pool's
+    preempt convergence ENDED/cancelled, the reconciler ENDED/workspace_lost) and the turn's own outcome
+    arrives after it. Writing it would hide why the session ended, resurrect the row (a WAITING over an ENDED
+    one) and mirror the wrong reason onto the on-disk slot. Every caller is a turn writing ITS outcome; none
+    reopens a session (that is wake_session's job, not a turn's).
+
+    The slot is brought in line with the ROW, not left as it was: the pool's ``_end_session`` ends a row without
+    touching the slot, so with the turn's own mirror skipped nothing else would take ``session.json`` out of
+    RUNNING. Only a reason the slot accepts is mirrored (``force_deleted`` and ``workspace_lost`` are not: the
+    slot of a deleted session is being removed, and an unknown reason would be written as ``completed``).
+    """
+    logger.info(
+        "session %s: the row is already ENDED (%s); not overwriting it with %s/%s",
+        session.id, ended.ended_reason, new_status.value, ended_reason,
+    )
+    if ended.ended_reason in _SLOT_ENDED_REASONS:
+        await _sync_agent_session_ended(
+            executor, ended.ended_reason, session=session, workspace_registry=workspace_registry,
+        )
+    return _TerminalWrite(False, SessionStatus.ENDED, ended.ended_reason)
+
+
 async def _transition_session_status(
     session_storage,
     session: WorkspaceSession,
@@ -2326,8 +2387,10 @@ async def _transition_session_status(
     executor=None,
     expected_epoch: int | None = None,
     workspace_registry: Any | None = None,
-) -> None:
+) -> _TerminalWrite:
     """Update the WorkspaceSession row in storage. Idempotent on no-op.
+
+    Returns what the row says afterwards (:class:`_TerminalWrite`); callers that announce the outcome use it.
 
     When ``new_status`` is ENDED and an ``executor`` is supplied, the
     terminal status is ALSO mirrored onto the executor's on-disk
@@ -2352,7 +2415,7 @@ async def _transition_session_status(
     # Re-read the current row so we don't overwrite concurrent changes.
     fresh = await session_storage.get(session.id)
     if fresh is None:
-        return
+        return _TerminalWrite(False, new_status, ended_reason)
     if expected_epoch is not None and fresh.binding_epoch != expected_epoch:
         # The binding switched while this turn ran. The terminal status
         # describes work done for a binding the session has left, so
@@ -2363,23 +2426,16 @@ async def _transition_session_status(
             "(row is at epoch %s)",
             session.id, expected_epoch, fresh.binding_epoch,
         )
-        return
+        return _TerminalWrite(False, new_status, ended_reason)
     if fresh.status == new_status and (
         ended_reason is None or fresh.ended_reason == ended_reason
     ):
-        return
+        return _TerminalWrite(False, new_status, ended_reason)
     if fresh.status == SessionStatus.ENDED:
-        # The first terminal reason wins. Something else ended this session while the turn ran (a
-        # force-delete wrote ENDED/force_deleted, the pool's preempt convergence ENDED/cancelled, the
-        # reconciler ENDED/workspace_lost) and the turn's own outcome arrives after it. Writing it
-        # would hide why the session ended, resurrect the row (a WAITING over an ENDED one) and mirror
-        # the wrong reason onto the on-disk slot. Every caller is a turn writing ITS outcome; none
-        # reopens a session (that is wake_session's job, not a turn's).
-        logger.info(
-            "session %s: the row is already ENDED (%s); not overwriting it with %s/%s",
-            session.id, fresh.ended_reason, new_status.value, ended_reason,
+        return await _leave_ended_row_alone(
+            session, fresh, new_status, ended_reason,
+            executor=executor, workspace_registry=workspace_registry,
         )
-        return
     updates: dict[str, object | None] = {"status": new_status}
     if new_status == SessionStatus.ENDED:
         updates["ended_at"] = datetime.now(timezone.utc)
@@ -2396,12 +2452,27 @@ async def _transition_session_status(
     # stranding the lease -- and it means the ENDED-only code below (the
     # on-disk AgentSession mirror, and the caller's _publish_terminal) never
     # runs for a status this process never actually persisted.
-    await session_storage.update(fresh.model_copy(update=updates))
+    #
+    # A CONDITIONAL write: the check above is on this helper's own snapshot, and force-delete, the reconciler
+    # and the pool's _end_session write without the lifecycle lock, so the row can be ended between that read
+    # and this write. The backend refuses the write in the same statement if the stored status is ENDED.
+    landed = await session_storage.update_unless(
+        fresh.model_copy(update=updates), field="status", forbidden=SessionStatus.ENDED.value,
+    )
+    if landed is None:
+        ended_now = await session_storage.get(session.id)
+        if ended_now is None:
+            return _TerminalWrite(False, new_status, ended_reason)
+        return await _leave_ended_row_alone(
+            session, ended_now, new_status, ended_reason,
+            executor=executor, workspace_registry=workspace_registry,
+        )
     if new_status == SessionStatus.ENDED:
         await _sync_agent_session_ended(
             executor, ended_reason,
             session=session, workspace_registry=workspace_registry,
         )
+    return _TerminalWrite(True, new_status, ended_reason)
 
 
 async def _sync_agent_session_ended(
@@ -2470,9 +2541,7 @@ async def _sync_agent_session_ended(
             current = await inner.status()
             if current == SessionStatus.ENDED:
                 return
-            reason = ended_reason if ended_reason in (
-                "completed", "failed", "cancelled", "tool_turn_cap",
-            ) else "completed"
+            reason = ended_reason if ended_reason in _SLOT_ENDED_REASONS else "completed"
             await set_status(SessionStatus.ENDED, ended_reason=reason)
     except TimeoutError:
         logger.warning(
