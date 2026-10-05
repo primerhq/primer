@@ -103,6 +103,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+#: How long a cancelled turn waits for its forced compaction's marker commit to finish before it stops waiting (the
+#: commit itself is not cancelled): bounded so a drain can abort a turn stuck on a dead storage.
+_MARKER_COMMIT_GRACE_S = 30.0
+
+
+def _consume_abandoned_commit(commit: "asyncio.Future") -> None:
+    """Retrieve what an abandoned marker commit dies of, so it is logged and not "never retrieved"."""
+    if not commit.cancelled() and commit.exception() is not None:
+        logger.warning("AgentExecutor: the abandoned compaction marker commit failed", exc_info=commit.exception())
+
+
 def refuse_compaction_summaries(messages: "list[Message]", where: str) -> None:
     """A :class:`CompactionSummary` is a structural tag on an ordinary message: it does not survive JSON, so one that
     is persisted as a message line or stamped into a parked state comes back as a reply the model wrote, and the
@@ -572,14 +583,32 @@ class _BaseAgentExecutor(ABC):
                 # Wait for the commit to be DONE, through any further cancel: a cancel that lands on this wait
                 # cancels the await and not the write (a thread writes the marker and it lands whatever the task
                 # does), so reading it as "the commit failed" would leave the record holding rounds the marker has.
+                # The wait is BOUNDED, like the dispatch's own shelter for a cancelled exit
+                # (``_finish_despite_cancel``): a drain must still be able to abort a turn whose commit hangs on a
+                # dead storage or workspace.
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + _MARKER_COMMIT_GRACE_S
                 while not write.done():
                     try:
-                        await asyncio.shield(write)
+                        # ``asyncio.wait`` does not cancel what it waits on when this task is cancelled
+                        await asyncio.wait({write}, timeout=max(0.0, deadline - loop.time()))
                     except asyncio.CancelledError:
                         continue
-                    except Exception:  # noqa: BLE001 -- inspected below, from the future
-                        break
-                if write.cancelled() or write.exception() is not None:
+                    if not write.done():
+                        break                   # the grace is up
+                if not write.done():
+                    # Unknown outcome. The commit is a thread that may still land: assume it will, because writing
+                    # the rounds again would put every tool_use id in the history twice (a 400 on every later
+                    # request), whereas rounds that never land are only run again.
+                    write.add_done_callback(_consume_abandoned_commit)
+                    logger.error(
+                        "AgentExecutor: the compaction marker commit did not finish within %gs of the cancel; "
+                        "assuming it lands, and not writing the turn's rounds a second time",
+                        _MARKER_COMMIT_GRACE_S, extra={"agent_id": self._agent.id},
+                    )
+                    if forced.summary_message is not None:
+                        fold_into_record()
+                elif write.cancelled() or write.exception() is not None:
                     logger.warning(
                         "AgentExecutor: the compaction marker commit failed while the turn was being cancelled; "
                         "the turn's rounds stay in the record",
