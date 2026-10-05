@@ -98,10 +98,6 @@ class CompactionToolExecutor(Protocol):
 # unbounded during an automatic, unattended step.
 DEFAULT_COMPACTION_TOOL_TURNS = 8
 
-# What the summariser's reduced input may take of the room its window leaves (the estimate is a heuristic, and the
-# call that made the recovery necessary has just overflowed, so the provider counted more than we did), and the
-# largest chunk of its rolling fold as a fraction of the budget.
-
 
 logger = logging.getLogger(__name__)
 

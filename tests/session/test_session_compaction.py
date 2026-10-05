@@ -234,6 +234,29 @@ class TestKeptTail:
         payload = json.loads(io.lines[0])["payload"]
         assert (payload["outcome"], payload["unreducible"], payload["trigger_tokens"]) == ("insufficient", "over_trigger", 82_627)
 
+    async def test_the_outcome_and_the_marker_say_what_was_done_to_the_summarisers_input(self):
+        io = _IO()
+        reduced = {"pruned": 2, "folded_chunks": 0, "truncated_parts": 1}
+
+        async def run(_history):
+            r = self._result("rolled up", [])
+            r.summary_input_reduced = reduced
+            return r
+
+        outcome = await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+        assert outcome.summary_input_reduced == reduced
+        assert json.loads(io.lines[0])["payload"]["summary_input_reduced"] == reduced
+
+    async def test_a_compaction_whose_summariser_did_not_overflow_has_no_reduction_anywhere(self):
+        io = _IO()
+
+        async def run(_history):
+            return self._result("rolled up", [])
+
+        outcome = await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+        assert outcome.summary_input_reduced is None
+        assert "summary_input_reduced" not in json.loads(io.lines[0])["payload"]
+
     async def test_a_compaction_that_summarised_nothing_writes_no_marker(self):
         """An empty summary would fold the whole history into nothing: refuse, and write nothing."""
         io = _IO()
