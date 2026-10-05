@@ -1239,16 +1239,11 @@ class WorkerPool:
         (still held-by-us, about to be dropped) lease's priority and be
         wiped out the instant release runs.
 
-        On the normal-turn path ``run_one_session_turn`` overwrites
-        whatever ``turn_status`` it started with: the turn start writes
-        ``"running"`` unconditionally (``primer.session.dispatch``), and
-        every exit clears ``"running"`` back to ``"idle"`` only where the
-        row does not read ``"claimable"``. So after a turn a lingering
-        ``turn_status == "claimable"`` can only mean a ``wake_session()``
-        steer landed after that start write (during, or right after, the
-        turn that just released) -- not a stale, already-serviced signal.
-        The resume branch writes no ``turn_status``; after it the value is
-        whatever the row already held.
+        ``run_one_session_turn`` consumes ("idle"s) any ``turn_status``
+        it started with before running the turn, so a lingering
+        ``turn_status == "claimable"`` at this point can only mean a
+        ``wake_session()`` steer landed during (or right after) the turn
+        that just released -- not a stale, already-serviced signal.
 
         No-ops when the session ended (a restart is required, and reset
         clears turn_status itself) or is not RUNNING/WAITING (e.g.
