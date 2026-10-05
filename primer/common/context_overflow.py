@@ -60,6 +60,7 @@ _BAD_REQUEST = "bad_request"
 #   llama.cpp / lmstudio : "the request exceeds the available context size"
 #   xai               : "This model's maximum prompt length is N but the request contains M tokens."
 #   groq              : "Please reduce the length of the messages or completion."
+#   vllm (input proc.): "The decoder prompt (length 5951) is longer than the maximum model length of 4096."
 _INPUT_PHRASES: tuple[str, ...] = (
     "context length",
     "context_length",
@@ -70,6 +71,7 @@ _INPUT_PHRASES: tuple[str, ...] = (
     "prompt is too long",
     "input is too long",
     "maximum prompt length",
+    "maximum model length",
     "input token count",
     "reduce the length of the messages",
 )
@@ -103,19 +105,32 @@ _OUTPUT_PARAM_TOO_LARGE = re.compile(
 # history is what must shrink (and primer always sends a max_output_tokens, so this is the normal
 # overflow form on a vLLM-backed profile). OpenAI's "max_tokens is too large: N. This model supports at
 # most M completion tokens" carries no context length at all: that one is an output-cap error.
-_VLLM_TRAILER = re.compile(r"\((\d+)\s*>\s*(\d+)\s*-\s*(\d+)\)")
-_TOO_LARGE_CAP = re.compile(r"is too large:\s*(\d+)")
-_MAX_CONTEXT = re.compile(r"maximum context length is\s*(\d+)")
+#
+# Newer vLLM (vllm/renderers/params.py, _token_len_check / _text_len_check) words the same condition without
+# "is too large", and states both numbers too:
+#   "This model's maximum context length is 128000 tokens. However, you requested 65535 output tokens and your
+#    prompt contains at least 62466 input tokens, for a total of at least 128001 tokens. Please reduce ..."
+# The same arithmetic applies: a requested output that is already >= the context length cannot be helped by a
+# shorter history. (Numbers are read with their thousands separators: "1,000,000" is a million, not a 1.)
+_NUM = r"\d[\d,]*"
+_VLLM_TRAILER = re.compile(rf"\(({_NUM})\s*>\s*({_NUM})\s*-\s*({_NUM})\)")
+_TOO_LARGE_CAP = re.compile(rf"is too large:\s*({_NUM})")
+_MAX_CONTEXT = re.compile(rf"maximum context length is\s*({_NUM})")
+_REQUESTED_OUTPUT = re.compile(rf"you requested\s*({_NUM})\s*output tokens")
+
+
+def _int(digits: str) -> int:
+    return int(digits.replace(",", ""))
 
 
 def _cap_and_context(text: str) -> tuple[int, int] | None:
     """The (output cap, context length) a message states, or None when it states no context length."""
     trailer = _VLLM_TRAILER.search(text)
     if trailer:
-        return int(trailer.group(1)), int(trailer.group(2))
+        return _int(trailer.group(1)), _int(trailer.group(2))
     cap, context = _TOO_LARGE_CAP.search(text), _MAX_CONTEXT.search(text)
     if cap and context:
-        return int(cap.group(1)), int(context.group(1))
+        return _int(cap.group(1)), _int(context.group(1))
     return None
 
 
@@ -126,6 +141,9 @@ def _message_says_overflow(message: str | None) -> bool:
         if numbers is None or numbers[0] >= numbers[1]:
             return False  # no context number, or the cap alone does not fit: an output-cap error
         # The cap fits and the request still does not: fall through, the history is what is too big.
+    requested, context = _REQUESTED_OUTPUT.search(text), _MAX_CONTEXT.search(text)
+    if requested and context and _int(requested.group(1)) >= _int(context.group(1)):
+        return False  # the requested output alone fills the window: no history can fit beside it
     if any(phrase in text for phrase in _INPUT_PHRASES):
         return True
     if any(phrase in text for phrase in _BUDGET_PHRASES):
@@ -144,6 +162,18 @@ def _yielded_says_overflow(code: str | None, message: str | None) -> bool:
     return code == _BAD_REQUEST and _message_says_overflow(message)
 
 
+def output_cap_never_fits(max_output_tokens: int | None, context_length: int | None) -> bool:
+    """True when the configured output cap alone is not below the context window.
+
+    Then no history, however short, fits beside the cap: a 400 that says the prompt does not fit is the
+    request's own cap talking, and compacting the history away cannot fix it (it would rewrite the persisted
+    history into a summary and the replay would be rejected the same way). This is the executor-side half of the
+    arithmetic the message-level veto does for the providers that state both numbers; it works for every provider.
+    An unset cap or an unknown window proves nothing.
+    """
+    return bool(max_output_tokens and context_length and max_output_tokens >= context_length)
+
+
 def is_context_overflow_error(error: Error) -> bool:
     """True when a terminal ``Error`` event, as an adapter yielded it, is a context overflow."""
     return error.fatal and _yielded_says_overflow(error.code, error.message)
@@ -160,4 +190,4 @@ def is_context_overflow(exc: BaseException) -> bool:
     return False
 
 
-__all__ = ["OVERFLOW_CODES", "is_context_overflow", "is_context_overflow_error"]
+__all__ = ["OVERFLOW_CODES", "is_context_overflow", "is_context_overflow_error", "output_cap_never_fits"]
