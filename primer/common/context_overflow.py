@@ -1,10 +1,12 @@
 """Shared context-overflow classifier.
 
 Answers one question for every place that decides what to do about a prompt
-that does not fit the model's context window. Today the one caller is
-``_BaseAgentExecutor.invoke``'s hard-overflow recovery (force-compact, then
-replay), which recovers only the first shape below; the overflow-replay and
-summariser-retry units are meant to call the same function for the others.
+that does not fit the model's context window. Today the callers are
+``_BaseAgentExecutor``'s hard-overflow recovery (force-compact, then continue
+the turn), which recovers the first two shapes below, and the agent loop, which
+uses :func:`is_context_overflow_error` to hold a yielded overflow back from the
+caller that recovers it; the summariser-retry unit is meant to call the same
+function for the third.
 
 A false POSITIVE is destructive: the recovery rewrites the persisted history
 into a summary, the replay hits the same 400 (an output-cap or parameter
@@ -24,9 +26,13 @@ An overflow reaches the caller in three shapes, all classified here:
   raises, so the 400 raises). ``invoke`` recovers this shape;
 * a YIELDED fatal ``Error(code="bad_request")`` that the loop turns into a
   :class:`~primer.model.chat.TurnStreamFailure` (Ollama and Gemini open the
-  request lazily, so the 400 arrives on the first iteration). Classified, NOT
-  yet recovered: a replay from scratch would re-run executed tools, and the
-  yielded ``Error`` has already been streamed and recorded;
+  request lazily, so the 400 arrives on the first iteration). Recovered too,
+  by a caller that opts in: when the stream held nothing but that ``Error`` the
+  loop does not yield it (a yielded ``Error`` is a terminal record, and a turn
+  that recovers must end with one) and raises
+  :class:`~primer.model.chat.TurnStreamOverflow`, which ``invoke`` recovers
+  like the raised shape. Content streamed before the error is already out, so
+  that case is not recovered;
 * the same yielded ``Error`` re-raised by the summariser as a
   :class:`~primer.model.except_.ServerError` carrying the ``Error``'s code.
 

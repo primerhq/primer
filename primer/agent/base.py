@@ -22,10 +22,13 @@ The base class owns:
   caller's iterator.
 * Hard-overflow recovery -- catch a RAISED :class:`BadRequestError` that
   :func:`primer.common.context_overflow.is_context_overflow` classifies as
-  a context overflow, force-compact, retry once. A YIELDED overflow (Ollama,
-  Gemini: a ``TurnStreamFailure``) is classified by the same function but
-  not recovered here: the replay restarts the turn from scratch, which would
-  re-run executed tools.
+  a context overflow, force-compact, and CONTINUE the turn once. A YIELDED
+  overflow (Ollama, Gemini deliver the 400 as a fatal ``Error`` event) is
+  recovered the same way: the loop holds the ``Error`` back instead of
+  yielding it (a yielded one is a terminal record, and a recovered turn
+  must end with exactly one) and raises ``TurnStreamOverflow``, which
+  :meth:`_overflow_of` turns into the ``BadRequestError`` the recovery
+  works on.
 
 Subclasses provide three abstract hooks:
 
@@ -68,6 +71,7 @@ from primer.model.chat import (
     TextPart,
     ToolCallPart,
     ToolResultPart,
+    TurnStreamOverflow,
     Usage,
     _CompactionNote,
     output_to_message,
@@ -367,14 +371,14 @@ class _BaseAgentExecutor(ABC):
                     record=record,
                 ):
                     yield ev
-            except BadRequestError as exc:
-                # Only a RAISED BadRequestError is recovered here. A yielded overflow (Ollama, Gemini) reaches
-                # this point as a TurnStreamFailure and is classified by is_context_overflow, but deliberately is
-                # NOT recovered here: the yielded Error has already been streamed and recorded.
-                if not is_context_overflow(exc):
+            except (BadRequestError, TurnStreamOverflow) as caught:
+                # A RAISED BadRequestError (Anthropic, OpenAI-family) or a YIELDED overflow the loop held back
+                # (Ollama, Gemini: TurnStreamOverflow). Any other failure is not this recovery's.
+                overflow = self._overflow_of(caught)
+                if overflow is None:
                     raise
                 async for ev in self._recover_from_overflow(
-                    exc,
+                    overflow,
                     history=history,
                     messages=messages,
                     response_format=response_format,
@@ -516,8 +520,9 @@ class _BaseAgentExecutor(ABC):
                 budget=record.guard,
             ):
                 yield ev
-        except BadRequestError as replay_exc:
-            if not is_context_overflow(replay_exc):
+        except (BadRequestError, TurnStreamOverflow) as caught:
+            replay_exc = self._overflow_of(caught)
+            if replay_exc is None:
                 raise
             logger.warning(
                 "AgentExecutor: the replay after a forced compaction overflowed too; recording the "
@@ -532,6 +537,21 @@ class _BaseAgentExecutor(ABC):
                 replay_attempted=True,
                 persisted_rounds=self._persisted_rounds(record),
             ) from replay_exc
+
+    @staticmethod
+    def _overflow_of(caught: BaseException) -> BadRequestError | None:
+        """The overflow ``caught`` stands for, as the ``BadRequestError`` the recovery works on; ``None`` if it
+        is not one. A raised ``BadRequestError`` is itself, when the classifier says it is a context overflow.
+        A ``TurnStreamOverflow`` is the same 400 delivered as a yielded ``Error`` (already classified by the
+        loop), rebuilt as the exception a raising adapter would have sent: its message and code are the
+        provider's, and it is what the typed failure carries as ``__cause__``."""
+        if isinstance(caught, TurnStreamOverflow):
+            return BadRequestError(
+                caught.error.message, code=caught.error.code or "bad_request", status_code=400,
+            )
+        if isinstance(caught, BadRequestError) and is_context_overflow(caught):
+            return caught
+        return None
 
     @staticmethod
     def _persisted_rounds(record: _TurnRecord) -> int:
@@ -737,6 +757,7 @@ class _BaseAgentExecutor(ABC):
                 tools=tools,
                 budget=budget,
                 initial_tool_round=initial_tool_round,
+                intercept_context_overflow=True,
             ):
                 await self._emit(event)
                 yield event
