@@ -244,6 +244,7 @@ WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
 `ws_session_duration_seconds`, `ws_replay_backlog_seconds`), and the worker / turn
 / session families:
 
+- `tool_wait_malformed_scoped_id_total{site}` counts tool-call task ids that did not parse as a scoped id (`parse_scoped_task_id`, `primer/model/tool_call_task.py`) where a tool_wait wake key was needed, through `tool_wait_event_key_or_none` (`primer/session/yields.py`, which also logs ERROR naming the id). `site` is a closed four-value enum, so it is on the label allowlist: `adapter` (the last-sibling release in `primer/claim/adapters/tool_calls.py` committed but woke nothing), `materializer` (`materialize_pending_tool_wait_rows` left that batch's key out), `dispatch` (the agent tool_wait park arm had no key and ended the turn failed) and `repark` (`_repark_graph_tool_wait_outcome` left that batch's key out). Only an id the code minted itself can be counted, so any non-zero value is a bug in the id mint.
 - `storage_cas_drift_total{model}` counts `Storage.patch_if` writes (through `primer.storage.cas.patch_if_checked`) that the database rejected although a fresh read still satisfies the guard in Python: a serialization disagreement rather than a lost race. Any non-zero rate means a compare-and-set can never apply and deserves attention.
 - `worker_tasks_total{worker,kind,status}` and
   `worker_task_duration_seconds{worker,kind,status}` are written by
