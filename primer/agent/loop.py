@@ -201,6 +201,7 @@ async def run_agent_turn(
     await_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None,
     tools: "list[Tool] | None" = None,
     budget: "PromptGuard | None" = None,
+    initial_tool_round: int = 0,
     interrupt: "asyncio.Event | None" = None,
     interrupted_out: "list[bool] | None" = None,
     capped_out: "list[bool] | None" = None,
@@ -317,6 +318,11 @@ async def run_agent_turn(
     budget
         Optional :class:`PromptGuard`; see its docstring. ``None`` (the default)
         sends every prompt exactly as the loop built it.
+    initial_tool_round
+        Tool rounds this turn has already spent in earlier attempts (default 0).
+        A replay after a context overflow starts with the rounds the rejected attempt
+        completed already in its history, and passes how many, so
+        ``agent.max_tool_turns`` bounds the TURN and not each attempt.
     interrupt
         Optional Stop signal (the session dispatch sets it). The loop races it
         against every wait for the model's next event, so a model that has not
@@ -361,7 +367,7 @@ async def run_agent_turn(
     if tools is None:
         tools = await tool_manager.list_tools(principal=principal)
 
-    tool_round = 0
+    tool_round = initial_tool_round
     while True:
         if interrupt is not None and interrupt.is_set():
             # A Stop that landed during the previous round's tool batch (or before the

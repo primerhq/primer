@@ -18,7 +18,8 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from contextlib import aclosing
+from typing import TYPE_CHECKING, Protocol
 
 from primer.agent.base import _BaseAgentExecutor
 from primer.agent.compaction import CompactionStrategy
@@ -33,6 +34,12 @@ from primer.model.workspace_session import (
     _UserInputWaiting,
 )
 from primer.model.yield_ import ToolWaitPark, YieldToWorker
+
+
+class _EventLog(Protocol):
+    """The slice of the dispatch layer's event-log writer a compaction marker needs."""
+
+    async def reserve_seq(self) -> int: ...
 
 
 if TYPE_CHECKING:
@@ -116,10 +123,19 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # for inspection (``WAITING``) when the executor exits without
         # having explicitly set the session status itself.
         self.last_done_reason: str | None = None
+        # The turn's event-log writer, bound by the dispatch layer when it has one (see
+        # :meth:`bind_event_log`); ``None`` for an executor driven on its own.
+        self._event_log: "_EventLog | None" = None
 
     @property
     def session(self) -> "AgentSession":
         return self._session
+
+    def bind_event_log(self, writer: "_EventLog | None") -> None:
+        """Bind the turn's event-log writer (post-construction, like ``bind_scoped_call_resolver``:
+        the dispatch layer only has the writer once the executor exists). A compaction marker then
+        takes its seq from the writer, so it cannot collide with the events the writer buffers."""
+        self._event_log = writer
 
     # ---- Subclass hooks --------------------------------------------------
 
@@ -189,7 +205,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         trigger_tokens: int | None = None,
         fixed_overhead_tokens: int = 0,
         snapshot: "list[Message] | None" = None,
-    ) -> None:
+    ) -> "list[Message]":
         """Record a compaction by APPENDING one ``compaction_marker`` record.
 
         ``messages.jsonl`` is APPEND-ONLY: this NEVER whole-file-replaces the
@@ -223,7 +239,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         tail, after the strategy's own tail.
         """
         if summary_message is None:
-            return
+            return []
         # ``compacted`` is the kept messages with the summary at its place (CompactionStrategy._place):
         # in front, or after the user run that opened the turn when the turn's early rounds were
         # summarised. The marker must carry the kept messages too, or the next load folds them into
@@ -238,14 +254,21 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             if getattr(part, "type", None) == "text"
         ).strip()
         if not summary_text:
-            return
+            return []
+        # Through the turn's event-log writer when there is one: a marker written mid-turn (the overflow
+        # recovery) would otherwise take the file's next seq while the writer's buffered events still
+        # hold higher ones, and the next event the writer assigns would repeat the marker's. Reserving
+        # the seq flushes what is buffered first and advances the writer past it. This takes the
+        # messages lock itself, so it runs before ours.
+        reserved = await self._event_log.reserve_seq() if self._event_log is not None else None
         async with self._session.messages_lock:
             existing = await self._read_messages_jsonl_text()
             boundary_seq = _max_event_log_seq(existing)
-            kept_tail = [*kept_tail, *await self._lines_after_snapshot(existing, snapshot)]
+            carried = await self._lines_after_snapshot(existing, snapshot)
+            kept_tail = [*kept_tail, *carried]
             now = datetime.now(timezone.utc)
             marker = SessionMessageRecord(
-                seq=boundary_seq + 1,
+                seq=reserved if reserved is not None else boundary_seq + 1,
                 kind=SessionMessageKind.COMPACTION_MARKER,
                 payload={
                     "summary": summary_text,
@@ -285,6 +308,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 op="message",
                 files={"messages.jsonl": new_jsonl},
             )
+        return carried
 
     async def _lines_after_snapshot(
         self, existing: str, snapshot: "list[Message] | None",
@@ -325,8 +349,8 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             self._session._state.begin_compaction(self._session.session_id)
             return await self._read_messages_jsonl()
 
-    async def _close_compaction_window(self) -> None:
-        """Clear the ``compacting`` flag AND drain deferred steers.
+    async def _close_compaction_window(self) -> "list[Message]":
+        """Clear the ``compacting`` flag AND drain deferred steers; returns the steers applied.
 
         Held under the messages lock so the flag-clear + drain + append are
         atomic vs a concurrent :meth:`AgentSession.append_instruction`. Drained
@@ -351,7 +375,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 self._session.session_id
             )
             if not pending:
-                return
+                return []
             try:
                 new_jsonl = await self._appended_jsonl(pending)
                 await self._session.commit_state(
@@ -369,7 +393,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     self._session.session_id,
                     len(pending),
                 )
-                return
+                return []
             # Durable now -- safe to remove from the queue.
             self._session._state.drain_pending_steers(self._session.session_id)
             for _ in pending:
@@ -377,6 +401,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     "session %s: applied a steer deferred during compaction",
                     self._session.session_id,
                 )
+            return list(pending)
 
     async def _ensure_artifact_dir(self) -> None:
         """Best-effort create ``<workspace_root>/artifacts/<session_id>/``.
@@ -430,12 +455,14 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # previous invoke can't leak into the post-turn status mapper.
         self.last_done_reason = None
         try:
-            async for ev in super().invoke(
-                messages, response_format=response_format
-            ):
-                if ev.type == "done":
-                    last_done_reason = ev.stop_reason  # type: ignore[union-attr]
-                yield ev
+            # ``aclosing``: when this generator is closed (dispatch does that on an error path) the inner
+            # one must be closed NOW, not whenever the garbage collector gets to it, because its close is
+            # where the turn's completed tool rounds are persisted.
+            async with aclosing(super().invoke(messages, response_format=response_format)) as events:
+                async for ev in events:
+                    if ev.type == "done":
+                        last_done_reason = ev.stop_reason  # type: ignore[union-attr]
+                    yield ev
         except (YieldToWorker, ToolWaitPark):
             # A park (tool approval, ask_user, subscribe_to_trigger,
             # watch_files, sleep) is NOT a failure: the base executor raises
