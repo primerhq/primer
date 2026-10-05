@@ -49,6 +49,10 @@ _ENTITY_UPDATE_KEYS = {
 }
 
 
+class _InvalidEntityUpdate(ValueError):
+    """A handler put a key in ``ReleaseOutcome.entity_update`` that its branch does not allow."""
+
+
 class ToolCallClaimAdapter(ClaimAdapter):
     kind = ClaimKind.TOOL_CALL
     entity_table = "toolcalltask"
@@ -108,10 +112,15 @@ class ToolCallClaimAdapter(ClaimAdapter):
             raise RuntimeError(
                 "task_storage is None - cannot run on_release without a storage backend"
             )
-        # Validated before anything else, so a malformed update is loud even on a path that
-        # would otherwise not write.
+        # Validated before anything else. A disallowed key is a bug in the HANDLER, and raising here would roll
+        # back the release and leave the lease claimed until it expires, for the same handler to be claimed again
+        # and repeat it for ever. So the task is failed terminally instead (``_fail_rejected``): the failure is
+        # logged at ERROR, the session is woken as for any terminal task, and the model is told the call failed.
         branch = "gated" if outcome.park is not None else "terminal" if outcome.drop_lease else "retry"
-        update = self._entity_update(outcome, branch)
+        try:
+            update = self._entity_update(outcome, branch)
+        except _InvalidEntityUpdate as exc:
+            return await self._fail_rejected(entity_id, outcome, exc, conn)
         token = outcome.claim_token
         if token is None:
             # A None token never matches a fence. Reading it as "absent or null" in the predicate
@@ -221,11 +230,42 @@ class ToolCallClaimAdapter(ClaimAdapter):
         allowed = _ENTITY_UPDATE_KEYS[branch]
         unknown = set(raw) - allowed
         if unknown:
-            raise ValueError(
+            raise _InvalidEntityUpdate(
                 f"a {branch} ToolCallClaimAdapter release takes entity_update keys {sorted(allowed)}, "
                 f"got {sorted(unknown)}"
             )
         return dict(raw)
+
+    async def _fail_rejected(
+        self, entity_id: str, outcome: ReleaseOutcome, exc: _InvalidEntityUpdate, conn,
+    ) -> "PostReleaseWake | None":
+        """Fail the task terminally because its handler's release was invalid.
+
+        Fenced like every other write (live state AND the claim token), so a stale or token-less release still
+        writes nothing. The engine then drops the lease (gated and terminal outcomes) or requeues one whose
+        task is now FAILED, which the eligibility filter skips and ``prune_dead_leases`` removes. The message
+        becomes the task's ``last_error``, which is what the model is shown for a failed task with no result.
+        """
+        logger.error(
+            "tool-call release of %s was rejected, so the task is failed terminally: %s", entity_id, exc,
+        )
+        token = outcome.claim_token
+        if token is None:
+            return None
+        updated = await self._patch(
+            entity_id,
+            {
+                "state": ToolCallTaskState.FAILED.value,
+                "finished_at": datetime.now(timezone.utc),
+                "last_error": f"the worker's release was invalid: {exc}",
+                "gate_state": None,
+            },
+            {"state": list(_LIVE_STATES), "claim_token": [token]},
+            conn,
+        )
+        if updated is None:
+            return None
+        return await self._last_sibling_wake_signal(updated, conn=conn)
 
     async def _read(self, entity_id: str, conn) -> ToolCallTask | None:
         task = await self._storage.get(entity_id, conn=conn)
