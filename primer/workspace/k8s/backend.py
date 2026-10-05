@@ -42,6 +42,25 @@ from primer.workspace.sandbox.workspace import SandboxWorkspace
 logger = logging.getLogger(__name__)
 
 
+async def _close_runtime_client(client: RuntimeClient, *, what: str) -> None:
+    """Close a runtime client that a build which did not finish left connected.
+
+    Run from the ``except BaseException`` of ``create`` and ``_reattach``, so a cancel or a caller's ``asyncio.timeout`` that
+    ended the build is covered too. The close is SHIELDED: a second cancel (a drain, a bound landing again) while the client
+    is closing must not leave the socket and the aiohttp session half released, so the close runs on its own task and
+    carries on. A close that fails is logged, never allowed to replace the error that ended the build.
+    """
+    closing = asyncio.ensure_future(client.aclose())
+    # Retrieve what the close dies of when a second cancel stops us waiting for it: no "never retrieved" noise.
+    closing.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+    try:
+        await asyncio.shield(closing)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("%s runtime-client aclose failed: %s", what, exc)
+
+
 def _generate_workspace_id() -> str:
     return f"ws-{uuid.uuid4().hex[:16]}"
 
@@ -412,14 +431,14 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             k8s_object_name=obj_name,
         )
         client = RuntimeClient(url=url, token=token)
-        await client.connect()
-        sandbox = WSSandbox(
-            runtime_client=client,
-            container_id=obj_name,
-            workspace_root=template.backend.workdir,
-        )
-
+        cached = False
         try:
+            await client.connect()
+            sandbox = WSSandbox(
+                runtime_client=client,
+                container_id=obj_name,
+                workspace_root=template.backend.workdir,
+            )
             # Resolve every FileSource variant (inline/url/document/secret)
             # up-front via the shared helper; the sandbox writes the
             # resulting bytes via the WS runtime.
@@ -464,18 +483,16 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                 runtime_meta=runtime_meta,
                 workspace_root=template.backend.workdir,
             )
-        except Exception:
-            try:
-                await client.aclose()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "rollback runtime-client aclose failed: %s", exc,
-                )
+            async with self._lock:
+                self._workspaces[workspace_id] = ws
+                cached = True
+            return ws
+        except BaseException:
+            # Anything that ends the build before the workspace is cached (a failure, a cancel, a caller's timeout) leaves
+            # the connection open and nothing to close it: it is ours to release.
+            if not cached:
+                await _close_runtime_client(client, what="rollback")
             raise
-
-        async with self._lock:
-            self._workspaces[workspace_id] = ws
-        return ws
 
     async def _create_secret(
         self, workspace_id: str, obj_name: str,
@@ -681,38 +698,42 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             k8s_object_name=obj_name,
         )
         client = RuntimeClient(url=url, token=token)
-        await client.connect()
-        sandbox = WSSandbox(
-            runtime_client=client,
-            container_id=obj_name,
-            workspace_root=template.backend.workdir,
-        )
-        reattach_meta = WorkspaceRuntimeMeta(
-            url=url,
-            token=SecretStr(token),
-            k8s_object_name=obj_name,
-        )
-        ws = await SandboxWorkspace.materialise(
-            workspace_id=workspace_id,
-            template=template,
-            sandbox=sandbox,
-            backend_kind="kubernetes",
-            runtime_meta=reattach_meta,
-            workspace_root=template.backend.workdir,
-        )
-        async with self._lock:
-            existing = self._workspaces.get(workspace_id)
-            if existing is not None:
-                # Another caller materialised first; drop ours.
-                try:
-                    await client.aclose()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "redundant runtime-client aclose failed: %s", exc,
-                    )
-                return existing
-            self._workspaces[workspace_id] = ws
-        return ws
+        cached = False
+        try:
+            await client.connect()
+            sandbox = WSSandbox(
+                runtime_client=client,
+                container_id=obj_name,
+                workspace_root=template.backend.workdir,
+            )
+            reattach_meta = WorkspaceRuntimeMeta(
+                url=url,
+                token=SecretStr(token),
+                k8s_object_name=obj_name,
+            )
+            ws = await SandboxWorkspace.materialise(
+                workspace_id=workspace_id,
+                template=template,
+                sandbox=sandbox,
+                backend_kind="kubernetes",
+                runtime_meta=reattach_meta,
+                workspace_root=template.backend.workdir,
+            )
+            async with self._lock:
+                existing = self._workspaces.get(workspace_id)
+                if existing is not None:
+                    # Another caller materialised first; drop ours.
+                    await _close_runtime_client(client, what="redundant")
+                    return existing
+                self._workspaces[workspace_id] = ws
+                cached = True
+            return ws
+        except BaseException:
+            # A failure, a cancel or a caller's timeout anywhere between connect() and the cache insert (including the wait
+            # for the lock) leaves the connection open and uncached, and the next call connects and leaks another one.
+            if not cached:
+                await _close_runtime_client(client, what="re-attach")
+            raise
 
     async def _read_runtime_token(self, obj_name: str) -> str:
         """Fetch ``RUNTIME_TOKEN`` out of the per-workspace Secret.
