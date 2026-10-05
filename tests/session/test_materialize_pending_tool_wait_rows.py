@@ -23,7 +23,9 @@ from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState, tool_ca
 from primer.model.workspace_session import (
     AgentSessionBinding, SessionStatus, WorkspaceSession,
 )
+from primer.model.except_ import ConflictError
 from primer.session.persistence import (
+    TurnInvariantError,
     _CoalesceState,
     _create_tool_call_task_idempotent,
     materialize_pending_tool_wait_rows,
@@ -152,15 +154,35 @@ async def test_missing_coalesce_record_raises_loudly() -> None:
     """The durable-append-before-claimable invariant: a scoped id with no
     matching TOOL_CALL record in this turn's coalesce_state must fail
     loudly (the default ``strict=True``), never silently mint a
-    placeholder tool_name."""
+    placeholder tool_name. Loudly means the exact ``TurnInvariantError``:
+    that, not its ``RuntimeError`` parent, is what the live-turn park arms
+    end the session failed on."""
     storage_provider = _FakeStorageProvider()
     session = _session()
-    with pytest.raises(RuntimeError, match="no matching TOOL_CALL record"):
+    with pytest.raises(TurnInvariantError, match="outstanding task 'A:tool:0:1' has no matching TOOL_CALL") as ei:
         await materialize_pending_tool_wait_rows(
             storage_provider, None, session.id, session.turn_no,
             _CoalesceState(), datetime.now(timezone.utc),
             [_pending_tool_wait("A", ["A:tool:0:1"])],
         )
+    assert type(ei.value) is TurnInvariantError
+
+
+@pytest.mark.asyncio
+async def test_a_notifying_result_with_no_coalesce_record_raises_the_exact_invariant_class() -> None:
+    """The notifying half of the same invariant: the claimable call has its record, the inline-answered one does
+    not."""
+    storage_provider = _FakeStorageProvider()
+    session = _session()
+    cs = _CoalesceState()
+    cs.tool_call_record_seq["A:tool:0:1"] = 1
+    cs.tool_call_record_name["A:tool:0:1"] = "t"
+    with pytest.raises(TurnInvariantError, match="notifying result 'A:tool:0:2' has no matching TOOL_CALL") as ei:
+        await materialize_pending_tool_wait_rows(
+            storage_provider, None, session.id, session.turn_no, cs, datetime.now(timezone.utc),
+            [_pending_tool_wait("A", ["A:tool:0:1"], notifying=("A:tool:0:2",))],
+        )
+    assert type(ei.value) is TurnInvariantError
 
 
 @pytest.mark.asyncio
@@ -219,6 +241,28 @@ async def test_strict_true_raises_on_record_seq_mismatch() -> None:
         await _create_tool_call_task_idempotent(
             task_storage, _task(record_seq=2), session_id="s1",
         )
+
+
+class _RowGoneOnReadStorage:
+    """Refuses the create as a duplicate, then finds nothing on the read: the row lost a race with a delete."""
+
+    async def create(self, entity, **kwargs):
+        raise ConflictError(f"id {entity.id!r} already exists")
+
+    async def get(self, entity_id, **kwargs):
+        return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strict", [True, False])
+async def test_a_row_gone_on_read_raises_the_plain_runtime_error_not_the_invariant_class(strict) -> None:
+    """Not deterministic (a re-run's create can succeed), so not a reason to end the turn: it must stay the plain
+    ``RuntimeError``, which the park arms let propagate instead of ending the session."""
+    with pytest.raises(RuntimeError, match="record_seq=<gone>") as ei:
+        await _create_tool_call_task_idempotent(
+            _RowGoneOnReadStorage(), _task(record_seq=1), session_id="s1", strict=strict,
+        )
+    assert type(ei.value) is RuntimeError
 
 
 @pytest.mark.asyncio

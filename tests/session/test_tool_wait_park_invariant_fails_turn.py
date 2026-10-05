@@ -11,7 +11,8 @@ an invariant break: it still propagates as itself and the session is not ended.
 Mutations, each run red: drop the ``except TurnInvariantError`` of the mixed arm (yield_mixed cases) or of the
 tool_wait arm (tool_wait_* cases); make the cross-session guard raise a plain ``RuntimeError`` (every collision case);
 widen an arm's catch to ``Exception`` (that arm's transient case); close the turn log before the materialization
-again, as it was (the turn-log assertion of that arm).
+again, as it was (the turn-log assertion of that arm); make dispatch's notifying-result raise a plain
+``RuntimeError`` again (the notifying case).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.int.claim import ClaimKind, Lease
-from primer.model.chat import Message, TextPart, ToolCallEnd, ToolCallStart
+from primer.model.chat import Message, TextPart, ToolCallEnd, ToolCallStart, ToolResultPart
 from primer.model.except_ import ProviderError
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
 from primer.model.workspace_session import (
@@ -201,3 +202,39 @@ async def test_a_transient_storage_error_while_parking_propagates_and_does_not_e
     outcome = await run_one_session_turn(lease, deps)
     assert outcome.success is True and outcome.park is not None
     assert await task_storage.get(f"{session_id}/x:tool:0:1") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_notifying_result_with_no_tool_call_record_ends_the_session_failed_as_an_invariant_break() -> None:
+    """The agent tool_wait loop's notifying-result raise (``primer/session/dispatch.py``): the claimable call has its
+    durable record, the inline-answered one in the same park does not. The ERROR record's title is the exception's
+    exact class name."""
+    storage_provider, session_id, io, _lines, deps, lease = await _setup("tool_wait_agent")
+
+    class _UnrecordedNotifyingExecutor:
+        _tool_calls_as_claims_enabled = True
+
+        async def invoke(self, messages, **kwargs):
+            yield ToolCallStart(id="call_a", name="tool_a", index=0)
+            yield ToolCallEnd(id="call_a", arguments={"x": 1}, index=0)
+            raise ToolWaitPark(
+                outstanding_task_ids=["x:tool:0:1"], event_key="tool_wait:x:tool:0:1",
+                notifying_results=[("x:tool:0:9", ToolResultPart(id="call_n", output="inline", error=False))],
+                call_ids={"x:tool:0:1": "call_a", "x:tool:0:9": "call_n"},
+            )
+            yield  # pragma: no cover - unreachable, keeps this a generator
+
+    async def _build_executor(_session: WorkspaceSession):
+        return _UnrecordedNotifyingExecutor()
+
+    deps.build_executor = _build_executor
+
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert (outcome.success, outcome.drop_lease, outcome.park) == (False, True, None)
+    row = await storage_provider.get_storage(WorkspaceSession).get(session_id)
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    error = io.records(session_id)[-1]
+    assert error["kind"] == SessionMessageKind.ERROR
+    assert error["payload"]["title"] == "TurnInvariantError"
+    assert "notifying result 'x:tool:0:9' has no matching TOOL_CALL record" in error["payload"]["message"]
