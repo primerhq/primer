@@ -187,6 +187,26 @@ class TestTheRatio:
         (call,) = _llm_calls(events)
         assert call.input_tokens == 50 and call.estimated_input_tokens is None
 
+    async def test_a_call_whose_stream_raises_after_its_usage_arrived_records_no_ratio(self):
+        """Documented in observability.md: only a call that completes is observed (the call is still counted on
+        ``llm_calls_total``, as an error, but it has no ``llm_call`` record to carry an estimate either)."""
+        import primer.observability.metrics as m
+
+        class _Raises(_FakeLLM):
+            def stream(self, *, messages, **_kwargs):
+                async def _gen():
+                    yield _usage(100)
+                    raise RuntimeError("the connection dropped")
+
+                return _gen()
+
+        with pytest.raises(RuntimeError, match="connection dropped"):
+            await _drain(_Raises([]))
+        assert _samples() == (None, None)
+        assert m.registry.get_sample_value(
+            "llm_calls_total", {"provider_id": "prov-1", "profile_id": "prof-1", "status": "error"},
+        ) == 1, "it is still counted, as an error"
+
     async def test_the_estimate_is_not_computed_for_a_call_that_has_no_usage(self, monkeypatch):
         """No usage means nothing to compare, so no pass over the prompt is spent."""
         import primer.agent.loop as loop
