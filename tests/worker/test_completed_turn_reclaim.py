@@ -662,3 +662,49 @@ async def test_the_noop_that_arms_an_open_input_leaves_a_pending_steer_queued(wo
     assert world.llm_calls == ["first", "second", "third"]
     assert not has_open_turn(world.ws.lines(), cursor=0)
     assert await _pending_texts(world) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [SessionStatus.CREATED, SessionStatus.PAUSED])
+@pytest.mark.parametrize("armed", ["open", "claimable"])
+async def test_input_waiting_on_a_row_the_pool_does_not_rearm_runs_the_turn(world, status, armed):
+    """A stale marker (completed_turn_no == turn_no with no release pending) on a CREATED or PAUSED row with a
+    USER_INPUT waiting, open in the log or already claimable. The pool re-arms only RUNNING/WAITING rows, so a no-op
+    here would leave the input with no lease for good: the claim runs the turn instead, one model call."""
+    await world.create_session(turn_no=1, completed_turn_no=1)
+    await world.steer("waiting")                    # USER_INPUT, claimable, RUNNING, a lease
+    row = await world.row()
+    await world.sessions.update(row.model_copy(update={
+        "status": status, "turn_status": "idle" if armed == "open" else "claimable",
+    }))
+    assert not (await world.row()).pause_requested     # not the pause exit: the guard decides
+
+    await _claim_until_idle(world, world.pool("wrk-b"))
+
+    assert world.llm_calls == ["waiting"], "the waiting input was not answered"
+    assert world.call_turn_nos == [1]
+    assert _noops() == 0
+    assert (await world.row()).turn_no == 2
+    assert not has_open_turn(world.ws.lines(), cursor=0)
+
+
+@pytest.mark.asyncio
+async def test_an_arming_patch_the_row_refuses_runs_the_turn(world):
+    """The open input could not be armed because the row changed under the patch (another process): the claim answers
+    it now instead of releasing with nothing armed."""
+    stale = await _completed_turn_then_stale_snapshot(world)
+    await world.steer("second")
+    await world.sessions.update(stale)
+    real_patch_if = world.sessions.patch_if
+
+    async def patch_if(id, patch=None, *, where, set_paths=None, conn=None):
+        if patch == {"turn_status": "claimable"}:
+            return None                               # refused: the fence no longer matches
+        return await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    world.sessions.patch_if = patch_if  # type: ignore[method-assign]
+    await _claim_until_idle(world, world.pool("wrk-b"))
+
+    assert world.llm_calls == ["first", "second"]
+    assert _noops() == 0
+    assert not has_open_turn(world.ws.lines(), cursor=0)
