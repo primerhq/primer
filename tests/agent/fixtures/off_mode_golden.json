@@ -1517,8 +1517,8 @@
    ]
   }
  ],
- "captured_from": "f2f20c8a4cbf223f5ec9d2bef7f12efb95a0cb58",
- "captured_from_subject": "fix(agent): in the replay-continues recovery an unreducible compaction ends the turn when rounds were completed",
+ "captured_from": "e27e7de341a024c4b5ad6849831026768b9771fc",
+ "captured_from_subject": "fix(agent): an overflow delivered as a yielded Error is recovered like a raised one, with one terminal record",
  "recaptures": [
   {
    "changed_turns": [
