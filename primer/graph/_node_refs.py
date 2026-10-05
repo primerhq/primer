@@ -312,11 +312,16 @@ async def _resume_value_yield_toolcall(
 
     ``session_id`` and ``resolve_provider`` fill the hook's
     :class:`~primer.worker.yield_resume_registry.ResumeContext` exactly as the
-    agent-session and agent-node resumes do. The executor holds neither (its
-    ``_graph_session_id`` names the graph run, not the session), so the worker
-    that drives the resume passes them to ``resume_from_checkpoint``; a caller
-    with no session or registry (a direct test, the GraphFrame child resume)
-    leaves both ``None`` and a hook that needs one must say so.
+    agent-session and agent-node resumes do. The executor does not supply them:
+    at top level the worker builds ``WorkspaceGraphExecutor`` with
+    ``graph_session_id=session.id``, but that attribute exists only on
+    ``WorkspaceGraphExecutor``, not on the base class that owns
+    ``resume_from_checkpoint``, and a sub-executor gets a derived
+    ``<gsid>__<node>`` id. So the worker that drives the resume passes the
+    session id explicitly, with the registry's resolver, to
+    ``resume_from_checkpoint``; a caller with no session or registry (a direct
+    test, the GraphFrame child resume) leaves both ``None`` and a hook that
+    needs one must say so.
     """
     from primer.model.chat import ToolResultPart
     from primer.worker.yield_resume_registry import ResumeContext, get_resume_hook

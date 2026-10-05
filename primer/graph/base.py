@@ -459,10 +459,13 @@ class _BaseGraphExecutor(
         ``resume_session_id`` / ``resolve_provider``: the session being
         resumed and the provider registry's ``get_toolset``, for the
         ``ResumeContext`` a value-yielding tool_call node's resume hook
-        receives. This executor holds neither (``_graph_session_id`` names
-        the graph run, not the session), so the worker that drives the
-        resume passes them; both default ``None`` for a caller with no
-        session or registry.
+        receives. This class supplies neither: at top level the worker builds
+        ``WorkspaceGraphExecutor`` with ``graph_session_id=session.id``, but
+        that attribute exists only on ``WorkspaceGraphExecutor`` (not on this
+        base class) and a sub-executor gets a derived ``<gsid>__<node>`` id,
+        so the worker that drives the resume passes the session id
+        explicitly. Both default ``None`` for a caller with no session or
+        registry.
         """
         self.restore_state(checkpoint)
 
