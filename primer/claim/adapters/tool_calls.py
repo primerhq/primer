@@ -260,7 +260,8 @@ class ToolCallClaimAdapter(ClaimAdapter):
         """Fail the task terminally because its handler's release was invalid.
 
         Fenced like every other write (live state AND the claim token), so a stale or token-less release still
-        writes nothing. The engine then drops the lease (gated and terminal outcomes) or requeues one whose task is
+        writes nothing, and a token no backend can store is refused here too (the ``_InvalidEntityUpdate`` this write
+        raises then leaves ``on_release``). The engine then drops the lease (gated and terminal outcomes) or requeues one whose task is
         now FAILED. On Postgres the eligibility filter keeps that lease from being claimed again; the in-memory
         engine applies no eligibility, so there it can be claimed again, and what stops the task running is the
         handler's own state guard (execute only a QUEUED or RUNNING row). ``prune_dead_leases`` removes the lease
@@ -313,10 +314,13 @@ class ToolCallClaimAdapter(ClaimAdapter):
 
         A ``PatchValueError`` is about a value this write supplies, never the stored row, and every value here that is
         not a constant of this adapter came from the handler's ``ReleaseOutcome`` (``entity_update``, ``last_error``,
-        ``claim_token``, the park): a value no backend can store (a lone surrogate, a non-finite number) is refused
-        before any I/O, so the release is rejected as invalid whether or not ``handler_values`` is empty. Any OTHER
-        ``PatchSpecError`` (an unknown field, a malformed ``where``) is a spec this adapter built wrongly: a bug, which
-        propagates instead of being blamed on the handler.
+        the park, and the ``claim_token`` in the fence): a value no backend can store (a lone surrogate, a non-finite
+        number) is refused before any I/O and raised as ``_InvalidEntityUpdate`` whether or not ``handler_values`` is
+        empty. ``on_release`` then fails the task (``_fail_rejected``), EXCEPT when the unstorable value is the claim
+        token: ``_fail_rejected`` fences on the same token, its write is refused too, and the ``_InvalidEntityUpdate``
+        raises out of ``on_release`` (the release fails, the row is left as it was, and the lease stays claimed until
+        it expires). Any OTHER ``PatchSpecError`` (an unknown field, a malformed ``where``) is a spec this adapter built
+        wrongly: a bug, which propagates instead of being blamed on the handler.
         """
         try:
             updated = await self._storage.patch_if(
