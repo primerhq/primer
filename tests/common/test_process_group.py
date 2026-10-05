@@ -62,12 +62,37 @@ async def test_it_kills_the_leader_and_everything_the_leader_started(tmp_path: P
 async def test_a_process_that_was_not_started_in_its_own_session_is_still_killed(tmp_path: Path) -> None:
     """It leads no group, so the group kill finds nothing: the process itself must still die, and promptly."""
     proc = await asyncio.create_subprocess_exec("sleep", "60")
+    try:
+        start = time.monotonic()
+        await kill_process_group(proc)
 
-    start = time.monotonic()
-    await kill_process_group(proc)
+        assert time.monotonic() - start < 3.0
+        assert proc.returncode == -signal.SIGKILL
+    finally:
+        try:
+            os.kill(proc.pid, signal.SIGKILL)     # a failing run must not leave the sleep behind
+        except ProcessLookupError:
+            pass
 
-    assert time.monotonic() - start < 3.0
-    assert proc.returncode == -signal.SIGKILL
+
+async def test_it_returns_only_once_every_member_of_the_group_is_gone(tmp_path: Path) -> None:
+    """The caller releases a write lock after this returns: the kill must have TAKEN EFFECT, not just been sent. With the
+    group empty, ``killpg(pgid, 0)`` finds nothing."""
+    proc = await asyncio.create_subprocess_shell(
+        f"sleep 60 & echo $! > {tmp_path}/child; sleep 60 & wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
+    )
+    child = await _child_pid(tmp_path / "child")
+    try:
+        await kill_process_group(proc)
+
+        with pytest.raises(ProcessLookupError):
+            os.killpg(proc.pid, 0)
+        assert not _running(child)
+    finally:
+        try:
+            os.kill(child, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 async def test_a_detached_process_holding_the_pipes_does_not_hold_the_kill_up(tmp_path: Path) -> None:
