@@ -17,6 +17,10 @@ from primer.storage.postgres import PostgresStorage, _table_ensured
 from tests.storage._patch_scenarios import StrictDoc
 
 
+TXN_BEGIN = "<transaction begin>"
+TXN_END = "<transaction end>"
+
+
 class _Row(dict):
     pass
 
@@ -55,7 +59,11 @@ class _ScriptedConn:
 
         @contextlib.asynccontextmanager
         async def _txn():
-            yield
+            self.calls.append((TXN_BEGIN, ()))
+            try:
+                yield
+            finally:
+                self.calls.append((TXN_END, ()))
 
         return _txn()
 
@@ -108,6 +116,10 @@ async def test_a_rejected_patch_issues_one_update_and_no_rewrite():
     assert len([sql for sql, _ in conn.calls if sql.lstrip().startswith("UPDATE")]) == 1
 
 
+def _first_update(conn: "_ScriptedConn") -> str:
+    return next(sql for sql, _ in conn.calls if sql.lstrip().startswith("UPDATE"))
+
+
 @pytest.mark.asyncio
 async def test_a_guard_naming_a_default_also_matches_the_absent_field_in_the_compiled_sql():
     names_default = _ScriptedConn(_row())
@@ -115,8 +127,8 @@ async def test_a_guard_naming_a_default_also_matches_the_absent_field_in_the_com
     names_other = _ScriptedConn(_row())
     await _storage().patch_if("a", {"status": "x"}, where={"gen": [1]}, conn=names_other)
 
-    assert "IS NULL" in names_default.calls[0][0], "gen defaults to 0, so a guard on 0 also matches an absent gen"
-    assert "IS NULL" not in names_other.calls[0][0], "a guard on another value must not"
+    assert "IS NULL" in _first_update(names_default), "gen defaults to 0, so a guard on 0 also matches an absent gen"
+    assert "IS NULL" not in _first_update(names_other), "a guard on another value must not"
 
 
 @pytest.mark.asyncio
@@ -125,3 +137,46 @@ async def test_an_unknown_field_is_refused_before_any_statement():
     with pytest.raises(ValueError):
         await _storage().patch_if("a", {"cnt": 1}, where={"status": ["created"]}, conn=conn)
     assert conn.calls == []
+
+
+def _trace(conn: _ScriptedConn) -> list[str]:
+    out: list[str] = []
+    for sql, _ in conn.calls:
+        if sql == TXN_BEGIN:
+            out.append("begin")
+        elif sql == TXN_END:
+            out.append("end")
+        elif sql.lstrip().startswith("UPDATE"):
+            out.append("update")
+        elif sql.lstrip().startswith("INSERT INTO") and ".events" in sql:
+            out.append("event")
+        else:
+            out.append("other")
+    return out
+
+
+@pytest.mark.asyncio
+async def test_both_updates_and_the_event_fall_inside_one_transaction(monkeypatch):
+    """The atomicity the canonical rewrite depends on: the patch, the rewrite and the CRUD event are ONE transaction on the
+    caller's connection, so a reader never sees the loose form and a rollback undoes all three together."""
+    monkeypatch.setattr("primer.storage.postgres.kind_for_model", lambda model: "strictdoc")
+    conn = _ScriptedConn(_row(count="5", tag="MiXeD"), _row(count=5, tag="mixed"))
+
+    out = await _storage().patch_if(
+        "a", {"count": "5", "tag": "MiXeD"}, where={"status": ["created"]}, conn=conn,
+    )
+
+    assert out is not None
+    assert _trace(conn) == ["begin", "update", "update", "event", "end"]
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_patch_opens_and_closes_its_transaction_around_the_one_update(monkeypatch):
+    monkeypatch.setattr("primer.storage.postgres.kind_for_model", lambda model: "strictdoc")
+    conn = _ScriptedConn(None)
+
+    out = await _storage().patch_if("a", {"count": "5"}, where={"status": ["running"]}, conn=conn)
+
+    assert out is None
+    # the existence probe that tells "rejected" from "missing" comes after the transaction, and writes nothing
+    assert _trace(conn) == ["begin", "update", "end", "other"]

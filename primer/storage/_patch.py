@@ -87,11 +87,21 @@ def raw_generation(entity: Any, field: str) -> Any:
     """
     dumped = dump_for_storage(entity)
     if field not in dumped:
-        raise ValueError(f"{type(entity).__name__} has no stored field {field!r}")
+        raise PatchSpecError(f"{type(entity).__name__} has no stored field {field!r}")
     return dumped[field]
 
 
 _MISSING = object()
+
+
+class PatchSpecError(ValueError):
+    """The ``patch_if`` call is itself wrong: a malformed spec, a field the model does not have, a leaf the model would drop.
+
+    The caller's mistake, so the backends re-raise it (and a pydantic ``ValidationError``, for a patch that leaves the row
+    unreadable) as themselves. It is a ``ValueError`` so existing handlers keep working, but it is a DISTINCT type so that
+    every OTHER ``ValueError`` raised under a write (a corrupt stored document, a driver quirk) is wrapped as the backend
+    failure it is instead of being reported as the caller's mistake.
+    """
 
 
 def json_equal(a: Any, b: Any) -> bool:
@@ -192,7 +202,7 @@ def check_known_fields(
     known = set(getattr(model_cls, "model_fields", {}))
     unknown = sorted({*patch, *(path[0] for path in set_paths)} - known)
     if unknown:
-        raise ValueError(f"{model_cls.__name__} has no field {unknown[0]!r} (patch_if writes known fields only)")
+        raise PatchSpecError(f"{model_cls.__name__} has no field {unknown[0]!r} (patch_if writes known fields only)")
 
 
 def canonical_fixup(
@@ -211,7 +221,7 @@ def canonical_fixup(
         node: Any = canonical
         for part in path:
             if not isinstance(node, dict) or part not in node:
-                raise ValueError(
+                raise PatchSpecError(
                     f"set_paths {path!r} is not part of {type(entity).__name__} (the model drops it); patch_if writes "
                     "fields the model carries"
                 )
@@ -226,9 +236,9 @@ def canonical_fixup(
 
 def _check_key(key: Any, what: str) -> None:
     if not isinstance(key, str) or key == "":
-        raise ValueError(f"{what} must be a non-empty string, got {key!r}")
+        raise PatchSpecError(f"{what} must be a non-empty string, got {key!r}")
     if any(ch in key for ch in _FORBIDDEN_IN_KEY) or any(ord(ch) < 0x20 for ch in key):
-        raise ValueError(
+        raise PatchSpecError(
             f"{what} {key!r} contains a quote, a backslash or a control character, which "
             "patch_if rejects on every backend so SQLite and Postgres stay identical"
         )
@@ -238,7 +248,7 @@ def _check_json(value: Any, what: str) -> None:
     try:
         json.dumps(value, allow_nan=False)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{what} is not JSON-ready: {exc}") from exc
+        raise PatchSpecError(f"{what} is not JSON-ready: {exc}") from exc
 
 
 def validate_patch(
@@ -252,45 +262,45 @@ def validate_patch(
     where_d: dict[str, list[Any]] = {}
 
     if not patch_d and not paths_d:
-        raise ValueError("patch_if needs a non-empty patch or set_paths")
+        raise PatchSpecError("patch_if needs a non-empty patch or set_paths")
     if len(patch_d) > MAX_PATCH_KEYS or len(paths_d) > MAX_LEAVES:
-        raise ValueError(
+        raise PatchSpecError(
             f"patch_if takes at most {MAX_PATCH_KEYS} patch keys and {MAX_LEAVES} set_paths leaves"
         )
     if not where:
-        raise ValueError(
+        raise PatchSpecError(
             "patch_if needs a non-empty where: an unguarded field-scoped write is Storage.update's job, "
             "and an empty guard would hide a caller that forgot its generation"
         )
     for key, value in patch_d.items():
         _check_key(key, "patch key")
         if key == "id":
-            raise ValueError("patch_if cannot change the id")
+            raise PatchSpecError("patch_if cannot change the id")
         _check_json(value, f"patch[{key!r}]")
 
     for path, value in paths_d.items():
         if not isinstance(path, tuple) or not path:
-            raise ValueError(f"set_paths key must be a non-empty tuple, got {path!r}")
+            raise PatchSpecError(f"set_paths key must be a non-empty tuple, got {path!r}")
         if len(path) > MAX_PATH_DEPTH:
-            raise ValueError(
+            raise PatchSpecError(
                 f"set_paths path {path!r} is deeper than {MAX_PATH_DEPTH}; "
                 "patch_if is for shallow field-scoped writes"
             )
         for part in path:
             _check_key(part, "set_paths element")
         if path[0] == "id":
-            raise ValueError("patch_if cannot change the id")
+            raise PatchSpecError("patch_if cannot change the id")
         if path[0] in patch_d:
-            raise ValueError(
+            raise PatchSpecError(
                 f"{path[0]!r} is in both patch and set_paths; write it one way or the other"
             )
         _check_json(value, f"set_paths[{path!r}]")
     ordered = sorted(paths_d)
     for a, b in zip(ordered, ordered[1:]):
         if b[: len(a)] == a:
-            raise ValueError(f"set_paths {a!r} is a prefix of {b!r}; the write order would decide")
+            raise PatchSpecError(f"set_paths {a!r} is a prefix of {b!r}; the write order would decide")
     if len(parent_paths(paths_d)) > MAX_DISTINCT_PARENTS:
-        raise ValueError(
+        raise PatchSpecError(
             f"set_paths touches more than {MAX_DISTINCT_PARENTS} distinct parent objects; "
             "the compiled statement grows as 3^parents"
         )
@@ -298,37 +308,26 @@ def validate_patch(
     for field, allowed in where.items():
         _check_key(field, "where field")
         if field == "id":
-            raise ValueError(
+            raise PatchSpecError(
                 "where cannot name 'id': the id is a column, not part of the stored document"
             )
         if isinstance(allowed, (str, bytes)) or not isinstance(allowed, Sequence):
-            raise ValueError(
+            raise PatchSpecError(
                 f"where[{field!r}] must be a LIST of allowed values, got {type(allowed).__name__} "
                 "(a bare string would be read as a list of its characters and never match)"
             )
         values = list(allowed)
         if not values:
-            raise ValueError(f"where[{field!r}] is empty, which can never match")
+            raise PatchSpecError(f"where[{field!r}] is empty, which can never match")
         for v in values:
             if not isinstance(v, _WHERE_SCALARS):
-                raise ValueError(
+                raise PatchSpecError(
                     f"where[{field!r}] holds {type(v).__name__}; use a JSON scalar "
                     "(raw_generation gives the canonical value of a field)"
                 )
             _check_json(v, f"where[{field!r}]")
         where_d[field] = values
     return patch_d, paths_d, where_d
-
-
-def _typed_equal(a: Any, b: Any) -> bool:
-    """JSON-typed equality, the rule ``where`` follows: ``True`` is not ``1``, ``1`` equals ``1.0``."""
-    if a is None or b is None:
-        return a is None and b is None
-    if isinstance(a, bool) or isinstance(b, bool):
-        return isinstance(a, bool) and isinstance(b, bool) and a == b
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return a == b
-    return type(a) is type(b) and a == b
 
 
 def document_matches(doc: Mapping[str, Any], where: Mapping[str, Sequence[Any]]) -> bool:
@@ -338,7 +337,7 @@ def document_matches(doc: Mapping[str, Any], where: Mapping[str, Sequence[Any]])
     authority on whether a write applies.
     """
     return all(
-        any(_typed_equal(doc.get(field), v) for v in allowed)
+        any(json_equal(doc.get(field), v) for v in allowed)
         for field, allowed in where.items()
     )
 

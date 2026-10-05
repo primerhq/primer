@@ -58,6 +58,7 @@ from primer.model.storage import (
     Predicate,
 )
 from primer.storage._patch import (
+    PatchSpecError,
     canonical_fixup,
     check_known_fields,
     compile_sqlite,
@@ -935,9 +936,10 @@ class SqliteStorage(Storage[ModelT]):
                     await conn_.execute("RELEASE patch_if")
                 if should_commit:
                     await conn_.commit()
-        except ValueError:
-            # A malformed spec, a leaf the model drops, or a ValidationError (a ValueError subclass): the caller's
-            # mistake, reported as itself, not wrapped as a backend failure.
+        except (PatchSpecError, ValidationError):
+            # A malformed spec or a leaf the model drops (PatchSpecError), or a patch that leaves the row unreadable
+            # (ValidationError): the caller's mistake, reported as itself. Any OTHER ValueError (a corrupt stored
+            # document, a driver quirk) is a backend failure and is wrapped below.
             raise
         except Exception as exc:
             raise _wrap_sqlite_error(
