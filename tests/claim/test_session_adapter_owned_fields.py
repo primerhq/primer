@@ -57,6 +57,8 @@ def _row(**fields) -> WorkspaceSession:
         id=SID, workspace_id="w1", binding=AgentSessionBinding(agent_id="ag1"),
         status=SessionStatus.WAITING, created_at=datetime.now(UTC), turn_no=4, last_seq=10,
         next_unprocessed_seq=11, turn_status="idle",
+        # Set, so the release's own clear of it is observable in every branch.
+        last_worker_id="wk",
     )
     base.update(fields)
     return WorkspaceSession(**base)
@@ -79,8 +81,9 @@ _PARK = ParkRequest(
     (ReleaseOutcome(success=True, drop_lease=True), True),
     (ReleaseOutcome(success=False, drop_lease=True, last_error="boom"), False),
     (ReleaseOutcome(success=True, drop_lease=True, preserve_park=True), True),
+    (ReleaseOutcome(success=False, drop_lease=True, preserve_park=True, last_error="boom"), False),
     (ReleaseOutcome(success=True, drop_lease=True, park=_PARK), False),
-], ids=["completed", "failed", "preserve_park", "park"])
+], ids=["completed", "failed", "preserve_park", "preserve_park_failed", "park"])
 async def test_a_wake_committed_between_the_read_and_the_write_survives_the_release(outcome, bumped):
     storage = _BarrierStorage(_row())
     storage.between = _wake
@@ -91,7 +94,7 @@ async def test_a_wake_committed_between_the_read_and_the_write_survives_the_rele
     assert row.last_seq == 11, "last_seq regressed: the next turn would reuse seq 11"
     assert row.status == SessionStatus.RUNNING
     assert row.turn_no == (5 if bumped else 4)
-    assert row.last_worker_id is None
+    assert row.last_worker_id is None, "the release did not clear the worker stamp"
     if outcome.park is not None:
         assert row.parked_status == "parked"
         assert row.parked_event_key == "ask_user:s-owned:tc-1"
