@@ -708,3 +708,29 @@ async def test_an_arming_patch_the_row_refuses_runs_the_turn(world):
     assert world.llm_calls == ["first", "second"]
     assert _noops() == 0
     assert not has_open_turn(world.ws.lines(), cursor=0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag, expected", [
+    ("ended", (SessionStatus.ENDED, "completed")),
+    ("cancel_requested", (SessionStatus.ENDED, "cancelled")),
+    ("pause_requested", (SessionStatus.PAUSED, None)),
+], ids=["ended", "cancel_requested", "pause_requested"])
+async def test_the_ended_cancel_and_pause_exits_win_over_the_noop(world, flag, expected):
+    """The guard sits AFTER the ENDED, cancel and pause exits. With the marker matching and nothing claimable, a
+    no-op taken before them would bump turn_no and arm nothing, stranding the cancel or the pause on a row that is
+    neither ENDED nor PAUSED until something else wakes it. The exit must win."""
+    await _complete_a_turn_whose_release_rolled_back(world)
+    row = await world.row()
+    assert row.completed_turn_no == row.turn_no == 0 and row.turn_status == "idle"
+    fields = {"status": SessionStatus.ENDED, "ended_reason": "completed"} if flag == "ended" else {flag: True}
+    await world.sessions.update(row.model_copy(update=fields))
+    world.expire_lease()
+
+    assert await world.claim_and_run(world.pool("wrk-b")) == 1
+
+    row = await world.row()
+    assert (row.status, row.ended_reason) == expected, f"the {flag} exit did not run"
+    assert _noops() == 0, "the completed-turn no-op ran before the exit"
+    assert world.llm_calls == ["first"]
+    assert KEY not in world.engine._leases
