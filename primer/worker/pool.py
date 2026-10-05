@@ -1178,6 +1178,13 @@ class WorkerPool:
         continuation) leaves it unclaimed, reads as present and is handled as abandoned. That is harmless for the
         lease (the row is already claimable) but such a release is not counted as committed and gets no post-release
         path (a trigger task is labelled ``error``).
+
+        WHERE IT MAY BE CALLED FROM. Whether the caller is unwinding a cancel is read from ``sys.exception()``, the
+        exception being handled where this is awaited (including by any coroutine up the ``await`` chain). Call it
+        from ordinary code (nothing is being handled: ``None``), from a ``finally`` (the exception it is unwinding,
+        if any) or from an ``except`` block that re-raises what it caught. NEVER from an ``except`` that swallows a
+        ``CancelledError`` (or ``BaseException``), nor from code awaited inside one: ``sys.exception()`` reports the
+        swallowed cancel there, and a timed-out release would raise it again.
         """
         in_flight = sys.exception()   # a cancel the caller's ``finally`` is unwinding, if it releases from one
         scope = self._active_scopes.get((lease.kind, lease.entity_id))
