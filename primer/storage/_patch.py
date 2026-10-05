@@ -249,14 +249,15 @@ def check_canonical_json(model_name: str, key: str, value: Any) -> None:
     be storable: "nan" is a fine string for a float field and a NaN once validated, which no strict-JSON statement can
     carry. Refuse it like any other bad spec value (so the write rolls back) rather than let the rewrite fail in the driver
     as a backend error. Shared by :func:`canonical_fixup` and the test fake's reference. The message names the field and
-    never echoes the value.
+    every cause the check refuses (``json.dumps(allow_nan=False)``, then a UTF-8 encode), and never echoes the value.
     """
     try:
         _check_json(value, key)
     except PatchSpecError:
         raise PatchSpecError(
             f"{model_name}.{key} is not representable as strict JSON once the model has validated the patch "
-            "(a non-finite float or a surrogate code point); patch_if writes values the model can store"
+            "(a non-finite float, a surrogate code point in a string or a key, or a value or key type JSON cannot "
+            "encode); patch_if writes values the model can store"
         ) from None
 
 
