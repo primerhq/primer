@@ -278,6 +278,11 @@ WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
   publish failed (`POST .../interrupt` still answers 200: the flag on the row is
   durable and the running worker polls it); it has no labels. `reason` is a
   closed two-value enum, so it is on the label allowlist.
+- `session_completed_turn_noop_total` (no labels) counts session claims that found the previous turn completed
+  (`completed_turn_no == turn_no`) but its release never committed, and released without calling the model
+  again (`_noop_if_turn_already_completed` in `primer/session/dispatch.py`; see `docs/dev/subsystems/sessions.md`).
+  Each one is a turn that would otherwise have run twice; a steady rate points at releases being abandoned at the
+  worker's release bound (`primer_worker_release_timeouts_total`) or failing.
 - `llm_count_tokens_total{provider_id,source,outcome}` and
   `llm_count_tokens_seconds{provider_id,source}` are written by
   `count_prompt_tokens` in `primer/llm/counting.py`, the one wrapper that turns
