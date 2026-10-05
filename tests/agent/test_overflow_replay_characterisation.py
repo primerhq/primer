@@ -1038,7 +1038,6 @@ class TestAReplayThatParksWithoutAMarker:
             await session.aclose()
             await backend.aclose()
 
-
 @POSIX
 class TestACompactionSummaryIsNeverAMessageLine:
     """``CompactionSummary`` is a tag that does not survive JSON: written as a message line it would come back as a reply
@@ -1382,6 +1381,76 @@ class TestAHardCancelDuringTheMarkerCommit:
             assert any("marker commit failed" in r.getMessage() for r in caplog.records)
             shown = await _reload(session)
             assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the round is in the history once, written by the chokepoint"
+            assert_anthropic_valid(shown)
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+    async def test_a_commit_that_hangs_cannot_make_the_turn_uncancellable(self, tmp_path, monkeypatch, caplog) -> None:
+        """The wait for the commit is bounded: a drain must still be able to abort a turn whose commit hangs on a dead
+        storage, however many cancels it has already absorbed."""
+        import logging
+
+        import primer.agent.base as base
+
+        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 0.3)
+        backend, workspace, session = await open_session(tmp_path)
+        forever = asyncio.Event()
+        try:
+            await _seed(workspace, session)
+            entered = asyncio.Event()
+
+            def hanging_commit(executor) -> None:
+                async def hang(*args, **kwargs):
+                    entered.set()
+                    await forever.wait()
+
+                executor._replace_compacted_head = hang  # noqa: SLF001
+
+            with caplog.at_level(logging.ERROR, logger="primer.agent.base"):
+                task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=hanging_commit))
+                await asyncio.wait_for(entered.wait(), timeout=30)
+                for _ in range(5):                       # a cancel storm: each is absorbed until the grace is up
+                    task.cancel()
+                    await asyncio.sleep(0.02)
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=5)
+            assert any("did not finish within" in r.getMessage() for r in caplog.records), "said so, loudly"
+        finally:
+            forever.set()
+            await session.aclose()
+            await backend.aclose()
+
+    async def test_a_commit_that_lands_after_the_grace_is_not_written_twice(self, tmp_path, monkeypatch) -> None:
+        """Past the grace the outcome is unknown. The commit is a thread that may still land, so the rounds are taken as
+        in the marker: writing them again would put every tool_use id in the history twice."""
+        import primer.agent.base as base
+
+        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 0.2)
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await _seed(workspace, session)
+            entered = asyncio.Event()
+
+            def slow_commit(executor) -> None:
+                original = executor._replace_compacted_head  # noqa: SLF001
+
+                async def slow(*args, **kwargs):
+                    entered.set()
+                    await asyncio.sleep(0.6)             # well past the grace ...
+                    return await original(*args, **kwargs)   # ... and then it lands
+
+                executor._replace_compacted_head = slow  # noqa: SLF001
+
+            task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=slow_commit))
+            await asyncio.wait_for(entered.wait(), timeout=30)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+            await asyncio.sleep(1.2)                     # the abandoned commit finishes on its own
+            assert len(_markers(workspace, session)) == 1
+            shown = await _reload(session)
+            assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the round is in the history once"
             assert_anthropic_valid(shown)
         finally:
             await session.aclose()
