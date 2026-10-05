@@ -2,19 +2,24 @@
 
 Once an execution's scope is marked ``lease_returned`` (PR #330) a lost-lease verdict can no longer push a
 release that hangs: a stuck connection after the lease was genuinely lost would otherwise keep the handler
-alive until the drain timeout. The release is therefore bounded by ``_release_timeout_seconds`` (two lease
-TTLs by default): on timeout the release is cancelled, counted and logged, the ``TimeoutError`` propagates
-like any failed release, the key leaves ``_in_flight`` (so nothing heartbeats the lease and it expires for a
-peer to re-claim), and an UNRELATED execution's release is untouched. A ``TimeoutError`` raised by the engine
-itself (a command timeout) is not this bound and is not counted as it.
+alive until the drain timeout. The release is therefore bounded by ``_release_timeout_seconds`` (the lease
+TTL minus one heartbeat interval): on timeout the release is cancelled, counted and logged, the
+``TimeoutError`` propagates like any failed release, the key leaves ``_in_flight`` (so nothing heartbeats the
+lease and it expires for a peer to re-claim), and an UNRELATED execution's release is untouched. A
+``TimeoutError`` raised by the engine itself (a command timeout) is not this bound and is not counted as it.
 
-Every test runs two executions.
+The bound is no longer than that because a slow release is NOT harmless to the worker's other leases: on
+Postgres the heartbeat is one ``UPDATE`` over every in-flight key, including the one being released, and it
+waits on the row lock the release holds, so nothing the worker holds is refreshed until the release ends.
+
+Every behavioural test runs two executions.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -96,6 +101,117 @@ async def test_a_release_that_hangs_is_abandoned_within_the_bound_and_the_other_
         assert not await w.engine.has_lease(ClaimKind.TRIGGER, "fine")
         assert await w.engine.has_lease(ClaimKind.HARNESS, "stuck")
     finally:
+        for task in list(w.pool._turn_tasks):
+            task.cancel()
+        await asyncio.gather(*w.pool._turn_tasks, return_exceptions=True)
+        await w.close()
+
+
+@pytest.mark.parametrize(
+    ("ttl", "heartbeat", "bound"),
+    [(5, 1, 4.0), (5, 2, 3.0), (30, 10, 20.0), (300, 60, 240.0)],
+)
+def test_the_bound_is_one_heartbeat_interval_short_of_the_lease_ttl(ttl, heartbeat, bound):
+    """Derived from the config, never longer than the TTL: 3 s at the 5 s minimum TTL (with the 2 s heartbeat the
+    validator allows), 20 s at the defaults. It used to be two TTLs, past the point the worker's other leases lapse."""
+    pool = WorkerPool(
+        config=WorkerConfig(lease_ttl_seconds=ttl, heartbeat_interval_seconds=heartbeat),
+        scheduler=InMemoryScheduler(), storage=None,  # type: ignore[arg-type]
+        workspace_registry=None,  # type: ignore[arg-type]
+        provider_registry=None,  # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={}),
+    )
+    assert pool._release_timeout_seconds == bound
+    assert pool._release_timeout_seconds < ttl
+
+
+@pytest.mark.asyncio
+async def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_workers_other_leases_lapse():
+    """The Postgres stall, modelled on the in-memory engine: while the ``stuck`` release is open (it holds its row
+    lock) a heartbeat waits for it, and a heartbeat stamps ``expires_at`` from the moment it STARTED (``now()`` is
+    the statement's start). The ``other`` execution is still running, so its lease is refreshed only by heartbeats.
+    The bound is the one the config derives (TTL 5 s, heartbeat 1 s: 4 s), not an override, and the release starts
+    right after a heartbeat completed, so its other lease has one full TTL left: the bound must end the release, and
+    let the stalled heartbeat land, before that TTL runs out."""
+    w = _World()
+    w.engine.lease_ttl_seconds = w.pool.config.lease_ttl_seconds     # what start() pushes to the engine
+    leases = await w.start()
+    real_release = w.engine.release
+    real_heartbeat = w.engine.heartbeat
+    lock_free = asyncio.Event()
+    lock_free.set()
+    beat = asyncio.Event()
+    go = asyncio.Event()
+    other_gate = asyncio.Event()
+
+    async def release(lease, *, outcome):
+        if lease.entity_id != "stuck":
+            return await real_release(lease, outcome=outcome)
+        lock_free.clear()                    # the release transaction holds the row lock ...
+        try:
+            await asyncio.Event().wait()     # ... on a connection that never answers
+        finally:
+            lock_free.set()                  # the cancel rolls it back and the lock goes
+
+    async def heartbeat(worker_id, kind_ids):
+        started = datetime.now(UTC)
+        await lock_free.wait()               # the one UPDATE waits on the released row's lock
+        confirmed = await real_heartbeat(worker_id, kind_ids)
+        for key in confirmed:
+            w.engine._leases[key].expires_at = started + timedelta(seconds=w.engine.lease_ttl_seconds)
+        beat.set()
+        return confirmed
+
+    async def stuck(lease) -> None:
+        await go.wait()
+        try:
+            await w.pool._release_lease(lease, ReleaseOutcome(success=True, drop_lease=True))
+        except TimeoutError:
+            w.outcomes[lease.entity_id] = "timeout"
+            raise
+
+    async def other(lease) -> None:
+        await other_gate.wait()
+        await w.pool._release_lease(lease, ReleaseOutcome(success=True, drop_lease=True))
+
+    w.engine.release = release  # type: ignore[method-assign]
+    w.engine.heartbeat = heartbeat  # type: ignore[method-assign]
+    w.pool._dispatch = {ClaimKind.HARNESS: stuck, ClaimKind.TRIGGER: other}
+    lapsed: list[float] = []
+
+    async def watch_other() -> None:
+        while True:
+            row = w.engine._leases[(ClaimKind.TRIGGER, "fine")]
+            if row.expires_at < datetime.now(UTC):
+                lapsed.append(time.monotonic())
+            await asyncio.sleep(0.02)
+
+    w.pool._reserve_and_dispatch(leases)
+    loop_task = asyncio.create_task(w.pool._heartbeat_loop())
+    watcher = asyncio.create_task(watch_other())
+    try:
+        beat.clear()
+        await asyncio.wait_for(beat.wait(), timeout=5.0)
+        go.set()                              # the release starts just after a heartbeat refreshed ``other``
+        await _until(
+            lambda: lapsed or "stuck" in w.outcomes,
+            "the stuck release was never abandoned", timeout=15.0,
+        )
+        assert not lapsed, "the worker's OTHER lease expired while the release stalled its heartbeat"
+        assert w.outcomes == {"stuck": "timeout"}
+        beat.clear()
+        await asyncio.wait_for(beat.wait(), timeout=5.0)   # the stalled heartbeat (or the next one) lands
+        assert not lapsed, "the worker's OTHER lease expired before the stalled heartbeat landed"
+        row = w.engine._leases[(ClaimKind.TRIGGER, "fine")]
+        assert row.claimed_by == WORKER and row.expires_at > datetime.now(UTC)
+        assert w.pool._release_timeouts_total == 1
+    finally:
+        other_gate.set()
+        go.set()
+        watcher.cancel()
+        w.pool._keepalive_done.set()
+        loop_task.cancel()
+        await asyncio.gather(watcher, loop_task, return_exceptions=True)
         for task in list(w.pool._turn_tasks):
             task.cancel()
         await asyncio.gather(*w.pool._turn_tasks, return_exceptions=True)
