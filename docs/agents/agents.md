@@ -119,10 +119,14 @@ could be summarised, for example when the system prompt and tool schemas alone
 fill the window; `skipped`: the trigger cannot be reached and the prompt still
 fits, or the last compaction already left it at about this size, so the
 summary is not summarised again before the prompt has grown; noted once per
-run, not every turn). If the model then rejects the prompt as too large and
-compaction cannot shrink it, the turn fails with `context_overflow_unrecoverable`
-instead of being replayed unchanged: shorten the system prompt, give the agent
-fewer tools, or use a larger-context model.
+run, not every turn). If the provider still rejects a call as too large, the
+turn is compacted once more and CONTINUED from the tool rounds it already ran
+(no tool runs twice; a long turn's early rounds are summarised, the question
+and the newest round are kept). If compaction cannot shrink the prompt, or the
+replay is rejected too, the completed rounds are recorded (cut down, with a
+note that the calls already ran) and the turn ends with
+`context_overflow_unrecoverable` instead of being replayed unchanged: shorten
+the system prompt, give the agent fewer tools, or use a larger-context model.
 
 Streaming: subscribers (the WS connection, internal taps) see token
 events in the order the LLM produces them. Persisted state is the
