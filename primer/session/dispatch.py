@@ -779,49 +779,6 @@ async def run_one_session_turn(
             event_keys=getattr(yielded, "event_keys", None),
         )
 
-        # Forward the prompt to every channel associated with this
-        # session's workspace (ask_user / tool_approval gates). Awaited
-        # so delivery is attempted before the lease drops;
-        # _dispatch_to_channels never raises and no-ops when no dispatcher
-        # is wired. Function-local import mirrors the ParkedState import
-        # below to avoid the worker->dispatch circular import.
-        from primer.worker.yield_runtime import (
-            _dispatch_to_channels,
-            _dispatch_to_channels_multi,
-            merge_pending_dispatch,
-        )
-
-        graph_checkpoint = getattr(park, "graph_checkpoint", None)
-        multi_keys = getattr(yielded, "event_keys", None)
-        # Resolve workspace attribution fields for the channel prompt header.
-        ws_name, sess_label = await _resolve_attribution(
-            deps.storage_provider, session,
-        )
-        if multi_keys and graph_checkpoint:
-            # Multi-event graph park: one prompt per pending node. The
-            # re-park path (after a reply) never re-dispatches, so each
-            # node is prompted exactly once.
-            await _dispatch_to_channels_multi(
-                dispatcher=deps.channel_dispatcher,
-                workspace_id=session.workspace_id,
-                session_id=session.id,
-                pending=merge_pending_dispatch(graph_checkpoint),
-                already_sent=set(),
-                workspace_name=ws_name,
-                session_label=sess_label,
-                session=session,
-            )
-        else:
-            await _dispatch_to_channels(
-                dispatcher=deps.channel_dispatcher,
-                session=session,
-                yielded=yielded_stamped,
-                workspace_registry=deps.workspace_registry,
-                artifact_registry=deps.artifact_registry,
-                workspace_name=ws_name,
-                session_label=sess_label,
-            )
-
         # The executor stamps YieldToWorker.llm_messages with the in-progress
         # turn history (the assistant message that emitted the tool_use).
         # Round-trip through model_dump so the JSONB column carries canonical
@@ -863,6 +820,52 @@ async def run_one_session_turn(
         except TurnInvariantError as exc:
             return await _end_turn_failed(exc)
         await turn_log.aclose()
+
+        # Forward the prompt to every channel associated with this
+        # session's workspace (ask_user / tool_approval gates). Only once
+        # the co-pending batch above is materialized: a TurnInvariantError
+        # there ends the session, and an ENDED session must not have asked
+        # a human anything. Awaited so delivery is attempted before the
+        # lease drops;
+        # _dispatch_to_channels never raises and no-ops when no dispatcher
+        # is wired. Function-local import mirrors the ParkedState import
+        # above to avoid the worker->dispatch circular import.
+        from primer.worker.yield_runtime import (
+            _dispatch_to_channels,
+            _dispatch_to_channels_multi,
+            merge_pending_dispatch,
+        )
+
+        graph_checkpoint = getattr(park, "graph_checkpoint", None)
+        multi_keys = getattr(yielded, "event_keys", None)
+        # Resolve workspace attribution fields for the channel prompt header.
+        ws_name, sess_label = await _resolve_attribution(
+            deps.storage_provider, session,
+        )
+        if multi_keys and graph_checkpoint:
+            # Multi-event graph park: one prompt per pending node. The
+            # re-park path (after a reply) never re-dispatches, so each
+            # node is prompted exactly once.
+            await _dispatch_to_channels_multi(
+                dispatcher=deps.channel_dispatcher,
+                workspace_id=session.workspace_id,
+                session_id=session.id,
+                pending=merge_pending_dispatch(graph_checkpoint),
+                already_sent=set(),
+                workspace_name=ws_name,
+                session_label=sess_label,
+                session=session,
+            )
+        else:
+            await _dispatch_to_channels(
+                dispatcher=deps.channel_dispatcher,
+                session=session,
+                yielded=yielded_stamped,
+                workspace_registry=deps.workspace_registry,
+                artifact_registry=deps.artifact_registry,
+                workspace_name=ws_name,
+                session_label=sess_label,
+            )
 
         # A yield raised inside a NESTED invoke_agent invocation arrives with
         # ``park.frames`` already populated (run_subagent/resume_subagent

@@ -238,3 +238,43 @@ async def test_a_notifying_result_with_no_tool_call_record_ends_the_session_fail
     assert error["kind"] == SessionMessageKind.ERROR
     assert error["payload"]["title"] == "TurnInvariantError"
     assert "notifying result 'x:tool:0:9' has no matching TOOL_CALL record" in error["payload"]["message"]
+
+
+class _RecordingDispatcher:
+    def __init__(self) -> None:
+        self.prompts: list = []
+
+    async def dispatch_prompt(self, *, envelope, session=None) -> list:
+        self.prompts.append(envelope)
+        return [{"ok": True}]
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_park_that_breaks_the_invariant_sends_no_channel_prompt() -> None:
+    """The mixed arm used to forward the gate's prompt to the channels BEFORE materializing the co-pending batch, so a
+    session the invariant then ENDED had already asked a human a question nothing would ever resume."""
+    storage_provider, session_id, _io, _lines, deps, lease = await _setup("yield_mixed")
+    deps.channel_dispatcher = _RecordingDispatcher()
+    await storage_provider.get_storage(ToolCallTask).create(ToolCallTask(
+        id=f"{session_id}/x:tool:0:1", session_id="someone-else", turn_no=0, tool_name="tool_a",
+        state=ToolCallTaskState.QUEUED, record_seq=1, created_at=_now(),
+    ))
+
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.park is None
+    row = await storage_provider.get_storage(WorkspaceSession).get(session_id)
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    assert deps.channel_dispatcher.prompts == [], "an ENDED session's gate was prompted on the channels"
+
+
+@pytest.mark.asyncio
+async def test_a_valid_mixed_park_sends_its_channel_prompt_once() -> None:
+    _storage_provider, _session_id, _io, _lines, deps, lease = await _setup("yield_mixed")
+    deps.channel_dispatcher = _RecordingDispatcher()
+
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.success is True and outcome.park is not None
+    (envelope,) = deps.channel_dispatcher.prompts
+    assert envelope.kind == "ask_user"
