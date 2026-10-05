@@ -21,6 +21,7 @@ from primer.int.storage import Storage
 from primer.model.common import Identifiable
 from primer.model.except_ import NotFoundError
 from primer.storage import raw_generation
+from primer.storage._patch import PatchSpecError
 
 
 class Phase(str, Enum):
@@ -469,11 +470,31 @@ async def a_set_paths_leaf_under_a_typed_sub_model_is_canonicalised_and_a_typo_i
     )
     assert out is not None and out.sub.a == 7
     assert out.sub.when is not None and out.sub.when.utcoffset() == timedelta(0)
-    # a leaf the typed sub-model does not carry would be reported written and silently dropped: refused instead
-    with pytest.raises(ValueError):
-        await store.patch_if("a", None, where={"status": ["created"]}, set_paths={("sub", "typo"): 1})
+    # a leaf the typed sub-model does not carry would be reported written and silently dropped: refused instead, and the
+    # refused call's OTHER visible change (a patched field) is rolled back with it
+    with pytest.raises(PatchSpecError):
+        await store.patch_if(
+            "a", {"count": 99}, where={"status": ["created"]}, set_paths={("sub", "typo"): 1},
+        )
     fresh = await store.get("a")
     assert fresh is not None and fresh.sub.a == 7
+    assert fresh.count == 0, "the refused call's patched field landed although the call was refused"
+
+
+async def a_legacy_row_missing_a_nullable_field_with_a_non_null_default_never_matches_that_default(env: Env) -> None:
+    """A row older than a NULLABLE field whose default is not null: the model reads the default (30), but a nullable field
+    is compared as stored, so a guard naming the default does not match the absent key. ``raw_generation`` of such a row
+    returns the default, so a guard built from that read is refused for that row until the key is written; ``None``
+    (which matches an absent key) is the way in."""
+    store = env.store(StrictDoc)
+    await env.seed_raw(StrictDoc, "old", {"status": "created"})
+    row = await store.get("old")
+    assert row is not None and row.timeout == 30
+    guard = {"timeout": [raw_generation(row, "timeout")]}
+    assert guard == {"timeout": [30]}
+    assert await store.patch_if("old", {"status": "x"}, where=guard) is None, "the default matched an absent nullable key"
+    assert await store.patch_if("old", {"timeout": 30}, where={"timeout": [None]}) is not None
+    assert await store.patch_if("old", {"status": "y"}, where=guard) is not None, "once stored, the guard matches"
 
 
 RAW = [
@@ -484,6 +505,7 @@ RAW = [
     patching_a_field_the_model_does_not_have_is_rejected,
     a_stale_guard_on_a_nullable_field_with_a_default_is_not_applied_over_a_newer_null,
     a_set_paths_leaf_under_a_typed_sub_model_is_canonicalised_and_a_typo_is_refused,
+    a_legacy_row_missing_a_nullable_field_with_a_non_null_default_never_matches_that_default,
 ]
 
 

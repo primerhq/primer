@@ -96,6 +96,7 @@ from primer.model.storage import (
 )
 from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_options
 from primer.storage._patch import (
+    PatchSpecError,
     canonical_fixup,
     check_known_fields,
     compile_postgres,
@@ -943,9 +944,10 @@ class PostgresStorage(Storage[ModelT]):
                     exists = await c.fetchval(
                         f'SELECT 1 FROM {self._qualified} WHERE id = $1', id,
                     )
-        except ValueError:
-            # A malformed spec, a leaf the model drops, or a ValidationError (a ValueError subclass): the caller's
-            # mistake, reported as itself, not wrapped as a backend failure.
+        except (PatchSpecError, ValidationError):
+            # A malformed spec or a leaf the model drops (PatchSpecError), or a patch that leaves the row unreadable
+            # (ValidationError): the caller's mistake, reported as itself. Any OTHER ValueError (a corrupt stored
+            # document, a driver quirk) is a backend failure and is wrapped below.
             raise
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc

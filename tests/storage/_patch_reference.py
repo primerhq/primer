@@ -11,7 +11,7 @@ import copy
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from primer.storage._patch import parent_paths
+from primer.storage._patch import PatchSpecError, parent_paths
 
 
 def typed_equal(a: Any, b: Any) -> bool:
@@ -114,7 +114,7 @@ def check_known_fields_reference(
     if model_cls.model_config.get("extra") != "allow":
         unknown = sorted({*patch, *(p[0] for p in set_paths)} - set(model_cls.model_fields))
         if unknown:
-            raise ValueError(f"{model_cls.__name__} has no field {unknown[0]!r}")
+            raise PatchSpecError(f"{model_cls.__name__} has no field {unknown[0]!r}")
 
 
 def patch_if_reference(
@@ -148,7 +148,7 @@ def patch_if_reference(
         node: Any = canonical
         for part in path:
             if not isinstance(node, dict) or part not in node:
-                raise ValueError(f"set_paths {path!r} is not part of {model_cls.__name__}")
+                raise PatchSpecError(f"set_paths {path!r} is not part of {model_cls.__name__}")
             node = node[part]
     for key in {*patch_d, *(p[0] for p in paths_d)}:
         if key in canonical and not same_spelling(produced.get(key), canonical[key]):
