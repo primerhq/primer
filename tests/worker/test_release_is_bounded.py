@@ -40,8 +40,8 @@ async def _until(predicate, message: str, timeout: float = 5.0) -> None:
 
 
 class _World:
-    def __init__(self, heartbeat: int = 1) -> None:
-        self.engine = InMemoryClaimEngine(adapters={})
+    def __init__(self, heartbeat: int = 1, clock=None) -> None:
+        self.engine = InMemoryClaimEngine(adapters={}, **({} if clock is None else {"clock": clock}))
         self.scheduler = InMemoryScheduler()
         self.pool = WorkerPool(
             config=WorkerConfig(concurrency=4, heartbeat_interval_seconds=heartbeat, lease_ttl_seconds=5),
@@ -146,13 +146,57 @@ def test_the_probe_after_a_timed_out_release_is_one_heartbeat_and_fits_in_the_tt
     assert pool._release_timeout_seconds + pool._release_probe_timeout_seconds <= config.lease_ttl_seconds
 
 
-@pytest.mark.asyncio
+class _VirtualTimeLoop(asyncio.SelectorEventLoop):
+    """An event loop whose clock moves only when it would otherwise wait, and then straight to the next timer.
+
+    Every timer (``asyncio.sleep``, ``asyncio.timeout``, ``wait_for``) fires exactly at its deadline whatever the
+    host's load, and no time passes between two of them, so a race between timers is decided by their deadlines
+    alone. Ready callbacks and file descriptors are served first, as on a real loop; with no timer scheduled it
+    blocks like one.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._virtual_now = 0.0
+        real_select = self._selector.select
+
+        def select(timeout=None):
+            if timeout is None:
+                return real_select(None)
+            events = real_select(0)
+            if not events and timeout > 0:
+                self._virtual_now += timeout
+            return events
+
+        self._selector.select = select  # type: ignore[method-assign]
+
+    def time(self) -> float:
+        return self._virtual_now
+
+
+# Far from the wall clock on purpose: a lease the engine stamped from the wall clock instead of the injected one
+# is then visibly expired.
+_EPOCH = datetime(2100, 1, 1, tzinfo=UTC)
+
+
+class _LoopClock:
+    """The engine's clock: the virtual loop's time as a datetime, or the instant ``pinned`` while it is set."""
+
+    def __init__(self) -> None:
+        self.pinned: datetime | None = None
+
+    def __call__(self) -> datetime:
+        if self.pinned is not None:
+            return self.pinned
+        return _EPOCH + timedelta(seconds=asyncio.get_running_loop().time())
+
+
 @pytest.mark.parametrize(
     ("heartbeat", "after_beat"),
     [(1, 0.0), (2, 1.6)],
     ids=["release-right-after-a-heartbeat", "release-just-before-the-next-heartbeat"],
 )
-async def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_workers_other_leases_lapse(
+def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_workers_other_leases_lapse(
     heartbeat, after_beat,
 ):
     """The Postgres stall, modelled on the in-memory engine: while the ``stuck`` release is open (it holds its row
@@ -164,8 +208,17 @@ async def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_worke
     full TTL left. Or it starts 1.6 s after one, just before the next 2 s tick (bound 3 s): ``other``'s last refresh
     is 1.6 s old when the release begins, so it lapses 3.4 s into the release and the bound (3 s) must end the
     release, and let the stalled heartbeat land, inside the 0.4 s left. A bound of a whole TTL (5 s) lapses it there.
-    (At the exact worst alignment the margin is only the cancel's round trip; see worker-system.md.)"""
-    w = _World(heartbeat=heartbeat)
+    (At the exact worst alignment the margin is only the cancel's round trip; see worker-system.md.)
+
+    It runs on a virtual-time loop and the engine reads that loop's time (``InMemoryClaimEngine(clock=...)``), so the
+    0.4 s margin is decided by the deadlines, not by how promptly a loaded host fires the bound's timer."""
+    with asyncio.Runner(loop_factory=_VirtualTimeLoop) as runner:
+        runner.run(_stall_scenario(heartbeat, after_beat))
+
+
+async def _stall_scenario(heartbeat: int, after_beat: float) -> None:
+    clock = _LoopClock()
+    w = _World(heartbeat=heartbeat, clock=clock)
     w.engine.lease_ttl_seconds = w.pool.config.lease_ttl_seconds     # what start() pushes to the engine
     leases = await w.start()
     real_release = w.engine.release
@@ -185,12 +238,14 @@ async def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_worke
         finally:
             lock_free.set()                  # the cancel rolls it back and the lock goes
 
-    async def heartbeat(worker_id, kind_ids):
-        started = datetime.now(UTC)
+    async def heartbeat_(worker_id, kind_ids):
+        started = clock()
         await lock_free.wait()               # the one UPDATE waits on the released row's lock
-        confirmed = await real_heartbeat(worker_id, kind_ids)
-        for key in confirmed:
-            w.engine._leases[key].expires_at = started + timedelta(seconds=w.engine.lease_ttl_seconds)
+        clock.pinned = started               # and stamps from its start (the in-memory heartbeat does not await)
+        try:
+            confirmed = await real_heartbeat(worker_id, kind_ids)
+        finally:
+            clock.pinned = None
         beat.set()
         return confirmed
 
@@ -207,15 +262,15 @@ async def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_worke
         await w.pool._release_lease(lease, ReleaseOutcome(success=True, drop_lease=True))
 
     w.engine.release = release  # type: ignore[method-assign]
-    w.engine.heartbeat = heartbeat  # type: ignore[method-assign]
+    w.engine.heartbeat = heartbeat_  # type: ignore[method-assign]
     w.pool._dispatch = {ClaimKind.HARNESS: stuck, ClaimKind.TRIGGER: other}
-    lapsed: list[float] = []
+    lapsed: list[datetime] = []
 
     async def watch_other() -> None:
         while True:
             row = w.engine._leases[(ClaimKind.TRIGGER, "fine")]
-            if row.expires_at < datetime.now(UTC):
-                lapsed.append(time.monotonic())
+            if row.expires_at < clock():
+                lapsed.append(clock())
             await asyncio.sleep(0.02)
 
     w.pool._reserve_and_dispatch(leases)
@@ -236,7 +291,7 @@ async def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_worke
         await asyncio.wait_for(beat.wait(), timeout=5.0)   # the stalled heartbeat (or the next one) lands
         assert not lapsed, "the worker's OTHER lease expired before the stalled heartbeat landed"
         row = w.engine._leases[(ClaimKind.TRIGGER, "fine")]
-        assert row.claimed_by == WORKER and row.expires_at > datetime.now(UTC)
+        assert row.claimed_by == WORKER and row.expires_at > clock()
         assert w.pool._release_timeouts_total == 1
     finally:
         other_gate.set()
