@@ -128,10 +128,33 @@ class TestReplayGuard:
         prompt = [_user("go"), _call(0), _result(0, 24_000), _call(1), _result(1, 24_000)]    # about 12k tokens
         tools = self._schemas(44_000)                                                         # about 22k tokens
         assert SIZE(prompt) < strategy.reduced_target(model), "the messages alone fit the old target"
-        sent = asyncio.run(strategy.replay_guard(model).before_call(prompt, tools=tools))
+        fixed = CompactionStrategy.estimate_fixed_overhead([], tools)
+        sent = asyncio.run(strategy.replay_guard(model, fixed_overhead=fixed).before_call(prompt, tools=tools))
         # (it reduces what it can: the newest result keeps a floor, so not to the target itself)
         assert SIZE(sent) < SIZE(prompt) // 2, "but with the schemas they are cut: the window has no room for them"
         assert all("ALREADY RAN" in o or len(o) < 24_000 for o in _outputs(sent)) and any("ALREADY RAN" in o for o in _outputs(sent))
+
+
+    def test_the_target_is_the_fixed_part_plus_a_fraction_of_what_the_budget_leaves_after_it(self) -> None:
+        """A fraction of the WHOLE budget counts the fixed part against the history's share: on the builder shape
+        (about 22k fixed in a 23.8k budget) that is 14.3k for a call that carries 22k before any history, so every
+        result was shed whatever the history held. ``fixed + fraction * (budget - fixed)`` leaves the history its
+        fraction of what is actually there to give."""
+        strategy = CompactionStrategy()
+        model = ResolvedModel(
+            profile_id="p", provider_id="prov", model_name="m", context_length=32_000, config=ModelProfileConfig(),
+        )
+        tools = self._schemas(36_000)                                                         # about 18k tokens
+        fixed = CompactionStrategy.estimate_fixed_overhead([], tools)
+        # an old result of about 1.1k tokens (sheddable: over the 1,000-token floor, and not one of the newest two)
+        prompt = [_user("go"), _call(0), _result(0, 4_400), _call(1), _result(1, 100), _call(2), _result(2, 100)]
+        budget = strategy._effective_budget(model)  # noqa: SLF001
+        assert SIZE(prompt) < int(strategy.DEFAULT_REDUCED_FRACTION * (budget - fixed)), "it fits what the budget leaves"
+        assert fixed + SIZE(prompt) > int(strategy.DEFAULT_REDUCED_FRACTION * budget), "and not a flat fraction of the budget"
+        counting = asyncio.run(strategy.replay_guard(model, fixed_overhead=fixed).before_call(prompt, tools=tools))
+        assert counting == prompt, "it fits what the budget leaves: nothing is shed"
+        blind = asyncio.run(strategy.replay_guard(model).before_call(prompt, tools=tools))
+        assert blind != prompt, "the same prompt against a flat fraction of the whole budget was cut"
 
 
 class TestCapNewestRound:
