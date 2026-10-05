@@ -160,11 +160,12 @@ class _Manager:
 
     def __init__(
         self, gate: asyncio.Event | None = None, on_start=None, parks: frozenset[str] = frozenset(),
-        notifying: frozenset[str] = frozenset(),
+        notifying: frozenset[str] = frozenset(), park_key_prefix: str = "timer:",
     ) -> None:
         self.gate = gate
         self.on_start = on_start
         self.parks = parks                       # call ids whose execution parks the session (YieldToWorker)
+        self.park_key_prefix = park_key_prefix   # what the parking call waits on: a timer, an approval, an answer
         self.notifying = notifying               # tool NAMES the runner answers itself (client actions)
         self.started = asyncio.Event()
         self.finished = 0
@@ -190,7 +191,7 @@ class _Manager:
             self.on_start(call)
         if call.id in self.parks:
             raise YieldToWorker(
-                Yielded(tool_name=call.name, event_key=f"timer:{call.id}", resume_metadata={}),
+                Yielded(tool_name=call.name, event_key=f"{self.park_key_prefix}{call.id}", resume_metadata={}),
                 tool_call_id=call.id,
             )
         if self.gate is not None:
@@ -579,9 +580,9 @@ def _client_actions(events: list[StreamEvent]) -> list[str]:
 
 class TestWhatAStopMeansForTheCallsAfterTheRunningOne:
     """Once the Stop is set, a call that has not started neither parks the session nor tells the browser to act, even
-    when it is the kind of call that would. Only the call that is RUNNING when the Stop lands can park (a timer, a
-    ``tool_wait``, an approval or an answer gate): the batch has left the loop by the time the Stop could be looked at,
-    and the dispatch drops the Stop as it parks (the park honouring a pending Stop is its own follow-up)."""
+    when it is the kind of call that would. Only the call that is RUNNING when the Stop lands can still ask to park (a
+    timer, a ``tool_wait``, an approval or an answer gate); what the loop does with that is
+    ``TestAStopThatLandsWhileACallAsksToPark`` below."""
 
     async def test_a_later_call_that_would_park_is_refused_not_parked(self) -> None:
         interrupt = asyncio.Event()
@@ -593,17 +594,6 @@ class TestWhatAStopMeansForTheCallsAfterTheRunningOne:
         assert manager.executed == ["a"], "the call that would park was started"
         assert [(p.id, p.output) for p in _tool_results(messages_out)] == [("a", "ok"), ("b", STOPPED)]
         assert interrupted == [True]
-
-    async def test_the_call_that_is_running_when_the_stop_lands_can_still_park(self) -> None:
-        """The narrowed caveat, pinned: it parks, so the loop is left by the park exception and the Stop is not seen."""
-        interrupt = asyncio.Event()
-        manager = _Manager(on_start=lambda c: interrupt.set() if c.id == "a" else None, parks=frozenset({"a"}))
-        llm = _ScriptedLLM(_round_of(("a", "loop_tool"), ("b", "loop_tool")), _AFTER)
-
-        with pytest.raises(YieldToWorker):
-            await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
-
-        assert manager.executed == ["a"]
 
     async def test_a_notifying_call_after_the_stop_emits_no_client_action(self) -> None:
         interrupt = asyncio.Event()
@@ -631,3 +621,126 @@ class TestWhatAStopMeansForTheCallsAfterTheRunningOne:
         assert [(p.id, p.output) for p in _tool_results(messages_out)] == [
             ("n", "delivered"), ("a", "ok"), ("b", STOPPED),
         ]
+
+
+PARKED_STOP = "interrupted: stopped by user (the call may have run, and its result was not recorded)"
+
+
+class TestAStopThatLandsWhileACallAsksToPark:
+    """The call that is RUNNING when the Stop lands cannot be cancelled here (slice B), and it may then ask the session
+    to park (a timer, a trigger, a claimed ``tool_wait`` batch). The park exception used to leave the loop with the Stop
+    unseen: the session parked, the console then offered no Stop, and the timer later ran the work the user had tried
+    to stop. A park that waits on no human decision is now ended as a Stop instead: every call of the round is answered
+    (so the history stays valid), the loop returns cleanly and reports the interruption. A park that asks a PERSON
+    (an approval, an answer) still parks: what they answer later wins over the earlier Stop."""
+
+    async def _drive_parking(self, calls, parking: str, *, key_prefix: str = "timer:", stop: bool = True):
+        interrupt = asyncio.Event()
+        manager = _Manager(
+            on_start=(lambda c: interrupt.set() if c.id == parking else None) if stop else None,
+            parks=frozenset({parking}), park_key_prefix=key_prefix,
+        )
+        llm = _ScriptedLLM(_round_of(*calls), _AFTER)
+        events, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+        return manager, llm, events, messages_out, interrupted
+
+    async def test_a_timer_park_ends_the_turn_as_a_stop_instead_of_raising(self) -> None:
+        manager, llm, _, _, interrupted = await self._drive_parking(
+            [("a", "loop_tool"), ("b", "loop_tool")], parking="a",
+        )
+
+        assert manager.executed == ["a"]
+        assert interrupted == [True] and llm.calls == 1, "the turn did not end as a Stop before the next model call"
+
+    async def test_the_running_call_and_the_ones_before_it_say_their_result_was_not_recorded(self) -> None:
+        """The calls before the one that asked to wait ran and their results went with the exception; the calls after
+        it never started. Each is answered with what holds for it."""
+        manager, _, _, messages_out, _ = await self._drive_parking(
+            [("x", "loop_tool"), ("a", "loop_tool"), ("b", "loop_tool")], parking="a",
+        )
+
+        assert manager.executed == ["x", "a"]
+        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [
+            ("x", PARKED_STOP, True), ("a", PARKED_STOP, True), ("b", STOPPED, True),
+        ]
+        assert [m.role for m in messages_out] == ["assistant", "tool"], "one paired, completed round"
+
+    async def test_every_answer_is_yielded_so_the_durable_log_is_paired_too(self) -> None:
+        _, _, events, _, _ = await self._drive_parking([("a", "loop_tool"), ("b", "loop_tool")], parking="a")
+
+        results = [e.extended for e in events if isinstance(e, ExtendedEvent) and hasattr(e.extended, "call_id")]
+        assert [(r.call_id, r.output, r.error) for r in results] == [("a", PARKED_STOP, True), ("b", STOPPED, True)]
+
+    async def test_the_persisted_history_is_valid_for_both_providers(self) -> None:
+        _, _, _, messages_out, _ = await self._drive_parking([("a", "loop_tool"), ("b", "loop_tool")], parking="a")
+        history = [Message(role="user", parts=[TextPart(text="go")]), *messages_out]
+
+        assert_anthropic_valid(history)
+        assert_openai_valid(history)
+
+    @pytest.mark.parametrize("key_prefix", ["tool_approval:", "ask_user:"])
+    async def test_a_park_that_asks_a_person_still_parks(self, key_prefix: str) -> None:
+        with pytest.raises(YieldToWorker) as parked:
+            await self._drive_parking([("a", "loop_tool")], parking="a", key_prefix=key_prefix)
+
+        assert parked.value.yielded.event_key == f"{key_prefix}a"
+
+    async def test_without_a_stop_a_timer_park_still_parks(self) -> None:
+        with pytest.raises(YieldToWorker):
+            await self._drive_parking([("a", "loop_tool")], parking="a", stop=False)
+
+    async def test_a_claimed_batch_ends_the_turn_as_a_stop_and_keeps_the_notifying_results(self) -> None:
+        """With tool_calls_as_claims on, the batch is parked as ToolWaitPark. A Stop that lands after the loop's check
+        (here: while the dispatch barrier is awaited) must not park it either. The notifying call already RAN (its
+        client action goes out and its real result is kept); the claimable one never started."""
+        interrupt = asyncio.Event()
+        resolved: list[str] = []
+
+        def resolver(call_id: str):
+            resolved.append(call_id)
+            return (f"x:tool:0:{len(resolved)}", len(resolved))
+
+        async def barrier() -> None:
+            interrupt.set()
+
+        manager = _Manager(notifying=frozenset({"notify_tool"}))
+        llm = _ScriptedLLM(_round_of(("n", "notify_tool"), ("a", "loop_tool")), _AFTER)
+        events: list[StreamEvent] = []
+        messages_out: list[Message] = []
+        interrupted: list[bool] = []
+
+        async def drive() -> None:
+            async for ev in run_agent_turn(
+                agent=AGENT, llm=llm, llm_model=MODEL, tool_manager=manager,
+                prompt=[Message(role="user", parts=[TextPart(text="go")])],
+                messages_out=messages_out, interrupt=interrupt, interrupted_out=interrupted,
+                tool_calls_as_claims_enabled=True, resolve_scoped_call=resolver, await_dispatch_barrier=barrier,
+            ):
+                events.append(ev)
+
+        await asyncio.wait_for(drive(), 3.0)   # a ToolWaitPark would be raised out of here
+
+        assert interrupted == [True] and llm.calls == 1
+        assert manager.executed == [], "the claimable call was started in-process"
+        assert _client_actions(events) == ["n"], "the delivered notifying call's client action was lost"
+        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [
+            ("n", "delivered", False), ("a", STOPPED, True),
+        ]
+        history = [Message(role="user", parts=[TextPart(text="go")]), *messages_out]
+        assert_anthropic_valid(history)
+        assert_openai_valid(history)
+
+    def test_the_loop_and_the_turn_log_agree_on_what_a_human_gate_is(self) -> None:
+        """One table (``YIELD_KIND_PREFIXES``): the loop's Stop handling and dispatch's yield-kind classifier."""
+        from primer.model.yield_ import YIELD_KIND_PREFIXES, asks_a_person
+        from primer.session.dispatch import _classify_yield_kind
+
+        def park(key: str) -> YieldToWorker:
+            return YieldToWorker(Yielded(tool_name="t", event_key=key), tool_call_id="c")
+
+        for prefix, kind in YIELD_KIND_PREFIXES:
+            assert asks_a_person(park(f"{prefix}x").yielded) is True
+            assert _classify_yield_kind(park(f"{prefix}x")) == kind
+        for key in ("timer:t1", "trigger:abc", "mcp_task:1", "watch:w"):
+            assert asks_a_person(park(key).yielded) is False
+            assert _classify_yield_kind(park(key)) == "subscribe_to_trigger"
