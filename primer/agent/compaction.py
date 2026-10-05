@@ -824,7 +824,7 @@ class CompactionStrategy:
             if tool_manager is None:
                 summary_text = await self._summarise_text_only(summary_request, llm=llm, model=model)
             else:
-                summary_text = await self._summarise_with_tools(
+                summary_text, cut_round = await self._summarise_with_tools(
                     summary_request,
                     llm=llm,
                     model=model,
@@ -834,6 +834,10 @@ class CompactionStrategy:
                     principal=principal,
                     carried=carried,
                 )
+                if cut_round:
+                    # The loop overflowed in a later round and ended with the summary it had written: that is an
+                    # overflow too, and the marker must say the summary may be less than one of the whole head.
+                    reduction = SummaryInputReduction(tool_loop_cut_round=cut_round)
         except Exception as exc:  # noqa: BLE001 -- only a context overflow is this recovery's
             if not is_context_overflow(exc):
                 raise
@@ -844,6 +848,7 @@ class CompactionStrategy:
             summary_text, reduction = await self._summarise_reduced(
                 head, compaction_prompt=compaction_prompt, llm=llm, model=model, cause=exc,
                 first_call_extra=await self._tool_schema_tokens(tool_manager, principal) + sum(carried),
+                head_known_to_fit=sum(carried) > 0,   # an earlier round was accepted with the head in it
             )
 
         marker_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -902,6 +907,7 @@ class CompactionStrategy:
         model: "ResolvedModel",
         cause: BaseException,
         first_call_extra: int = 0,
+        head_known_to_fit: bool = False,
     ) -> tuple[str, SummaryInputReduction]:
         """The one retry of a summariser call that overflowed: text only, on a reduced input."""
         current = self._estimate_tokens(head)
@@ -913,6 +919,7 @@ class CompactionStrategy:
                 frame=self._estimate_tokens(self._summary_request(compaction_prompt, [])),
                 current=current,
                 first_call_extra=first_call_extra,
+                head_known_to_fit=head_known_to_fit,
             )
         except SummaryInputUnreachable as unreachable:
             raise SummariserOverflow(
@@ -993,7 +1000,7 @@ class CompactionStrategy:
         max_tool_turns: int | None,
         principal: str | None,
         carried: list[int] | None = None,
-    ) -> str:
+    ) -> tuple[str, int]:
         """Tool-enabled summarisation: a bounded, ephemeral tool-use loop.
 
         The compaction prompt may instruct the model to call the agent's tools
@@ -1003,6 +1010,9 @@ class CompactionStrategy:
         assistant/tool messages are DISCARDED -- only the model's final text is
         returned as the summary. An empty final text (e.g. the model spent its
         turn writing files) falls back to a marker rather than erroring.
+
+        Returns ``(summary_text, cut_round)``: ``cut_round`` is the round (1-based) in which the loop overflowed
+        and was ended with the summary it had already written, else ``0``.
         """
         cap = (
             max_tool_turns
@@ -1013,6 +1023,7 @@ class CompactionStrategy:
         messages = list(summary_request)
         summary_text = ""
         tool_round = 0
+        cut_round = 0
         while True:
             buffered: list[StreamEvent] = []
             try:
@@ -1047,6 +1058,7 @@ class CompactionStrategy:
                     "compaction: the summariser's tool loop overflowed in round %d; ending it with the "
                     "summary written so far", tool_round + 1, extra={"error": str(exc)},
                 )
+                cut_round = tool_round + 1
                 break
             try:
                 assistant_msg = output_to_message(buffered)
@@ -1114,7 +1126,7 @@ class CompactionStrategy:
                 "conversation was written out via the compaction tool calls; "
                 "see the compaction activity for what was produced.)"
             )
-        return summary_text
+        return summary_text, cut_round
 
     @staticmethod
     async def _sink(

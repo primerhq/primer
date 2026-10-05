@@ -201,3 +201,12 @@ class TestHowMuchTheRetryMayRead:
         assert explained.goal == int(SUMMARISER_SAFETY * (64_000 - 4_096 - 200)) > 15_500
         assert _size(**kw).goal == int(PROVIDER_COUNTED_MORE * 15_500), "without schemas the same head was a provider miscount"
 
+    def test_a_head_an_earlier_tool_round_was_accepted_with_is_never_cut_below_its_own_size(self) -> None:
+        """Round one of a tool loop carried the head and the schemas and the provider took it: the head alone, text only,
+        fits, whatever our count says. Both branches keep it whole."""
+        over_the_target = _size(current=90_000, head_known_to_fit=True)
+        assert over_the_target.goal == 90_000, "our count had it over the target, the provider's acceptance says otherwise"
+        assert _size(current=90_000).goal < 90_000, "(without the evidence it is cut)"
+        under = _size(current=30_000, head_known_to_fit=True)
+        assert under.goal == 30_000, "and the provider-counted-more cut does not apply to a head that was accepted"
+

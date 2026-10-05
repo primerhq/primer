@@ -156,11 +156,13 @@ def test_a_compaction_divider_says_when_the_summariser_read_a_reduced_input_via_
           m(3, {replaced_from_seq: 9, summary_input_reduced: {pruned: 1, folded_chunks: 0, truncated_parts: 0}}),
           m(4, {summary_input_reduced: {pruned: 0, folded_chunks: 0, truncated_parts: 0}}),
           m(5, {replaced_from_seq: 11}),
+          m(6, {replaced_from_seq: 13, summary_input_reduced: {pruned: 0, folded_chunks: 0, truncated_parts: 0, tool_loop_cut_round: 2}}),
+          m(7, {replaced_from_seq: 15, summary_input_reduced: {pruned: 1, folded_chunks: 0, truncated_parts: 0, tool_loop_cut_round: 3}}),
         ], {id: "s1"});
         """
     )
-    # SA_visibleRecords keeps all five (no rewind); each is a divider with its own label
-    labels = [ctx.eval(f"out[{i}].label") for i in range(5)]
+    # SA_visibleRecords keeps all seven (no rewind); each is a divider with its own label
+    labels = [ctx.eval(f"out[{i}].label") for i in range(7)]
     assert labels[0] == "\u2014 history compacted from #1 \u2014", "an ordinary compaction reads as it always did"
     assert labels[1] == (
         "\u2014 history compacted from #3 (summariser input reduced: 3 tool results left out, read in 2 chunks, 1 part cut) \u2014"
@@ -168,6 +170,10 @@ def test_a_compaction_divider_says_when_the_summariser_read_a_reduced_input_via_
     assert labels[2] == "\u2014 history compacted from #9 (summariser input reduced: 1 tool result left out) \u2014"
     assert labels[3] == "\u2014 history compacted (summariser retried without tools) \u2014"
     assert labels[4] == "\u2014 history compacted from #11 \u2014"
+    assert labels[5] == "\u2014 history compacted from #13 (summariser tool loop cut in round 2) \u2014"
+    assert labels[6] == (
+        "\u2014 history compacted from #15 (summariser input reduced: 1 tool result left out; tool loop cut in round 3) \u2014"
+    )
 
 
 def test_rewind_marker_folds_the_discarded_span_via_mini_racer() -> None:

@@ -69,9 +69,16 @@ class SummaryInputReduction:
     """Chunks of the rolling fold; ``0`` when one call was enough (a single chunk is one call)."""
     truncated_parts: int = 0
     """Parts cut head and tail, or media replaced by a placeholder."""
+    tool_loop_cut_round: int = 0
+    """A tool-enabled summariser's loop overflowed in this round (1-based) and ended with the summary it had written
+    (it is never restarted); ``0`` when it did not. The head was not reduced then: the summary is whatever the earlier
+    rounds wrote, which can be less than a summary of the head."""
 
     def as_payload(self) -> dict[str, int]:
-        return {"pruned": self.pruned, "folded_chunks": self.folded_chunks, "truncated_parts": self.truncated_parts}
+        payload = {"pruned": self.pruned, "folded_chunks": self.folded_chunks, "truncated_parts": self.truncated_parts}
+        if self.tool_loop_cut_round:
+            payload["tool_loop_cut_round"] = self.tool_loop_cut_round
+        return payload
 
 
 @dataclass(frozen=True)
@@ -98,6 +105,7 @@ class SummariserSizing:
 
 def size_summariser_input(
     *, window: int, budget: int, summary_tokens: int, frame: int, current: int, first_call_extra: int = 0,
+    head_known_to_fit: bool = False,
     safety: float = SUMMARISER_SAFETY, chunk_fraction: float = SUMMARISER_CHUNK_FRACTION,
 ) -> SummariserSizing:
     """What a summariser whose call overflowed may be sent, from the model's ``window``, the compaction ``budget``
@@ -111,7 +119,9 @@ def size_summariser_input(
     OUR count says the call that overflowed did not fit (the head and ``first_call_extra`` over the room) the
     overflow is explained and the head is reduced to that; when it says the call fitted, the provider counted more
     than we did and the head is reduced to :data:`PROVIDER_COUNTED_MORE` of our count, however close to the room it
-    is (a head just under the target must not be sent at 97% of what was rejected). A chunk of the fold is at most ``chunk_fraction`` of the budget,
+    is (a head just under the target must not be sent at 97% of what was rejected). ``head_known_to_fit``: an earlier
+    round of a tool loop was accepted with the head and the schemas in it, so the head alone, text only, fits: it is
+    never cut below its own size. A chunk of the fold is at most ``chunk_fraction`` of the budget,
     and leaves room for the summary so far, which every call after the first carries; when no chunk fits beside
     it the retry is ONE call (a bounded fold of one chunk). A chunk is never larger than ``goal``: a chunk the
     size of the head is the input that was just rejected. Raises :class:`SummaryInputUnreachable` when the window
@@ -125,6 +135,8 @@ def size_summariser_input(
         )
     explained = current + first_call_extra > room
     goal = target if explained else int(PROVIDER_COUNTED_MORE * current)
+    if head_known_to_fit:
+        goal = max(goal, current)
     fold_chunk = min(int(chunk_fraction * budget), target - summary_tokens)
     chunk, max_chunks = (fold_chunk, MAX_CHUNKS) if fold_chunk > 0 else (target, 1)
     return SummariserSizing(goal=goal, chunk_tokens=min(chunk, goal), max_chunks=max_chunks)
