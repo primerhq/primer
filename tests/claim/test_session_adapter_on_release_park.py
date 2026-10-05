@@ -10,6 +10,8 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 
+from tests.conftest import _InMemoryStorage
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -28,18 +30,24 @@ def _make_session(session_id: str, turn_no: int = 3) -> WorkspaceSession:
     )
 
 
-class FakeStorage:
+class FakeStorage(_InMemoryStorage):
+    """One session row; ``updated`` lists every row the adapter wrote (its release is one field-scoped
+    ``patch_if``), ``_session`` is the stored row."""
+
     def __init__(self, session: WorkspaceSession) -> None:
-        self._session = session
+        super().__init__(WorkspaceSession)
+        self._data[session.id] = session
         self.updated: list[WorkspaceSession] = []
 
-    async def get(self, id: str, *, conn=None) -> WorkspaceSession | None:
-        return self._session if self._session.id == id else None
+    @property
+    def _session(self) -> WorkspaceSession:
+        return next(iter(self._data.values()))
 
-    async def update(self, entity: WorkspaceSession, *, conn=None) -> WorkspaceSession:
-        self.updated.append(entity)
-        self._session = entity
-        return entity
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        written = await super().patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+        if written is not None:
+            self.updated.append(written)
+        return written
 
 
 @pytest.fixture

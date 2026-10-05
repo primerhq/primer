@@ -4,8 +4,12 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from pydantic_core import to_jsonable_python
+
 from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
 from primer.int.storage import Storage
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.storage import raw_generation
 
 if TYPE_CHECKING:
     from primer.api.registries.workspace_registry import WorkspaceRegistry
@@ -80,6 +84,21 @@ class SessionClaimAdapter(ClaimAdapter):
         ]
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
+        """Write the fields the release owns, and nothing else.
+
+        Every branch is ONE field-scoped ``Storage.patch_if`` of only its own fields (the park columns,
+        ``last_worker_id``, and on a successful turn ``turn_no`` / ``last_turn_at``). It never writes
+        ``turn_status``, ``last_seq``, ``status``, the cursor or the request flags: a whole-document
+        ``update`` from the row read here used to put back whatever a concurrent writer (a ``wake_session``
+        steer) committed between the read and the write, so its ``turn_status="claimable"`` and its
+        ``last_seq`` regressed and the next turn's writer reused a seq.
+
+        ``turn_no`` is a counter, so its bump is fenced on the value READ (``raw_generation``): it applies
+        exactly once. A branch that writes no counter fences on ``workspace_id``, which never changes, so it
+        applies whenever the row exists. A rejected fence means the row changed under the release: it is
+        re-read and the write retried once; a second rejection raises, so the release (and its transaction)
+        fails and is retried by a later claim instead of bumping from a value that is no longer current.
+        """
         if self._storage is None:
             raise RuntimeError(
                 "session_storage is None - cannot run on_release without a storage backend"
@@ -95,7 +114,7 @@ class SessionClaimAdapter(ClaimAdapter):
         # event re-arms it via engine.mark_resumable.
         if outcome.park is not None:
             p = outcome.park
-            parked = sess.model_copy(update={
+            await self._patch_owned(entity_id, sess, conn, {
                 "parked_status": "parked",
                 "parked_event_key": p.parked_event_key,
                 "parked_event_keys": p.parked_event_keys,
@@ -103,8 +122,7 @@ class SessionClaimAdapter(ClaimAdapter):
                 "parked_at": p.parked_at,
                 "parked_state": p.parked_state,
                 "last_worker_id": None,
-            })
-            await self._storage.update(parked, conn=conn)
+            }, bump=False)
             return
 
         # Preserve-park branch: the operator paused a resumable session (the
@@ -114,12 +132,9 @@ class SessionClaimAdapter(ClaimAdapter):
         # pause completion still counts as a turn, so bump turn_no /
         # last_turn_at on success, mirroring the non-park branch.
         if outcome.preserve_park:
-            updates = {"last_worker_id": None}
-            if outcome.success:
-                updates["turn_no"] = sess.turn_no + 1
-                updates["last_turn_at"] = datetime.now(timezone.utc)
-            preserved = sess.model_copy(update=updates)
-            await self._storage.update(preserved, conn=conn)
+            await self._patch_owned(
+                entity_id, sess, conn, {"last_worker_id": None}, bump=outcome.success,
+            )
             return
 
         # Non-park release: clear any park columns. Only bump turn_no /
@@ -127,7 +142,7 @@ class SessionClaimAdapter(ClaimAdapter):
         # A failed release (reclaim, executor build failure, executor crash)
         # must leave the counters untouched so the next claim sees the same
         # turn.
-        updates: dict[str, object | None] = {
+        written = await self._patch_owned(entity_id, sess, conn, {
             "parked_status": None,
             "parked_event_key": None,
             "parked_event_keys": None,
@@ -135,13 +150,9 @@ class SessionClaimAdapter(ClaimAdapter):
             "parked_at": None,
             "parked_state": None,
             "last_worker_id": None,
-        }
-        if outcome.success:
-            updates["turn_no"] = sess.turn_no + 1
-            updates["last_turn_at"] = datetime.now(timezone.utc)
-
-        updated = sess.model_copy(update=updates)
-        await self._storage.update(updated, conn=conn)
+        }, bump=outcome.success)
+        if written is None:
+            return
 
         # Write a terminal error record to messages.jsonl when the release
         # is a failure (reclaim, worker crash, or any other engine error).
@@ -149,7 +160,41 @@ class SessionClaimAdapter(ClaimAdapter):
         # mode: dispatch.py's own except-block write can't run if the
         # worker process that would run it is the thing that died.
         if not outcome.success and self._workspace_registry is not None:
-            await self._write_terminal_record(sess, outcome)
+            await self._write_terminal_record(written, outcome)
+
+    async def _patch_owned(self, entity_id: str, sess, conn, owned: dict, *, bump: bool):
+        """One ``patch_if`` of the branch's ``owned`` fields (plus the fenced ``turn_no`` bump).
+
+        Returns the row as written, or ``None`` when the row is gone (nothing to write). Raises
+        ``ConflictError`` when the fence is rejected on the re-read too.
+        """
+        for attempt in range(2):
+            patch = dict(owned)
+            if bump:
+                patch["turn_no"] = sess.turn_no + 1
+                patch["last_turn_at"] = datetime.now(timezone.utc)
+                where = {"turn_no": [raw_generation(sess, "turn_no")]}
+            else:
+                where = {"workspace_id": [raw_generation(sess, "workspace_id")]}
+            try:
+                written = await self._storage.patch_if(
+                    entity_id, to_jsonable_python(patch), where=where, conn=conn,
+                )
+            except NotFoundError:
+                return None
+            if written is not None:
+                return written
+            logger.warning(
+                "session release of %s: the row changed under the release (turn_no was %s); %s",
+                entity_id, sess.turn_no, "re-reading and retrying once" if attempt == 0 else "giving up",
+            )
+            if attempt == 0:
+                sess = await self._storage.get(entity_id, conn=conn)
+                if sess is None:
+                    return None
+        raise ConflictError(
+            f"session {entity_id!r}: turn_no changed under the release twice; the release is not applied"
+        )
 
     async def _write_terminal_record(
         self, session: "WorkspaceSession", outcome: ReleaseOutcome,
