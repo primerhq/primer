@@ -528,7 +528,9 @@ def build_invocation_services(pool: "WorkerPool", session, workspace, executor, 
     async def graph_agent_tool_result(checkpoint, tcid, payload):
         # Reuse the worker's own helper so a GraphFrame leaf resolves an
         # agent-node ask_user answer consistently.
-        return await pool._graph_agent_tool_result(checkpoint, tcid, payload)
+        return await pool._graph_agent_tool_result(
+            checkpoint, tcid, payload, session_id=session.id,
+        )
 
     return InvocationServices(
         build_subagent_toolmanager=build_subagent_toolmanager,
