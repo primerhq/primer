@@ -491,8 +491,14 @@ async def run_agent_turn(
             # that prunes must re-derive (or re-apply a recorded set) on every
             # call, never rely on this variable carrying its previous output.
             send_prompt = await budget.before_call(prompt, tools=tools)
+            # Unreduced messages keep their identity through a guard, so "sent unchanged" is decidable.
+            guard_state = (
+                "kept" if len(send_prompt) == len(prompt) and all(a is b for a, b in zip(send_prompt, prompt))
+                else "reduced"
+            )
         else:
             send_prompt = prompt
+            guard_state = "none"
         buffered: list[StreamEvent] = []
         held_done: StreamEvent | None = None
         call_t0 = time.monotonic()
@@ -600,6 +606,9 @@ async def run_agent_turn(
                 input_tokens=call_usage.input_tokens if call_usage else None,
                 output_tokens=call_usage.output_tokens if call_usage else None,
                 estimated_input_tokens=estimated_input,
+                cached_input_tokens=call_usage.cached_input_tokens if call_usage else None,
+                context_length=llm_model.context_length if estimated_input is not None else None,
+                guard=guard_state,
                 duration_ms=max(0, int(elapsed * 1000)),
                 status=call_status,
             )

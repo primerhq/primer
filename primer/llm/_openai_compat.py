@@ -333,10 +333,14 @@ def _build_usage(usage_obj: Any) -> Usage | None:
     completion = getattr(usage_obj, "completion_tokens", None)
     if prompt is None or completion is None:
         return None
+    # ``prompt_tokens`` includes the cached tokens and ``prompt_tokens_details.cached_tokens`` is a subset of it (OpenAI
+    # spec; OpenRouter and the local servers mostly follow it, UNVERIFIED for LM Studio): reported when the server sends it.
+    details = getattr(usage_obj, "prompt_tokens_details", None)
+    cached = getattr(details, "cached_tokens", None) if details is not None else None
     return Usage(
         input_tokens=prompt,
         output_tokens=completion,
-        cached_input_tokens=None,
+        cached_input_tokens=cached if isinstance(cached, int) and 0 <= cached <= prompt else None,
         reasoning_tokens=None,
         cumulative=False,
     )
