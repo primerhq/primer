@@ -134,6 +134,23 @@ def test_a_passthrough_parent_end_after_a_nested_end_keeps_the_nested_text_as_th
     assert derive_session_final_text(records) == "Inner: raw"
 
 
+def test_a_passthrough_parent_over_two_nested_levels_keeps_the_nearest_levels_text_as_the_result() -> None:
+    """Three levels: the innermost graph's End ('G: raw') is forwarded by the middle graph, whose own End ('C: G: raw')
+    is forwarded by the outer graph, whose pass-through End writes nothing. Both forwards are nested; the run's result
+    is the LAST one (the level just below the outer graph), not the first (the innermost level's text)."""
+    state = _CoalesceState()
+    records = [
+        USER, *_node(state, "worker", "raw"),
+        *_end(state, "g3-exit", "G: raw", nested=True), *_end(state, "g2-exit", "C: G: raw", nested=True),
+        *_end(state, "exit", "C: G: raw"),
+    ]
+
+    assert [r["payload"].get("nested") for r in records if r["kind"] == "assistant_token"][1:] == [True, True], (
+        "the pass-through outer End was written, or a nested record is not marked: this test would be vacuous"
+    )
+    assert derive_session_final_text(records) == "C: G: raw"
+
+
 def test_two_top_level_ends_around_a_nested_one_are_joined_without_the_nested_text() -> None:
     state = _CoalesceState()
     records = [
