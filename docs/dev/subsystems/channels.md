@@ -47,7 +47,7 @@ erDiagram
 - **Provider-agnostic envelopes over a thin ABC.** `ChannelAdapter` (`primer/channel/adapter.py`) declares exactly four async methods (`initialize`, `aclose`, `verify`, `post_prompt`). The core only ever speaks `PromptEnvelope` (outbound) and `ResponseEnvelope` (inbound); all platform-specific rendering and decoding stay inside the per-platform packages.
 - **Import-time factory registry.** `primer/channel/factory.py` keeps a module-level `_FACTORIES: dict[ChannelProviderType, AdapterFactory]`. Each per-platform package self-registers by calling `register_adapter_factory` at import, and `primer/api/app.py` imports the three factory modules at module load. `build_adapter` raises `ConfigError` for an unregistered provider.
 - **Lazy per-row adapter cache with double-checked locking.** `ChannelRegistry.get_adapter` (`primer/api/registries/channel_registry.py`) caches one adapter per Channel id under an `asyncio.Lock`. There is no `warm_up`; adapters are built on first `get_adapter`.
-- **Fire-and-forget dispatch off the critical path.** After a session parks, `primer/worker/pool.py` schedules `_dispatch_to_channels` via `asyncio.create_task` so a slow post never delays the worker releasing its lease.
+- **The park prompt is awaited inside the turn, before the lease is released.** When a turn parks on an `ask_user` or approval gate, the park arm of `run_one_session_turn` (`except YieldToWorker`, `primer/session/dispatch.py`) awaits `_dispatch_to_channels` (one prompt) or, for a multi-event graph park, `_dispatch_to_channels_multi` (one prompt per pending node). It does so after writing the `YIELDED` record and, for a mixed park (a gate with a co-pending tool_wait batch), after creating the batch's `ToolCallTask` rows, and before it returns the park outcome. So the worker still holds the session's lease while the prompt goes out, and the park columns are written only afterwards, by the session adapter's `on_release` when the pool releases the lease. An adapter that raises is logged and skipped (`ChannelDispatcher.dispatch_prompt` turns each adapter's exception into an error result), but the dispatch path adds no timeout of its own, so a slow post delays the release for as long as the adapter takes. A mixed park whose batch breaks the bookkeeping invariant (a `TurnInvariantError` while the rows are created) sends no prompt: the session ends `failed` instead (see the invariant bullet in the sessions subsystem doc).
 - **CorrelationStore as the durable routing table.** `primer/channel/correlation.py` wraps `ChannelCorrelation` storage. Adapters write correlation rows when they post a session gate or map a thread; `ChannelInboundRouter` reads them to route replies. In-memory caches are optimisations only; the DB is truth.
 - **`(channel_id, anchor)` is unique and writes are atomic.** `upsert_session` / `upsert_chat` are NOT a lookup-then-create read-modify-write. The store lazily creates a DB-level unique index over the JSONB-extracted `data->>'channel_id'` / `data->>'anchor'` columns of the `channelcorrelation` table (`channelcorrelation_channel_anchor_uniq`) and writes via an atomic `INSERT ... ON CONFLICT (...) DO UPDATE`. Two workers that both observe "no row" for one gate can no longer each insert their own record: the second insert collapses onto the first row (last writer wins on `data`; the row id is preserved). Without this, a multi-worker deployment could create two correlations for one parked gate and double-resume the session. A storage backend with no raw connection (in-memory test double) falls back to the lookup-then-write path, which is still single-row within one process.
 - **Thread-to-session resolution is a keyed lookup, never a scan.** `CorrelationStore.lookup(channel_id, anchor)` is one indexed read on the inbound hot path; the mapping is written once, when the fire that created the session returns.
@@ -92,7 +92,8 @@ erDiagram
 | `primer/api/routers/triggers.py` | `channel` trigger CRUD + `event_matcher` / `reply_target` on subscription bodies. |
 | `primer/api/deps.py` | `get_channel_registry` / `get_channel_dispatcher` FastAPI deps. |
 | `primer/worker/yield_runtime.py` | `_dispatch_to_channels`: builds the `PromptEnvelope` from a `Yielded` sentinel. |
-| `primer/worker/pool.py` | Schedules `_dispatch_to_channels` post-park. |
+| `primer/session/dispatch.py` | Awaits `_dispatch_to_channels` / `_dispatch_to_channels_multi` in the park arm of `run_one_session_turn`. |
+| `primer/worker/pool.py` | Hands its `channel_dispatcher` to the turn (`SessionDispatchDeps.channel_dispatcher`). |
 | `primer/toolset/system.py` | `channel_provider` / `channel` CRUD tools + `set_reply_binding` / `clear_reply_binding` + `create_channel_binding` / `list_channel_bindings` / `delete_channel_binding`. |
 | `primer/toolset/workspace_ext.py` | `subscribe_to_channel_event` yielding tool (parks a session until a matching channel event). |
 | `ui/components/channel_rules.jsx` | Console rule editor (capability-aware event picker + binding list). |
@@ -131,6 +132,7 @@ The end-to-end flow from park to resume crosses the worker, the dispatcher, an a
 ```mermaid
 sequenceDiagram
     participant Worker as WorkerPool
+    participant Turn as run_one_session_turn
     participant YR as _dispatch_to_channels
     participant Disp as ChannelDispatcher
     participant Reg as ChannelRegistry
@@ -140,14 +142,17 @@ sequenceDiagram
     participant CS as CorrelationStore
     participant Bus as EventBus
 
-    Worker->>Worker: write parked_state, flip parked_status
-    Worker->>YR: create_task(_dispatch_to_channels)
+    Worker->>Turn: run the claimed turn (lease held)
+    Turn->>Turn: write the YIELDED record (a mixed park: create its ToolCallTask rows)
+    Turn->>YR: await _dispatch_to_channels
     YR->>Disp: dispatch_prompt(envelope)
     Disp->>Reg: get_adapter(channel_id)
     Reg-->>Disp: adapter
     Disp->>Ad: post_prompt(envelope)
     Ad->>Plat: post message / buttons / thread
     Ad->>CS: upsert_session(channel_id, anchor, workspace_id, session_id, tcid)
+    Turn-->>Worker: park outcome
+    Worker->>Worker: release the lease; on_release writes parked_state, flips parked_status
     Plat-->>Ad: inbound reply / button click
     Ad->>IR: route(channel, anchor, ...)
     IR->>CS: lookup(channel_id, anchor)
@@ -224,7 +229,7 @@ Live platform smoke tests (`tests/integration/test_slack_smoke.py`, `test_telegr
 ## 11. Historical decisions
 
 - **Channels piggyback on the existing event bus and `mark_resumable` park flow instead of a dedicated channels event stream.** Why: republishing on the same `ask_user:{sid}:{tcid}` key means the existing atomic `mark_resumable` flip makes the first response win with no new race-arbitration code.
-- **Post-park dispatch runs as a fire-and-forget `asyncio.create_task` from the worker pool, never on the lease-holding turn.** Why: a slow post must not delay the worker releasing its lease.
+- **The park prompt is awaited on the lease-holding turn, not scheduled as a separate task.** Why (the code's own comment in `primer/session/dispatch.py`): so delivery is attempted before the lease drops. The cost is that a slow post delays the release; the dispatch path adds no timeout of its own. An earlier version of this section described a fire-and-forget `asyncio.create_task` from the worker pool; no such task exists.
 - **`ChannelCorrelation` replaces in-memory per-adapter correlation caches as the durable routing store.** Why: in-memory caches are lost on restart, leaving open gates unanswerable via channel. A DB row survives restarts and lets one channel route to many workspaces simultaneously.
 - **`(channel_id, anchor)` is enforced unique at the DB and written atomically (`INSERT ... ON CONFLICT`).** Why: with no DB uniqueness, two workers writing a correlation for the same gate could each observe "no row" and both insert, producing two routing records for one gate and double-resuming the parked session. A unique index plus an atomic upsert makes the second write collapse onto the first row, so the routing table has exactly one row per gate even under concurrent multi-worker writes.
 - **`Workspace.channel_association` replaces the old `WorkspaceChannelAssociation` entity.** Why: the old entity was a separate CRUD resource with `forward_ask_user` / `forward_tool_approval` flags that operators had to manage independently; the new design folds the association onto the workspace row directly, with no per-gate flags (the association implies all gates forward).
