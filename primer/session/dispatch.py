@@ -24,7 +24,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 from collections.abc import Awaitable, Callable
 
 from primer.int.claim import (
@@ -81,6 +81,16 @@ from primer.observability.turn_log_writer import (
 
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class _NamesWhyItEndedTheTurn(Protocol):
+    """An exception that says, in one code, why it ended the turn: ``TurnStreamFailure`` (the LLM stream itself
+    failed) and ``ContextOverflowUnrecoverable`` (the prompt cannot fit). Dispatch records the code as the
+    session's ``ended_detail``; any other exception leaves it unset."""
+
+    @property
+    def ended_detail_code(self) -> str: ...
 
 # How often a running turn re-reads its session row for a Stop whose bus message never
 # arrived (see _cancel_watcher). A fallback, so it only has to be quick enough that a Stop
@@ -1109,9 +1119,7 @@ async def run_one_session_turn(
                 # fallback), so monitoring can tell "the LLM was
                 # unreachable" apart from "some other internal error"
                 # instead of both reading as an undifferentiated "failed".
-                # Any exception that names why it ended the turn (a TurnStreamFailure, the executor's
-                # ContextOverflowUnrecoverable) carries its own code.
-                ended_detail=getattr(exc, "ended_detail_code", None),
+                ended_detail=exc.ended_detail_code if isinstance(exc, _NamesWhyItEndedTheTurn) else None,
                 executor=executor,
                 expected_epoch=session.binding_epoch,
             )

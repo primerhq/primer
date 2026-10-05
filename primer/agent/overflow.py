@@ -19,9 +19,11 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from primer.agent.prune import ALREADY_RAN_PLACEHOLDERS, PruneSet, prune_prompt
-from primer.model.chat import Message, Tool
+from primer.agent.tail import unit_starts
+from primer.model.chat import Message, Tool, ToolCallPart, ToolResultPart
 
 SizeOf = Callable[[Sequence[Message]], int]
+ToolsSizeOf = Callable[[Sequence[Tool]], int]
 
 
 def _has_tool_call(message: Message) -> bool:
@@ -55,11 +57,17 @@ class ReplayGuard:
     newest rounds included, are truncated. It never touches the caller's own messages, so a
     successful replay persists the raw results. It reduces what it can: a prompt that is over the
     target with nothing left to shed is sent as it is.
+
+    The target is for everything the call carries: the messages (the rendered system prompt is one of
+    them) AND the tool schemas, which go out on every call whatever the history is (``tools_size``).
+    Counting only the messages let an agent with a large tool catalogue be reduced to a target the
+    schemas then overflowed on their own.
     """
 
-    def __init__(self, *, target_tokens: int, size: SizeOf) -> None:
+    def __init__(self, *, target_tokens: int, size: SizeOf, tools_size: ToolsSizeOf | None = None) -> None:
         self._target = target_tokens
         self._size = size
+        self._tools_size = tools_size
         self._sticky = PruneSet()
         self.shed_calls = 0
 
@@ -70,7 +78,8 @@ class ReplayGuard:
 
     async def before_call(self, prompt: list[Message], *, tools: list[Tool]) -> list[Message]:
         outcome = prune_prompt(prompt, sticky=self._sticky, placeholders=ALREADY_RAN_PLACEHOLDERS)
-        over = self._size(outcome.messages) - self._target
+        schemas = self._tools_size(tools) if self._tools_size is not None and tools else 0
+        over = self._size(outcome.messages) + schemas - self._target
         if over > 0:
             outcome = prune_prompt(
                 prompt, sticky=self._sticky, shed_tokens=over, force=True, placeholders=ALREADY_RAN_PLACEHOLDERS,
@@ -83,27 +92,85 @@ class ReplayGuard:
         return None
 
 
+def cap_newest_round(rounds: Sequence[Message], *, cap_tokens: int, size: SizeOf) -> list[Message]:
+    """``rounds`` with the NEWEST round cut to ``cap_tokens``, the older ones untouched.
+
+    The forced compaction that folds a turn's completed rounds protects the opening user input and the
+    newest round: nothing can summarise them, so what is left for the prompt after the fixed part has
+    to hold both. When the newest round alone is over ``cap_tokens`` it is reduced further (its results
+    already ran: the placeholders say so), down to its placeholders when the cap is 0. The call/result
+    envelope stays, so a tool call is never separated from its result.
+    """
+    starts = unit_starts(rounds)
+    if not starts:
+        return list(rounds)
+    k = starts[-1]
+    newest = rounds[k:]
+    if size(newest) <= cap_tokens:
+        return list(rounds)
+    return [*rounds[:k], *reduce_for_persist(newest, sticky=PruneSet(), target_tokens=cap_tokens, size=size)]
+
+
 def reduce_for_persist(
-    rounds: Sequence[Message], *, sticky: PruneSet, target_tokens: int, size: SizeOf,
+    rounds: Sequence[Message],
+    *,
+    sticky: PruneSet,
+    target_tokens: int,
+    size: SizeOf,
+    context: Sequence[Message] = (),
 ) -> list[Message]:
     """The form of a failed turn's completed rounds that goes into the history.
 
     First what the model last saw (the replay guard's recorded reductions), then, when the rounds
     are still over ``target_tokens``, a forced cut of the largest results. The call/result
     envelope stays; the placeholders say the calls already ran.
+
+    A recorded prune set keys a result by its call id, a hash of its output and the OCCURRENCE of
+    that pair in the prompt it was recorded against, counted in prompt order. ``context`` is what
+    came before ``rounds`` in that prompt (the history the replay was sent): the set is applied to
+    ``context + rounds`` so the occurrences line up, and only the rounds are returned. Applied to the
+    rounds alone, an identical pair earlier in the history shifts every index, and a recorded
+    reduction misses its result (it is persisted raw) or lands on another one.
     """
-    outcome = prune_prompt(rounds, sticky=sticky, keep_rounds=0, placeholders=ALREADY_RAN_PLACEHOLDERS)
-    over = size(outcome.messages) - target_tokens
+    full = [*context, *rounds]
+    outcome = prune_prompt(full, sticky=sticky, keep_rounds=0, placeholders=ALREADY_RAN_PLACEHOLDERS)
+    reduced = outcome.messages[len(context):]
+    over = size(reduced) - target_tokens
     if over > 0:
-        outcome = prune_prompt(
-            rounds, sticky=sticky, shed_tokens=over, keep_rounds=0, force=True, placeholders=ALREADY_RAN_PLACEHOLDERS,
-        )
-    return outcome.messages
+        # the cut is for the rounds alone: the context is history that is not being persisted
+        reduced = prune_prompt(
+            reduced, shed_tokens=over, keep_rounds=0, force=True, placeholders=ALREADY_RAN_PLACEHOLDERS,
+        ).messages
+    return reduced
+
+
+def kept_rounds(compacted: Sequence[Message], rounds: Sequence[Message]) -> int:
+    """How many of ``rounds`` (the newest units last) the compacted history still holds as messages.
+
+    A compaction keeps the newest units whole and summarises the older ones, so what is kept is a
+    suffix of ``rounds``: the units are compared from the end by the ids of the calls and results
+    they hold.
+    """
+    def units(messages: Sequence[Message]) -> list[tuple[str, ...]]:
+        starts = unit_starts(messages)
+        return [
+            tuple(p.id for m in messages[a:b] for p in m.parts if isinstance(p, (ToolCallPart, ToolResultPart)))
+            for a, b in zip(starts, [*starts[1:], len(messages)])
+        ]
+
+    kept = 0
+    for mine, theirs in zip(reversed(units(compacted)), reversed(units(rounds))):
+        if mine != theirs or not mine:
+            break
+        kept += 1
+    return kept
 
 
 __all__ = [
     "ReplayGuard",
+    "cap_newest_round",
     "completed_rounds",
+    "kept_rounds",
     "reduce_for_persist",
     "tool_rounds",
 ]
