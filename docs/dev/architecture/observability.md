@@ -313,7 +313,18 @@ prompt-size accounting work, which groups records by `(provider_id, model)` beca
 the `llm_prompt_estimate_ratio` label is `provider_id` only (one OpenRouter or
 aggregated provider hides several tokenizers): `scripts/analyse_estimate_ratio.py DIR
 ...` reads the `messages.jsonl` files under the given directories and prints the
-verdict of that rule with the figures it rests on.
+verdict of that rule with the figures it rests on. A session's log is
+`<workspace root>/<state_path>/sessions/<id>/messages.jsonl` (`state_path` defaults to
+`.state`): for the dogfood instance pass `~/.primer/workspaces`; a docker or k8s
+workspace keeps its state inside the sandbox, so copy it out first (for example
+`kubectl cp <namespace>/<pod>:<workspace root>/.state/sessions ./k3s-dump/<workspace>`)
+and pass `./k3s-dump`. The record carries the provider's id and not its kind, so name an
+Ollama provider with `--exclude-provider` (its `prompt_eval_count` leaves out the
+KV-cached prefix); the script lists the provider ids it saw and warns when none is
+excluded. It counts a turn from the `done` whose `stop_reason` is not `tool_use` (the
+loop writes a `done` after every call), measures the 7-day requirement over the calls
+the verdict rests on, and uses the group's median ratio as kappa in rule 3, which leans
+towards Phase 1b compared with the per-session EMA Phase 1a would use.
 
 Four declared metrics are not yet written by any call site and scrapers will see
 them as never-incremented zeros: `llm_retry_total` (no adapter increments it),
