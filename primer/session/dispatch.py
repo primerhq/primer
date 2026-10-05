@@ -1395,13 +1395,23 @@ async def run_one_session_turn(
                     )
                 else:
                     if final_text:
-                        await post_session_final_result(
-                            dispatcher=deps.channel_dispatcher,
-                            session=session,
-                            storage_provider=deps.storage_provider,
-                            text=final_text,
-                            binding=binding,
-                        )
+                        try:
+                            # Bounded like the read, for the same reason: the lease release comes after this, and
+                            # a channel API call that never returns (a hung Discord or Slack request) would hold it.
+                            async with asyncio.timeout(_CHANNEL_POST_TIMEOUT_S):
+                                await post_session_final_result(
+                                    dispatcher=deps.channel_dispatcher,
+                                    session=session,
+                                    storage_provider=deps.storage_provider,
+                                    text=final_text,
+                                    binding=binding,
+                                )
+                        except TimeoutError:
+                            logger.warning(
+                                "session %s: posting the final result to the channel did not finish within %gs "
+                                "(the channel API is not answering); it may or may not have been posted",
+                                session_id, _CHANNEL_POST_TIMEOUT_S,
+                            )
                     else:
                         # A reply-bound session that relays nothing was invisible for months (the reader had no
                         # read surface and returned None, and ``if final_text`` skipped the post). Say so: the
@@ -1608,6 +1618,13 @@ _SLOT_MIRROR_TIMEOUT_S = 10.0
 # after the terminal publish. (The build-failure path is not this exit, but it can hold the lock for two
 # _SLOT_MIRROR_TIMEOUT_S bounds: loading the slot through the registry, then the mirror.)
 _BEST_EFFORT_IO_TIMEOUT_S = 5.0
+
+# The bound for the final-result post to the session's channel, which also runs before the lease release (see
+# post_session_final_result's call site): a channel API call that never returns would hold the release. Longer than
+# _BEST_EFFORT_IO_TIMEOUT_S because it is a real network call (a get-or-create thread, then the post, with the
+# platform's own rate-limit waits) and not a workspace read. A timeout is logged; the message may or may not have
+# reached the channel.
+_CHANNEL_POST_TIMEOUT_S = 15.0
 
 
 # How long a cancelled turn's exit may keep running after the TASK is cancelled under it (see _finish_despite_cancel).
