@@ -400,3 +400,56 @@ async def test_a_skipped_legacy_bare_entry_keeps_its_stored_ids_so_its_rows_stay
     assert wake_keys == ["tool_wait:s1:0:L", "tool_wait:s1:0:N", "tool_wait:s1:0:Q"]
     assert await task_storage.get(_q("N:tool:0:1")) is not None
     assert await task_storage.get(_q("L:tool:0:1")) is None, "the skipped entry must not gain rows"
+
+
+@pytest.mark.asyncio
+async def test_a_wake_key_takes_the_turn_of_the_id_not_the_turn_argument() -> None:
+    """The ``turn_no`` argument stamps the rows; the wake key comes from the id alone, so a carried-over batch keeps
+    the key it was parked under after the session's turn moved on (mutation N27, call-site leg)."""
+    storage_provider = _FakeStorageProvider()
+    cs = _CoalesceState()
+    cs.tool_call_record_seq["a:b:tool:3:1"] = 1
+    cs.tool_call_record_name["a:b:tool:3:1"] = "t"
+
+    wake_keys = await materialize_pending_tool_wait_rows(
+        storage_provider, None, "s1", 5, cs, datetime.now(timezone.utc),
+        [_pending_tool_wait("a:b", ["a:b:tool:3:1"])],
+    )
+
+    assert wake_keys == ["tool_wait:s1:3:a:b"]
+    row = await storage_provider.get_storage(ToolCallTask).get(_q("a:b:tool:3:1"))
+    assert row.turn_no == 5
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_batch_drops_only_its_own_key_and_its_rows_are_still_created(caplog) -> None:
+    """A batch whose ids do not parse has no wake key. The materializer never guesses one: it logs ERROR, counts it,
+    and returns the other batches' keys; row creation is unchanged. All batches malformed returns no key and does not
+    raise here (the mixed park still has its human gate's key; the pure park arms decide)."""
+    import logging
+
+    import primer.observability.metrics as metrics
+
+    metrics.reset_for_test()
+    storage_provider = _FakeStorageProvider()
+    task_storage = storage_provider.get_storage(ToolCallTask)
+    cs = _CoalesceState()
+    for tid in ("A:tool:0:1", "B:tool:03:1", "C:tool:+1:1"):
+        cs.tool_call_record_seq[tid] = 1
+        cs.tool_call_record_name[tid] = "t"
+
+    with caplog.at_level(logging.ERROR):
+        wake_keys = await materialize_pending_tool_wait_rows(
+            storage_provider, None, "s1", 0, cs, datetime.now(timezone.utc),
+            [_pending_tool_wait("B", ["B:tool:03:1"]), _pending_tool_wait("A", ["A:tool:0:1"])],
+        )
+    assert wake_keys == ["tool_wait:s1:0:A"]
+    assert await task_storage.get(_q("B:tool:03:1")) is not None, "the malformed batch's row was not created"
+    assert metrics.tool_wait_malformed_scoped_id_total.labels("materializer")._value.get() == 1.0
+    assert any(r.levelno == logging.ERROR and repr(_q("B:tool:03:1")) in r.getMessage() for r in caplog.records)
+
+    assert await materialize_pending_tool_wait_rows(
+        storage_provider, None, "s1", 0, cs, datetime.now(timezone.utc),
+        [_pending_tool_wait("C", ["C:tool:+1:1"])],
+    ) == []
+    assert metrics.tool_wait_malformed_scoped_id_total.labels("materializer")._value.get() == 2.0
