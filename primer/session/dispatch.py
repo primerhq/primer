@@ -1364,13 +1364,14 @@ async def run_one_session_turn(
         or clean_stop_now_parked
     ):
         try:
+            from primer.channel.reply_binding import resolve_reply_binding
             from primer.channel.session_relay import (
                 post_session_final_result,
                 read_session_final_text,
             )
 
             final_text = await read_session_final_text(
-                deps.workspace_io, session_id,
+                await _final_text_source(deps, session), session_id,
             )
             if final_text:
                 await post_session_final_result(
@@ -1379,6 +1380,16 @@ async def run_one_session_turn(
                     storage_provider=deps.storage_provider,
                     text=final_text,
                 )
+            else:
+                # A reply-bound session that relays nothing was invisible for months (the reader had no read
+                # surface and returned None, and ``if final_text`` skipped the post). Say so: the final text of a
+                # turn that reached this point is normally there.
+                binding = await resolve_reply_binding(session, storage_provider=deps.storage_provider)
+                if binding is not None and not getattr(binding, "quiet", False):
+                    logger.warning(
+                        "session %s: reply-bound, but no final text could be derived from its messages.jsonl; "
+                        "nothing was posted to the channel", session_id,
+                    )
         except Exception:  # never block release on a relay failure
             logger.warning(
                 "session %s: final-result relay failed", session_id,
@@ -1391,6 +1402,29 @@ async def run_one_session_turn(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+async def _final_text_source(deps: SessionDispatchDeps, session: WorkspaceSession) -> Any:
+    """What ``read_session_final_text`` reads ``messages.jsonl`` through: the session's REAL workspace.
+
+    ``deps.workspace_io`` is the pool's ``_WorkspaceIOShim``, a WRITE adapter (``append_message_line``): it has neither
+    ``read_lines`` nor ``read_file``, so the reader found nothing to read and returned None. The workspace the registry
+    resolves does (``read_file`` over its ``state_path``), the same object the trigger hold reads the final text
+    through. ``deps.workspace_io`` stays the fallback for a deployment without a registry (and for the test fakes that
+    expose ``read_lines``)."""
+    registry = deps.workspace_registry
+    if registry is not None:
+        try:
+            workspace = await registry.get_workspace(session.workspace_id)
+        except Exception:  # noqa: BLE001 - the relay degrades, it never blocks the release
+            logger.warning(
+                "session %s: workspace %s could not be resolved for the final-result relay",
+                session.id, session.workspace_id, exc_info=True,
+            )
+            workspace = None
+        if workspace is not None:
+            return workspace
+    return deps.workspace_io
 
 
 def _now() -> datetime:

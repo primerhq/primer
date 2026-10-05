@@ -29,6 +29,7 @@ import logging
 
 from primer.channel.adapter import PromptEnvelope
 from primer.channel.reply_binding import resolve_reply_binding
+from primer.model.except_ import NotFoundError
 
 
 _log = logging.getLogger(__name__)
@@ -201,16 +202,26 @@ async def read_session_final_text(workspace_io, session_id: str) -> str | None:
             result = read_lines(session_id)
             lines = list(result) if result is not None else []
         except Exception:
+            _log.warning("session relay: read_lines failed for %s", session_id, exc_info=True)
             return None
     else:
         read_file = getattr(workspace_io, "read_file", None)
         if not callable(read_file):
+            # The relay's silent failure for months: handed a write-only adapter (the pool's ``_WorkspaceIOShim``),
+            # there is nothing to read through and the answer is never found. Hand it the workspace.
+            _log.warning(
+                "session relay: %s has neither read_lines nor read_file; the final text of %s cannot be read",
+                type(workspace_io).__name__, session_id,
+            )
             return None
         state_path = getattr(workspace_io, "state_path", ".state")
         path = f"{state_path}/sessions/{session_id}/messages.jsonl"
         try:
             raw = await read_file(path)
+        except NotFoundError:
+            return None  # no messages.jsonl yet: nothing to relay, and not a fault
         except Exception:
+            _log.warning("session relay: reading %s failed", path, exc_info=True)
             return None
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", "replace")
