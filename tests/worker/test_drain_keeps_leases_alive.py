@@ -125,9 +125,22 @@ async def test_the_keepalive_stops_once_the_turns_are_done_so_drain_does_not_han
         await _until(lambda: sorted(started) == ["a", "b"], "turns never started")
         loops = list(pool._tasks)       # drain_and_stop clears ``_tasks``, so the loops are captured BEFORE it
         assert loops, "the pool started no loops"
+        beats_after_stopping: list[int] = []
+        real_heartbeat = engine.heartbeat
+
+        async def counting_heartbeat(worker_id, keys):
+            if pool._stopping.is_set():
+                beats_after_stopping.append(len(keys))
+            return await real_heartbeat(worker_id, keys)
+
+        engine.heartbeat = counting_heartbeat           # type: ignore[method-assign]
         drain = asyncio.create_task(pool.drain_and_stop(timeout=20))
         await _until(pool._stopping.is_set, "drain never started")
-        assert not any(t.done() for t in loops), "a keep-alive loop ended with the drain's first step"
+        # Checked only after MORE than one heartbeat interval (1 s): a loop that ended on ``_stopping`` would still
+        # be asleep right after the drain began and finish at its next wake-up, so checking at once proves nothing.
+        await asyncio.sleep(1.5)
+        assert not any(t.done() for t in loops), "a keep-alive loop ended once the drain began"
+        assert beats_after_stopping, "the lease heartbeat stopped once the drain began"
         gate.set()
         await asyncio.wait_for(drain, timeout=5.0)
 
@@ -238,5 +251,61 @@ async def test_a_slow_drain_worker_cannot_push_the_turn_wait_past_the_drains_own
         assert len(cancelled_at) == 2, "both turns must have been cancelled by the drain"
         assert max(cancelled_at) - t0 < 4.0, f"the turn wait started after the slow drain_worker: cancel at +{max(cancelled_at) - t0:.1f}s"
         assert min(cancelled_at) - t0 >= 2.9, "the cancel arrived before drain_worker even returned"
+    finally:
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_stop_claiming_inside_the_allowance_does_not_cut_the_turn_wait():
+    """The cap's LOWER side: it allows ``_stop_claiming`` two graces, so a ``_stop_claiming`` that takes 1.8 graces
+    still leaves the turn wait its full ``drain_timeout`` after it. Grace 1 s, drain timeout 1 s: the turn wait ends
+    at about 2.8 s (the cap is 3 s), so a turn finishing at 2.5 s (timeout + 1.5 graces) is not cut, and a turn that
+    never finishes is cancelled at about 2.8 s, not at 1.8 s. With no allowance (``+ 0``) the cap is 1 s: both turns
+    would be cancelled the moment ``_stop_claiming`` returned."""
+    engine = InMemoryClaimEngine(adapters={KIND: _Adapter()})
+    scheduler = InMemoryScheduler()
+    await scheduler.initialize()
+    loop = asyncio.get_event_loop()
+    started: list[str] = []
+    drain_began = asyncio.Event()
+    clock: dict[str, float] = {}
+    finished: list[str] = []
+    cancelled_at: dict[str, float] = {}
+
+    async def handler(lease):
+        started.append(lease.entity_id)
+        try:
+            await drain_began.wait()
+            if lease.entity_id == "finishing":
+                await asyncio.sleep(clock["t0"] + 2.5 - loop.time())
+                finished.append(lease.entity_id)
+                return
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled_at[lease.entity_id] = loop.time() - clock["t0"]
+            raise
+
+    pool = await _pool(engine, scheduler, handler)
+    pool._claim_stop_grace_seconds = 1.0
+    real_stop = pool._stop_claiming
+
+    async def slow_stop(grace=None):
+        await real_stop(grace)
+        await asyncio.sleep(clock["t0"] + 1.8 - loop.time())      # 1.8 graces in all
+
+    pool._stop_claiming = slow_stop  # type: ignore[method-assign]
+    try:
+        for key in ("finishing", "endless"):
+            await engine.upsert(KIND, key)
+        await _until(lambda: sorted(started) == ["endless", "finishing"], "turns never started")
+        clock["t0"] = loop.time()
+        drain_began.set()
+        await asyncio.wait_for(pool.drain_and_stop(timeout=1.0), timeout=15.0)
+
+        assert finished == ["finishing"], f"a turn inside the allowance was cut: cancelled at {cancelled_at}"
+        assert "finishing" not in cancelled_at
+        assert 2.7 <= cancelled_at["endless"] < 3.6, (
+            f"the turn wait ended at +{cancelled_at['endless']:.2f}s, not one drain timeout after _stop_claiming"
+        )
     finally:
         await scheduler.aclose()
