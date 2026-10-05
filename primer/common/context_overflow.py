@@ -61,6 +61,8 @@ _BAD_REQUEST = "bad_request"
 #   xai               : "This model's maximum prompt length is N but the request contains M tokens."
 #   groq              : "Please reduce the length of the messages or completion."
 #   vllm (input proc.): "The decoder prompt (length 5951) is longer than the maximum model length of 4096."
+#                       (the same f-string says "encoder prompt" with the multimodal encoder cache size as the
+#                       limit: see _ENCODER_PROMPT, that one is not about the history)
 _INPUT_PHRASES: tuple[str, ...] = (
     "context length",
     "context_length",
@@ -81,6 +83,12 @@ _INPUT_PHRASES: tuple[str, ...] = (
 # exceed N"). They count only when the message does not talk about OUTPUT
 # tokens, so "requested output token limit exceeds ..." stays a non-overflow.
 _BUDGET_PHRASES: tuple[str, ...] = ("token limit", "tokens exceeds", "too many tokens")
+
+# vLLM's input processor (_validate_prompt_len) words the decoder and the ENCODER check with one f-string, "The
+# {prompt_type} prompt (length N) is longer than the maximum model length of M". For the encoder, M is the
+# multimodal encoder cache size, not the context window, and the thing that is too long is an image or an audio
+# clip, which compacting the text history cannot shrink: the replay would be rejected the same way.
+_ENCODER_PROMPT = "encoder prompt"
 _OUTPUT_WORDS: tuple[str, ...] = (
     "output token",
     "completion token",
@@ -112,7 +120,7 @@ _OUTPUT_PARAM_TOO_LARGE = re.compile(
 #    prompt contains at least 62466 input tokens, for a total of at least 128001 tokens. Please reduce ..."
 # The same arithmetic applies: a requested output that is already >= the context length cannot be helped by a
 # shorter history. (Numbers are read with their thousands separators: "1,000,000" is a million, not a 1.)
-_NUM = r"\d[\d,]*"
+_NUM = r"\d{1,3}(?:,\d{3})+|\d+"  # a comma belongs to the number only before exactly three digits
 _VLLM_TRAILER = re.compile(rf"\(({_NUM})\s*>\s*({_NUM})\s*-\s*({_NUM})\)")
 _TOO_LARGE_CAP = re.compile(rf"is too large:\s*({_NUM})")
 _MAX_CONTEXT = re.compile(rf"maximum context length is\s*({_NUM})")
@@ -136,6 +144,8 @@ def _cap_and_context(text: str) -> tuple[int, int] | None:
 
 def _message_says_overflow(message: str | None) -> bool:
     text = (message or "").lower()
+    if _ENCODER_PROMPT in text:
+        return False
     if _OUTPUT_PARAM_TOO_LARGE.search(text):
         numbers = _cap_and_context(text)
         if numbers is None or numbers[0] >= numbers[1]:
