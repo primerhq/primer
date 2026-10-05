@@ -200,7 +200,8 @@ async def test_a_process_the_command_detached_with_setsid_survives_the_kill(tmp_
     exec started, so the group kill does not reach it; its foreground sibling in the group does die."""
     tool, _ = _tool(tmp_path)
     command = (
-        "setsid sleep 60 > /dev/null 2>&1 & echo $! > detached.pid; "
+        # the detached process writes its OWN pid after setsid() (``$!`` can be read before the child has left the group)
+        "setsid sh -c 'echo $$ > detached.pid; exec sleep 60' > /dev/null 2>&1 & "
         "sleep 60 & echo $! > foreground.pid; wait"
     )
     detached = foreground = None
@@ -233,7 +234,7 @@ async def test_a_detached_process_that_holds_the_pipes_does_not_delay_the_kill(t
     for the pipes), so a kill that waited that way took its whole reap bound (5 s) here. The kill must wait for the exit
     itself and then close the pipes, and the exec must return at once."""
     tool, _ = _tool(tmp_path)
-    command = "setsid sleep 60 & echo $! > detached.pid; sleep 60 & echo $! > foreground.pid; wait"
+    command = "setsid sh -c 'echo $$ > detached.pid; exec sleep 60' & sleep 60 & echo $! > foreground.pid; wait"
     detached = foreground = None
     fds_before = _open_fds()
     try:
