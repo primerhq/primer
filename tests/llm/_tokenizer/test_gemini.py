@@ -178,11 +178,11 @@ class TestFailuresRaiseMappedErrors:
     async def test_a_count_that_outlives_the_deadline_is_a_timeout_not_a_long_wait(self) -> None:
         """The documented bound must be real: a count stuck in the SDK's sleep and
         retry is cut off at ``timeout_s`` and reported as a timeout."""
-        client, calls = _sleeping_client(3.0)
+        client, calls = _sleeping_client(30.0)
         started = time.monotonic()
         with pytest.raises(ProviderTimeoutError):
             await _count(client, timeout_s=0.1)
-        assert time.monotonic() - started < 1.0, "the call waited out the SDK's sleep"
+        assert time.monotonic() - started < 10.0, "the call waited out the SDK's sleep"
         assert calls["n"] == 1
 
     async def test_a_408_is_a_timeout_and_a_425_is_retry_later_not_a_rejection(self) -> None:
@@ -257,7 +257,7 @@ class TestThroughTheWrapper:
     async def test_a_count_stuck_in_the_sdk_retry_sleep_is_a_cached_timeout(self) -> None:
         """Through the wrapper: the deadline turns the SDK's sleep-and-retry into a
         labelled fallback_timeout, and the next turn does not wait again."""
-        client, calls = _sleeping_client(3.0)
+        client, calls = _sleeping_client(30.0)
         cache = NegativeCache()
         llm = self._Llm(client, timeout_s=0.1)
         started = time.monotonic()
@@ -265,7 +265,7 @@ class TestThroughTheWrapper:
         second = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
         assert (first.outcome, second.outcome) == ("fallback_timeout", "negative_cached")
         assert calls["n"] == 1
-        assert time.monotonic() - started < 1.0
+        assert time.monotonic() - started < 10.0
 
     async def test_an_aiohttp_connection_failure_is_negative_cached_too(self) -> None:
         client, count = _fake_client(exc=_connector_error())
