@@ -15,9 +15,9 @@ def _leaf_approval(call_id="c1"):
     return Yielded(tool_name="_approval", event_key=f"tool_approval:ses:{call_id}",
         resume_metadata={"original_call": {"id": call_id, "name": "system__delete_agent", "arguments": {"id": "x"}}})
 
-def _agent_frame(call_id="c1", tools=None):
+def _agent_frame(call_id="c1", tools=None, session_id="ses"):
     return AgentFrame(agent_id="a", llm_messages=[], tool_call_id=call_id, depth=1,
-                      context=AgentResumeContext("ses", "ws", None, "u", tools or []))
+                      context=AgentResumeContext(session_id, "ws", None, "u", tools or []))
 
 class _TM:
     def __init__(self, result=None, raises=None): self._r, self._raise = result, raises
@@ -80,12 +80,13 @@ async def test_apply_leaf_hook_in_a_nested_subagent_gets_the_session_and_the_reg
     register_resume_hook("test_apply_leaf_ctx", hook)
     leaf = Yielded(tool_name="test_apply_leaf_ctx", event_key="test_apply_leaf_ctx:ses:c1", resume_metadata={})
 
-    out = await apply_leaf(_agent_frame(), leaf, {"response": "blue"}, _real_services(_Registry()))
+    out = await apply_leaf(_agent_frame(session_id="ctx-ses"), leaf, {"response": "blue"}, _real_services(_Registry()))
 
     assert out.error is False and out.id == "c1"
     ((payload, ctx),) = seen
     assert payload == {"response": "blue"}
     assert (ctx.tool_name, ctx.tool_call_id) == ("test_apply_leaf_ctx", "c1")
+    # The bundle's session (the one being resumed), not the frame context's: the two differ here.
     assert ctx.session_id == "ses", "the hook was not told which session it is answering"
     assert ctx.resolve_provider is not None, "a python toolset's hook could not reach its provider"
     assert await ctx.resolve_provider("ts-any") == "ts-any", "the resolver does not reach the registry"
@@ -97,7 +98,7 @@ async def test_apply_leaf_python_toolset_tool_in_a_nested_subagent_resumes():
     register_resume_hook(name, python_tool_resume)
     leaf = Yielded(tool_name=name, event_key=f"{name}:ses:c1", resume_metadata={"toolset_id": "ts-vy", "tool_id": "ask"})
 
-    out = await apply_leaf(_agent_frame(), leaf, {"response": "blue"}, _real_services(_PythonRegistry()))
+    out = await apply_leaf(_agent_frame(session_id="ctx-ses"), leaf, {"response": "blue"}, _real_services(_PythonRegistry()))
 
     assert out.error is False, out.output
     assert json.loads(out.output) == {"tool_id": "ask", "answer": "blue"}
