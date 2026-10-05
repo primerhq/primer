@@ -1966,13 +1966,18 @@ async def test_seq_strictly_increases_across_invoke_and_restart(
         workspace_id="w1", session_id=session_id,
         instruction="first", human_intent=True, deps=wake_deps,
     )
-    await run_one_session_turn(
+    outcome = await run_one_session_turn(
         _make_lease(session_id),
         _dispatch_deps([
             TextDelta(text="alpha", index=0),
             Done(stop_reason="stop", raw_reason="stop"),
         ]),
     )
+    # The worker's release between the two turns (it bumps turn_no). Without it the next claim would be the
+    # re-claim of a completed turn whose release never committed, which takes the no-op path (01a10b05).
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+
+    await SessionClaimAdapter(session_storage=storage).on_release(None, session_id, outcome=outcome)
     row = await storage.get(session_id)
     assert row.status == SessionStatus.ENDED, (
         "every clean turn ends the session; a follow-up message restarts it"

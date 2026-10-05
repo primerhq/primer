@@ -185,8 +185,13 @@ async def test_a_stopped_turn_does_not_leak_its_partial_text_into_the_next_turns
     row.interrupt_requested = True
     await sessions.update(row)
     await bus.publish("session:s1:cancel", {})
-    await asyncio.wait_for(first, 3.0)
+    stopped = await asyncio.wait_for(first, 3.0)
     assert dispatcher.texts == [], "a stopped turn relays nothing"
+    # The worker's release between the two turns (it bumps turn_no). Without it the next claim would be the
+    # re-claim of a completed turn whose release never committed, which takes the no-op path (01a10b05).
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+
+    await SessionClaimAdapter(session_storage=sessions).on_release(None, "s1", outcome=stopped)
 
     row = await sessions.get("s1")
     row.status = SessionStatus.RUNNING
