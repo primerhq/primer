@@ -13,6 +13,8 @@ the system prompt, the history and the tool schemas), taken from the prompt as S
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from primer.agent.loop import run_agent_turn
@@ -69,6 +71,8 @@ def _agent() -> Agent:
 
 
 PROMPT = [Message(role="user", parts=[TextPart(text="hi there, " * 40)])]
+
+BUCKETS = (0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0, 3.0, 4.0)
 
 
 async def _drain(llm, *, model: ResolvedModel | None = None, prompt=PROMPT, budget=None, tool_manager=None) -> list:
@@ -172,12 +176,32 @@ class TestTheRatio:
         """The buckets are what lets the histogram tell 0.9 from 1.1 and 1.5 from 2.0 (dense around 1.0, out to 0.25 and
         4.0 for a 2x error either way); prometheus's latency defaults (0.005..10) or a coarser tuple would record the same
         counts and lose that. The autouse fixture has just rebuilt the instrument through ``reset_for_test``, so this
-        pins that definition (a module-level definition that drifts from it is the one ``primer`` imports: keep both)."""
+        pins that copy; the next test pins the definition production imports."""
         import primer.observability.metrics as m
 
-        assert m.llm_prompt_estimate_ratio._upper_bounds[:-1] == [
-            0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0, 3.0, 4.0,
+        assert m.llm_prompt_estimate_ratio._upper_bounds[:-1] == list(BUCKETS)
+
+    def test_both_definitions_of_the_histogram_carry_the_bucket_layout(self):
+        """Nothing in ``primer/`` calls ``reset_for_test``: every production process runs on the MODULE-LEVEL definition,
+        which the instrument-level test above never sees (it reads the rebuilt copy). So read the source: exactly two
+        ``Histogram("llm_prompt_estimate_ratio", ...)`` calls (the module-level one and the one in ``reset_for_test``),
+        each with a literal ``buckets=`` keyword equal to the layout. A dropped ``buckets=`` has no keyword to find and
+        fails too."""
+        import ast
+        from pathlib import Path
+
+        import primer.observability.metrics as m
+
+        calls = [
+            node for node in ast.walk(ast.parse(Path(m.__file__).read_text(encoding="utf-8")))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "Histogram"
+            and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "llm_prompt_estimate_ratio"
         ]
+        assert len(calls) == 2, "the module-level definition and reset_for_test's copy"
+        for call in calls:
+            (buckets,) = [kw.value for kw in call.keywords if kw.arg == "buckets"]
+            assert ast.literal_eval(buckets) == BUCKETS, f"line {call.lineno}"
 
     async def test_a_prompt_with_nothing_to_estimate_records_nothing_and_does_not_divide_by_zero(self):
         """Usage reported for a prompt we estimate at 0 (no messages, no tools) has no ratio: the guard skips it instead of
