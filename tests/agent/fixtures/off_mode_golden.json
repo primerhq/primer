@@ -1517,8 +1517,8 @@
    ]
   }
  ],
- "captured_from": "4d95669bfcb9880d5889949368caf5e7a4d0d37b",
- "captured_from_subject": "docs(compaction): the hysteresis does not apply past the context window",
+ "captured_from": "749135cfd89d41de3ac9eb0044f37ee359482568",
+ "captured_from_subject": "fix(agent): the overflow replay counts the fixed part, a replay that parks is covered, and the failure says what is in the history",
  "recaptures": [
   {
    "changed_turns": [
