@@ -105,7 +105,9 @@ async def test_a_detached_process_holding_the_pipes_does_not_hold_the_kill_up(tm
     """``proc.wait()`` also waits for the pipes to close, and a process that left the group (setsid) can hold them for as
     long as it lives. The kill waits for the process's own exit and then closes the pipes itself."""
     proc = await asyncio.create_subprocess_shell(
-        f"setsid sleep 60 & echo $! > {tmp_path}/detached; wait",
+        # the detached process writes its OWN pid after setsid(): ``$!`` is known the moment the shell forks, before the
+        # child has exec'd setsid(1) and left the group, and a pid read then is a process the group kill still reaches
+        f"setsid sh -c 'echo $$ > {tmp_path}/detached; exec sleep 60' & wait",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **NEW_SESSION,
     )
     detached = await _child_pid(tmp_path / "detached")
@@ -180,7 +182,7 @@ async def test_a_group_that_never_empties_is_given_up_on_at_the_bound(tmp_path: 
     _killpg_reporting_the_group_present(monkeypatch, probes_present=None)
     caplog.set_level(logging.WARNING, logger="primer.common.process_group")
     proc = await asyncio.create_subprocess_shell(
-        f"setsid sleep 60 & echo $! > {tmp_path}/detached; wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
+        f"setsid sh -c 'echo $$ > {tmp_path}/detached; exec sleep 60' & wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
     )
     detached = await _child_pid(tmp_path / "detached")
     try:
@@ -203,7 +205,7 @@ async def test_a_refused_signal_to_the_leader_does_not_skip_the_wait_or_the_pipe
     """A leader that changed uid (it exec'd a setuid program) refuses the direct signal with PermissionError. That must
     not replace the caller's own error, and must not skip the pipe close that runs in the ``finally``."""
     proc = await asyncio.create_subprocess_shell(
-        f"setsid sleep 60 & echo $! > {tmp_path}/detached; wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
+        f"setsid sh -c 'echo $$ > {tmp_path}/detached; exec sleep 60' & wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
     )
     detached = await _child_pid(tmp_path / "detached")
 
@@ -269,31 +271,45 @@ def _proc_state(pid: int) -> str | None:
 async def test_the_live_member_scan_reads_the_real_state_of_a_real_process(tmp_path: Path) -> None:
     """Every other test reaches ``_live_member_of`` through a stub or only on its False side (a zombie is not live). This
     one runs it on a real process in its own group, through its whole life: live while it runs, not live once it is killed
-    but not yet reaped (the zombie nothing reaps under PID 1), not live once it is reaped. Its ``comm`` is set to
+    but not yet reaped (the zombie nothing reaps under PID 1), not live once it is reaped. A second, NON-leader process of
+    the group keeps the group live after the leader has died, and only its death empties it. Its ``comm`` is set to
     ``x) Z 1 2 (``, which a parse that splits at the FIRST ")" would read as state Z and the wrong fields: the scan must
     split at the last one. It is a ``Popen`` and not an asyncio process so that nothing reaps it behind the test's back."""
     ready = tmp_path / "ready"
     source = (
-        "import ctypes, time\n"
+        "import ctypes, subprocess, time\n"
         "ctypes.CDLL(None).prctl(15, b'x) Z 1 2 (', 0, 0, 0)\n"        # PR_SET_NAME
-        f"open({str(ready)!r}, 'w').write('1')\n"
+        "member = subprocess.Popen(['sleep', '60'])\n"                 # a second process of the leader's group
+        f"open({str(ready)!r}, 'w').write(str(member.pid))\n"
         "time.sleep(60)\n"
     )
     child = subprocess.Popen([sys.executable, "-c", source], start_new_session=True)
+    member = None
     try:
         deadline = time.monotonic() + 10.0
-        while not ready.exists():
+        while not ready.exists() or not ready.read_text().strip():
             assert time.monotonic() < deadline, "the child never reported ready"
             await asyncio.sleep(0.02)
+        member = int(ready.read_text().strip())
         if Path(f"/proc/{child.pid}/comm").read_text().strip() != "x) Z 1 2 (":
             pytest.skip("prctl(PR_SET_NAME) was refused: the test is not in the situation it is about")
 
         assert pg._live_member_of(child.pid) is True, "a running process of the group was not found"
 
+        # The leader dies and stays a zombie, but a NON-leader member of its group is still alive: the group is not
+        # empty (a scan that looked only at the leader would say it is).
         os.kill(child.pid, signal.SIGKILL)
         deadline = time.monotonic() + 5.0
         while _proc_state(child.pid) != "Z":
             assert time.monotonic() < deadline, f"the child never became a zombie (state {_proc_state(child.pid)})"
+            time.sleep(0.01)
+        assert pg._live_member_of(child.pid) is True, "a live member that is not the leader was not found"
+
+        # Now the member dies too (init or a subreaper reaps it): only the leader's zombie is left, which is not live.
+        os.kill(member, signal.SIGKILL)
+        deadline = time.monotonic() + 5.0
+        while _proc_state(member) not in (None, "Z"):
+            assert time.monotonic() < deadline, f"the member never died (state {_proc_state(member)})"
             time.sleep(0.01)
         assert pg._live_member_of(child.pid) is False, "a zombie was counted as a live member"
 
@@ -303,6 +319,11 @@ async def test_the_live_member_scan_reads_the_real_state_of_a_real_process(tmp_p
         if child.poll() is None:
             child.kill()
             child.wait()
+        if member is not None:
+            try:
+                os.kill(member, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_a_scan_that_read_no_stat_file_says_it_cannot_tell(monkeypatch) -> None:

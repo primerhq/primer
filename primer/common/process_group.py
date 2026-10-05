@@ -10,10 +10,10 @@ The fix has two halves, and the caller must do both: start the process in its ow
 :func:`kill_process_group` it. ``LocalWorkspace.diagnostic_exec`` and the workspace init command already did this for
 their timeouts; the agent-facing ``exec`` tool and the local python runner did not.
 
-The workspace runtime image cannot import ``primer``, so it carries its own copy of the same idea
-(``runtime/primer_runtime/process_group.py``, which differs on purpose: it sends SIGTERM and a grace period before the
-SIGKILL, and has no Windows branch). Keep the shared helpers (``_live_member_of``, ``_group_has_a_live_member``,
-``_close_the_pipes``) in step with it.
+The workspace runtime image cannot import ``primer``, so the change that gives it process-group handling (stop slice
+B0b) carries its own copy of the same idea, ``runtime/primer_runtime/process_group.py`` (it differs on purpose: it sends
+SIGTERM and a grace period before the SIGKILL, and has no Windows branch). Wherever that copy exists, keep the shared
+helpers (``_live_member_of``, ``_group_has_a_live_member``, ``_close_the_pipes``) in step with it.
 
 What the group kill does NOT reach, on purpose: a process that left the group by starting a session of its own
 (``setsid``, or a daemon that double-forks and calls ``setsid``) was detached deliberately and survives. ``nohup`` alone

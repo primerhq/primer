@@ -155,7 +155,8 @@ async def test_a_process_detached_into_its_own_session_survives_the_kill(tmp_pat
     """A deliberately detached process (setsid) is outside the group; its foreground sibling in the group dies."""
     _shell_as_the_shim(
         monkeypatch,
-        f"setsid sleep 60 > /dev/null 2>&1 & echo $! > {tmp_path}/detached; "
+        # the detached process writes its OWN pid after setsid() (``$!`` can be read before the child has left the group)
+        f"setsid sh -c 'echo $$ > {tmp_path}/detached; exec sleep 60' > /dev/null 2>&1 & "
         f"sleep 60 & echo $! > {tmp_path}/foreground; wait",
     )
     detached = foreground = None
@@ -194,7 +195,7 @@ async def test_a_detached_process_that_holds_the_pipes_does_not_delay_the_kill_o
     wait out its bound on them, and must close them itself: none of the shim's descriptors may stay open."""
     _shell_as_the_shim(
         monkeypatch,
-        f"setsid sleep 60 & echo $! > {tmp_path}/detached; sleep 60 & echo $! > {tmp_path}/foreground; wait",
+        f"setsid sh -c 'echo $$ > {tmp_path}/detached; exec sleep 60' & sleep 60 & echo $! > {tmp_path}/foreground; wait",
     )
     detached = foreground = None
     fds_before = _open_fds()
