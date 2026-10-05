@@ -1169,14 +1169,16 @@ class WorkerPool:
         That is NOT a harmless retry when the work had finished, unlike a drain hand-back (an unstarted lease). A
         bound that fired BEFORE the commit rolled back what ``on_release`` wrote (a session's ``turn_no`` bump and
         ``last_turn_at``, or its park columns; a harness's cleared ``pending_operation``; a trigger's next fire time),
-        so the re-claim finds the entity runnable and does the work AGAIN: ``run_one_session_turn`` checks only
-        ENDED, cancel and pause, so it runs a NEW turn over the same history (a second model call and its tool runs);
-        a harness operation runs again; a trigger fires again. A failed session release's terminal ERROR record is a
-        workspace write the database transaction does not cover, so the rollback does not undo it and it can be
-        written twice. This is the cost of a bound below the lease TTL: a shorter bound abandons more releases that
-        are slow but alive, while the longer bound it replaced let a slow release stall the heartbeat long enough to
-        duplicate the turns of the worker's OTHER leases instead. Tracked: a guard against re-running a completed
-        turn.
+        so the re-claim finds the entity runnable and does the work AGAIN: a harness operation runs again; a trigger
+        fires again. A session turn that COMPLETED is the exception: it recorded ``completed_turn_no`` before its
+        release, so the re-claim finds ``completed_turn_no == turn_no`` and ``run_one_session_turn`` takes its no-op
+        path (no model call; its own release applies the lost bump; see ``_noop_if_turn_already_completed``). A
+        session's park or resume release that rolls back is not covered: the re-claim runs a fresh turn, or the resume
+        handler again. A failed session release's terminal ERROR record is a workspace write the database transaction
+        does not cover, so the rollback does not undo it and it can be written twice. This is the cost of a bound
+        below the lease TTL: a shorter bound abandons more releases that are slow but alive, while the longer bound it
+        replaced let a slow release stall the heartbeat long enough to duplicate the turns of the worker's OTHER leases
+        instead.
 
         The probe UNDERCOUNTS committed timeouts: the contract has no read of who holds a lease (``heartbeat`` would
         tell, but it writes, refreshes the TTL and on Postgres waits on the very row lock an open release holds), so a
@@ -1239,11 +1241,14 @@ class WorkerPool:
         (still held-by-us, about to be dropped) lease's priority and be
         wiped out the instant release runs.
 
-        ``run_one_session_turn`` consumes ("idle"s) any ``turn_status``
-        it started with before running the turn, so a lingering
-        ``turn_status == "claimable"`` at this point can only mean a
-        ``wake_session()`` steer landed during (or right after) the turn
-        that just released -- not a stale, already-serviced signal.
+        ``run_one_session_turn`` flips ``turn_status`` to "running"
+        unconditionally when a turn starts (whatever it was) and the turn's
+        cleanup returns it to "idle" unless a wake set "claimable"
+        meanwhile, so a lingering ``turn_status == "claimable"`` at this
+        point means a ``wake_session()`` steer landed during (or right
+        after) the turn that just released -- not a stale, already-serviced
+        signal -- or the completed-turn no-op path found an unanswered
+        input and set it (``_noop_if_turn_already_completed``).
 
         No-ops when the session ended (a restart is required, and reset
         clears turn_status itself) or is not RUNNING/WAITING (e.g.
