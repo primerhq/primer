@@ -1493,6 +1493,10 @@ _CANCEL_REASON = "operator_cancel"
 # queues behind that lock. Long enough for a slow healthy write, short enough that the session is not wedged.
 _CANCELLED_RECORD_WRITE_TIMEOUT_S = 10.0
 
+# The same bound for the ENDED transition's mirror onto the executor's on-disk slot (``session.json``), which
+# commits through the same runtime connection and runs inside the same lock on a Cancel.
+_SLOT_MIRROR_TIMEOUT_S = 10.0
+
 
 async def _land_cancelled_turn(
     deps: "SessionDispatchDeps",
@@ -1575,7 +1579,7 @@ async def _write_cancelled_record(
             return seq
     except TimeoutError:
         logger.warning(
-            "session %s: the CANCELLED(%s) record was not written within %gs (the workspace is not "
+            "session %s: the CANCELLED(%s) record was not confirmed within %gs (the workspace is not "
             "accepting writes); finishing the cancelled exit without it",
             session_id, reason, _CANCELLED_RECORD_WRITE_TIMEOUT_S,
         )
@@ -2255,13 +2259,22 @@ async def _sync_agent_session_ended(
     if set_status is None:
         return
     try:
-        current = await inner.status()
-        if current == SessionStatus.ENDED:
-            return
-        reason = ended_reason if ended_reason in (
-            "completed", "failed", "cancelled", "tool_turn_cap",
-        ) else "completed"
-        await set_status(SessionStatus.ENDED, ended_reason=reason)
+        # Bounded: the slot commit goes over the workspace runtime connection, and on a Cancel this runs
+        # inside the session's lifecycle lock. A dead connection would otherwise hold that lock forever.
+        async with asyncio.timeout(_SLOT_MIRROR_TIMEOUT_S):
+            current = await inner.status()
+            if current == SessionStatus.ENDED:
+                return
+            reason = ended_reason if ended_reason in (
+                "completed", "failed", "cancelled", "tool_turn_cap",
+            ) else "completed"
+            await set_status(SessionStatus.ENDED, ended_reason=reason)
+    except TimeoutError:
+        logger.warning(
+            "dispatch: the ENDED status was not confirmed on the AgentSession slot within %gs (the "
+            "workspace is not accepting writes); the row is ENDED and the slot may still read running",
+            _SLOT_MIRROR_TIMEOUT_S,
+        )
     except Exception:  # noqa: BLE001 -- advisory; never block release
         logger.warning(
             "dispatch: failed to mirror ENDED onto AgentSession slot",
