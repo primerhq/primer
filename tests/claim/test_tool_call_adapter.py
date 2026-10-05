@@ -491,7 +491,8 @@ async def test_an_unknown_entity_update_key_fails_the_task_terminally_instead_of
 
         failed = await storage.get("b:tool:0:1")
         assert failed.state == ToolCallTaskState.FAILED, key
-        assert failed.last_error is not None and f"got ['{key}']" in failed.last_error, failed.last_error
+        assert failed.last_error is not None and f"it set ['{key}']" in failed.last_error, failed.last_error
+        assert "Adapter" not in failed.last_error, "the model-visible reason carries no internal class names"
         assert failed.result_state is None, "the rejected update must not be applied"
         assert isinstance(wake, PostReleaseWake), "the batch is complete, so the session must be woken"
         assert await storage.get("b:tool:0:2") == sibling, "a sibling's row was touched"
@@ -513,8 +514,8 @@ async def test_the_entity_update_allow_list_is_per_branch_and_a_violation_fails_
         await adapter.on_release(conn=None, entity_id="t1", outcome=_release("t1", **kwargs))
         failed = await storage.get("t1")
         assert failed.state == ToolCallTaskState.FAILED, branch
-        assert f"a {branch} ToolCallClaimAdapter release takes entity_update keys" in failed.last_error
-        assert f"got ['{key}']" in failed.last_error
+        assert f"on a {branch} release, which takes only" in failed.last_error
+        assert f"it set ['{key}']" in failed.last_error
         assert failed.attempts == 0 and failed.gate_event_key is None, "the rejected update or gate was applied"
     # the terminal branch takes all three
     storage = FakeStorage(_make_task("t1"))
@@ -527,6 +528,73 @@ async def test_the_entity_update_allow_list_is_per_branch_and_a_violation_fails_
     )
     done = await storage.get("t1")
     assert (done.state, done.attempts, done.last_error) == (ToolCallTaskState.FAILED, 3, "poisoned")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs, key", [
+    (dict(success=True, drop_lease=True, entity_update={"attempts": -1}), "attempts"),
+    (dict(success=True, drop_lease=True, entity_update={"result_state": "not an object"}), "result_state"),
+    (dict(success=True, drop_lease=True, entity_update={"last_error": {"a": 1}}), "last_error"),
+    (dict(success=False, entity_update={"attempts": "many"}), "attempts"),
+])
+async def test_a_value_the_model_refuses_fails_the_task_too_not_just_a_disallowed_key(kwargs, key) -> None:
+    """The allowed KEYS can still carry an unusable VALUE (``attempts=-1``, a ``result_state`` that is not an object).
+    The merged document then fails validation (a pydantic ``ValidationError``) INSIDE the release transaction, which on
+    Postgres is re-raised as itself and rolls the release back, so the same loop as a disallowed key. It is the same
+    terminal failure, with a reason that names the key but carries neither the value nor pydantic's text."""
+    storage = FakeStorage(_make_task("t1"))
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+
+    await adapter.on_release(conn=None, entity_id="t1", outcome=_release("t1", **kwargs))
+
+    failed = await storage.get("t1")
+    assert failed.state == ToolCallTaskState.FAILED
+    assert failed.last_error == f"the worker's release was invalid: it gave an invalid value for ['{key}']"
+    assert failed.attempts == 0 and failed.result_state is None, "the refused value was applied"
+
+
+@pytest.mark.asyncio
+async def test_a_validation_error_with_no_handler_values_is_a_corrupt_row_and_still_propagates() -> None:
+    """With nothing supplied by the handler the unreadable document is the STORED row's doing, which is not the handler's
+    to answer for: it propagates exactly as before instead of failing a task for a fault it did not cause."""
+    class _CorruptRow(FakeStorage):
+        async def patch_if(self, *a, **k):
+            ToolCallTask.model_validate({})        # raises pydantic.ValidationError
+
+    adapter = ToolCallClaimAdapter(task_storage=_CorruptRow(_make_task("t1")))
+    with pytest.raises(Exception) as excinfo:
+        await adapter.on_release(
+            conn=None, entity_id="t1", outcome=_release("t1", success=True, drop_lease=True),
+        )
+    assert type(excinfo.value).__name__ == "ValidationError"
+
+
+@pytest.mark.asyncio
+async def test_the_engine_drops_the_lease_of_a_terminal_rejection_and_requeues_a_retry_rejections_which_prune_removes() -> None:
+    """Engine level, not just the adapter: a rejected TERMINAL release drops the lease with the task FAILED; a rejected RETRY
+    release requeues a lease whose task is FAILED (the in-memory engine applies no eligibility, so it is claimable again
+    there; the handler's state guard is what stops it re-running), and ``prune_dead_leases`` removes it."""
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    storage = FakeStorage(_make_task("term"), _make_task("retry"))
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=storage)})
+    for tid in ("term", "retry"):
+        await engine.upsert(ClaimKind.TOOL_CALL, tid)
+    leases = {l.entity_id: l for l in await engine.claim_due("w", max_count=10, kinds=[ClaimKind.TOOL_CALL])}
+
+    await engine.release(leases["term"], outcome=_release(
+        "term", success=True, drop_lease=True, entity_update={"state": "done"},
+    ))
+    await engine.release(leases["retry"], outcome=_release(
+        "retry", success=False, entity_update={"result_state": ToolResultPart(id="retry", output="x")},
+    ))
+
+    assert (await storage.get("term")).state == ToolCallTaskState.FAILED
+    assert (await storage.get("retry")).state == ToolCallTaskState.FAILED
+    assert await engine.has_lease(ClaimKind.TOOL_CALL, "term") is False, "a terminal rejection drops its lease"
+    assert await engine.has_lease(ClaimKind.TOOL_CALL, "retry") is True, "a retry rejection requeues a lease"
+    assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 1
+    assert await engine.has_lease(ClaimKind.TOOL_CALL, "retry") is False
 
 
 @pytest.mark.asyncio

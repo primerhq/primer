@@ -79,8 +79,9 @@ class ReleaseOutcome:
     # as one field-scoped ``Storage.patch_if`` (never a whole-document update). Which keys
     # an adapter accepts is its own contract; ``ToolCallClaimAdapter`` validates them PER
     # BRANCH (terminal: ``result_state``, ``attempts``, ``last_error``; retry: ``attempts``,
-    # ``last_error``; gated: none) and raises ``ValueError`` on any other key rather than
-    # letting a handler overwrite ``state``, ``claim_token`` or ``finished_at``.
+    # ``last_error``; gated: none). Any other key, or a value the model refuses, FAILS THE TASK
+    # terminally (through the same fence) rather than raising inside the release transaction, and
+    # a handler can never overwrite ``state``, ``claim_token`` or ``finished_at``.
     entity_update: Mapping[str, Any] | None = None
     # The per-claim token the releaser holds. ``ToolCallClaimAdapter`` writes the entity only
     # while the row still carries it, and refuses the write when it is ``None``: a ``None``

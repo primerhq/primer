@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from collections.abc import Mapping
 from typing import Any
 
+from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
 
 from primer.int.claim import ClaimAdapter, ClaimKind, PostReleaseWake, ReleaseOutcome
@@ -50,7 +52,15 @@ _ENTITY_UPDATE_KEYS = {
 
 
 class _InvalidEntityUpdate(ValueError):
-    """A handler put a key in ``ReleaseOutcome.entity_update`` that its branch does not allow."""
+    """A handler's ``ReleaseOutcome.entity_update`` is unusable: a key its branch does not allow, or a value the model refuses.
+
+    ``reason`` is what the MODEL is shown (no class names, no values); ``detail`` is for the operator's log only.
+    """
+
+    def __init__(self, reason: str, *, detail: str = "") -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.detail = detail
 
 
 class ToolCallClaimAdapter(ClaimAdapter):
@@ -113,15 +123,21 @@ class ToolCallClaimAdapter(ClaimAdapter):
             raise RuntimeError(
                 "task_storage is None - cannot run on_release without a storage backend"
             )
-        # Validated before anything else. A disallowed key is a bug in the HANDLER, and raising here would roll
-        # back the release and leave the lease claimed until it expires, for the same handler to be claimed again
-        # and repeat it for ever. So the task is failed terminally instead (``_fail_rejected``): the failure is
-        # logged at ERROR, the session is woken as for any terminal task, and the model is told the call failed.
+        # A disallowed KEY, or a VALUE the model refuses, is a bug in the HANDLER, and raising here would roll back
+        # the release and leave the lease claimed until it expires, for the same handler to be claimed again and
+        # repeat it for ever. So the task is failed terminally instead (``_fail_rejected``): the failure is logged
+        # at ERROR, the session is woken as for any terminal task, and the model is told the call failed.
         branch = "gated" if outcome.park is not None else "terminal" if outcome.drop_lease else "retry"
         try:
             update = self._entity_update(outcome, branch)
+            return await self._release(conn, entity_id, outcome, update)
         except _InvalidEntityUpdate as exc:
             return await self._fail_rejected(entity_id, outcome, exc, conn)
+
+    async def _release(
+        self, conn, entity_id: str, outcome: ReleaseOutcome, update: dict[str, Any],
+    ) -> "PostReleaseWake | None":
+        """The branch body of :meth:`on_release` for an update that passed the key check."""
         token = outcome.claim_token
         if token is None:
             # A None token never matches a fence. Reading it as "absent or null" in the predicate
@@ -171,7 +187,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 **update,
             }
             await self._patch(
-                entity_id, patch, {**fence, "gate_seq": [current.gate_seq]}, conn,
+                entity_id, patch, {**fence, "gate_seq": [current.gate_seq]}, conn, handler_values=update,
             )
             return None
 
@@ -195,7 +211,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 "gate_state": None,
                 **update,
             }
-            updated = await self._patch(entity_id, patch, fence, conn)
+            updated = await self._patch(entity_id, patch, fence, conn, handler_values=update)
             if updated is None:
                 return None
             return await self._last_sibling_wake_signal(updated, conn=conn)
@@ -220,7 +236,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
             "claim_token": None,
             **update,
         }
-        await self._patch(entity_id, patch, fence, conn)
+        await self._patch(entity_id, patch, fence, conn, handler_values=update)
         return None
 
     @staticmethod
@@ -232,8 +248,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
         unknown = set(raw) - allowed
         if unknown:
             raise _InvalidEntityUpdate(
-                f"a {branch} ToolCallClaimAdapter release takes entity_update keys {sorted(allowed)}, "
-                f"got {sorted(unknown)}"
+                f"it set {sorted(unknown)} on a {branch} release, which takes only {sorted(allowed)}",
             )
         return dict(raw)
 
@@ -243,22 +258,31 @@ class ToolCallClaimAdapter(ClaimAdapter):
         """Fail the task terminally because its handler's release was invalid.
 
         Fenced like every other write (live state AND the claim token), so a stale or token-less release still
-        writes nothing. The engine then drops the lease (gated and terminal outcomes) or requeues one whose
-        task is now FAILED, which the eligibility filter skips and ``prune_dead_leases`` removes. The message
-        becomes the task's ``last_error``, which is what the model is shown for a failed task with no result.
+        writes nothing. The engine then drops the lease (gated and terminal outcomes) or requeues one whose task is
+        now FAILED. On Postgres the eligibility filter keeps that lease from being claimed again; the in-memory
+        engine applies no eligibility, so there it can be claimed again, and what stops the task running is the
+        handler's own state guard (execute only a QUEUED or RUNNING row). ``prune_dead_leases`` removes the lease
+        once something calls it (the reconciler rule that does is planned, not built), so until then it is an inert row.
+        ``exc.reason`` becomes the task's ``last_error``, which is what the model is shown for a failed task with no
+        result; ``exc.detail`` is logged only.
         """
-        logger.error(
-            "tool-call release of %s was rejected, so the task is failed terminally: %s", entity_id, exc,
-        )
         token = outcome.claim_token
         if token is None:
+            logger.error(
+                "tool-call release of %s was invalid (%s) and carries no claim token: nothing is written",
+                entity_id, exc.reason,
+            )
             return None
+        logger.error(
+            "tool-call release of %s was invalid (%s), so the task is failed terminally %s",
+            entity_id, exc.reason, exc.detail,
+        )
         updated = await self._patch(
             entity_id,
             {
                 "state": ToolCallTaskState.FAILED.value,
                 "finished_at": datetime.now(timezone.utc),
-                "last_error": f"the worker's release was invalid: {exc}",
+                "last_error": f"the worker's release was invalid: {exc.reason}",
                 "gate_state": None,
             },
             {"state": list(_LIVE_STATES), "claim_token": [token]},
@@ -276,8 +300,15 @@ class ToolCallClaimAdapter(ClaimAdapter):
 
     async def _patch(
         self, entity_id: str, patch: dict[str, Any], where: dict[str, list[Any]], conn,
+        *, handler_values: Mapping[str, Any] | None = None,
     ) -> ToolCallTask | None:
-        """One fenced ``patch_if``; a rejected or missing row logs and returns ``None``."""
+        """One fenced ``patch_if``; a rejected or missing row logs and returns ``None``.
+
+        ``handler_values`` are the keys the HANDLER supplied through ``entity_update``. When the write leaves the document
+        unreadable (a pydantic ``ValidationError``: ``attempts=-1``, a ``result_state`` that is not an object) AND the
+        handler supplied values, the handler's values are the cause and the release is rejected as invalid; with none
+        supplied the cause is a corrupt stored row, which is not the handler's doing and propagates as before.
+        """
         try:
             updated = await self._storage.patch_if(
                 entity_id, to_jsonable_python(patch), where=where, conn=conn,
@@ -285,6 +316,12 @@ class ToolCallClaimAdapter(ClaimAdapter):
         except NotFoundError:
             logger.warning("tool-call release of %s: the row is gone, nothing written", entity_id)
             return None
+        except ValidationError as exc:
+            if not handler_values:
+                raise
+            raise _InvalidEntityUpdate(
+                f"it gave an invalid value for {sorted(handler_values)}", detail=str(exc)[:300],
+            ) from exc
         if updated is None:
             logger.warning(
                 "tool-call release of %s rejected by its fence: cancelled, finished or "

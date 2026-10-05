@@ -1639,7 +1639,7 @@ async def test_postgres_prune_leaves_a_lapsed_lease_a_concurrent_heartbeat_exten
             async with pg_storage.pool.acquire() as probe:
                 return bool(await probe.fetchval(
                     "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-                    "AND wait_event_type = 'Lock' AND query LIKE '%DELETE FROM%'"
+                    "AND wait_event_type = 'Lock' AND query LIKE '%DELETE FROM%USING doomed%'"
                 ))
 
         for _ in range(100):
