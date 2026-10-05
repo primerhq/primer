@@ -45,6 +45,9 @@ interleave, and a delegated (subagent) run, which ``DelegationRecorder`` writes 
 ``payload.delegated`` and the delegating call's id, is a turn of its own, so its final ``done`` does not end the parent's turn
 and a parent call is never paired with a child call. Turn segmentation is only as good as the adapters' stop reasons: an
 OpenAI-compatible server that finishes a tool round with ``stop`` (ticketed) would end the turn early for that provider.
+**Limitation:** the recorder stamps no depth or run id, only the delegating call's RAW provider id, and providers that
+synthesise ids (Gemini and Ollama: ``call_{idx}``) reuse them: a delegation nested inside a delegation, with the same raw id
+at both levels, merges the child and the grandchild into one run (sequential reuse of an id is handled). Ticketed.
 """
 
 from __future__ import annotations
@@ -303,7 +306,7 @@ def decide(corpus: Corpus, groups: list[Group], min_days: float) -> dict:
     premature_share = premature / len(corpus.premature) if corpus.premature else 0.0
     out["facts"] = {
         "days_of_usable_data (shortest material group)": round(days, 2), "near_window_turns": len(near_turns),
-        "replay_turns": len(replay_turns), "replays_per_200_near_window_turns": round(replays_per_200, 2),
+        "replay_turns": len(replay_turns), "replays_per_200_near_window_turns": round(replays_per_200, 4),
         "trigger_fired_compactions": len(corpus.premature), "premature_compaction_share": round(premature_share, 3),
         "manual_or_forced_markers_not_counted": corpus.manual_or_forced_markers,
     }
