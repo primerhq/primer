@@ -322,9 +322,13 @@ and pass `./k3s-dump`. The record carries the provider's id and not its kind, so
 Ollama provider with `--exclude-provider` (its `prompt_eval_count` leaves out the
 KV-cached prefix); the script lists the provider ids it saw and warns when none is
 excluded. It counts a turn from the `done` whose `stop_reason` is not `tool_use` (the
-loop writes a `done` after every call), measures the 7-day requirement over the calls
-the verdict rests on, and uses the group's median ratio as kappa in rule 3, which leans
-towards Phase 1b compared with the per-session EMA Phase 1a would use.
+loop writes a `done` after every call), per file, node and delegated run: a subagent's
+calls are recorded inline in the parent's log (`payload.delegated` and
+`delegate_tool_call_id`), so a delegated run is a turn of its own and its final `done`
+does not end the parent's. It measures the 7-day requirement over the calls the verdict
+rests on, applies rules 1 and 2 to the material groups only, and uses the group's median
+ratio as kappa in rule 3, which leans towards Phase 1b compared with the per-session EMA
+Phase 1a would use.
 
 Four declared metrics are not yet written by any call site and scrapers will see
 them as never-incremented zeros: `llm_retry_total` (no adapter increments it),
