@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+import json
+import logging
 import os
 import signal
 import subprocess
@@ -12,7 +15,10 @@ from pathlib import Path
 
 import pytest
 
+import primer.common.process_group as pg
 from primer.common.process_group import NEW_SESSION, kill_process_group
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 pytestmark = pytest.mark.skipif(sys.platform not in ("linux", "darwin"), reason="process groups and ps are needed")
 
@@ -124,3 +130,222 @@ async def test_a_process_that_is_already_gone_is_not_an_error() -> None:
     await kill_process_group(proc)
 
     assert proc.returncode == 0
+
+
+# --- the wait loop's own promises, pinned without real timing --------------------------------------------------------------
+
+
+def _killpg_reporting_the_group_present(monkeypatch, *, probes_present: int | None) -> list[int]:
+    """Make the emptiness probe (``killpg(pgid, 0)``) answer "present" ``probes_present`` times (forever for None) and then
+    ProcessLookupError, with the ``/proc`` scan agreeing that a live member is there. Real signals pass through. Returns
+    the list the probes are appended to, so a test can say how many times the kill looked before it returned."""
+    real = os.killpg
+    probes: list[int] = []
+
+    def killpg(pgid: int, sig: int) -> None:
+        if sig != 0:
+            return real(pgid, sig)
+        probes.append(pgid)
+        if probes_present is not None and len(probes) > probes_present:
+            raise ProcessLookupError(errno.ESRCH, "no such process")
+        return None
+
+    monkeypatch.setattr(pg.os, "killpg", killpg)
+    monkeypatch.setattr(pg, "_live_member_of", lambda pgid: True)
+    return probes
+
+
+async def test_it_does_not_return_while_the_group_is_still_reported_present(monkeypatch) -> None:
+    """The group-empty check is a promise the caller leans on (it releases a write lock after the kill). The real group
+    empties too fast for a test to tell the check from the leader's exit, so the probe is scripted: present for five polls,
+    then gone. The kill must have looked six times, that is, it waited for the sixth."""
+    probes = _killpg_reporting_the_group_present(monkeypatch, probes_present=5)
+    proc = await asyncio.create_subprocess_exec("sleep", "60", stdout=asyncio.subprocess.PIPE, **NEW_SESSION)
+    try:
+        await asyncio.wait_for(kill_process_group(proc), timeout=10.0)
+
+        assert len(probes) == 6, f"returned after {len(probes)} probes: it did not wait for the group to be reported empty"
+    finally:
+        try:
+            os.kill(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+async def test_a_group_that_never_empties_is_given_up_on_at_the_bound(tmp_path: Path, monkeypatch, caplog) -> None:
+    """A member that never leaves the group (a process in uninterruptible I/O) must not turn a timeout or a cancel into a
+    hang that holds the write lock forever: the wait ends at ``reap_timeout_s``, warns ONCE, and still closes the pipes.
+    The command leaves a detached process holding the pipe, so the transport is still open when the kill returns unless
+    the kill closes it."""
+    _killpg_reporting_the_group_present(monkeypatch, probes_present=None)
+    caplog.set_level(logging.WARNING, logger="primer.common.process_group")
+    proc = await asyncio.create_subprocess_shell(
+        f"setsid sleep 60 & echo $! > {tmp_path}/detached; wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
+    )
+    detached = await _child_pid(tmp_path / "detached")
+    try:
+        start = time.monotonic()
+        await asyncio.wait_for(kill_process_group(proc, reap_timeout_s=0.2), timeout=10.0)
+        elapsed = time.monotonic() - start
+
+        assert 0.19 <= elapsed < 0.2 + 1.5, f"returned after {elapsed:.2f}s with a bound of 0.2s"
+        warned = [r for r in caplog.records if r.name == "primer.common.process_group" and r.levelno == logging.WARNING]
+        assert len(warned) == 1
+        assert proc._transport.is_closing(), "the pipes were left open"
+    finally:
+        try:
+            os.kill(detached, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+async def test_a_refused_signal_to_the_leader_does_not_skip_the_wait_or_the_pipe_close(tmp_path: Path, monkeypatch) -> None:
+    """A leader that changed uid (it exec'd a setuid program) refuses the direct signal with PermissionError. That must
+    not replace the caller's own error, and must not skip the pipe close that runs in the ``finally``."""
+    proc = await asyncio.create_subprocess_shell(
+        f"setsid sleep 60 & echo $! > {tmp_path}/detached; wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
+    )
+    detached = await _child_pid(tmp_path / "detached")
+
+    def refuse() -> None:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    real_kill = os.kill
+
+    def refuse_the_leader(pid: int, sig: int) -> None:
+        if pid == proc.pid:
+            refuse()
+        return real_kill(pid, sig)
+
+    # however the helper signals the leader itself, the kernel refuses it (the group kill is untouched and still lands)
+    monkeypatch.setattr(proc, "kill", refuse)
+    monkeypatch.setattr(pg.os, "kill", refuse_the_leader)
+    try:
+        await kill_process_group(proc)
+
+        assert proc.returncode == -signal.SIGKILL, "the group kill still took the leader down"
+        assert proc._transport.is_closing(), "the pipes were left open"
+    finally:
+        try:
+            os.kill(detached, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+async def test_a_leader_the_group_kill_already_took_down_is_reported_as_killed_not_as_255(caplog) -> None:
+    """``proc.kill()`` polls the child first (``waitpid(WNOHANG)``), so a leader the group kill had already taken down was
+    reaped by that poll and asyncio then reported exit code 255 and logged "exit status already read". Here the leader is
+    dead before the helper looks (the loop is blocked while it dies), the situation a fast kill is in on a busy host."""
+    caplog.set_level(logging.WARNING)
+    proc = await asyncio.create_subprocess_exec("sleep", "60", stdout=asyncio.subprocess.PIPE, **NEW_SESSION)
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+        time.sleep(0.2)                                   # the leader is dead; the loop has not yet looked at it
+
+        await kill_process_group(proc)
+        await asyncio.sleep(0.2)                          # let the child watcher report the exit, if it can
+
+        assert proc.returncode == -signal.SIGKILL
+        assert not [r for r in caplog.records if "already read" in r.getMessage()], "the child was reaped behind asyncio's back"
+    finally:
+        try:
+            os.kill(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+# --- primer as PID 1: killed children are never reaped ----------------------------------------------------------------------
+
+#: Runs in a child python. ``PR_SET_CHILD_SUBREAPER`` makes it adopt the orphans of the commands it starts, and, like
+#: PID 1 in the shipped image (no init), it never reaps them: every process the group kill takes down stays a ZOMBIE in
+#: the group, and ``killpg(pgid, 0)`` finds a zombie "present" for ever.
+_AS_PID_ONE = r'''
+import asyncio, ctypes, json, logging, os, sys, time
+
+PR_SET_CHILD_SUBREAPER = 36
+if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+    print(json.dumps({"subreaper": False}))
+    sys.exit(0)
+
+from primer.common.process_group import NEW_SESSION, kill_process_group
+
+warnings = []
+
+
+class Collect(logging.Handler):
+    def emit(self, record):
+        if record.levelno >= logging.WARNING:
+            warnings.append(record.getMessage())
+
+
+logging.getLogger("primer.common.process_group").addHandler(Collect())
+
+
+def zombie_children():
+    count = 0
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            data = open(f"/proc/{name}/stat", "rb").read()
+        except OSError:
+            continue
+        fields = data[data.rindex(b")") + 2:].split()
+        if fields[0] == b"Z" and int(fields[1]) == os.getpid():
+            count += 1
+    return count
+
+
+async def main(script, ready):
+    proc = await asyncio.create_subprocess_shell(script, stdout=asyncio.subprocess.PIPE, **NEW_SESSION)
+    try:
+        deadline = time.monotonic() + 10
+        while not os.path.exists(ready) or not open(ready).read().strip():
+            if time.monotonic() > deadline:
+                raise SystemExit("the command never reported ready")
+            await asyncio.sleep(0.02)
+        start = time.monotonic()
+        await kill_process_group(proc)
+        elapsed = time.monotonic() - start
+        print(json.dumps({"subreaper": True, "elapsed": elapsed, "warnings": warnings, "zombies": zombie_children()}))
+    finally:
+        if proc.returncode is None:
+            os.killpg(proc.pid, 9)
+
+
+asyncio.run(main(sys.argv[1], sys.argv[2]))
+'''
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="PR_SET_CHILD_SUBREAPER is Linux-only")
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sleep 60 & echo $! > {ready}; wait",
+        "sleep 60 | (echo $$ > {ready}; cat)",
+    ],
+    ids=["a-forked-child", "a-pipeline"],
+)
+async def test_a_kill_is_not_held_up_by_zombies_nothing_reaps(tmp_path: Path, command: str) -> None:
+    """The shipped image runs primer as PID 1 with no init, so the children a group kill takes down are orphaned to a
+    process that never reaps them. They are dead; waiting for them to disappear waits out the whole bound on EVERY kill
+    (a timeout or cancel took timeout + 2 s and the exec write lock was held 2 s longer) and logs a false 'stuck in
+    uninterruptible I/O'. The check must look at a member's state and ignore a zombie."""
+    probe = tmp_path / "as_pid_one.py"
+    probe.write_text(_AS_PID_ONE)
+    ready = tmp_path / "ready"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(_REPO_ROOT), env.get("PYTHONPATH")]))
+
+    done = await asyncio.to_thread(
+        subprocess.run, [sys.executable, str(probe), command.format(ready=ready), str(ready)],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    if not out["subreaper"]:
+        pytest.skip("this environment does not allow PR_SET_CHILD_SUBREAPER")
+    assert out["zombies"] >= 1, "nothing was left unreaped: the test is not in the situation it is about"
+    assert out["elapsed"] < 1.0, f"the kill took {out['elapsed']:.2f}s: it waited on zombies (the bound is {pg.REAP_TIMEOUT_S}s)"
+    assert out["warnings"] == [], out["warnings"]
