@@ -481,6 +481,27 @@ async def test_a_tool_loop_that_overflows_in_round_two_with_no_text_yet_is_retri
     assert reduction is not None and reduction.as_payload() == {"pruned": 0, "folded_chunks": 0, "truncated_parts": 0}
 
 
+async def test_a_head_an_earlier_tool_round_was_accepted_with_is_retried_whole_even_when_our_count_has_it_over_the_target() -> None:
+    """The head is 90k tokens by our count: over the 76k target. Round one (the head and the schemas) was ACCEPTED, round
+    two (with a 50k-token tool result in it) was not. The provider has shown the head fits, so the text-only retry sends it
+    whole; cutting it to the target would shed 14k tokens of a head that was never the problem."""
+    head = [Message(role="user" if i % 2 == 0 else "assistant", parts=[TextPart(text="x" * 60_000)]) for i in range(6)]
+    llm = _Window(
+        window=CONTEXT_LENGTH - 4_096,
+        script=lambda call: _exec_round("whatever") if call.is_summary and call.tools and len(llm.summaries) == 1 else None,
+    )
+    _, reduction = await CompactionStrategy()._full_compact(  # noqa: SLF001
+        head=head, agent=make_agent(), llm=llm, model=_strategy_model(CONTEXT_LENGTH),  # type: ignore[arg-type]
+        tool_manager=_BigResultTools(1, 100),
+    )
+
+    round_one, round_two, retry = llm.calls
+    assert round_one.tokens <= llm.window < round_two.tokens, "round one was accepted; the tool result overflowed round two"
+    assert not retry.tools and retry.tokens < llm.window
+    assert reduction is not None and reduction.as_payload() == {"pruned": 0, "folded_chunks": 0, "truncated_parts": 0}
+    assert retry.text.count("x" * 60_000) == 6, "all six messages, whole"
+
+
 async def test_a_small_context_model_recovers_by_leaving_the_one_big_result_out() -> None:
     """A 16k window: one 15k-token tool result is the whole head. Leaving it out is one small call. The recovery used
     to refuse here (no room for a FOLD), which it did on every window under about 18k."""
@@ -612,7 +633,9 @@ async def test_a_tool_loop_that_overflows_in_a_later_round_ends_with_the_summary
         assert (workspace.root / "counter.txt").read_text().splitlines() == ["ran"], "the tool ran once, not again"
         (marker,) = _markers(workspace, session)
         assert marker["payload"]["summary"].endswith("THE SUMMARY, WRITTEN IN ROUND ONE")
-        assert "summary_input_reduced" not in marker["payload"], "the input was never reduced: the loop ended instead"
+        assert marker["payload"]["summary_input_reduced"] == {
+            "pruned": 0, "folded_chunks": 0, "truncated_parts": 0, "tool_loop_cut_round": 2,
+        }, "the head was never reduced, but the loop was cut in round two and the marker says so"
     await _with_session(tmp_path, body)
 
 
