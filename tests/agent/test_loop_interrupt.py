@@ -255,7 +255,7 @@ class TestTheLlmWait:
         assert metrics.llm_calls_total.labels("prov", "p", "ok")._value.get() == 0.0
 
 
-class TestTheToolBatchIsNotInterruptedHere:
+class TestARunningToolIsNotInterruptedHere:
     async def test_a_stop_during_a_tool_waits_for_the_tool_then_stops_at_the_next_llm_wait(self) -> None:
         """The boundary slice B owns. The tool finishes, its result is yielded and appended (the log
         stays paired), and the loop stops BEFORE starting the next model call."""
@@ -411,6 +411,36 @@ class TestAStopBeforeTheBatchStopsTheBatch:
 
         assert manager.finished == 1 and interrupted == [True]
         assert [p.output for p in _tool_results(messages_out)] == ["ok"], "the real result, not a refusal"
+
+    async def test_the_claims_path_is_never_reached_by_a_stopped_round(self) -> None:
+        """With tool_calls_as_claims on and a resolver bound, a batch of non-notifying calls is PARKED
+        (ToolWaitPark, one claimable task per call). A Stop that landed before the batch must be checked before
+        that branch too: no park, no task, no scoped id resolved, the calls answered."""
+        interrupt = asyncio.Event()
+        resolved: list[str] = []
+
+        def resolver(call_id: str):
+            resolved.append(call_id)
+            return (f"x:tool:0:{len(resolved)}", len(resolved))
+
+        llm = _StopsAsTheModelFinishes(interrupt, per_round=2)
+        messages_out: list[Message] = []
+        interrupted: list[bool] = []
+
+        async def drive() -> None:
+            async for _ in run_agent_turn(
+                agent=AGENT, llm=llm, llm_model=MODEL, tool_manager=_Manager(),
+                prompt=[Message(role="user", parts=[TextPart(text="go")])],
+                messages_out=messages_out, interrupt=interrupt, interrupted_out=interrupted,
+                tool_calls_as_claims_enabled=True, resolve_scoped_call=resolver,
+            ):
+                pass
+
+        await asyncio.wait_for(drive(), 3.0)   # a ToolWaitPark would be raised out of here
+
+        assert resolved == [], "the claims path resolved scoped ids for a round that was never going to run"
+        assert interrupted == [True] and llm.calls == 1
+        assert [p.output for p in _tool_results(messages_out)] == [STOPPED, STOPPED]
 
     async def test_without_a_stop_the_batch_runs_as_before(self) -> None:
         manager = _Manager()

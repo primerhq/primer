@@ -88,10 +88,16 @@ async def test_every_terminal_exit_drains_the_queue():
     """
     import inspect
 
-    from primer.session.dispatch import run_one_session_turn
+    from primer.session.dispatch import _land_cancelled_turn, run_one_session_turn
 
-    src = inspect.getsource(run_one_session_turn)
-    assert src.count("_realize_pending_at_checkpoint(deps, session)") == 4, (
-        "expected the drain at all four terminal exits (executor failure, cancel/interrupt, "
-        "a Cancel that lands inside the completion lock, clean completion)"
+    # Three terminal exits: an executor failure and a clean completion drain inline; EVERY cancelled turn (a
+    # Stop, a Cancel, and a Cancel found after the stream's last event) goes through the one shared exit,
+    # _land_cancelled_turn, which drains once.
+    turn = inspect.getsource(run_one_session_turn)
+    assert turn.count("_realize_pending_at_checkpoint(deps, session)") == 2, (
+        "expected the inline drain at the executor-failure and clean-completion exits"
     )
+    assert turn.count("_land_cancelled_turn(") == 2, (
+        "both cancelled exits (the cancel arm and the Cancel found after the stream) must use the shared exit"
+    )
+    assert inspect.getsource(_land_cancelled_turn).count("_realize_pending_at_checkpoint(deps, session)") == 1
