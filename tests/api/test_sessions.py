@@ -1035,6 +1035,20 @@ async def test_a_session_that_stopped_running_before_the_lock_is_not_marked_forc
     assert "force_deleted" not in reasons and "cancelled" in reasons, reasons
 
 
+async def test_a_session_that_vanished_before_the_lock_is_a_404_and_the_stale_snapshot_is_not_written(
+    sessions_client, seeded_workspace, seeded_agent, app, monkeypatch,
+):
+    """Someone else deleted the row while this request waited for the lifecycle lock. The row read inside the lock is
+    gone, so there is nothing to force: writing the snapshot read before the wait back would re-create a deleted
+    session. It is the same 404 the route gives for a session that does not exist."""
+    resp, events = await _spied_force_delete(
+        sessions_client, seeded_workspace, seeded_agent, app, monkeypatch, reread=lambda row: None,
+    )
+
+    assert resp.status_code == 404, resp.text
+    assert events == [], f"a write or a cancel publish happened for a session that was already gone: {events}"
+
+
 async def test_pause_running_sets_pause_requested_flag(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
