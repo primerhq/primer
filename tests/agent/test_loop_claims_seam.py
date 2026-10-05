@@ -234,3 +234,21 @@ async def test_event_key_is_synthetic_not_pub_sub() -> None:
             }),
         )
     assert excinfo.value.event_key == "tool_wait:x:tool:0:1"
+
+
+@pytest.mark.asyncio
+async def test_call_ids_map_every_scoped_id_to_the_providers_raw_id_notifying_and_claimable() -> None:
+    """The park carries ``scoped id -> provider raw id`` for EVERY call of the batch, notifying ones included: the model
+    only knows the raw id, so each result handed back must be stamped with it (S1b)."""
+    tm = _FakeToolManager(notifying_names=frozenset({"notify"}))
+    with pytest.raises(ToolWaitPark) as excinfo:
+        await _dispatch_as_claims(
+            [_call("raw_n1", name="notify")], [_call("raw_c1"), _call("raw_c2")],
+            tool_manager=tm, principal=None, actions_out=[],
+            resolve_scoped_call=_resolver({
+                "raw_n1": ("x:tool:0:1", 1), "raw_c1": ("x:tool:0:2", 2), "raw_c2": ("x:tool:0:3", 3),
+            }),
+        )
+    assert excinfo.value.call_ids == {
+        "x:tool:0:1": "raw_n1", "x:tool:0:2": "raw_c1", "x:tool:0:3": "raw_c2",
+    }

@@ -162,3 +162,54 @@ async def test_notifying_results_count_toward_readiness_too() -> None:
     assert set(resolved_tool_wait) == {"A"}
     assert {p.id for p in resolved_tool_wait["A"]} == {"A:tool:0:1", "A:tool:0:2"}
     assert {t.id for t in resolved_tasks["A"]} == {"A:tool:0:1", "A:tool:0:2"}
+
+
+def _session_task(
+    session_id: str, scoped_id: str, state: ToolCallTaskState, *, call_id: str,
+    output: str | None = None, last_error: str | None = None,
+) -> ToolCallTask:
+    """A row as S1b writes it: the id is session-qualified, ``call_id`` is the provider's raw id."""
+    return ToolCallTask(
+        id=f"{session_id}/{scoped_id}", session_id=session_id, turn_no=0, tool_name="t", state=state,
+        record_seq=1, created_at=datetime.now(timezone.utc), call_id=call_id,
+        result_state=(
+            {"id": f"{session_id}/{scoped_id}", "output": output, "error": False} if output is not None else None
+        ),
+        last_error=last_error,
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_with_identical_node_batches_each_resolve_their_own_results_under_their_raw_ids() -> None:
+    """Both sessions have a node `n` whose first call is `n:tool:0:1`; the rows live under the session-qualified ids in
+    ONE storage. Each session's resolve reads only its own rows and hands the model its own raw provider id."""
+    storage = _FakeTaskStorage({
+        "s-A/n:tool:0:1": _session_task("s-A", "n:tool:0:1", ToolCallTaskState.DONE, call_id="call_a", output="A result"),
+        "s-B/n:tool:0:1": _session_task("s-B", "n:tool:0:1", ToolCallTaskState.DONE, call_id="call_b", output="B result"),
+    })
+
+    for sid, raw, output in (("s-A", "call_a", "A result"), ("s-B", "call_b", "B result")):
+        storage.get_calls.clear()
+        resolved_tool_wait, resolved_tasks = await resolve_ready_graph_tool_waits(
+            storage, [_pending_tool_wait("n", [f"{sid}/n:tool:0:1"], [])],
+        )
+        assert [(p.id, p.output) for p in resolved_tool_wait["n"]] == [(raw, output)]
+        assert [t.id for t in resolved_tasks["n"]] == [f"{sid}/n:tool:0:1"]
+        assert storage.get_calls == [f"{sid}/n:tool:0:1"], "a session's resolve read another session's row"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_task_without_a_result_is_synthesised_under_the_raw_provider_id() -> None:
+    storage = _FakeTaskStorage({
+        "s-A/n:tool:0:1": _session_task(
+            "s-A", "n:tool:0:1", ToolCallTaskState.FAILED, call_id="call_a", last_error="poisoned after 3 attempts",
+        ),
+        "s-B/n:tool:0:1": _session_task("s-B", "n:tool:0:1", ToolCallTaskState.DONE, call_id="call_b", output="B result"),
+    })
+
+    resolved_tool_wait, _ = await resolve_ready_graph_tool_waits(
+        storage, [_pending_tool_wait("n", ["s-A/n:tool:0:1"], [])],
+    )
+
+    part = resolved_tool_wait["n"][0]
+    assert (part.id, part.error, part.output) == ("call_a", True, "poisoned after 3 attempts")

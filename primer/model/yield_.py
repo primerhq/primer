@@ -357,9 +357,8 @@ class ToolWaitPark(Exception):
     row for ``(session_id, turn_no)``" stays the SINGLE reassembly
     truth, notifying and claimable alike, rather than a split-brain
     between two sources. Each entry is ``(scoped_call_id,
-    ToolResultPart)`` — the scoped id because that is what the
-    resulting row's ``id`` must be, matching every other
-    ``ToolCallTask`` in the batch.
+    ToolResultPart)``: the scoped id (the row's own ``id`` is its
+    session-qualified form, like every other ``ToolCallTask`` in the batch).
 
     ``call_ids`` (S1b): ``{scoped_call_id: provider_raw_id}`` for every
     call in the batch, claimable and notifying alike. The scoped ids

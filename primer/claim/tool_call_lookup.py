@@ -45,7 +45,7 @@ async def read_tool_call_record(
     never falls back to scanning for a plausible substitute) if the
     record is missing, isn't a TOOL_CALL, or its id doesn't match
     ``task.scoped_call_id`` (the transcript's id, the task id without its
-    session qualification) — ruling (01a0518b): "fail loudly on mismatch...
+    session qualification): ruling (01a0518b): "fail loudly on mismatch...
     a mismatch means the ordering invariant broke and we want to know."
     """
     record = await read_record_by_seq(

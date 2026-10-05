@@ -1224,3 +1224,95 @@ async def test_ready_set_is_actually_empty_at_every_loop_tail_fold(
         ready_set_snapshots_from_loop_tail
     )
 
+
+
+# ===========================================================================
+# S1b: the provider's raw ids ride with every pending batch, in every arm that records one
+# ===========================================================================
+
+
+def _park_with_raw_ids(node_id: str, seq: str, raw_id: str) -> ToolWaitPark:
+    scoped_id = f"{node_id}:tool:0:{seq}"
+    park = _tool_wait_park(node_id, seq)
+    park.call_ids = {scoped_id: raw_id}
+    return park
+
+
+@pytest.mark.asyncio
+async def test_the_first_park_records_each_nodes_raw_provider_ids(monkeypatch) -> None:
+    """The scoped ids name rows and records; the model only ever knows the provider's raw id, so the checkpoint keeps the
+    scoped -> raw map per node (``call_ids``) for the resume to hand results back under. Two nodes, so a map that is
+    shared or dropped for one of them shows."""
+    ex = await _mk_parallel_executor()
+    _patch_run_agent_turn(monkeypatch, {
+        "agent-a": _park_with_raw_ids("A", "1", "call_a"),
+        "agent-b": _park_with_raw_ids("B", "1", "call_b"),
+    })
+
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+
+    by_node = {pw["node_id"]: pw["call_ids"] for pw in excinfo.value.graph_checkpoint["pending_tool_waits"]}
+    assert by_node == {"A": {"A:tool:0:1": "call_a"}, "B": {"B:tool:0:1": "call_b"}}
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_human_gate_node_that_dispatches_a_batch_keeps_its_raw_ids(monkeypatch) -> None:
+    """The resumed-human-gate arm: B's gate is answered, B's continuation dispatches ANOTHER claims batch, and that
+    batch's raw ids must land in its pending entry (the arm used to be able to drop them unnoticed)."""
+    ex = await _mk_parallel_executor()
+    behavior = {
+        "agent-a": _park_with_raw_ids("A", "1", "call_a"),
+        "agent-b": _ask_user_yield("B", "tc-b"),
+    }
+    _patch_run_agent_turn(monkeypatch, behavior)
+
+    with pytest.raises(YieldToWorker) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    first_park = excinfo.value
+    behavior["agent-b"] = _park_with_raw_ids("B", "2", "call_b2")     # B's continuation parks on a new batch
+
+    with pytest.raises(ToolWaitPark) as excinfo2:
+        async for _ev in ex.resume_from_checkpoint(
+            first_park.graph_checkpoint,
+            resumed_tcid="tc-b",
+            agent_tool_result=Message(role="tool", parts=[ToolResultPart(id="tc-b", output="blue")]),
+        ):
+            pass
+
+    by_node = {pw["node_id"]: pw["call_ids"] for pw in excinfo2.value.graph_checkpoint["pending_tool_waits"]}
+    assert by_node["B"] == {"B:tool:0:2": "call_b2"}
+    assert by_node["A"] == {"A:tool:0:1": "call_a"}, "the carried-over batch keeps its map across the re-park"
+
+
+@pytest.mark.asyncio
+async def test_a_node_resumed_from_a_finished_batch_that_dispatches_another_keeps_its_raw_ids(monkeypatch) -> None:
+    """The tool_wait-resumed arm: A's first batch is terminal, A's continuation dispatches a SECOND batch (a second
+    tool-calling round in one node), and the second batch's raw ids must be recorded."""
+    ex = await _mk_parallel_executor()
+    behavior = {
+        "agent-a": _park_with_raw_ids("A", "1", "call_a"),
+        "agent-b": _ask_user_yield("B", "tc-b"),
+    }
+    _patch_run_agent_turn(monkeypatch, behavior)
+
+    with pytest.raises(YieldToWorker) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    first_park = excinfo.value
+    behavior["agent-a"] = _park_with_raw_ids("A", "2", "call_a2")
+
+    result_a = ToolResultPart(id="call_a", output="result A", error=False)
+    with pytest.raises(YieldToWorker) as excinfo2:
+        async for _ev in ex.resume_from_checkpoint(
+            first_park.graph_checkpoint,
+            resumed_tcid="__no_gate_reply_yet__",
+            resolved_tool_wait={"A": [result_a]},
+        ):
+            pass
+
+    entries = excinfo2.value.graph_checkpoint["pending_tool_waits"]
+    assert [pw["node_id"] for pw in entries] == ["A"]
+    assert entries[0]["call_ids"] == {"A:tool:0:2": "call_a2"}
