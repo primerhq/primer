@@ -40,8 +40,14 @@ def _config(url: str) -> PostgresConfig:
     )
 
 
+@pytest.fixture
+def created_ids() -> list[str]:
+    """Every `toolcalltask` id a test here created; `pg_storage` deletes exactly these rows and no others."""
+    return []
+
+
 @pytest_asyncio.fixture
-async def pg_storage() -> AsyncIterator[PostgresStorageProvider]:
+async def pg_storage(created_ids: list[str]) -> AsyncIterator[PostgresStorageProvider]:
     sp = PostgresStorageProvider(_config(require_postgres_url("TOOL_CALL session-qualified id tests")))
     await sp.initialize()
     async with sp.pool.acquire() as conn:
@@ -51,9 +57,10 @@ async def pg_storage() -> AsyncIterator[PostgresStorageProvider]:
     finally:
         async with sp.pool.acquire() as conn:
             await conn.execute(f"DELETE FROM {sp.leases_table}")
-            await conn.execute(
-                f'DELETE FROM "{sp.schema}"."toolcalltask" WHERE id LIKE \'sess-pg-%\' OR id LIKE \'x:tool:%\''
-            )
+            if created_ids:
+                await conn.execute(
+                    f'DELETE FROM "{sp.schema}"."toolcalltask" WHERE id = ANY($1::text[])', created_ids,
+                )
         await sp.aclose()
 
 
@@ -64,17 +71,22 @@ def _task(task_id: str, session_id: str) -> ToolCallTask:
     )
 
 
+async def _create(store, task: ToolCallTask, created_ids: list[str]) -> None:
+    await store.create(task)
+    created_ids.append(task.id)  # only once the create succeeded: a refused create names a row this file does not own
+
+
 @_needs_pg
 @pytest.mark.asyncio
-async def test_unqualified_ids_collide_on_the_primary_key_and_qualified_ones_do_not(pg_storage):
+async def test_unqualified_ids_collide_on_the_primary_key_and_qualified_ones_do_not(pg_storage, created_ids):
     store = pg_storage.get_storage(ToolCallTask)
-    await store.create(_task("x:tool:0:1", "sess-pg-A"))
+    await _create(store, _task("x:tool:0:1", "sess-pg-A"), created_ids)
     with pytest.raises(ConflictError):
         await store.create(_task("x:tool:0:1", "sess-pg-B"))       # the bug S1b closes
     await store.delete("x:tool:0:1")
 
     for sid in ("sess-pg-A", "sess-pg-B"):
-        await store.create(_task(tool_call_task_id(sid, "x:tool:0:1"), sid))
+        await _create(store, _task(tool_call_task_id(sid, "x:tool:0:1"), sid), created_ids)
     for sid in ("sess-pg-A", "sess-pg-B"):
         row = await store.get(tool_call_task_id(sid, "x:tool:0:1"))
         assert row is not None and row.session_id == sid and row.scoped_call_id == "x:tool:0:1"
@@ -82,7 +94,7 @@ async def test_unqualified_ids_collide_on_the_primary_key_and_qualified_ones_do_
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_each_sessions_task_gets_its_own_lease_and_is_claimed_separately(pg_storage):
+async def test_each_sessions_task_gets_its_own_lease_and_is_claimed_separately(pg_storage, created_ids):
     store = pg_storage.get_storage(ToolCallTask)
     engine = PostgresClaimEngine(
         storage_provider=pg_storage,
@@ -90,7 +102,7 @@ async def test_each_sessions_task_gets_its_own_lease_and_is_claimed_separately(p
     )
     ids = [tool_call_task_id(sid, "x:tool:0:1") for sid in ("sess-pg-A", "sess-pg-B")]
     for task_id, sid in zip(ids, ("sess-pg-A", "sess-pg-B")):
-        await store.create(_task(task_id, sid))
+        await _create(store, _task(task_id, sid), created_ids)
         await engine.upsert(ClaimKind.TOOL_CALL, task_id)
 
     for task_id in ids:
