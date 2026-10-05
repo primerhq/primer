@@ -59,7 +59,7 @@ class _Registry:
 
 
 class _Run:
-    def __init__(self, dispatcher: _RecordingDispatcher, outcome, reads: list[str]) -> None:
+    def __init__(self, dispatcher: Any, outcome, reads: list[str]) -> None:
         self.dispatcher, self.outcome, self.reads = dispatcher, outcome, reads
 
     @property
@@ -86,6 +86,25 @@ class _RecordingDispatcher:
         return [{"ok": True}]
 
 
+class _HangingDispatcher:
+    """``dispatch_prompt`` never returns (a Discord or Slack request that is never answered); remembers it was started
+    and whether it was cancelled out from under the wait."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self.started = False
+        self.cancelled = False
+
+    async def dispatch_prompt(self, *, envelope, session=None):
+        self.started = True
+        self.texts.append(envelope.prompt)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+
 def _lease(session_id: str) -> Lease:
     now = datetime.now(UTC)
     return Lease(
@@ -100,7 +119,8 @@ class _RaisingRegistry:
 
 
 async def _run_with_the_pools_io(tmp_path, *, metadata: dict, text: str = "here is the answer", stop_reason: str = "stop",
-                                 registry_in_deps: bool = True, deps_registry=None, hang_reads: bool = False):
+                                 registry_in_deps: bool = True, deps_registry=None, hang_reads: bool = False,
+                                 dispatcher=None):
     """One turn through ``run_one_session_turn`` with the REAL shim over a REAL workspace, as ``WorkerPool`` builds it."""
     backend, workspace, session = await open_session(tmp_path)
     try:
@@ -115,7 +135,7 @@ async def _run_with_the_pools_io(tmp_path, *, metadata: dict, text: str = "here 
         ))
         bus = InMemoryEventBus()
         await bus.initialize()
-        dispatcher = _RecordingDispatcher()
+        dispatcher = dispatcher if dispatcher is not None else _RecordingDispatcher()
 
         async def build(_session):
             return _Executor(text, stop_reason)
@@ -214,3 +234,49 @@ class TestTheRelayReadsThroughTheWorkspaceTheWayProductionIsWired:
         assert run.texts == ["here is the answer"]
         assert len(calls) == 1
 
+    async def test_a_channel_post_that_never_returns_cannot_hold_the_lease(self, tmp_path, monkeypatch, caplog) -> None:
+        """The post runs before the lease is released too, and ``dispatch_prompt`` fans out to platform APIs (Discord,
+        Slack) whose request can hang. It is bounded like the read: the post is cancelled, the turn releases, and the
+        log says the message may or may not have reached the channel."""
+        import primer.session.dispatch as dispatch
+
+        monkeypatch.setattr(dispatch, "_CHANNEL_POST_TIMEOUT_S", 0.3)
+        hanging = _HangingDispatcher()
+        with caplog.at_level(logging.WARNING):
+            run = await _run_with_the_pools_io(
+                tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING}, dispatcher=hanging,
+            )
+        assert hanging.started and hanging.texts == ["here is the answer"], "the text was read and the post attempted"
+        assert hanging.cancelled, "the bound cancels the post, it does not leave it running behind the release"
+        assert run.outcome.success and run.outcome.drop_lease, "the turn still releases"
+        warned = [r.getMessage() for r in caplog.records if "posting the final result" in r.getMessage()]
+        assert len(warned) == 1 and "did not finish within 0.3s" in warned[0] and "may or may not" in warned[0], warned
+
+    async def test_one_hung_adapter_cancels_the_real_fan_out_and_the_release_goes_ahead(self, tmp_path, monkeypatch) -> None:
+        """Through the real ``ChannelDispatcher``: ``asyncio.gather`` over the adapters is cancelled with the post, so an
+        adapter that hangs is stopped and not abandoned."""
+        import primer.session.dispatch as dispatch
+        from primer.channel.dispatcher import ChannelDispatcher
+
+        monkeypatch.setattr(dispatch, "_CHANNEL_POST_TIMEOUT_S", 0.3)
+        seen: dict[str, bool] = {"started": False, "cancelled": False}
+
+        class _HungAdapter:
+            async def post_prompt(self, envelope):
+                seen["started"] = True
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    seen["cancelled"] = True
+                    raise
+
+        class _AdapterRegistry:
+            async def for_session(self, session):
+                return [_HungAdapter()]
+
+        dispatcher = ChannelDispatcher(registry=_AdapterRegistry())
+        run = await _run_with_the_pools_io(
+            tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING}, dispatcher=dispatcher,
+        )
+        assert seen == {"started": True, "cancelled": True}
+        assert run.outcome.success and run.outcome.drop_lease
