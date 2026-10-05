@@ -28,6 +28,7 @@ from primer.model.tool_call_task import tool_call_task_id
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import ToolWaitPark, Yielded, YieldToWorker
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
+from primer.session.tool_wait_batches import BatchRef, batches_referenced_by_park
 from primer.worker.yield_runtime import ParkedState, ToolWaitParkedState
 
 from tests.conftest import _FakeStorageProvider
@@ -39,20 +40,8 @@ from tests.session.test_dispatch_park_arms_e2e import (
     _session,
 )
 
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="red-first: primer.session.tool_wait_batches does not exist yet",
-)
 
-
-def _batches(blob):
-    from primer.session.tool_wait_batches import batches_referenced_by_park
-
-    return batches_referenced_by_park(blob)
-
-
-def _ref(node_id, outstanding, notifying):
-    from primer.session.tool_wait_batches import BatchRef
-
+def _ref(node_id, outstanding, notifying) -> BatchRef:
     return BatchRef(node_id=node_id, outstanding_ids=tuple(outstanding), notifying_ids=tuple(notifying))
 
 
@@ -188,7 +177,7 @@ async def test_a_pure_graph_tool_wait_park_has_one_batch_per_node_and_its_flatte
     assert blob["notifying_task_ids"] == [b2]
     entries = blob["graph_checkpoint"]["pending_tool_waits"]
 
-    batches = _batches(blob)
+    batches = batches_referenced_by_park(blob)
 
     assert batches == {
         a1: _ref("A", [a1, a2], []),
@@ -211,7 +200,7 @@ async def test_a_stale_or_reordered_flattened_projection_still_names_no_batch(mo
         notifying_task_ids=[f"{sid}/Z:tool:0:10"],
     ).to_jsonable())
 
-    batches = _batches(blob)
+    batches = batches_referenced_by_park(blob)
 
     assert set(batches) == {f"{sid}/A:tool:0:1", f"{sid}/B:tool:0:1"}
     referenced = {i for ref in batches.values() for i in (*ref.outstanding_ids, *ref.notifying_ids)}
@@ -225,7 +214,7 @@ async def test_a_mixed_park_reads_its_batches_from_the_classic_blobs_checkpoint(
     assert "kind" not in blob and "outstanding_task_ids" not in blob
     assert [e["node_id"] for e in blob["graph_checkpoint"]["pending_agent_yields"]] == ["B"]
 
-    assert _batches(blob) == {
+    assert batches_referenced_by_park(blob) == {
         f"{sid}/A:tool:0:1": _ref("A", [f"{sid}/A:tool:0:1", f"{sid}/A:tool:0:2"], []),
     }
 
@@ -243,8 +232,8 @@ def test_a_graph_blob_whose_checkpoint_has_no_entries_has_no_batch() -> None:
         started_at=_now(), tool_call_id="tc", graph_checkpoint={"pending_toolcalls": []},
     ).to_jsonable())
 
-    assert _batches(pure) == {}
-    assert _batches(classic) == {}
+    assert batches_referenced_by_park(pure) == {}
+    assert batches_referenced_by_park(classic) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +248,7 @@ async def test_the_agent_surface_is_one_batch_keyed_on_its_first_outstanding_id(
     blob = await _stored_park(sid, [(None, "call_1"), (None, "call_2"), (None, "call_3")], park)
     assert blob["kind"] == "tool_wait" and blob["graph_checkpoint"] is None
 
-    assert _batches(blob) == {
+    assert batches_referenced_by_park(blob) == {
         f"{sid}/x:tool:0:1": _ref(None, [f"{sid}/x:tool:0:1", f"{sid}/x:tool:0:2"], [f"{sid}/x:tool:0:3"]),
     }
 
@@ -275,13 +264,13 @@ def test_the_agent_surface_key_is_the_first_outstanding_id_else_the_first_notify
     sid = "s-agent-shape"
     q = lambda ids: [tool_call_task_id(sid, i) for i in ids]  # noqa: E731
 
-    assert _batches(_agent_blob(sid, outstanding, notifying)) == {
+    assert batches_referenced_by_park(_agent_blob(sid, outstanding, notifying)) == {
         tool_call_task_id(sid, key): _ref(None, q(outstanding), q(notifying)),
     }
 
 
 def test_an_agent_surface_batch_with_no_ids_is_not_a_batch() -> None:
-    assert _batches(_agent_blob("s-agent-empty", [], [])) == {}
+    assert batches_referenced_by_park(_agent_blob("s-agent-empty", [], [])) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +289,7 @@ def test_the_key_is_the_first_id_exactly_as_stored(stored_id) -> None:
         llm_messages=[], turn_no=0, started_at=_now(),
     ).to_jsonable())
 
-    assert _batches(blob) == {stored_id: _ref(None, [stored_id], [])}
+    assert batches_referenced_by_park(blob) == {stored_id: _ref(None, [stored_id], [])}
 
 
 # ---------------------------------------------------------------------------
@@ -314,17 +303,17 @@ def test_no_park_and_a_classic_agent_park_reference_no_batch() -> None:
         started_at=_now(), tool_call_id="tc",
     ).to_jsonable())
 
-    assert _batches(None) == {}
-    assert _batches({}) == {}
-    assert _batches(classic_agent) == {}
+    assert batches_referenced_by_park(None) == {}
+    assert batches_referenced_by_park({}) == {}
+    assert batches_referenced_by_park(classic_agent) == {}
 
 
 def test_top_level_batch_lists_outside_a_tool_wait_blob_are_not_a_batch() -> None:
     """The agent batch belongs to a tool_wait blob: the same lists on a classic (kind-less) or foreign blob name none."""
     lists = {"outstanding_task_ids": ["s/x:tool:0:1"], "notifying_task_ids": ["s/x:tool:0:2"]}
 
-    assert _batches({**lists}) == {}
-    assert _batches({"kind": "something_else", **lists}) == {}
+    assert batches_referenced_by_park({**lists}) == {}
+    assert batches_referenced_by_park({"kind": "something_else", **lists}) == {}
 
 
 @pytest.mark.parametrize("blob", [
@@ -341,7 +330,7 @@ def test_top_level_batch_lists_outside_a_tool_wait_blob_are_not_a_batch() -> Non
     {"graph_checkpoint": {"pending_tool_waits": [{"notifying_results": [None, [], "ab", [5, {}], {"a": 1}]}]}},
 ], ids=lambda b: type(b).__name__)
 def test_a_malformed_blob_does_not_raise_and_names_no_batch(blob) -> None:
-    assert _batches(blob) == {}
+    assert batches_referenced_by_park(blob) == {}
 
 
 def test_a_malformed_entry_does_not_hide_its_well_formed_siblings() -> None:
@@ -351,7 +340,7 @@ def test_a_malformed_entry_does_not_hide_its_well_formed_siblings() -> None:
         {"node_id": 9, "outstanding_task_ids": [], "notifying_results": [["s/B:tool:0:1", {}], "junk"]},
     ]}}
 
-    assert _batches(blob) == {
+    assert batches_referenced_by_park(blob) == {
         "s/A:tool:0:1": _ref("A", ["s/A:tool:0:1"], []),
         # a non-string node id is not invented into one; the batch it carries is still referenced
         "s/B:tool:0:1": _ref(None, [], ["s/B:tool:0:1"]),
@@ -367,7 +356,7 @@ async def test_the_helper_does_not_touch_the_blob_and_batchref_is_a_frozen_value
     blob = await _pure_graph_blob(monkeypatch, "s-pure-value")
     before = copy.deepcopy(blob)
 
-    batches = _batches(blob)
+    batches = batches_referenced_by_park(blob)
 
     assert blob == before
     ref = batches["s-pure-value/B:tool:0:1"]

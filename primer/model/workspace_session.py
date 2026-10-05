@@ -76,6 +76,25 @@ class SessionStatus(str, Enum):
     ENDED = "ended"
 
 
+def NON_ENDED_STATUSES() -> list[str]:
+    """Every :class:`SessionStatus` value but ``ended``, for a ``patch_if`` ``where`` status term.
+
+    Computed from the enum on each call, never hand-written, so a status added later is included: a write guarded on
+    a typed list would silently refuse a row in the new status, where today's ``update_unless(status != ENDED)``
+    accepts it. Returns a fresh list each call.
+    """
+    return [s.value for s in SessionStatus if s is not SessionStatus.ENDED]
+
+
+def NON_ENDED_STATUSES_NOT_PAUSED() -> list[str]:
+    """Every :class:`SessionStatus` value but ``ended`` and ``paused``, computed from the enum on each call.
+
+    For a write that must also refuse a row that became ``paused`` after it was read (a ``/pause`` writes PAUSED
+    directly on a WAITING or CREATED row, and a claim would resume a row it armed). Returns a fresh list each call.
+    """
+    return [s.value for s in SessionStatus if s not in (SessionStatus.ENDED, SessionStatus.PAUSED)]
+
+
 # ===========================================================================
 # Waiting state (discriminated union)
 # ===========================================================================
@@ -560,6 +579,35 @@ class WorkspaceSession(Identifiable):
             "resume_event_payload). Shape documented in spec §5.2."
         ),
     )
+    # Literal[True] | None, never a bool: a cleared row stores NULL, so a selector
+    # or partial index on the marker sees only marked rows whether it tests
+    # `= true` or IS NOT NULL. A stored False would be a second "unset" spelling
+    # (an IS NOT NULL index would hold every cleared row).
+    parked_tool_batches: Literal[True] | None = Field(
+        default=None,
+        description=(
+            "Park-batch marker (Phase 3 stage 7a): true while parked_state "
+            "references at least one tool_wait batch, as "
+            "primer.session.tool_wait_batches.batches_referenced_by_park "
+            "derives it; NULL otherwise. Cleared by writing NULL, never "
+            "false. A selector only: readiness is always recomputed from the "
+            "task rows, never trusted from this flag. Not written yet (the "
+            "claim adapter's park branch sets it on every park and re-park in "
+            "a later change), so it reads NULL on every row today. "
+            "Additive/optional, no migration."
+        ),
+    )
+    resumable_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When the park was last flipped to resumable: the anchor for the "
+            "tool_wait reconciler's grace period (parked_at is the park "
+            "time, the wrong anchor). Not written yet (the wake hook and "
+            "durably_mark_session_resumable stamp it in a later change), so "
+            "it reads NULL on every row today. Additive/optional, no "
+            "migration."
+        ),
+    )
     external_tools: list[dict[str, Any]] | None = Field(
         default=None,
         description=(
@@ -995,6 +1043,8 @@ __all__ = [
     "AgentSessionBinding",
     "GraphSessionBinding",
     "Instruction",
+    "NON_ENDED_STATUSES",
+    "NON_ENDED_STATUSES_NOT_PAUSED",
     "SessionMessageKind",
     "SessionMessageRecord",
     "WorkspaceSession",
