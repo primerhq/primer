@@ -243,11 +243,15 @@ class TestTheRelayReadsThroughTheWorkspaceTheWayProductionIsWired:
         import primer.session.dispatch as dispatch
 
         monkeypatch.setattr(dispatch, "_CHANNEL_POST_TIMEOUT_S", 0.3)
+        monkeypatch.setattr(dispatch, "_BEST_EFFORT_IO_TIMEOUT_S", 60.0)   # the OTHER bound: pins which one the post uses
         hanging = _HangingDispatcher()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         with caplog.at_level(logging.WARNING):
             run = await _run_with_the_pools_io(
                 tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING}, dispatcher=hanging,
             )
+        assert loop.time() - started < 5, "the post ran under _CHANNEL_POST_TIMEOUT_S, not under the workspace-read bound"
         assert hanging.started and hanging.texts == ["here is the answer"], "the text was read and the post attempted"
         assert hanging.cancelled, "the bound cancels the post, it does not leave it running behind the release"
         assert run.outcome.success and run.outcome.drop_lease, "the turn still releases"
@@ -261,6 +265,7 @@ class TestTheRelayReadsThroughTheWorkspaceTheWayProductionIsWired:
         from primer.channel.dispatcher import ChannelDispatcher
 
         monkeypatch.setattr(dispatch, "_CHANNEL_POST_TIMEOUT_S", 0.3)
+        monkeypatch.setattr(dispatch, "_BEST_EFFORT_IO_TIMEOUT_S", 60.0)   # the OTHER bound: pins which one the post uses
         seen: dict[str, bool] = {"started": False, "cancelled": False}
 
         class _HungAdapter:
