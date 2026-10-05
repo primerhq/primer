@@ -402,6 +402,12 @@ async def persist_resume_tool_result_records(
     Best-effort: a write failure here is logged and swallowed, exactly
     as the single-task version does.
 
+    What each record holds is read from the TASK, never from the part the model was shown: ``output`` is the
+    result's ``output`` and falls back to ``task.last_error`` (which may be ``None``), and ``error`` is the result's
+    ``error`` and falls back to ``task.state == "failed"``. For a poisoned task with no ``result_state`` the record
+    is therefore ``output=last_error`` and ``error=True``, where the model was shown ``last_error or "tool call
+    failed"``: the two agree on the cause but not necessarily on the text.
+
     ``node_id_by_task_id`` (01a0518b boundary d): the graph-bound caller's
     task-id -> owning-node-id map, so each record carries ``node_id``
     like the classic graph resume's own
