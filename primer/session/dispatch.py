@@ -1158,10 +1158,19 @@ async def run_one_session_turn(
             # ahead of the CANCELLED record below, or it exists only in the live view and vanishes
             # on refresh. Before delta_buffer.aclose() so the live parts are closed too.
             try:
-                for partial in flush_partial_output(
-                    coalesce_state, delta_sink=delta_buffer, turn_no=session.turn_no,
-                ):
-                    await writer.append(partial)
+                # Bounded: appending can run the writer's age flush of records already buffered, which
+                # goes over the workspace connection, and the cancelled exit below waits on this.
+                async with asyncio.timeout(_BEST_EFFORT_IO_TIMEOUT_S):
+                    for partial in flush_partial_output(
+                        coalesce_state, delta_sink=delta_buffer, turn_no=session.turn_no,
+                    ):
+                        await writer.append(partial)
+            except TimeoutError:
+                logger.warning(
+                    "session %s: the output streamed before the stop was not confirmed within %gs (the "
+                    "workspace is not accepting writes); finishing the cancel without it",
+                    session_id, _BEST_EFFORT_IO_TIMEOUT_S,
+                )
             except Exception:  # noqa: BLE001 - the cancel must still land
                 logger.exception(
                     "session %s: could not persist the output streamed before the stop",
@@ -1511,6 +1520,12 @@ _CANCELLED_RECORD_WRITE_TIMEOUT_S = 10.0
 # commits through the same runtime connection and runs inside the same lock on a Cancel.
 _SLOT_MIRROR_TIMEOUT_S = 10.0
 
+# The bound for the cancelled exit's best-effort workspace I/O OUTSIDE the lock (the output streamed before the
+# Stop, the turn-log entry, the turn log's close). Nothing else waits on those, but the terminal publish and the
+# lease release come after them. Shorter than the others so the whole exit (up to _CANCELLED_RECORD_WRITE_TIMEOUT_S
+# + _SLOT_MIRROR_TIMEOUT_S under the lock, then two of these) stays within _TERMINAL_EXIT_GRACE_S.
+_BEST_EFFORT_IO_TIMEOUT_S = 5.0
+
 
 # How long a cancelled turn's exit may keep running after the TASK is cancelled under it (see _finish_despite_cancel).
 _TERMINAL_EXIT_GRACE_S = 30.0
@@ -1652,15 +1667,32 @@ async def _land_cancelled_turn(
         await _advance_drain_cursor(session_storage, session_id)
     if seq is not None:
         await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
-    await _safe_turn_log(turn_log, TurnLogCancelled(
+    await _best_effort_io("the TurnLogCancelled turn log entry", session_id, _safe_turn_log(turn_log, TurnLogCancelled(
         seq=0, ts=_now(), turn_no=session.turn_no, reason=reason,
-    ))
+    )))
     await _publish_terminal(deps, session, new_status, ended_reason)
-    await turn_log.aclose()
+    await _best_effort_io("closing the turn log", session_id, turn_log.aclose())
     await _apply_pending_switch_at_checkpoint(deps, session)
     await _realize_pending_at_checkpoint(deps, session)
     _observe_turn(session, "cancelled", started_at)
     return ReleaseOutcome(success=True, drop_lease=True)
+
+
+async def _best_effort_io(what: str, session_id: str, work: "Awaitable[Any]") -> None:
+    """Await best-effort workspace I/O of a cancelled exit that runs OUTSIDE the lifecycle lock, bounded.
+
+    A write that never returns (the workspace's runtime connection dropped) would hold the terminal publish and
+    the lease release that come after it. On a timeout this logs and carries on without it; any other failure
+    of ``work`` is the caller's, exactly as before.
+    """
+    try:
+        async with asyncio.timeout(_BEST_EFFORT_IO_TIMEOUT_S):
+            await work
+    except TimeoutError:
+        logger.warning(
+            "session %s: %s was not confirmed within %gs (the workspace is not accepting writes); "
+            "carrying on without it", session_id, what, _BEST_EFFORT_IO_TIMEOUT_S,
+        )
 
 
 async def _write_cancelled_record(
@@ -2345,11 +2377,14 @@ async def _sync_agent_session_ended(
     inner = getattr(executor, "session", None) if executor is not None else None
     if inner is None and workspace_registry is not None and session is not None:
         try:
-            workspace = await workspace_registry.get_workspace(session.workspace_id)
-            inner = (
-                await workspace.get_session(session.id)
-                if workspace is not None else None
-            )
+            # Bounded like the mirror below: the registry and the workspace go over the same runtime
+            # connection. A timeout is a TimeoutError, which the handler below logs and swallows.
+            async with asyncio.timeout(_SLOT_MIRROR_TIMEOUT_S):
+                workspace = await workspace_registry.get_workspace(session.workspace_id)
+                inner = (
+                    await workspace.get_session(session.id)
+                    if workspace is not None else None
+                )
         except Exception:  # noqa: BLE001 -- advisory; never block release
             logger.warning(
                 "dispatch: failed to load the on-disk AgentSession slot "

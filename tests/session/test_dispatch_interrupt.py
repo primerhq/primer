@@ -29,7 +29,7 @@ import primer.observability.metrics as metrics
 import primer.session.dispatch as dispatch
 from primer.agent.interrupt import Interrupted, interruptible
 from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
-from primer.model.chat import Done, ExtendedEvent, TextDelta, _ExecutorToolResult
+from primer.model.chat import Done, ExtendedEvent, TextDelta, ToolCallEnd, ToolCallStart, _ExecutorToolResult
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.workspace_session import SessionMessageKind, SessionStatus, WorkspaceSession
 from primer.observability.turn_log_writer import NoopTurnLogWriter
@@ -635,10 +635,9 @@ class TestTheCancelledRecordWriteIsBoundedInTheLock:
         assert seq is None
 
     @pytest.mark.parametrize("record_write", ["lands", "hangs too"])
-    @pytest.mark.parametrize("hangs_in", ["set_status", "status"])
     async def test_a_slot_mirror_that_never_returns_does_not_wedge_a_cancel(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,
-        record_write, hangs_in,
+        record_write,
     ) -> None:
         """A Cancel ENDS the session, and the ENDED transition mirrors that onto the executor's on-disk slot
         (``AgentSession.set_status`` commits ``session.json`` through the same runtime connection). When that
@@ -661,17 +660,14 @@ class TestTheCancelledRecordWriteIsBoundedInTheLock:
         monkeypatch.setattr(fake_event_bus, "publish", spy_publish)
 
         class _DeadSlot:
-            """Both calls go over the runtime connection, so either can be the one that hangs."""
+            """``status()`` is an in-memory read; only ``set_status`` commits ``session.json`` over the connection."""
 
             async def status(self) -> SessionStatus:
-                if hangs_in == "status":
-                    mirror_hung.set()
-                    await asyncio.Event().wait()       # the runtime socket is down and never comes back
                 return SessionStatus.RUNNING
 
             async def set_status(self, status, *, ended_reason=None) -> None:
                 mirror_hung.set()
-                await asyncio.Event().wait()
+                await asyncio.Event().wait()           # the runtime socket is down and never comes back
 
         if record_write == "hangs too":
             real_append = fake_workspace_io.append_message_line
@@ -1082,6 +1078,185 @@ class TestTheCancelledExitSurvivesAHardPreempt:
         assert any("cleanup failed while being abandoned" in str(r.exc_info[1]) for r in caplog.records if r.exc_info), (
             "the abandoned exit's error was not logged"
         )
+
+
+def _stop_lands_script(storage, bus, sid: str):
+    """A script step: the Stop lands (flag and bus key) and the watcher has a moment to set the event."""
+
+    async def stop_lands() -> None:
+        await _request_stop(storage, bus, sid)
+        await asyncio.sleep(0.1)
+
+    return stop_lands
+
+
+class _DyingTurnLog(NoopTurnLogWriter):
+    """A turn log whose every write and close hangs once ``dead`` is set (the runtime socket dropped)."""
+
+    def __init__(self, dead: asyncio.Event) -> None:
+        super().__init__()
+        self.dead = dead
+        self.kinds: list[str] = []
+
+    async def append(self, event) -> int:
+        self.kinds.append(type(event).__name__)
+        if self.dead.is_set():
+            await asyncio.Event().wait()
+        return await super().append(event)
+
+    async def aclose(self) -> None:
+        self.kinds.append("aclose")
+        if self.dead.is_set():
+            await asyncio.Event().wait()
+        await super().aclose()
+
+
+class TestTheCancelledExitsOtherWorkspaceIoIsBounded:
+    """The CANCELLED record and the slot mirror are bounded inside the lock. The cancelled exit also does best-effort
+    workspace I/O OUTSIDE it: the output the model had streamed when the Stop landed (its append can run the writer's
+    age flush), the turn-log entry and the turn log's close. On a dead connection the lock is free, but a write that
+    never returns still holds the terminal publish and the lease release behind it. EVERY such write hangs here, from
+    the moment the Stop lands."""
+
+    def _script(self, how: str, sid: str, storage, bus, dead: asyncio.Event) -> list[Any]:
+        async def io_dies_then_stop() -> None:
+            await asyncio.sleep(0.2)             # the tool_call record has sat in the writer's buffer past its age limit
+            dead.set()
+            await _request_stop(storage, bus, sid)
+            await asyncio.sleep(0.1)
+
+        streamed = [
+            TextDelta(text="first", index=0),
+            ToolCallStart(id="t1", name="x", index=0), ToolCallEnd(id="t1", arguments={}, index=0),
+            TextDelta(text="the part streamed when the stop landed", index=1),
+        ]
+        if how == "stop":
+            return [*streamed, io_dies_then_stop, "BLOCK"]
+        return [*streamed, Done(stop_reason="stop", raw_reason="stop")]
+
+    @pytest.mark.parametrize("how", ["stop", "cancel"])
+    async def test_every_best_effort_write_hanging_does_not_hold_the_terminal_publish_or_the_release(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog, how,
+    ) -> None:
+        sid = seeded_session.id
+        ref = dispatch._binding_ref(await fake_storage_provider.get_storage(WorkspaceSession).get(sid))
+        monkeypatch.setattr(dispatch, "_BEST_EFFORT_IO_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(dispatch, "_CANCELLED_RECORD_WRITE_TIMEOUT_S", 0.2)
+        dead = asyncio.Event()
+        published: list[str] = []
+        publish = fake_event_bus.publish
+
+        async def spy_publish(key: str, payload: dict) -> None:
+            published.append(key)
+            await publish(key, payload)
+
+        monkeypatch.setattr(fake_event_bus, "publish", spy_publish)
+        real_append = fake_workspace_io.append_message_line
+
+        async def append_or_hang(session_id: str, line: bytes) -> None:
+            if dead.is_set():
+                await asyncio.Event().wait()
+            await real_append(session_id, line)
+
+        monkeypatch.setattr(fake_workspace_io, "append_message_line", append_or_hang)
+        if how == "cancel":
+            cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+            async def read_status_then_the_workspace_dies_and_a_cancel_lands(executor):
+                # The stream is over: only the cancelled exit is left, and every write in it now hangs.
+                dead.set()
+                await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+                return None
+
+            monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_the_workspace_dies_and_a_cancel_lands)
+        turn_log = _DyingTurnLog(dead)
+        deps = SessionDispatchDeps(
+            storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus,
+            build_executor=_build_returning(_StopAwareExecutor(
+                self._script(how, sid, fake_storage_provider, fake_event_bus, dead))),
+            turn_log_writer_factory=lambda _io, _sid: turn_log,
+        )
+        with caplog.at_level(logging.WARNING):
+            outcome = await asyncio.wait_for(run_one_session_turn(_make_lease(sid), deps), 10.0)
+
+        assert dead.is_set(), "the test never reached the point where the workspace dies"
+        assert outcome.success and outcome.drop_lease, "the lease was not released"
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        if how == "stop":
+            assert row.status == SessionStatus.WAITING and row.ended_reason is None
+        else:
+            assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled"
+        assert f"session:{sid}:terminal" in published, "the terminal event was held behind a hung write"
+        assert metrics.turns_total.labels(ref, "cancelled")._value.get() == 1.0
+        assert "TurnLogCancelled" in turn_log.kinds and turn_log.kinds[-1] == "aclose", (
+            "the exit never reached the turn log's entry and its close"
+        )
+        text = " | ".join(r.getMessage() for r in caplog.records)
+        assert "turn log entry" in text and "closing the turn log" in text, f"a skipped write was not logged: {text}"
+        if how == "stop":
+            assert "streamed before the stop" in text, "the skipped partial-output flush was not logged"
+
+    async def test_a_slow_but_healthy_turn_log_still_gets_its_entry_and_its_close(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        sid = seeded_session.id
+        monkeypatch.setattr(dispatch, "_BEST_EFFORT_IO_TIMEOUT_S", 2.0)
+        landed: list[str] = []
+
+        class _SlowTurnLog(NoopTurnLogWriter):
+            async def append(self, event) -> int:
+                await asyncio.sleep(0.3)               # well inside the bound
+                landed.append(type(event).__name__)
+                return await super().append(event)
+
+            async def aclose(self) -> None:
+                await asyncio.sleep(0.3)
+                landed.append("aclose")
+                await super().aclose()
+
+        script = [TextDelta(text="x", index=0), _stop_lands_script(fake_storage_provider, fake_event_bus, sid), "BLOCK"]
+        deps = SessionDispatchDeps(
+            storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus,
+            build_executor=_build_returning(_StopAwareExecutor(script)),
+            turn_log_writer_factory=lambda _io, _sid: _SlowTurnLog(),
+        )
+        await asyncio.wait_for(run_one_session_turn(_make_lease(sid), deps), 10.0)
+
+        assert "TurnLogCancelled" in landed and landed[-1] == "aclose", f"the bound cut a healthy write short: {landed}"
+
+    async def test_a_failure_that_is_not_a_timeout_is_not_swallowed(self) -> None:
+        async def boom() -> None:
+            raise RuntimeError("the turn log is broken")
+
+        with pytest.raises(RuntimeError, match="broken"):
+            await dispatch._best_effort_io("closing the turn log", "s1", boom())
+
+    @pytest.mark.parametrize("hangs_in", ["get_workspace", "get_session"])
+    async def test_the_build_failure_fallback_that_loads_the_slot_is_bounded_too(
+        self, monkeypatch, caplog, hangs_in,
+    ) -> None:
+        """With no executor (the build failed) the slot is re-resolved through the workspace registry, which also
+        goes over the runtime connection. It is part of the mirror, so it gets the mirror's bound."""
+        monkeypatch.setattr(dispatch, "_SLOT_MIRROR_TIMEOUT_S", 0.2)
+
+        class _Workspace:
+            async def get_session(self, session_id: str):
+                await asyncio.Event().wait()
+
+        class _Registry:
+            async def get_workspace(self, workspace_id: str):
+                if hangs_in == "get_workspace":
+                    await asyncio.Event().wait()
+                return _Workspace()
+
+        session = type("S", (), {"id": "s1", "workspace_id": "w1"})()
+        with caplog.at_level(logging.WARNING):
+            await asyncio.wait_for(
+                dispatch._sync_agent_session_ended(None, "failed", session=session, workspace_registry=_Registry()),
+                3.0,
+            )
+
+        assert any("failed to load the on-disk AgentSession slot" in r.getMessage() for r in caplog.records)
 
 
 class TestAStopThatLandsBeforeTheBatchThroughTheWholeTurn:
