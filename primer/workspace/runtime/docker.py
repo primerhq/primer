@@ -25,6 +25,7 @@ from primer.model.workspace import (
     ResourceLimits,
     VolumeMount,
 )
+from primer.workspace.base_backend import close_shielded
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.runtime.runtime_client import RuntimeClient
 from primer.workspace.runtime.ws_sandbox import WSSandbox
@@ -173,16 +174,23 @@ async def _make_ws_sandbox(
             f"Unknown container reachability kind: {reachability.kind!r}"
         )
     runtime_client = RuntimeClient(url=url, token=token)
-    await runtime_client.connect()
-    handle = _DockerContainerHandle(container)
-    container_info = await container.show()
-    container_id = container_info.get("Id", name)
-    sandbox = WSSandbox(
-        runtime_client=runtime_client,
-        container_id=container_id,
-        workspace_root="/workspace",
-        container_handle=handle,
-    )
+    try:
+        await runtime_client.connect()
+        handle = _DockerContainerHandle(container)
+        container_info = await container.show()
+        container_id = container_info.get("Id", name)
+        sandbox = WSSandbox(
+            runtime_client=runtime_client,
+            container_id=container_id,
+            workspace_root="/workspace",
+            container_handle=handle,
+        )
+    except BaseException:
+        # A failure, a cancel or a caller's timeout between connect() and the return leaves an aiohttp session and a
+        # WebSocket open with nothing holding them (``get_sandbox`` turns an Exception into None, a cancel just
+        # propagates): it is ours to release.
+        await close_shielded(runtime_client, what="docker runtime client")
+        raise
     # Stash the mapped host port on the sandbox so the backend can pass
     # it back into ``build_runtime_url`` (only meaningful in host_port
     # mode; remains None for bridge_network).
