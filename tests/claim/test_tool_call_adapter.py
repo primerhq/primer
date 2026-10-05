@@ -471,42 +471,54 @@ async def test_the_release_is_one_fenced_write_not_a_read_then_an_unconditional_
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_entity_update_key_is_refused_before_anything_is_written() -> None:
+async def test_an_unknown_entity_update_key_fails_the_task_terminally_instead_of_raising() -> None:
     """``state``, ``claim_token``, the gate fields and ``finished_at`` belong to the branches; a handler must not
-    be able to write them (the adapter stamps ``finished_at`` itself)."""
-    row = _make_task("t1")
-    storage = FakeStorage(row)
-    adapter = ToolCallClaimAdapter(task_storage=storage)
-
+    be able to write them (the adapter stamps ``finished_at`` itself). Raising inside the release transaction would roll
+    the release back and leave the lease claimed until it expires, for the same buggy handler to repeat for ever, so the
+    task is failed TERMINALLY with the reason as its ``last_error``, the offending value is never written, and a
+    sibling's last-sibling wake still fires. Two tasks of one batch: the second is untouched by the first's rejection."""
     for key in ("state", "claim_token", "gate_seq", "id", "finished_at", "materialized_at"):
-        with pytest.raises(ValueError, match=rf"takes entity_update keys .*got \['{key}'\]"):
-            await adapter.on_release(
-                conn=None, entity_id="t1",
-                outcome=_release("t1", success=True, drop_lease=True, entity_update={key: "x"}),
-            )
-    assert await storage.get("t1") == row
+        batch = ["b:tool:0:1", "b:tool:0:2"]
+        first = _make_task("b:tool:0:1", batch_task_ids=batch)
+        sibling = _make_task("b:tool:0:2", state=ToolCallTaskState.DONE, batch_task_ids=batch)
+        storage = FakeStorage(first, sibling)
+        adapter = ToolCallClaimAdapter(task_storage=storage)
+
+        wake = await adapter.on_release(
+            conn=None, entity_id="b:tool:0:1",
+            outcome=_release("b:tool:0:1", success=True, drop_lease=True, entity_update={key: "x"}),
+        )
+
+        failed = await storage.get("b:tool:0:1")
+        assert failed.state == ToolCallTaskState.FAILED, key
+        assert failed.last_error is not None and f"got ['{key}']" in failed.last_error, failed.last_error
+        assert failed.result_state is None, "the rejected update must not be applied"
+        assert isinstance(wake, PostReleaseWake), "the batch is complete, so the session must be woken"
+        assert await storage.get("b:tool:0:2") == sibling, "a sibling's row was touched"
 
 
 @pytest.mark.asyncio
-async def test_the_entity_update_allow_list_is_per_branch() -> None:
+async def test_the_entity_update_allow_list_is_per_branch_and_a_violation_fails_the_task() -> None:
     """A requeue clears result_state on purpose (a result from a run that never released cleanly must not survive
-    into the next attempt), so it may not supply one; a clean gate changes neither result nor attempts."""
-    row = _make_task("t1")
-    storage = FakeStorage(row)
-    adapter = ToolCallClaimAdapter(task_storage=storage)
+    into the next attempt), so it may not supply one; a clean gate changes neither result nor attempts. Each violation
+    fails the task terminally, with the branch named in the reason."""
     result = ToolResultPart(id="t1", output="x")
-
-    with pytest.raises(ValueError, match=r"takes entity_update keys .*got \['result_state'\]"):
-        await adapter.on_release(
-            conn=None, entity_id="t1", outcome=_release("t1", success=False, entity_update={"result_state": result}),
-        )
-    with pytest.raises(ValueError, match=r"takes entity_update keys .*got \['attempts'\]"):
-        await adapter.on_release(
-            conn=None, entity_id="t1",
-            outcome=_release("t1", success=False, drop_lease=True, park=_gate(), entity_update={"attempts": 2}),
-        )
-    assert await storage.get("t1") == row
+    cases = [
+        (dict(success=False, entity_update={"result_state": result}), "retry", "result_state"),
+        (dict(success=False, drop_lease=True, park=_gate(), entity_update={"attempts": 2}), "gated", "attempts"),
+    ]
+    for kwargs, branch, key in cases:
+        storage = FakeStorage(_make_task("t1"))
+        adapter = ToolCallClaimAdapter(task_storage=storage)
+        await adapter.on_release(conn=None, entity_id="t1", outcome=_release("t1", **kwargs))
+        failed = await storage.get("t1")
+        assert failed.state == ToolCallTaskState.FAILED, branch
+        assert f"a {branch} ToolCallClaimAdapter release takes entity_update keys" in failed.last_error
+        assert f"got ['{key}']" in failed.last_error
+        assert failed.attempts == 0 and failed.gate_event_key is None, "the rejected update or gate was applied"
     # the terminal branch takes all three
+    storage = FakeStorage(_make_task("t1"))
+    adapter = ToolCallClaimAdapter(task_storage=storage)
     await adapter.on_release(
         conn=None, entity_id="t1",
         outcome=_release("t1", success=False, drop_lease=True, entity_update={
@@ -518,13 +530,29 @@ async def test_the_entity_update_allow_list_is_per_branch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_malformed_entity_update_is_loud_even_on_a_release_that_would_not_write() -> None:
-    adapter = ToolCallClaimAdapter(task_storage=FakeStorage(_make_task("t1")))
-    with pytest.raises(ValueError, match="state"):
-        await adapter.on_release(
-            conn=None, entity_id="t1",
-            outcome=ReleaseOutcome(success=True, drop_lease=True, claim_token=None, entity_update={"state": "done"}),
-        )
+async def test_a_rejected_release_is_fenced_like_any_other_it_cannot_fail_another_claims_row() -> None:
+    """The terminal failure goes through the same fence (live state AND the claim token): a stale handler whose release is
+    both late and malformed must not fail the row of the claim that took over, and a token-less one writes nothing."""
+    taken_over = _make_task("t1")        # the live claim holds ``_token("t1")``
+    storage = FakeStorage(taken_over)
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+
+    stale = ReleaseOutcome(
+        success=True, drop_lease=True, claim_token="a-previous-claims-token", entity_update={"state": "done"},
+    )
+    assert await adapter.on_release(conn=None, entity_id="t1", outcome=stale) is None
+    assert await storage.get("t1") == taken_over, "a stale malformed release failed the new claim's row"
+
+    # a token-less malformed release: against a row that holds a token AND against a fresh QUEUED row that holds none
+    # (a ``None`` in a fence matches "absent or null", so the fresh row is where a missing guard would show)
+    fresh = _make_task("t2", state=ToolCallTaskState.QUEUED, claim_token=None)
+    storage = FakeStorage(taken_over, fresh)
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    tokenless = ReleaseOutcome(success=True, drop_lease=True, claim_token=None, entity_update={"state": "done"})
+    assert await adapter.on_release(conn=None, entity_id="t1", outcome=tokenless) is None
+    assert await adapter.on_release(conn=None, entity_id="t2", outcome=tokenless) is None
+    assert await storage.get("t1") == taken_over, "a token-less malformed release wrote a row"
+    assert await storage.get("t2") == fresh, "a token-less malformed release failed a fresh QUEUED row"
 
 
 # ---------------------------------------------------------------------------
