@@ -1517,8 +1517,8 @@
    ]
   }
  ],
- "captured_from": "f315496b09e6f1c0cdafd1ddd489c302c68d0197",
- "captured_from_subject": "test(budget): the golden's provenance names the rebased primer/ tree",
+ "captured_from": "ccb41c9682dd14698e2f6ce978fc6d341ceb164f",
+ "captured_from_subject": "fix(agent): a fresh session whose first round overflowed continues without a marker, and the replay guard's target is fixed + a fraction of the rest",
  "recaptures": [
   {
    "changed_turns": [
