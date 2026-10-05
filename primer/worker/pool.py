@@ -1286,8 +1286,8 @@ class WorkerPool:
             # as-is deliberately rather than hardened, because it is
             # observably inert: SessionClaimAdapter.on_release does its OWN
             # independent re-fetch of this row and returns immediately if
-            # that ALSO finds nothing (primer/claim/adapters/sessions.py
-            # :87-89), so a genuinely-gone row never reaches the
+            # that ALSO finds nothing (its first read of the row), so a
+            # genuinely-gone row never reaches the
             # outcome.success branch that would otherwise write a terminal
             # error record or bump turn_no. This is a COINCIDENTAL property
             # of on_release's re-check, not a designed guarantee -- see
@@ -1317,9 +1317,9 @@ class WorkerPool:
             await storage.update(paused)
         else:
             # 01a08bf0: same reasoning as _end_session's vanished-row branch
-            # above -- success=True is left as-is; on_release's own re-fetch
-            # (primer/claim/adapters/sessions.py:87-89) makes this inert
-            # today, coincidentally rather than by design.
+            # above -- success=True is left as-is; the re-fetch at the top of
+            # SessionClaimAdapter.on_release makes this inert today,
+            # coincidentally rather than by design.
             logger.warning(
                 "pause_session: row %s vanished before pause write", session.id,
             )
