@@ -196,3 +196,64 @@ async def test_no_binding_is_silent():
     assert final is False
     assert reg.requested == []
     assert reg.adapters == {}
+
+
+class _NoReadSurface:
+    """The pool's write adapter: ``append_message_line`` and nothing the relay can read through."""
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None: ...
+
+
+async def test_a_write_only_adapter_cannot_be_read_and_the_reader_says_so(caplog):
+    """The silent failure of the relay in production: handed ``_WorkspaceIOShim`` the reader found nothing to read through
+    and returned None without a word."""
+    import logging
+
+    from primer.channel.session_relay import read_session_final_text
+
+    with caplog.at_level(logging.WARNING):
+        assert await read_session_final_text(_NoReadSurface(), "s1") is None
+    assert any("neither read_lines nor read_file" in r.getMessage() and "s1" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_read_that_fails_is_a_warning_but_a_missing_file_is_not(caplog):
+    import logging
+
+    from primer.channel.session_relay import read_session_final_text
+    from primer.model.except_ import NotFoundError
+
+    class Broken:
+        async def read_file(self, path):
+            raise OSError("mount went away")
+
+    class Missing:
+        async def read_file(self, path):
+            raise NotFoundError("no such file")
+
+    with caplog.at_level(logging.WARNING):
+        assert await read_session_final_text(Missing(), "s1") is None
+        assert not caplog.records, "no messages.jsonl yet is not a fault"
+        assert await read_session_final_text(Broken(), "s1") is None
+    assert any("reading" in r.getMessage() and r.exc_info for r in caplog.records)
+
+
+async def test_the_workspace_read_surface_derives_the_final_text():
+    """``read_file`` over ``state_path``, which every real workspace backend offers."""
+    import json
+
+    from primer.channel.session_relay import read_session_final_text
+
+    lines = "\n".join(json.dumps(r) for r in [
+        {"seq": 1, "kind": "assistant_token", "payload": {"text": "the answer"}},
+        {"seq": 2, "kind": "done", "payload": {"stop_reason": "stop"}},
+    ])
+
+    class Workspace:
+        state_path = ".state"
+
+        async def read_file(self, path):
+            assert path == ".state/sessions/s1/messages.jsonl"
+            return lines.encode()
+
+    assert await read_session_final_text(Workspace(), "s1") == "the answer"
+

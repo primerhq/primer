@@ -66,7 +66,11 @@ def _make_lease(session_id: str) -> Lease:
 
 
 class _FakeWorkspaceIO:
-    """Captures messages.jsonl lines and replays them for the final-text scan."""
+    """The pool's write adapter: it captures messages.jsonl lines and has NO read surface.
+
+    That is what ``_WorkspaceIOShim`` is in production (``append_message_line`` and nothing the relay can read
+    through). It used to expose ``read_lines``, which no production object has, so this journey passed while the
+    final-result relay never posted anything: the text is read through the session's workspace, below."""
 
     def __init__(self) -> None:
         self._data: dict[tuple[str, str], bytes] = defaultdict(bytes)
@@ -74,11 +78,26 @@ class _FakeWorkspaceIO:
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         self._data[(session_id, "messages.jsonl")] += line
 
-    def read_lines(
-        self, session_id: str, filename: str = "messages.jsonl",
-    ) -> list[str]:
-        raw = self._data.get((session_id, filename), b"")
-        return [ln for ln in raw.decode().splitlines() if ln.strip()]
+
+class _FakeWorkspace:
+    """The registry's workspace as the relay reads it: ``read_file`` over ``state_path``, like every real backend."""
+
+    state_path = ".state"
+
+    def __init__(self, io: _FakeWorkspaceIO) -> None:
+        self._io = io
+
+    async def read_file(self, path: str) -> bytes:
+        session_id = path.split("/")[-2]
+        return self._io._data.get((session_id, "messages.jsonl"), b"")  # noqa: SLF001
+
+
+class _WorkspaceRegistry:
+    def __init__(self, workspace: _FakeWorkspace) -> None:
+        self._workspace = workspace
+
+    async def get_workspace(self, workspace_id: str) -> _FakeWorkspace:
+        return self._workspace
 
 
 class _StreamingExecutor:
@@ -176,12 +195,14 @@ async def test_channel_session_lifecycle_relay_journey() -> None:
         async def _build_executor(_session: WorkspaceSession):
             return _StreamingExecutor()
 
+        io = _FakeWorkspaceIO()
         deps = SessionDispatchDeps(
             storage_provider=sp,
-            workspace_io=_FakeWorkspaceIO(),
+            workspace_io=io,
             event_bus=bus,
             build_executor=_build_executor,
             channel_dispatcher=dispatcher,
+            workspace_registry=_WorkspaceRegistry(_FakeWorkspace(io)),
         )
 
         outcome = await run_one_session_turn(_make_lease(session.id), deps)
@@ -252,12 +273,14 @@ async def test_silent_session_in_bound_workspace_opens_no_thread() -> None:
         async def _build_executor(_session: WorkspaceSession):
             return _SilentExecutor()
 
+        io = _FakeWorkspaceIO()
         deps = SessionDispatchDeps(
             storage_provider=sp,
-            workspace_io=_FakeWorkspaceIO(),
+            workspace_io=io,
             event_bus=bus,
             build_executor=_build_executor,
             channel_dispatcher=dispatcher,
+            workspace_registry=_WorkspaceRegistry(_FakeWorkspace(io)),
         )
 
         outcome = await run_one_session_turn(_make_lease(session.id), deps)
