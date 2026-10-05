@@ -571,6 +571,16 @@ class Message(BaseModel):
     )
 
 
+class CompactionSummary(Message):
+    """The synthetic assistant message that stands in for history a compaction replaced.
+
+    To a provider or a store it is an ordinary :class:`Message` (same role, same parts, same dump); the
+    type is only a structural tag, so the compactor can tell it from a reply the model wrote without
+    reading its text. It is built by the compactor and by the history reader (the marker carries its text
+    and where it sits), and is never written as a message line itself.
+    """
+
+
 # ---- Tool definitions and choice -------------------------------------------
 
 
@@ -1546,26 +1556,28 @@ class _LlmCall(BaseModel):
     )
 
 class _CompactionNote(BaseModel):
-    """Synthetic event: a compaction ran and could not bring the prompt under the trigger.
+    """Synthetic event: a compaction ran and could not bring the prompt under the trigger, or deliberately did nothing.
 
     Reachable only through :class:`ExtendedEvent`. Emitted by
     :meth:`primer.agent.base._BaseAgentExecutor.invoke` when a compaction came back
     ``unreducible`` (nothing summarised, so NO compaction marker is written and the
-    prompt goes out as it is), so the verdict is in the session record and not only in a
-    log. A compaction that summarised and was still over the trigger records the same
-    facts in its marker's payload instead. Not produced by any LLM adapter.
+    prompt goes out as it is) or ``skipped`` (the trigger cannot be reached, so it did
+    nothing; noted once per run of skips), so the verdict is in the session record and not
+    only in a log. A compaction that summarised and was still over the trigger records the
+    same facts in its marker's payload instead. Not produced by any LLM adapter.
     """
 
     type: Literal["compaction_note"] = Field(
         default="compaction_note",
         description="Discriminator tag identifying this as a compaction-verdict event.",
     )
-    outcome: str = Field(..., description="The counted outcome (``unreducible``).")
+    outcome: str = Field(..., description="The counted outcome (``unreducible`` or ``skipped``).")
     reason: str = Field(
         ...,
         description=(
             "Why: ``empty_head``, ``fixed_over_budget`` or ``protected_over_budget`` "
-            "(see CompactedTurn.unreducible)."
+            "(``unreducible``), ``cannot_reach_trigger`` or ``recently_compacted`` (``skipped``); "
+            "see CompactedTurn.unreducible."
         ),
     )
     estimated_tokens: int = Field(..., ge=0, description="The history's estimated size, in tokens.")

@@ -19,9 +19,10 @@ from pathlib import Path
 import pytest
 
 import tests._support.off_golden as g
-from primer.agent.compaction import CompactionStrategy
+from primer.agent.base import _BaseAgentExecutor
+from primer.agent.compaction import CompactedTurn, CompactionStrategy
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
-from primer.model.chat import Done, Message, TextDelta, TextPart, Tool
+from primer.model.chat import Done, Message, TextDelta, TextPart, Tool, ToolCallPart, ToolResultPart
 from primer.model.except_ import BadRequestError, ContextOverflowUnrecoverable
 from primer.model.model_profile import ModelProfileConfig
 from primer.model_profile import ResolvedModel
@@ -64,11 +65,11 @@ def _history(tokens: int) -> list[Message]:
     ] + [_msg("user", "THE QUESTION")]
 
 
-def _maybe(strategy, *, history, fixed, window, new_messages=None, summariser=None):
+def _maybe(strategy, *, history, fixed, window, new_messages=None, summariser=None, last_compaction_tokens=None):
     summariser = summariser or _Summariser()
     result = asyncio.run(strategy.maybe_compact(
         agent=g.make_agent(), llm=summariser, model=_model(window), history=history,
-        new_messages=new_messages or [], fixed_overhead=fixed,
+        new_messages=new_messages or [], fixed_overhead=fixed, last_compaction_tokens=last_compaction_tokens,
     ))
     return result, summariser
 
@@ -168,6 +169,11 @@ class TestTheBudgetRules:
             result, summariser = _maybe(CompactionStrategy(), history=_history(tokens), fixed=24_000, window=self.WINDOW)
             assert summariser.calls == 0 and (result.outcome, result.unreducible) == ("unreducible", "fixed_over_budget")
 
+    def test_a_fixed_part_that_fills_the_budget_is_named_even_when_there_is_also_nothing_to_summarise(self) -> None:
+        """Both are true of a one-message history; the label says the cause that no history change could fix."""
+        result, summariser = _maybe(CompactionStrategy(), history=[_msg("user", "Q")], fixed=24_000, window=self.WINDOW)
+        assert summariser.calls == 0 and (result.outcome, result.unreducible) == ("unreducible", "fixed_over_budget")
+
     def test_fixed_plus_the_protected_input_filling_the_budget_is_unreducible(self) -> None:
         history = [_msg("user", "old"), _msg("assistant", "a"), _msg("user", "q" * 8_000)]  # ~2,000 protected
         result, summariser = _maybe(CompactionStrategy(), history=history, fixed=22_500, window=self.WINDOW)
@@ -187,6 +193,69 @@ class TestTheBudgetRules:
         result, summariser = _maybe(CompactionStrategy(), history=history, fixed=0, window=100_000)
         assert summariser.calls == 1 and result.outcome == "summarised"
 
+    def test_a_compaction_that_bottoms_out_over_the_budget_is_not_repeated_every_turn(self) -> None:
+        """The live shape: a 22,013-token fixed part against a 23,808 budget. A compaction leaves the prompt (fixed +
+        summary + question) at about 24k, which is still over the budget, so every following turn is over it too. Left
+        alone, each of them summarised the summary again (a summariser call per turn, no gain). It must run once, and
+        again only once the prompt has grown by a summary allowance beyond what that compaction left."""
+        def simulate(*, remember: bool) -> tuple[int, list[str]]:
+            summariser = _Summariser(text="s" * 8_000)  # a 2,000-token summary: the result stays over the budget
+            history = _history(5_000)[:-1]
+            last, verdicts = None, []
+            for turn in range(10):
+                question = _msg("user", f"question {turn}")
+                result, _ = _maybe(
+                    CompactionStrategy(), history=history, new_messages=[question], fixed=self.FIXED,
+                    window=self.WINDOW, summariser=summariser, last_compaction_tokens=last if remember else None,
+                )
+                verdicts.append(result.outcome if result is not None else "none")
+                if result is not None and result.summary_message is not None:
+                    history, last = result.new_messages, result.estimated_tokens_after
+                history = [*history, question, _msg("assistant", "a" * 1_200)]  # the turn: about 300 tokens of growth
+            return summariser.calls, verdicts
+
+        calls_without, _ = simulate(remember=False)
+        assert calls_without == 10, "the control: without the memory it is a summariser call on every turn"
+        calls, verdicts = simulate(remember=True)
+        assert calls == 1, f"one compaction across ten turns while the prompt grows 300 tokens a turn: {verdicts}"
+        assert verdicts[0] == "insufficient" and set(verdicts[1:]) == {"skipped"}
+
+    def test_a_prompt_that_has_grown_by_a_summary_allowance_is_compacted_again(self) -> None:
+        last = 24_000                                   # what the last compaction left (over the 23,808 budget)
+        grown = _history(7_000)                         # about 29k with the fixed part: past last + 4,096
+        result, summariser = _maybe(
+            CompactionStrategy(), history=grown, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=last,
+        )
+        assert summariser.calls == 1 and result.summary_message is not None
+        barely = _history(5_000)                        # about 27k: under last + 4,096
+        result, summariser = _maybe(
+            CompactionStrategy(), history=barely, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=last,
+        )
+        assert summariser.calls == 0 and (result.outcome, result.unreducible) == ("skipped", "recently_compacted")
+        assert result.new_messages == barely and result.summary_message is None
+        allowance, summariser = _maybe(
+            CompactionStrategy(summary_max_tokens=200), history=barely, fixed=self.FIXED, window=self.WINDOW,
+            last_compaction_tokens=last,
+        )
+        assert summariser.calls == 1, "the growth that re-enables it is the summary allowance, not a constant"
+
+    def test_a_prompt_that_fits_the_budget_is_skipped_as_before_whatever_the_last_compaction_left(self) -> None:
+        """A stale or small figure (the fixed part has grown since) must not turn the skip into a compaction: a prompt
+        that fits the window is left alone because its trigger cannot be reached, not because of the memory."""
+        history = _history(1_000)                       # about 23.1k with the fixed part: under the 23,808 budget
+        result, summariser = _maybe(
+            CompactionStrategy(), history=history, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=2_000,
+        )
+        assert summariser.calls == 0 and (result.outcome, result.unreducible) == ("skipped", "cannot_reach_trigger")
+
+    def test_the_memory_never_holds_back_a_prompt_that_the_trigger_can_still_be_reached_from(self) -> None:
+        """Only the skip path reads it: where compaction can bring the prompt under the trigger it runs as before."""
+        history = _history(90_000)
+        result, summariser = _maybe(
+            CompactionStrategy(), history=history, fixed=0, window=100_000, last_compaction_tokens=95_000,
+        )
+        assert summariser.calls == 1 and result.outcome == "summarised"
+
     def test_the_outcomes_are_counted_including_the_skip(self) -> None:
         from primer.observability import metrics
 
@@ -204,6 +273,55 @@ def _run(coro_factory):
             return await coro_factory(Path(tmp))
 
     return asyncio.run(_main())
+
+
+class TestWhenAReplayIsHopeless:
+    """``_replay_is_futile``: a forced compaction that came back unreducible fails the turn with a name only when the
+    replay would be the prompt the provider just rejected AND the estimate agrees it does not fit. (In ``invoke`` the
+    proactive pass has pruned the same outputs first, so the prune clause bites on a history that grew after it: the
+    in-turn history of an overflow in the middle of a turn.)"""
+
+    @staticmethod
+    def _forced(*, outcome="unreducible", pruned=0, after=150_000, budget: int | None = 100_000) -> CompactedTurn:
+        return CompactedTurn(
+            new_messages=[], estimated_tokens_before=after, estimated_tokens_after=after, outcome=outcome,
+            unreducible="empty_head" if outcome == "unreducible" else None, pruned_tool_outputs=pruned,
+            budget_tokens=budget,
+        )
+
+    @pytest.mark.parametrize(
+        ("case", "futile"),
+        [
+            (dict(), True),
+            (dict(pruned=3), False),                    # the prune changed what would be sent
+            (dict(after=50_000), False),                # our estimate says it fits: the estimate is what is wrong
+            (dict(budget=None), True),                  # the producer did not say: judged on what is known
+            (dict(outcome="summarised"), False),
+            (dict(outcome="insufficient"), False),
+            (dict(outcome="skipped"), False),
+            (dict(outcome="pruned"), False),
+        ],
+    )
+    def test_the_decision(self, case, futile) -> None:
+        assert _BaseAgentExecutor._replay_is_futile(self._forced(**case)) is futile
+
+    def test_the_strategy_states_the_budget_it_measured_against(self) -> None:
+        """The decision reads it from the result, so every verdict has to carry it."""
+        strategy = CompactionStrategy()
+        window = 100_000
+        expected = strategy._effective_budget(_model(window))
+        unreducible, _ = _maybe(strategy, history=[_msg("user", "x" * 400_000), _msg("user", "Q")], fixed=0, window=window)
+        assert unreducible is not None and unreducible.outcome == "unreducible" and unreducible.budget_tokens == expected
+        summarised, _ = _maybe(strategy, history=_history(90_000), fixed=0, window=window)
+        assert summarised is not None and summarised.outcome == "summarised" and summarised.budget_tokens == expected
+        rounds = [
+            m for i in range(4) for m in (
+                Message(role="assistant", parts=[ToolCallPart(id=f"c{i}", name="exec", arguments={})]),
+                Message(role="tool", parts=[ToolResultPart(id=f"c{i}", output="x" * 90_000)]),
+            )
+        ]
+        pruned, _ = _maybe(strategy, history=rounds, fixed=0, window=window)
+        assert pruned is not None and pruned.outcome == "pruned" and pruned.budget_tokens == expected
 
 
 class TestTheExecutor:
@@ -275,6 +393,124 @@ class TestTheExecutor:
         assert error.code == "context_overflow_unrecoverable" and isinstance(error.__cause__, BadRequestError)
         assert "fixed_over_budget" in str(error) and "context window of 4000" in str(error)
         assert markers == []
+
+    def test_a_forced_compaction_that_pruned_a_tool_output_replays_the_pruned_prompt(self) -> None:
+        """Nothing can be summarised (the turn is one question and one round), but the forced tier-1 prune shrank a
+        tool output: the replay is a different, smaller prompt, so failing now would throw away a turn that fits."""
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                await g.append_messages(
+                    workspace, session, g.user_message("Q"),
+                    Message(role="assistant", parts=[ToolCallPart(id="c0", name="exec", arguments={"command": "ls"})]),
+                    Message(role="tool", parts=[ToolResultPart(id="c0", output="x" * 200_000)]),
+                )
+                llm.extend([g.Raise(BadRequestError(OVERFLOW)), g.Events(g.text_events("done"))])
+                await g.run_turn(session, llm)
+                return llm.calls
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        calls = _run(scenario)
+
+        def result_len(call) -> int:
+            return next(p[1] for m in call["messages"] for p in m["parts"] if p[0] == "tool_result")
+
+        assert len(calls) == 2, "the pruned prompt was replayed"
+        assert result_len(calls[1]) < result_len(calls[0]) // 10, "the replay carries the placeholder, not the output"
+
+    def test_a_forced_compaction_that_changed_nothing_but_whose_estimate_fits_is_replayed_once(self) -> None:
+        """Our estimate says the prompt fits the window although the provider rejected it, so the estimate is the
+        thing that is wrong and nothing proves a replay hopeless: it gets its one call (a second rejection reaches the
+        caller as the provider's own error, unchanged)."""
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                await g.append_messages(workspace, session, g.user_message("Q"))
+                llm.extend([g.Raise(BadRequestError(OVERFLOW)), g.Events(g.text_events("done"))])
+                await g.run_turn(session, llm)
+                return len(llm.calls)
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        assert _run(scenario) == 2
+
+    def test_a_compaction_that_bottoms_out_over_the_budget_is_not_repeated_on_the_next_turn(self) -> None:
+        """End to end: turn 1 compacts and the prompt (real fixed part + a 1,500-token summary + the question) is still
+        over a 4,096-token budget. Turn 2 reads the marker back and does not summarise the summary: its scripted LLM
+        has a step for the turn's own call only, so a second compaction would fail the run."""
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                per_pair = 500
+                for i in range(3):
+                    await g.append_messages(
+                        workspace, session, g.user_message(chr(97 + i) * (4 * (per_pair - 20))), g.assistant_message(f"r{i}"),
+                    )
+                await g.append_messages(workspace, session, g.user_message("Q1"))
+                llm.extend([g.Events(g.text_events("s" * 6_000)), g.Events(g.text_events("done 1"))])
+                await g.run_turn(session, llm, llm_model=_model(8_192))
+                path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+                marker = [r for r in map(json.loads, path.read_text().splitlines()) if r.get("kind") == "compaction_marker"][-1]
+                after_turn_one = len(llm.calls)
+                await g.append_messages(workspace, session, g.user_message("Q2"))
+                llm.extend([g.Events(g.text_events("done 2"))])
+                await g.run_turn(session, llm, llm_model=_model(8_192))
+                return marker["payload"], after_turn_one, len(llm.calls)
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        payload, after_turn_one, calls = _run(scenario)
+        assert after_turn_one == 2, "turn 1: one summariser call and the turn's own"
+        assert payload["outcome"] == "insufficient" and payload["tokens_after"] >= payload["trigger_tokens"]
+        assert calls - after_turn_one == 1, "turn 2 made the turn's own call only: the summary was not summarised again"
+
+    def test_a_run_of_skipped_compactions_is_noted_in_the_session_record_once(self) -> None:
+        """A skip writes no marker, so it was invisible: an agent whose prompt sat between the trigger and the budget
+        looked like compaction was broken. One ``compaction_note`` per run, not one per turn. The executor yields the
+        note as an event and the dispatch path persists it; here each note is persisted the way dispatch does, and the
+        next turn must read it back from the file to know the run has its note."""
+        from primer.model.chat import ExtendedEvent, _CompactionNote
+        from primer.session.persistence import _CoalesceState, translate_stream_event
+
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                # 8,192-token window: budget 4,096, trigger 3,686; the real fixed part is about 3,100 tokens, so a
+                # 600-token message puts the prompt between them and the trigger cannot be reached
+                await g.append_messages(workspace, session, g.user_message("p" * 2_400), g.assistant_message("ok"))
+                notes_per_turn, calls = [], 0
+                for turn in range(3):
+                    await g.append_messages(workspace, session, g.user_message(f"Q{turn}"))
+                    llm.extend([g.Events(g.text_events(f"done {turn}"))])
+                    events: list = []
+                    await g.run_turn(session, llm, llm_model=_model(8_192), collect=events)
+                    notes = [e for e in events if isinstance(e, ExtendedEvent) and isinstance(e.extended, _CompactionNote)]
+                    notes_per_turn.append([(n.extended.outcome, n.extended.reason) for n in notes])
+                    for n in notes:  # what the dispatch path does with it
+                        record = translate_stream_event(n, _CoalesceState())
+                        await workspace.append_message_line(
+                            session.session_id, (record.model_copy(update={"seq": 50 + turn}).model_dump_json() + "\n").encode(),
+                        )
+                return notes_per_turn, len(llm.calls)
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        notes_per_turn, calls = _run(scenario)
+        assert calls == 3, "three turns, no summariser call: the compaction skipped itself each time"
+        assert notes_per_turn == [[("skipped", "cannot_reach_trigger")], [], []], "noted once for the run, not once per turn"
 
     def test_the_tool_catalogue_is_fetched_once_per_invoke(self) -> None:
         """The compaction needs it for the fixed part; the loop is handed the same list instead of fetching again."""

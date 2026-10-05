@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from primer.model.chat import Message, ToolCallPart
+from primer.model.chat import CompactionSummary, Message, ToolCallPart
 
 
 def tail_split(
@@ -98,10 +98,24 @@ def pending_from(messages: Sequence[Message]) -> int:
     ordinary history and summarisable, or a session that once ended that way could never
     be compacted again. A history that ends on a final assistant answer has nothing
     pending (the index is ``len(messages)``).
+
+    A compaction summary that stands between the user run and the rounds is transparent. After a
+    compaction that summarised the early rounds of the turn the history reads ``[question, summary,
+    newest round]``; the summary is an assistant message, but it is not an answer to the question, so
+    the walk goes on through it to the question, and a second compaction in the same turn still
+    protects the question and folds the first summary into the second.
     """
-    i = len(messages)
+    n = len(messages)
+    i = n
     while i > 0 and (messages[i - 1].role == "tool" or _has_tool_call(messages[i - 1])):
         i -= 1
+    if i < n:
+        # a turn still in flight (it has rounds): look through the summaries in front of them
+        j = i
+        while j > 0 and isinstance(messages[j - 1], CompactionSummary):
+            j -= 1
+        if j > 0 and messages[j - 1].role == "user":
+            i = j
     while i > 0 and messages[i - 1].role == "user":
         i -= 1
     return i
@@ -165,6 +179,10 @@ def split_for_compaction(
     to summarise.
 
     ``reason`` is ``"empty_head"`` only when even the floor replaces nothing.
+
+    ``size`` must be additive: the size of a list is the sum of the sizes of its messages, as the
+    strategy's token estimate is. The in-turn shrink relies on it to keep a running total instead of
+    measuring the whole tail again for every round it replaces.
     """
     if tail_turns < 0:
         raise ValueError(f"tail_turns must be >= 0, got {tail_turns!r}")
@@ -201,29 +219,29 @@ def split_for_compaction(
 
     # Inside the current turn: protect the opening user run and the newest round, summarise the
     # rounds between them, oldest first, while the tail is over budget (or there is nothing else
-    # to replace).
-    removed: list[tuple[int, int]] = []
-    user_end = start
+    # to replace). The summarised rounds are always one block, [user_end, removed_end), so the size
+    # of what is kept is tracked as rounds leave it instead of measured again for every round.
+    user_end = removed_end = start
     if start == pending and pending < n:
-        user_end = pending
+        user_end = removed_end = pending
         while user_end < n and msgs[user_end].role == "user":
             user_end += 1
+        removed_end = user_end
         rounds = [(a, b) for a, b in zip(starts, [*starts[1:], n]) if a >= user_end]
+        kept_tokens = size(msgs[start:])
         for a, b in rounds[:-1]:
-            kept = [i for i in range(start, n) if not any(x <= i < y for x, y in removed)]
-            if size([msgs[i] for i in kept]) <= tail_budget_tokens and (start > 0 or removed):
+            if kept_tokens <= tail_budget_tokens and (start > 0 or removed_end > user_end):
                 break
-            removed.append((a, b))
+            kept_tokens -= size(msgs[a:b])
+            removed_end = b
 
-    kept_indices = [i for i in range(start, n) if not any(a <= i < b for a, b in removed)]
-    head_indices = [*range(start), *(i for a, b in removed for i in range(a, b))]
-    head = [msgs[i] for i in head_indices]
-    tail = [msgs[i] for i in kept_indices]
-    summary_after = (user_end - start) if removed else 0
-    reads_to = removed[-1][1] if removed else start
+    replaced = removed_end > user_end
+    head = [*msgs[:start], *msgs[user_end:removed_end]]
+    tail = [*msgs[start:user_end], *msgs[removed_end:]]
     return CompactionSplit(
         head=head, tail=tail, pending_from=pending, reason=None if head else "empty_head",
-        summary_after=summary_after, summary_input=msgs[:reads_to],
+        summary_after=(user_end - start) if replaced else 0,
+        summary_input=msgs[:removed_end if replaced else start],
     )
 
 
