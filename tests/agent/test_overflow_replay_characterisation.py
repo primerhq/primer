@@ -41,8 +41,8 @@ from primer.model.yield_ import Yielded, YieldToWorker
 from primer.model_profile import ResolvedModel
 from tests._support.provider_history import assert_anthropic_valid, assert_openai_valid
 from tests._support.off_golden import (
-    Events, FnLLM, Gate, ScriptedLLM, append_messages, assistant_message, make_executor, open_session, run_turn,
-    text_events, user_message,
+    CONTEXT_LENGTH, Events, FnLLM, Gate, ScriptedLLM, append_messages, assistant_message, make_executor, open_session,
+    run_turn, text_events, user_message,
 )
 
 OVERFLOW = "This model's maximum context length is 100000 tokens, however you requested more"
@@ -396,6 +396,40 @@ class TestASecondOverflow:
             shown = await _reload(session)
             outputs = [p.output for m in shown for p in m.parts if isinstance(p, Result)]
             assert raw in outputs, "and the turn recorded it raw"
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+
+@POSIX
+class TestAnOutputCapThatFillsTheWindow:
+    """The agent's own ``max_output_tokens`` is not below the model's window: the guard at the top of
+    ``_recover_from_overflow`` ends the turn before any compaction, whatever the provider's rejection says."""
+
+    async def test_a_turn_that_ran_a_round_ends_without_compacting_and_keeps_the_round_once(self, tmp_path) -> None:
+        """The model is only rejected once the round's result is in its prompt, so the guard fires AFTER a tool ran. The
+        typed failure says recovery got nowhere (no compaction, no replay), and the completed round is neither lost
+        (the guard raises before anything is folded, so the record still holds it) nor written twice: the one
+        chokepoint writes it on the way out."""
+        def cap_fills_the_window(executor) -> None:
+            executor._agent = executor._agent.model_copy(update={"max_output_tokens": CONTEXT_LENGTH})  # noqa: SLF001
+
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await _seed(workspace, session)
+            llm = FnLLM(_reactive())
+            with pytest.raises(ContextOverflowUnrecoverable) as failed:
+                await run_turn(session, llm, configure=cap_fills_the_window)
+            error = failed.value
+            assert error.code == "context_overflow_unrecoverable" and isinstance(error.__cause__, BadRequestError)
+            assert error.problem_extensions == {
+                "forced_compaction": False, "replay_attempted": False, "persisted_rounds": 1, "summarised_rounds": 0,
+            }
+            assert _counter(workspace) == ["a"], "the tool ran once"
+            assert len(llm.calls) == 2, "the round, then the rejected call: no summariser call and no replay"
+            shown = await _reload(session)
+            assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the completed round is persisted, exactly once"
+            assert [_text(m) for m in shown].count(QUESTION) == 1 and "done" not in [_text(m) for m in shown]
         finally:
             await session.aclose()
             await backend.aclose()
