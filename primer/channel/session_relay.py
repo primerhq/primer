@@ -46,12 +46,16 @@ def _count_reached(results: list) -> int:
     )
 
 
+_RESOLVE = object()   # "work the binding out": the default for a caller that has not already
+
+
 async def _post_lifecycle(
     *,
     dispatcher,
     session,
     storage_provider,
     text: str,
+    binding=_RESOLVE,
 ) -> bool:
     """Resolve the binding, honour ``quiet``, post an ``inform`` envelope.
 
@@ -60,9 +64,10 @@ async def _post_lifecycle(
     silent. Never raises: a dispatch failure is logged and reported as
     ``False`` rather than propagated into the turn loop.
     """
-    binding = await resolve_reply_binding(
-        session, storage_provider=storage_provider,
-    )
+    if binding is _RESOLVE:
+        binding = await resolve_reply_binding(
+            session, storage_provider=storage_provider,
+        )
     if binding is None or getattr(binding, "quiet", False):
         return False
 
@@ -93,11 +98,14 @@ async def post_session_final_result(
     session,
     storage_provider,
     text: str,
+    binding=_RESOLVE,
 ) -> bool:
     """Post the final-result ``text`` to the session's reply binding.
 
     No-ops (returns ``False``) when ``text`` is empty, when the session has
-    no binding, or when the binding is quiet.
+    no binding, or when the binding is quiet. A caller that has already
+    resolved the binding (the dispatch does, to decide whether to read the
+    text at all) passes it as ``binding`` and it is not resolved again.
     """
     if not text:
         return False
@@ -106,6 +114,7 @@ async def post_session_final_result(
         session=session,
         storage_provider=storage_provider,
         text=text,
+        binding=binding,
     )
 
 

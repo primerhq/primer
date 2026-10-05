@@ -1373,26 +1373,43 @@ async def run_one_session_turn(
                 read_session_final_text,
             )
 
-            final_text = await read_session_final_text(
-                await _final_text_source(deps, session), session_id,
-            )
-            if final_text:
-                await post_session_final_result(
-                    dispatcher=deps.channel_dispatcher,
-                    session=session,
-                    storage_provider=deps.storage_provider,
-                    text=final_text,
-                )
-            else:
-                # A reply-bound session that relays nothing was invisible for months (the reader had no read
-                # surface and returned None, and ``if final_text`` skipped the post). Say so: the final text of a
-                # turn that reached this point is normally there.
-                binding = await resolve_reply_binding(session, storage_provider=deps.storage_provider)
-                if binding is not None and not getattr(binding, "quiet", False):
+            # The binding FIRST, and nothing is read without one: this runs after every clean turn of every
+            # session, and the read is the whole messages.jsonl over the workspace's runtime connection (a
+            # docker or k8s workspace pulls it across a websocket). A session with no channel, or a quiet
+            # binding, has nothing to post and must cost no I/O here.
+            binding = await resolve_reply_binding(session, storage_provider=deps.storage_provider)
+            if binding is not None and not getattr(binding, "quiet", False):
+                final_text: str | None = None
+                try:
+                    # Bounded: a read that never returns (the runtime connection is down and its client waits
+                    # for it forever) must not hold the lease release that comes after this.
+                    async with asyncio.timeout(_BEST_EFFORT_IO_TIMEOUT_S):
+                        final_text = await read_session_final_text(
+                            await _final_text_source(deps, session), session_id,
+                        )
+                except TimeoutError:
                     logger.warning(
-                        "session %s: reply-bound, but no final text could be derived from its messages.jsonl; "
-                        "nothing was posted to the channel", session_id,
+                        "session %s: reading the final text for the channel relay did not finish within %gs "
+                        "(the workspace is not answering); nothing was posted to the channel",
+                        session_id, _BEST_EFFORT_IO_TIMEOUT_S,
                     )
+                else:
+                    if final_text:
+                        await post_session_final_result(
+                            dispatcher=deps.channel_dispatcher,
+                            session=session,
+                            storage_provider=deps.storage_provider,
+                            text=final_text,
+                            binding=binding,
+                        )
+                    else:
+                        # A reply-bound session that relays nothing was invisible for months (the reader had no
+                        # read surface and returned None, and ``if final_text`` skipped the post). Say so: the
+                        # final text of a turn that reached this point is normally there.
+                        logger.warning(
+                            "session %s: reply-bound, but no final text could be derived from its messages.jsonl; "
+                            "nothing was posted to the channel", session_id,
+                        )
         except Exception:  # never block release on a relay failure
             logger.warning(
                 "session %s: final-result relay failed", session_id,

@@ -10,6 +10,7 @@ object has, so none of them could see it. These run the real shim over a real ``
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -31,6 +32,22 @@ BINDING = {"channel_id": "ch-1", "anchor": "thr-1", "quiet": False}
 WORKSPACE_ID = "w1"
 
 
+class _SpyWorkspace:
+    """The real workspace, with every ``read_file`` recorded (and, when asked, never answered)."""
+
+    def __init__(self, workspace, reads: list[str], *, hang: bool = False) -> None:
+        self._workspace, self._reads, self._hang = workspace, reads, hang
+
+    def __getattr__(self, name):
+        return getattr(self._workspace, name)
+
+    async def read_file(self, path: str):
+        self._reads.append(path)
+        if self._hang:
+            await asyncio.Event().wait()        # a runtime connection that never answers
+        return await self._workspace.read_file(path)
+
+
 class _Registry:
     """The workspace registry the pool holds: ``get_workspace`` resolves the real workspace by id."""
 
@@ -39,6 +56,15 @@ class _Registry:
 
     async def get_workspace(self, workspace_id: str):
         return self._workspace if workspace_id == WORKSPACE_ID else None
+
+
+class _Run:
+    def __init__(self, dispatcher: _RecordingDispatcher, outcome, reads: list[str]) -> None:
+        self.dispatcher, self.outcome, self.reads = dispatcher, outcome, reads
+
+    @property
+    def texts(self) -> list[str]:
+        return self.dispatcher.texts
 
 
 class _Executor:
@@ -74,11 +100,12 @@ class _RaisingRegistry:
 
 
 async def _run_with_the_pools_io(tmp_path, *, metadata: dict, text: str = "here is the answer", stop_reason: str = "stop",
-                                 registry_in_deps: bool = True, deps_registry=None):
+                                 registry_in_deps: bool = True, deps_registry=None, hang_reads: bool = False):
     """One turn through ``run_one_session_turn`` with the REAL shim over a REAL workspace, as ``WorkerPool`` builds it."""
     backend, workspace, session = await open_session(tmp_path)
     try:
-        registry = _Registry(workspace)
+        reads: list[str] = []
+        registry = _Registry(_SpyWorkspace(workspace, reads, hang=hang_reads))
         shim = _WorkspaceIOShim(registry)
         shim.register_session(session.session_id, WORKSPACE_ID)
         sp = _FakeStorageProvider()
@@ -93,13 +120,13 @@ async def _run_with_the_pools_io(tmp_path, *, metadata: dict, text: str = "here 
         async def build(_session):
             return _Executor(text, stop_reason)
 
-        await run_one_session_turn(_lease(session.session_id), SessionDispatchDeps(
+        outcome = await asyncio.wait_for(run_one_session_turn(_lease(session.session_id), SessionDispatchDeps(
             storage_provider=sp, workspace_io=shim, event_bus=bus, build_executor=build,
             channel_dispatcher=dispatcher,
             workspace_registry=deps_registry if deps_registry is not None else (registry if registry_in_deps else None),
-        ))
+        )), timeout=15)
         await bus.aclose()
-        return dispatcher
+        return _Run(dispatcher, outcome, reads)
     finally:
         await session.aclose()
         await backend.aclose()
@@ -107,19 +134,21 @@ async def _run_with_the_pools_io(tmp_path, *, metadata: dict, text: str = "here 
 
 class TestTheRelayReadsThroughTheWorkspaceTheWayProductionIsWired:
     async def test_a_reply_bound_session_that_completes_posts_its_final_answer(self, tmp_path) -> None:
-        dispatcher = await _run_with_the_pools_io(tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING})
-        assert dispatcher.texts == ["here is the answer"]
+        run = await _run_with_the_pools_io(tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING})
+        assert run.texts == ["here is the answer"]
+        assert len(run.reads) == 1 and run.reads[0].endswith("/messages.jsonl"), "the history is read once, through read_file"
 
     async def test_a_thread_mapped_session_relays_every_turn_through_the_same_path(self, tmp_path) -> None:
         """``relay_every_turn``: a turn that leaves the session WAITING still posts its answer (max_tokens here)."""
-        dispatcher = await _run_with_the_pools_io(
+        run = await _run_with_the_pools_io(
             tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING, RELAY_EVERY_TURN_KEY: True}, stop_reason="max_tokens",
         )
-        assert dispatcher.texts == ["here is the answer"]
+        assert run.texts == ["here is the answer"]
 
     async def test_a_session_without_a_reply_binding_stays_silent(self, tmp_path) -> None:
-        dispatcher = await _run_with_the_pools_io(tmp_path, metadata={})
-        assert dispatcher.texts == []
+        run = await _run_with_the_pools_io(tmp_path, metadata={})
+        assert run.texts == []
+        assert run.reads == [], "a session with no channel costs no I/O here: this runs after every clean turn of every session"
 
     async def test_when_the_final_text_cannot_be_read_a_reply_bound_session_says_so_in_the_log(
         self, tmp_path, caplog,
@@ -127,28 +156,61 @@ class TestTheRelayReadsThroughTheWorkspaceTheWayProductionIsWired:
         """Without a registry the dispatch has only the shim to read through: it cannot, and a reply-bound session
         that silently posts nothing is what hid this for months."""
         with caplog.at_level(logging.WARNING):
-            dispatcher = await _run_with_the_pools_io(
+            run = await _run_with_the_pools_io(
                 tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING}, registry_in_deps=False,
             )
-        assert dispatcher.texts == []
+        assert run.texts == []
         assert any("no final text" in r.getMessage() for r in caplog.records), "the silent skip is now a warning"
 
     async def test_a_quiet_binding_does_not_warn_about_a_text_it_would_not_post_anyway(self, tmp_path, caplog) -> None:
         with caplog.at_level(logging.WARNING):
-            dispatcher = await _run_with_the_pools_io(
-                tmp_path, metadata={SESSION_REPLY_BINDING_KEY: {**BINDING, "quiet": True}}, registry_in_deps=False,
+            run = await _run_with_the_pools_io(
+                tmp_path, metadata={SESSION_REPLY_BINDING_KEY: {**BINDING, "quiet": True}},
             )
-        assert dispatcher.texts == []
+        assert run.texts == [] and run.reads == [], "a quiet binding has nothing to post and reads nothing"
         assert not any("no final text" in r.getMessage() for r in caplog.records)
 
     async def test_a_registry_that_raises_does_not_block_the_release(self, tmp_path, caplog) -> None:
         """The relay degrades (it falls back to the shim, which cannot read) and says so; the turn still releases."""
         with caplog.at_level(logging.WARNING):
-            dispatcher = await _run_with_the_pools_io(
+            run = await _run_with_the_pools_io(
                 tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING}, deps_registry=_RaisingRegistry(),
             )
-        assert dispatcher.texts == []
+        assert run.texts == []
+        assert run.outcome.success and run.outcome.drop_lease, "the turn still releases"
         messages = [r.getMessage() for r in caplog.records]
         assert any("could not be resolved for the final-result relay" in m for m in messages)
         assert any("no final text" in m for m in messages)
+
+    async def test_a_read_that_never_returns_cannot_hold_the_lease(self, tmp_path, monkeypatch, caplog) -> None:
+        """The read runs before the lease is released, over the workspace's runtime connection, whose client waits for a
+        dropped connection forever. It is bounded: the turn releases, and the skipped post is said in the log."""
+        import primer.session.dispatch as dispatch
+
+        monkeypatch.setattr(dispatch, "_BEST_EFFORT_IO_TIMEOUT_S", 0.3)
+        with caplog.at_level(logging.WARNING):
+            run = await _run_with_the_pools_io(tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING}, hang_reads=True)
+        assert len(run.reads) == 1, "it did try to read"
+        assert run.texts == []
+        assert run.outcome.success and run.outcome.drop_lease
+        assert any("did not finish within" in r.getMessage() for r in caplog.records)
+        assert not any("no final text" in r.getMessage() for r in caplog.records), "one warning, not two"
+
+    async def test_the_binding_is_resolved_once_and_handed_to_the_post(self, tmp_path, monkeypatch) -> None:
+        """The dispatch resolves it to decide whether to read at all; the post must not do that database read again."""
+        import primer.channel.reply_binding as reply_binding
+        import primer.channel.session_relay as session_relay
+
+        calls: list[str] = []
+        real = reply_binding.resolve_reply_binding
+
+        async def counting(session, **kwargs):
+            calls.append(session.id)
+            return await real(session, **kwargs)
+
+        monkeypatch.setattr(reply_binding, "resolve_reply_binding", counting)
+        monkeypatch.setattr(session_relay, "resolve_reply_binding", counting)
+        run = await _run_with_the_pools_io(tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING})
+        assert run.texts == ["here is the answer"]
+        assert len(calls) == 1
 
