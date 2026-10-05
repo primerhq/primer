@@ -264,18 +264,35 @@ async def test_nothing_to_summarise_is_a_422_that_names_the_reason(client, app, 
 
 
 @pytest.mark.asyncio
+def _expected_fixed(system_prompt: str | None) -> int:
+    """What the executor renders as the system prompt (the agent's own plus the workspace fragment), sized by the
+    strategy's own estimate. The tool schemas are not part of it: the route has no executor to ask."""
+    from primer.agent.compaction import CompactionStrategy
+    from primer.agent.prompt_render import render_system_prompt_or_raw
+    from primer.model.chat import Message, TextPart
+    from primer.model.graph import build_execution_context
+    from primer.workspace.session import workspace_system_prompt_fragment
+
+    parts = [*([system_prompt] if system_prompt else []), workspace_system_prompt_fragment("j-1")]
+    text = render_system_prompt_or_raw(parts, build_execution_context())
+    return CompactionStrategy.estimate_fixed_overhead([Message(role="system", parts=[TextPart(text=text)])], [])
+
+
+@pytest.mark.asyncio
 async def test_the_markers_figures_count_what_the_route_can_see_of_the_fixed_part(
     client, app, fake_storage_provider, monkeypatch,
 ):
-    """The route renders the agent's system prompt (the tool schemas are behind the session's executor and are not
-    counted here), so the marker's ``tokens_before`` / ``tokens_after`` include it and say how much. ``tokens_before``
-    used to be a flat 0: the route told the strategy the history was empty."""
+    """The route renders the system prompt the way the executor does (the agent's own plus the workspace fragment it
+    appends; the tool schemas are behind the session's executor and are not counted here), so the marker's
+    ``tokens_before`` / ``tokens_after`` include it and say how much. ``tokens_before`` used to be a flat 0: the route
+    told the strategy the history was empty."""
     ws, _ = await _journey(app, fake_storage_provider, monkeypatch, system_prompt=SYSTEM_PROMPT)
     r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
     assert r.status_code == 200, r.text
     (marker,) = _marker(ws)
     payload = marker["payload"]
-    assert 1_000 <= payload["fixed_overhead_tokens"] < 1_100, "the rendered 4,000-character system prompt"
+    assert payload["fixed_overhead_tokens"] == _expected_fixed(SYSTEM_PROMPT), "the agent's prompt and the fragment"
+    assert payload["fixed_overhead_tokens"] > 1_000 + 250, "the 4,000 characters of the agent and the fragment"
     assert payload["tokens_before"] > payload["fixed_overhead_tokens"], "history and the fixed part"
     assert payload["tokens_after"] >= payload["fixed_overhead_tokens"]
     body = r.json()
@@ -283,9 +300,13 @@ async def test_the_markers_figures_count_what_the_route_can_see_of_the_fixed_par
 
 
 @pytest.mark.asyncio
-async def test_an_agent_without_a_system_prompt_counts_no_fixed_part(client, app, fake_storage_provider, monkeypatch):
+async def test_an_agent_without_a_system_prompt_still_has_the_workspace_fragment_as_its_fixed_part(
+    client, app, fake_storage_provider, monkeypatch,
+):
     ws, _ = await _journey(app, fake_storage_provider, monkeypatch)
     r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
     assert r.status_code == 200, r.text
     (marker,) = _marker(ws)
-    assert marker["payload"]["fixed_overhead_tokens"] == 0 and marker["payload"]["tokens_before"] > 0
+    fixed = marker["payload"]["fixed_overhead_tokens"]
+    assert fixed == _expected_fixed(None) and 0 < fixed < 1_000, "the fragment every workspace executor appends"
+    assert marker["payload"]["tokens_before"] > fixed
