@@ -336,6 +336,21 @@ class ToolWaitPark(Exception):
     purely for parity with the session's own ``parked_event_key``
     column and for observability/debugging.
 
+    Its tail is the batch's first outstanding id in whatever form the
+    producer holds it, so it has no single id form. The agent loop
+    (``_dispatch_as_claims``) and a graph's live-turn park hold scoped
+    ids, and the live turn is the only place it is recorded (the turn
+    log, the ``session.parked`` event and the YIELDED record). A graph
+    RE-park (``_build_pending_tool_wait_park`` after ``restore_state``)
+    starts from a carried-over checkpoint entry, which holds the
+    session-qualified id (a bare one for a park written before S1b).
+    Neither producer has the session id ``external_call_id`` needs to
+    normalise it, and nothing reads a re-park's value:
+    ``_repark_graph_tool_wait_outcome`` falls back to it only when the
+    checkpoint has no ``pending_tool_waits``, which a graph-raised park
+    always has. Never key anything on it; ``tool_wait_event_key`` is the
+    functional key.
+
     ``llm_messages`` / ``frames`` mirror :class:`YieldToWorker`'s own
     fields exactly, for the same reason: the in-progress turn's
     assistant message (carrying the tool_use parts the outstanding
