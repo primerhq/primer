@@ -1517,8 +1517,8 @@
    ]
   }
  ],
- "captured_from": "f315496b09e6f1c0cdafd1ddd489c302c68d0197",
- "captured_from_subject": "test(budget): the golden's provenance names the rebased primer/ tree",
+ "captured_from": "f2f20c8a4cbf223f5ec9d2bef7f12efb95a0cb58",
+ "captured_from_subject": "fix(agent): in the replay-continues recovery an unreducible compaction ends the turn when rounds were completed",
  "recaptures": [
   {
    "changed_turns": [
