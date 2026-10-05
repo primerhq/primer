@@ -283,8 +283,15 @@ class TestThroughTheWrapper:
         cache = NegativeCache()
         llm = self._Llm(client, timeout_s=0.1)
         started = time.monotonic()
-        first = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
-        second = await count_prompt_tokens(llm, model=self.MODEL, messages=USER, negative_cache=cache)
+        # The wrapper's own backstop (10s by default) would turn a MISSING provider deadline into the same
+        # fallback_timeout, a hair under this test's bound; out of the way (60s), a missing deadline lets the
+        # 30s sleep finish and the outcome is 'ok', a failure with a wide margin.
+        first = await count_prompt_tokens(
+            llm, model=self.MODEL, messages=USER, negative_cache=cache, backstop_s=60.0,
+        )
+        second = await count_prompt_tokens(
+            llm, model=self.MODEL, messages=USER, negative_cache=cache, backstop_s=60.0,
+        )
         assert (first.outcome, second.outcome) == ("fallback_timeout", "negative_cached")
         assert calls["n"] == 1
         assert time.monotonic() - started < 10.0
