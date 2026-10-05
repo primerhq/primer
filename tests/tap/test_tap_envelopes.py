@@ -113,6 +113,19 @@ class TestDerivedFrames:
             "insufficient", "over_trigger", 82627, 3113,
         )
 
+    def test_compaction_frame_carries_what_was_done_to_the_summarisers_input(self):
+        from primer.api.routers.tap import build_compaction_frame
+
+        def frame(**extra):
+            return build_compaction_frame([json.dumps({
+                "seq": 2, "kind": "compaction_marker", "created_at": "2026-10-05T00:00:00+00:00",
+                "payload": {"summary": "s", **extra},
+            })])
+
+        reduced = {"pruned": 3, "folded_chunks": 2, "truncated_parts": 1}
+        assert frame(summary_input_reduced=reduced)["summary_input_reduced"] == reduced
+        assert frame()["summary_input_reduced"] is None, "a compaction whose summariser did not overflow records none"
+
     def test_pending_frame_lists_unrealized_steers_with_their_parts(self):
         from primer.api.routers.tap import build_pending_steer_frame
         from primer.model.workspace_session import PendingSessionMessage

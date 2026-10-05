@@ -185,6 +185,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         unreducible: str | None = None,
         trigger_tokens: int | None = None,
         fixed_overhead_tokens: int = 0,
+        summary_input_reduced: "dict[str, int] | None" = None,
         snapshot: "list[Message] | None" = None,
     ) -> None:
         """Record a compaction by APPENDING one ``compaction_marker`` record.
@@ -270,6 +271,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     # ``tokens_before`` / ``tokens_after`` and the trigger count this part of the
                     # prompt too (system prompt and tool schemas): it is no history's to give back.
                     "fixed_overhead_tokens": fixed_overhead_tokens,
+                    # Only when the summariser's own call overflowed and its input was reduced (A.4): what
+                    # was done to it, so the summary is not read as a summary of the whole head.
+                    **({"summary_input_reduced": summary_input_reduced} if summary_input_reduced else {}),
                     "created_at": now.isoformat(),
                 },
                 created_at=now,

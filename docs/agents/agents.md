@@ -119,7 +119,12 @@ could be summarised, for example when the system prompt and tool schemas alone
 fill the window; `skipped`: the trigger cannot be reached and the prompt still
 fits, or the last compaction already left it at about this size, so the
 summary is not summarised again before the prompt has grown; noted once per
-run, not every turn). If the model then rejects the prompt as too large and
+run, not every turn). If the summarising call itself is rejected as too large (the history it has to summarise is over the model's window),
+the compaction retries once, without tools, on a shortened input: tool outputs are left out first, then the rest is
+summarised in up to four pieces, one after another, each with the summary so far. The marker records this as
+`summary_input_reduced`. If even that cannot fit, or the retry is rejected too, the turn (or the manual compact
+request) fails with `summariser_overflow` (the same 413 as `context_overflow_unrecoverable`): compact earlier, or
+use a larger-context model. If the model then rejects the prompt as too large and
 compaction cannot shrink it, the turn fails with `context_overflow_unrecoverable`
 instead of being replayed unchanged: shorten the system prompt, give the agent
 fewer tools, or use a larger-context model.

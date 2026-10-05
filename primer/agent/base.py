@@ -189,6 +189,7 @@ class _BaseAgentExecutor(ABC):
         unreducible: str | None = None,
         trigger_tokens: int | None = None,
         fixed_overhead_tokens: int = 0,
+        summary_input_reduced: dict[str, int] | None = None,
         snapshot: list[Message] | None = None,
     ) -> None:
         """Replace the persisted history with the compacted form.
@@ -199,7 +200,9 @@ class _BaseAgentExecutor(ABC):
         telemetry, and ``outcome`` / ``unreducible`` / ``trigger_tokens`` its
         verdict (``insufficient`` when the summary stands and the prompt is
         still over the trigger) and ``fixed_overhead_tokens`` the part of the
-        prompt no history can give back that its figures include. ``snapshot`` is the history the compaction
+        prompt no history can give back that its figures include. ``summary_input_reduced`` is what the
+        compaction did to the summariser's input when its first call overflowed (``None`` when it did not).
+        ``snapshot`` is the history the compaction
         was computed from: lines written to the persisted history after it
         was taken (a steer, say) are not in ``compacted`` and must survive
         the fold. Surfaces that record compaction as an append-only marker
@@ -300,6 +303,7 @@ class _BaseAgentExecutor(ABC):
                     unreducible=compacted.unreducible,
                     trigger_tokens=compacted.trigger_tokens,
                     fixed_overhead_tokens=compacted.fixed_overhead_tokens,
+                    summary_input_reduced=compacted.summary_input_reduced,
                     snapshot=history,
                 )
                 notes += self._compaction_notes(compacted, skip_noted=skip_noted)
@@ -374,6 +378,7 @@ class _BaseAgentExecutor(ABC):
                     unreducible=forced.unreducible,
                     trigger_tokens=forced.trigger_tokens,
                     fixed_overhead_tokens=forced.fixed_overhead_tokens,
+                    summary_input_reduced=forced.summary_input_reduced,
                     snapshot=history,
                 )
                 notes = self._compaction_notes(forced)

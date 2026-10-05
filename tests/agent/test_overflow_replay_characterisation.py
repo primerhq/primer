@@ -8,7 +8,9 @@ limitations (task 01a10893-ef41 changes exactly these; the proposed L1 and L2 la
 * tools the rejected attempt already ran run AGAIN, and the first attempt's tool call and result are not
   in the persisted history, so one effect happened twice and the record shows it once;
 * the replay is not itself covered: a second overflow propagates out of the turn;
-* ``maybe_compact`` runs OUTSIDE the overflow handler, so a context overflow in the summariser fails the turn.
+* ``maybe_compact`` runs OUTSIDE the overflow handler. A context overflow in the summariser used to fail the turn
+  with the provider's 400; it is now recovered inside the compaction (``test_summariser_overflow_recovery``), and a
+  head the bounded recovery cannot hold fails at once with a typed error that names the summariser.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from primer.model.chat import Done, ToolCallEnd, ToolCallStart
-from primer.model.except_ import BadRequestError
+from primer.model.except_ import BadRequestError, SummariserOverflow
 from tests._support.off_golden import (
     BIG_USER_CHARS, Events, Raise, ScriptedLLM, append_messages, assistant_message, open_session, run_turn,
     text_events, user_message,
@@ -101,20 +103,21 @@ async def test_a_second_overflow_has_no_handler_and_the_turn_fails_after_the_for
         await backend.aclose()
 
 
-async def test_a_context_overflow_in_the_summariser_fails_the_turn_because_maybe_compact_is_outside_the_handler(tmp_path) -> None:
+async def test_a_head_the_summariser_cannot_be_recovered_for_fails_the_turn_naming_the_summariser(tmp_path) -> None:
     backend, workspace, session = await open_session(tmp_path)
     try:
         # over the trigger (6 x 30k tokens of user text) and with a head before the 4th most recent assistant
-        # reply, so tier 2 runs
+        # reply, so tier 2 runs; the head is 5 units of 30k tokens: more than the bounded fold holds (4 chunks)
         for i in range(6):
             await append_messages(workspace, session, user_message(chr(ord("A") + i) * BIG_USER_CHARS), assistant_message(f"reply {i}"))
         await append_messages(workspace, session, user_message("now do the thing"))
         llm = ScriptedLLM()
         llm.session_id = session.session_id
         llm.extend([Raise(BadRequestError(OVERFLOW))])  # the summariser's own call is rejected
-        with pytest.raises(BadRequestError):
+        with pytest.raises(SummariserOverflow, match="summariser") as failed:
             await run_turn(session, llm)
-        assert len(llm.calls) == 1, "no force-compact, no retry: the summariser call was the only call"
+        assert isinstance(failed.value.__cause__, BadRequestError), "the provider's rejection is the cause"
+        assert len(llm.calls) == 1, "no force-compact, no second call that cannot work: the rejected call is the only call"
         assert _markers(_lines(workspace, session)) == []
     finally:
         await session.aclose()
