@@ -329,16 +329,22 @@ explicitly whenever a command's real write target lives outside its
 - **`watch_files` is invisible from MCP.** It's a yielding tool;
   the MCP exposability gate drops it. External agents wanting
   change-detection should poll `read_workspace_file` instead.
-- **A timed-out or cancelled `exec` kills everything it started
-  (container and k8s workspaces).** The command runs in its own
-  process group and a stop (the timeout, a cancel) signals the whole
-  group: SIGTERM first, so a command that traps it can clean up, then
-  SIGKILL after a few seconds. A background job the command left
+- **On a container or k8s workspace a timed-out `exec` kills everything
+  it started, but a Stop or Cancel does not yet reach the command.** The
+  command runs in its own process group. When its timeout (`timeout_ms`)
+  expires, or the connection to the runtime closes, the runtime signals
+  the whole group: SIGTERM first, so a command that traps it can clean
+  up, then SIGKILL after 5 seconds. A background job the command left
   behind (`server &`, `nohup server &`) is part of that group and is
   killed with it; a command that FINISHES leaves its background jobs
-  alone. To leave a daemon running past a call that may time out, both
-  detach and redirect: `setsid cmd >log 2>&1 &`. (`nohup` alone does
-  not detach.)
+  alone. A Stop or a Cancel of the call is different: the call is
+  cancelled and the session moves on, but the command keeps running in
+  the container until its own timeout or until the runtime connection
+  closes, whichever comes first. That changes when the runtime protocol
+  gains an exec-cancel operation (not shipped yet, and the runtime image
+  has to be rebuilt for it too). To leave a daemon running past a call
+  that may time out, both detach and redirect: `setsid cmd >log 2>&1 &`.
+  (`nohup` alone does not detach.)
 
 ## Related
 
