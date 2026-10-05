@@ -46,7 +46,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.workspace.base_backend import BaseWorkspaceBackend
+from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded
 from primer.workspace.files import FileResolvers
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.runtime.url import build_runtime_url
@@ -290,62 +290,71 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         sandbox = await self._adapter.get_sandbox(name)
         if sandbox is None:
             return None
-        # Lazy re-attach: the sandbox is alive (started by the adapter
-        # if it had stopped). Without a persisted template we cannot
-        # rebuild the SandboxWorkspace wrapper; the caller will see
-        # None and can re-issue the call with the template.
-        if template is None:
-            logger.debug(
-                "ContainerWorkspaceBackend.get: sandbox %r exists but no "
-                "template supplied for re-attach; returning None",
-                name,
+        # ``get_sandbox`` returns a FRESH sandbox with its own connected RuntimeClient on every call, so what is not cached
+        # below (no template, a wrong template kind, a failure, a cancel or a caller's timeout, the race lost) is ours to
+        # close: nothing else holds it.
+        cached = False
+        try:
+            # Lazy re-attach: the sandbox is alive (started by the adapter
+            # if it had stopped). Without a persisted template we cannot
+            # rebuild the SandboxWorkspace wrapper; the caller will see
+            # None and can re-issue the call with the template.
+            if template is None:
+                logger.debug(
+                    "ContainerWorkspaceBackend.get: sandbox %r exists but no "
+                    "template supplied for re-attach; returning None",
+                    name,
+                )
+                return None
+            if not isinstance(template.backend, ContainerTemplateConfig):
+                raise ConfigError(
+                    f"re-attach for workspace {workspace_id!r}: template "
+                    f"backend kind is {template.backend.kind!r}, expected "
+                    "'container'"
+                )
+            # Re-attach: rebuild the runtime_meta so the wrapper still
+            # exposes a non-None ``runtime_meta`` per the Workspace ABC. The
+            # adapter recovered the bearer token from the container env
+            # (``docker inspect`` -> ``Config.Env``) and stashed it on the
+            # sandbox as ``recovered_token``; fold it back into the meta so the
+            # re-attached workspace carries the live token (mirrors the K8s
+            # backend recovering it from the per-workspace Secret). Falls back
+            # to an empty SecretStr when the adapter could not recover it.
+            reattach_host_port: int | None = None
+            if isinstance(self._config.reachability, ContainerReachabilityHostPort):
+                reattach_host_port = getattr(sandbox, "mapped_host_port", None)
+            reattach_url = build_runtime_url(
+                provider_config=self._config,
+                workspace_id=workspace_id,
+                mapped_host_port=reattach_host_port,
             )
-            return None
-        if not isinstance(template.backend, ContainerTemplateConfig):
-            raise ConfigError(
-                f"re-attach for workspace {workspace_id!r}: template "
-                f"backend kind is {template.backend.kind!r}, expected "
-                "'container'"
+            recovered_token = getattr(sandbox, "recovered_token", None)
+            runtime_meta = WorkspaceRuntimeMeta(
+                url=reattach_url,
+                token=SecretStr(recovered_token) if recovered_token else SecretStr(""),
+                mapped_host_port=reattach_host_port,
             )
-        # Re-attach: rebuild the runtime_meta so the wrapper still
-        # exposes a non-None ``runtime_meta`` per the Workspace ABC. The
-        # adapter recovered the bearer token from the container env
-        # (``docker inspect`` -> ``Config.Env``) and stashed it on the
-        # sandbox as ``recovered_token``; fold it back into the meta so the
-        # re-attached workspace carries the live token (mirrors the K8s
-        # backend recovering it from the per-workspace Secret). Falls back
-        # to an empty SecretStr when the adapter could not recover it.
-        reattach_host_port: int | None = None
-        if isinstance(self._config.reachability, ContainerReachabilityHostPort):
-            reattach_host_port = getattr(sandbox, "mapped_host_port", None)
-        reattach_url = build_runtime_url(
-            provider_config=self._config,
-            workspace_id=workspace_id,
-            mapped_host_port=reattach_host_port,
-        )
-        recovered_token = getattr(sandbox, "recovered_token", None)
-        runtime_meta = WorkspaceRuntimeMeta(
-            url=reattach_url,
-            token=SecretStr(recovered_token) if recovered_token else SecretStr(""),
-            mapped_host_port=reattach_host_port,
-        )
-        ws = await SandboxWorkspace.materialise(
-            workspace_id=workspace_id,
-            template=template,
-            sandbox=sandbox,
-            backend_kind="container",
-            runtime_meta=runtime_meta,
-            workspace_root=template.backend.workdir,
-        )
-        async with self._lock:
-            # Race: another caller may have built the same wrapper.
-            existing = self._workspaces.get(workspace_id)
-            if existing is not None:
-                # Discard our wrapper; theirs wins. Don't tear the
-                # sandbox down -- it's the same one.
-                return existing
-            self._workspaces[workspace_id] = ws
-        return ws
+            ws = await SandboxWorkspace.materialise(
+                workspace_id=workspace_id,
+                template=template,
+                sandbox=sandbox,
+                backend_kind="container",
+                runtime_meta=runtime_meta,
+                workspace_root=template.backend.workdir,
+            )
+            async with self._lock:
+                # Race: another caller may have built the same wrapper.
+                existing = self._workspaces.get(workspace_id)
+                if existing is not None:
+                    # Theirs wins. Our sandbox is a separate object with its own connection to the same container: it
+                    # is closed below (the container itself is not torn down).
+                    return existing
+                self._workspaces[workspace_id] = ws
+                cached = True
+            return ws
+        finally:
+            if not cached:
+                await close_shielded(sandbox, what="re-attach sandbox")
 
     async def list(self) -> list[str]:
         names = await self._adapter.list_sandboxes()

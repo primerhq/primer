@@ -229,7 +229,7 @@ async def test_a_close_that_fails_is_logged_and_does_not_replace_the_error_that_
     c = _Client(close_error=OSError("the socket was already gone"))
     monkeypatch.setattr(k8s_backend, "RuntimeClient", lambda **kwargs: c)
     _materialise_raises(monkeypatch, RuntimeError("the sandbox could not be wrapped"))
-    with caplog.at_level(logging.WARNING, logger="primer.workspace.k8s.backend"):
+    with caplog.at_level(logging.WARNING, logger="primer.workspace"):
         with pytest.raises(RuntimeError, match="could not be wrapped"):
             await build(_backend())
     assert c.close_started == 1

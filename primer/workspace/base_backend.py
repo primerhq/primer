@@ -215,4 +215,26 @@ class BaseWorkspaceBackend(WorkspaceBackend):
         raise NotImplementedError
 
 
-__all__ = ["BaseWorkspaceBackend", "MergedTemplate"]
+async def close_shielded(closable: object, *, what: str) -> None:
+    """Close what a build that did not finish left open: a ``RuntimeClient``, a ``WSSandbox``, anything with ``aclose``.
+
+    Run from the ``except BaseException`` (or ``finally``) of a backend's create or re-attach, so a cancel or a caller's
+    ``asyncio.timeout`` that ended the build is covered too. The close is SHIELDED: a second cancel (a drain, a bound
+    landing again) while it runs must not leave the socket and the aiohttp session half released, so it runs on its own
+    task and carries on. A close that fails is logged and never replaces the error that ended the build.
+    """
+    aclose = getattr(closable, "aclose", None)
+    if aclose is None:
+        return
+    closing = asyncio.ensure_future(aclose())
+    # Retrieve what the close dies of when a second cancel stops us waiting for it: no "never retrieved" noise.
+    closing.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+    try:
+        await asyncio.shield(closing)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("%s: aclose failed: %s", what, exc)
+
+
+__all__ = ["BaseWorkspaceBackend", "MergedTemplate", "close_shielded"]
