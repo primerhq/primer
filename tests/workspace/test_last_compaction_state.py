@@ -2,8 +2,8 @@
 
 ``tokens_after`` is what the last compaction left the prompt at, so the strategy can avoid summarising its own
 summary again before the prompt has grown. It follows the same rules as the history reader: the newest marker wins,
-and a marker a rewind cut away no longer stands. ``skip_noted`` says that a run of skipped compactions already has
-its ``compaction_note``, so the run is noted once.
+and a marker a rewind cut away no longer stands. ``noted`` says that a run of the same verdict (outcome and reason) already
+has its ``compaction_note``, so the run is noted once.
 """
 
 import json
