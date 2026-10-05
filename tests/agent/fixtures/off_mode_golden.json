@@ -1517,8 +1517,8 @@
    ]
   }
  ],
- "captured_from": "4d95669bfcb9880d5889949368caf5e7a4d0d37b",
- "captured_from_subject": "docs(compaction): the hysteresis does not apply past the context window",
+ "captured_from": "0ef272c84c691067ce0934b89cb918d8fbd3fea0",
+ "captured_from_subject": "docs(compaction): the forced raise rule, the skip's population and what the route counts",
  "recaptures": [
   {
    "changed_turns": [
