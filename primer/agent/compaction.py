@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
+from primer.agent.overflow import ReplayGuard
 from primer.agent.tail import CompactionSplit, split_for_compaction
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.model.chat import (
@@ -278,6 +279,7 @@ class CompactionStrategy:
     DEFAULT_RESERVED_OUTPUT: int = 8192
     DEFAULT_TAIL_TURNS: int = 4
     DEFAULT_TAIL_BUDGET_FRACTION: float = 0.5
+    DEFAULT_REDUCED_FRACTION: float = 0.6
     DEFAULT_PRUNE_PER_OUTPUT: int = 20_000
     DEFAULT_PRUNE_TOTAL_THRESHOLD: int = 40_000
     DEFAULT_SUMMARY_MAX_TOKENS: int = 4096
@@ -575,6 +577,16 @@ class CompactionStrategy:
             tail_budget_tokens=tail_budget_tokens,
             size=self._estimate_tokens,
         )
+
+    def reduced_target(self, model: "ResolvedModel") -> int:
+        """The size, in estimated tokens, a prompt is reduced to when it has to shrink to be sent
+        again: ``DEFAULT_REDUCED_FRACTION`` of the budget, so the reduced prompt leaves room for
+        the reply and for the estimate being low."""
+        return int(self.DEFAULT_REDUCED_FRACTION * self._effective_budget(model))
+
+    def replay_guard(self, model: "ResolvedModel") -> ReplayGuard:
+        """The prompt guard for the replay after an overflow (see :class:`ReplayGuard`)."""
+        return ReplayGuard(target_tokens=self.reduced_target(model), size=self._estimate_tokens)
 
     def _tail_budget(self, room: int) -> int:
         """What the kept tail may weigh, given ``room`` (the trigger minus everything that is not

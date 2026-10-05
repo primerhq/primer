@@ -161,6 +161,40 @@ class ScriptedLLM:
             yield event
 
 
+class FnLLM:
+    """A REACTIVE model: ``fn(call_number, messages, kwargs)`` decides what each call does from what the prompt holds.
+
+    It returns the events to stream, or an exception to raise. A scripted model replays a fixed list whatever
+    it is asked, so it cannot tell a recovery that continues a turn from one that starts it again; a model that
+    looks at the prompt can (emit a tool call only while no result for it is in the prompt).
+    """
+
+    def __init__(self, fn) -> None:
+        self._fn = fn
+        self.calls: list[dict[str, Any]] = []
+        self.session_id = ""
+
+    async def list_models(self) -> list[str]:
+        return ["m"]
+
+    def stream(self, *, model, messages, **kwargs):
+        self.calls.append({"call": len(self.calls) + 1, "messages": list(messages), "kwargs": kwargs})
+        outcome = self._fn(len(self.calls), list(messages), kwargs)
+        return self._run(outcome)
+
+    async def _run(self, outcome):
+        if isinstance(outcome, Gate):
+            outcome.entered.set()
+            await outcome.release.wait()
+            if outcome.error is not None:
+                raise outcome.error
+            outcome = outcome.events
+        if isinstance(outcome, Exception):
+            raise outcome
+        for event in outcome:
+            yield event
+
+
 # ------------------------------------------------------------------- the session
 
 def make_agent() -> Agent:
@@ -256,17 +290,24 @@ def assistant_message(text: str) -> Message:
 
 
 def make_executor(
-    session, llm, *, llm_model=None, compaction=None, wrap_tools=None,
+    session, llm, *, llm_model=None, compaction=None, wrap_tools=None, configure=None,
 ) -> WorkspaceAgentExecutor:
-    """The real executor over a real session. ``wrap_tools`` receives the real tool manager and returns the one to use."""
+    """The real executor over a real session.
+
+    ``wrap_tools`` receives the real tool manager and returns the one to use; ``configure`` receives the
+    executor before it is used (``WorkspaceAgentExecutor`` rebuilds its agent from a few fields, so a test
+    that needs an agent setting such as ``max_tool_turns`` sets it on the executor's own agent here)."""
     manager = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
     if wrap_tools is not None:
         manager = wrap_tools(manager)
-    return WorkspaceAgentExecutor(
+    executor = WorkspaceAgentExecutor(
         agent=make_agent(), llm=llm,  # type: ignore[arg-type]
         llm_model=llm_model or make_model(), tool_manager=manager, session=session,
         compaction=compaction or CompactionStrategy(),
     )
+    if configure is not None:
+        configure(executor)
+    return executor
 
 
 async def fixed_overhead(session) -> int:
@@ -275,14 +316,17 @@ async def fixed_overhead(session) -> int:
 
 
 async def run_turn(
-    session, llm: ScriptedLLM, *, collect: list | None = None, llm_model=None, compaction=None, wrap_tools=None,
+    session, llm, *, collect: list | None = None, llm_model=None, compaction=None, wrap_tools=None, configure=None,
 ) -> None:
     """One turn on the real executor; ``collect`` receives every event the turn yields."""
-    executor = make_executor(session, llm, llm_model=llm_model, compaction=compaction, wrap_tools=wrap_tools)
+    executor = make_executor(
+        session, llm, llm_model=llm_model, compaction=compaction, wrap_tools=wrap_tools, configure=configure,
+    )
     async for event in executor.invoke([]):
         if collect is not None:
             collect.append(event)
-    assert llm.unused() == 0, f"{llm.unused()} scripted LLM step(s) were never used this turn"
+    if hasattr(llm, "unused"):
+        assert llm.unused() == 0, f"{llm.unused()} scripted LLM step(s) were never used this turn"
 
 
 # ------------------------------------------------------------- what is recorded

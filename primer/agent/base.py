@@ -41,6 +41,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -54,7 +55,9 @@ from primer.agent.events import (
     Subscription,
     _ExecutorToolResult,
 )
+from primer.agent.overflow import completed_rounds, reduce_for_persist, tool_rounds
 from primer.agent.prompt_render import render_system_prompt_or_raw
+from primer.agent.prune import PruneSet
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.context_overflow import is_context_overflow
 from primer.model.chat import (
@@ -90,6 +93,27 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _TurnRecord:
+    """What one ``invoke`` has produced so far, shared by its attempts.
+
+    ``messages`` is the turn's own messages: its input (``inputs`` leading entries) and then every
+    round the model and the tools completed, appended by the loop as they finish. It is the one
+    thing the persistence chokepoint reads when a turn ends any way but a park or a normal finish.
+    ``durable_rounds`` counts rounds that already reached the history through a compaction marker
+    (the overflow recovery folds the rounds so far into the history), so they are not written twice.
+    """
+
+    messages: list[Message]
+    inputs: int
+    persisted: bool = False
+    durable_rounds: int = 0
+    guard: Any = None
+    forced_compaction: bool = False
+    replay_attempted: bool = False
+    notes: list[ExtendedEvent] = field(default_factory=list)
 
 
 class _BaseAgentExecutor(ABC):
@@ -190,7 +214,7 @@ class _BaseAgentExecutor(ABC):
         trigger_tokens: int | None = None,
         fixed_overhead_tokens: int = 0,
         snapshot: list[Message] | None = None,
-    ) -> None:
+    ) -> list[Message] | None:
         """Replace the persisted history with the compacted form.
 
         ``summary_message`` is the assistant-role summary the strategy
@@ -202,7 +226,8 @@ class _BaseAgentExecutor(ABC):
         prompt no history can give back that its figures include. ``snapshot`` is the history the compaction
         was computed from: lines written to the persisted history after it
         was taken (a steer, say) are not in ``compacted`` and must survive
-        the fold. Surfaces that record compaction as an append-only marker
+        the fold; the hook returns those lines (``None`` or empty when there are
+        none) so the caller can hand them to the turn that follows. Surfaces that record compaction as an append-only marker
         (the workspace executor) use these to build the marker payload;
         surfaces that rewrite in place (the chat/thread executor) ignore them.
         """
@@ -231,14 +256,16 @@ class _BaseAgentExecutor(ABC):
         """
         return None
 
-    async def _close_compaction_window(self) -> None:
+    async def _close_compaction_window(self) -> list[Message]:
         """Hook run after the compaction region (in a ``finally``). No-op here.
 
         The workspace executor overrides this to clear the ``compacting`` flag
         and drain any steers deferred during the window, applying them AFTER
-        the compaction marker. Must not raise on the default no-op path.
+        the compaction marker; it returns the steers it applied, so the overflow
+        replay can be handed them (the history it is built on was fixed before they
+        landed). Must not raise on the default no-op path.
         """
-        return None
+        return []
 
     # ---- Public surface --------------------------------------------------
 
@@ -321,75 +348,200 @@ class _BaseAgentExecutor(ABC):
             await self._emit(note)
             yield note
 
+        record = _TurnRecord(messages=list(messages), inputs=len(messages))
+        from primer.model.yield_ import ToolWaitPark, YieldToWorker
+
         try:
-            async for ev in self._run_loop(
-                history=history,
-                new_messages=messages,
-                response_format=response_format,
-                tools=tools,
-            ):
-                yield ev
-        except BadRequestError as exc:
-            # Only a RAISED BadRequestError is recovered here. A yielded overflow (Ollama, Gemini)
-            # reaches this point as a TurnStreamFailure and is classified by is_context_overflow, but
-            # deliberately NOT recovered: this replay starts the turn again from scratch, which would
-            # re-run side-effecting tools, and the yielded Error has already been streamed and recorded.
-            if not is_context_overflow(exc):
-                raise
-            logger.warning(
-                "AgentExecutor: hard-overflow detected; force-compacting and retrying",
-                extra={"agent_id": self._agent.id, "error": str(exc)},
-            )
-            # Hard-overflow recovery also runs an LLM await (force_compact), so
-            # bracket it too; ``history`` is already in hand, so the snapshot
-            # from the hook is not needed here (the flag/drain is what matters).
-            await self._open_compaction_window()
             try:
-                forced = await self._compaction.force_compact(
-                    agent=self._agent,
-                    llm=self._llm,
-                    model=self._model,
+                async for ev in self._run_loop(
                     history=history,
                     new_messages=messages,
+                    response_format=response_format,
+                    tools=tools,
+                    record=record,
+                ):
+                    yield ev
+            except BadRequestError as exc:
+                # Only a RAISED BadRequestError is recovered here. A yielded overflow (Ollama, Gemini) reaches
+                # this point as a TurnStreamFailure and is classified by is_context_overflow, but deliberately is
+                # NOT recovered here: the yielded Error has already been streamed and recorded.
+                if not is_context_overflow(exc):
+                    raise
+                async for ev in self._recover_from_overflow(
+                    exc,
+                    history=history,
+                    messages=messages,
+                    response_format=response_format,
+                    tools=tools,
                     fixed_overhead=fixed_overhead,
-                    **self._compaction_tool_kwargs(),
-                )
-                if self._replay_is_futile(forced):
-                    # Nothing can be shrunk (the fixed part, or the input the model has not answered,
-                    # already fills the window): replaying the byte-identical prompt would be rejected
-                    # the same way, so fail now, with a name, instead of spending a model call on it.
-                    raise ContextOverflowUnrecoverable(
-                        f"the model rejected the prompt as too large and compaction cannot shrink it "
-                        f"({forced.unreducible}): about {forced.estimated_tokens_after} tokens, of which "
-                        f"{forced.fixed_overhead_tokens} are the system prompt and tool schemas, against a "
-                        f"context window of {self._model.context_length}",
-                        cause=exc,
-                    ) from exc
-                await self._replace_compacted_head(
-                    forced.new_messages,
-                    summary_message=forced.summary_message,
-                    tokens_before=forced.estimated_tokens_before,
-                    tokens_after=forced.estimated_tokens_after,
-                    outcome=forced.outcome,
-                    unreducible=forced.unreducible,
-                    trigger_tokens=forced.trigger_tokens,
-                    fixed_overhead_tokens=forced.fixed_overhead_tokens,
-                    snapshot=history,
-                )
-                notes = self._compaction_notes(forced)
-                history = forced.new_messages
-            finally:
-                await self._close_compaction_window()
-            for note in notes:
-                await self._emit(note)
-                yield note
+                    record=record,
+                ):
+                    yield ev
+        except (YieldToWorker, ToolWaitPark):
+            # A park is not a failure: the worker keeps the stamped rounds in its parked state.
+            raise
+        except BaseException as exc:
+            # EVERY other way a turn can end (an exception, a failed stream, the generator closed, a
+            # hard cancel) leaves the tool rounds it already ran only here. They have run: persisting
+            # them is what stops the next turn running them again.
+            await self._persist_failed_turn(record, exc)
+            raise
+
+    async def _recover_from_overflow(
+        self,
+        exc: BadRequestError,
+        *,
+        history: list[Message],
+        messages: list[Message],
+        response_format: type[BaseModel] | dict[str, Any] | None,
+        tools: "list[Tool]",
+        fixed_overhead: int,
+        record: _TurnRecord,
+    ) -> AsyncIterator[StreamEvent]:
+        """The turn's own call was rejected as a context overflow: compact, then CONTINUE the turn.
+
+        The tool rounds the rejected attempt completed are folded into the history the compaction
+        works on (so a turn that read many files can be shrunk: its early rounds are summarised and
+        the opening question and the newest round stay), in the reduced form with ALREADY RAN
+        placeholders (the raw output is in the event log; persisting it raw would let the next turn
+        overflow on it), and written by the compaction marker. The replay is then a fresh record
+        built on the compacted history, with the turn's tool budget carried over, under a prompt
+        guard that reduces what it sends. Nothing the turn already ran runs again.
+        """
+        rounds = completed_rounds(record.messages[record.inputs:])
+        del record.messages[record.inputs + len(rounds):]  # a call that never got its result goes
+        logger.warning(
+            "AgentExecutor: hard-overflow detected; force-compacting and replaying",
+            extra={"agent_id": self._agent.id, "error": str(exc), "completed_rounds": tool_rounds(rounds)},
+        )
+        size = self._compaction._estimate_tokens  # noqa: SLF001 - the strategy's own sizing
+        reduced = reduce_for_persist(
+            rounds, sticky=PruneSet(), target_tokens=self._compaction.reduced_target(self._model) // 2, size=size,
+        )
+        notes: list[ExtendedEvent] = []
+        carried: list[Message] = []
+        drained: list[Message] = []
+        # Hard-overflow recovery runs an LLM await (force_compact), so bracket it with the window too.
+        await self._open_compaction_window()
+        try:
+            forced = await self._compaction.force_compact(
+                agent=self._agent,
+                llm=self._llm,
+                model=self._model,
+                history=[*history, *messages, *reduced],
+                new_messages=[],
+                fixed_overhead=fixed_overhead,
+                **self._compaction_tool_kwargs(),
+            )
+            if self._replay_is_futile(forced):
+                # Nothing can be shrunk (the fixed part, or the input the model has not answered,
+                # already fills the window): replaying the byte-identical prompt would be rejected
+                # the same way, so fail now, with a name, instead of spending a model call on it.
+                raise ContextOverflowUnrecoverable(
+                    f"the model rejected the prompt as too large and compaction cannot shrink it "
+                    f"({forced.unreducible}): about {forced.estimated_tokens_after} tokens, of which "
+                    f"{forced.fixed_overhead_tokens} are the system prompt and tool schemas, against a "
+                    f"context window of {self._model.context_length}",
+                    cause=exc,
+                    forced_compaction=False,
+                    replay_attempted=False,
+                    persisted_rounds=self._durable_rounds(record),
+                ) from exc
+            carried = await self._replace_compacted_head(
+                forced.new_messages,
+                summary_message=forced.summary_message,
+                tokens_before=forced.estimated_tokens_before,
+                tokens_after=forced.estimated_tokens_after,
+                outcome=forced.outcome,
+                unreducible=forced.unreducible,
+                trigger_tokens=forced.trigger_tokens,
+                fixed_overhead_tokens=forced.fixed_overhead_tokens,
+                snapshot=history,
+            ) or []
+            notes = self._compaction_notes(forced)
+            # The marker holds the input and the rounds so far: they are durable, the replay starts clean.
+            record.forced_compaction = True
+            record.durable_rounds += tool_rounds(rounds)
+            record.messages = []
+            record.inputs = 0
+        finally:
+            drained = await self._close_compaction_window() or []
+        for note in notes:
+            await self._emit(note)
+            yield note
+        record.replay_attempted = True
+        record.guard = self._compaction.replay_guard(self._model)
+        try:
             async for ev in self._run_loop(
-                history=history,
-                new_messages=messages,
+                # the compacted history, the lines written since it was read (mid-turn steers) and the
+                # steers deferred while it ran: a steer is not left for the next turn
+                history=[*forced.new_messages, *carried, *drained],
+                new_messages=[],
                 response_format=response_format,
                 tools=tools,
+                record=record,
+                initial_tool_round=tool_rounds(rounds),
+                budget=record.guard,
             ):
                 yield ev
+        except BadRequestError as replay_exc:
+            if not is_context_overflow(replay_exc):
+                raise
+            logger.warning(
+                "AgentExecutor: the replay after a forced compaction overflowed too; recording the "
+                "tool rounds the turn ran and failing the turn",
+                extra={"agent_id": self._agent.id, "error": str(replay_exc)},
+            )
+            raise ContextOverflowUnrecoverable(
+                f"the model rejected the prompt as too large, the forced compaction ran, and the "
+                f"replay was rejected too: {replay_exc.message}",
+                cause=replay_exc,
+                forced_compaction=True,
+                replay_attempted=True,
+                persisted_rounds=self._durable_rounds(record),
+            ) from replay_exc
+
+    @staticmethod
+    def _durable_rounds(record: _TurnRecord) -> int:
+        """How many completed tool rounds of this turn are, or are about to be, in the history."""
+        return record.durable_rounds + tool_rounds(completed_rounds(record.messages[record.inputs:]))
+
+    async def _persist_failed_turn(self, record: _TurnRecord, exc: BaseException) -> None:
+        """The persistence chokepoint for a turn that did not finish: write its completed rounds.
+
+        Only WHOLE rounds (a call with its result; a half-streamed reply or a call whose dispatch never
+        finished is not one), in the REDUCED form the model last saw (the replay guard's recorded
+        reductions, cut further when still large, ALREADY RAN placeholders): the raw output stays in the
+        event log, and persisting it raw would let the next turn overflow on it again. A hard cancel
+        writes under ``asyncio.shield`` so the cancellation cannot interrupt the write. Best effort:
+        a failure here (an ENDED slot, a broken mount) is logged and never masks the error that ended
+        the turn.
+        """
+        if record.persisted:
+            return
+        rounds = completed_rounds(record.messages[record.inputs:])
+        if not rounds:
+            return
+        guard = record.guard
+        reduced = reduce_for_persist(
+            rounds,
+            sticky=guard.prune_set if guard is not None else PruneSet(),
+            target_tokens=self._compaction.reduced_target(self._model) // 2,
+            size=self._compaction._estimate_tokens,  # noqa: SLF001 - the strategy's own sizing
+        )
+        record.persisted = True
+        write = self._persist_turn([*record.messages[: record.inputs], *reduced])
+        try:
+            if isinstance(exc, asyncio.CancelledError):
+                await asyncio.shield(write)
+            else:
+                await write
+        except Exception:  # noqa: BLE001 -- the error that ended the turn is the one to surface
+            logger.exception(
+                "AgentExecutor: could not record the %d tool round(s) a failed turn had completed",
+                tool_rounds(rounds),
+                extra={"agent_id": self._agent.id},
+            )
 
     async def fixed_overhead_tokens(self, tools: "list[Tool] | None" = None) -> int:
         """The estimated size of what goes out on every call and no history can give back: the rendered
@@ -478,10 +630,21 @@ class _BaseAgentExecutor(ABC):
         new_messages: list[Message],
         response_format: type[BaseModel] | dict[str, Any] | None,
         tools: "list[Tool] | None" = None,
+        record: _TurnRecord | None = None,
+        initial_tool_round: int = 0,
+        budget: "PromptGuard | None" = None,
     ) -> AsyncIterator[StreamEvent]:
+        """Run the turn's LLM/tool loop and persist it.
+
+        ``record`` is the turn's record (shared with ``invoke``'s persistence chokepoint and with a
+        replay); a loop run on its own makes its own. ``initial_tool_round`` is the rounds the turn
+        already spent in earlier attempts and ``budget`` an optional prompt guard.
+        """
         from primer.agent.loop import run_agent_turn
 
-        full_turn_messages: list[Message] = list(new_messages)
+        if record is None:
+            record = _TurnRecord(messages=list(new_messages), inputs=len(new_messages))
+        full_turn_messages = record.messages
         prompt = self._build_prompt(history, new_messages)
         self.was_interrupted = False
         self.hit_tool_turn_cap = False
@@ -512,6 +675,8 @@ class _BaseAgentExecutor(ABC):
                 interrupted_out=interrupted_holder,
                 capped_out=capped_holder,
                 tools=tools,
+                budget=budget,
+                initial_tool_round=initial_tool_round,
             ):
                 await self._emit(event)
                 yield event
@@ -529,7 +694,7 @@ class _BaseAgentExecutor(ABC):
             # The slice strips ``new_messages`` (which the executor's
             # caller already has) so the stamp is just what this turn
             # accumulated up to the yield point.
-            exc.llm_messages = list(full_turn_messages[len(new_messages):])
+            exc.llm_messages = list(full_turn_messages[record.inputs:])
             raise
         except ToolWaitPark as exc:
             # 01a0518b: same stamp, same reasoning, as the YieldToWorker
@@ -539,7 +704,7 @@ class _BaseAgentExecutor(ABC):
             # (loop.py's _dispatch_as_claims leaves llm_messages unset);
             # this is the "one layer up" that stamps it, mirroring
             # YieldToWorker's precedent exactly.
-            exc.llm_messages = list(full_turn_messages[len(new_messages):])
+            exc.llm_messages = list(full_turn_messages[record.inputs:])
             raise
 
         # A Stop ends the loop cleanly. What was persisted is whatever COMPLETED
@@ -552,9 +717,10 @@ class _BaseAgentExecutor(ABC):
         # message (helper appends it on the first non-tool stop or
         # not at all on empty/error streams).
         produced_assistant = any(
-            m.role == "assistant" for m in full_turn_messages[len(new_messages):]
+            m.role == "assistant" for m in full_turn_messages[record.inputs:]
         )
         if produced_assistant:
+            record.persisted = True
             await self._persist_turn(full_turn_messages)
 
     # ---- Tool dispatch ---------------------------------------------------
