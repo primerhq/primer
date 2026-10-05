@@ -75,7 +75,7 @@ _TOOL_CAP_REFUSAL = "not executed: tool-turn cap reached"
 # ... and when a Stop landed while the call was RUNNING and it has no result to report: it asked to park, or it was
 # cancelled (or abandoned) by the Stop (slice B1). It started and never reported a result, so it cannot say "not
 # run". One wording for all three. (The calls that finished before it keep their real results.)
-_PARK_STOPPED_REFUSAL ="interrupted: stopped by user (the call may have run, and its result was not recorded)"
+_PARK_STOPPED_REFUSAL = "interrupted: stopped by user (the call may have run, and its result was not recorded)"
 
 
 def _answer_undispatched(
@@ -785,18 +785,6 @@ async def run_agent_turn(
         prompt = prompt + [assistant_msg, *tool_result_msgs]
 
 
-def _abandon_hook(call: ToolCallPart) -> "Callable[[], None] | None":
-    """What to do just before a call is abandoned: tell the turn's delegation recorder to drop whatever a subagent call
-    still emits, so the parent log never shows it continuing after the Stop's answer. None when no recorder is bound
-    (or it is not a :class:`~primer.session.delegation.DelegationRecorder`)."""
-    from primer.session.delegation import current_delegation_sink
-
-    abandon = getattr(current_delegation_sink(), "abandon", None)
-    if abandon is None:
-        return None
-    return lambda: abandon(call.id)
-
-
 def _partition_notifying(
     calls: list[ToolCallPart], tool_manager: ToolExecutionManager,
 ) -> tuple[list[ToolCallPart], list[ToolCallPart]]:
@@ -912,12 +900,12 @@ async def _dispatch_tool_calls(
                 # Its own task, raced against the Stop (see primer.agent.stoppable_call): an interruptible call is
                 # cancelled, one that is not is waited for, and a call that finishes keeps its real result. None
                 # means the Stop fired and the call has none to give: the same "interrupted" answer a Stop at a
-                # park gets.
+                # park gets. A call it gives up on is abandoned through its CallScope (what it and every subagent it
+                # started still emit is dropped by the delegation recorder), on the Stop path and on a hard Cancel.
                 result = await run_stoppable(
                     lambda: tool_manager.execute(call, principal=principal),
                     interrupt=interrupt,
                     interruptible=lambda: tool_manager.is_interruptible(call.name),
-                    on_abandon=_abandon_hook(call),
                     name=call.name,
                 )
                 if result is None:

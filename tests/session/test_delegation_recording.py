@@ -10,6 +10,9 @@ subagent event, which is what gives S7 its trace coverage and S8 its
 nesting anchor (both keyed on payload["delegate_tool_call_id"]).
 """
 
+import asyncio
+
+from primer.agent.call_scope import CallScope, bind_call_scope
 from primer.model.chat import Done, TextDelta
 from primer.session.delegation import (
     DelegationRecorder,
@@ -90,57 +93,100 @@ async def test_untranslatable_events_are_dropped_quietly():
     assert b.published == []
 
 
+async def _in_a_call(scope: CallScope, work):
+    """Run ``work()`` the way a tool call runs: in its own task, with the call's scope bound in that task's context."""
+
+    async def run():
+        bind_call_scope(scope)
+        return await work()
+
+    return await asyncio.create_task(run())
+
+
 async def test_an_abandoned_call_records_nothing_more():
     """Stop slice B1: when a Stop gives up on a subagent call, its eventual events must not be appended to the parent log
     AFTER the synthetic result that answered the call (they would read as the subagent continuing past the Stop)."""
     w, b = _Writer(), _Bus()
     rec = DelegationRecorder(writer=w, event_bus=b, session_id="s")
-    await rec.on_event(TextDelta(index=0, text="before"), delegate_tool_call_id="call_7")
-    await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_7")
-    before = len(w.records)
-    published = len(b.published)
-    assert before > 0
+    scope = CallScope()
+    counts: dict[str, int] = {}
 
-    rec.abandon("call_7")
-    await rec.on_event(TextDelta(index=0, text="after"), delegate_tool_call_id="call_7")
-    await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_7")
+    async def work():
+        await rec.on_event(TextDelta(index=0, text="before"), delegate_tool_call_id="call_7")
+        await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_7")
+        counts["before"], counts["published"] = len(w.records), len(b.published)
+        scope.abandon()
+        await rec.on_event(TextDelta(index=0, text="after"), delegate_tool_call_id="call_7")
+        await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_7")
 
-    assert len(w.records) == before, "an abandoned call kept appending to the parent log"
-    assert len(b.published) == published, "an abandoned call kept publishing ticks"
+    await _in_a_call(scope, work)
+
+    assert counts["before"] > 0
+    assert len(w.records) == counts["before"], "an abandoned call kept appending to the parent log"
+    assert len(b.published) == counts["published"], "an abandoned call kept publishing ticks"
+
+
+async def test_events_of_a_nested_call_are_dropped_whatever_id_they_carry():
+    """A subagent that delegated tags its events with the INNER call's id. Abandonment follows the call's scope (the task
+    tree), not one id, so those are dropped too."""
+    w = _Writer()
+    rec = DelegationRecorder(writer=w, event_bus=_Bus(), session_id="s")
+    scope = CallScope()
+    scope.abandon()
+
+    async def work():
+        await rec.on_event(TextDelta(index=0, text="inner"), delegate_tool_call_id="inner_call")
+        await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="inner_call")
+
+    await _in_a_call(scope, work)
+
+    assert w.records == []
 
 
 async def test_abandoning_one_call_leaves_the_others_recording():
     w, b = _Writer(), _Bus()
     rec = DelegationRecorder(writer=w, event_bus=b, session_id="s")
-    rec.abandon("call_a")
+    abandoned, other = CallScope(), CallScope()
+    abandoned.abandon()
 
-    await rec.on_event(TextDelta(index=0, text="mine"), delegate_tool_call_id="call_b")
-    await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_b")
+    async def work():
+        await rec.on_event(TextDelta(index=0, text="mine"), delegate_tool_call_id="call_b")
+        await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_b")
 
+    await _in_a_call(other, work)
     assert w.records, "an unrelated call stopped recording"
     assert {r.payload["delegate_tool_call_id"] for r in w.records} == {"call_b"}
 
 
+async def test_a_turn_without_a_stop_has_no_scope_and_records_as_before():
+    """The control: no call scope bound (every turn that is never stopped): nothing is dropped."""
+    w = _Writer()
+    rec = DelegationRecorder(writer=w, event_bus=_Bus(), session_id="s")
+
+    await rec.on_event(TextDelta(index=0, text="x"), delegate_tool_call_id="call_7")
+    await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_7")
+
+    assert w.records
+
+
 async def test_an_abandon_between_the_records_of_one_event_stops_the_rest():
     """One event can translate to several records; the abandon can land while the first is being written."""
+    scope = CallScope()
 
     class _AbandoningWriter(_Writer):
-        def __init__(self, rec_holder):
-            super().__init__()
-            self._holder = rec_holder
-
         async def append(self, rec):
             seq = await super().append(rec)
             if len(self.records) == 1:
-                self._holder[0].abandon("call_7")      # the Stop gives up on the call mid-event
+                scope.abandon()                        # the Stop gives up on the call mid-event
             return seq
 
-    holder: list = []
-    w = _AbandoningWriter(holder)
+    w = _AbandoningWriter()
     rec = DelegationRecorder(writer=w, event_bus=_Bus(), session_id="s")
-    holder.append(rec)
 
-    await rec.on_event(TextDelta(index=0, text="buffered"), delegate_tool_call_id="call_7")
-    await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_7")
+    async def work():
+        await rec.on_event(TextDelta(index=0, text="buffered"), delegate_tool_call_id="call_7")
+        await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_7")
+
+    await _in_a_call(scope, work)
 
     assert len(w.records) == 1, "records of an abandoned call were written after the abandon"

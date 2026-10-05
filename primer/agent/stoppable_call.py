@@ -17,11 +17,12 @@ The rules, in the order they apply:
   process-group kill) and any records it writes land BEFORE the answer is recorded. A call that is not interruptible (a
   file write: cancelling it would release the scope lock while its thread still writes) is not cancelled, only waited
   for, up to :data:`NON_INTERRUPTIBLE_GRACE_S`.
-* A call that will not go is ABANDONED: ``on_abandon`` runs first (a subagent's recorder stops accepting its events),
-  the task is kept in a strong set (asyncio holds tasks only weakly, so an unreferenced one can be collected mid-flight)
-  and a done-callback retrieves and logs its exception.
+* A call that will not go is ABANDONED: its :class:`~primer.agent.call_scope.CallScope` is flipped first (the delegation
+  recorder then drops whatever the call, and every subagent it started, still emits), then ``on_abandon`` runs, the task
+  is kept in a strong set (asyncio holds tasks only weakly, so an unreferenced one can be collected mid-flight) and a
+  done-callback retrieves and logs its exception.
 * A hard Cancel of the turn cancels the call, waits for it (shielded, bounded) so its cleanup has run when the turn task
-  ends, and re-raises: a ``CancelledError`` is never swallowed.
+  ends, and re-raises: a ``CancelledError`` is never swallowed. A call that still has not gone is abandoned the same way.
 
 The call runs in a COPY of the caller's context (``create_task`` does that); every primer context variable
 (``delegation._SINK``, ``invoke._DEPTH``, the node identity, the MCP principal) is set and reset inside one call, so
@@ -35,13 +36,17 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
+from primer.agent.call_scope import CallScope, bind_call_scope, current_call_scope
 from primer.model.except_ import AuthRequiredError
 from primer.model.yield_ import ToolWaitPark, YieldToWorker
 
 logger = logging.getLogger(__name__)
 
-#: How long a cancelled call gets to unwind (its cleanup, the records it writes) before it is abandoned.
-UNWIND_BOUND_S = 2.0
+#: How long a cancelled call gets to unwind (its cleanup, the records it writes) before it is abandoned. It has a margin
+#: over the MCP SDK's stdio client, which waits up to ``PROCESS_TERMINATION_TIMEOUT`` (2.0 s) for a server to exit once
+#: its stdin is closed before it terminates it: a bound equal to that abandons a cancelled stdio MCP call before its
+#: process is reaped, so the answer would be recorded while the server is still alive.
+UNWIND_BOUND_S = 3.0
 
 #: How long a call that is NOT interruptible is waited for after a Stop before it is abandoned.
 NON_INTERRUPTIBLE_GRACE_S = 5.0
@@ -64,11 +69,23 @@ async def run_stoppable(
     """Run ``call()`` as its own task; return its result, or None when the Stop fired and there is no usable result.
 
     ``interruptible`` is asked only once the Stop has fired, so a turn that is never stopped pays nothing for it.
-    ``on_abandon`` runs just before a call is abandoned, BEFORE the caller records its own answer. None means "the Stop
-    fired and the call did not produce a result": the caller records the synthetic one.
+    ``on_abandon`` runs just before a call is abandoned (on the Stop path AND on the hard-Cancel path), BEFORE the caller
+    records its own answer. None means "the Stop fired and the call did not produce a result": the caller records the
+    synthetic one.
+
+    The call runs inside its own :class:`~primer.agent.call_scope.CallScope`, bound in the call task's context and so
+    inherited by everything the call starts; abandoning the call flips it, and the delegation recorder drops what any of
+    that still emits. That is why abandonment follows the call's task tree and not an id: a subagent that delegated tags its
+    events with its INNER call's id.
     """
     loop = asyncio.get_running_loop()
-    task = asyncio.ensure_future(call())
+    scope = CallScope(parent=current_call_scope())
+
+    async def in_the_calls_scope() -> T:
+        bind_call_scope(scope)        # inside the task: its own copy of the context, never the caller's
+        return await call()
+
+    task = asyncio.ensure_future(in_the_calls_scope())
     task.set_name(f"stoppable:{name}")
     waiter = loop.create_task(interrupt.wait(), name="stoppable:stop-waiter")
     stopped_first = False
@@ -85,13 +102,13 @@ async def run_stoppable(
             else:
                 await asyncio.wait({task}, timeout=NON_INTERRUPTIBLE_GRACE_S)
     except asyncio.CancelledError:
-        await _unwind_after_a_hard_cancel(task, name)
+        await _unwind_after_a_hard_cancel(task, name, scope, on_abandon)
         raise
     finally:
         waiter.cancel()
 
     if not task.done():
-        _abandon(task, name, on_abandon)
+        _abandon(task, name, scope, on_abandon)
         return None
     return _outcome(task, interrupt, stopped_first=stopped_first, name=name)
 
@@ -113,9 +130,13 @@ def _outcome(task: asyncio.Task, interrupt: asyncio.Event, *, stopped_first: boo
     raise exc
 
 
-async def _unwind_after_a_hard_cancel(task: asyncio.Task, name: str) -> None:
+async def _unwind_after_a_hard_cancel(
+    task: asyncio.Task, name: str, scope: CallScope, on_abandon: Callable[[], None] | None,
+) -> None:
     """The turn task itself is being cancelled: cancel the call and give it a short, SHIELDED wait so its cleanup has run
-    (an exec's process-group kill) before the cancellation leaves. A second cancel during the wait is not held up."""
+    (an exec's process-group kill) before the cancellation leaves. A second cancel during the wait is not held up. A call
+    that still has not gone is abandoned like on the Stop path (the same scope and hook), so a subagent that carries on
+    cannot write to the log after the cancelled turn's terminal record."""
     if not task.done():
         task.cancel()
     try:
@@ -124,10 +145,11 @@ async def _unwind_after_a_hard_cancel(task: asyncio.Task, name: str) -> None:
         if task.done():
             _retrieve(task, name)
         else:
-            _abandon(task, name, None)
+            _abandon(task, name, scope, on_abandon)
 
 
-def _abandon(task: asyncio.Task, name: str, on_abandon: Callable[[], None] | None) -> None:
+def _abandon(task: asyncio.Task, name: str, scope: CallScope, on_abandon: Callable[[], None] | None) -> None:
+    scope.abandon()                   # first: from here on what the call and everything it started emits is dropped
     if on_abandon is not None:
         try:
             on_abandon()
