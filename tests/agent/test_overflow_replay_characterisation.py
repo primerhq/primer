@@ -1421,13 +1421,16 @@ class TestAHardCancelDuringTheMarkerCommit:
             await backend.aclose()
 
     async def test_a_commit_that_hangs_cannot_make_the_turn_uncancellable(self, tmp_path, monkeypatch, caplog) -> None:
-        """The wait for the commit is bounded: a drain must still be able to abort a turn whose commit hangs on a dead
-        storage, however many cancels it has already absorbed."""
+        """The wait for the commit is bounded, and the bound runs from the FIRST cancel: a drain must still be able to
+        abort a turn whose commit hangs on a dead storage, however many cancels it has already absorbed. The storm here
+        is spaced closer than the grace and lasts well past it (a cancel every 0.1s for a second, against a 0.3s grace),
+        so a deadline that restarted at every cancel would keep the turn waiting until the storm stopped."""
         import logging
 
         import primer.agent.base as base
 
-        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 0.3)
+        grace = 0.3
+        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", grace)
         backend, workspace, session = await open_session(tmp_path)
         forever = asyncio.Event()
         try:
@@ -1442,18 +1445,45 @@ class TestAHardCancelDuringTheMarkerCommit:
                 executor._replace_compacted_head = hang  # noqa: SLF001
 
             with caplog.at_level(logging.ERROR, logger="primer.agent.base"):
+                loop = asyncio.get_running_loop()
                 task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=hanging_commit))
                 await asyncio.wait_for(entered.wait(), timeout=30)
-                for _ in range(5):                       # a cancel storm: each is absorbed until the grace is up
+
+                async def when_done() -> float:
+                    await asyncio.wait({task})               # does not cancel it, does not raise what it ended with
+                    return loop.time()
+
+                watcher = asyncio.create_task(when_done())
+                first_cancel = loop.time()
+                sent = 0
+                for _ in range(10):                      # a cancel storm: each is absorbed until the grace is up
+                    if task.done():
+                        break
                     task.cancel()
-                    await asyncio.sleep(0.02)
+                    sent += 1
+                    await asyncio.sleep(0.1)
+                finished_at = await asyncio.wait_for(watcher, timeout=5)
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, timeout=5)
+                    await task
+            assert sent >= 3, "the storm landed more than one cancel inside the grace, so the test says something"
+            assert finished_at - first_cancel < grace + 0.5, (
+                f"the turn ended {finished_at - first_cancel:.2f}s after the FIRST cancel, grace {grace}s: the "
+                "deadline moved with later cancels"
+            )
             assert any("did not finish within" in r.getMessage() for r in caplog.records), "said so, loudly"
         finally:
             forever.set()
             await session.aclose()
             await backend.aclose()
+
+    def test_the_marker_commit_grace_is_the_terminal_exit_grace(self) -> None:
+        """Both are the bound on how long a cancelled turn may keep a drain waiting (they do not add up: a hard cancel
+        during the stream skips the sheltered exit), and the pod budget in worker-system.md is built on that figure.
+        A change to one has to be a decision about the other."""
+        import primer.agent.base as base
+        import primer.session.dispatch as dispatch
+
+        assert base._MARKER_COMMIT_GRACE_S == dispatch._TERMINAL_EXIT_GRACE_S  # noqa: SLF001
 
     async def test_a_commit_that_lands_after_the_grace_is_not_written_twice(self, tmp_path, monkeypatch) -> None:
         """Past the grace the outcome is unknown. The commit is a thread that may still land, so the rounds are taken as
