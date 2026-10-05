@@ -183,28 +183,33 @@ class ToolCallTask(Identifiable):
     # claimable call is not built.
     result_state: dict[str, Any] | None = None
 
-    # Unclean executions so far: a claim that found the row RUNNING (the previous
-    # holder died mid-run) and an explicit failed release. A clean GATED release, a gate
-    # resume and a drain requeue do not count. The executor poisons the task when this
-    # reaches ``max_attempts``. Read-then-write from a FENCED read (``patch_if`` with the
-    # old value in ``where``), so a concurrent increment rejects the write instead of
-    # being lost.
+    # Unclean executions so far. CONTRACT for the executor slice, which is not built (nothing
+    # writes this today; the adapter only carries it through ``ReleaseOutcome.entity_update``):
+    # a claim that finds the row RUNNING (the previous holder died mid-run) and an explicit
+    # failed release count; a clean GATED release, a gate resume and a drain requeue do not.
+    # The executor poisons the task when this reaches ``max_attempts``, and writes it as a
+    # read-then-write from a FENCED read (``patch_if`` with the old value in ``where``), so a
+    # concurrent increment rejects the write instead of being lost.
     attempts: int = Field(0, ge=0)
 
-    # The per-CLAIM fence for every row write the executor makes. Minted by the claiming
-    # handler (``worker:claimed_at:random``) and written with the RUNNING patch, which
-    # overwrites the previous holder's token; ``ToolCallClaimAdapter.on_release`` writes
-    # only while the row still carries the releaser's token, so a release that outlived
-    # its claim cannot move a row someone else now owns. ``None`` never matches a fence.
+    # The per-CLAIM fence for every row write the executor makes. BUILT: ``ToolCallClaimAdapter.
+    # on_release`` writes only while the row still carries the releaser's token, so a release
+    # that outlived its claim cannot move a row someone else now owns, and ``None`` never
+    # matches a fence. CONTRACT for the (unbuilt) claiming handler: it mints the token
+    # (``worker:claimed_at:random``) and writes it with the RUNNING patch, which overwrites the
+    # previous holder's token.
     claim_token: str | None = None
 
-    # Bumped by every GATED release; a REST/channel decision carries the value the
-    # resolver returned and flips the gate only while it still matches, so a decision
-    # for an earlier gate of the same call cannot resume a later one.
+    # Bumped by every GATED release (BUILT: ``ToolCallClaimAdapter``, one fenced read of the
+    # counter). CONTRACT for the decisions slice, not built: a REST/channel decision carries the
+    # value the resolver returned and flips the gate only while it still matches, so a decision
+    # for an earlier gate of the same call cannot resume a later one. Today the gated -> queued
+    # flip (``durably_mark_tool_call_task_resumable``) compares nothing.
     gate_seq: int = Field(0, ge=0)
 
-    # Stamped by the resume coordinator when it persists this task's TOOL_RESULT record.
-    # Retention never prunes a terminal row that has not been materialized.
+    # CONTRACT, not built (nothing stamps it today): the resume coordinator stamps it when it
+    # persists this task's TOOL_RESULT record, and retention never prunes a terminal row that
+    # has not been materialized.
     materialized_at: datetime | None = None
 
     created_at: datetime
