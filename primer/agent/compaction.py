@@ -589,11 +589,18 @@ class CompactionStrategy:
         the reply and for the estimate being low."""
         return int(self.DEFAULT_REDUCED_FRACTION * self._effective_budget(model))
 
-    def replay_guard(self, model: "ResolvedModel") -> ReplayGuard:
-        """The prompt guard for the replay after an overflow (see :class:`ReplayGuard`): its target counts
-        the messages and the tool schemas."""
+    def replay_guard(self, model: "ResolvedModel", *, fixed_overhead: int = 0) -> ReplayGuard:
+        """The prompt guard for the replay after an overflow (see :class:`ReplayGuard`).
+
+        What the guard measures is the whole call (the messages, the rendered system prompt among them, and the
+        tool schemas), so its target is the fixed part plus ``DEFAULT_REDUCED_FRACTION`` of what the budget
+        leaves after it: ``fixed + fraction * (budget - fixed)``. A fraction of the whole budget would count the
+        fixed part against the history's share, and on an agent whose fixed part nearly fills the window it
+        would leave the history nothing at all."""
+        budget = self._effective_budget(model)
+        target = fixed_overhead + int(self.DEFAULT_REDUCED_FRACTION * max(0, budget - fixed_overhead))
         return ReplayGuard(
-            target_tokens=self.reduced_target(model),
+            target_tokens=target,
             size=self._estimate_tokens,
             tools_size=lambda tools: self.estimate_fixed_overhead([], tools),
         )
