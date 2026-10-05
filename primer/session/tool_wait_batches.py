@@ -1,10 +1,11 @@
 """Which tool_wait batches a park references: the one membership test over a ``parked_state`` blob.
 
-Phase 3 stage 7a (plan 3.3, the lead's ruling C1). :func:`batches_referenced_by_park` is the ONLY place a caller
-asks "which batches does this park hold, and which task ids are in them" (handler liveness, the wake hook, the
-resolver, the reconciler, the timeout step). A hygiene test (``tests/session/test_tool_wait_batch_readers.py``)
-fails when a module outside its frozen allowlist reads the blob's batch keys itself, and later PRs shrink that list
-as they move their readers here.
+Phase 3 stage 7a (plan 3.3, the lead's ruling C1). :func:`batches_referenced_by_park` is THE answer to "which
+batches does this park hold, and which task ids are in them": the executor's liveness check, the wake hook, the
+resolver, the reconciler and the timeout step are to ask it (none of them exists yet, so it has no caller today).
+The modules that read the blob's batch keys themselves on main are a frozen allowlist in a hygiene test
+(``tests/session/test_tool_wait_batch_readers.py``) that fails any new reader; later PRs shrink the list as they
+move those readers here.
 
 A BATCH is one group of tool-call tasks parked together:
 
