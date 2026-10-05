@@ -35,6 +35,7 @@ from primer.int.scheduler import (
 from primer.model.except_ import ListenConnectionLost
 from primer.model.scheduler import WorkerConfig
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
+from primer.model.yield_ import CANCEL_REASON_PREEMPTED
 from primer.worker.turn import _CancelScope
 from primer.worker.drivers import _GraphTurnDriver, _TurnDriver  # noqa: F401  re-export
 from primer.worker.io_shim import _WorkspaceIOShim
@@ -490,7 +491,7 @@ class WorkerPool:
                                 continue
                             # Unconditional on purpose (see _CancelScope): a lease lost
                             # mid-turn must be able to push a turn that is stuck unwinding.
-                            scope.cancel("preempted")
+                            scope.cancel(CANCEL_REASON_PREEMPTED)
                 except Exception:
                     logger.exception("heartbeat_loop iteration failed")
         except asyncio.CancelledError:
