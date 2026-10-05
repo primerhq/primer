@@ -98,14 +98,31 @@ The executor responsibilities, per turn:
 
 Auto-compaction:
 before each turn (and again on a hard context overflow), the executor
-estimates the size of the history. If it is over 90% of the model's
-context window minus the output reserve, run a compaction strategy - typically
-summarise the head, keep the tail. The tail always includes the
-input the model has not answered yet and never splits a tool call
-from its results. The resulting summary replaces the elided range in
-the reconstructed history, followed by the kept tail. The original
-messages stay in storage; the substitution happens at history-
-reconstruction time.
+estimates the size of the prompt: the history plus the part that goes out on
+every call whatever the history is, the system prompt and the tool schemas
+(an agent with many or large tools has a big fixed part, and it counts). If
+that is over 90% of the model's context window minus the output reserve, run
+a compaction strategy - typically summarise the head, keep the tail. The
+tail always includes the input the model has not answered yet and never
+splits a tool call from its results. The resulting summary replaces the
+elided range in the reconstructed history, followed by the kept tail. The
+original messages stay in storage; the substitution happens at history-
+reconstruction time. A single turn that reads many files is compacted too:
+its early tool rounds are summarised and the summary sits after the question,
+so the question stays first and verbatim.
+
+Compaction can come back without shrinking anything, and says so in the
+session record: a `compaction_marker` carries `outcome` (`summarised`, or
+`insufficient` when the prompt is still over the trigger afterwards), and a
+`compaction_note` record is written when no marker was (`unreducible`: nothing
+could be summarised, for example when the system prompt and tool schemas alone
+fill the window; `skipped`: the trigger cannot be reached and the prompt still
+fits, or the last compaction already left it at about this size, so the
+summary is not summarised again before the prompt has grown; noted once per
+run, not every turn). If the model then rejects the prompt as too large and
+compaction cannot shrink it, the turn fails with `context_overflow_unrecoverable`
+instead of being replayed unchanged: shorten the system prompt, give the agent
+fewer tools, or use a larger-context model.
 
 Streaming: subscribers (the WS connection, internal taps) see token
 events in the order the LLM produces them. Persisted state is the
@@ -256,9 +273,11 @@ Read the description + system_prompt to confirm fit.
   LLM sees the error and (usually) recovers. This is the
   recovery loop you may have seen as "invalid arguments for X" in
   session logs.
-- **Auto-compaction triggers between turns at 90% context.** Don't
-  assume the LLM's history input is a contiguous slice of stored
-  rows - it can have a compaction summary replacing a range.
+- **Auto-compaction triggers between turns at 90% context, counting
+  the system prompt and tool schemas.** Don't assume the LLM's history
+  input is a contiguous slice of stored rows - it can have a compaction
+  summary replacing a range, and the summary can sit after the first
+  user message of the turn rather than in front.
 - **Streaming tokens are not persisted as separate rows.** Only
   complete messages (assistant_message, tool_call, tool_result)
   land in storage. The token-by-token stream is observed by live
