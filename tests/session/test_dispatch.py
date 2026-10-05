@@ -27,7 +27,7 @@ from primer.model.chat import (
     ToolCallStart,
     TurnStreamFailure,
 )
-from primer.model.except_ import ContextOverflowUnrecoverable
+from primer.model.except_ import ContextOverflowUnrecoverable, SummariserOverflow
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionMessageKind,
@@ -1165,9 +1165,10 @@ async def test_a_skip_note_the_executor_yields_is_written_where_the_next_turn_re
     ("failure", "detail"),
     [
         (ContextOverflowUnrecoverable("the prompt is too large (fixed_over_budget)"), "context_overflow_unrecoverable"),
+        (SummariserOverflow("the compaction's summariser was rejected as too large"), "summariser_overflow"),
         (RuntimeError("kaboom"), None),
     ],
-    ids=["overflow-compaction-cannot-fix", "any-other-error"],
+    ids=["overflow-compaction-cannot-fix", "summariser-overflow", "any-other-error"],
 )
 async def test_an_exception_that_names_why_it_ended_the_turn_sets_ended_detail(
     failure: Exception,
