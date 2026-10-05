@@ -1513,14 +1513,24 @@ async def _finish_despite_cancel(exit_coro: "Awaitable[ReleaseOutcome]") -> Rele
     webhook hold waits on it), the turn log, the queued-steer drain and the metric were silently lost.
 
     So the exit runs as its own task, and a cancellation that arrives while it runs is absorbed until
-    the exit is done, then re-raised: the caller (the pool) still sees the cancellation it asked for.
+    the exit is done. What the caller then sees depends on how the exit ended:
+
+    * It finished: the cancellations are consumed (``uncancel``, once per cancellation absorbed) and its
+      own outcome is returned, exactly as for a cancel that no one preempted. Re-raising here would throw
+      the outcome away: the pool would release with its pre-set ``success=False`` (its convergence skips a
+      row that is already ENDED) and ``on_release`` would write a terminal ERROR after a clean exit.
+    * It raised: the caller gets a ``CancelledError`` chained to the exit's error (which is logged), not the
+      error itself. The pool's preempt convergence runs only on a ``CancelledError``; the error would skip it
+      and leave the session RUNNING with no lease.
+
     The shelter is BOUNDED by ``_TERMINAL_EXIT_GRACE_S`` from the first cancellation: past that the exit
     is abandoned (cancelled) and the cancellation propagates, so a drain timeout can still abort an exit
-    that hangs on a dead storage or workspace.
+    that hangs on a dead storage or workspace. An abandoned exit is not awaited, so a done-callback
+    retrieves whatever it dies of and logs it.
     """
     task = asyncio.ensure_future(exit_coro)
     loop = asyncio.get_running_loop()
-    cancelled = False
+    absorbed = 0
     deadline: float | None = None
     while not task.done():
         timeout = None if deadline is None else max(0.0, deadline - loop.time())
@@ -1528,17 +1538,40 @@ async def _finish_despite_cancel(exit_coro: "Awaitable[ReleaseOutcome]") -> Rele
             # asyncio.wait does NOT cancel the task it waits on when the awaiting task is cancelled.
             await asyncio.wait({task}, timeout=timeout)
         except asyncio.CancelledError:
-            cancelled = True
+            absorbed += 1
             if deadline is None:
                 deadline = loop.time() + _TERMINAL_EXIT_GRACE_S
             continue
         if not task.done():
+            task.add_done_callback(_consume_abandoned_exit)
             task.cancel()           # the grace is up: stop sheltering an exit that is not finishing
             raise asyncio.CancelledError()
-    outcome = task.result()
-    if cancelled:
+    if not absorbed:
+        return task.result()
+    if task.cancelled():
         raise asyncio.CancelledError()
-    return outcome
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(
+            "dispatch: the cancelled turn's exit failed after the task was cancelled; "
+            "propagating the cancellation", exc_info=exc,
+        )
+        raise asyncio.CancelledError() from exc
+    current = asyncio.current_task()
+    if current is not None:
+        for _ in range(absorbed):
+            current.uncancel()
+    return task.result()
+
+
+def _consume_abandoned_exit(task: "asyncio.Task") -> None:
+    """Done-callback of an exit that ``_finish_despite_cancel`` stopped waiting for: retrieve what it ended
+    with (asyncio reports 'Task exception was never retrieved' otherwise) and log an error."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("dispatch: an abandoned cancelled-turn exit ended with an error", exc_info=exc)
 
 
 async def _land_cancelled_turn(

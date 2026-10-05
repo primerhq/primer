@@ -18,6 +18,7 @@ where the executor yields an event and THEN the turn stops):
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
 from typing import Any
@@ -836,9 +837,12 @@ class TestTheCancelledExitSurvivesAHardPreempt:
         monkeypatch.setattr(dispatch, "_transition_session_status", transition_then_the_hard_preempt_lands)
         outer["task"] = asyncio.ensure_future(run_one_session_turn(_make_lease(sid), deps))
 
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(outer["task"], 5.0)   # the cancellation is still delivered to the caller
+        outcome = await asyncio.wait_for(outer["task"], 5.0)
 
+        # The exit finished, so it hands the pool its own outcome (the pool releases with success=True and
+        # on_release writes no terminal ERROR record) and the absorbed cancellation is consumed with it.
+        assert outcome.success and outcome.drop_lease, "the exit's own outcome was thrown away"
+        assert outer["task"].cancelling() == 0, "the absorbed cancellation was left pending on the task"
         assert fired["done"], "the test never reached the cancelled exit's transition"
         row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
         assert row.status == expect_status and row.ended_reason == expect_ended
@@ -889,11 +893,12 @@ class TestTheCancelledExitSurvivesAHardPreempt:
             fake_storage_provider, fake_workspace_io, fake_event_bus, executor,
         )))
 
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(outer["task"], 5.0)
+        outcome = await asyncio.wait_for(outer["task"], 5.0)
 
         assert cancels["n"] == 2, "the second preempt never landed inside the exit"
         assert f"session:{sid}:terminal" in published, "a repeated preempt cut the exit"
+        assert outcome.success and outcome.drop_lease, "the exit's own outcome was thrown away"
+        assert outer["task"].cancelling() == 0, "an absorbed cancellation was left pending on the task"
 
     async def test_an_exit_that_hangs_is_abandoned_after_the_grace_so_a_drain_can_still_abort_it(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
@@ -930,6 +935,91 @@ class TestTheCancelledExitSurvivesAHardPreempt:
             await asyncio.wait_for(task, 5.0)
 
         assert cancelled_inside.is_set(), "the hung exit was left running after the grace instead of being abandoned"
+
+    async def test_an_exit_that_fails_after_the_preempt_still_raises_the_cancellation(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,
+    ) -> None:
+        """The pool's preempt convergence runs only on a CancelledError. An exit that died (storage down) must not
+        turn the absorbed cancel into the exit's own error: the pool would then skip the convergence and leave the
+        session RUNNING with no lease."""
+        sid = seeded_session.id
+        outer: dict[str, asyncio.Task] = {}
+
+        async def failing_transition(*args, **kwargs):
+            outer["task"].cancel()
+            await asyncio.sleep(0.05)
+            raise RuntimeError("storage is down")
+
+        monkeypatch.setattr(dispatch, "_transition_session_status", failing_transition)
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def read_status_then_cancel_lands(executor):
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            return None
+
+        monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+        executor = _StopAwareExecutor([TextDelta(text="x", index=0), Done(stop_reason="stop", raw_reason="stop")])
+        outer["task"] = asyncio.ensure_future(run_one_session_turn(_make_lease(sid), _deps(
+            fake_storage_provider, fake_workspace_io, fake_event_bus, executor,
+        )))
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(asyncio.CancelledError) as raised:
+                await asyncio.wait_for(outer["task"], 5.0)
+
+        assert isinstance(raised.value.__cause__, RuntimeError), "the exit's own error was not chained to the cancel"
+        assert any("storage is down" in str(r.exc_info[1]) for r in caplog.records if r.exc_info), (
+            "the exit's error was swallowed without a log"
+        )
+
+    async def test_an_abandoned_exit_that_dies_is_retrieved_and_logged(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,
+    ) -> None:
+        """Past the grace the exit is cancelled and nobody awaits it. Whatever it dies of must still be retrieved,
+        or asyncio reports 'Task exception was never retrieved' when the task is collected."""
+        sid = seeded_session.id
+        monkeypatch.setattr(dispatch, "_TERMINAL_EXIT_GRACE_S", 0.2, raising=False)
+        hung = asyncio.Event()
+
+        async def hanging_then_failing_transition(*args, **kwargs):
+            hung.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup failed while being abandoned") from None
+
+        monkeypatch.setattr(dispatch, "_transition_session_status", hanging_then_failing_transition)
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def read_status_then_cancel_lands(executor):
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            return None
+
+        monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+        loop = asyncio.get_running_loop()
+        reported: list[str] = []
+        loop.set_exception_handler(lambda _loop, context: reported.append(str(context.get("message"))))
+        try:
+            executor = _StopAwareExecutor([TextDelta(text="x", index=0), Done(stop_reason="stop", raw_reason="stop")])
+            task = asyncio.ensure_future(run_one_session_turn(_make_lease(sid), _deps(
+                fake_storage_provider, fake_workspace_io, fake_event_bus, executor,
+            )))
+            await asyncio.wait_for(hung.wait(), 5.0)
+            task.cancel()
+            with caplog.at_level(logging.WARNING):
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 5.0)
+                await asyncio.sleep(0.1)                  # the abandoned exit unwinds and dies
+            del task
+            gc.collect()
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(None)
+
+        assert not [m for m in reported if "never retrieved" in m], f"an abandoned exit's error was left: {reported}"
+        assert any("cleanup failed while being abandoned" in str(r.exc_info[1]) for r in caplog.records if r.exc_info), (
+            "the abandoned exit's error was not logged"
+        )
 
 
 class TestAStopThatLandsBeforeTheBatchThroughTheWholeTurn:
