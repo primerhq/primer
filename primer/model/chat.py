@@ -1561,6 +1561,30 @@ class _LlmCall(BaseModel):
             "record omits the key then."
         ),
     )
+    cached_input_tokens: int | None = Field(
+        default=None,
+        description=(
+            "The subset of ``input_tokens`` the provider served from a prompt cache, when it reported one. A cache "
+            "hit that a provider counts differently is what makes ``input_tokens`` over or under the prompt's size, "
+            "so the record keeps it. ``None`` (and the key omitted) when not reported."
+        ),
+    )
+    context_length: int | None = Field(
+        default=None,
+        description=(
+            "The model profile's context window at the time of the call, set with ``estimated_input_tokens`` (only "
+            "when the provider reported usage; the record omits the key otherwise). It lets the compaction trigger "
+            "be recomputed from the record alone, without joining a profile that may have changed since."
+        ),
+    )
+    guard: Literal["none", "kept", "reduced"] = Field(
+        default="none",
+        description=(
+            "``none`` when no prompt guard was installed for the call; ``kept`` when one was and sent the prompt "
+            "unchanged; ``reduced`` when it sent less than the loop's accumulated prompt (a guard is installed only "
+            "for the replay after a context overflow today). The record omits the key for ``none``."
+        ),
+    )
     duration_ms: int = Field(
         default=0,
         ge=0,

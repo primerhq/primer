@@ -673,6 +673,12 @@ def translate_stream_event(
                     {"estimated_input_tokens": call.estimated_input_tokens}
                     if call.estimated_input_tokens is not None else {}
                 ),
+                **(
+                    {"cached_input_tokens": call.cached_input_tokens}
+                    if call.cached_input_tokens is not None else {}
+                ),
+                **({"context_length": call.context_length} if call.context_length is not None else {}),
+                **({"guard": call.guard} if call.guard != "none" else {}),
                 "duration_ms": call.duration_ms,
                 "status": call.status,
             },
