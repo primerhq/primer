@@ -1236,10 +1236,29 @@ async def rename_session(
     return info.model_dump(mode="json")
 
 
+class CompactSessionResponse(BaseModel):
+    """What a manual compaction did: the marker it wrote and the figures it measured."""
+
+    compaction_marker_seq: int = Field(..., description="The seq of the compaction marker the fold wrote.")
+    summary: str = Field(..., description="The summary that now stands for the folded history.")
+    tokens_before: int = Field(..., description="Estimated size of the history and the fixed part before the fold.")
+    tokens_after: int = Field(..., description="The same estimate after it.")
+    summary_input_reduced: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Set when the summariser's own call overflowed and was made again on less: `pruned` (tool results left "
+            "out), `folded_chunks` (chunks of the rolling fold, 0 for one call), `truncated_parts` (parts cut or "
+            "replaced), and `tool_loop_cut_round` when a tool-using summariser's loop was cut in that round. A summary "
+            "of a reduced input is a summary of less than the whole history. `null` when the call did not overflow."
+        ),
+    )
+
+
 @sessions_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/compact",
     summary="Compact a session's history into a summary marker",
-    responses=common_responses(404, 409, 422, 500),
+    response_model=CompactSessionResponse,
+    responses=common_responses(404, 409, 413, 422, 500),
 )
 async def compact_session_endpoint(
     workspace_id: str = Path(...),
@@ -1248,7 +1267,7 @@ async def compact_session_endpoint(
     storage_provider=Depends(get_storage_provider),
     provider_registry=Depends(get_provider_registry),
     event_bus=Depends(get_event_bus),
-) -> dict:
+) -> CompactSessionResponse:
     """Summarise the visible history and append the fold marker.
 
     The summarising call takes seconds, so the session row is re-read
@@ -1377,15 +1396,13 @@ async def compact_session_endpoint(
         )
     except Exception:  # noqa: BLE001 - the marker landed; the tick is a hint
         logger.exception("compaction tick publish failed for %s", session_id)
-    return {
-        "compaction_marker_seq": outcome.compaction_marker_seq,
-        "summary": outcome.summary,
-        "tokens_before": outcome.tokens_before,
-        "tokens_after": outcome.tokens_after,
-        # What was done to the summariser's input when its first call overflowed (null otherwise): a summary of
-        # a reduced input is not an ordinary one.
-        "summary_input_reduced": outcome.summary_input_reduced,
-    }
+    return CompactSessionResponse(
+        compaction_marker_seq=outcome.compaction_marker_seq,
+        summary=outcome.summary,
+        tokens_before=outcome.tokens_before,
+        tokens_after=outcome.tokens_after,
+        summary_input_reduced=outcome.summary_input_reduced,
+    )
 
 
 class BindingSwitchBody(BaseModel):
