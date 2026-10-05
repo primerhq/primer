@@ -29,26 +29,22 @@ from primer.worker.graph_resume import resume_graph_from_checkpoint
 from primer.worker.yield_resume_registry import ResumeContext, register_resume_hook
 from primer.worker.yield_runtime import ParkedState
 
-from tests.graph.test_toolcall_ask_user_value_resume import (
-    _build_graph,
-    _drain,
-    _drain_until_yield,
-    _make_executor,
+from tests._resume_hook_fakes import (
+    DrainTapPool as _FakePool,
+    EngineFakePool as _EngineFakePool,
+    EngineStorageProvider as _StorageProvider,
+    FakeSessionRow as _FakeSessionRow,
+    FakeSessionStorage as _FakeSessionStorage,
+    FakeStorage as _FakeStorage,
+    NullWorkspaceIO as _EngineWorkspaceIO,
+    RecordingWorkspaceIO as _FakeWorkspaceIO,
+    build_ask_user_graph as _build_graph,
+    drain as _drain,
+    drain_until_yield as _drain_until_yield,
+    make_toolcall_executor as _make_executor,
+    waiting_graph_session as _session,
 )
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
-from tests.worker.test_pool_graph_resume import (
-    _FakePool,
-    _FakeSessionRow,
-    _FakeSessionStorage,
-    _FakeStorage,
-    _FakeWorkspaceIO,
-)
-from tests.worker.test_resume_graph_tool_wait import (
-    _FakePool as _EngineFakePool,
-    _FakeWorkspaceIO as _EngineWorkspaceIO,
-    _StorageProvider,
-    _session,
-)
 
 _TCID = "tc-vy"
 

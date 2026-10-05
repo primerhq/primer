@@ -13,7 +13,6 @@ This is the executor-level regression for the graph ask_user resume bug:
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 
 import pytest
 
@@ -23,76 +22,16 @@ import primer.toolset.system  # noqa: F401
 from primer.graph._node_refs import _PendingToolCall, _is_value_yield_toolcall
 from primer.graph.base import _GraphErrorEvent
 from primer.graph.executor import GraphExecutor
-from primer.model.agent import Agent
-from primer.model.chat import StreamEvent
-from primer.model.graph import (
-    Graph,
-    GraphNodeMessage,
-    GraphThread,
-    _BeginNode,
-    _EndNode,
-    _StaticEdge,
-    _ToolCallNode,
-)
+from primer.model.graph import GraphNodeMessage, GraphThread
 from primer.model.yield_ import Yielded, YieldToWorker
 
+from tests._resume_hook_fakes import (
+    build_ask_user_graph as _build_graph,
+    drain as _drain,
+    drain_until_yield as _drain_until_yield,
+    make_toolcall_executor as _make_executor,
+)
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
-
-
-async def _drain_until_yield(
-    it: AsyncIterator[StreamEvent],
-) -> tuple[list[StreamEvent], YieldToWorker | None]:
-    events: list[StreamEvent] = []
-    try:
-        async for ev in it:
-            events.append(ev)
-    except YieldToWorker as exc:
-        return events, exc
-    return events, None
-
-
-async def _drain(it: AsyncIterator[StreamEvent]) -> list[StreamEvent]:
-    return [ev async for ev in it]
-
-
-def _build_graph() -> Graph:
-    return Graph(
-        id="g-ask-user-value",
-        description="begin -> tool(ask_user) -> end",
-        nodes=[
-            _BeginNode(id="begin"),
-            _ToolCallNode(
-                id="ask",
-                tool_id="system__ask_user",
-                arguments={"prompt": "Approve access?"},
-            ),
-            _EndNode(id="exit", output_template="{{ nodes.ask.text }}"),
-        ],
-        edges=[
-            _StaticEdge(from_node="begin", to_node="ask"),
-            _StaticEdge(from_node="ask", to_node="exit"),
-        ],
-    )
-
-
-async def _agent_resolver(agent_id: str) -> Agent:
-    raise KeyError(agent_id)
-
-
-async def _llm_resolver(agent):  # pragma: no cover - never reached
-    raise NotImplementedError
-
-
-def _make_executor(graph, thread, thread_storage, message_storage, dispatcher):
-    return GraphExecutor(
-        graph=graph,
-        agent_resolver=_agent_resolver,
-        llm_resolver=_llm_resolver,  # type: ignore[arg-type]
-        thread_storage=thread_storage,  # type: ignore[arg-type]
-        message_storage=message_storage,  # type: ignore[arg-type]
-        graph_thread_id=thread.id,
-        tool_dispatcher=dispatcher,
-    )
 
 
 def test_value_yield_toolcall_classified_by_tool_name() -> None:

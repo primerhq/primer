@@ -52,6 +52,13 @@ from primer.worker.graph_resume import (
 )
 from primer.worker.yield_runtime import ParkedState
 
+from tests._resume_hook_fakes import (
+    DrainTapPool as _FakePool,
+    FakeSessionRow as _FakeSessionRow,
+    FakeSessionStorage as _FakeSessionStorage,
+    FakeStorage as _FakeStorage,
+    RecordingWorkspaceIO as _FakeWorkspaceIO,
+)
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
 
 
@@ -319,68 +326,6 @@ async def test_resume_graph_from_checkpoint_approved_drains() -> None:
 # 01a0690a piece 3: the resume drain's events are durably tapped, not
 # discarded (Gap 2 -- worker/graph_resume.py's _ResumeDrainTap)
 # ===========================================================================
-
-
-class _FakeWorkspaceIO:
-    def __init__(self) -> None:
-        self.lines: list[tuple[str, bytes]] = []
-
-    async def append_message_line(self, session_id: str, line: bytes) -> None:
-        self.lines.append((session_id, line))
-
-
-class _FakeSessionRow:
-    def __init__(self, *, sid: str, workspace_id: str, turn_no: int, last_seq: int) -> None:
-        self.id = sid
-        self.workspace_id = workspace_id
-        self.turn_no = turn_no
-        self.last_seq = last_seq
-
-    def model_copy(self, *, update: dict):
-        merged = {**self.__dict__, **update}
-        return _FakeSessionRow(
-            sid=merged["id"], workspace_id=merged["workspace_id"],
-            turn_no=merged["turn_no"], last_seq=merged["last_seq"],
-        )
-
-
-class _FakeSessionStorage:
-    def __init__(self, row) -> None:
-        self._row = row
-
-    async def get(self, sid: str):
-        return self._row if self._row.id == sid else None
-
-    async def update(self, row) -> None:
-        self._row = row
-
-
-class _FakeStorage:
-    def __init__(self, session_storage) -> None:
-        self._session_storage = session_storage
-
-    def get_storage(self, _model_cls):
-        return self._session_storage
-
-
-class _NoopClaimEngine:
-    """Stands in for WorkerPool._engine - these tests exercise the drain
-    tap's own persistence tapping, not row-creation content, so upserts
-    are discarded."""
-
-    async def upsert(self, kind, entity_id: str, **kwargs) -> None:
-        return None
-
-
-class _FakePool:
-    def __init__(self, *, workspace_io, storage) -> None:
-        self._storage = storage
-        self._event_bus = None
-        self._workspace_io = workspace_io
-        self._engine = _NoopClaimEngine()
-
-    async def _load_workspace_for_persist(self, _workspace_id: str):
-        return self._workspace_io
 
 
 @pytest.mark.asyncio
