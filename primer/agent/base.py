@@ -129,6 +129,17 @@ def _consume_abandoned_commit(commit: "asyncio.Future", rounds_lost: int | None 
         logger.warning("AgentExecutor: the abandoned compaction marker commit failed", exc_info=commit.exception())
 
 
+#: The compaction-window closes a cancelled turn left to run after its abandoned marker commit (held so the task is not
+#: garbage collected before it has run).
+_DEFERRED_WINDOW_CLOSES: "set[asyncio.Future]" = set()
+
+
+def _deferred_window_close_done(task: "asyncio.Future") -> None:
+    _DEFERRED_WINDOW_CLOSES.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("AgentExecutor: closing the compaction window after an abandoned commit failed", exc_info=task.exception())
+
+
 def refuse_compaction_summaries(messages: "list[Message]", where: str) -> None:
     """A :class:`CompactionSummary` is a structural tag on an ordinary message: it does not survive JSON, so one that
     is persisted as a message line or stamped into a parked state comes back as a reply the model wrote, and the
@@ -164,6 +175,10 @@ class _TurnRecord:
     forced_compaction: bool = False
     replay_attempted: bool = False
     notes: list[ExtendedEvent] = field(default_factory=list)
+    #: A cancel that said the lease was lost (``CANCEL_REASON_PREEMPTED``) reached this turn. Sticky on the turn and
+    #: not only on the exception: a later cancel (the drain's) can replace the exception while the turn unwinds, and
+    #: the chokepoint must still write nothing, because the session may belong to another worker.
+    lease_lost: bool = False
 
 
 class _BaseAgentExecutor(ABC):
@@ -518,6 +533,7 @@ class _BaseAgentExecutor(ABC):
         notes: list[ExtendedEvent] = []
         carried: list[Message] = []
         drained: list[Message] = []
+        abandoned: "asyncio.Future | None" = None   # a marker commit this turn stopped waiting for (see ``finally``)
         # Hard-overflow recovery runs an LLM await (force_compact), so bracket it with the window too.
         await self._open_compaction_window()
         try:
@@ -592,14 +608,22 @@ class _BaseAgentExecutor(ABC):
                 summary_input_reduced=forced.summary_input_reduced,
                 snapshot=history,
             ))
+            def lease_lost() -> None:
+                """A cancel that says the lease was lost reached the wait: the session may belong to another worker,
+                and the chokepoint writes no rounds for it (``_write_failed_rounds``). What the wait would settle,
+                whether the record still holds rounds the marker has, is moot, so this is the one kind of cancel that
+                is not held up, whether it is the first or arrives while an earlier one is waiting. It is remembered
+                on the turn (a later cancel can replace the exception), and the commit is left to finish alone."""
+                nonlocal abandoned
+                record.lease_lost = True
+                write.add_done_callback(_consume_abandoned_commit)
+                abandoned = write
+
             try:
                 carried = await asyncio.shield(write) or []
             except asyncio.CancelledError as cancelled:
                 if cancelled.args[:1] == (CANCEL_REASON_PREEMPTED,):
-                    # The lease is lost: the session may belong to another worker, and the chokepoint writes no
-                    # rounds for this cancel (``_write_failed_rounds``). What the wait would settle, whether the
-                    # record still holds rounds the marker has, is moot, so this is the one kind of cancel that is not held up (in the wait loop below too).
-                    write.add_done_callback(_consume_abandoned_commit)
+                    lease_lost()
                     raise
                 # Wait for the commit to be DONE, through any further cancel: a cancel that lands on this wait
                 # cancels the await and not the write (a thread writes the marker and it lands whatever the task
@@ -615,12 +639,8 @@ class _BaseAgentExecutor(ABC):
                         await asyncio.wait({write}, timeout=max(0.0, deadline - loop.time()))
                     except asyncio.CancelledError as again:
                         if again.args[:1] == (CANCEL_REASON_PREEMPTED,):
-                            # The lease was lost AFTER an earlier cancel started this wait. It is raised in
-                            # place of the first cancel for the same reason as above: the chokepoint must see it
-                            # and write nothing (the first cancel's reason, held to the end of the grace, would
-                            # let it write the rounds as a worker that no longer owns the session).
-                            write.add_done_callback(_consume_abandoned_commit)
-                            raise
+                            lease_lost()
+                            raise           # in place of the first cancel: the exception the turn ends with says why
                         continue
                     if not write.done():
                         break                   # the grace is up
@@ -628,6 +648,7 @@ class _BaseAgentExecutor(ABC):
                     # Unknown outcome. The commit is a thread that may still land: assume it will, because writing
                     # the rounds again would put every tool_use id in the history twice (a 400 on every later
                     # request), whereas rounds that never land are only run again.
+                    abandoned = write
                     write.add_done_callback(functools.partial(
                         _consume_abandoned_commit,
                         rounds_lost=tool_rounds(rounds) if forced.summary_message is not None else None,
@@ -658,7 +679,14 @@ class _BaseAgentExecutor(ABC):
                 # in the reduced form the replay is sent, and the chokepoint or a normal finish writes them.
                 record.messages = [*record.messages[: record.inputs], *reduced]
         finally:
-            drained = await self._close_compaction_window() or []
+            if abandoned is not None and not abandoned.done():
+                # The commit this turn stopped waiting for still holds the messages lock, and closing the window
+                # takes it: awaiting it here would keep a cancelled turn running for as long as the commit hangs,
+                # which is what the bound on the wait is for. The window closes when the commit is done (the steers
+                # deferred meanwhile stay queued, by design, and are applied then).
+                self._close_the_window_when_done(abandoned)
+            else:
+                drained = await self._close_compaction_window() or []
         for note in notes:
             await self._emit(note)
             yield note
@@ -724,6 +752,16 @@ class _BaseAgentExecutor(ABC):
         sets the figure again once the write has happened or failed.)"""
         return record.kept_rounds + tool_rounds(completed_rounds(record.messages[record.inputs:]))
 
+    def _close_the_window_when_done(self, commit: "asyncio.Future") -> None:
+        """Close the compaction window once ``commit`` (which holds the messages lock) is done, without waiting for it."""
+
+        def start(_commit: "asyncio.Future") -> None:
+            task = asyncio.ensure_future(self._close_compaction_window())
+            _DEFERRED_WINDOW_CLOSES.add(task)
+            task.add_done_callback(_deferred_window_close_done)
+
+        commit.add_done_callback(start)
+
     async def _persist_failed_turn(self, record: _TurnRecord, exc: BaseException) -> None:
         """The persistence chokepoint for a turn that did not finish: write its completed rounds.
 
@@ -755,7 +793,7 @@ class _BaseAgentExecutor(ABC):
         rounds = completed_rounds(record.messages[record.inputs:])
         if not rounds:
             return 0
-        if isinstance(exc, asyncio.CancelledError) and exc.args[:1] == (CANCEL_REASON_PREEMPTED,):
+        if record.lease_lost or (isinstance(exc, asyncio.CancelledError) and exc.args[:1] == (CANCEL_REASON_PREEMPTED,)):
             logger.warning(
                 "AgentExecutor: the lease was lost; not recording the %d tool round(s) the turn had completed",
                 tool_rounds(rounds),
