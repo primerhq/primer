@@ -383,6 +383,52 @@ class TestAStopThatEndsAnExternalToolPark:
         )
         assert rows[0].result == {"cancelled": True, "reason": "stopped by user"} and rows[0].resolved_at is not None
 
+    async def test_the_row_is_already_cancelled_when_the_terminal_event_goes_out(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        """A listener that waits for the terminal event and then lists the pending calls must not see the stopped call
+        as pending (answering it would be a 409)."""
+        sid = seeded_session.id
+        seen_at_the_terminal: list[list[str]] = []
+        publish = fake_event_bus.publish
+
+        async def spy_publish(key: str, payload: dict) -> None:
+            if key == f"session:{sid}:terminal":
+                seen_at_the_terminal.append([r.status for r in await self._rows(fake_storage_provider, sid)])
+            await publish(key, payload)
+
+        fake_event_bus.publish = spy_publish
+        llm = _OneRoundLlm([("a", "wait")])
+        manager = _ExternalToolManager(
+            parking="a", key="", storage=fake_storage_provider, bus=fake_event_bus, sid=sid,
+        )
+
+        await _turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, _RealLoopExecutor(llm, manager),
+        )
+
+        assert seen_at_the_terminal == [["cancelled"]], f"a pending row was visible at the terminal event: {seen_at_the_terminal}"
+
+    async def test_a_stop_at_a_timer_park_leaves_an_unrelated_pending_row_alone(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        """Only an external_tool park has a row to clean up: the cleanup is keyed on the park, not run for every Stop."""
+        sid = seeded_session.id
+        other = ExternalToolCall(
+            session_id=sid, tool_call_id="zzz", tool_name="external__lookup", created_at=datetime.now(UTC),
+        )
+        await fake_storage_provider.get_storage(ExternalToolCall).create(other)
+        llm = _OneRoundLlm([("a", "wait")])
+        manager = _Manager(parking="a", key="timer:", storage=fake_storage_provider, bus=fake_event_bus, sid=sid)
+
+        outcome = await _turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, _RealLoopExecutor(llm, manager),
+        )
+
+        assert outcome.park is None
+        rows = await self._rows(fake_storage_provider, sid)
+        assert [(r.tool_call_id, r.status) for r in rows] == [("zzz", "pending")]
+
     async def test_without_a_stop_the_park_happens_and_the_row_stays_pending(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
     ) -> None:

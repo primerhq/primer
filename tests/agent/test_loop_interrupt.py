@@ -694,6 +694,62 @@ class TestAStopThatLandsWhileACallAsksToPark:
             ("call_0", "ok", False), ("call_1", PARKED_STOP, True),
         ]
 
+    async def test_a_real_nested_yield_is_stamped_by_the_outer_batch_last(self) -> None:
+        """The outermost loop stamps LAST. Outer round [call_0 finishes, call_1 runs a SUBAGENT, call_2]; the subagent's
+        own first call (raw id 'call_0' again) parks. The inner loop stamps its own position first (index 0, nothing
+        finished) and the outer batch must overwrite it: keeping the inner stamp would answer the finished call_0
+        'may have run' (losing its real result) and the call that ran the whole subagent 'not run'."""
+        interrupt = asyncio.Event()
+        subagent_manager = _Manager(parks=frozenset({"call_0"}))
+
+        class _RunsASubagent(_Manager):
+            async def execute(self, call, *, principal=None):
+                if call.id != "call_1":
+                    return await super().execute(call, principal=principal)
+                self.executed.append(call.id)
+                interrupt.set()                          # the Stop lands while the subagent runs
+                async for _ in run_agent_turn(           # like run_subagent: its own loop, no Stop event
+                    agent=AGENT, llm=_ScriptedLLM(_round_of(("call_0", "loop_tool")), _AFTER), llm_model=MODEL,
+                    tool_manager=subagent_manager, prompt=[Message(role="user", parts=[TextPart(text="go")])],
+                ):
+                    pass
+                raise AssertionError("the subagent was expected to park")
+
+        manager = _RunsASubagent()
+        llm = _ScriptedLLM(_round_of(("call_0", "loop_tool"), ("call_1", "loop_tool"), ("call_2", "loop_tool")), _AFTER)
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert manager.executed == ["call_0", "call_1"] and subagent_manager.executed == ["call_0"]
+        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [
+            ("call_0", "ok", False), ("call_1", PARKED_STOP, True), ("call_2", STOPPED, True),
+        ]
+        assert interrupted == [True]
+
+    async def test_a_yield_that_arrives_already_stamped_is_restamped_by_the_outer_batch(self) -> None:
+        """The same overwrite with the inner stamp supplied directly: an exception that left an inner batch with
+        ``batch_index=0, completed_results=[]`` must not keep them once the outer batch has stamped its own."""
+        interrupt = asyncio.Event()
+
+        class _RaisesAStampedYield(_Manager):
+            async def execute(self, call, *, principal=None):
+                if call.id != "call_1":
+                    return await super().execute(call, principal=principal)
+                self.executed.append(call.id)
+                interrupt.set()
+                park = YieldToWorker(Yielded(tool_name=call.name, event_key="timer:inner"), tool_call_id="call_0")
+                park.batch_index, park.completed_results = 0, []
+                raise park
+
+        manager = _RaisesAStampedYield()
+        llm = _ScriptedLLM(_round_of(("call_0", "loop_tool"), ("call_1", "loop_tool"), ("call_2", "loop_tool")), _AFTER)
+
+        _, messages_out, _ = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [
+            ("call_0", "ok", False), ("call_1", PARKED_STOP, True), ("call_2", STOPPED, True),
+        ]
+
     async def test_a_nested_yield_with_a_distinct_inner_id_leaves_the_later_calls_not_run(self) -> None:
         """Nothing matches by id here, and the call after the yielding one still never started."""
         manager, _, _, messages_out, _ = await self._drive_parking(

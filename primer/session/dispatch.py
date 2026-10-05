@@ -1795,8 +1795,8 @@ async def _land_cancelled_turn(
     await _best_effort_io("the TurnLogCancelled turn log entry", session_id, _safe_turn_log(turn_log, TurnLogCancelled(
         seq=0, ts=_now(), turn_no=session.turn_no, reason=reason,
     )))
-    await _publish_terminal(deps, session, new_status, ended_reason)
     await _cancel_the_stopped_external_call(deps, session, executor)
+    await _publish_terminal(deps, session, new_status, ended_reason)
     await _best_effort_io("closing the turn log", session_id, turn_log.aclose())
     await _apply_pending_switch_at_checkpoint(deps, session)
     await _realize_pending_at_checkpoint(deps, session)
@@ -1812,8 +1812,10 @@ async def _cancel_the_stopped_external_call(
     The invoker-supplied tool provider writes the row BEFORE it yields (``primer/agent/external_tools.py``), and a turn
     that ends instead of parking would leave it listed as pending (``GET .../external_tools/pending``, the global list)
     and answerable only with a 409 (an answer needs a parked row). The cancel, delete, restart and steer routes cancel
-    such rows with the same call. Row-side only: there is no park to wake. It follows the terminal publish and is
-    bounded, so a slow storage delays only what comes after it, and it never fails the exit.
+    such rows with the same call. Row-side only: there is no park to wake. It runs just BEFORE the terminal publish
+    (outside the lifecycle lock), so a listener that waits for the terminal event never sees a pending row for a turn
+    that has ended; it is bounded by ``_BEST_EFFORT_IO_TIMEOUT_S``, so a slow storage delays the publish by at most
+    that, and it never fails the exit.
     """
     park = getattr(executor, "stopped_park", None)
     if not isinstance(park, YieldToWorker):
