@@ -103,6 +103,32 @@ class _ParkingExecutor:
                 llm_messages=[Message(role="assistant", parts=[TextPart(text="let me check")])],
             )
             park.graph_checkpoint = {"pending_tool_waits": _pending_tool_waits()}
+        elif self._arm == "yield_mixed_multi":
+            # A multi-event graph park (event_keys AND a checkpoint): one channel prompt per pending node, from the
+            # checkpoint's pending_dispatch (a tool_call node) and pending_agent_yields (an agent node).
+            yield ToolCallStart(id="call_gate", name="ask_user", index=1)
+            yield ToolCallEnd(id="call_gate", arguments={}, index=1)
+            sid = self._session_id
+            park = YieldToWorker(
+                Yielded(
+                    tool_name="ask_user", event_key=f"ask_user:{sid}:gate-a",
+                    event_keys=[f"ask_user:{sid}:gate-a", f"ask_user:{sid}:gate-b"],
+                    resume_metadata={"prompt": "colour?"},
+                ),
+                tool_call_id="call_gate",
+                llm_messages=[Message(role="assistant", parts=[TextPart(text="let me check")])],
+            )
+            park.graph_checkpoint = {
+                "pending_tool_waits": _pending_tool_waits(),
+                "pending_dispatch": [{
+                    "kind": "ask_user", "node_id": "ask_a", "tool_call_id": "gate-a",
+                    "resume_metadata": {"prompt": "colour?"},
+                }],
+                "pending_agent_yields": [{
+                    "tool_name": "ask_user", "node_id": "agent_b", "tool_call_id": "gate-b",
+                    "resume_metadata": {"prompt": "size?"},
+                }],
+            }
         else:
             park = ToolWaitPark(
                 outstanding_task_ids=["x:tool:0:1"], event_key="tool_wait:x:tool:0:1",
@@ -278,3 +304,34 @@ async def test_a_valid_mixed_park_sends_its_channel_prompt_once() -> None:
     assert outcome.success is True and outcome.park is not None
     (envelope,) = deps.channel_dispatcher.prompts
     assert envelope.kind == "ask_user"
+
+
+@pytest.mark.asyncio
+async def test_a_multi_prompt_mixed_park_that_breaks_the_invariant_sends_no_channel_prompt() -> None:
+    """The ``_dispatch_to_channels_multi`` branch of the mixed arm: no prompt for any pending node of a park whose
+    co-pending batch breaks the invariant, and the session ends failed."""
+    storage_provider, session_id, _io, _lines, deps, lease = await _setup("yield_mixed_multi")
+    deps.channel_dispatcher = _RecordingDispatcher()
+    await storage_provider.get_storage(ToolCallTask).create(ToolCallTask(
+        id=f"{session_id}/x:tool:0:1", session_id="someone-else", turn_no=0, tool_name="tool_a",
+        state=ToolCallTaskState.QUEUED, record_seq=1, created_at=_now(),
+    ))
+
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.park is None
+    row = await storage_provider.get_storage(WorkspaceSession).get(session_id)
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    assert deps.channel_dispatcher.prompts == [], "an ENDED session's pending nodes were prompted on the channels"
+
+
+@pytest.mark.asyncio
+async def test_a_valid_multi_prompt_mixed_park_sends_one_prompt_per_pending_node() -> None:
+    _storage_provider, _session_id, _io, _lines, deps, lease = await _setup("yield_mixed_multi")
+    deps.channel_dispatcher = _RecordingDispatcher()
+
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.success is True and outcome.park is not None
+    sent = sorted((e.kind, e.tool_call_id, e.prompt) for e in deps.channel_dispatcher.prompts)
+    assert sent == [("ask_user", "gate-a", "colour?"), ("ask_user", "gate-b", "size?")]
