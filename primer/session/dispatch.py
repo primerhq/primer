@@ -1376,7 +1376,8 @@ async def run_one_session_turn(
             # The binding FIRST, and nothing is read without one: this runs after every clean turn of every
             # session, and the read is the whole messages.jsonl over the workspace's runtime connection (a
             # docker or k8s workspace pulls it across a websocket). A session with no channel, or a quiet
-            # binding, has nothing to post and must cost no I/O here.
+            # binding, has nothing to post and costs no workspace I/O here (one Workspace-row lookup, for
+            # the workspace-standing binding).
             binding = await resolve_reply_binding(session, storage_provider=deps.storage_provider)
             if binding is not None and not getattr(binding, "quiet", False):
                 final_text: str | None = None
