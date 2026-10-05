@@ -180,3 +180,157 @@ def test_with_no_entries_the_exceptions_scoped_ids_are_qualified() -> None:
 
     parked_state = ToolWaitParkedState.from_jsonable(outcome.park.parked_state)
     assert parked_state.outstanding_task_ids == ["gs-1/A:tool:0:1"]
+
+
+def _malformed_repark(*entries: tuple[str, list[str]]) -> ToolWaitPark:
+    repark = ToolWaitPark(
+        outstanding_task_ids=[i for _, ids in entries for i in ids], event_key="tool_wait:obs", notifying_results=[],
+    )
+    repark.graph_checkpoint = {
+        "pending_tool_waits": [
+            {"node_id": node, "outstanding_task_ids": ids, "notifying_results": []} for node, ids in entries
+        ],
+    }
+    return repark
+
+
+def test_the_wake_keys_take_the_turn_of_each_batchs_ids_not_the_sessions_turn() -> None:
+    """A carried-over batch keeps the key it was parked under after the session's turn moved on: the key is a pure
+    function of the batch's ids (mutation N27, call-site leg: key on ``session.turn_no``)."""
+    outcome = repark_graph_outcome(
+        None, _session(turn_no=5), _malformed_repark(("a:b", ["gs-1/a:b:tool:0:1"]), ("C", ["gs-1/C:tool:5:1"])),
+    )
+
+    assert outcome.park.parked_event_keys == ["tool_wait:gs-1:0:a:b", "tool_wait:gs-1:5:C"]
+    assert outcome.park.parked_event_key == "tool_wait:gs-1:0:a:b"
+
+
+def test_a_malformed_batch_drops_only_its_own_key_and_the_park_is_still_written(caplog) -> None:
+    import logging
+
+    import primer.observability.metrics as metrics
+
+    metrics.reset_for_test()
+    with caplog.at_level(logging.ERROR):
+        outcome = repark_graph_outcome(
+            None, _session(), _malformed_repark(("A", ["gs-1/A:tool:03:1"]), ("B", ["gs-1/B:tool:0:1"])),
+        )
+
+    assert outcome.park is not None
+    assert outcome.park.parked_event_keys == ["tool_wait:gs-1:0:B"]
+    assert outcome.park.parked_event_key == "tool_wait:gs-1:0:B", "the park must be keyed on a batch that parses"
+    parked_state = ToolWaitParkedState.from_jsonable(outcome.park.parked_state)
+    assert parked_state.outstanding_task_ids == ["gs-1/A:tool:03:1", "gs-1/B:tool:0:1"], "the blob keeps both batches"
+    assert metrics.tool_wait_malformed_scoped_id_total.labels("repark")._value.get() == 1.0
+    assert any(r.levelno == logging.ERROR and "'gs-1/A:tool:03:1'" in r.getMessage() for r in caplog.records)
+
+
+def test_a_repark_whose_every_batch_is_malformed_raises_instead_of_parking_with_no_wake_key() -> None:
+    """A park with no wake key has no timeout backstop either: it is never written. The builder raises the turn
+    invariant, and the resume ends the session failed (below)."""
+    import pytest
+
+    from primer.session.persistence import TurnInvariantError
+
+    with pytest.raises(TurnInvariantError, match="no wake key"):
+        repark_graph_outcome(
+            None, _session(), _malformed_repark(("A", ["gs-1/A:tool:03:1"]), ("B", ["gs-1/B:tool:0:0"])),
+        )
+
+
+class _ResumePool:
+    """The pool surface the two graph resume coordinators touch, with the REAL re-park builder."""
+
+    def __init__(self) -> None:
+        self._storage = None
+        self._event_bus = None
+        self.end_session_calls: list[str] = []
+
+    async def _load_workspace_for_persist(self, workspace_id):
+        return None
+
+    async def _build_graph_executor(self, session, workspace):
+        return object()
+
+    async def _end_session(self, session, *, reason: str):
+        self.end_session_calls.append(reason)
+        return f"ENDED:{reason}"
+
+    def _repark_graph_outcome(self, session, repark, *, node_tool_call_seq=None):
+        return repark_graph_outcome(self, session, repark, node_tool_call_seq=node_tool_call_seq)
+
+    def _graph_nested_agent_yield(self, checkpoint, tcid):
+        return None
+
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
+        return None
+
+    def _graph_value_yield_toolcall(self, checkpoint, tcid) -> bool:
+        return False
+
+    async def _write_approval_record_for_graph(self, **kwargs) -> None:
+        return None
+
+
+def _drain_returning(repark):
+    async def _resume_graph_from_checkpoint(**kwargs):
+        return "approved", repark, {}
+    return _resume_graph_from_checkpoint
+
+
+async def test_the_tool_wait_resume_ends_the_session_failed_when_its_repark_has_no_wake_key(monkeypatch) -> None:
+    import primer.worker.graph_resume as graph_resume
+    import primer.worker.tool_wait_resume_coordinator as coordinator
+
+    async def _ready(task_storage, pending):
+        return {"A": object()}, {}
+
+    async def _no_records(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(coordinator, "resolve_ready_graph_tool_waits", _ready)
+    monkeypatch.setattr(coordinator, "persist_resume_tool_result_records", _no_records)
+    monkeypatch.setattr(
+        graph_resume, "resume_graph_from_checkpoint", _drain_returning(_malformed_repark(("B", ["gs-1/B:tool:03:1"]))),
+    )
+    pool = _ResumePool()
+    pool._storage = type("_SP", (), {"get_storage": lambda self, model: None})()
+    parked = ToolWaitParkedState(
+        outstanding_task_ids=["gs-1/A:tool:0:1"], notifying_task_ids=[], event_key="tool_wait:gs-1:0:A",
+        llm_messages=[], turn_no=0, started_at=datetime.now(timezone.utc),
+        graph_checkpoint={
+            "pending_tool_waits": [{"node_id": "A", "outstanding_task_ids": ["gs-1/A:tool:0:1"], "notifying_results": []}],
+        },
+    )
+
+    outcome = await coordinator.resume_graph_tool_wait(pool, _session(), parked)
+
+    assert outcome == "ENDED:failed"
+    assert pool.end_session_calls == ["failed"]
+
+
+async def test_the_gate_resume_ends_the_session_failed_when_its_repark_has_no_wake_key(monkeypatch) -> None:
+    import primer.worker.graph_resume as graph_resume
+    from primer.model.yield_ import Yielded
+    from primer.worker.graph_resume_coordinator import resume_graph_engine
+    from primer.worker.yield_runtime import ParkedState
+
+    monkeypatch.setattr(
+        graph_resume, "resume_graph_from_checkpoint", _drain_returning(_malformed_repark(("B", ["gs-1/B:tool:03:1"]))),
+    )
+    now = datetime.now(timezone.utc)
+    session = _session().model_copy(update={
+        "parked_at": now, "parked_state": {"resume_event_key": "tool_approval:gs-1:tc-1"},
+    })
+    parked = ParkedState(
+        yielded=Yielded(tool_name="_approval", event_key="tool_approval:gs-1:tc-1"),
+        llm_messages=[], turn_no=0, started_at=now, tool_call_id="tc-1",
+        resume_event_payload={"decision": "approved"},
+        graph_checkpoint={"pending_toolcalls": [{"node_id": "A", "tool_call_id": "tc-1"}]},
+    )
+    pool = _ResumePool()
+
+    outcome = await resume_graph_engine(pool, session, parked)
+
+    assert outcome == "ENDED:failed"
+    assert pool.end_session_calls == ["failed"]

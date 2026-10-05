@@ -341,3 +341,147 @@ async def test_two_graph_sessions_parking_the_same_scoped_batch_keep_separate_ro
             f"{session_id}/x:tool:0:1"
         ]
         assert outcome.park.parked_event_key == f"tool_wait:{session_id}:0:x"
+
+
+# ---------------------------------------------------------------------------
+# A malformed scoped id at the park arms: the batch's key is dropped (ERROR plus a counter), and a park is never
+# written with no wake key at all (it would have no timeout backstop either). The one mint site never produces a
+# malformed id, so a hand-made one is given a TOOL_CALL record here to stand in for that bug.
+# ---------------------------------------------------------------------------
+
+
+def _seed_tool_call_records(monkeypatch, *scoped_ids: str) -> None:
+    import primer.session.dispatch as dispatch
+    from primer.session.persistence import _CoalesceState
+
+    def _seeded() -> _CoalesceState:
+        state = _CoalesceState()
+        for scoped_id in scoped_ids:
+            state.tool_call_record_seq[scoped_id] = 1
+            state.tool_call_record_name[scoped_id] = "tool_a"
+        return state
+
+    monkeypatch.setattr(dispatch, "_CoalesceState", _seeded)
+
+
+async def _run_turn(session_id: str, park: Exception):
+    from primer.int.claim import ClaimKind, Lease
+
+    storage_provider = _FakeStorageProvider()
+    await storage_provider.get_storage(WorkspaceSession).create(_session(session_id))
+
+    class _Executor:
+        _tool_calls_as_claims_enabled = True
+
+        async def invoke(self, messages, **kwargs):
+            raise park
+            yield  # pragma: no cover - unreachable, keeps this a generator
+
+    async def _build_executor(_session: WorkspaceSession):
+        return _Executor()
+
+    io = _FakeWorkspaceIO()
+    deps = SessionDispatchDeps(
+        storage_provider=storage_provider, workspace_io=io, event_bus=_FakeEventBus(),
+        build_executor=_build_executor, claim_engine=_RecordingClaimEngine(),
+    )
+    lease = Lease(
+        kind=ClaimKind.SESSION, entity_id=session_id, claimed_by="worker-1",
+        claimed_at=_now(), expires_at=_now(), attempt_count=0, last_error=None,
+    )
+    outcome = await run_one_session_turn(lease, deps)
+    return outcome, storage_provider, io
+
+
+def _graph_tool_wait_park(*entries: tuple[str, list[str]]) -> ToolWaitPark:
+    park = ToolWaitPark(
+        outstanding_task_ids=[i for _, ids in entries for i in ids], event_key="tool_wait:obs",
+    )
+    park.graph_checkpoint = {
+        "pending_tool_waits": [
+            {"node_id": node, "outstanding_task_ids": list(ids), "notifying_results": []} for node, ids in entries
+        ],
+    }
+    return park
+
+
+def _messages(io: _FakeWorkspaceIO, session_id: str) -> list[dict]:
+    import json
+
+    raw = io._data.get((session_id, "messages.jsonl"), b"")
+    return [json.loads(line) for line in raw.decode().splitlines() if line.strip()]
+
+
+@pytest.mark.asyncio
+async def test_pure_graph_arm_keeps_the_batch_that_parses_and_parks(monkeypatch) -> None:
+    import primer.observability.metrics as metrics
+
+    metrics.reset_for_test()
+    _seed_tool_call_records(monkeypatch, "B:tool:03:1", "x:tool:0:1")
+
+    outcome, storage_provider, _ = await _run_turn(
+        "s-one-bad", _graph_tool_wait_park(("B", ["B:tool:03:1"]), ("x", ["x:tool:0:1"])),
+    )
+
+    assert outcome.park is not None, "one malformed batch must not stop the park"
+    assert outcome.park.parked_event_keys == ["tool_wait:s-one-bad:0:x"]
+    assert outcome.park.parked_event_key == "tool_wait:s-one-bad:0:x", "the park is keyed on a batch that parses"
+    tasks = storage_provider.get_storage(ToolCallTask)
+    assert await tasks.get("s-one-bad/B:tool:03:1") is not None, "row creation is unchanged"
+    assert metrics.tool_wait_malformed_scoped_id_total.labels("materializer")._value.get() == 1.0
+
+
+@pytest.mark.asyncio
+async def test_pure_graph_arm_with_no_parseable_batch_ends_the_turn_failed_instead_of_parking(monkeypatch) -> None:
+    _seed_tool_call_records(monkeypatch, "B:tool:03:1")
+
+    outcome, storage_provider, io = await _run_turn("s-all-bad", _graph_tool_wait_park(("B", ["B:tool:03:1"])))
+
+    assert outcome.park is None, "a park with no wake key was written"
+    assert outcome.success is False
+    row = await storage_provider.get_storage(WorkspaceSession).get("s-all-bad")
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    errors = [m for m in _messages(io, "s-all-bad") if m["kind"] == "error"]
+    assert errors and "no wake key" in errors[-1]["payload"]["message"], errors
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_wait_arm_with_a_malformed_id_ends_the_turn_failed_before_creating_rows(monkeypatch) -> None:
+    import primer.observability.metrics as metrics
+
+    metrics.reset_for_test()
+    _seed_tool_call_records(monkeypatch, "x:tool:03:1")
+
+    outcome, storage_provider, io = await _run_turn(
+        "s-agent-bad", ToolWaitPark(outstanding_task_ids=["x:tool:03:1"], event_key="tool_wait:obs"),
+    )
+
+    assert outcome.park is None and outcome.success is False
+    row = await storage_provider.get_storage(WorkspaceSession).get("s-agent-bad")
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    assert await storage_provider.get_storage(ToolCallTask).get("s-agent-bad/x:tool:03:1") is None
+    assert metrics.tool_wait_malformed_scoped_id_total.labels("dispatch")._value.get() == 1.0
+    errors = [m for m in _messages(io, "s-agent-bad") if m["kind"] == "error"]
+    assert errors and "no wake key" in errors[-1]["payload"]["message"], errors
+
+
+@pytest.mark.asyncio
+async def test_mixed_arm_drops_a_malformed_batchs_key_and_parks_on_the_gate(monkeypatch) -> None:
+    """The mixed park always has its human gate's key, so a malformed co-pending batch only loses its own."""
+    import primer.observability.metrics as metrics
+
+    metrics.reset_for_test()
+    _seed_tool_call_records(monkeypatch, "B:tool:03:1")
+    yld = YieldToWorker(
+        Yielded(tool_name="ask_user", event_key="ask_user:s-mixed-bad:call_gate", resume_metadata={"prompt": "?"}),
+        tool_call_id="call_gate",
+    )
+    yld.graph_checkpoint = _graph_tool_wait_park(("B", ["B:tool:03:1"])).graph_checkpoint
+
+    outcome, storage_provider, _ = await _run_turn("s-mixed-bad", yld)
+
+    assert outcome.park is not None
+    assert outcome.park.parked_event_key == "ask_user:s-mixed-bad:call_gate"
+    assert not any(k.startswith("tool_wait:") for k in outcome.park.parked_event_keys or [])
+    assert await storage_provider.get_storage(ToolCallTask).get("s-mixed-bad/B:tool:03:1") is not None
+    assert metrics.tool_wait_malformed_scoped_id_total.labels("materializer")._value.get() == 1.0
