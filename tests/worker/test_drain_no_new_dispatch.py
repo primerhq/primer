@@ -454,3 +454,50 @@ async def test_a_loop_that_ignores_its_cancel_is_abandoned_after_the_grace_and_t
         let_go.set()
         await asyncio.sleep(0.05)
         await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_loop_that_later_fails_has_its_exception_logged(caplog):
+    """An abandoned loop keeps running after the drain. Its done-callback retrieves its outcome (so asyncio never
+    reports it as "never retrieved"), and it used to drop an exception silently: a loop that ends with one, late,
+    is now logged with that exception. A second loop that stops in time with no exception logs nothing."""
+    scheduler = InMemoryScheduler()
+    await scheduler.initialize()
+    pool = WorkerPool(
+        config=_config(), scheduler=scheduler,
+        storage=None,  # type: ignore[arg-type]
+        workspace_registry=None,  # type: ignore[arg-type]
+        provider_registry=None,  # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={KIND: _SpyAdapter()}),
+    )
+    let_go = asyncio.Event()
+
+    async def stuck_then_fails() -> None:
+        while not let_go.is_set():
+            try:
+                await let_go.wait()
+            except asyncio.CancelledError:
+                pass                                              # ignores its cancel ...
+        raise RuntimeError("the loop's late failure")             # ... and fails once it is let go
+
+    async def stops() -> None:
+        await asyncio.Event().wait()
+
+    try:
+        stuck = asyncio.create_task(stuck_then_fails(), name="engine-claim-late")
+        clean = asyncio.create_task(stops(), name="engine-bus-clean")
+        await asyncio.sleep(0)
+        with caplog.at_level(logging.WARNING, logger="primer.worker.pool"):
+            for task in (stuck, clean):
+                task.cancel()
+                await pool._await_stopped_loop(task, 0.2)
+            assert pool.metrics_snapshot()["primer_worker_loops_abandoned_on_drain_total"] == 1
+            let_go.set()
+            await asyncio.wait({stuck}, timeout=2.0)
+            await asyncio.sleep(0)                                # done-callbacks run on the next loop pass
+        late = [r for r in caplog.records if "ended with an exception" in r.getMessage()]
+        assert [r.getMessage() for r in late] == ["drain: engine-claim-late ended with an exception"]
+        assert isinstance(late[0].exc_info[1], RuntimeError)
+    finally:
+        let_go.set()
+        await scheduler.aclose()

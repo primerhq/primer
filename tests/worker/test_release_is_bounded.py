@@ -40,11 +40,11 @@ async def _until(predicate, message: str, timeout: float = 5.0) -> None:
 
 
 class _World:
-    def __init__(self) -> None:
+    def __init__(self, heartbeat: int = 1) -> None:
         self.engine = InMemoryClaimEngine(adapters={})
         self.scheduler = InMemoryScheduler()
         self.pool = WorkerPool(
-            config=WorkerConfig(concurrency=4, heartbeat_interval_seconds=1, lease_ttl_seconds=5),
+            config=WorkerConfig(concurrency=4, heartbeat_interval_seconds=heartbeat, lease_ttl_seconds=5),
             scheduler=self.scheduler, storage=None,  # type: ignore[arg-type]
             workspace_registry=None,  # type: ignore[arg-type]
             provider_registry=None,  # type: ignore[arg-type]
@@ -126,14 +126,25 @@ def test_the_bound_is_one_heartbeat_interval_short_of_the_lease_ttl(ttl, heartbe
 
 
 @pytest.mark.asyncio
-async def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_workers_other_leases_lapse():
+@pytest.mark.parametrize(
+    ("heartbeat", "after_beat"),
+    [(1, 0.0), (2, 1.6)],
+    ids=["release-right-after-a-heartbeat", "release-just-before-the-next-heartbeat"],
+)
+async def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_workers_other_leases_lapse(
+    heartbeat, after_beat,
+):
     """The Postgres stall, modelled on the in-memory engine: while the ``stuck`` release is open (it holds its row
     lock) a heartbeat waits for it, and a heartbeat stamps ``expires_at`` from the moment it STARTED (``now()`` is
     the statement's start). The ``other`` execution is still running, so its lease is refreshed only by heartbeats.
-    The bound is the one the config derives (TTL 5 s, heartbeat 1 s: 4 s), not an override, and the release starts
-    right after a heartbeat completed, so its other lease has one full TTL left: the bound must end the release, and
-    let the stalled heartbeat land, before that TTL runs out."""
-    w = _World()
+    The bound is the one the config derives (TTL 5 s minus the heartbeat), not an override.
+
+    Two alignments. The release starts right after a heartbeat completed (heartbeat 1 s, bound 4 s): ``other`` has a
+    full TTL left. Or it starts 1.6 s after one, just before the next 2 s tick (bound 3 s): ``other``'s last refresh
+    is 1.6 s old when the release begins, so it lapses 3.4 s into the release and the bound (3 s) must end the
+    release, and let the stalled heartbeat land, inside the 0.4 s left. A bound of a whole TTL (5 s) lapses it there.
+    (At the exact worst alignment the margin is only the cancel's round trip; see worker-system.md.)"""
+    w = _World(heartbeat=heartbeat)
     w.engine.lease_ttl_seconds = w.pool.config.lease_ttl_seconds     # what start() pushes to the engine
     leases = await w.start()
     real_release = w.engine.release
@@ -192,7 +203,8 @@ async def test_a_release_that_stalls_the_heartbeat_is_abandoned_before_the_worke
     try:
         beat.clear()
         await asyncio.wait_for(beat.wait(), timeout=5.0)
-        go.set()                              # the release starts just after a heartbeat refreshed ``other``
+        await asyncio.sleep(after_beat)       # 0: right after a heartbeat refreshed ``other``; 1.6: just before the next
+        go.set()
         await _until(
             lambda: lapsed or "stuck" in w.outcomes,
             "the stuck release was never abandoned", timeout=15.0,
