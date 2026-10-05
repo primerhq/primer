@@ -310,3 +310,42 @@ async def test_an_agent_without_a_system_prompt_still_has_the_workspace_fragment
     fixed = marker["payload"]["fixed_overhead_tokens"]
     assert fixed == _expected_fixed(None) and 0 < fixed < 1_000, "the fragment every workspace executor appends"
     assert marker["payload"]["tokens_before"] > fixed
+
+
+@pytest.mark.asyncio
+async def test_a_summariser_that_overflows_is_retried_once_and_the_marker_says_so(client, app, fake_storage_provider, monkeypatch):
+    """The manual route summarises through the same ``_full_compact`` as the turn path, so it gets the same one
+    recovery: the first call is rejected as a context overflow, the second (text only, on a smaller input) answers,
+    and the marker records what was cut. (The stub rejects the first call whatever its size, as a provider that
+    counts more than we do would.)"""
+    from primer.model.except_ import BadRequestError
+
+    class _OverflowsOnce(_StubLLM):
+        async def _stream_impl(self):
+            if len(self.calls) == 1:
+                raise BadRequestError("This model's maximum context length is 128000 tokens, however you requested more")
+            async for event in super()._stream_impl():
+                yield event
+
+    big = [_msg("user", "q" * 80_000), _msg("assistant", "a" * 80_000)]            # ~40k tokens: a head worth cutting
+    ws, llm = await _journey(app, fake_storage_provider, monkeypatch, llm=_OverflowsOnce("the story so far"),
+                             lines=[_rec(1, "user_input", text="hello"), big[0], _rec(2, "assistant_token", text="hi"), big[1], _rec(3, "done")])
+    r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
+    assert r.status_code == 200, r.text
+    sizes = [sum(len(p.text) for m in call["messages"] for p in m.parts) for call in llm.calls]
+    rejected, retries = sizes[0], sizes[1:]
+    assert retries and all(size < rejected for size in retries), "every retry call is sent less than the one the provider rejected"
+    (marker,) = _marker(ws)
+    reduced = marker["payload"]["summary_input_reduced"]
+    assert reduced == {"pruned": 0, "folded_chunks": len(retries) if len(retries) > 1 else 0, "truncated_parts": 0}, reduced
+    assert "the story so far" in marker["payload"]["summary"]
+
+
+@pytest.mark.asyncio
+async def test_a_marker_of_a_summariser_that_did_not_overflow_has_no_reduction(client, app, fake_storage_provider, monkeypatch):
+    ws, _ = await _journey(app, fake_storage_provider, monkeypatch)
+    r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
+    assert r.status_code == 200, r.text
+    (marker,) = _marker(ws)
+    assert "summary_input_reduced" not in marker["payload"]
+

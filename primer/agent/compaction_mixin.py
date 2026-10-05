@@ -68,6 +68,9 @@ class CompactionResult:
     fixed_overhead_tokens: int = 0
     """The part of the prompt no history can give back that ``tokens_before`` / ``tokens_after`` include
     (the caller says what it counted: ``0`` when it counted none)."""
+    summary_input_reduced: dict[str, int] | None = None
+    """``CompactedTurn.summary_input_reduced``: what was done to the summariser's input because the first
+    call overflowed (``pruned`` / ``folded_chunks`` / ``truncated_parts``), else ``None``."""
 
 
 async def should_compact(
@@ -204,6 +207,7 @@ async def apply_compaction(
         outcome=compacted.outcome,
         trigger_tokens=compacted.trigger_tokens,
         fixed_overhead_tokens=compacted.fixed_overhead_tokens,
+        summary_input_reduced=compacted.summary_input_reduced,
     )
 
 

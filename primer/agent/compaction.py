@@ -40,7 +40,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
 from primer.agent.overflow import ReplayGuard
+from primer.agent.summary_input import (
+    SummaryInputReduction,
+    SummaryInputUnreachable,
+    reduce_summary_input,
+    size_summariser_input,
+)
 from primer.agent.tail import CompactionSplit, split_for_compaction
+from primer.common.context_overflow import is_context_overflow
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.model.chat import (
     CompactionSummary,
@@ -59,7 +66,7 @@ from primer.model.chat import (
     _ExecutorToolResult,
     output_to_message,
 )
-from primer.model.except_ import ServerError
+from primer.model.except_ import ServerError, SummariserOverflow
 from primer.model.media_tokens import media_tokens
 from primer.observability import metrics as _metrics
 
@@ -90,6 +97,10 @@ class CompactionToolExecutor(Protocol):
 # ``max_tool_turns`` -- keeps an ill-behaved compaction prompt from looping
 # unbounded during an automatic, unattended step.
 DEFAULT_COMPACTION_TOOL_TURNS = 8
+
+# What the summariser's reduced input may take of the room its window leaves (the estimate is a heuristic, and the
+# call that made the recovery necessary has just overflowed, so the provider counted more than we did), and the
+# largest chunk of its rolling fold as a fraction of the budget.
 
 
 logger = logging.getLogger(__name__)
@@ -242,6 +253,16 @@ class CompactedTurn(BaseModel):
             "Where the summary sits in ``new_messages``: after this many kept messages. ``0`` "
             "(the usual) puts it in front; a turn whose early tool rounds were summarised puts it "
             "after the user run that opened the turn, so the question stays first and verbatim."
+        ),
+    )
+    summary_input_reduced: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Set when the summariser's own call overflowed and was made again, text only, on a reduced "
+            "input: ``pruned`` (tool results left out), ``folded_chunks`` (chunks of the rolling fold, 0 "
+            "for one call) and ``truncated_parts`` (parts cut head and tail, media replaced); all zero when "
+            "the retry needed nothing taken out. The marker records it as ``summary_input_reduced``. "
+            "``None`` when the first call was enough."
         ),
     )
     fixed_overhead_tokens: int = Field(
@@ -534,7 +555,7 @@ class CompactionStrategy:
                 )
 
         split = self._split(history, tail_budget_tokens=self._tail_budget(trigger - extra))
-        summary_msg = await self._full_compact(
+        summary_msg, reduction = await self._full_compact(
             head=split.summary_input, agent=agent, llm=llm, model=model, tool_manager=tool_manager,
             event_sink=event_sink, max_tool_turns=max_tool_turns, principal=principal,
         )
@@ -546,7 +567,9 @@ class CompactionStrategy:
             # tool-enabled summariser would run its tools a second time, and the marker is written
             # once, for the result that is returned.
             split = floor
-            summary_msg = await self._full_compact(head=split.summary_input, agent=agent, llm=llm, model=model)
+            summary_msg, reduction = await self._full_compact(
+                head=split.summary_input, agent=agent, llm=llm, model=model,
+            )
             compacted_messages = self._place(summary_msg, split)
             after = self._estimate_tokens(compacted_messages) + extra
         insufficient = after >= trigger
@@ -566,6 +589,7 @@ class CompactionStrategy:
             trigger_tokens=trigger,
             budget_tokens=budget,
             summary_after=split.summary_after,
+            summary_input_reduced=reduction.as_payload() if reduction is not None else None,
             fixed_overhead_tokens=fixed_overhead,
         )
 
@@ -781,44 +805,49 @@ class CompactionStrategy:
         event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
         max_tool_turns: int | None = None,
         principal: str | None = None,
-    ) -> Message:
+    ) -> tuple[Message, SummaryInputReduction | None]:
         """Summarise ``head`` into one assistant-role message. The split (what is head,
-        what is kept) is decided by the caller: see :func:`split_for_compaction`."""
+        what is kept) is decided by the caller: see :func:`split_for_compaction`.
+
+        The summariser is a model call too, and a head over its window makes it overflow. That is
+        recovered ONCE, here, so every path that summarises (the proactive compaction, the forced one,
+        the manual route) gets it: the call is made again TEXT ONLY (no tools, so no tool runs twice and
+        the tool schemas stop counting) on an input reduced to what fits (:func:`reduce_summary_input`:
+        tool results left out, then a bounded rolling fold, then single units cut). What was done comes
+        back beside the summary, for the marker. An overflow that cannot be reduced away, or that repeats,
+        is :class:`SummariserOverflow`, which names the summariser."""
         compaction_prompt = (
             "\n\n".join(agent.compaction_prompt)
             if agent.compaction_prompt
             else DEFAULT_COMPACTION_PROMPT
         )
-
-        summary_request: list[Message] = [
-            Message(role="system", parts=[TextPart(text=compaction_prompt)]),
-            *head,
-            Message(
-                role="user",
-                parts=[
-                    TextPart(
-                        text=(
-                            "Now produce the summary as instructed. "
-                            "One dense paragraph; no headers, no lists."
-                        )
-                    )
-                ],
-            ),
-        ]
-
-        if tool_manager is None:
-            summary_text = await self._summarise_text_only(
-                summary_request, llm=llm, model=model,
+        summary_request = self._summary_request(compaction_prompt, head)
+        reduction: SummaryInputReduction | None = None
+        carried: list[int] = []  # what a tool loop's earlier rounds added to the call that overflowed
+        try:
+            if tool_manager is None:
+                summary_text = await self._summarise_text_only(summary_request, llm=llm, model=model)
+            else:
+                summary_text = await self._summarise_with_tools(
+                    summary_request,
+                    llm=llm,
+                    model=model,
+                    tool_manager=tool_manager,
+                    event_sink=event_sink,
+                    max_tool_turns=max_tool_turns,
+                    principal=principal,
+                    carried=carried,
+                )
+        except Exception as exc:  # noqa: BLE001 -- only a context overflow is this recovery's
+            if not is_context_overflow(exc):
+                raise
+            logger.warning(
+                "compaction: the summariser's own call overflowed; reducing its input and retrying once, text only",
+                extra={"error": str(exc), "tools": tool_manager is not None},
             )
-        else:
-            summary_text = await self._summarise_with_tools(
-                summary_request,
-                llm=llm,
-                model=model,
-                tool_manager=tool_manager,
-                event_sink=event_sink,
-                max_tool_turns=max_tool_turns,
-                principal=principal,
+            summary_text, reduction = await self._summarise_reduced(
+                head, compaction_prompt=compaction_prompt, llm=llm, model=model, cause=exc,
+                first_call_extra=await self._tool_schema_tokens(tool_manager, principal) + sum(carried),
             )
 
         marker_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -833,7 +862,100 @@ class CompactionStrategy:
                 )
             ],
         )
-        return summary_msg
+        return summary_msg, reduction
+
+    async def _tool_schema_tokens(
+        self, tool_manager: "CompactionToolExecutor | None", principal: str | None,
+    ) -> int:
+        """What the tool catalogue adds to a tool-enabled summariser's call (``0`` for a text-only one)."""
+        if tool_manager is None:
+            return 0
+        try:
+            return self.estimate_fixed_overhead([], await tool_manager.list_tools(principal=principal))
+        except Exception:  # noqa: BLE001 -- an estimate for the retry's sizing: not worth failing the recovery for
+            logger.debug("compaction: the tool catalogue could not be sized for the summariser's retry", exc_info=True)
+            return 0
+
+    @staticmethod
+    def _summary_request(compaction_prompt: str, chunk: Sequence[Message], earlier: str | None = None) -> list[Message]:
+        """What one summariser call is sent: the compaction prompt, then (in a rolling fold) the summary so far,
+        then the part of the head it reads, then the instruction to produce the summary."""
+        return [
+            Message(role="system", parts=[TextPart(text=compaction_prompt)]),
+            *([Message(role="assistant", parts=[TextPart(text=f"[the summary so far]\n\n{earlier}")])] if earlier else []),
+            *chunk,
+            Message(
+                role="user",
+                parts=[
+                    TextPart(
+                        text=(
+                            "Now produce the summary as instructed. "
+                            "One dense paragraph; no headers, no lists."
+                        )
+                    )
+                ],
+            ),
+        ]
+
+    async def _summarise_reduced(
+        self,
+        head: list[Message],
+        *,
+        compaction_prompt: str,
+        llm: "LLM",
+        model: "ResolvedModel",
+        cause: BaseException,
+        first_call_extra: int = 0,
+    ) -> tuple[str, SummaryInputReduction]:
+        """The one retry of a summariser call that overflowed: text only, on a reduced input."""
+        current = self._estimate_tokens(head)
+        try:
+            sizing = size_summariser_input(
+                window=model.context_length,
+                budget=self._effective_budget(model),
+                summary_tokens=self.summary_max_tokens,
+                frame=self._estimate_tokens(self._summary_request(compaction_prompt, [])),
+                current=current,
+                first_call_extra=first_call_extra,
+            )
+        except SummaryInputUnreachable as unreachable:
+            raise SummariserOverflow(
+                f"the compaction's summariser was rejected as too large and cannot be retried: {unreachable}",
+                cause=cause,
+            ) from cause
+        goal = sizing.goal
+        try:
+            reduced = reduce_summary_input(
+                head,
+                size=self._estimate_tokens,
+                part_size=self._estimate_part_tokens,
+                goal_tokens=goal,
+                chunk_tokens=sizing.chunk_tokens,
+                max_chunks=sizing.max_chunks,
+            )
+        except SummaryInputUnreachable as unreachable:
+            raise SummariserOverflow(
+                f"the compaction's summariser was rejected as too large and its input could not be reduced "
+                f"to fit: {unreachable} (about {current} tokens to summarise, {goal} fit)",
+                cause=cause,
+            ) from cause
+        try:
+            earlier: str | None = None
+            for chunk in reduced.chunks:
+                earlier = await self._summarise_text_only(
+                    self._summary_request(compaction_prompt, chunk, earlier), llm=llm, model=model,
+                )
+        except Exception as exc:  # noqa: BLE001
+            if not is_context_overflow(exc):
+                raise
+            raise SummariserOverflow(
+                f"the compaction's summariser was rejected as too large again after its input was reduced "
+                f"(pruned {reduced.report.pruned}, {len(reduced.chunks)} call(s), "
+                f"truncated {reduced.report.truncated_parts}); not retrying a second time",
+                cause=exc,
+            ) from exc
+        assert earlier is not None
+        return earlier, reduced.report
 
     async def _summarise_text_only(
         self,
@@ -874,6 +996,7 @@ class CompactionStrategy:
         event_sink: "Callable[[StreamEvent], Awaitable[None]] | None",
         max_tool_turns: int | None,
         principal: str | None,
+        carried: list[int] | None = None,
     ) -> str:
         """Tool-enabled summarisation: a bounded, ephemeral tool-use loop.
 
@@ -896,22 +1019,39 @@ class CompactionStrategy:
         tool_round = 0
         while True:
             buffered: list[StreamEvent] = []
-            async for event in llm.stream(
-                model=model.model_name,
-                messages=messages,
-                temperature=0.0,
-                max_output_tokens=self.summary_max_tokens,
-                tools=tools,
-                tool_choice="auto",
-            ):
-                buffered.append(event)
-                if isinstance(event, (ToolCallStart, ToolCallEnd)):
-                    await self._sink(event_sink, event)
-                elif isinstance(event, Error) and event.fatal:
-                    raise ServerError(
-                        f"compaction LLM failed: {event.message}",
-                        code=event.code,
-                    )
+            try:
+                async for event in llm.stream(
+                    model=model.model_name,
+                    messages=messages,
+                    temperature=0.0,
+                    max_output_tokens=self.summary_max_tokens,
+                    tools=tools,
+                    tool_choice="auto",
+                ):
+                    buffered.append(event)
+                    if isinstance(event, (ToolCallStart, ToolCallEnd)):
+                        await self._sink(event_sink, event)
+                    elif isinstance(event, Error) and event.fatal:
+                        raise ServerError(
+                            f"compaction LLM failed: {event.message}",
+                            code=event.code,
+                        )
+            except Exception as exc:  # noqa: BLE001 -- only a context overflow is handled here
+                # An overflow after a round that wrote a summary is the tool results outgrowing the window:
+                # the tools have run (their effects stand), so the loop ends with that summary instead of
+                # starting again. With none yet (round one, or rounds that only called tools) the overflow
+                # goes up and ``_full_compact`` makes one text-only call on a reduced input, which runs no tool.
+                if not summary_text or not is_context_overflow(exc):
+                    if carried is not None and is_context_overflow(exc):
+                        # the rounds before this one are in the call that overflowed and not in the text-only
+                        # retry: the sizing must not read the head's own size as the whole explanation
+                        carried.append(self._estimate_tokens(messages[len(summary_request):]))
+                    raise
+                logger.warning(
+                    "compaction: the summariser's tool loop overflowed in round %d; ending it with the "
+                    "summary written so far", tool_round + 1, extra={"error": str(exc)},
+                )
+                break
             try:
                 assistant_msg = output_to_message(buffered)
             except ValueError:

@@ -164,6 +164,19 @@ def test_a_context_overflow_that_compaction_cannot_fix_has_its_own_problem_type(
     assert ContextOverflowUnrecoverable("x").ended_detail_code == "context_overflow_unrecoverable"
 
 
+def test_a_summariser_that_overflowed_maps_like_the_overflow_it_is_and_says_which_it_was() -> None:
+    """The compaction's own summariser call, not the turn's prompt: the same 413 problem type (it is a
+    ``ContextOverflowUnrecoverable``), a code of its own so it is not read as the turn not fitting."""
+    from primer.model.except_ import SummariserOverflow
+
+    app = _make_app()
+    _mount_raiser(app, "/raise", SummariserOverflow("the compaction's summariser was rejected as too large"))
+    response = TestClient(app, raise_server_exceptions=False).get("/raise")
+    assert response.status_code == 413
+    assert response.json()["type"] == "/errors/context-overflow-unrecoverable"
+    assert SummariserOverflow("x").ended_detail_code == SummariserOverflow("x").code == "summariser_overflow"
+
+
 def test_an_exceptions_problem_extensions_are_merged_into_the_envelope() -> None:
     from primer.session.compaction import NothingToCompact
 

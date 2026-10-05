@@ -154,6 +154,11 @@ async def compact_session(
             # ``tokens_before`` / ``tokens_after`` count this part of the prompt too, as far as the
             # caller could measure it, as the executor's marker records.
             "fixed_overhead_tokens": getattr(result, "fixed_overhead_tokens", 0),
+            # As the executor's marker: only when the summariser's input had to be reduced.
+            **(
+                {"summary_input_reduced": reduced}
+                if (reduced := getattr(result, "summary_input_reduced", None)) else {}
+            ),
             "created_at": datetime.now(UTC).isoformat(),
             # The tail kept verbatim after the summary: without it the fold
             # would drop it (see reconstruct_compacted_history).

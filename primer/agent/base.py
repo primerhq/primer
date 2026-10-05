@@ -77,6 +77,7 @@ from primer.model.except_ import (
     BadRequestError,
     ContextOverflowUnrecoverable,
     PrimerError,
+    SummariserOverflow,
 )
 from primer.model.graph import build_execution_context
 from primer.model.yield_ import CANCEL_REASON_PREEMPTED
@@ -219,6 +220,7 @@ class _BaseAgentExecutor(ABC):
         unreducible: str | None = None,
         trigger_tokens: int | None = None,
         fixed_overhead_tokens: int = 0,
+        summary_input_reduced: dict[str, int] | None = None,
         snapshot: list[Message] | None = None,
     ) -> list[Message] | None:
         """Replace the persisted history with the compacted form.
@@ -229,7 +231,9 @@ class _BaseAgentExecutor(ABC):
         telemetry, and ``outcome`` / ``unreducible`` / ``trigger_tokens`` its
         verdict (``insufficient`` when the summary stands and the prompt is
         still over the trigger) and ``fixed_overhead_tokens`` the part of the
-        prompt no history can give back that its figures include. ``snapshot`` is the history the compaction
+        prompt no history can give back that its figures include. ``summary_input_reduced`` is what the
+        compaction did to the summariser's input when its first call overflowed (``None`` when it did not).
+        ``snapshot`` is the history the compaction
         was computed from: lines written to the persisted history after it
         was taken (a steer, say) are not in ``compacted`` and must survive
         the fold; the hook returns those lines (``None`` or empty when there are
@@ -333,6 +337,7 @@ class _BaseAgentExecutor(ABC):
                     unreducible=compacted.unreducible,
                     trigger_tokens=compacted.trigger_tokens,
                     fixed_overhead_tokens=compacted.fixed_overhead_tokens,
+                    summary_input_reduced=compacted.summary_input_reduced,
                     snapshot=history,
                 )
                 notes += self._compaction_notes(compacted, skip_noted=skip_noted)
@@ -442,15 +447,19 @@ class _BaseAgentExecutor(ABC):
         # Hard-overflow recovery runs an LLM await (force_compact), so bracket it with the window too.
         await self._open_compaction_window()
         try:
-            forced = await self._compaction.force_compact(
-                agent=self._agent,
-                llm=self._llm,
-                model=self._model,
-                history=[*history, *messages, *reduced],
-                new_messages=[],
-                fixed_overhead=fixed_overhead,
-                **self._compaction_tool_kwargs(),
-            )
+            try:
+                forced = await self._compaction.force_compact(
+                    agent=self._agent,
+                    llm=self._llm,
+                    model=self._model,
+                    history=[*history, *messages, *reduced],
+                    new_messages=[],
+                    fixed_overhead=fixed_overhead,
+                    **self._compaction_tool_kwargs(),
+                )
+            except SummariserOverflow as failed:
+                failed.forced_compaction = True  # it ran: its summariser is what could not be made to fit
+                raise
             changed = reduced != rounds       # our own reduction of the rounds the turn ran made a smaller prompt
             if self._replay_is_futile(forced, changed=changed):
                 # Nothing can be shrunk (the fixed part, or the input the model has not answered, fills the
@@ -506,6 +515,7 @@ class _BaseAgentExecutor(ABC):
                 unreducible=forced.unreducible,
                 trigger_tokens=forced.trigger_tokens,
                 fixed_overhead_tokens=forced.fixed_overhead_tokens,
+                summary_input_reduced=forced.summary_input_reduced,
                 snapshot=history,
             ))
             try:
