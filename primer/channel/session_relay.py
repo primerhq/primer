@@ -117,8 +117,10 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     ``assistant_token`` text of the LAST completed turn, i.e. the rows between
     the previous terminal record and the final ``done`` row. Returns ``None``
     when there is no completed turn, when the LATEST turn did not complete (the
-    last terminal record is a ``cancelled`` or an ``error``), or when the window
-    carries no assistant text.
+    last terminal record is a ``cancelled``, an ``error`` or a ``done`` whose
+    ``stop_reason`` is ``error``), or when the window carries no assistant text.
+    A ``done`` with ``stop_reason`` ``max_tokens`` is a truncated answer, not a
+    failure, and is relayed.
 
     A terminal record is a ``done``, a ``cancelled`` or an ``error``. A turn
     that was stopped or failed has no ``done``, but what it had streamed is
@@ -139,6 +141,10 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     # run the user cancelled, or the previous turn's answer, as this run's result.
     last_done = boundaries[-1]
     if records[last_done].get("kind") != "done":
+        return None
+    # A turn that fails mid-stream can end in ``Done(stop_reason="error")`` with no ``error`` record before it:
+    # that ``done`` is a terminal record but the turn did not complete, and its partial text is not a result.
+    if (records[last_done].get("payload") or {}).get("stop_reason") == "error":
         return None
     prev_boundary = boundaries[-2] if len(boundaries) > 1 else -1
     chunks: list[str] = []

@@ -108,3 +108,30 @@ def test_a_completed_turn_after_a_stop_with_no_text_relays_nothing_not_the_parti
     records = [USER, _tok("partial"), {"kind": "cancelled", "payload": {}}, USER, _done()]
 
     assert derive_session_final_text(records) is None
+
+
+def test_a_failed_turn_that_ends_in_a_done_with_stop_reason_error_relays_nothing() -> None:
+    """A turn that fails mid-stream can finish with ``Done(stop_reason="error")`` and no ``error`` record before it.
+    That ``done`` is the turn's last terminal record, but the turn did not complete: its partial text is not a result."""
+    records = [USER, _tok("half an ans"), _done("error")]
+
+    assert derive_session_final_text(records) is None
+
+
+def test_a_done_with_stop_reason_error_after_an_error_record_relays_nothing() -> None:
+    records = [USER, _tok("half an ans"), {"kind": "error", "payload": {"message": "provider failed"}}, _done("error")]
+
+    assert derive_session_final_text(records) is None
+
+
+def test_a_failed_turn_does_not_hide_the_next_turns_reply() -> None:
+    records = [USER, _tok("half an ans"), _done("error"), USER, _tok("Second try."), _done()]
+
+    assert derive_session_final_text(records) == "Second try."
+
+
+def test_a_reply_cut_off_by_the_token_limit_is_still_relayed() -> None:
+    """``max_tokens`` is a truncated answer, not a failure: it is the turn's result and the session rests WAITING."""
+    records = [USER, _tok("a long answer that was cut"), _done("max_tokens")]
+
+    assert derive_session_final_text(records) == "a long answer that was cut"
