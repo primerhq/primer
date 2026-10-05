@@ -155,7 +155,10 @@ class WorkerPool:
         # other lease was last refreshed up to one heartbeat interval before the release began, so it can lapse
         # ``lease_ttl - heartbeat_interval`` into the release: the bound is exactly that. ``WorkerConfig`` enforces
         # ``lease_ttl >= 2 * heartbeat_interval``, so it is at least half a TTL: 3 s at the 5 s minimum TTL (heartbeat
-        # 2 s), 20 s at the defaults.
+        # 2 s), 20 s at the defaults. That keeps the stall within the TTL for ONE slow release only. Overlapping slow
+        # releases chain it: the UPDATE waits on each locked row in turn, so a second release that took its row lock
+        # before the stalled UPDATE reached that row (say while the first was running or being abandoned) holds the
+        # heartbeat until it ends as well, up to one bound after IT began, and the other leases can still lapse.
         self._release_timeout_seconds: float = float(config.lease_ttl_seconds - config.heartbeat_interval_seconds)
         self._release_timeouts_total: int = 0
         # After a timed-out release, how long the one ``has_lease`` probe that decides its outcome may take: a primary-key
@@ -1223,11 +1226,16 @@ class WorkerPool:
         (still held-by-us, about to be dropped) lease's priority and be
         wiped out the instant release runs.
 
-        ``run_one_session_turn`` consumes ("idle"s) any ``turn_status``
-        it started with before running the turn, so a lingering
-        ``turn_status == "claimable"`` at this point can only mean a
-        ``wake_session()`` steer landed during (or right after) the turn
-        that just released -- not a stale, already-serviced signal.
+        On the normal-turn path ``run_one_session_turn`` overwrites
+        whatever ``turn_status`` it started with: the turn start writes
+        ``"running"`` unconditionally (``primer.session.dispatch``), and
+        every exit clears ``"running"`` back to ``"idle"`` only where the
+        row does not read ``"claimable"``. So after a turn a lingering
+        ``turn_status == "claimable"`` can only mean a ``wake_session()``
+        steer landed after that start write (during, or right after, the
+        turn that just released) -- not a stale, already-serviced signal.
+        The resume branch writes no ``turn_status``; after it the value is
+        whatever the row already held.
 
         No-ops when the session ended (a restart is required, and reset
         clears turn_status itself) or is not RUNNING/WAITING (e.g.
