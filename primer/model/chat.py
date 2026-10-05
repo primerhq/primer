@@ -1552,6 +1552,15 @@ class _LlmCall(BaseModel):
         default=None,
         description="Completion tokens reported by the stream's Usage event, if any.",
     )
+    estimated_input_tokens: int | None = Field(
+        default=None,
+        description=(
+            "Our character-heuristic estimate of the prompt that was sent (the figure the compaction trigger "
+            "computes: system prompt, history and tool schemas), beside the provider's ``input_tokens`` so the "
+            "two can be compared. Only set when the provider reported usage; ``None`` otherwise, and the "
+            "record omits the key then."
+        ),
+    )
     duration_ms: int = Field(
         default=0,
         ge=0,

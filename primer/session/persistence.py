@@ -669,6 +669,10 @@ def translate_stream_event(
                 "model": call.model,
                 "input_tokens": call.input_tokens,
                 "output_tokens": call.output_tokens,
+                **(
+                    {"estimated_input_tokens": call.estimated_input_tokens}
+                    if call.estimated_input_tokens is not None else {}
+                ),
                 "duration_ms": call.duration_ms,
                 "status": call.status,
             },

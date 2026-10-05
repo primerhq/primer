@@ -35,6 +35,7 @@ import primer.observability.metrics as _metrics
 from primer.agent.interrupt import Interrupted, interruptible
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.context_overflow import is_context_overflow_error
+from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.media.hydrate import hydrate_prompt_parts
 from primer.model.chat import (
     Done,
@@ -151,6 +152,32 @@ def _observe_llm_call(
                 llm_model.profile_id, "out",
             ).inc(usage.output_tokens)
     return elapsed
+
+
+def _observe_prompt_estimate(
+    llm_model: "ResolvedModel",
+    usage: "Usage | None",
+    prompt: list[Message],
+    tools: list["Tool"],
+) -> int | None:
+    """Compare the provider's count of the prompt it was sent with our heuristic estimate of it.
+
+    Returns the estimate and records ``usage.input_tokens / estimate`` on ``llm_prompt_estimate_ratio`` for a
+    call that came back with usage; returns ``None`` and records NOTHING (not a zero) for one that did not,
+    and does not even pass over the prompt then. The estimate is the figure the compaction trigger computes
+    (the same per-part heuristic over the system prompt, the history and the tool schemas), taken from the
+    prompt as SENT: after a guard reduced it, hydrated, whatever the provider actually received. Provider
+    usage is free, so this costs one local pass over the prompt and no counting; it changes no decision.
+    """
+    if usage is None or not usage.input_tokens:
+        return None
+    estimate = count_tokens_char_fallback(messages=prompt, tools=tools or None)
+    if estimate <= 0:
+        return None
+    _metrics.llm_prompt_estimate_ratio.labels(
+        llm_model.provider_id or llm_model.profile_id,
+    ).observe(usage.input_tokens / estimate)
+    return estimate
 
 
 async def _emit_llm_called(
@@ -504,6 +531,7 @@ async def run_agent_turn(
         if budget is not None:
             budget.after_call(call_usage)
         elapsed = _observe_llm_call(llm_model, call_t0, call_usage, call_status)
+        estimated_input = _observe_prompt_estimate(llm_model, call_usage, send_prompt, tools)
         await _emit_llm_called(
             tool_manager, llm_model, call_usage, elapsed, call_status,
         )
@@ -514,6 +542,7 @@ async def run_agent_turn(
                 model=llm_model.model_name,
                 input_tokens=call_usage.input_tokens if call_usage else None,
                 output_tokens=call_usage.output_tokens if call_usage else None,
+                estimated_input_tokens=estimated_input,
                 duration_ms=max(0, int(elapsed * 1000)),
                 status=call_status,
             )
