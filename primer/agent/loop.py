@@ -323,13 +323,20 @@ async def run_agent_turn(
         produced its first token is stoppable too (see
         :func:`primer.agent.interrupt.interruptible`). When it fires the turn
         ends CLEANLY (no exception), after the provider stream is closed.
-        Tool dispatch is NOT interruptible here: a Stop that lands while a tool
-        runs lets the batch finish and its results be yielded (the log stays
-        paired), and the turn ends before the next model call. A Stop that has
-        landed BEFORE a round's batch starts runs none of it: each call is
-        answered with a synthetic ``not run: stopped by user`` error result
-        (appended to ``messages_out`` and yielded), so the history stays valid
-        for the next request. ``None`` (the default) changes nothing.
+        A call that is already RUNNING is not interruptible here: a Stop that
+        lands while a tool runs lets that call finish and its result be yielded
+        (the log stays paired), and the turn ends before the next model call.
+        The calls of the same batch that have not STARTED do not run: the batch
+        is run one call after another, and once the Stop is set each remaining
+        call is answered with a synthetic ``not run: stopped by user`` error
+        result in place of its real one. A Stop that has landed BEFORE a round's
+        batch starts runs none of it, answered the same way (appended to
+        ``messages_out`` and yielded), so the history stays valid for the next
+        request. A batch that PARKS (a ``tool_wait`` park, or a timer yield)
+        leaves the loop before it looks at the Stop, and the dispatch clears the
+        flag as it parks: a Stop pressed during such a turn is dropped rather
+        than ending it (a known gap; a park honouring a pending Stop is its own
+        follow-up). ``None`` (the default) changes nothing.
     interrupted_out
         Optional caller-provided list; ``True`` is appended when the turn ended
         because ``interrupt`` fired (the same output-parameter shape as
@@ -409,8 +416,9 @@ async def run_agent_turn(
                     # (that would drop a tool call the model had finished asking for), and a
                     # provider that never closes the stream must not hold the Stop for the
                     # stall timeout: close it and treat it as the end of the stream. The
-                    # completed round is processed normally; the Stop is honoured before the
-                    # next model call.
+                    # completed round is KEPT, but its tool calls are not run: the Stop is
+                    # already set, so the check after the stream answers each call
+                    # ``not run: stopped by user`` and ends the turn before the next model call.
                     aclose = getattr(stream_it, "aclose", None)
                     if aclose is not None:
                         with contextlib.suppress(Exception):
@@ -573,6 +581,7 @@ async def run_agent_turn(
             tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
             resolve_scoped_call=resolve_scoped_call,
             await_dispatch_barrier=await_dispatch_barrier,
+            interrupt=interrupt,
         )
         # Delivery frames go out BEFORE the results so the session log
         # reads tool_call -> client_action -> tool_result, matching the
@@ -637,6 +646,7 @@ async def _dispatch_tool_calls(
     tool_calls_as_claims_enabled: bool = False,
     resolve_scoped_call: "Callable[[str], tuple[str, int]] | None" = None,
     await_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None,
+    interrupt: "asyncio.Event | None" = None,
 ) -> list[Message]:
     """Dispatch tool calls; return tool-role messages to feed back to the LLM.
 
@@ -644,6 +654,14 @@ async def _dispatch_tool_calls(
     :class:`PrimerError` instances are converted to
     ``ToolResultPart(error=True)`` by the manager itself; the
     defensive catch here is belt-and-braces for adapter bugs.
+
+    In the in-process loop the calls run one after another, and ``interrupt`` (the Stop
+    signal) is checked before each one: a call that is already running cannot be
+    cancelled here and finishes with its real result, but once the Stop is set every call
+    that has NOT started is answered ``not run: stopped by user`` instead of running, so a
+    Stop pressed during call 1 does not see calls 2..N execute. The batch is still
+    answered in full, in order, so the history stays paired. The claims path
+    (:func:`_dispatch_as_claims`) parks the batch and is not covered.
 
     When ``tool_calls_as_claims_enabled`` and the batch has at least one
     CLAIMABLE call (see :func:`_partition_notifying`), routes to
@@ -667,7 +685,12 @@ async def _dispatch_tool_calls(
             )
 
     result_parts: list[ToolResultPart] = []
-    for call in calls:
+    for index, call in enumerate(calls):
+        if interrupt is not None and interrupt.is_set():
+            result_parts.extend(
+                ToolResultPart(id=skipped.id, output=_STOPPED_REFUSAL, error=True) for skipped in calls[index:]
+            )
+            break
         # See _partition_notifying's docstring for why a notifying call
         # (checked the same way here) can never become a ToolCallTask row.
         if tool_manager.is_notifying(call.name):
