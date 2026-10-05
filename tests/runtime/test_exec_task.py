@@ -154,16 +154,23 @@ async def test_exec_read_access_takes_no_lock(tmp_path):
             frames.append(evt)
 
     holder = asyncio.create_task(hold_scope())
-    await asyncio.wait_for(holding.wait(), timeout=10.0)
     try:
+        # Inside the try, so the holder is released and awaited even if this wait is what hits its bound.
+        await asyncio.wait_for(holding.wait(), timeout=10.0)
         # The scope lock stays held for the whole read exec, so a read that took it would wait forever and hit
         # this bound. The bound is only a backstop for that failure: it is far longer than spawning a shell
         # needs even on a loaded runner (a 0.1s bound around a real process spawn failed CI).
         await asyncio.wait_for(read_exec(), timeout=10.0)
-        assert not holder.done(), "the scope lock was released before the read exec finished"
+        # The lock is STILL held: a second acquirer cannot get it. (This probe only ever times out while the
+        # lock is held, so it cannot flake; it fails only if the lock was released before the exec returned.)
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.05):
+                async with locks.hold_scope(str(tmp_path)):
+                    pass
     finally:
         release.set()
-        await holder
+        holder.cancel()
+        await asyncio.gather(holder, return_exceptions=True)
     assert any(f.event == "exit" for f in frames)
 
 
