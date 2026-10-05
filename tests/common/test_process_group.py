@@ -254,6 +254,65 @@ async def test_a_leader_the_group_kill_already_took_down_is_reported_as_killed_n
             pass
 
 
+# --- the /proc scan itself, on a real process -------------------------------------------------------------------------------
+
+
+def _proc_state(pid: int) -> str | None:
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as stat:
+            return stat.read().rsplit(b")", 1)[1].split()[0].decode()
+    except (OSError, IndexError):
+        return None
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux-only")
+async def test_the_live_member_scan_reads_the_real_state_of_a_real_process(tmp_path: Path) -> None:
+    """Every other test reaches ``_live_member_of`` through a stub or only on its False side (a zombie is not live). This
+    one runs it on a real process in its own group, through its whole life: live while it runs, not live once it is killed
+    but not yet reaped (the zombie nothing reaps under PID 1), not live once it is reaped. Its ``comm`` is set to
+    ``x) Z 1 2 (``, which a parse that splits at the FIRST ")" would read as state Z and the wrong fields: the scan must
+    split at the last one. It is a ``Popen`` and not an asyncio process so that nothing reaps it behind the test's back."""
+    ready = tmp_path / "ready"
+    source = (
+        "import ctypes, time\n"
+        "ctypes.CDLL(None).prctl(15, b'x) Z 1 2 (', 0, 0, 0)\n"        # PR_SET_NAME
+        f"open({str(ready)!r}, 'w').write('1')\n"
+        "time.sleep(60)\n"
+    )
+    child = subprocess.Popen([sys.executable, "-c", source], start_new_session=True)
+    try:
+        deadline = time.monotonic() + 10.0
+        while not ready.exists():
+            assert time.monotonic() < deadline, "the child never reported ready"
+            await asyncio.sleep(0.02)
+        if Path(f"/proc/{child.pid}/comm").read_text().strip() != "x) Z 1 2 (":
+            pytest.skip("prctl(PR_SET_NAME) was refused: the test is not in the situation it is about")
+
+        assert pg._live_member_of(child.pid) is True, "a running process of the group was not found"
+
+        os.kill(child.pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5.0
+        while _proc_state(child.pid) != "Z":
+            assert time.monotonic() < deadline, f"the child never became a zombie (state {_proc_state(child.pid)})"
+            time.sleep(0.01)
+        assert pg._live_member_of(child.pid) is False, "a zombie was counted as a live member"
+
+        child.wait()
+        assert pg._live_member_of(child.pid) is False, "a reaped process was counted as a live member"
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+
+
+def test_a_scan_that_read_no_stat_file_says_it_cannot_tell(monkeypatch) -> None:
+    """None, not False: the caller then has only ``killpg`` to go on (a /proc that lists pids but has no readable
+    ``stat``, as a non-Linux procfs, must not make every group look empty)."""
+    monkeypatch.setattr(pg.os, "listdir", lambda path: ["4194999"])      # a pid that is not there
+
+    assert pg._live_member_of(12345) is None
+
+
 # --- primer as PID 1: killed children are never reaped ----------------------------------------------------------------------
 
 #: Runs in a child python. ``PR_SET_CHILD_SUBREAPER`` makes it adopt the orphans of the commands it starts, and, like

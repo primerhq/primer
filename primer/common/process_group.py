@@ -10,6 +10,11 @@ The fix has two halves, and the caller must do both: start the process in its ow
 :func:`kill_process_group` it. ``LocalWorkspace.diagnostic_exec`` and the workspace init command already did this for
 their timeouts; the agent-facing ``exec`` tool and the local python runner did not.
 
+The workspace runtime image cannot import ``primer``, so it carries its own copy of the same idea
+(``runtime/primer_runtime/process_group.py``, which differs on purpose: it sends SIGTERM and a grace period before the
+SIGKILL, and has no Windows branch). Keep the shared helpers (``_live_member_of``, ``_group_has_a_live_member``,
+``_close_the_pipes``) in step with it.
+
 What the group kill does NOT reach, on purpose: a process that left the group by starting a session of its own
 (``setsid``, or a daemon that double-forks and calls ``setsid``) was detached deliberately and survives. ``nohup`` alone
 does not detach (it only ignores SIGHUP), so a job started with it stays in the group and is killed (SIGKILL cannot be
@@ -62,7 +67,12 @@ async def kill_process_group(proc: asyncio.subprocess.Process, *, reap_timeout_s
     An accepted edge: once the leader is gone and its group empty, its id is no longer reserved, so the group signal
     (and the emptiness check) could in theory reach an unrelated group if the pid was recycled to a new group leader in
     the meantime. That needs a pid wrap inside the caller's timeout; ``LocalWorkspace.diagnostic_exec`` and the init
-    command carry the same edge.
+    command carry the same edge. The same class of edge covers the direct signal to the leader: ``proc.kill()`` used to
+    poll first, and an ECHILD meant "already reaped, do not signal"; ``os.kill`` has no such guard. Under asyncio's
+    pidfd child watcher (the default where ``pidfd_open`` exists) the reap and the recorded ``returncode`` happen in the
+    same loop callback, so there is no window; under the thread-based watcher the watcher thread can reap the leader
+    just before the loop records it, and the signal would then target a freed pid, which needs a pid wrap inside that
+    window.
     """
     if os.name == "posix":
         try:
@@ -107,11 +117,13 @@ def _group_has_a_live_member(pgid: int) -> bool:
 
 def _live_member_of(pgid: int) -> bool | None:
     """Is any process of group ``pgid`` alive, that is, in a state other than zombie (``Z``) or dead (``X``)? None where
-    ``/proc`` cannot say (not Linux): the caller then has only ``killpg`` to go on."""
+    ``/proc`` cannot say (not Linux, or no ``stat`` file could be read at all): the caller then has only ``killpg`` to go
+    on."""
     try:
         names = os.listdir("/proc")
     except OSError:
         return None
+    read_any = False
     for name in names:
         if not name.isdigit():
             continue
@@ -123,9 +135,10 @@ def _live_member_of(pgid: int) -> bool | None:
             state, group = fields[0], int(fields[2])
         except (OSError, ValueError, IndexError):
             continue      # it exited while we looked, or is not ours to read
+        read_any = True
         if group == pgid and state not in (b"Z", b"X"):
             return True
-    return False
+    return False if read_any else None
 
 
 def _close_the_pipes(proc: asyncio.subprocess.Process) -> None:
