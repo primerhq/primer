@@ -35,13 +35,16 @@ def _text(message: Message) -> str:
     return "".join(p.text for p in message.parts if isinstance(p, TextPart))
 
 
-async def _history(session, llm) -> list[Message]:
+def _executor(session, llm) -> WorkspaceAgentExecutor:
     manager = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
-    executor = WorkspaceAgentExecutor(
+    return WorkspaceAgentExecutor(
         agent=g.make_agent(), llm=llm, llm_model=g.make_model(), tool_manager=manager,
         session=session, compaction=CompactionStrategy(),
     )
-    return await executor._read_messages_jsonl()
+
+
+async def _history(session, llm) -> list[Message]:
+    return await _executor(session, llm)._read_messages_jsonl()
 
 
 async def _compacting_turn(root: Path, *, pairs: int = 6, question: str = QUESTION):
@@ -645,6 +648,117 @@ class TestAParkedTurnWithManyRounds:
         assert shown[-1].role == "assistant" and _text(shown[-1]) == "the answer"
         assert _answered(shown)
         assert [m["role"] for m in turn_prompt[1:]] == [m.role for m in shown[:-1]], "the turn was sent what a reload returns"
+
+
+class TestASecondCompactionInTheSameTurn:
+    """After compaction 1 of a turn with many rounds the history is [question, summary 1, newest round]. The summary is
+    an assistant message that stands between the question and the rounds, so a second compaction in the same turn must
+    see through it: the question is still the unanswered input, and summary 1 is folded into summary 2."""
+
+    @staticmethod
+    def _rounds(lo: int, hi: int, size: int = 12_000) -> list[Message]:
+        return [m for i in range(lo, hi) for m in _round(i, size=size)]
+
+    @staticmethod
+    def _assert_the_question_survived(result, summariser) -> None:
+        out = result.new_messages
+        assert _text(out[0]) == QUESTION, "the question was summarised away by the second compaction"
+        assert out[1].role == "assistant" and _text(out[1]).endswith("SUMMARY-2")
+        assert result.summary_after == 1
+        assert all("SUMMARY-1" not in _text(m) for m in out), "summary 1 was kept next to summary 2 instead of folded"
+        request = summariser.requests[0]
+        assert any(_text(m) == QUESTION for m in request), "the summariser was not shown the question"
+        assert any("SUMMARY-1" in _text(m) for m in request), "the summariser was not shown the first summary"
+        assert _answered(out)
+
+    def test_the_second_pass_on_the_history_the_first_one_returned(self) -> None:
+        history = [_msg("user", QUESTION), *self._rounds(0, 30)]
+        strategy = CompactionStrategy()
+        first = asyncio.run(strategy.maybe_compact(
+            agent=g.make_agent(), llm=_Summariser("SUMMARY-1"), model=_model(), history=history, new_messages=[],
+        ))
+        assert first is not None and first.outcome == "summarised" and first.summary_after == 1
+        second_summariser = _Summariser("SUMMARY-2")
+        second = asyncio.run(strategy.maybe_compact(
+            agent=g.make_agent(), llm=second_summariser, model=_model(),
+            history=[*first.new_messages, *self._rounds(30, 60)], new_messages=[],
+        ))
+        assert second is not None and second.outcome == "summarised"
+        self._assert_the_question_survived(second, second_summariser)
+
+    def test_across_a_marker_write_and_reconstruct(self) -> None:
+        """The same two passes with the history of the second one read back from the file the first one's marker was
+        written to: the summary is rebuilt by the reader, so it has to be recognisable there too."""
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                executor = _executor(session, llm)
+                strategy = CompactionStrategy()
+                history = [_msg("user", QUESTION), *self._rounds(0, 30)]
+                await g.append_messages(workspace, session, *history)
+                first = await strategy.maybe_compact(
+                    agent=g.make_agent(), llm=_Summariser("SUMMARY-1"), model=_model(), history=history, new_messages=[],
+                )
+                await executor._replace_compacted_head(
+                    first.new_messages, summary_message=first.summary_message, outcome=first.outcome,
+                )
+                reloaded = await executor._read_messages_jsonl()
+                more = self._rounds(30, 60)
+                await g.append_messages(workspace, session, *more)
+                summariser = _Summariser("SUMMARY-2")
+                second = await strategy.maybe_compact(
+                    agent=g.make_agent(), llm=summariser, model=_model(), history=[*reloaded, *more], new_messages=[],
+                )
+                await executor._replace_compacted_head(
+                    second.new_messages, summary_message=second.summary_message, outcome=second.outcome,
+                )
+                return second, summariser, await executor._read_messages_jsonl(), _markers(_file_lines(workspace, session))
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        second, summariser, after_two, markers = _run(scenario)
+        self._assert_the_question_survived(second, summariser)
+        assert [m.get("payload", {}).get("summary_after") for m in markers] == [1, 1]
+        assert _text(after_two[0]) == QUESTION and _text(after_two[1]).endswith("SUMMARY-2"), "the reload lost the question"
+
+    def test_a_proactive_then_a_forced_compaction_in_one_invoke(self) -> None:
+        """The forced compaction is what an overflow of the turn's own call triggers, in the same invoke as the
+        proactive one that left [question, summary 1, newest round] in memory."""
+        from primer.model.except_ import BadRequestError
+
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                await g.append_messages(workspace, session, _msg("user", QUESTION), *self._rounds(0, 30))
+                overflow = BadRequestError("This model's maximum context length is 100000 tokens, however you requested more")
+                llm.extend([
+                    g.Events(g.text_events("SUMMARY-1")),   # the proactive compaction's summariser
+                    g.Raise(overflow),                      # the turn's own call is rejected
+                    g.Events(g.text_events("SUMMARY-2")),   # the forced compaction's summariser
+                    g.Events(g.text_events("the answer")),  # the replay
+                ])
+                await g.run_turn(session, llm)
+                return llm.calls, await _history(session, llm), _markers(_file_lines(workspace, session))
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        calls, shown, markers = _run(scenario)
+        texts = [_text(m) for m in shown]
+        assert len(markers) == 2, "one proactive and one forced marker"
+        # the session opens with its own "hello" instruction, so the user run that opens the turn is two messages
+        assert texts[:2] == ["hello", QUESTION], "the forced compaction summarised the question"
+        assert texts[2].endswith("SUMMARY-2") and not any("SUMMARY-1" in t for t in texts)
+        assert [m["payload"].get("summary_after") for m in markers] == [2, 2]
+        assert texts[-1] == "the answer"
+        assert [m["role"] for m in calls[3]["messages"][1:]] == [m.role for m in shown[:-1]], (
+            "the replay was sent something other than what a reload returns (the prompts are fingerprints, not text)"
+        )
 
 
 class TestTheManualAndMixinPath:

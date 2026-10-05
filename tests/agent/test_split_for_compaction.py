@@ -6,7 +6,7 @@ import pytest
 
 from primer.agent.compaction import CompactionStrategy
 from primer.agent.tail import pending_from, split_for_compaction, unit_starts
-from primer.model.chat import Message, TextPart, ToolCallPart, ToolResultPart
+from primer.model.chat import CompactionSummary, Message, TextPart, ToolCallPart, ToolResultPart
 
 SIZE = CompactionStrategy._estimate_tokens  # noqa: SLF001
 
@@ -68,6 +68,69 @@ class TestPending:
     def test_a_history_ending_on_an_answer_has_nothing_pending(self) -> None:
         messages = [_m("user"), _m("assistant")]
         assert pending_from(messages) == len(messages)
+
+
+def _summary(text: str = "[summary]") -> CompactionSummary:
+    return CompactionSummary(role="assistant", parts=[TextPart(text=text)])
+
+
+class TestACompactionSummaryIsTransparentToThePendingTurn:
+    """After a compaction that summarised the early rounds of a turn the history is [question, summary, newest round].
+    The summary is an assistant message but not an answer: the question is still the unanswered input."""
+
+    @pytest.mark.parametrize(
+        ("messages", "expected"),
+        [
+            ([_m("user", "q"), _summary(), _call(0), _result(0)], 0),
+            ([_m("user", "q1"), _m("user", "q2"), _summary(), _call(0), _result(0)], 0),
+            ([_m("user", "o"), _m("assistant", "a"), _m("user", "q"), _summary(), _call(0), _result(0)], 2),
+            ([_m("user", "q"), _summary("s1"), _summary("s2"), _call(0), _result(0)], 0),
+            ([_m("user", "q"), _summary(), _call(0), _result(0), _call(1), _result(1)], 0),
+        ],
+        ids=["one-question", "queued-questions", "after-an-earlier-turn", "two-summaries", "two-rounds"],
+    )
+    def test_the_walk_goes_through_the_summary_to_the_question(self, messages, expected) -> None:
+        assert pending_from(messages) == expected
+
+    def test_an_ordinary_assistant_reply_still_ends_the_pending_turn(self) -> None:
+        """Only the compactor's own summary is transparent: a reply the model wrote answered the question."""
+        assert pending_from([_m("user", "q"), _m("assistant", "[earlier conversation compacted on x]"), _call(0), _result(0)]) == 2
+
+    def test_a_summary_with_no_question_in_front_of_it_is_not_pending(self) -> None:
+        assert pending_from([_summary(), _call(0), _result(0)]) == 1
+        assert pending_from([_summary(), _m("user", "q"), _call(0), _result(0)]) == 1
+
+    def test_a_history_that_ends_on_the_summary_has_nothing_pending(self) -> None:
+        messages = [_m("user", "q"), _summary()]
+        assert pending_from(messages) == len(messages)
+
+    def test_a_later_question_after_the_rounds_is_the_only_pending_input(self) -> None:
+        assert pending_from([_m("user", "q"), _summary(), _call(0), _result(0), _m("user", "q2")]) == 4
+
+    def test_a_second_split_keeps_the_question_and_folds_the_first_summary(self) -> None:
+        history = [_m("user", "THE QUESTION"), _summary("S1"), *[m for i in range(6) for m in (_call(i), _result(i))]]
+        split = _split(history, turns=4, budget=0)
+        assert split.tail[0].parts[0].text == "THE QUESTION" and split.summary_after == 1
+        assert split.head[0] is history[1], "the first summary is in what the second one replaces"
+        assert [t.role for t in split.tail] == ["user", "assistant", "tool"], "the question and the newest round"
+        assert split.summary_input[:2] == history[:2], "the summariser reads the question and the first summary"
+
+
+class TestTheCostOfShrinkingATurn:
+    def test_the_in_turn_shrink_does_not_measure_the_whole_tail_for_every_round(self) -> None:
+        """500 rounds took about 3 seconds a call (the tail was measured again for every round replaced) and blocked
+        the event loop. Counted in messages measured, not in seconds, so the test cannot flake."""
+        measured = 0
+
+        def counting(messages) -> int:
+            nonlocal measured
+            measured += len(messages)
+            return SIZE(messages)
+
+        history = [_m("user", "q"), *[m for i in range(500) for m in (_call(i), _result(i))]]
+        split = split_for_compaction(history, tail_turns=4, tail_budget_tokens=1, size=counting)
+        assert split.head and len(split.tail) == 3, "the shrink reached the floor"
+        assert measured < 10 * len(history), f"{measured} messages measured for a history of {len(history)}"
 
 
 class TestTheCut:

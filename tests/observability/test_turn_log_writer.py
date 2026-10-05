@@ -381,6 +381,35 @@ class TestToProblemDetails:
         assert pd.status == 401
         assert pd.title == "Authentication Failed"
 
+    def test_a_context_overflow_that_compaction_cannot_fix_has_its_own_type(self):
+        from primer.model.except_ import ContextOverflowUnrecoverable
+
+        pd = to_problem_details(ContextOverflowUnrecoverable("the prompt is too large (fixed_over_budget)"))
+        assert (pd.status, pd.type, pd.title) == (413, "/errors/context-overflow-unrecoverable", "Context Overflow Unrecoverable")
+        assert pd.extensions["exception_class"] == "ContextOverflowUnrecoverable"
+        assert "fixed_over_budget" in pd.detail
+
+    def test_an_exceptions_problem_extensions_are_merged_beside_the_class_and_traceback(self):
+        from primer.session.compaction import NothingToCompact
+
+        pd = to_problem_details(NothingToCompact("empty_head"))
+        assert pd.status == 422
+        assert pd.extensions["reason"] == "empty_head"
+        assert pd.extensions["exception_class"] == "NothingToCompact" and "traceback" in pd.extensions
+
+    def test_an_exception_without_problem_extensions_adds_no_keys(self):
+        from primer.model.except_ import ConflictError
+
+        assert set(to_problem_details(ConflictError("taken")).extensions) == {"exception_class", "traceback"}
+
+    def test_every_row_mirrors_the_api_map(self):
+        """The two tables are kept in step by hand: a row added to one and not the other would map the same
+        exception to two different problem types depending on which surface reported it."""
+        from primer.api.errors import _PRIMER_ERROR_MAP as api_map
+        from primer.observability.turn_log_writer import _PRIMER_ERROR_MAP as log_map
+
+        assert set(log_map) <= set(api_map), sorted(r[0].__name__ for r in set(log_map) - set(api_map))
+
     def test_specific_subclass_preferred_over_base(self):
         from primer.model.except_ import RateLimitError
 

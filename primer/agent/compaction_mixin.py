@@ -65,6 +65,9 @@ class CompactionResult:
     """``CompactedTurn.outcome``: ``summarised``, ``unreducible`` or ``insufficient``."""
     trigger_tokens: int | None = None
     """The trigger the compaction was measured against, in estimated tokens."""
+    fixed_overhead_tokens: int = 0
+    """The part of the prompt no history can give back that ``tokens_before`` / ``tokens_after`` include
+    (the caller says what it counted: ``0`` when it counted none)."""
 
 
 async def should_compact(
@@ -134,8 +137,13 @@ async def apply_compaction(
     event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
     max_tool_turns: int | None = None,
     principal: str | None = None,
+    fixed_overhead: int = 0,
 ) -> CompactionResult:
     """Run the :class:`CompactionStrategy` and assemble a :class:`CompactionResult`.
+
+    ``fixed_overhead`` is the estimated size of the part of every prompt that no history can give
+    back, as far as the caller can count it (see :meth:`CompactionStrategy.estimate_fixed_overhead`):
+    it is part of the budget rules and of the figures the result reports.
 
     The strategy expects an Agent-like shim with a ``compaction_prompt``
     field (``list[str]``), and a model shim with ``model_name`` +
@@ -161,7 +169,7 @@ async def apply_compaction(
     compacted = await effective_strategy._tier2(  # noqa: SLF001
         pruned_history=list(history),
         pruned_count=0,
-        before=0,
+        before=effective_strategy._estimate_tokens(history) + fixed_overhead,  # noqa: SLF001
         agent=_AgentShim(),
         llm=llm,
         model=_ModelShim(),
@@ -169,6 +177,7 @@ async def apply_compaction(
         event_sink=event_sink,
         max_tool_turns=max_tool_turns,
         principal=principal,
+        fixed_overhead=fixed_overhead,
     )
     summary_msg = compacted.summary_message
     summary_text = (
@@ -194,6 +203,7 @@ async def apply_compaction(
         unreducible=compacted.unreducible,
         outcome=compacted.outcome,
         trigger_tokens=compacted.trigger_tokens,
+        fixed_overhead_tokens=compacted.fixed_overhead_tokens,
     )
 
 
@@ -209,6 +219,7 @@ async def force_compact(
     event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
     max_tool_turns: int | None = None,
     principal: str | None = None,
+    fixed_overhead: int = 0,
 ) -> CompactionResult:
     """On-demand compaction -- bypasses the trigger check."""
     return await apply_compaction(
@@ -222,6 +233,7 @@ async def force_compact(
         event_sink=event_sink,
         max_tool_turns=max_tool_turns,
         principal=principal,
+        fixed_overhead=fixed_overhead,
     )
 
 
