@@ -251,15 +251,15 @@ class _BaseAgentExecutor(ABC):
         surfaces that rewrite in place (the chat/thread executor) ignore them.
         """
 
-    async def _last_compaction(self) -> tuple[int | None, bool]:
-        """``(tokens_after, skip_noted)`` for the newest compaction. Default: ``(None, False)``, nothing known.
+    async def _last_compaction(self) -> tuple[int | None, tuple[str, str] | None]:
+        """``(tokens_after, noted)`` for the newest compaction. Default: ``(None, None)``, nothing known.
 
         ``tokens_after`` is the estimated prompt size it left: the strategy uses it to hold off compacting
         again until the prompt has grown (a compaction that cannot reach its trigger would otherwise
-        summarise its own summary every turn). ``skip_noted`` says that a skipped compaction was already
-        noted in the session record since then, so a run of skips is noted once. The workspace executor
+        summarise its own summary every turn). ``noted`` is the ``(outcome, reason)`` of the newest note in
+        the session record since then, so a run of the same verdict is noted once. The workspace executor
         reads both back from ``messages.jsonl``."""
-        return None, False
+        return None, None
 
     # ---- Compaction-window hooks (steer-deferral; workspace override) -----
 
@@ -325,7 +325,7 @@ class _BaseAgentExecutor(ABC):
             history = (
                 snapshot if snapshot is not None else await self._load_history()
             )
-            last_compaction_tokens, skip_noted = await self._last_compaction()
+            last_compaction_tokens, noted = await self._last_compaction()
             compacted = await self._compaction.maybe_compact(
                 agent=self._agent,
                 llm=self._llm,
@@ -349,7 +349,7 @@ class _BaseAgentExecutor(ABC):
                     summary_input_reduced=compacted.summary_input_reduced,
                     snapshot=history,
                 )
-                notes += self._compaction_notes(compacted, skip_noted=skip_noted)
+                notes += self._compaction_notes(compacted, noted=noted)
                 history = compacted.new_messages
                 logger.info(
                     "AgentExecutor: compaction fired",
@@ -748,18 +748,21 @@ class _BaseAgentExecutor(ABC):
         return forced.pruned_tool_outputs == 0 and not changed
 
     @staticmethod
-    def _compaction_notes(compacted: "CompactedTurn", *, skip_noted: bool = False) -> list[ExtendedEvent]:
+    def _compaction_notes(
+        compacted: "CompactedTurn", *, noted: tuple[str, str] | None = None,
+    ) -> list[ExtendedEvent]:
         """The session-record entry for a compaction that wrote no marker.
 
         A compaction that summarised and was still over the trigger says so in its marker's
         payload; one that summarised nothing writes no marker, so this event (persisted as a
         ``compaction_note`` record by the dispatch path) is where it is visible: ``unreducible``
         (it could not help) and ``skipped`` (it deliberately did nothing, because it could not
-        reach the trigger). A skip repeats every turn until something changes, so it is noted once
-        per run (``skip_noted``: this run already has its note)."""
+        reach the trigger). Either repeats every turn until something changes, so a verdict is noted once
+        per run (``noted``: the newest note since the last marker already says this outcome and reason; a
+        different reason is a new run)."""
         if compacted.unreducible is None or compacted.outcome not in ("unreducible", "skipped"):
             return []
-        if compacted.outcome == "skipped" and skip_noted:
+        if noted == (compacted.outcome, compacted.unreducible):
             return []
         return [ExtendedEvent(extended=_CompactionNote(
             outcome=compacted.outcome,

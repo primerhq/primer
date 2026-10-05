@@ -237,7 +237,8 @@ class LastCompaction(NamedTuple):
     """What ``messages.jsonl`` says about the newest compaction: see :func:`last_compaction_state`."""
 
     tokens_after: int | None = None
-    skip_noted: bool = False
+    noted: tuple[str, str] | None = None
+    """``(outcome, reason)`` of the newest ``compaction_note`` since the newest marker, ``None`` when there is none."""
 
 
 def last_compaction_state(raw_lines: "list[str]") -> LastCompaction:
@@ -249,15 +250,16 @@ def last_compaction_state(raw_lines: "list[str]") -> LastCompaction:
     figure was kept says ``0``). The strategy reads it to avoid summarising its own summary again before
     the prompt has grown.
 
-    ``skip_noted`` says that a ``compaction_note`` record for a skipped compaction was already written
-    since that marker (or since the start of the session, with none). A run of skips is noted once, not
-    on every turn; the next marker ends the run.
+    ``noted`` is the ``(outcome, reason)`` of the newest ``compaction_note`` record since that marker (or
+    since the start of the session, with none): a compaction that reaches the same verdict again is part
+    of the same run and is not noted again, so a prompt that stays unreducible or skipped is noted once,
+    not on every turn. The next marker, a different verdict, or a rewind that cuts the note away ends the run.
     """
     marker_kind = SessionMessageKind.COMPACTION_MARKER.value
     rewind_kind = SessionMessageKind.REWIND_MARKER.value
     note_kind = SessionMessageKind.COMPACTION_NOTE.value
     last: tuple[int, int | None] | None = None  # (seq of the marker, its tokens_after)
-    skip_noted = False
+    noted: tuple[int, tuple[str, str]] | None = None  # (seq of the note, (outcome, reason))
     for line in raw_lines:
         if marker_kind not in line and rewind_kind not in line and note_kind not in line:
             continue  # the file is mostly messages and event records: only these lines are parsed
@@ -274,14 +276,17 @@ def last_compaction_state(raw_lines: "list[str]") -> LastCompaction:
             tokens = payload.get("tokens_after")
             known = isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0
             last = (seq, tokens if known else None)
-            skip_noted = False
+            noted = None
         elif kind == rewind_kind:
             to_seq = payload.get("to_seq")
-            if last is not None and isinstance(to_seq, int) and last[0] > to_seq:
-                last, skip_noted = None, False
-        elif kind == note_kind and payload.get("outcome") == "skipped":
-            skip_noted = True
-    return LastCompaction(last[1] if last else None, skip_noted)
+            if isinstance(to_seq, int):
+                if last is not None and last[0] > to_seq:
+                    last, noted = None, None
+                elif noted is not None and noted[0] > to_seq:
+                    noted = None       # the note was cut away: its verdict is no longer on the record
+        elif kind == note_kind and isinstance(payload.get("outcome"), str) and isinstance(payload.get("reason"), str):
+            noted = (seq, (payload["outcome"], payload["reason"]))
+    return LastCompaction(last[1] if last else None, noted[1] if noted else None)
 
 
 # ---------------------------------------------------------------------------
