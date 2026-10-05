@@ -63,7 +63,7 @@ from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.prune import PruneSet
 from primer.agent.tail import pending_from
 from primer.agent.tool_manager import ToolExecutionManager
-from primer.common.context_overflow import is_context_overflow
+from primer.common.context_overflow import is_context_overflow, output_cap_never_fits
 from primer.model.chat import (
     ExtendedEvent,
     Message,
@@ -422,7 +422,38 @@ class _BaseAgentExecutor(ABC):
         overflow on it), and written by the compaction marker. The replay is then a fresh record
         built on the compacted history, with the turn's tool budget carried over, under a prompt
         guard that reduces what it sends. Nothing the turn already ran runs again.
+
+        Not when the agent's own ``max_output_tokens`` is not below the model's context window: no history,
+        however short, fits beside that cap, so the rejection is the cap talking and a compaction would only
+        rewrite the persisted history into a summary before the replay is rejected the same way. This is
+        decided from the configuration, before anything else, so it holds whatever the provider's rejection
+        says (a provider code, or a text the classifier takes for an input overflow, is no proof the history
+        is what is too big); the message-level arithmetic of the classifier only covers providers that state
+        both numbers. The rounds the turn completed are not lost: nothing was folded, so they stay in the
+        record and the chokepoint writes them on the way out.
         """
+        max_output = self._agent.max_output_tokens
+        if output_cap_never_fits(max_output, self._model.context_length):
+            logger.warning(
+                "AgentExecutor: hard-overflow detected, but the agent's output cap fills the context window; "
+                "not compacting",
+                extra={
+                    "agent_id": self._agent.id,
+                    "max_output_tokens": max_output,
+                    "context_length": self._model.context_length,
+                    "error": str(exc),
+                },
+            )
+            raise ContextOverflowUnrecoverable(
+                f"the model rejected the prompt as too large, but the agent's max_output_tokens ({max_output}) "
+                f"is not below the model's context window ({self._model.context_length}): no history, however "
+                f"short, fits beside that cap, so compaction cannot help; lower max_output_tokens or use a "
+                f"model with a larger window",
+                cause=exc,
+                forced_compaction=False,
+                replay_attempted=False,
+                persisted_rounds=self._persisted_rounds(record),
+            ) from exc
         rounds = completed_rounds(record.messages[record.inputs:])
         del record.messages[record.inputs + len(rounds):]  # a call that never got its result goes
         logger.warning(

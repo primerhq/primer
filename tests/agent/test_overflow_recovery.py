@@ -79,9 +79,11 @@ class _Manager:
 
 
 class _Executor(_BaseAgentExecutor):
-    def __init__(self, llm, compaction: _SpyCompaction) -> None:
+    def __init__(self, llm, compaction: _SpyCompaction, *, max_output_tokens: int | None = None) -> None:
         super().__init__(
-            agent=Agent(id="ag", description="x", model=AgentModel(profile_id="p--m")),
+            agent=Agent(
+                id="ag", description="x", model=AgentModel(profile_id="p--m"), max_output_tokens=max_output_tokens,
+            ),
             llm=llm, llm_model=MODEL, tool_manager=_Manager(), compaction=compaction,  # type: ignore[arg-type]
         )
         self.history = [
@@ -247,6 +249,75 @@ async def test_vllms_cap_larger_than_the_context_does_not_force_compact() -> Non
         await _invoke(executor)
 
     assert spy.forced == 0 and executor.replaced == [] and llm.calls == 1
+
+
+# --- the configured output cap: when it alone does not fit the window, no history can ----------------------
+
+# MODEL.context_length is 4096. Both rejections below say the PROMPT does not fit: one by the provider's code
+# (which the message-level arithmetic never sees), one by a text the classifier takes for an input overflow
+# (a proxy that rewrites the provider's words). Either way the agent's own cap fills the window, so the
+# compaction could only destroy the history and the replay would be rejected the same way.
+CAP_AT_THE_WINDOW = 4096
+CAP_ABOVE_THE_WINDOW = 100_000
+_REJECTIONS = {
+    "provider-code": lambda: BadRequestError("Something went wrong", code="context_length_exceeded", status_code=400),
+    "input-overflow-text": lambda: BadRequestError(OVERFLOW, status_code=400),
+}
+
+
+@pytest.mark.parametrize("cap", [CAP_AT_THE_WINDOW, CAP_ABOVE_THE_WINDOW], ids=["cap-equals-window", "cap-above-window"])
+@pytest.mark.parametrize("rejection", list(_REJECTIONS))
+async def test_a_cap_that_alone_fills_the_window_is_not_compacted_away(rejection: str, cap: int) -> None:
+    spy = _SpyCompaction()
+    rejected = _REJECTIONS[rejection]()
+    llm = _FailsThenAnswers(raises=rejected)
+    executor = _Executor(llm, spy, max_output_tokens=cap)
+
+    with pytest.raises(ContextOverflowUnrecoverable) as failed:
+        await _invoke(executor)
+
+    assert spy.forced == 0, "no history, however short, fits beside the cap: summarising it away cannot help"
+    assert executor.replaced == [], "the persisted history must be left alone"
+    assert llm.calls == 1, "and the turn must not be replayed against the same rejection"
+    assert failed.value.__cause__ is rejected
+    assert (failed.value.forced_compaction, failed.value.replay_attempted) == (False, False)
+    # It says WHY, in the words the operator can act on: the agent's cap and the model's window.
+    assert f"max_output_tokens ({cap})" in failed.value.message
+    assert f"context window ({MODEL.context_length})" in failed.value.message
+
+
+@pytest.mark.parametrize("rejection", list(_REJECTIONS))
+async def test_a_cap_below_the_window_still_force_compacts_and_replays(rejection: str) -> None:
+    """The cap fits (1024 < 4096): the history is what does not, and compaction can fix it."""
+    spy = _SpyCompaction()
+    llm = _FailsThenAnswers(raises=_REJECTIONS[rejection]())
+    executor = _Executor(llm, spy, max_output_tokens=1024)
+
+    events = await _invoke(executor)
+
+    assert spy.forced == 1 and len(executor.replaced) == 1 and llm.calls == 2
+    assert "all good" in "".join(e.text for e in events if isinstance(e, TextDelta))
+
+
+async def test_a_cap_one_below_the_window_still_force_compacts_and_replays() -> None:
+    """The boundary: 4095 < 4096 fits (one token of history), 4096 does not (see the equal case above)."""
+    spy = _SpyCompaction()
+    llm = _FailsThenAnswers(raises=_REJECTIONS["provider-code"]())
+    executor = _Executor(llm, spy, max_output_tokens=CAP_AT_THE_WINDOW - 1)
+
+    await _invoke(executor)
+
+    assert spy.forced == 1 and llm.calls == 2
+
+
+async def test_an_unset_cap_proves_nothing_and_still_force_compacts_and_replays() -> None:
+    spy = _SpyCompaction()
+    llm = _FailsThenAnswers(raises=_REJECTIONS["provider-code"]())
+    executor = _Executor(llm, spy)  # no max_output_tokens: the adapter's own default applies
+
+    await _invoke(executor)
+
+    assert spy.forced == 1 and llm.calls == 2
 
 
 async def test_the_recovery_is_attempted_once_not_in_a_loop() -> None:
