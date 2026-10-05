@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from primer.common.context_overflow import is_context_overflow
+from primer.common.context_overflow import is_context_overflow, output_cap_never_fits
 from primer.model.chat import Error, TurnStreamFailure
 from primer.model.except_ import (
     AuthenticationError,
@@ -76,6 +76,44 @@ REAL_OVERFLOWS = [
         "max_tokens is too large to leave room for the history; exceeds maximum context length (4096 > 32768 - 29000)",
         id="synthetic-trailer-only",
     ),
+    # vLLM's renderer (vllm/renderers/params.py, _token_len_check and _text_len_check), the form that replaced
+    # the "is too large" one: the cap alone fits (65535 < 128000), the history does not, so compaction can fix it.
+    pytest.param(
+        "This model's maximum context length is 128000 tokens. However, you requested 65535 output tokens and "
+        "your prompt contains at least 62466 input tokens, for a total of at least 128001 tokens. Please reduce "
+        "the length of the input prompt or the number of requested output tokens.",
+        id="vllm-renderer-tokens",
+    ),
+    pytest.param(
+        "This model's maximum context length is 32768 tokens. However, you requested 4096 output tokens and "
+        "your prompt contains 200000 characters (more than 130688 characters, which is the upper bound for "
+        "28672 input tokens). Please reduce the length of the input prompt or the number of requested output "
+        "tokens.",
+        id="vllm-renderer-characters",
+    ),
+    # vLLM's input processor: the input alone is longer than the context, with no mention of an output cap.
+    pytest.param(
+        "The decoder prompt (length 5951) is longer than the maximum model length of 4096. Make sure that "
+        "`max_model_len` is no smaller than the number of text tokens.",
+        id="vllm-decoder-prompt",
+    ),
+    pytest.param(
+        "The prompt (total length 25938) is too long to fit into the model (context length 4096). Make sure that "
+        "`max_model_len` is no smaller than the number of text tokens plus multimodal tokens.",
+        id="vllm-prompt-too-long-to-fit",
+    ),
+    # Numbers with thousands separators. Truncating at the comma read the cap as 2 and the context as 1 here, and
+    # called a recoverable overflow an output-cap error.
+    pytest.param(
+        "'max_tokens' is too large: 2,000. This model's maximum context length is 1,000,000 tokens and your "
+        "request has 999,500 input tokens (2,000 > 1,000,000 - 999,500).",
+        id="vllm-comma-numbers-cap-fits",
+    ),
+    pytest.param(
+        "This model's maximum context length is 1,048,576 tokens. However, you requested 2,000 output tokens and "
+        "your prompt contains 1,047,000 input tokens, for a total of 1,049,000 tokens.",
+        id="vllm-renderer-comma-numbers-cap-fits",
+    ),
     # The OpenAI SDK embeds the response body in the exception text, so an unrelated "too large" can sit next to
     # 'param': 'max_tokens'. Only "<param> is too large" is the output-cap signal (synthetic).
     pytest.param(
@@ -134,6 +172,29 @@ NOT_OVERFLOWS = [
     pytest.param(
         "'max_tokens' is too large: 100000. This model's maximum context length is 8192 tokens.",
         id="vllm-no-trailer-cap-exceeds-the-context",
+    ),
+    # vLLM's renderer, the OTHER case: the requested output alone is >= the context length, so no history, however
+    # short, can fit beside it (an equal cap, a larger cap, and the same with separators).
+    pytest.param(
+        "This model's maximum context length is 128000 tokens. However, you requested 128000 output tokens and "
+        "your prompt contains 10 input tokens, for a total of 128010 tokens. Please reduce the length of the "
+        "input prompt or the number of requested output tokens.",
+        id="vllm-renderer-cap-equals-the-context",
+    ),
+    pytest.param(
+        "This model's maximum context length is 128000 tokens. However, you requested 200000 output tokens and "
+        "your prompt contains 10 input tokens, for a total of 200010 tokens.",
+        id="vllm-renderer-cap-exceeds-the-context",
+    ),
+    pytest.param(
+        "This model's maximum context length is 128,000 tokens. However, you requested 130,000 output tokens and "
+        "your prompt contains 10 input tokens, for a total of 130,010 tokens.",
+        id="vllm-renderer-comma-numbers-cap-exceeds-the-context",
+    ),
+    pytest.param(
+        "'max_tokens' is too large: 130,000. This model's maximum context length is 128,000 tokens and your "
+        "request has 50 input tokens (130,000 > 128,000 - 50).",
+        id="vllm-comma-numbers-cap-exceeds-the-context",
     ),
     # One per output parameter, so each name in the veto is pinned on its own (no context number: synthetic).
     pytest.param("max_tokens is too large for this model's context length of 8192 tokens", id="veto-max-tokens"),
@@ -218,3 +279,23 @@ def test_the_summariser_wrapped_overflow_is_an_overflow() -> None:
 def test_a_genuine_summariser_server_error_is_not_an_overflow() -> None:
     assert is_context_overflow(ServerError("compaction LLM failed: boom", code="server_error")) is False
     assert is_context_overflow(ServerError("compaction produced empty summary text")) is False
+
+
+@pytest.mark.parametrize(
+    ("cap", "context", "never_fits"),
+    [
+        (None, 8192, False),      # no cap configured: the provider's default, nothing to refuse
+        (4096, 8192, False),      # the cap fits with room for a history
+        (8191, 8192, False),      # one token of room is still room: the message arithmetic, not this, decides
+        (8192, 8192, True),       # the cap alone fills the window: no history can fit beside it
+        (9000, 8192, True),
+        (4096, None, False),      # an unknown window cannot prove anything
+        (4096, 0, False),
+    ],
+)
+def test_an_output_cap_that_fills_the_context_window_can_never_fit(
+    cap: int | None, context: int | None, never_fits: bool,
+) -> None:
+    """The executor-side half of the arithmetic veto: when the configured cap is not below the window, no history
+    can fit beside it, so compacting the history cannot fix the 400 and the executor must not try."""
+    assert output_cap_never_fits(cap, context) is never_fits
