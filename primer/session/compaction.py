@@ -59,6 +59,8 @@ class CompactionOutcome:
     summary: str
     tokens_before: int
     tokens_after: int
+    summary_input_reduced: dict[str, int] | None = None
+    """What the compaction did to the summariser's input when its first call overflowed, else ``None``."""
 
 
 def guard_compactable(row: WorkspaceSession) -> None:
@@ -176,6 +178,7 @@ async def compact_session(
         summary=result.summary_text,
         tokens_before=result.tokens_before,
         tokens_after=result.tokens_after,
+        summary_input_reduced=getattr(result, "summary_input_reduced", None) or None,
     )
 
 

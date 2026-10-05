@@ -122,7 +122,8 @@ summary is not summarised again before the prompt has grown; noted once per
 run, not every turn). If the summarising call itself is rejected as too large (the history it has to summarise is over the model's window),
 the compaction retries once, without tools, on a shortened input: tool outputs are left out first, then the rest is
 summarised in up to four pieces, one after another, each with the summary so far. The marker records this as
-`summary_input_reduced`. If even that cannot fit, or the retry is rejected too, the turn (or the manual compact
+`summary_input_reduced`, the manual compact response carries it, and the console's compaction divider says the
+summary read a reduced input and what was cut. If even that cannot fit, or the retry is rejected too, the turn (or the manual compact
 request) fails with `summariser_overflow` (the same 413 as `context_overflow_unrecoverable`): compact earlier, or
 use a larger-context model. If the provider still rejects a call as too large, the
 turn is compacted once more and CONTINUED from the tool rounds it already ran

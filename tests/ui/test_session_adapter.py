@@ -137,6 +137,39 @@ def test_sa_to_transcript_maps_records_via_mini_racer() -> None:
     assert ctx.eval("out[3].kind") == "done"
 
 
+def test_a_compaction_divider_says_when_the_summariser_read_a_reduced_input_via_mini_racer() -> None:
+    """A compaction whose summariser overflowed was summarised from less than the whole span
+    (``summary_input_reduced`` on the marker): the divider must not read as an ordinary compaction."""
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(ADAPTER.read_text(encoding="utf-8"))
+    ctx.eval(
+        """
+        var m = function (seq, payload) {
+          return {seq: seq, kind: "compaction_marker", payload: payload, created_at: "t", node_id: null};
+        };
+        var out = window.SA_toTranscript([
+          m(1, {replaced_from_seq: 1}),
+          m(2, {replaced_from_seq: 3, summary_input_reduced: {pruned: 3, folded_chunks: 2, truncated_parts: 1}}),
+          m(3, {replaced_from_seq: 9, summary_input_reduced: {pruned: 1, folded_chunks: 0, truncated_parts: 0}}),
+          m(4, {summary_input_reduced: {pruned: 0, folded_chunks: 0, truncated_parts: 0}}),
+          m(5, {replaced_from_seq: 11}),
+        ], {id: "s1"});
+        """
+    )
+    # SA_visibleRecords keeps all five (no rewind); each is a divider with its own label
+    labels = [ctx.eval(f"out[{i}].label") for i in range(5)]
+    assert labels[0] == "— history compacted from #1 —", "an ordinary compaction reads as it always did"
+    assert labels[1] == (
+        "— history compacted from #3 (summariser input reduced: 3 tool results left out, read in 2 chunks, 1 part cut) —"
+    )
+    assert labels[2] == "— history compacted from #9 (summariser input reduced: 1 tool result left out) —"
+    assert labels[3] == "— history compacted (summariser retried without tools) —"
+    assert labels[4] == "— history compacted from #11 —"
+
+
 def test_rewind_marker_folds_the_discarded_span_via_mini_racer() -> None:
     """US-008 R3 item 4: a rewind must be VISIBLE (a fold divider, same
     treatment as compaction_marker) and it must hide the span it
