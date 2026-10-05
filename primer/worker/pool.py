@@ -18,6 +18,7 @@ import contextlib
 import logging
 import os
 import socket
+import sys
 import time
 import uuid
 from collections.abc import Callable, Coroutine
@@ -1135,10 +1136,13 @@ class WorkerPool:
         returns normally and the caller runs exactly what it runs after a release that returned (the session handler
         re-arms a queued steer, which would otherwise be stranded with no lease); counted again in
         ``_release_timeouts_committed_total``. Lease row PRESENT, or the probe failed or timed out (unknown): the
-        ``TimeoutError`` propagates and the caller treats it like any failed release. The key then leaves
+        ``TimeoutError`` propagates and the caller treats it like any failed release (unless the caller is unwinding a
+        cancel, releasing from its ``finally``: then that cancel propagates instead, so the task still ends cancelled
+        and ``worker_tasks_total`` labels it so, not ``error``). The key then leaves
         ``_in_flight``, nothing heartbeats the lease, it expires after one TTL and a peer re-claims it (slower, not
         lost: the same outcome as a failed drain hand-back).
         """
+        in_flight = sys.exception()   # a cancel the caller's ``finally`` is unwinding, if it releases from one
         scope = self._active_scopes.get((lease.kind, lease.entity_id))
         if scope is not None:
             scope.mark_lease_returned()
@@ -1171,6 +1175,8 @@ class WorkerPool:
                 "probe could not tell): abandoning it (the lease expires and a peer re-claims it)",
                 lease.kind, lease.entity_id, self._release_timeout_seconds,
             )
+            if isinstance(in_flight, asyncio.CancelledError):
+                raise in_flight   # the cancel goes on: a TimeoutError would replace it, and its task metric label
             raise
 
     async def _maybe_rearm_session(self, session_id: str) -> None:

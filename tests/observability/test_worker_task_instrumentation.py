@@ -109,3 +109,70 @@ async def test_kind_label_is_bounded_to_claim_kinds(pool):
     }
     assert seen == {k.value for k in ClaimKind}
     assert "session" in seen
+
+
+@pytest.mark.parametrize("kind", [ClaimKind.HARNESS, ClaimKind.TRIGGER])
+@pytest.mark.parametrize("cancelled", [True, False], ids=["work-cancelled", "work-finished"])
+async def test_a_release_timeout_in_the_handlers_finally_does_not_turn_a_cancel_into_an_error(
+    monkeypatch, kind, cancelled,
+):
+    """The harness and trigger handlers release in a ``finally``. When their work was cancelled (a lost lease, the
+    drain timeout) and that release then ran into the release bound, the bound's ``TimeoutError`` replaced the
+    in-flight ``CancelledError`` and the task was counted ``error``. It is counted ``cancelled``; a release that times
+    out after work that was NOT cancelled is still ``error``."""
+    import types
+
+    import primer.observability.metrics as m
+    from primer.model.harness import Harness, HarnessOperation
+    from tests.conftest import _FakeStorageProvider
+
+    storage = _FakeStorageProvider()
+    await storage.get_storage(Harness).create(Harness(
+        id="e-1", slug="e-1", name="h", created_at=datetime.now(timezone.utc),
+        pending_operation=HarnessOperation.SYNC,
+    ))
+    engine = InMemoryClaimEngine(adapters={})
+    scheduler = InMemoryScheduler()
+    await scheduler.initialize()
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=2, worker_label="lane-a"),
+        scheduler=scheduler, storage=storage,
+        workspace_registry=None,       # type: ignore[arg-type]
+        provider_registry=None,        # type: ignore[arg-type]
+        engine=engine,
+    )
+    pool._worker_id = "wrk-x"
+    pool._release_timeout_seconds = 0.3
+    work_started = asyncio.Event()
+
+    async def work(*args, **kwargs):
+        work_started.set()
+        if cancelled:
+            await asyncio.Event().wait()                  # runs until it is cancelled
+        return types.SimpleNamespace(results=[])
+
+    monkeypatch.setattr("primer.harness.dispatch.run_one_harness_operation", work)
+    monkeypatch.setattr("primer.trigger.dispatch.fire_trigger", work)
+
+    async def hung_release(lease, *, outcome):
+        await asyncio.Event().wait()                      # a release that never answers (nothing committed)
+
+    engine.release = hung_release  # type: ignore[method-assign]
+    await engine.upsert(kind, "e-1")
+    [lease] = await engine.claim_due("wrk-x", max_count=1)
+    handler = pool._run_engine_harness if kind is ClaimKind.HARNESS else pool._run_engine_trigger
+    try:
+        task = asyncio.create_task(pool._run_engine(lease, handler))
+        await asyncio.wait_for(work_started.wait(), timeout=5.0)
+        if cancelled:
+            pool._active_scopes[(kind, "e-1")].cancel("worker_drain_timeout")
+        await asyncio.wait_for(task, timeout=5.0)
+        assert pool._release_timeouts_total == 1
+        counts = {
+            status: m.worker_tasks_total.labels("lane-a", kind.value, status)._value.get()
+            for status in ("ok", "error", "cancelled")
+        }
+        expected = "cancelled" if cancelled else "error"
+        assert counts == {s: (1.0 if s == expected else 0.0) for s in counts}, counts
+    finally:
+        await scheduler.aclose()
