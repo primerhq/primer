@@ -80,6 +80,7 @@ class _FakePool:
         self._executor_factory = executor_factory
         self.end_session_calls: list[str] = []
         self.repark_calls: list = []
+        self.agent_tool_result_session_ids: list = []
 
     async def _load_workspace_for_persist(self, workspace_id: str):
         return self._workspace_io
@@ -102,9 +103,13 @@ class _FakePool:
     def _graph_value_yield_toolcall(self, checkpoint, tcid):
         return graph_resume_coordinator.graph_value_yield_toolcall(self, checkpoint, tcid)
 
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload):
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id=None):
         # Directly supplies the ask_user answer, bypassing the global
-        # resume-hook registry - irrelevant to what these tests prove.
+        # resume-hook registry - irrelevant to what these tests prove (the
+        # real hook call is pinned by test_graph_agent_tool_result_real_hooks.py).
+        # It does record the session id the engine passes, because the hook's
+        # ResumeContext is built from it.
+        self.agent_tool_result_session_ids.append(session_id)
         return Message(role="tool", parts=[ToolResultPart(id=tcid, output="blue")])
 
     async def _write_approval_record_for_graph(self, *, session, checkpoint, tcid, payload):
@@ -311,6 +316,9 @@ async def test_resume_graph_engine_resolves_co_pending_tool_wait_same_cycle(
     assert outcome == "ENDED:completed"
     assert pool.end_session_calls == ["completed"]
     assert pool.repark_calls == []
+    assert pool.agent_tool_result_session_ids == [session.id], (
+        "the engine must hand the agent-node hook the session it is resuming"
+    )
 
 
 @pytest.mark.asyncio

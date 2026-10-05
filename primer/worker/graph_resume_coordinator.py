@@ -25,7 +25,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from primer.worker.yield_resume_registry import get_resume_hook
+from primer.worker.yield_resume_registry import ResumeContext, get_resume_hook
 from primer.worker.yield_runtime import (
     classify_approval_payload,
     classify_resume_payload,
@@ -279,7 +279,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
             agent_tool_result = cont.agent_tool_result
         else:
             agent_tool_result = await pool._graph_agent_tool_result(
-                ck, tcid, payload,
+                ck, tcid, payload, session_id=session.id,
             )
             # An approval gate is a pending tool-call yield (NOT an ask_user
             # agent yield, which carries agent_tool_result). Persist the
@@ -527,11 +527,21 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
     )
 
 
-async def graph_agent_tool_result(pool: "WorkerPool", checkpoint, tcid, payload):
+async def graph_agent_tool_result(
+    pool: "WorkerPool", checkpoint, tcid, payload, *, session_id: str | None = None,
+):
     """Build the tool_result Message an agent-node yield continues from
     (e.g. the ask_user answer). Returns None for tool_call approvals /
     agent-node approvals (those take the bypass/verdict path) or when
-    the fired tcid is not a hook-backed agent yield."""
+    the fired tcid is not a hook-backed agent yield.
+
+    The hook gets the same :class:`ResumeContext` the agent-session path
+    builds (session_resume_coordinator.py): every registered hook takes
+    three arguments, and a two-argument call raised a TypeError that the
+    handler below turned into a "resume failed" result, losing every
+    plain agent-node ask_user answer and external-tool reply.
+    ``session_id`` is None only on the GraphFrame leaf path, which holds
+    no session of its own."""
     from primer.model.chat import Message, ToolResultPart
 
     matches = [
@@ -550,7 +560,17 @@ async def graph_agent_tool_result(pool: "WorkerPool", checkpoint, tcid, payload)
         return None
     try:
         hook = get_resume_hook(ay["tool_name"])
-        hook_result = hook(ay.get("resume_metadata") or {}, payload)
+        registry = getattr(pool, "_provider_registry", None)
+        hook_result = hook(
+            ay.get("resume_metadata") or {},
+            payload,
+            ResumeContext(
+                tool_name=ay["tool_name"],
+                tool_call_id=ay["tool_call_id"],
+                session_id=session_id,
+                resolve_provider=registry.get_toolset if registry is not None else None,
+            ),
+        )
         if asyncio.iscoroutine(hook_result):
             hook_result = await hook_result
         return Message(role="tool", parts=[ToolResultPart(
