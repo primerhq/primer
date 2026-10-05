@@ -29,8 +29,8 @@ NEW_SESSION: dict[str, bool] = {"start_new_session": True}
 #: How long a stopped command gets to exit on SIGTERM before the group is SIGKILLed.
 TERM_GRACE_S = 5.0
 
-#: How long to wait for the group to be gone after the SIGKILL. It cannot be ignored, so this only bounds a process stuck
-#: in uninterruptible I/O.
+#: How long to wait for the group to be gone after the SIGKILL. It cannot be ignored, so a live member still there after it
+#: is one that cannot die yet (a process in uninterruptible I/O); a zombie is not (see :func:`_group_has_a_live_member`).
 KILL_WAIT_S = 2.0
 
 _POLL_S = 0.01
@@ -46,6 +46,14 @@ async def stop_process_group(proc: asyncio.subprocess.Process, *, grace_s: float
     are closed here, in a ``finally``, so the caller never inherits them. Returns once the stop has TAKEN EFFECT (the
     caller releases a write lock after it) or the bounds have run out.
 
+    "No member left" means no LIVE member: a ZOMBIE does not count. The runtime is PID 1 in its image (no init), so the
+    children a stop takes down are orphaned to a process that never reaps them, and ``killpg(pgid, 0)`` reports a zombie
+    present for ever; waiting on it would wait out the whole SIGTERM grace and then the SIGKILL wait on every stop.
+
+    The leader is reached through the group, once. It is signalled directly (``os.kill``, not ``proc.send_signal``, whose
+    poll would reap a leader the group signal had already taken down, so that asyncio reported exit code 255) only when
+    it leads no group, that is, when it was not started in its own session.
+
     An accepted edge: once the leader is gone and its group empty, its id is no longer reserved, so a signal could in
     theory reach an unrelated group if the pid was recycled in the meantime; it needs a pid wrap inside the exec's timeout.
     """
@@ -59,7 +67,7 @@ async def stop_process_group(proc: asyncio.subprocess.Process, *, grace_s: float
                 _signal_group(proc, signal.SIGKILL)
         if not await _wait_gone(proc, KILL_WAIT_S):
             logger.warning(
-                "process %s (or a member of its group) was still there %gs after its SIGKILL: stuck in uninterruptible "
+                "process %s (or a live member of its group) was still there %gs after its SIGKILL: stuck in uninterruptible "
                 "I/O? Giving up the wait; the pipes are closed regardless.", proc.pid, KILL_WAIT_S,
             )
     finally:
@@ -67,25 +75,58 @@ async def stop_process_group(proc: asyncio.subprocess.Process, *, grace_s: float
 
 
 def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
-    """Signal the group, and the process itself (a process not started in its own session leads no group)."""
+    """Signal the group ``proc`` leads, once. Only when there is no such group (a process not started in its own session
+    leads none) is the process itself signalled, so that it is never signalled twice."""
     try:
         os.killpg(proc.pid, sig)
+        return
     except OSError:
-        pass          # ProcessLookupError: every member is already gone; PermissionError: a member changed uid
+        pass          # ProcessLookupError: no such group (or every member is gone); PermissionError: a member changed uid
+    if proc.returncode is not None:
+        return
     try:
-        proc.send_signal(sig)
-    except ProcessLookupError:
-        pass
+        os.kill(proc.pid, sig)
+    except OSError:
+        pass          # ProcessLookupError: gone; PermissionError: it changed uid, and the group signal is all we have
 
 
 def _is_gone(proc: asyncio.subprocess.Process) -> bool:
-    """``proc`` has exited (its exit recorded) and nothing is left in the group it led."""
+    """``proc`` has exited (its exit recorded) and no live member is left in the group it led."""
     if proc.returncode is None:
         return False
+    return not _group_has_a_live_member(proc.pid)
+
+
+def _group_has_a_live_member(pgid: int) -> bool:
     try:
-        os.killpg(proc.pid, 0)
+        os.killpg(pgid, 0)
     except OSError:
-        return True   # ProcessLookupError: empty; PermissionError: a member we cannot signal, nothing more to wait for
+        return False  # ProcessLookupError: empty; PermissionError: a member we cannot signal, nothing more to wait for
+    # ``killpg(pgid, 0)`` also succeeds for a ZOMBIE member, so it cannot tell "still dying" from "dead, not reaped".
+    live = _live_member_of(pgid)
+    return True if live is None else live
+
+
+def _live_member_of(pgid: int) -> bool | None:
+    """Is any process of group ``pgid`` alive, that is, in a state other than zombie (``Z``) or dead (``X``)? None where
+    ``/proc`` cannot say (not Linux): the caller then has only ``killpg`` to go on."""
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return None
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as stat:
+                data = stat.read()
+            # "pid (comm) state ppid pgrp ...": comm may hold spaces and parentheses, so split after the LAST ")".
+            fields = data[data.rindex(b")") + 2:].split()
+            state, group = fields[0], int(fields[2])
+        except (OSError, ValueError, IndexError):
+            continue  # it exited while we looked, or is not ours to read
+        if group == pgid and state not in (b"Z", b"X"):
+            return True
     return False
 
 
