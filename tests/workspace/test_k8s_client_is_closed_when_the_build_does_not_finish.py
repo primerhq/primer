@@ -222,6 +222,40 @@ async def test_the_caller_that_lost_the_race_closes_its_own_client_and_gets_the_
     assert client.closed == 1 and backend._workspaces == {"ws-1": winner}
 
 
+async def test_two_concurrent_gets_on_a_cold_cache_share_one_workspace_and_only_the_loser_closes(monkeypatch):
+    """A REAL race: two callers re-attach at once, each with its own client; materialise waits until both have arrived, so
+    both reach the cache insert. Both get the same workspace; the connection that was cached stays open (it is the shared one),
+    and only the other caller's client is closed. (A stand-in winner object cannot tell the two clients apart: a build that
+    closed the winner's would pass.)"""
+    clients: list[_Client] = []
+
+    def new_client(**kwargs) -> _Client:
+        clients.append(_Client())
+        return clients[-1]
+
+    monkeypatch.setattr(k8s_backend, "RuntimeClient", new_client)
+    backend = _backend()
+    arrived, both_here = 0, asyncio.Event()
+    real = SandboxWorkspace.materialise.__func__
+
+    async def wait_for_the_other_caller(**kwargs):
+        nonlocal arrived
+        arrived += 1
+        if arrived == 2:
+            both_here.set()
+        await both_here.wait()
+        return await real(SandboxWorkspace, **kwargs)
+
+    monkeypatch.setattr(SandboxWorkspace, "materialise", staticmethod(wait_for_the_other_caller))
+    first, second = await asyncio.wait_for(asyncio.gather(_reattach(backend), _reattach(backend)), timeout=10)
+    assert first is second and backend._workspaces == {"ws-1": first}
+    assert len(clients) == 2
+    cached = first._sandbox._client
+    (other,) = [c for c in clients if c is not cached]
+    assert cached.close_started == 0 and cached.closed == 0, "the cached connection is the shared one: it stays open"
+    assert other.closed == 1, "the caller that lost the race closed its own"
+
+
 # ---- the close itself --------------------------------------------------------------------------------------------------------------
 
 @BUILDS
