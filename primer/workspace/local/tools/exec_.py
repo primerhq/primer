@@ -218,19 +218,23 @@ class Exec(WorkspaceTool):
                 stderr=asyncio.subprocess.PIPE,
                 **NEW_SESSION,
             )
+            finished = False
             try:
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(),
                     timeout=args.timeout_ms / 1000.0,
                 )
+                finished = True
             except TimeoutError as exc:
-                await kill_process_group(proc)
                 raise BadRequestError(
                     f"command timed out after {args.timeout_ms}ms: {args.command!r}"
                 ) from exc
-            except asyncio.CancelledError:
-                await kill_process_group(proc)
-                raise
+            finally:
+                # Any way out of the wait that is not the command finishing: the timeout, a cancel, or anything else
+                # (a failure inside the wait). Not keyed on ``proc.returncode``: the shell may already be gone while a
+                # job it left behind holds the pipes, and that job is still in the group.
+                if not finished:
+                    await kill_process_group(proc)
 
         rc = proc.returncode if proc.returncode is not None else -1
         out_text = stdout.decode("utf-8", errors="replace")

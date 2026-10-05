@@ -179,6 +179,59 @@ async def test_a_process_the_command_detached_with_setsid_survives_the_kill(tmp_
                 _kill(pid)
 
 
+@pytest.mark.parametrize("how", ["timeout", "cancel"])
+async def test_a_detached_process_that_holds_the_pipes_does_not_delay_the_kill(tmp_path: Path, how: str) -> None:
+    """A setsid'd child that INHERITED stdout/stderr survives the group kill and keeps the pipes open. ``proc.wait()``
+    right after the kill blocks until the pipes close when the leader's exit is not yet recorded (the wait also waits
+    for the pipes), so a kill that waited that way took its whole reap bound (5 s) here. The kill must wait for the exit
+    itself and then close the pipes, and the exec must return at once."""
+    tool, _ = _tool(tmp_path)
+    command = "setsid sleep 60 & echo $! > detached.pid; sleep 60 & echo $! > foreground.pid; wait"
+    detached = foreground = None
+    try:
+        run = asyncio.create_task(tool.execute(_args(command, timeout_ms=800 if how == "timeout" else 60_000), None))
+        detached, foreground = await _pid(tmp_path / "detached.pid"), await _pid(tmp_path / "foreground.pid")
+        start = time.monotonic()
+        if how == "cancel":
+            run.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await run
+        else:
+            with pytest.raises(BadRequestError, match="timed out"):
+                await run
+
+        assert time.monotonic() - start < 2.5, "the kill waited on pipes a detached process holds open"
+        assert await _gone(foreground)
+        assert _running(detached), "the group kill reached a process that was detached on purpose"
+    finally:
+        for pid in (detached, foreground):
+            if pid:
+                _kill(pid)
+
+
+async def test_any_other_way_out_of_the_wait_also_kills_the_group(tmp_path: Path, monkeypatch) -> None:
+    """The kill belongs in a ``finally``, not in two ``except`` arms: an exception that is neither the timeout nor a
+    cancel (here a failure inside the wait) must not leave the command running either."""
+    tool, locks = _tool(tmp_path)
+    child = None
+
+    async def explode(self, input=None):   # noqa: A002
+        await _pid(tmp_path / "child.pid")
+        raise RuntimeError("the wait failed")
+
+    monkeypatch.setattr(asyncio.subprocess.Process, "communicate", explode)
+    try:
+        with pytest.raises(RuntimeError, match="the wait failed"):
+            await tool.execute(_args("sleep 60 & echo $! > child.pid; wait"), None)
+
+        child = await _pid(tmp_path / "child.pid")
+        assert await _gone(child), "a command was left running after the wait failed"
+        assert await _lock_is_free(locks, tmp_path)
+    finally:
+        if child:
+            _kill(child)
+
+
 async def test_nohup_alone_does_not_detach_a_job_from_the_group(tmp_path: Path) -> None:
     """``nohup`` only ignores SIGHUP; the job stays in the exec's group and SIGKILL cannot be ignored."""
     tool, _ = _tool(tmp_path)

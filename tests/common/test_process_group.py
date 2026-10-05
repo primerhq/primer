@@ -70,6 +70,28 @@ async def test_a_process_that_was_not_started_in_its_own_session_is_still_killed
     assert proc.returncode == -signal.SIGKILL
 
 
+async def test_a_detached_process_holding_the_pipes_does_not_hold_the_kill_up(tmp_path: Path) -> None:
+    """``proc.wait()`` also waits for the pipes to close, and a process that left the group (setsid) can hold them for as
+    long as it lives. The kill waits for the process's own exit and then closes the pipes itself."""
+    proc = await asyncio.create_subprocess_shell(
+        f"setsid sleep 60 & echo $! > {tmp_path}/detached; wait",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **NEW_SESSION,
+    )
+    detached = await _child_pid(tmp_path / "detached")
+    try:
+        start = time.monotonic()
+        await kill_process_group(proc)
+
+        assert time.monotonic() - start < 2.0, "the kill waited on the pipes the detached process holds"
+        assert proc.returncode == -signal.SIGKILL
+        assert _running(detached), "the detached process was killed"
+    finally:
+        try:
+            os.kill(detached, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 async def test_a_process_that_is_already_gone_is_not_an_error() -> None:
     proc = await asyncio.create_subprocess_exec("true", **NEW_SESSION)
     await proc.wait()
