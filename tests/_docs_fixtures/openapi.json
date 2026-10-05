@@ -7612,6 +7612,19 @@
             "description": "Park lifecycle: NULL when not parked, 'parked' when the session is waiting for its yield event to fire, 'resumable' when the event has fired (or a timeout/cancel synthesised one) and the next worker claim should resume the parked turn. Excluded from the claim-loop while 'parked'.",
             "title": "Parked Status"
           },
+          "parked_tool_batches": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Park-batch marker (Phase 3 stage 7a): true while parked_state references at least one tool_wait batch, as primer.session.tool_wait_batches.batches_referenced_by_park derives it; NULL otherwise. Cleared by writing NULL, never false. A selector only: readiness is always recomputed from the task rows, never trusted from this flag. Not written yet (the claim adapter's park branch sets it on every park and re-park in a later change), so it reads NULL on every row today. Additive/optional, no migration.",
+            "title": "Parked Tool Batches"
+          },
           "parked_until": {
             "anyOf": [
               {
@@ -7676,6 +7689,19 @@
             ],
             "description": "Persistent per-session structured-output JSON Schema. Overrides the agent default for this session. An ephemeral per-steer override rides metadata['ephemeral_response_format'] and beats this for exactly one turn. Mirrors Chat.response_format.",
             "title": "Response Format"
+          },
+          "resumable_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the park was last flipped to resumable: the anchor for the tool_wait reconciler's grace period (parked_at is the park time, the wrong anchor). Not written yet (the wake hook and durably_mark_session_resumable stamp it in a later change), so it reads NULL on every row today. Additive/optional, no migration.",
+            "title": "Resumable At"
           },
           "started_at": {
             "anyOf": [
@@ -10174,6 +10200,19 @@
             "description": "Park lifecycle: NULL when not parked, 'parked' when the session is waiting for its yield event to fire, 'resumable' when the event has fired (or a timeout/cancel synthesised one) and the next worker claim should resume the parked turn. Excluded from the claim-loop while 'parked'.",
             "title": "Parked Status"
           },
+          "parked_tool_batches": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Park-batch marker (Phase 3 stage 7a): true while parked_state references at least one tool_wait batch, as primer.session.tool_wait_batches.batches_referenced_by_park derives it; NULL otherwise. Cleared by writing NULL, never false. A selector only: readiness is always recomputed from the task rows, never trusted from this flag. Not written yet (the claim adapter's park branch sets it on every park and re-park in a later change), so it reads NULL on every row today. Additive/optional, no migration.",
+            "title": "Parked Tool Batches"
+          },
           "parked_until": {
             "anyOf": [
               {
@@ -10230,6 +10269,19 @@
             ],
             "description": "Persistent per-session structured-output JSON Schema. Overrides the agent default for this session. An ephemeral per-steer override rides metadata['ephemeral_response_format'] and beats this for exactly one turn. Mirrors Chat.response_format.",
             "title": "Response Format"
+          },
+          "resumable_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the park was last flipped to resumable: the anchor for the tool_wait reconciler's grace period (parked_at is the park time, the wrong anchor). Not written yet (the wake hook and durably_mark_session_resumable stamp it in a later change), so it reads NULL on every row today. Additive/optional, no migration.",
+            "title": "Resumable At"
           },
           "started_at": {
             "anyOf": [
