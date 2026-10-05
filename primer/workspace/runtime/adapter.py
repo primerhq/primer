@@ -69,7 +69,11 @@ class ContainerRuntimeAdapter(ABC):
     @abstractmethod
     async def get_sandbox(self, name: str) -> Sandbox | None:
         """Look up a sandbox by name. Starts it if stopped. Returns
-        ``None`` if no sandbox by that name exists."""
+        ``None`` if no sandbox by that name exists.
+
+        Every call returns a NEW sandbox with its OWN connection to the container (the Docker adapter reconnects its
+        ``RuntimeClient`` each time), and the caller owns it: one that is not kept (not cached by the backend, or used
+        only to remove the container) must be closed with ``aclose``."""
 
     @abstractmethod
     async def list_sandboxes(self) -> list[str]:
