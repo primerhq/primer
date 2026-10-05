@@ -557,36 +557,6 @@ class _BaseAgentExecutor(ABC):
         if produced_assistant:
             await self._persist_turn(full_turn_messages)
 
-    # ---- Tool dispatch ---------------------------------------------------
-
-    async def _dispatch_tool_calls(
-        self,
-        calls: list[ToolCallPart],
-    ) -> list[Message]:
-        """Dispatch tool calls and return the resulting tool-role messages.
-
-        AuthRequiredError is the only exception that propagates --
-        subclasses handle it (chat: terminal stream Error; workspace:
-        WAITING transition). All other PrimerErrors are converted to
-        ToolResultPart(error=True) by the manager itself.
-        """
-        result_parts: list[ToolResultPart] = []
-        for call in calls:
-            try:
-                rp = await self._tool_manager.execute(
-                    call,
-                    principal=self._principal,
-                )
-            except AuthRequiredError:
-                raise
-            except PrimerError as exc:  # defence-in-depth.
-                rp = ToolResultPart(id=call.id, output=str(exc), error=True)
-            result_parts.append(rp)
-
-        if not result_parts:
-            return []
-        return [Message(role="tool", parts=list(result_parts))]
-
     # ---- Prompt building -------------------------------------------------
 
     def _build_prompt(
