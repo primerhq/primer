@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Protocol
 
-from primer.agent.base import _BaseAgentExecutor
+from primer.agent.base import _BaseAgentExecutor, refuse_compaction_summaries
 from primer.agent.compaction import CompactionStrategy
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import Message
@@ -161,6 +161,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         inside this critical section appends to messages.jsonl, so the
         non-reentrant lock cannot be re-taken by this task.
         """
+        refuse_compaction_summaries(turn_messages, "messages.jsonl")
         async with self._session.messages_lock:
             new_text = await self._appended_jsonl(turn_messages)
             newest_assistant = next((m for m in reversed(turn_messages) if m.role == "assistant"), None)

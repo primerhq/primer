@@ -65,6 +65,7 @@ from primer.agent.tail import pending_from
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.context_overflow import is_context_overflow, output_cap_never_fits
 from primer.model.chat import (
+    CompactionSummary,
     ExtendedEvent,
     Message,
     StreamEvent,
@@ -101,6 +102,18 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def refuse_compaction_summaries(messages: "list[Message]", where: str) -> None:
+    """A :class:`CompactionSummary` is a structural tag on an ordinary message: it does not survive JSON, so one that
+    is persisted as a message line or stamped into a parked state comes back as a reply the model wrote, and the
+    compactor no longer looks through it (``pending_from``). Its durable form is the compaction marker. Nothing writes
+    one today; this fails loudly if something ever does, instead of corrupting the next turn."""
+    if any(isinstance(m, CompactionSummary) for m in messages):
+        raise ValueError(
+            f"a CompactionSummary reached {where}: the summary of a compaction is durable only as a compaction "
+            "marker, and the tag that tells it from a reply does not survive being written as a message line"
+        )
 
 
 @dataclass
@@ -884,6 +897,7 @@ class _BaseAgentExecutor(ABC):
             # caller already has) so the stamp is just what this turn
             # accumulated up to the yield point.
             exc.llm_messages = list(full_turn_messages[record.inputs:])
+            refuse_compaction_summaries(exc.llm_messages, "a parked state")
             raise
         except ToolWaitPark as exc:
             # 01a0518b: same stamp, same reasoning, as the YieldToWorker
@@ -894,6 +908,7 @@ class _BaseAgentExecutor(ABC):
             # this is the "one layer up" that stamps it, mirroring
             # YieldToWorker's precedent exactly.
             exc.llm_messages = list(full_turn_messages[record.inputs:])
+            refuse_compaction_summaries(exc.llm_messages, "a parked state")
             raise
 
         # A Stop ends the loop cleanly. What was persisted is whatever COMPLETED
