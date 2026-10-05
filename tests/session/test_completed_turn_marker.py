@@ -313,3 +313,95 @@ async def test_an_identical_repeat_still_records_the_turn_as_completed(
     row = await _row(fake_storage_provider)
     assert row.status == SessionStatus.WAITING
     assert row.completed_turn_no == TURN
+
+
+# --- the marker is the LAST write of its block: "marker present" must imply last_seq and the cursor were written ---
+
+
+def _record_row_writes(sessions) -> list[set[str]]:
+    """Every session-row write that applied, in order, as the set of fields it changed (a ``patch_if``: the fields
+    it names). Wraps ``update``, ``update_unless`` and ``patch_if`` on the shared in-memory storage."""
+    writes: list[set[str]] = []
+    real_update, real_update_unless, real_patch_if = sessions.update, sessions.update_unless, sessions.patch_if
+
+    async def changed(entity) -> set[str]:
+        current = await sessions.get(entity.id)
+        before = current.model_dump() if current is not None else {}
+        return {k for k, v in entity.model_dump().items() if before.get(k) != v}
+
+    async def update(entity, *, conn=None):
+        fields = await changed(entity)
+        result = await real_update(entity, conn=conn)
+        writes.append(fields)
+        return result
+
+    async def update_unless(entity, *, field, forbidden, conn=None):
+        fields = await changed(entity)
+        result = await real_update_unless(entity, field=field, forbidden=forbidden, conn=conn)
+        if result is not None:
+            writes.append(fields)
+        return result
+
+    async def patch_if(id, patch=None, *, where, set_paths=None, conn=None):
+        result = await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+        if result is not None:
+            writes.append(set(patch or {}))
+        return result
+
+    sessions.update, sessions.update_unless, sessions.patch_if = update, update_unless, patch_if
+    return writes
+
+
+def _assert_marker_is_the_last_write(writes: list[set[str]], *, cursor_moves: bool) -> None:
+    def last(field: str) -> int | None:
+        hits = [i for i, w in enumerate(writes) if field in w]
+        return hits[-1] if hits else None
+
+    marker = [i for i, w in enumerate(writes) if "completed_turn_no" in w]
+    assert len(marker) == 1, f"expected exactly one marker write: {writes}"
+    marker_at, last_seq_at, cursor_at = marker[0], last("last_seq"), last("next_unprocessed_seq")
+    assert last_seq_at is not None and last_seq_at < marker_at, (
+        f"the marker was written before last_seq (marker at {marker_at}, last_seq at {last_seq_at}): {writes}"
+    )
+    if cursor_moves:
+        assert cursor_at is not None and cursor_at < marker_at, (
+            f"the marker was written before the drain cursor (marker at {marker_at}, cursor at {cursor_at}): {writes}"
+        )
+    else:
+        assert cursor_at is None, f"the cursor was already ahead and must not be written: {writes}"
+    # Nothing is queued (no binding switch, no pending steer, no scheduler), so no checkpoint writes follow the block.
+    assert marker_at == len(writes) - 1, f"a session-row write follows the marker: {writes[marker_at:]}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cursor_ahead", [False, True], ids=["cursor-moves", "cursor-already-ahead"])
+async def test_the_marker_is_the_last_write_of_the_clean_completion_block(
+    fake_storage_provider, fake_workspace_io, fake_event_bus, cursor_ahead,
+):
+    await _seed(fake_storage_provider, next_unprocessed_seq=1000 if cursor_ahead else 0)
+    writes = _record_row_writes(fake_storage_provider.get_storage(WorkspaceSession))
+    outcome = await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, _Clean([
+        TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop"),
+    ]))
+    assert outcome.success is True
+    assert (await _row(fake_storage_provider)).status == SessionStatus.WAITING
+    _assert_marker_is_the_last_write(writes, cursor_moves=not cursor_ahead)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cursor_ahead", [False, True], ids=["cursor-moves", "cursor-already-ahead"])
+async def test_the_marker_is_the_last_write_of_the_stop_and_cancel_block(
+    fake_storage_provider, fake_workspace_io, fake_event_bus, cursor_ahead,
+):
+    await _seed(
+        fake_storage_provider, interrupt_requested=True, next_unprocessed_seq=1000 if cursor_ahead else 0,
+    )
+    writes = _record_row_writes(fake_storage_provider.get_storage(WorkspaceSession))
+    outcome = await _run(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        _StopAwareExecutor([TextDelta(text="partial", index=0), "BLOCK"]),
+    )
+    assert outcome.success is True
+    row = await _row(fake_storage_provider)
+    assert row.status == SessionStatus.WAITING and row.interrupt_requested is False   # the Stop exit ran
+    _assert_marker_is_the_last_write(writes, cursor_moves=not cursor_ahead)
