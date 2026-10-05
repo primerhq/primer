@@ -136,6 +136,18 @@ class WorkspaceMessageWriter:
         """
         return self._seq
 
+    async def reserve_seq(self) -> int:
+        """Flush what is buffered, then hand out the next seq to a record somebody else writes.
+
+        A compaction marker is written by the executor straight into the log, outside this buffer. If
+        it took "the file's next seq" while records the writer has already numbered were still buffered,
+        the writer's next record would repeat it (and the marker would sit in the file before events with
+        lower seqs). Flushing first keeps the file in seq order; advancing the counter keeps it unique.
+        """
+        await self._do_flush()
+        self._seq += 1
+        return self._seq
+
     async def append(self, record: SessionMessageRecord) -> int:
         """Append a record; flush per buffer policy.
 

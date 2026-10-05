@@ -156,18 +156,39 @@ class PruneOutcome:
         return self.applied.union(self.added)
 
 
-def _omit(part: ToolResultPart) -> ToolResultPart:
-    return part.model_copy(update={"output": _OMITTED.format(n=len(part.output))})
+# The replay after a context overflow carries tool results that HAVE ALREADY RUN. The default
+# placeholders tell the model to call the tool again, which would run its side effects a second time,
+# so the replay (and a failed turn's persisted rounds) use these.
+OMITTED_RAN = "[output of {n} chars omitted to fit the context window; this call ALREADY RAN, do NOT call it again]"
+CUT_RAN = "\n[... {n} chars omitted to fit the context window; this call ALREADY RAN, do NOT call it again ...]\n"
 
 
-def _cut(part: ToolResultPart, keep_chars: int) -> ToolResultPart:
+@dataclass(frozen=True)
+class Placeholders:
+    """The text a reduced result is replaced by (``{n}`` is the number of characters left out)."""
+
+    omitted: str = _OMITTED
+    cut: str = _CUT
+
+
+DEFAULT_PLACEHOLDERS = Placeholders()
+ALREADY_RAN_PLACEHOLDERS = Placeholders(omitted=OMITTED_RAN, cut=CUT_RAN)
+
+
+def _omit(part: ToolResultPart, placeholders: Placeholders = DEFAULT_PLACEHOLDERS) -> ToolResultPart:
+    return part.model_copy(update={"output": placeholders.omitted.format(n=len(part.output))})
+
+
+def _cut(
+    part: ToolResultPart, keep_chars: int, placeholders: Placeholders = DEFAULT_PLACEHOLDERS,
+) -> ToolResultPart:
     text = part.output
     if len(text) <= keep_chars:
         return part
     head = text[: keep_chars * 2 // 3]
     tail = text[len(text) - (keep_chars - len(head)):]
     return part.model_copy(update={
-        "output": head + _CUT.format(n=len(text) - len(head) - len(tail)) + tail,
+        "output": head + placeholders.cut.format(n=len(text) - len(head) - len(tail)) + tail,
     })
 
 
@@ -203,6 +224,7 @@ def prune_prompt(
     force: bool = False,
     truncate_chars: int = DEFAULT_TRUNCATE_CHARS,
     size: SizeFn = default_size,
+    placeholders: Placeholders = DEFAULT_PLACEHOLDERS,
 ) -> PruneOutcome:
     """Reduce tool results in the RAW ``messages``: re-apply ``sticky``, then give
     back about ``shed_tokens`` MORE, largest first.
@@ -216,7 +238,10 @@ def prune_prompt(
     over-pruning). With ``force=True``, when that is not enough, phase 2 truncates
     the largest remaining results (the newest rounds included) to
     ``truncate_chars`` characters. It may shed less than asked when there is
-    nothing left to reduce; the outcome reports what was actually shed.
+    nothing left to reduce; the outcome reports what was actually shed. ``placeholders`` is the
+    text a reduced result is replaced by (:data:`ALREADY_RAN_PLACEHOLDERS` for results that have
+    executed and must not be called again); pass the same value on every call that re-applies a
+    recorded set.
     """
     raw = list(messages)
     keys = result_keys(raw)
@@ -229,10 +254,10 @@ def prune_prompt(
     for (mi, pi), key in keys.items():
         part = raw[mi].parts[pi]
         if key in sticky.omitted and mi not in protected:
-            decisions[(mi, pi)] = _omit(part)  # type: ignore[arg-type]
+            decisions[(mi, pi)] = _omit(part, placeholders)  # type: ignore[arg-type]
             applied_omit.add(key)
         elif key in sticky.truncated:
-            decisions[(mi, pi)] = _cut(part, sticky.truncated[key])  # type: ignore[arg-type]
+            decisions[(mi, pi)] = _cut(part, sticky.truncated[key], placeholders)  # type: ignore[arg-type]
             applied_cut[key] = sticky.truncated[key]
 
     sticky_total = _total(raw, size) - _total(_rewrite(raw, decisions), size)
@@ -255,10 +280,10 @@ def prune_prompt(
                 break
             mi = -neg_mi
             part = raw[mi].parts[pi]
-            saved = s - size(_omit(part))  # type: ignore[arg-type]
+            saved = s - size(_omit(part, placeholders))  # type: ignore[arg-type]
             if saved <= 0:
                 continue
-            decisions[(mi, pi)] = _omit(part)  # type: ignore[arg-type]
+            decisions[(mi, pi)] = _omit(part, placeholders)  # type: ignore[arg-type]
             added_omit.add(keys[(mi, pi)])
             shed += saved
 
@@ -276,10 +301,10 @@ def prune_prompt(
                     break
                 mi = -neg_mi
                 part = raw[mi].parts[pi]
-                saved = s - size(_cut(part, truncate_chars))  # type: ignore[arg-type]
+                saved = s - size(_cut(part, truncate_chars, placeholders))  # type: ignore[arg-type]
                 if saved <= 0:
                     continue
-                decisions[(mi, pi)] = _cut(part, truncate_chars)  # type: ignore[arg-type]
+                decisions[(mi, pi)] = _cut(part, truncate_chars, placeholders)  # type: ignore[arg-type]
                 added_cut[keys[(mi, pi)]] = truncate_chars
                 shed += saved
 
@@ -299,17 +324,21 @@ def apply_prune_set(
     *,
     keep_rounds: int = DEFAULT_KEEP_ROUNDS,
     size: SizeFn = default_size,
+    placeholders: Placeholders = DEFAULT_PLACEHOLDERS,
 ) -> tuple[list[Message], int]:
     """Re-apply a recorded prune set and nothing else. Returns ``(messages, shed)``."""
-    outcome = prune_prompt(messages, sticky=prune_set, keep_rounds=keep_rounds, size=size)
+    outcome = prune_prompt(messages, sticky=prune_set, keep_rounds=keep_rounds, size=size, placeholders=placeholders)
     return outcome.messages, outcome.shed_tokens
 
 
 __all__ = [
+    "ALREADY_RAN_PLACEHOLDERS",
     "DEFAULT_KEEP_ROUNDS",
+    "DEFAULT_PLACEHOLDERS",
     "DEFAULT_MIN_TOKENS",
     "DEFAULT_TRUNCATE_CHARS",
     "PruneOutcome",
+    "Placeholders",
     "PruneSet",
     "SizeFn",
     "apply_prune_set",
