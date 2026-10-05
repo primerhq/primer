@@ -1099,6 +1099,13 @@ class WorkerPool:
         ``UPDATE`` waits on this release's row lock, so none of them is refreshed until the release ends, and each can
         lapse one TTL after its last refresh (see ``__init__``). On timeout the release is cancelled and counted.
 
+        The bound is BEST-EFFORT, not firm. ``asyncio.timeout`` only cancels the awaiting task; asyncpg then cancels
+        the running statement best-effort (a cancel request to the server). A connection that ignores the
+        cancellation keeps this task inside the release, and the row lock held, until the statement completes or the
+        storage pool's ``command_timeout`` fires (``PoolConfig.acquire_timeout``, 30 s by default, the per-statement
+        default set in ``primer/storage/postgres.py``). Work ``on_release`` awaits that is not a statement (the
+        session adapter's terminal-record workspace write) stops only as far as that I/O honours cancellation.
+
         A timed-out release has an UNKNOWN outcome, not a failed one: the bound also covers what follows the commit
         (the post-release hook, the COMMIT's own reply), so the release may well have committed. One bounded probe
         (``has_lease``, within ``_release_probe_timeout_seconds``) decides. Lease row ABSENT: the release evidently
