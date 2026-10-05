@@ -146,3 +146,40 @@ async def test_was_interrupted_describes_only_the_latest_invoke(tmp_path: Path, 
     _spy_loop(monkeypatch, produce=ROUND, interrupted=False)
     await _run(ex)
     assert ex.was_interrupted is False
+
+
+def _spy_loop_that_ends_a_park(monkeypatch, park: object | None) -> None:
+    """A loop that ends the turn as a Stop at ``park`` (or, with None, finishes normally): it reports the interruption
+    and hands the park over through ``stopped_park_out``, as ``run_agent_turn`` does."""
+    import primer.agent.loop as loop_mod
+
+    async def _fake(*, messages_out, interrupted_out=None, stopped_park_out=None, **kwargs):
+        messages_out.extend(ROUND)
+        if park is not None:
+            interrupted_out.append(True)
+            stopped_park_out.append(park)
+        return
+        yield  # pragma: no cover - keeps this an async generator
+
+    monkeypatch.setattr(loop_mod, "run_agent_turn", _fake)
+
+
+async def test_the_park_a_stop_ended_is_exposed_to_dispatch_and_describes_only_the_latest_invoke(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Dispatch's cancelled exit cleans up what the park's tool had already created (an external tool's pending call
+    row) and finds the park here, the way it finds ``was_interrupted``."""
+    from primer.model.yield_ import Yielded, YieldToWorker
+
+    ex = await _executor(tmp_path)
+    ex.bind_interrupt_event(asyncio.Event())
+    _persisted(ex, monkeypatch)
+    park = YieldToWorker(Yielded(tool_name="t", event_key="external_tool:s:c"), tool_call_id="c")
+
+    _spy_loop_that_ends_a_park(monkeypatch, park)
+    await _run(ex)
+    assert ex.was_interrupted is True and ex.stopped_park is park
+
+    _spy_loop_that_ends_a_park(monkeypatch, None)
+    await _run(ex)
+    assert ex.was_interrupted is False and ex.stopped_park is None

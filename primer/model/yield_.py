@@ -328,6 +328,13 @@ class YieldToWorker(Exception):
         # (run_subagent / resume_subagent) prepends its own AgentFrame onto
         # this list; a session that yields directly leaves it empty.
         self.frames: list = []
+        # Where in the OUTERMOST in-process tool batch the yield happened, and what had already finished there. Stamped
+        # by ``primer.agent.loop._dispatch_tool_calls`` as the exception leaves it (the outermost loop stamps last, so
+        # a nested yield carries the outer batch's position, not the subagent's), for a Stop that ends the park to
+        # answer the round truthfully. ``tool_call_id`` cannot serve: for a nested yield it is the INNER call's raw
+        # provider id, which restarts every stream and can equal an earlier outer id. A normal park ignores both.
+        self.batch_index: int | None = None
+        self.completed_results: list | None = None
 
 
 class ToolWaitPark(Exception):

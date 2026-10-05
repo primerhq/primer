@@ -1796,11 +1796,47 @@ async def _land_cancelled_turn(
         seq=0, ts=_now(), turn_no=session.turn_no, reason=reason,
     )))
     await _publish_terminal(deps, session, new_status, ended_reason)
+    await _cancel_the_stopped_external_call(deps, session, executor)
     await _best_effort_io("closing the turn log", session_id, turn_log.aclose())
     await _apply_pending_switch_at_checkpoint(deps, session)
     await _realize_pending_at_checkpoint(deps, session)
     _observe_turn(session, "cancelled", started_at)
     return ReleaseOutcome(success=True, drop_lease=True)
+
+
+async def _cancel_the_stopped_external_call(
+    deps: "SessionDispatchDeps", session: "WorkspaceSession", executor: Any,
+) -> None:
+    """Cancel the pending ``ExternalToolCall`` row of an ``external_tool`` park that a Stop ended instead of parking.
+
+    The invoker-supplied tool provider writes the row BEFORE it yields (``primer/agent/external_tools.py``), and a turn
+    that ends instead of parking would leave it listed as pending (``GET .../external_tools/pending``, the global list)
+    and answerable only with a 409 (an answer needs a parked row). The cancel, delete, restart and steer routes cancel
+    such rows with the same call. Row-side only: there is no park to wake. It follows the terminal publish and is
+    bounded, so a slow storage delays only what comes after it, and it never fails the exit.
+    """
+    park = getattr(executor, "stopped_park", None)
+    if not isinstance(park, YieldToWorker):
+        return
+    from primer.agent.external_tools import external_event_key
+
+    if not (park.yielded.event_key or "").startswith(external_event_key(session.id, "")):
+        return
+    from primer.model.external_tool import ExternalToolCall
+    from primer.session.external_tools import cancel_pending_external
+
+    try:
+        await _best_effort_io(
+            "cancelling the stopped external tool call", session.id,
+            cancel_pending_external(
+                call_storage=deps.storage_provider.get_storage(ExternalToolCall),
+                session_id=session.id, reason="stopped by user",
+            ),
+        )
+    except Exception:  # noqa: BLE001 - the cancelled exit must still finish
+        logger.warning(
+            "session %s: could not cancel the pending external tool call a Stop ended", session.id, exc_info=True,
+        )
 
 
 async def _best_effort_io(what: str, session_id: str, work: "Awaitable[Any]") -> None:
