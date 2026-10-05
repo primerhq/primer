@@ -416,13 +416,16 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 ToolCallTaskState.DONE, ToolCallTaskState.FAILED,
             ):
                 return None
-        from primer.session.yields import tool_wait_event_key
+        from primer.session.yields import tool_wait_event_key_or_none
 
+        # This runs inside the release transaction: a malformed id must not raise here (the rollback would lose
+        # this task's result). No key, no wake; the park's own timeout is the backstop.
+        event_key = tool_wait_event_key_or_none(task.session_id, scoped_task_id=task.id, site="adapter")
+        if event_key is None:
+            return None
         return PostReleaseWake(
             session_id=task.session_id,
-            event_key=tool_wait_event_key(
-                task.session_id, task.turn_no, scoped_task_id=task.id,
-            ),
+            event_key=event_key,
             payload={"tool_wait_ready": True},
         )
 

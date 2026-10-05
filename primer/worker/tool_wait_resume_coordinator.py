@@ -393,9 +393,17 @@ async def resume_graph_tool_wait(
     )
 
     if repark is not None:
-        return pool._repark_graph_outcome(
-            session, repark, node_tool_call_seq=node_tool_call_seq,
-        )
+        from primer.session.persistence import TurnInvariantError
+
+        try:
+            return pool._repark_graph_outcome(
+                session, repark, node_tool_call_seq=node_tool_call_seq,
+            )
+        except TurnInvariantError:
+            logger.exception(
+                "resume_graph_tool_wait: session %s cannot re-park - ending failed", sid,
+            )
+            return await pool._end_session(session, reason="failed")
     return await pool._end_session(session, reason="completed")
 
 
