@@ -179,6 +179,14 @@ class TestTheRatio:
             0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0, 3.0, 4.0,
         ]
 
+    async def test_a_prompt_with_nothing_to_estimate_records_nothing_and_does_not_divide_by_zero(self):
+        """Usage reported for a prompt we estimate at 0 (no messages, no tools) has no ratio: the guard skips it instead of
+        raising ZeroDivisionError out of the turn."""
+        events = await _drain(_FakeLLM([_answer(_usage(50))]), prompt=[])
+        assert _samples() == (None, None)
+        (call,) = _llm_calls(events)
+        assert call.input_tokens == 50 and call.estimated_input_tokens is None
+
     async def test_the_estimate_is_not_computed_for_a_call_that_has_no_usage(self, monkeypatch):
         """No usage means nothing to compare, so no pass over the prompt is spent."""
         import primer.agent.loop as loop
