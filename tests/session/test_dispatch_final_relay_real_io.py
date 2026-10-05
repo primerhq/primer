@@ -258,6 +258,34 @@ class TestTheRelayReadsThroughTheWorkspaceTheWayProductionIsWired:
         warned = [r.getMessage() for r in caplog.records if "posting the final result" in r.getMessage()]
         assert len(warned) == 1 and "did not finish within 0.3s" in warned[0] and "may or may not" in warned[0], warned
 
+    async def test_a_preempt_during_the_channel_post_propagates_and_is_not_taken_for_the_timeout(
+        self, tmp_path, caplog,
+    ) -> None:
+        """The post sits inside ``asyncio.timeout`` and an ``except Exception``: a hard preempt (the lost-lease verdict, the
+        drain timeout) that lands while it waits is a ``CancelledError``, which the relay must let through, not report as
+        "did not finish within" (the timeout's own expiry) or "relay failed" (the ``except Exception``), and not swallow.
+        The post is cancelled with the turn."""
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+        hanging = _HangingDispatcher()
+        with caplog.at_level(logging.WARNING):
+            task = asyncio.create_task(_run_with_the_pools_io(
+                tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING}, dispatcher=hanging,
+            ))
+
+            async def post_started() -> None:
+                while not hanging.started:
+                    await asyncio.sleep(0.01)
+
+            await asyncio.wait_for(post_started(), timeout=10)
+            task.cancel(CANCEL_REASON_PREEMPTED)
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=10)
+        assert hanging.cancelled, "the post was cancelled with the turn"
+        messages = [r.getMessage() for r in caplog.records]
+        assert not any("did not finish within" in m for m in messages), "a preempt is not the post timeout"
+        assert not any("final-result relay failed" in m for m in messages), "and not a relay failure"
+
     async def test_one_hung_adapter_cancels_the_real_fan_out_and_the_release_goes_ahead(self, tmp_path, monkeypatch) -> None:
         """Through the real ``ChannelDispatcher``: ``asyncio.gather`` over the adapters is cancelled with the post, so an
         adapter that hangs is stopped and not abandoned."""
