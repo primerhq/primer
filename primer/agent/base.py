@@ -356,13 +356,22 @@ class _BaseAgentExecutor(ABC):
                 )
                 if self._replay_is_futile(forced):
                     # Nothing can be shrunk (the fixed part, or the input the model has not answered,
-                    # already fills the window): replaying the byte-identical prompt would be rejected
-                    # the same way, so fail now, with a name, instead of spending a model call on it.
+                    # already fills the window, or there is nothing before it to summarise): replaying the
+                    # byte-identical prompt would be rejected the same way, so fail now, with a name,
+                    # instead of spending a model call on it.
+                    undercounted = (
+                        forced.budget_tokens is not None and forced.estimated_tokens_after < forced.budget_tokens
+                    )
                     raise ContextOverflowUnrecoverable(
                         f"the model rejected the prompt as too large and compaction cannot shrink it "
-                        f"({forced.unreducible}): about {forced.estimated_tokens_after} tokens, of which "
-                        f"{forced.fixed_overhead_tokens} are the system prompt and tool schemas, against a "
-                        f"context window of {self._model.context_length}",
+                        f"({forced.unreducible}): about {forced.estimated_tokens_after} tokens by our estimate, "
+                        f"of which {forced.fixed_overhead_tokens} are the system prompt and tool schemas, against "
+                        f"a context window of {self._model.context_length}"
+                        + (
+                            "; the estimate is under the budget, so it undercounts what the provider counted "
+                            "(images, documents and dense text are the usual causes)"
+                            if undercounted else ""
+                        ),
                         cause=exc,
                     ) from exc
                 await self._replace_compacted_head(
@@ -402,16 +411,13 @@ class _BaseAgentExecutor(ABC):
     def _replay_is_futile(forced: "CompactedTurn") -> bool:
         """Whether a forced compaction that came back ``unreducible`` proves that replaying the turn is hopeless.
 
-        It does only when the replayed prompt would be the one the provider just rejected (the tier-1
-        prune changed no tool output) AND the character estimate agrees that it does not fit the window.
-        A prune that did shrink something makes the replay a different prompt, and an estimate under the
-        budget means the heuristic undercounts what the provider counted: either way one replay is worth
-        its call, and a second rejection surfaces as the provider's own error."""
-        return (
-            forced.outcome == "unreducible"
-            and forced.pruned_tool_outputs == 0
-            and (forced.budget_tokens is None or forced.estimated_tokens_after >= forced.budget_tokens)
-        )
+        It does when the replayed prompt would be the one the provider just rejected: nothing could be
+        summarised (``unreducible``) and the tier-1 prune changed no tool output. A prune that did shrink
+        something makes the replay a different prompt, so it gets its call. Our own estimate does NOT
+        decide it: an estimate under the budget only says the heuristic undercounts what the provider
+        counted (an image or a document is a flat guess, dense text runs over chars/4), and a byte-identical
+        prompt is rejected again whatever the estimate says. The error says so when they disagree."""
+        return forced.outcome == "unreducible" and forced.pruned_tool_outputs == 0
 
     @staticmethod
     def _compaction_notes(compacted: "CompactedTurn", *, skip_noted: bool = False) -> list[ExtendedEvent]:

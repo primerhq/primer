@@ -1126,6 +1126,39 @@ async def test_turn_stream_failure_ended_detail_falls_back_when_code_unset(
 
 
 @pytest.mark.asyncio
+async def test_a_skip_note_the_executor_yields_is_written_where_the_next_turn_reads_it_back(
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """A skipped compaction is noted once per run: the executor yields the note, dispatch writes it as a
+    ``compaction_note`` record to the session's messages.jsonl, and the NEXT turn knows the run has its note because
+    ``last_compaction_state`` finds that record in the file. The executor-level tests persist the note by hand; this
+    is the chain with the real dispatch writer."""
+    from primer.model.chat import ExtendedEvent, _CompactionNote
+    from primer.workspace.session import last_compaction_state
+
+    session = await _seed_session(fake_storage_provider, autonomous=True)
+    note = ExtendedEvent(extended=_CompactionNote(
+        outcome="skipped", reason="cannot_reach_trigger", estimated_tokens=23_100, trigger_tokens=21_427,
+    ))
+    fake_executor = FakeExecutor([note, TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    outcome = await run_one_session_turn(_make_lease(session.id), deps)
+    assert outcome.success is True
+
+    lines = fake_workspace_io.read_lines(session.id)
+    assert last_compaction_state(lines).skip_noted is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failure", "detail"),
     [
