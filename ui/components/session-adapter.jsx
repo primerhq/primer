@@ -199,6 +199,25 @@ function SA_rowText(rec) {
 }
 
 
+// " (summariser input reduced: ...)" for a compaction marker whose summariser
+// overflowed and was retried on less (summary_input_reduced: {pruned,
+// folded_chunks, truncated_parts}); "" for an ordinary compaction.
+function SA_reducedInputNote(r) {
+  if (!r) return "";
+  var parts = [];
+  if (r.pruned > 0) {
+    parts.push(r.pruned + (r.pruned === 1 ? " tool result" : " tool results") + " left out");
+  }
+  if (r.folded_chunks > 1) parts.push("read in " + r.folded_chunks + " chunks");
+  if (r.truncated_parts > 0) {
+    parts.push(r.truncated_parts + (r.truncated_parts === 1 ? " part" : " parts") + " cut");
+  }
+  // all zero: the retry was text only on an input that needed nothing taken out
+  return parts.length
+    ? " (summariser input reduced: " + parts.join(", ") + ")"
+    : " (summariser retried without tools)";
+}
+
 // Divider label for the four kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
 // invocation_divider (written by reset_session on ENDED->CREATED re-open,
 // payload: {invocation: N}) renders "— invocation N —"; graph_transition
@@ -208,9 +227,13 @@ function SA_dividerLabel(rec) {
   if (rec.kind === "compaction_marker") {
     var p = rec.payload || {};
     var from = p.replaced_from_seq;
-    return from == null
-      ? "— history compacted —"
-      : "— history compacted from #" + from + " —";
+    var base = from == null
+      ? "\u2014 history compacted"
+      : "\u2014 history compacted from #" + from;
+    // The summariser's own call overflowed and it was retried on a smaller
+    // input (primer/agent/summary_input.py): its summary is of less than the
+    // whole span, which an ordinary compaction divider would not say.
+    return base + SA_reducedInputNote(p.summary_input_reduced) + " \u2014";
   }
   if (rec.kind === "rewind_marker") {
     var rp = rec.payload || {};

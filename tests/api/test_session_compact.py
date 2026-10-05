@@ -339,6 +339,7 @@ async def test_a_summariser_that_overflows_is_retried_once_and_the_marker_says_s
     reduced = marker["payload"]["summary_input_reduced"]
     assert reduced == {"pruned": 0, "folded_chunks": len(retries) if len(retries) > 1 else 0, "truncated_parts": 0}, reduced
     assert "the story so far" in marker["payload"]["summary"]
+    assert r.json()["summary_input_reduced"] == reduced, "the caller is told what the summary was made from"
 
 
 @pytest.mark.asyncio
@@ -348,4 +349,5 @@ async def test_a_marker_of_a_summariser_that_did_not_overflow_has_no_reduction(c
     assert r.status_code == 200, r.text
     (marker,) = _marker(ws)
     assert "summary_input_reduced" not in marker["payload"]
+    assert r.json()["summary_input_reduced"] is None
 

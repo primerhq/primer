@@ -1382,6 +1382,9 @@ async def compact_session_endpoint(
         "summary": outcome.summary,
         "tokens_before": outcome.tokens_before,
         "tokens_after": outcome.tokens_after,
+        # What was done to the summariser's input when its first call overflowed (null otherwise): a summary of
+        # a reduced input is not an ordinary one.
+        "summary_input_reduced": outcome.summary_input_reduced,
     }
 
 
