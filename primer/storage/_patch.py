@@ -106,6 +106,18 @@ class PatchSpecError(ValueError):
     """
 
 
+class PatchValueError(PatchSpecError):
+    """A ``PatchSpecError`` about a VALUE the call supplies, not the shape of the spec: one strict JSON cannot hold (a
+    non-finite float, a value or key type JSON cannot encode), a string or key that is not valid Unicode (a surrogate
+    code point), or a canonical value the model made of a patched field that is one of those.
+
+    Raised only by the value checks (``_check_json``, ``_check_encodable`` and :func:`check_canonical_json`). A caller
+    that writes values it was handed (a claim adapter writing what a handler released) can tell "that value cannot be
+    stored" from "my own spec is malformed" by this subclass; everything else stays a plain ``PatchSpecError``. Still a
+    ``PatchSpecError`` and a ``ValueError``, so existing handlers keep catching it.
+    """
+
+
 def json_equal(a: Any, b: Any) -> bool:
     """JSON-typed equality, the rule ``where`` uses: ``True`` is not ``1`` and not ``"true"``, ``1`` equals ``1.0``,
     objects and arrays compare element by element."""
@@ -253,8 +265,8 @@ def check_canonical_json(model_name: str, key: str, value: Any) -> None:
     """
     try:
         _check_json(value, key)
-    except PatchSpecError:
-        raise PatchSpecError(
+    except PatchValueError:
+        raise PatchValueError(
             f"{model_name}.{key} is not representable as strict JSON once the model has validated the patch "
             "(a non-finite float, a surrogate code point in a string or a key, or a value or key type JSON cannot "
             "encode); patch_if writes values the model can store"
@@ -279,7 +291,7 @@ def _check_encodable(text: str, what: str) -> None:
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:
-        raise PatchSpecError(
+        raise PatchValueError(
             f"{what} holds a string that is not valid Unicode (a surrogate code point), which no backend can store"
         ) from None
 
@@ -289,7 +301,7 @@ def _check_json(value: Any, what: str) -> None:
         # ensure_ascii=False keeps a surrogate code point (anywhere in the value, keys included) in the text so the encode check sees it.
         text = json.dumps(value, allow_nan=False, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
-        raise PatchSpecError(f"{what} is not JSON-ready: {exc}") from exc
+        raise PatchValueError(f"{what} is not JSON-ready: {exc}") from exc
     _check_encodable(text, what)
 
 
