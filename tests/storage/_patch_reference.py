@@ -150,7 +150,7 @@ def patch_if_reference(
             if not isinstance(node, dict) or part not in node:
                 raise PatchSpecError(f"set_paths {path!r} is not part of {model_cls.__name__}")
             node = node[part]
-    for key in {*patch_d, *(p[0] for p in paths_d)}:
+    for key in sorted({*patch_d, *(p[0] for p in paths_d)}):   # sorted: the field a refusal names must not depend on the hash seed
         if key in canonical and not same_spelling(produced.get(key), canonical[key]):
             check_canonical_json(model_cls.__name__, key, canonical[key])   # a "nan" the model made a float is refused
             produced[key] = canonical[key]

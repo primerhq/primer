@@ -250,7 +250,7 @@ class Storage(ABC, Generic[ModelT]):
         primer.model.except_.ProviderError
             Any OTHER failure under the write is a backend failure, wrapped like every other one and
             never reported as the caller's mistake: a ``ValueError`` that is neither a
-            ``PatchSpecError`` nor a ``ValidationError`` (a stored document that is not valid JSON, a
+            ``PatchSpecError`` nor a ``ValidationError`` (a stored document that cannot be read back, a
             driver quirk) is a ``ProviderError`` on both backends. A database error is a
             ``ProviderError`` from SQLite (a ``ServerError``, its subclass, for a
             ``sqlite3.OperationalError`` such as a locked database) and a ``ServerError`` from
