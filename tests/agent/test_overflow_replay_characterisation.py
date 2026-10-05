@@ -986,6 +986,60 @@ class TestAFreshSessionThatOverflowsAfterOneBigRound:
 
 
 @POSIX
+class TestAReplayThatParksWithoutAMarker:
+    """Without a marker the rounds the rejected attempt ran are NOT in a compaction: they stay in the turn's record, in
+    the reduced form the replay is sent. A replay that then parks stamps them too (``llm_messages`` is the record), so
+    the resume appends the whole stamped slice: the carried round (reduced) and the parking call."""
+
+    async def test_the_park_stamps_the_rejected_attempts_reduced_rounds_and_the_resume_holds_every_call_once(
+        self, tmp_path,
+    ) -> None:
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await append_messages(workspace, session, user_message(QUESTION))      # nothing before the question
+            ran: list[str] = []
+            state = {"overflowed": False}
+
+            def fn(n, messages, kwargs):
+                if _is_summariser(kwargs):
+                    return text_events("SUMMARY")
+                if not _has_result(messages, "call_a"):
+                    return _call("call_a", "a")
+                if not state["overflowed"]:
+                    state["overflowed"] = True
+                    return BadRequestError(OVERFLOW)
+                if not _has_result(messages, "call_park"):
+                    return _call("call_park", "park")
+                return text_events("done")
+
+            llm = FnLLM(fn)
+            with pytest.raises(YieldToWorker) as parked:
+                await run_turn(
+                    session, llm,
+                    wrap_tools=lambda m: _ParksOn(_HugeResult(m, ("call_a",), 600_000, ran), "call_park"),
+                )
+            assert ran == ["call_a"] and _markers(workspace, session) == [], "the round ran once; nothing was summarised"
+            assert [c for c in llm.calls if _is_summariser(c["kwargs"])] == [], "nothing to summarise: no summariser call"
+
+            stamped = parked.value.llm_messages
+            assert _tool_ids(stamped) == (["call_a", "call_park"], ["call_a"]), (
+                "unlike the marker path, the rejected attempt's round is stamped too, with the parking call after it"
+            )
+            carried = [p.output for m in stamped for p in m.parts if isinstance(p, ToolResultPart)]
+            assert len(carried) == 1 and len(carried[0]) < 10_000 and "ALREADY RAN" in carried[0], "in its reduced form"
+
+            result = Message(role="tool", parts=[ToolResultPart(id="call_park", output="resumed")])
+            await make_executor(session, ScriptedLLM()).inject_resume_messages([*stamped, result])
+            shown = await _reload(session)
+            assert _tool_ids(shown) == (["call_a", "call_park"], ["call_a", "call_park"]), "every call and result once"
+            assert [_text(m) for m in shown].count(QUESTION) == 1
+            assert_anthropic_valid(shown)
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+
+@POSIX
 class TestACompactionThatCanChangeNothing:
     """``unreducible``: nothing could be summarised (here the fixed part fills the window, or there is nothing
     before the question). The replay would send the prompt that was just rejected, so the turn ends by name; the
