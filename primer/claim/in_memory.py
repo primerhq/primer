@@ -3,7 +3,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, UTC, timedelta
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from primer.int.claim import (
     CLAIM_PRIORITY_FRESH, CLAIM_PRIORITY_RESUME, ClaimAdapter, ClaimEngine, ClaimKind, Lease,
     ReleaseOutcome,
@@ -28,14 +28,28 @@ class _LeaseRow:
     last_error: str | None = None
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 class InMemoryClaimEngine(ClaimEngine):
+    """A single-process ``ClaimEngine`` over a dict of lease rows (no row locks, no transactions).
+
+    ``clock`` is what every lease timestamp is read from (claim, heartbeat and expiry stamps, the expiry
+    checks, ``next_attempt_at``); it defaults to the wall clock, ``datetime.now(UTC)``. A test that drives
+    the pool on a virtual-time event loop passes a clock derived from that loop's time, so a lease's expiry
+    is decided on the same timeline as the pool's own timers.
+    """
+
     def __init__(
         self,
         *,
         adapters: dict[ClaimKind, ClaimAdapter],
         lease_ttl_seconds: int = 60,
+        clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._adapters = adapters
+        self._clock = clock
         self._leases: dict[tuple[ClaimKind, str], _LeaseRow] = {}
         self._wake = asyncio.Event()
         self._notify_queue: asyncio.Queue[tuple[ClaimKind, str]] = asyncio.Queue()
@@ -59,7 +73,7 @@ class InMemoryClaimEngine(ClaimEngine):
         else:
             self._leases[key] = _LeaseRow(
                 kind=kind, entity_id=entity_id, priority_score=priority,
-                next_attempt_at=next_attempt_at or datetime.now(UTC),
+                next_attempt_at=next_attempt_at or self._clock(),
             )
             self._notify_queue.put_nowait((kind, entity_id))
         self._wake.set()
@@ -78,7 +92,7 @@ class InMemoryClaimEngine(ClaimEngine):
         if adapter is None or adapter.dead_lease_sql() is None:
             return 0
         def held(row: _LeaseRow) -> bool:
-            return row.claimed_by is not None and (row.expires_at is None or row.expires_at >= datetime.now(UTC))
+            return row.claimed_by is not None and (row.expires_at is None or row.expires_at >= self._clock())
 
         pruned = 0
         for key, row in list(self._leases.items()):
@@ -95,14 +109,14 @@ class InMemoryClaimEngine(ClaimEngine):
         row = self._leases.get((kind, entity_id))
         if row is None or row.claimed_by is None or row.expires_at is None:
             return False
-        return row.expires_at > datetime.now(UTC)
+        return row.expires_at > self._clock()
 
     async def claim_due(
         self, worker_id: str, *, max_count: int, kinds: list[ClaimKind] | None = None,
     ) -> list[Lease]:
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
-            now = datetime.now(UTC)
+            now = self._clock()
             kind_set = None if kinds is None else set(kinds)
             eligible = [
                 row for row in self._leases.values()
@@ -136,7 +150,7 @@ class InMemoryClaimEngine(ClaimEngine):
     async def heartbeat(
         self, worker_id: str, kind_ids: list[tuple[ClaimKind, str]],
     ) -> list[tuple[ClaimKind, str]]:
-        now = datetime.now(UTC)
+        now = self._clock()
         confirmed = []
         for kind, entity_id in kind_ids:
             row = self._leases.get((kind, entity_id))
@@ -186,7 +200,7 @@ class InMemoryClaimEngine(ClaimEngine):
             row.last_heartbeat_at = None
             row.expires_at = None
             if outcome.requeue_after is not None:
-                row.next_attempt_at = datetime.now(UTC) + outcome.requeue_after
+                row.next_attempt_at = self._clock() + outcome.requeue_after
             if outcome.entity_noop:
                 pass  # a lease-only hand-back is not a run: attempt_count and last_error stay
             elif not outcome.success:
@@ -212,7 +226,7 @@ class InMemoryClaimEngine(ClaimEngine):
             await self.upsert(kind, entity_id, priority=priority)
             return
         row.priority_score = priority
-        row.next_attempt_at = datetime.now(UTC)
+        row.next_attempt_at = self._clock()
         self._wake.set()
         self._notify_queue.put_nowait((kind, entity_id))
 
