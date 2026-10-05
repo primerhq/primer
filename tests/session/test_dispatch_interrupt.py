@@ -775,9 +775,11 @@ class TestTheCancelledRecordWriteIsBoundedInTheLock:
 
 
 class TestTheCancelledExitSurvivesAHardPreempt:
-    """The pool delivers a Cancel two ways: the cooperative signal this turn watches, and a HARD preempt (a lost-lease
-    verdict after the Cancel route dropped the lease, or the user-cancel path) that cancels the whole task wherever it
-    is. Once the turn has decided it is ending as a cancelled one, a hard preempt landing INSIDE that exit cut it
+    """The pool delivers a Cancel two ways: the cooperative signal this turn watches, and a HARD preempt that cancels
+    the whole task wherever it is (the Cancel route keeps a RUNNING session's lease, so its hard path is the pool's
+    ``_cancel_loop``; a lost-lease verdict comes from a force-delete, which drops the lease, or a really lost lease;
+    the drain timeout cancels too). Once the turn has decided it is ending as a cancelled one, a hard preempt landing
+    INSIDE that exit cut it
     mid-way: the pool's convergence sees a row that is already ENDED and skips it, so the terminal event (the webhook
     hold waits on it), the turn log, the queued-steer drain and the metric were silently lost."""
 
@@ -1078,6 +1080,49 @@ class TestTheCancelledExitSurvivesAHardPreempt:
         assert any("cleanup failed while being abandoned" in str(r.exc_info[1]) for r in caplog.records if r.exc_info), (
             "the abandoned exit's error was not logged"
         )
+
+    async def test_an_abandoned_exit_that_later_finishes_cleanly_is_logged(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,
+    ) -> None:
+        """Past the grace the pool has already released the lease as a failure; an exit that swallows its cancel and
+        finishes anyway explains the terminal ERROR record that can follow its CANCELLED one, so it is logged."""
+        sid = seeded_session.id
+        monkeypatch.setattr(dispatch, "_TERMINAL_EXIT_GRACE_S", 0.2, raising=False)
+        hung = asyncio.Event()
+        real_transition = dispatch._transition_session_status
+        swallowed = {"n": 0}
+
+        async def transition_that_swallows_its_cancel(*args, **kwargs):
+            hung.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                swallowed["n"] += 1                    # the abandonment cancels the exit; it carries on regardless
+            return await real_transition(*args, **kwargs)
+
+        monkeypatch.setattr(dispatch, "_transition_session_status", transition_that_swallows_its_cancel)
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def read_status_then_cancel_lands(executor):
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            return None
+
+        monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+        executor = _StopAwareExecutor([TextDelta(text="x", index=0), Done(stop_reason="stop", raw_reason="stop")])
+        task = asyncio.ensure_future(run_one_session_turn(_make_lease(sid), _deps(
+            fake_storage_provider, fake_workspace_io, fake_event_bus, executor,
+        )))
+        await asyncio.wait_for(hung.wait(), 5.0)
+        task.cancel()
+        with caplog.at_level(logging.INFO):
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5.0)
+            await asyncio.sleep(0.3)                  # the abandoned exit finishes behind the pool's back
+
+        assert swallowed["n"] == 1, "the exit was not abandoned (and so never cancelled) in this test"
+        assert any(
+            r.levelno == logging.INFO and "later finished successfully" in r.getMessage() for r in caplog.records
+        ), "an abandoned exit that finished cleanly was not logged"
 
 
 def _stop_lands_script(storage, bus, sid: str):
