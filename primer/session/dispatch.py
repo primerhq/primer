@@ -1515,8 +1515,8 @@ async def _finish_despite_cancel(exit_coro: "Awaitable[ReleaseOutcome]") -> Rele
     So the exit runs as its own task, and a cancellation that arrives while it runs is absorbed until
     the exit is done. What the caller then sees depends on how the exit ended:
 
-    * It finished: the cancellations are consumed (``uncancel``, once per cancellation absorbed) and its
-      own outcome is returned, exactly as for a cancel that no one preempted. Re-raising here would throw
+    * It finished: the cancellations are consumed (``uncancel``, down to the task's ``cancelling()`` count
+      on entry) and its own outcome is returned, exactly as for a cancel that no one preempted. Re-raising here would throw
       the outcome away: the pool would release with its pre-set ``success=False`` (its convergence skips a
       row that is already ENDED) and ``on_release`` would write a terminal ERROR after a clean exit.
     * It raised: the caller gets a ``CancelledError`` chained to the exit's error (which is logged), not the
@@ -1527,9 +1527,16 @@ async def _finish_despite_cancel(exit_coro: "Awaitable[ReleaseOutcome]") -> Rele
     is abandoned (cancelled) and the cancellation propagates, so a drain timeout can still abort an exit
     that hangs on a dead storage or workspace. An abandoned exit is not awaited, so a done-callback
     retrieves whatever it dies of and logs it.
+
+    Two limits follow from the shelter. A drain (or a lost-lease verdict) can take up to the grace longer
+    to take effect on a turn that is in its exit, so a drain can run that much past its budget. And an exit
+    abandoned at the grace that LATER finishes cleanly (it swallowed its cancel, or was past its last await)
+    was already released by the pool as a failure: its effects landed, but the claim was not released as a success.
     """
     task = asyncio.ensure_future(exit_coro)
     loop = asyncio.get_running_loop()
+    current = asyncio.current_task()
+    entered_cancelling = current.cancelling() if current is not None else 0
     absorbed = 0
     deadline: float | None = None
     while not task.done():
@@ -1541,6 +1548,10 @@ async def _finish_despite_cancel(exit_coro: "Awaitable[ReleaseOutcome]") -> Rele
             absorbed += 1
             if deadline is None:
                 deadline = loop.time() + _TERMINAL_EXIT_GRACE_S
+                logger.info(
+                    "dispatch: the task was cancelled while the cancelled turn's exit was running; "
+                    "finishing the exit first (for at most %gs)", _TERMINAL_EXIT_GRACE_S,
+                )
             continue
         if not task.done():
             task.add_done_callback(_consume_abandoned_exit)
@@ -1557,9 +1568,10 @@ async def _finish_despite_cancel(exit_coro: "Awaitable[ReleaseOutcome]") -> Rele
             "propagating the cancellation", exc_info=exc,
         )
         raise asyncio.CancelledError() from exc
-    current = asyncio.current_task()
     if current is not None:
-        for _ in range(absorbed):
+        # ``cancelling()`` counts cancel() REQUESTS, not the CancelledErrors delivered: two requests before the
+        # task runs again deliver one. Consume down to what it was on entry, not once per delivery.
+        while current.cancelling() > entered_cancelling:
             current.uncancel()
     return task.result()
 
