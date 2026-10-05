@@ -41,10 +41,15 @@ class EntitySeeder:
                 "updated_at timestamptz NOT NULL DEFAULT now()"
                 ")"
             )
+            # ``data`` given: the row ends up with THAT data even if it already exists (a silent DO NOTHING left a
+            # test asserting against the previous test's leftovers). ``data`` omitted: an existing row is left alone,
+            # so seeding the same id again without data never wipes what an earlier seed put there.
+            on_conflict = (
+                "DO UPDATE SET data = EXCLUDED.data, updated_at = now()" if data is not None else "DO NOTHING"
+            )
             for entity_id in entity_ids:
                 await conn.execute(
-                    f"INSERT INTO {qualified} (id, data) "
-                    "VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING",
+                    f"INSERT INTO {qualified} (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) {on_conflict}",
                     entity_id, json.dumps(dict(data or {})),
                 )
                 self._seeded.append((table, entity_id))
