@@ -231,6 +231,48 @@ class TestTheRatio:
             "llm_calls_total", {"provider_id": "prov-1", "profile_id": "prof-1", "status": "error"},
         ) == 1, "it is still counted, as an error"
 
+    async def test_a_call_a_stop_interrupts_after_its_usage_arrived_records_no_ratio(self):
+        """The Stop half of the same promise: the model sent a ``Usage`` (a cumulative Gemini chunk mid-stream), went
+        quiet before its terminal event, and the operator pressed Stop. The call is counted as ``interrupted``, with no
+        ratio, no ``llm_call`` event and no estimate."""
+        import primer.observability.metrics as m
+
+        usage_consumed, stop = asyncio.Event(), asyncio.Event()
+
+        class _GoesQuiet(_FakeLLM):
+            def stream(self, *, messages, **_kwargs):
+                async def _gen():
+                    yield _usage(100)
+                    usage_consumed.set()                       # the loop has taken the usage and asks for the next event
+                    await asyncio.Event().wait()
+
+                return _gen()
+
+        async def press_stop():
+            await usage_consumed.wait()
+            stop.set()
+
+        interrupted: list[bool] = []
+        events: list = []
+
+        async def run():
+            async for ev in run_agent_turn(
+                agent=_agent(), llm=_GoesQuiet([]), llm_model=_model(),
+                tool_manager=ToolExecutionManager(toolset_providers={}, tools=[]), prompt=list(PROMPT),
+                interrupt=stop, interrupted_out=interrupted,
+            ):
+                events.append(ev)
+
+        stopper = asyncio.create_task(press_stop())
+        await asyncio.wait_for(run(), timeout=10)
+        await stopper
+        assert interrupted == [True], "the turn did stop"
+        assert _samples() == (None, None)
+        assert _llm_calls(events) == [], "an interrupted call has no llm_call record to carry an estimate"
+        assert m.registry.get_sample_value(
+            "llm_calls_total", {"provider_id": "prov-1", "profile_id": "prof-1", "status": "interrupted"},
+        ) == 1, "it is still counted, as interrupted"
+
     async def test_the_estimate_is_not_computed_for_a_call_that_has_no_usage(self, monkeypatch):
         """No usage means nothing to compare, so no pass over the prompt is spent."""
         import primer.agent.loop as loop
