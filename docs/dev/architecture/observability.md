@@ -101,7 +101,10 @@ The instrumentation plumbing lives in `primer/observability/`:
   written), `skipped` (the trigger cannot be reached and the prompt still fits the window, so it was deliberately not
   compacted) or `insufficient` (summarised, and the result is still at or over the trigger). `unreducible` and
   `insufficient` also log a WARNING and are in the session record (the marker's payload, or a `compaction_note`
-  record when there is no marker); `skipped` logs at INFO and writes nothing. The trigger, the tail budget and the
+  record when there is no marker); `skipped` logs at INFO and leaves ONE `compaction_note` per run of skips (the
+  next marker ends the run), not one per turn. A skip is `cannot_reach_trigger` (the prompt fits the window) or
+  `recently_compacted` (it does not fit the budget but has not grown by a summary allowance since the newest
+  marker's `tokens_after`). The trigger, the tail budget and the
   re-measure count the FIXED overhead (system prompt and tool schemas), so a rising `unreducible` rate with reason
   `fixed_over_budget` is an agent whose fixed part does not fit its model's window (too many or too large tool
   schemas), and a steady `skipped` rate is one whose fixed part keeps it over the trigger without overflowing.
