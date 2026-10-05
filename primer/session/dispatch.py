@@ -60,6 +60,7 @@ from primer.session.delegation import (
 )
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
+from primer.session.turns import has_open_turn
 from primer.session.persistence import (
     TurnInvariantError,
     WorkspaceIO,
@@ -253,6 +254,16 @@ async def run_one_session_turn(
         return ReleaseOutcome(
             success=True, drop_lease=True, preserve_park=True,
         )
+
+    # ------------------------------------------------------------------
+    # 1.4 A completed turn whose release never committed is not run again.
+    # ------------------------------------------------------------------
+    # Decided from a FRESH row under the lifecycle lock, never from the row
+    # read above. Before the running flip and before build_executor: the
+    # no-op path calls no model, flips nothing and builds nothing.
+    noop = await _noop_if_turn_already_completed(deps, session_storage, session_id)
+    if noop is not None:
+        return noop
 
     # ------------------------------------------------------------------
     # 1.5 Consume the claimable signal before running the turn.
@@ -2159,6 +2170,100 @@ async def _mark_turn_completed(session_storage, session_id: str, turn_no: int) -
             "session %s: turn_no is no longer %d, so the turn is not recorded as completed",
             session_id, turn_no,
         )
+
+
+async def _noop_if_turn_already_completed(
+    deps: SessionDispatchDeps, session_storage, session_id: str,
+) -> ReleaseOutcome | None:
+    """The no-op path for a claim of a turn that already completed (01a10b05); ``None`` means run the turn.
+
+    A completed turn commits everything BEFORE its release (records, status, ``last_seq``, the cursor, then
+    ``completed_turn_no``); only ``turn_no + 1`` is written inside the release transaction. A release that is
+    abandoned at the pool's bound, or raises, rolls that back and leaves the lease claimed until it expires, and
+    the re-claim used to run a NEW turn over the same history (a second model call and its tool runs). A fresh
+    row with ``completed_turn_no == turn_no`` is exactly that state, so this claim does not run the turn: it
+    returns ``success=True`` and its own release applies the lost bump (once; the adapter fences it), after which
+    the marker trails ``turn_no`` and every later claim runs normally. If that release is lost too, the next
+    claim lands here again. ``turn_no`` is never bumped here.
+
+    What the claim leaves armed depends on whether input is unanswered, decided in this order under the lock:
+
+    * ``turn_status == "claimable"``: a steer is queued; the pool re-arms it after the release.
+    * otherwise the log is read and ``has_open_turn`` (``primer/session/turns.py``: a USER_INPUT at or after the
+      drain cursor with no closing record) decides. An open input is armed with a ``turn_status``-only patch
+      (``claimable``), so the pool re-arms it and the next claim answers it. This catches a stale whole-document
+      write that put back an old ``turn_no``, ``turn_status`` and ``last_seq`` over a steer. ``next_unprocessed_seq
+      <= last_seq`` is NOT the test: compaction, rewind, reopen and abandon raise ``last_seq`` with a marker record
+      and leave the cursor, and a double stale revert can leave the cursor past ``last_seq``.
+    * no open input: the drain checkpoint the turn would have run is run here (a queued binding switch, then ONE
+      queued steer, which arms itself through ``wake_session``), recovering a crash between the marker and the
+      checkpoint. With nothing queued there is nothing to arm.
+
+    A log that cannot be read returns ``None``: the turn runs, as it did before this guard. It never swallows a
+    turn it cannot see.
+    """
+    async with session_lifecycle_lock().acquire(session_id):
+        fresh = await session_storage.get(session_id)
+        if fresh is None or fresh.completed_turn_no is None or fresh.completed_turn_no != fresh.turn_no:
+            return None
+        if fresh.turn_status == "claimable":
+            work = "a queued steer is armed"
+        else:
+            lines = await _read_message_lines(deps.workspace_io, fresh)
+            if lines is None:
+                return None
+            if has_open_turn(lines, cursor=fresh.next_unprocessed_seq):
+                try:
+                    await session_storage.patch_if(
+                        session_id, {"turn_status": "claimable"},
+                        where={"turn_status": ["idle", "running"], "status": _NOT_ENDED},
+                    )
+                except Exception:  # noqa: BLE001 - cannot arm it: answer it now instead of stranding it
+                    logger.warning(
+                        "session %s: could not arm the unanswered input of completed turn %d; running the turn",
+                        session_id, fresh.turn_no, exc_info=True,
+                    )
+                    return None
+                work = "an unanswered input was armed"
+            else:
+                work = None
+    if work is None:
+        await _apply_pending_switch_at_checkpoint(deps, fresh)
+        await _realize_pending_at_checkpoint(deps, fresh)
+    _metrics.session_completed_turn_noop_total.inc()
+    logger.warning(
+        "session %s: turn %d already completed but its release never committed; releasing it without calling "
+        "the model again (%s)",
+        session_id, fresh.turn_no, work or "no unanswered input",
+    )
+    return ReleaseOutcome(success=True, drop_lease=True)
+
+
+_NOT_ENDED = [s.value for s in SessionStatus if s != SessionStatus.ENDED]
+
+
+async def _read_message_lines(workspace_io, row: WorkspaceSession) -> list[str] | None:
+    """The session's ``messages.jsonl`` lines, or ``None`` when they cannot be read (logged).
+
+    Through the worker's IO shim (``read_state_file``, which resolves the workspace's own state path and returns
+    nothing for an absent file) or a test fake's ``read_lines``. Bounded like the other workspace I/O of a turn exit.
+    """
+    try:
+        async with asyncio.timeout(_BEST_EFFORT_IO_TIMEOUT_S):
+            read_state_file = getattr(workspace_io, "read_state_file", None)
+            if read_state_file is not None:
+                raw = await read_state_file(row.workspace_id, f"sessions/{row.id}/messages.jsonl")
+                text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+                return text.splitlines()
+            read_lines = getattr(workspace_io, "read_lines", None)
+            if read_lines is None:
+                raise TypeError(f"{type(workspace_io).__name__} cannot read a message log")
+            return list(read_lines(row.id))
+    except Exception:  # noqa: BLE001 - the caller falls back to running the turn
+        logger.warning(
+            "session %s: could not read messages.jsonl to tell whether input is unanswered", row.id, exc_info=True,
+        )
+        return None
 
 
 def _event_recorder(deps: SessionDispatchDeps):
