@@ -69,8 +69,9 @@ class CompactionResult:
     """The part of the prompt no history can give back that ``tokens_before`` / ``tokens_after`` include
     (the caller says what it counted: ``0`` when it counted none)."""
     summary_input_reduced: dict[str, int] | None = None
-    """``CompactedTurn.summary_input_reduced``: what was done to the summariser's input because the first
-    call overflowed (``pruned`` / ``folded_chunks`` / ``truncated_parts``), else ``None``."""
+    """``CompactedTurn.summary_input_reduced``: what the summariser's overflow led to (``pruned`` /
+    ``folded_chunks`` / ``truncated_parts`` for a retry on a reduced input, ``tool_loop_cut_round`` for a tool loop
+    ended with the summary it had written), else ``None``."""
 
 
 async def should_compact(
