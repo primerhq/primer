@@ -408,8 +408,14 @@ class GraphFrame:
         graph = await services.resolve_graph(self.graph_id)
         child = await services.build_child_graph_executor(graph, self.gsid)
         agent_tool_result = Message(role="tool", parts=[child_result])
-        # No session or resolver: the node resumed here is an agent node's
-        # nested chain, delivered as ``agent_tool_result``; no value-yielding
+        # No session or resolver, because nothing reaches this today. A child
+        # graph parks through ``_build_pending_park_exception``, which builds a
+        # FRESH YieldToWorker (``frames == []``), so the GraphFrame that
+        # ``run_invoke_graph`` pushes is always the INNERMOST frame, and
+        # ``resume_continuation`` calls ``resume_leaf`` on the innermost frame
+        # and ``resume`` only on the frames outside it. Only a GraphFrame with a
+        # deeper frame under it would get here, and then it would deliver that
+        # frame's finished result as ``agent_tool_result``: no value-yielding
         # tool_call hook runs, so there is no ResumeContext to fill.
         out, repark = await resume_invoke_graph(
             child=child,
