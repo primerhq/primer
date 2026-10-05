@@ -1078,6 +1078,21 @@ class TurnStreamFailure(Exception):
         return self.error.code or "llm_stream_error"
 
 
+class TurnStreamOverflow(TurnStreamFailure):
+    """A :class:`TurnStreamFailure` whose terminal ``Error`` was a context overflow the loop did NOT yield.
+
+    Ollama and Gemini open the request lazily, so a prompt that does not fit arrives as a fatal
+    ``Error`` event on the first iteration of the stream instead of a raised exception. Yielded, that
+    event is streamed to subscribers and recorded as the turn's ERROR, a terminal record: a turn that
+    then recovers (a forced compaction and a replay) would end with a second terminal record after it.
+    A caller that can recover opts in (``run_agent_turn(intercept_context_overflow=True)``) and gets
+    this exception INSTEAD, with the ``Error`` held back; the caller turns it into the same recovery
+    a raised :class:`~primer.model.except_.BadRequestError` gets. Only an error-only stream is
+    intercepted: when content was streamed before the error it is already out, and the turn fails as
+    a plain :class:`TurnStreamFailure` with its ERROR record.
+    """
+
+
 # ---- Extended stream events (wrapped via ExtendedEvent) ---------------------
 
 
