@@ -536,6 +536,7 @@ class CompactionStrategy:
                 )
             if (
                 last_compaction_tokens is not None
+                and last_compaction_tokens <= model.context_length
                 and history_tokens < last_compaction_tokens + self.summary_max_tokens
                 and history_tokens < model.context_length
             ):
@@ -544,6 +545,9 @@ class CompactionStrategy:
                 # compacting again would summarise the summary for no gain. Not for a prompt that does not
                 # fit the window itself: that one would be rejected, so it is compacted whatever it grew by.
                 # (Past the budget but inside the window the overflow path is still there as the net.)
+                # And only a figure this window could have produced: one above it was left under a LARGER
+                # window (the session's profile was switched since), says nothing about this prompt, and
+                # would hold back a compaction the smaller window needs.
                 return unreducible(
                     "recently_compacted", outcome="skipped",
                     detail=f"the last compaction left it at about {last_compaction_tokens} and it has not grown "
