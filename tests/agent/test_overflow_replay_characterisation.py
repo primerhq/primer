@@ -38,6 +38,7 @@ from primer.model.except_ import BadRequestError, ContextOverflowUnrecoverable, 
 from primer.model.model_profile import ModelProfileConfig
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.model_profile import ResolvedModel
+from tests._support.provider_history import assert_anthropic_valid, assert_openai_valid
 from tests._support.off_golden import (
     Events, FnLLM, Gate, ScriptedLLM, append_messages, assistant_message, make_executor, open_session, run_turn,
     text_events, user_message,
@@ -167,6 +168,12 @@ class TestTheReplayContinuesTheTurn:
             llm = FnLLM(_reactive(more_rounds=("call_b",)))
             await run_turn(session, llm, configure=cap)
             assert _counter(workspace) == ["a"], "call_b was the second round of the turn: the cap, not dispatched"
+            # The cap answers the call it does not run (it used to leave a tool_use with no result, a 400 on every
+            # later request), so what the turn persisted is a history both provider families accept.
+            shown = await _reload(session)
+            assert _tool_ids(shown) == (["call_a", "call_b"], ["call_a", "call_b"]), "call_b is answered, not dangling"
+            assert_anthropic_valid(shown)
+            assert_openai_valid(shown)
         finally:
             await session.aclose()
             await backend.aclose()
@@ -853,6 +860,130 @@ class TestAReplayThatParks:
             await backend.aclose()
 
 
+class _HugeResult:
+    """The real tool manager, except that one call comes back with a huge result (more than any envelope allows)."""
+
+    def __init__(self, inner, call_ids: tuple[str, ...], chars: int, ran: list[str]) -> None:
+        self._inner, self._call_ids, self._chars, self._ran = inner, call_ids, chars, ran
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def execute(self, call, **kwargs):
+        if call.id in self._call_ids:
+            self._ran.append(call.id)
+            return ToolResultPart(id=call.id, output="x" * self._chars)
+        return await self._inner.execute(call, **kwargs)
+
+
+@POSIX
+class TestAFreshSessionThatOverflowsAfterOneBigRound:
+    """No history before the question, so the forced compaction has nothing to summarise (``empty_head``). That is
+    not the end of the turn: folding the round the turn ran SHRANK it (our own reduction, ALREADY RAN placeholders),
+    so the replay does not send the prompt that was rejected and has every chance to fit. The turn continues without a
+    marker: the reduced round stays in the record, where the persistence chokepoint and a normal finish write it."""
+
+    async def test_a_single_huge_round_is_reduced_and_the_turn_continues(self, tmp_path) -> None:
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await append_messages(workspace, session, user_message(QUESTION))     # [hello, question]: nothing before them
+            ran: list[str] = []
+            llm = FnLLM(_reactive())
+            await run_turn(session, llm, wrap_tools=lambda m: _HugeResult(m, ("call_a",), 600_000, ran))   # ~150k tokens
+            assert ran == ["call_a"], "the tool ran once"
+            size = CompactionStrategy._estimate_tokens  # noqa: SLF001
+            replay = [m for m in llm.calls[-1]["messages"] if m.role != "system"]
+            assert size(replay) < 10_000, "the replay was sent the REDUCED round, not ~150k tokens"
+            shown = await _reload(session)
+            assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the round is in the history once"
+            outputs = [p.output for m in shown for p in m.parts if isinstance(p, ToolResultPart)]
+            assert len(outputs) == 1 and len(outputs[0]) < 10_000 and "ALREADY RAN" in outputs[0], "persisted reduced"
+            assert _text(shown[-1]) == "done" and _markers(workspace, session) == [], "no marker: nothing was summarised"
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+    async def test_a_second_overflow_after_the_continued_replay_records_both_reduced_rounds_once(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """Round a is huge and is reduced by the fold; the replay (continued without a marker) runs round b, also huge,
+        and is rejected again. Both rounds are in the record in their reduced form, the chokepoint writes each once,
+        and the recorded prune set is applied over the prompt BEFORE the record's own rounds (the reduced round a is
+        in the record as well as at the end of the compacted history; counting it twice would shift the keys)."""
+        import primer.agent.base as base
+
+        contexts: list[list] = []
+        real = base.reduce_for_persist
+
+        def spy(rounds, **kwargs):
+            contexts.append(list(kwargs.get("context", ())))
+            return real(rounds, **kwargs)
+
+        monkeypatch.setattr(base, "reduce_for_persist", spy)
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await append_messages(workspace, session, user_message(QUESTION))
+            ran: list[str] = []
+            state = {"overflowed": False}
+
+            def fn(n, messages, kwargs):
+                if _is_summariser(kwargs):
+                    return text_events("SUMMARY")
+                if not _has_result(messages, "call_a"):
+                    return _call("call_a", "a")
+                if not state["overflowed"]:
+                    state["overflowed"] = True
+                    return BadRequestError(OVERFLOW)
+                if not _has_result(messages, "call_b"):
+                    return _call("call_b", "b")               # the continued replay runs a second huge round ...
+                return BadRequestError(OVERFLOW)              # ... and is rejected again
+
+            with pytest.raises(ContextOverflowUnrecoverable) as failed:
+                await run_turn(session, FnLLM(fn), wrap_tools=lambda m: _HugeResult(m, ("call_a", "call_b"), 600_000, ran))
+            error = failed.value
+            assert ran == ["call_a", "call_b"], "each tool ran once"
+            assert (error.forced_compaction, error.replay_attempted, error.persisted_rounds) == (True, True, 2)
+            shown = await _reload(session)
+            assert _tool_ids(shown) == (["call_a", "call_b"], ["call_a", "call_b"]), "both rounds, once each"
+            outputs = [p.output for m in shown for p in m.parts if isinstance(p, ToolResultPart)]
+            assert all(len(o) < 10_000 for o in outputs), "neither was persisted raw (600k characters)"
+            assert not any(isinstance(p, ToolResultPart) for m in contexts[-1] for p in m.parts), (
+                "the context holds no round of the record's own"
+            )
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+    async def test_the_builder_shape_with_no_history_continues_too(self, tmp_path) -> None:
+        """A 22k fixed part in a 32k window, a 5k-token round, nothing seeded: the round is cut to its placeholders
+        by the cap and the replay fits. (Seeded with older exchanges the same turn already continued, through a
+        marker; this is the case that used to fail.)"""
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await append_messages(workspace, session, user_message(QUESTION))
+            state = {"overflowed": False}
+
+            def fn(n, messages, kwargs):
+                if _is_summariser(kwargs):
+                    return text_events("SUMMARY")
+                if not _has_result(messages, "call_a"):
+                    return _big_call("call_a")
+                if not state["overflowed"]:
+                    state["overflowed"] = True
+                    return BadRequestError(OVERFLOW)
+                return text_events("done")
+
+            llm = FnLLM(fn)
+            await run_turn(session, llm, llm_model=TestTheFixedPartInTheReplay.WINDOW, wrap_tools=_FatCatalogue)
+            assert _counter(workspace) == ["a"] and _text((await _reload(session))[-1]) == "done"
+            assert [c for c in llm.calls if _is_summariser(c["kwargs"])] == [], "nothing to summarise: no summariser call"
+            outputs = [p.output for m in llm.calls[-1]["messages"] for p in m.parts if isinstance(p, ToolResultPart)]
+            assert len(outputs) == 1 and "ALREADY RAN" in outputs[0] and len(outputs[0]) < 2_000
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+
 @POSIX
 class TestACompactionThatCanChangeNothing:
     """``unreducible``: nothing could be summarised (here the fixed part fills the window, or there is nothing
@@ -875,7 +1006,7 @@ class TestACompactionThatCanChangeNothing:
                 await run_turn(session, llm, llm_model=self.TINY)
             error = failed.value
             assert "fixed_over_budget" in str(error) and isinstance(error.__cause__, BadRequestError)
-            assert (error.forced_compaction, error.replay_attempted, error.persisted_rounds) == (False, False, 1)
+            assert (error.forced_compaction, error.replay_attempted, error.persisted_rounds) == (True, False, 1)
             assert [c for c in llm.calls if _is_summariser(c["kwargs"])] == [], "nothing was summarised"
             assert len(llm.calls) == 2, "the tool call and the rejected call: no replay of the rejected prompt"
             assert _counter(workspace) == ["a"]
@@ -1008,6 +1139,44 @@ class TestTheChokepointAppliesTheGuardsReductionsOverTheReplaysHistory:
             assert QUESTION in history and any("earlier conversation compacted" in t for t in history), (
                 "the replay's history (the compaction's summary and the question) is the context"
             )
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+
+@POSIX
+class TestAHardCancelDuringTheMarkerCommit:
+    async def test_the_rounds_are_in_the_history_once_not_twice(self, tmp_path) -> None:
+        """The forced compaction's marker holds the rounds the rejected attempt ran. A hard cancel that lands after the
+        commit but before ``invoke`` has accounted for it must not leave the record holding rounds the marker already
+        has: the chokepoint would write them again and every tool_use id would be in the history twice (a 400 on every
+        later request). The commit runs under a shield and the record is told before the cancel goes on."""
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await _seed(workspace, session)
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            def gate_after_the_commit(executor) -> None:
+                original = executor._replace_compacted_head  # noqa: SLF001
+
+                async def gated(*args, **kwargs):
+                    result = await original(*args, **kwargs)     # the marker has landed ...
+                    entered.set()
+                    await release.wait()                          # ... and the turn is cancelled before it returns
+                    return result
+
+                executor._replace_compacted_head = gated  # noqa: SLF001
+
+            task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=gate_after_the_commit))
+            await asyncio.wait_for(entered.wait(), timeout=30)
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert len(_markers(workspace, session)) == 1, "the commit was allowed to finish"
+            shown = await _reload(session)
+            assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the round is in the history once"
+            assert_anthropic_valid(shown)
         finally:
             await session.aclose()
             await backend.aclose()
