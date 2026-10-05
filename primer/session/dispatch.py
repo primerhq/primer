@@ -161,6 +161,13 @@ async def run_one_session_turn(
     Returns:
         :class:`ReleaseOutcome` for the caller to pass to
         ``engine.release(lease, outcome=...)``.
+
+    Cancellation contract: a cancellation delivered to the calling task WHILE the turn is in its cancelled
+    exit is absorbed, consumed (``uncancel``) and the exit's outcome returned (see ``_finish_despite_cancel``),
+    so the call swallows that cancel and returns normally. A caller must therefore not wrap this in
+    ``asyncio.timeout`` or a ``TaskGroup`` and rely on the cancellation propagating out of it: the timeout
+    would not fire its ``TimeoutError`` and the group would not see its child cancelled. The worker pool
+    (``_run_engine_session``) is the production caller and relies on the return.
     """
     assert lease.kind == ClaimKind.SESSION, (
         f"run_one_session_turn called with wrong kind: {lease.kind!r}"
@@ -1519,9 +1526,13 @@ async def _finish_despite_cancel(exit_coro: "Awaitable[ReleaseOutcome]") -> Rele
     """Run a turn's terminal exit to completion even if the task awaiting it is cancelled meanwhile.
 
     The worker pool delivers a Cancel two ways: the cooperative signal this turn watches, and a HARD
-    preempt that cancels the whole task wherever it is (a lost-lease verdict after the Cancel route
-    dropped the lease, or the user-cancel path). By the time a turn is in its cancelled exit it has
-    already decided to end, and the exit IS the convergence the hard preempt asks for. Cut mid-way, the
+    preempt that cancels the whole task wherever it is. The Cancel route KEEPS the lease of a RUNNING
+    session (it flags the row, publishes the key and sends the NOTIFY), so the hard path of a Cancel is
+    ``_cancel_loop``'s and the row reconciler's ``cancel_once``. The heartbeat's lost-lease verdict
+    (``scope.cancel("preempted")``) comes from a force-delete, which drops the lease, or from a lease that
+    was really stolen or expired; and the drain timeout cancels unconditionally. By the time a turn is in
+    its cancelled exit it has already decided to end, and the exit IS the convergence the hard preempt
+    asks for. Cut mid-way, the
     pool's own convergence finds a row that is already ENDED and skips it, so the terminal event (the
     webhook hold waits on it), the turn log, the queued-steer drain and the metric were silently lost.
 
@@ -1597,6 +1608,11 @@ def _consume_abandoned_exit(task: "asyncio.Task") -> None:
     exc = task.exception()
     if exc is not None:
         logger.warning("dispatch: an abandoned cancelled-turn exit ended with an error", exc_info=exc)
+        return
+    logger.info(
+        "dispatch: an abandoned cancelled-turn exit later finished successfully; the pool had already "
+        "released the lease as a failed one, which is why a terminal ERROR record can follow its CANCELLED record"
+    )
 
 
 async def _land_cancelled_turn(

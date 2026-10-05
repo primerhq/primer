@@ -58,6 +58,8 @@ worker:
   heartbeat_interval_seconds: 10
   lease_ttl_seconds: 30
   poll_interval_seconds: 2.0
+  # On Kubernetes, give the pod terminationGracePeriodSeconds of at least drain_timeout_seconds + 40: a turn in its
+  # cancelled exit can take up to 30 s past the drain timeout to finish (see docs/dev/architecture/worker-system.md).
   drain_timeout_seconds: 120
   max_attempts: 5
   base_backoff_seconds: 2.0
