@@ -55,9 +55,10 @@ from primer.agent.events import (
     Subscription,
     _ExecutorToolResult,
 )
-from primer.agent.overflow import completed_rounds, reduce_for_persist, tool_rounds
+from primer.agent.overflow import cap_newest_round, completed_rounds, kept_rounds, reduce_for_persist, tool_rounds
 from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.prune import PruneSet
+from primer.agent.tail import pending_from
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.context_overflow import is_context_overflow
 from primer.model.chat import (
@@ -78,6 +79,7 @@ from primer.model.except_ import (
     PrimerError,
 )
 from primer.model.graph import build_execution_context
+from primer.model.yield_ import CANCEL_REASON_PREEMPTED
 
 
 if TYPE_CHECKING:
@@ -102,14 +104,18 @@ class _TurnRecord:
     ``messages`` is the turn's own messages: its input (``inputs`` leading entries) and then every
     round the model and the tools completed, appended by the loop as they finish. It is the one
     thing the persistence chokepoint reads when a turn ends any way but a park or a normal finish.
-    ``durable_rounds`` counts rounds that already reached the history through a compaction marker
-    (the overflow recovery folds the rounds so far into the history), so they are not written twice.
+    The overflow recovery folds the rounds so far into the history through a compaction marker, so they
+    are not written twice: ``kept_rounds`` of them are in the marker's kept tail as messages,
+    ``summarised_rounds`` only as part of its summary. ``base`` is the history the replay is sent
+    (what the recorded prune set was measured against).
     """
 
     messages: list[Message]
     inputs: int
     persisted: bool = False
-    durable_rounds: int = 0
+    kept_rounds: int = 0
+    summarised_rounds: int = 0
+    base: list[Message] = field(default_factory=list)
     guard: Any = None
     forced_compaction: bool = False
     replay_attempted: bool = False
@@ -418,6 +424,18 @@ class _BaseAgentExecutor(ABC):
         reduced = reduce_for_persist(
             rounds, sticky=PruneSet(), target_tokens=self._compaction.reduced_target(self._model) // 2, size=size,
         )
+        # The forced compaction keeps the opening user input and the NEWEST folded round whole, so with the
+        # fixed part counted they have to fit what the budget leaves: cut the newest round (its results
+        # already ran, so it is reducible) rather than let the compaction declare it protected_over_budget.
+        base = [*history, *messages]
+        protected = size([m for m in base[pending_from(base):] if m.role == "user"])
+        reduced = cap_newest_round(
+            reduced,
+            cap_tokens=self._compaction.newest_round_cap(
+                self._model, fixed_overhead=fixed_overhead, protected_tokens=protected,
+            ),
+            size=size,
+        )
         notes: list[ExtendedEvent] = []
         carried: list[Message] = []
         drained: list[Message] = []
@@ -445,7 +463,7 @@ class _BaseAgentExecutor(ABC):
                     cause=exc,
                     forced_compaction=False,
                     replay_attempted=False,
-                    persisted_rounds=self._durable_rounds(record),
+                    persisted_rounds=self._persisted_rounds(record),
                 ) from exc
             carried = await self._replace_compacted_head(
                 forced.new_messages,
@@ -459,9 +477,12 @@ class _BaseAgentExecutor(ABC):
                 snapshot=history,
             ) or []
             notes = self._compaction_notes(forced)
-            # The marker holds the input and the rounds so far: they are durable, the replay starts clean.
+            # The marker holds the input and the rounds so far (the newest ones as messages, the rest in its
+            # summary): they are durable, the replay starts clean.
             record.forced_compaction = True
-            record.durable_rounds += tool_rounds(rounds)
+            kept = kept_rounds(forced.new_messages, reduced)
+            record.kept_rounds += kept
+            record.summarised_rounds += tool_rounds(rounds) - kept
             record.messages = []
             record.inputs = 0
         finally:
@@ -471,11 +492,12 @@ class _BaseAgentExecutor(ABC):
             yield note
         record.replay_attempted = True
         record.guard = self._compaction.replay_guard(self._model)
+        # the compacted history, the lines written since it was read (mid-turn steers) and the steers
+        # deferred while it ran: a steer is not left for the next turn
+        record.base = [*forced.new_messages, *carried, *drained]
         try:
             async for ev in self._run_loop(
-                # the compacted history, the lines written since it was read (mid-turn steers) and the
-                # steers deferred while it ran: a steer is not left for the next turn
-                history=[*forced.new_messages, *carried, *drained],
+                history=record.base,
                 new_messages=[],
                 response_format=response_format,
                 tools=tools,
@@ -498,13 +520,15 @@ class _BaseAgentExecutor(ABC):
                 cause=replay_exc,
                 forced_compaction=True,
                 replay_attempted=True,
-                persisted_rounds=self._durable_rounds(record),
+                persisted_rounds=self._persisted_rounds(record),
             ) from replay_exc
 
     @staticmethod
-    def _durable_rounds(record: _TurnRecord) -> int:
-        """How many completed tool rounds of this turn are, or are about to be, in the history."""
-        return record.durable_rounds + tool_rounds(completed_rounds(record.messages[record.inputs:]))
+    def _persisted_rounds(record: _TurnRecord) -> int:
+        """How many completed tool rounds of this turn are, or are about to be, in the history as messages:
+        the ones the compaction marker kept and the ones the chokepoint is about to write. (The failure
+        sets the figure again once the write has happened or failed.)"""
+        return record.kept_rounds + tool_rounds(completed_rounds(record.messages[record.inputs:]))
 
     async def _persist_failed_turn(self, record: _TurnRecord, exc: BaseException) -> None:
         """The persistence chokepoint for a turn that did not finish: write its completed rounds.
@@ -513,21 +537,44 @@ class _BaseAgentExecutor(ABC):
         finished is not one), in the REDUCED form the model last saw (the replay guard's recorded
         reductions, cut further when still large, ALREADY RAN placeholders): the raw output stays in the
         event log, and persisting it raw would let the next turn overflow on it again. A hard cancel
-        writes under ``asyncio.shield`` so the cancellation cannot interrupt the write. Best effort:
-        a failure here (an ENDED slot, a broken mount) is logged and never masks the error that ended
-        the turn.
+        writes under ``asyncio.shield`` so the cancellation cannot interrupt the write, except one that
+        says the lease was lost (``CANCEL_REASON_PREEMPTED``): the session may belong to another worker
+        by then and a write from here could interleave with its own. Best effort: a failure here (an
+        ENDED slot, a broken mount) is logged and never masks the error that ended the turn.
+
+        A :class:`ContextOverflowUnrecoverable` is told afterwards how many rounds really are in the
+        history as messages and how many only in a summary, so what the ERROR record says is what
+        happened, not what was about to.
         """
+        written = 0
+        try:
+            written = await self._write_failed_rounds(record, exc)
+        finally:
+            if isinstance(exc, ContextOverflowUnrecoverable):
+                exc.persisted_rounds = record.kept_rounds + written
+                exc.summarised_rounds = record.summarised_rounds
+
+    async def _write_failed_rounds(self, record: _TurnRecord, exc: BaseException) -> int:
+        """Write the completed rounds of a failed turn; the number of rounds actually written."""
         if record.persisted:
-            return
+            return 0
         rounds = completed_rounds(record.messages[record.inputs:])
         if not rounds:
-            return
+            return 0
+        if isinstance(exc, asyncio.CancelledError) and exc.args[:1] == (CANCEL_REASON_PREEMPTED,):
+            logger.warning(
+                "AgentExecutor: the lease was lost; not recording the %d tool round(s) the turn had completed",
+                tool_rounds(rounds),
+                extra={"agent_id": self._agent.id},
+            )
+            return 0
         guard = record.guard
         reduced = reduce_for_persist(
             rounds,
             sticky=guard.prune_set if guard is not None else PruneSet(),
             target_tokens=self._compaction.reduced_target(self._model) // 2,
             size=self._compaction._estimate_tokens,  # noqa: SLF001 - the strategy's own sizing
+            context=record.base,
         )
         record.persisted = True
         write = self._persist_turn([*record.messages[: record.inputs], *reduced])
@@ -542,6 +589,8 @@ class _BaseAgentExecutor(ABC):
                 tool_rounds(rounds),
                 extra={"agent_id": self._agent.id},
             )
+            return 0
+        return tool_rounds(rounds)
 
     async def fixed_overhead_tokens(self, tools: "list[Tool] | None" = None) -> int:
         """The estimated size of what goes out on every call and no history can give back: the rendered

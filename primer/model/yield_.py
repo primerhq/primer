@@ -253,6 +253,11 @@ class ToolContext:
 # ===========================================================================
 
 
+#: The cancel reason the worker delivers to an execution whose lease it lost (``_CancelScope.cancel``): the
+#: session may belong to another worker now, so the execution must not write to it on its way out.
+CANCEL_REASON_PREEMPTED = "preempted"
+
+
 class YieldToWorker(Exception):
     """Raised by the tool engine when it sees a :class:`Yielded`.
 

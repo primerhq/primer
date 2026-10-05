@@ -32,7 +32,7 @@ from primer.model.chat import (
     TextPart,
     TurnStreamFailure,
 )
-from primer.model.except_ import BadRequestError
+from primer.model.except_ import BadRequestError, ContextOverflowUnrecoverable
 from primer.model.model_profile import ModelProfileConfig
 from primer.model_profile import ResolvedModel
 
@@ -228,9 +228,13 @@ async def test_the_recovery_is_attempted_once_not_in_a_loop() -> None:
     llm = _FailsThenAnswers(raises=BadRequestError(OVERFLOW, status_code=400), failures=99)
     executor = _Executor(llm, spy)
 
-    with pytest.raises(BadRequestError):
+    # A rejected replay is not raised raw any more: it is the typed failure (the provider's rejection is its
+    # __cause__), carrying how far recovery got.
+    with pytest.raises(ContextOverflowUnrecoverable) as failed:
         await _invoke(executor)
 
+    assert isinstance(failed.value.__cause__, BadRequestError)
+    assert (failed.value.forced_compaction, failed.value.replay_attempted) == (True, True)
     assert spy.forced == 1 and llm.calls == 2
 
 
