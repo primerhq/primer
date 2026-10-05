@@ -808,6 +808,60 @@ async def test_on_release_returns_wake_signal_when_last_sibling() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_wake_key_comes_from_the_task_id_not_the_rows_turn_no() -> None:
+    """The key is a pure function of the id: the turn segment is the one the id was minted with (``3``), whatever
+    ``turn_no`` the row carries (mutation N27, call-site leg: key on ``task.turn_no``)."""
+    batch = ["sess-1/a:b:tool:3:1", "sess-1/a:b:tool:3:2"]
+    releasing = _make_task(batch[0], batch_task_ids=batch).model_copy(update={"turn_no": 7})
+    sibling = _make_task(batch[1], state=ToolCallTaskState.DONE, batch_task_ids=batch).model_copy(
+        update={"turn_no": 7},
+    )
+    adapter = ToolCallClaimAdapter(task_storage=FakeStorage(releasing, sibling))
+
+    wake = await adapter.on_release(
+        conn=None, entity_id=batch[0], outcome=_release(batch[0], success=True, drop_lease=True),
+    )
+
+    assert wake is not None and wake.event_key == "tool_wait:sess-1:3:a:b"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_id_on_the_last_sibling_commits_the_release_and_wakes_nothing(caplog) -> None:
+    """The adapter computes the wake key INSIDE the fenced release transaction. A malformed id must not raise there:
+    the raise would roll the release back and lose the task's result. The release lands (row DONE, lease dropped),
+    no wake is returned, and the miss is logged at ERROR and counted (mutation N67: the adapter lets the error
+    propagate)."""
+    import primer.observability.metrics as metrics
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    metrics.reset_for_test()
+    bad = "sess-1/x:tool:03:1"
+    batch = [bad, "sess-1/x:tool:3:2"]
+    storage = FakeStorage(
+        _make_task(bad, batch_task_ids=batch),
+        _make_task(batch[1], state=ToolCallTaskState.DONE, batch_task_ids=batch),
+    )
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=storage)})
+    woken: list[PostReleaseWake] = []
+
+    async def _hook(signal: PostReleaseWake) -> None:
+        woken.append(signal)
+
+    engine.bind_post_release_hook(_hook)
+    await engine.upsert(ClaimKind.TOOL_CALL, bad)
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+
+    with caplog.at_level(logging.ERROR):
+        await engine.release(lease, outcome=_release(bad, success=True, drop_lease=True))
+
+    assert (await storage.get(bad)).state == ToolCallTaskState.DONE, "the release did not land"
+    assert await engine.claim_due("worker-B", max_count=1) == [], "the lease was not dropped"
+    assert woken == [], "a malformed id woke the session"
+    assert metrics.tool_wait_malformed_scoped_id_total.labels("adapter")._value.get() == 1.0
+    assert any(r.levelno == logging.ERROR and repr(bad) in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_on_release_wake_signal_treats_failed_as_terminal() -> None:
     """A sibling that FAILED (not just DONE) still counts as terminal for
     the purposes of "is the batch finished" - the batch is done either

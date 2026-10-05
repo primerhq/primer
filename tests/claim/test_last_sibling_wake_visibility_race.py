@@ -151,17 +151,19 @@ async def test_sequential_releases_do_not_race_the_second_one_fires() -> None:
     """Control case: when the second release's OWN transaction starts
     strictly after the first one's has already committed (the common,
     non-concurrent case), the race does not occur - the second sibling
-    correctly observes the first as terminal and fires."""
-    batch = ["A", "B"]
+    correctly observes the first as terminal and fires. (The ids are real
+    scoped task ids: the wake key is parsed from them.)"""
+    a, b = "s1/x:tool:0:1", "s1/x:tool:0:2"
+    batch = [a, b]
     storage = _PerConnVisibilityStorage({
-        "A": _task("A", batch), "B": _task("B", batch),
+        a: _task(a, batch), b: _task(b, batch),
     })
     adapter = ToolCallClaimAdapter(task_storage=storage)
     conn_a, conn_b = object(), object()
 
-    signal_a = await adapter.on_release(conn_a, "A", outcome=_release("A"))
+    signal_a = await adapter.on_release(conn_a, a, outcome=_release(a))
     storage.commit(conn_a)  # A's transaction commits before B's even starts.
-    signal_b = await adapter.on_release(conn_b, "B", outcome=_release("B"))
+    signal_b = await adapter.on_release(conn_b, b, outcome=_release(b))
 
     assert signal_a is None
     assert signal_b is not None
