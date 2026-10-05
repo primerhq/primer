@@ -524,15 +524,27 @@ class _BaseAgentExecutor(ABC):
             ))
             try:
                 carried = await asyncio.shield(write) or []
-            except asyncio.CancelledError:
-                try:
-                    await write
-                except BaseException:  # noqa: BLE001 -- the commit failed too: nothing landed, nothing to account
-                    pass
-                else:
-                    if forced.summary_message is not None:
-                        fold_into_record()
-                raise
+            except asyncio.CancelledError as cancelled:
+                # Wait for the commit to be DONE, through any further cancel: a cancel that lands on this wait
+                # cancels the await and not the write (a thread writes the marker and it lands whatever the task
+                # does), so reading it as "the commit failed" would leave the record holding rounds the marker has.
+                while not write.done():
+                    try:
+                        await asyncio.shield(write)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:  # noqa: BLE001 -- inspected below, from the future
+                        break
+                if write.cancelled() or write.exception() is not None:
+                    logger.warning(
+                        "AgentExecutor: the compaction marker commit failed while the turn was being cancelled; "
+                        "the turn's rounds stay in the record",
+                        extra={"agent_id": self._agent.id},
+                        exc_info=None if write.cancelled() else write.exception(),
+                    )
+                elif forced.summary_message is not None:
+                    fold_into_record()
+                raise cancelled
             notes = self._compaction_notes(forced)
             record.forced_compaction = True
             if forced.summary_message is not None:
