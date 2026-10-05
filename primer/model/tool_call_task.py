@@ -19,6 +19,8 @@ exception, not the row's general payload — see its own docstring.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -52,6 +54,62 @@ def external_call_id(task_id: str, session_id: str) -> str:
     """
     prefix = f"{session_id}/"
     return task_id[len(prefix):] if task_id.startswith(prefix) else task_id
+
+
+class MalformedScopedIdError(ValueError):
+    """A task id that is not ``[<session_id>/]<node>:tool:<turn_seg>:<seq>``. Handled by each caller, never guessed at."""
+
+
+@dataclass(frozen=True)
+class ScopedId:
+    """The parts of a scoped tool-call id. ``turn_seg`` is the turn segment exactly as written in the id."""
+
+    node: str
+    turn_no: int
+    epoch: int
+    seq: int
+    scoped: str
+    turn_seg: str
+
+
+# Canonical ASCII integers only: an epoch is written only when it is greater than zero, and a seq is 1-based.
+# ``[0-9]``, not ``\d`` (which matches non-ASCII digits), and always with ``fullmatch`` (``$`` accepts a trailing newline).
+_TURN_SEG = re.compile(r"(0|[1-9][0-9]*)(\.[1-9][0-9]*)?")
+_SEQ = re.compile(r"[1-9][0-9]*")
+
+
+def parse_scoped_task_id(task_id: str, session_id: str) -> ScopedId:
+    """Parse a task id (session-qualified or bare scoped) into its parts. The ONE parser of the scoped-id shape.
+
+    The ``<session_id>/`` qualification is stripped by :func:`external_call_id` (the one place it is stripped). The
+    rest is split from the RIGHT (``rsplit(":", 3)``), because graph node ids are free-form and may contain ``:``
+    or ``.``: the node keeps everything left of ``:tool:``. The turn segment is ``<turn_no>`` or
+    ``<turn_no>.<epoch>`` (epoch > 0) and the seq is 1-based, both canonical ASCII integers; anything ``int()``
+    would also accept (a sign, whitespace, ``_``, a leading zero, a non-ASCII digit) is malformed. An empty node is
+    malformed too: a graph node id has ``min_length=1`` and the agent surface mints ``x``.
+
+    ``session_id`` is required: parsed without it, a qualified id would yield the node ``<session_id>/<node>`` and
+    no error. Raises :class:`MalformedScopedIdError` naming the id.
+    """
+    scoped = external_call_id(task_id, session_id)
+    parts = scoped.rsplit(":", 3)
+    if len(parts) == 4 and parts[0] and parts[1] == "tool":
+        node, _, turn_seg, seq = parts
+        turn = _TURN_SEG.fullmatch(turn_seg)
+        if turn is not None and _SEQ.fullmatch(seq) is not None:
+            epoch = turn.group(2)
+            return ScopedId(
+                node=node,
+                turn_no=int(turn.group(1)),
+                epoch=int(epoch[1:]) if epoch else 0,
+                seq=int(seq),
+                scoped=scoped,
+                turn_seg=turn_seg,
+            )
+    raise MalformedScopedIdError(
+        f"malformed scoped tool-call id {task_id!r} (session {session_id!r}): "
+        "expected [<session_id>/]<node>:tool:<turn_no>[.<epoch>]:<seq>"
+    )
 
 
 class ToolCallTaskState(StrEnum):
@@ -228,4 +286,12 @@ class ToolCallTask(Identifiable):
         return self.call_id or self.scoped_call_id
 
 
-__all__ = ["ToolCallTask", "ToolCallTaskState", "external_call_id", "tool_call_task_id"]
+__all__ = [
+    "MalformedScopedIdError",
+    "ScopedId",
+    "ToolCallTask",
+    "ToolCallTaskState",
+    "external_call_id",
+    "parse_scoped_task_id",
+    "tool_call_task_id",
+]
