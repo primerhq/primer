@@ -10,22 +10,24 @@ Each case runs on the real SQLite backend and on the Postgres backend through a 
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
 import pytest_asyncio
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
+from primer.model.common import Identifiable
 from primer.model.except_ import ProviderError
 from primer.storage._patch import PatchSpecError, document_matches, json_equal
 from primer.storage.postgres import PostgresStorage, _table_ensured
 from tests.storage._patch_scenarios import StrictDoc
-from tests.storage.test_patch_if_postgres_fixup import _Provider, _ScriptedConn, _row
+from tests.storage.test_patch_if_postgres_fixup import TXN_BEGIN, TXN_END, _Provider, _ScriptedConn, _row
 
 
-def _postgres_storage() -> PostgresStorage[StrictDoc]:
-    storage = PostgresStorage[StrictDoc](provider=_Provider(), model_class=StrictDoc)
-    _table_ensured.add((id(storage._provider), StrictDoc))
+def _postgres_storage(model_class=StrictDoc) -> PostgresStorage:
+    storage = PostgresStorage(provider=_Provider(), model_class=model_class)
+    _table_ensured.add((id(storage._provider), model_class))
     return storage
 
 
@@ -87,6 +89,81 @@ async def test_a_string_that_cannot_be_encoded_is_a_patch_spec_error_and_writes_
         assert "surrogate" in str(excinfo.value) and "ud800" not in str(excinfo.value).lower()
     assert conn.calls == [], "Postgres: refused before any statement"
     assert await sqlite_storage.get("a") == before, "SQLite: the row is untouched"
+
+
+class FloatSub(BaseModel):
+    x: float = 0.0
+
+
+class FloatDoc(Identifiable):
+    """Float fields, top-level and under a typed sub-model: lax validation reads the strings "nan" and "inf" as floats."""
+
+    status: str = "created"
+    ratio: float = 0.0
+    sub: FloatSub = Field(default_factory=FloatSub)
+
+
+TXN_ROLLBACK = "<transaction left by an exception>"
+
+
+class _TxnConn(_ScriptedConn):
+    """A scripted connection that also records a transaction block being left by an exception (a real one rolls back)."""
+
+    def transaction(self):
+        @contextlib.asynccontextmanager
+        async def _txn():
+            self.calls.append((TXN_BEGIN, ()))
+            try:
+                yield
+            except BaseException:
+                self.calls.append((TXN_ROLLBACK, ()))
+                raise
+            finally:
+                self.calls.append((TXN_END, ()))
+
+        return _txn()
+
+
+@pytest_asyncio.fixture
+async def float_storage(sqlite_provider):
+    storage = sqlite_provider.get_storage(FloatDoc)
+    await storage.create(FloatDoc(id="a"))
+    return storage
+
+
+#: (id, the spec, the field the error must name, the document the first statement leaves behind on the scripted Postgres)
+NON_FINITE_SPECS = [
+    pytest.param(dict(patch={"ratio": value}), "ratio", {"ratio": value}, value, id=f"patch-{value}")
+    for value in ("nan", "inf")
+] + [
+    pytest.param(
+        dict(patch=None, set_paths={("sub", "x"): value}), "sub", {"sub": {"x": value}}, value, id=f"set-paths-leaf-{value}",
+    )
+    for value in ("nan", "inf")
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs, field, stored, value", NON_FINITE_SPECS)
+async def test_a_value_the_model_coerces_to_a_non_finite_float_is_a_patch_spec_error_and_writes_nothing_on_both_backends(
+    float_storage, kwargs, field, stored, value,
+):
+    """The strings "nan" and "inf" pass the spec check; the model then reads them as non-finite floats, and the
+    canonical rewrite used to hand NaN to the JSON encoder, which failed as a ProviderError (SQLite) or a different backend
+    error (Postgres) for what is the caller's own bad value. Now the rewrite refuses it as the spec error it is, naming the
+    field and never echoing the value, and the write rolls back."""
+    before = await float_storage.get("a")
+    conn = _TxnConn(_row(**stored))
+    for storage, scripted in ((float_storage, None), (_postgres_storage(FloatDoc), conn)):
+        with pytest.raises(PatchSpecError) as excinfo:
+            await storage.patch_if("a", where={"status": ["created"]}, **kwargs, **({} if scripted is None else {"conn": scripted}))
+        message = str(excinfo.value)
+        assert f"FloatDoc.{field} " in message and value not in message.lower()
+    assert await float_storage.get("a") == before, "SQLite: the row is untouched"
+    # Postgres: the refusal can only come after the guarded statement (the model has to validate its result), so it is
+    # one UPDATE inside the transaction, no rewrite and no event, and the transaction is left by the exception: a rollback.
+    trace = [sql if sql in (TXN_BEGIN, TXN_END, TXN_ROLLBACK) else sql.lstrip().split()[0] for sql, _ in conn.calls]
+    assert trace == [TXN_BEGIN, "UPDATE", TXN_ROLLBACK, TXN_END]
 
 
 @pytest.mark.asyncio
