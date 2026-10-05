@@ -603,3 +603,62 @@ async def test_a_queued_steer_the_skipped_checkpoint_left_is_realized_and_answer
     assert world.call_turn_nos == [0, 1]
     assert _noops() == 1
     assert not has_open_turn(world.ws.lines(), cursor=0)
+
+
+async def _pending_texts(world: _World) -> list[str]:
+    from primer.model.storage import OffsetPage
+    from primer.model.workspace_session import PendingSessionMessage
+
+    page = await world.storage.get_storage(PendingSessionMessage).list(OffsetPage(offset=0, length=50))
+    return [p.get("text") for row in page.items for p in row.parts]
+
+
+async def _store_pending(world: _World, text: str) -> None:
+    from primer.session.pending_messages import store_pending_steer
+
+    await store_pending_steer(
+        storage_provider=world.storage, session=await world.row(), text=text, workspace_registry=world.registry,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_armed_steer_and_a_pending_one_after_a_rolled_back_completion_are_answered_in_order(world):
+    """The no-op realizes a queued steer ONLY when nothing is armed. Here 'second' is armed (claimable) and 'third' is
+    still pending: the no-op must leave 'third' queued, the next turn answers 'second' and its checkpoint realizes
+    'third', which the turn after answers. Realizing 'third' in the no-op too would put two USER_INPUTs before one
+    turn: 'second' would never get its own answer and the log would keep an open turn for good (every later steer is
+    then routed to pending and the session sticks)."""
+    await _complete_a_turn_whose_release_rolled_back(world)
+    await world.steer("second")
+    await _store_pending(world, "third")
+    world.expire_lease()
+
+    await _claim_until_idle(world, world.pool("wrk-b"))
+
+    assert world.llm_calls == ["first", "second", "third"]
+    assert not has_open_turn(world.ws.lines(), cursor=0), "an input was left without its closing record"
+    assert await _pending_texts(world) == []
+
+
+@pytest.mark.asyncio
+async def test_the_noop_that_arms_an_open_input_leaves_a_pending_steer_queued(world):
+    """The has_open_turn branch: a stale write put back turn_no, turn_status=idle, last_seq and the cursor over the
+    armed steer 'second', and 'third' is pending. The no-op arms 'second' (claimable) and must NOT realize 'third';
+    the following turns answer them in order."""
+    stale = await _completed_turn_then_stale_snapshot(world)
+    await world.steer("second")
+    await world.sessions.update(stale)
+    await _store_pending(world, "third")
+    row = await world.row()
+    assert (row.turn_no, row.turn_status) == (0, "idle")
+
+    pool_b = world.pool("wrk-b")
+    assert await world.claim_and_run(pool_b) == 1          # the no-op
+    assert world.llm_calls == ["first"]
+    assert (await world.row()).turn_status == "claimable", "the open input was not armed"
+    assert await _pending_texts(world) == ["third"], "the no-op realized a pending steer while an input was open"
+
+    await _claim_until_idle(world, pool_b)
+    assert world.llm_calls == ["first", "second", "third"]
+    assert not has_open_turn(world.ws.lines(), cursor=0)
+    assert await _pending_texts(world) == []
