@@ -1157,7 +1157,7 @@ async def test_a_skip_note_the_executor_yields_is_written_where_the_next_turn_re
     assert outcome.success is True
 
     lines = fake_workspace_io.read_lines(session.id)
-    assert last_compaction_state(lines).skip_noted is True
+    assert last_compaction_state(lines).noted == ("skipped", "cannot_reach_trigger")
 
 
 @pytest.mark.asyncio

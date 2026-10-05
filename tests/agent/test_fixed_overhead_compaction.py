@@ -566,6 +566,55 @@ class TestTheExecutor:
         assert calls == 3, "three turns, no summariser call: the compaction skipped itself each time"
         assert notes_per_turn == [[("skipped", "cannot_reach_trigger")], [], []], "noted once for the run, not once per turn"
 
+    def test_an_unreducible_verdict_that_repeats_is_noted_once_and_a_new_reason_is_noted_again(self) -> None:
+        """``fixed_over_budget`` (the system prompt and tool schemas alone fill the budget) is the same on every turn
+        until the agent changes. It used to write a note, and a WARNING, per turn. The newest note since the last marker
+        is what a verdict is compared with: the same one is not repeated, a different one is."""
+        from primer.model.chat import ExtendedEvent, _CompactionNote
+        from primer.session.persistence import _CoalesceState, translate_stream_event
+
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                notes_per_turn = []
+                for turn in range(3):
+                    await g.append_messages(workspace, session, g.user_message(f"Q{turn}"))
+                    llm.extend([g.Events(g.text_events(f"done {turn}"))])
+                    events: list = []
+                    # a 4,096-token window: budget 2,048, under the real fixed part (about 3,100 tokens)
+                    await g.run_turn(session, llm, llm_model=_model(4_096), collect=events)
+                    notes = [e for e in events if isinstance(e, ExtendedEvent) and isinstance(e.extended, _CompactionNote)]
+                    notes_per_turn.append([(n.extended.outcome, n.extended.reason) for n in notes])
+                    for n in notes:
+                        record = translate_stream_event(n, _CoalesceState())
+                        await workspace.append_message_line(
+                            session.session_id, (record.model_copy(update={"seq": 50 + turn}).model_dump_json() + "\n").encode(),
+                        )
+                return notes_per_turn
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        assert _run(scenario) == [[("unreducible", "fixed_over_budget")], [], []], "noted once for the run, not every turn"
+
+    def test_the_note_decision_compares_the_outcome_and_the_reason(self) -> None:
+        from primer.agent.base import _BaseAgentExecutor
+        from primer.agent.compaction import CompactedTurn
+
+        def turn(outcome: str, reason: str) -> CompactedTurn:
+            return CompactedTurn(
+                new_messages=[], estimated_tokens_before=1, estimated_tokens_after=1, outcome=outcome, unreducible=reason,
+            )
+
+        notes = _BaseAgentExecutor._compaction_notes  # noqa: SLF001
+        verdict = ("skipped", "cannot_reach_trigger")
+        assert notes(turn(*verdict), noted=verdict) == [], "the same verdict again: part of the run"
+        assert len(notes(turn(*verdict))) == 1, "nothing noted yet"
+        assert len(notes(turn("skipped", "recently_compacted"), noted=verdict)) == 1, "another reason: a new run"
+        assert len(notes(turn("unreducible", "cannot_reach_trigger"), noted=verdict)) == 1, "another outcome: a new run"
+
     def test_the_tool_catalogue_is_fetched_once_per_invoke(self) -> None:
         """The compaction needs it for the fixed part; the loop is handed the same list instead of fetching again."""
         class Counting:
