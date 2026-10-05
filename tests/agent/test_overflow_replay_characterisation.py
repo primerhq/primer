@@ -1520,6 +1520,47 @@ class TestAHardCancelDuringTheMarkerCommit:
             await session.aclose()
             await backend.aclose()
 
+    async def test_a_commit_that_fails_after_the_grace_loses_the_rounds_and_says_how_many(
+        self, tmp_path, monkeypatch, caplog,
+    ) -> None:
+        """The loss mode of taking an unfinished commit as landed, pinned so the docs say what the code does: the
+        turn dropped its rounds from the record, so a commit that then FAILS leaves them in neither the marker nor
+        messages.jsonl (the next turn runs those tool calls again), and the log says how many rounds went."""
+        import logging
+
+        import primer.agent.base as base
+
+        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 0.2)
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await _seed(workspace, session)
+            entered = asyncio.Event()
+
+            def late_failure(executor) -> None:
+                async def fail_late(*args, **kwargs):
+                    entered.set()
+                    await asyncio.sleep(0.6)             # past the grace ...
+                    raise OSError("the workspace mount went away")   # ... and then it fails
+
+                executor._replace_compacted_head = fail_late  # noqa: SLF001
+
+            with caplog.at_level(logging.ERROR, logger="primer.agent.base"):
+                task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=late_failure))
+                await asyncio.wait_for(entered.wait(), timeout=30)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=5)
+                await asyncio.sleep(1.2)                 # the abandoned commit fails on its own
+            assert _markers(workspace, session) == [], "the marker never landed"
+            shown = await _reload(session)
+            assert _tool_ids(shown) == ([], []), "and the round is not in the history either"
+            lost = [r.getMessage() for r in caplog.records if "did not land" in r.getMessage()]
+            assert len(lost) == 1 and "1 completed tool round(s)" in lost[0], lost
+            assert all(r.levelno == logging.ERROR for r in caplog.records if "did not land" in r.getMessage())
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
 
 @POSIX
 class TestALostLeaseWritesNothing:
