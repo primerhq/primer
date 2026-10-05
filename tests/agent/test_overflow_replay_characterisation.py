@@ -1040,6 +1040,82 @@ class TestAReplayThatParksWithoutAMarker:
 
 
 @POSIX
+class TestACompactionSummaryIsNeverAMessageLine:
+    """``CompactionSummary`` is a tag that does not survive JSON: written as a message line it would come back as a reply
+    the model wrote, and ``pending_from`` would stop looking through it. Its durable form is the marker."""
+
+    async def test_persisting_one_is_refused_and_writes_nothing(self, tmp_path) -> None:
+        from primer.model.chat import CompactionSummary
+
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await append_messages(workspace, session, user_message(QUESTION))
+            before = (await _reload(session))
+            executor = make_executor(session, ScriptedLLM())
+            summary = CompactionSummary(role="assistant", parts=[TextPart(text="[earlier conversation compacted] ...")])
+            with pytest.raises(ValueError, match="CompactionSummary"):
+                await executor._persist_turn([summary])  # noqa: SLF001
+            with pytest.raises(ValueError, match="CompactionSummary"):
+                await executor.inject_resume_messages([summary])
+            assert [(_text(m), m.role) for m in await _reload(session)] == [(_text(m), m.role) for m in before]
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+    def test_the_guard_looks_at_the_type_not_the_text(self) -> None:
+        from primer.agent.base import refuse_compaction_summaries
+        from primer.model.chat import CompactionSummary
+
+        refuse_compaction_summaries([user_message("hi"), assistant_message("[earlier conversation compacted on x] y")], "x")
+        with pytest.raises(ValueError, match="a parked state"):
+            refuse_compaction_summaries([CompactionSummary(role="assistant", parts=[TextPart(text="s")])], "a parked state")
+
+    async def test_a_park_that_would_stamp_one_fails_loudly_instead(self, tmp_path, monkeypatch) -> None:
+        """If something ever put a summary among the turn's own messages, the park must not carry it into the parked
+        state (it would come back as a model reply)."""
+        import primer.agent.loop as loop
+        from primer.model.chat import CompactionSummary
+
+        real = loop.output_to_message
+
+        def tagged(buffered):
+            message = real(buffered)
+            return CompactionSummary(**message.model_dump()) if message.role == "assistant" else message
+
+        monkeypatch.setattr(loop, "output_to_message", tagged)
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await append_messages(workspace, session, user_message(QUESTION))
+            llm = FnLLM(lambda n, messages, kwargs: _call("call_park", "park"))
+            with pytest.raises(ValueError, match="a parked state"):
+                await run_turn(session, llm, wrap_tools=lambda m: _ParksOn(m, "call_park"))
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+    async def test_a_replay_that_parks_stamps_no_summary_and_the_history_has_none_as_a_line(self, tmp_path) -> None:
+        """The recovery builds a summary in memory (the compacted history); what a park stamps and what is persisted are
+        the turn's own messages only."""
+        from primer.model.chat import CompactionSummary
+
+        harness = TestAReplayThatParks()
+        backend, workspace, session, parked = await harness._park(tmp_path)  # noqa: SLF001
+        try:
+            assert not any(isinstance(m, CompactionSummary) for m in parked.llm_messages)
+            texts = [_text(m) for m in await _reload(session) if not isinstance(m, CompactionSummary)]
+            assert not any(t.startswith("[earlier conversation compacted") for t in texts), (
+                "the summary is in the history only as the marker's, never as a message line"
+            )
+            lines = [line for line in _lines(workspace, session) if "role" in line]
+            assert not any(
+                p.get("text", "").startswith("[earlier conversation compacted") for line in lines for p in line["parts"]
+            )
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+
+@POSIX
 class TestACompactionThatCanChangeNothing:
     """``unreducible``: nothing could be summarised (here the fixed part fills the window, or there is nothing
     before the question). The replay would send the prompt that was just rejected, so the turn ends by name; the
