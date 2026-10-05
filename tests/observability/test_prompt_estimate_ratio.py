@@ -231,6 +231,68 @@ class TestTheRatio:
             "llm_calls_total", {"provider_id": "prov-1", "profile_id": "prof-1", "status": "error"},
         ) == 1, "it is still counted, as an error"
 
+    async def test_a_call_whose_stream_raises_after_its_terminal_event_records_no_ratio(self):
+        """Pins the "at any point" wording of observability.md: a stream that raises even AFTER its ``Done`` (the connection
+        drops while the provider closes the stream) is not a completed call. The loop's ``except Exception`` covers the whole
+        iteration, so the call is counted on ``llm_calls_total`` as an error and records no ratio, whatever it had already
+        delivered (text, usage, the terminal event)."""
+        import primer.observability.metrics as m
+
+        class _RaisesAfterDone(_FakeLLM):
+            def stream(self, *, messages, **_kwargs):
+                async def _gen():
+                    yield TextDelta(text="hello", index=0)
+                    yield _usage(100)
+                    yield Done(stop_reason="stop", raw_reason="stop")
+                    raise RuntimeError("the connection dropped while the stream was closing")
+
+                return _gen()
+
+        with pytest.raises(RuntimeError, match="connection dropped"):
+            await _drain(_RaisesAfterDone([]))
+        assert _samples() == (None, None)
+        assert m.registry.get_sample_value(
+            "llm_calls_total", {"provider_id": "prov-1", "profile_id": "prof-1", "status": "error"},
+        ) == 1, "counted as an error, with no ratio"
+
+    async def test_a_stop_that_arrives_after_the_terminal_event_still_records_the_ratio(self):
+        """The other side of the same boundary: the call has delivered its ``Done``, so a Stop that lands while the stream
+        is still being drained does not undo it (the call completed and is observed, with its estimate on the event)."""
+        usage_and_done_consumed, stop = asyncio.Event(), asyncio.Event()
+
+        class _HangsAfterDone(_FakeLLM):
+            def stream(self, *, messages, **_kwargs):
+                async def _gen():
+                    yield TextDelta(text="hello", index=0)
+                    yield _usage(100)
+                    yield Done(stop_reason="stop", raw_reason="stop")
+                    usage_and_done_consumed.set()               # the loop has the terminal event and asks for the next one
+                    await asyncio.Event().wait()
+
+                return _gen()
+
+        async def press_stop():
+            await usage_and_done_consumed.wait()
+            stop.set()
+
+        events: list = []
+
+        async def run():
+            async for ev in run_agent_turn(
+                agent=_agent(), llm=_HangsAfterDone([]), llm_model=_model(),
+                tool_manager=ToolExecutionManager(toolset_providers={}, tools=[]), prompt=list(PROMPT),
+                interrupt=stop, interrupted_out=[],
+            ):
+                events.append(ev)
+
+        stopper = asyncio.create_task(press_stop())
+        await asyncio.wait_for(run(), timeout=10)
+        await stopper
+        count, total = _samples()
+        assert count == 1 and total == pytest.approx(100 / count_tokens_char_fallback(messages=PROMPT))
+        (call,) = _llm_calls(events)
+        assert call.input_tokens == 100 and call.estimated_input_tokens == count_tokens_char_fallback(messages=PROMPT)
+
     async def test_a_call_a_stop_interrupts_after_its_usage_arrived_records_no_ratio(self):
         """The Stop half of the same promise: the model sent a ``Usage`` (a cumulative Gemini chunk mid-stream), went
         quiet before its terminal event, and the operator pressed Stop. The call is counted as ``interrupted``, with no
