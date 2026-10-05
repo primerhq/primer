@@ -145,3 +145,11 @@ async def test_a_refused_direct_signal_does_not_raise_and_the_pipes_are_closed(m
     finally:
         monkeypatch.undo()
         _kill(proc.pid)
+
+
+def test_the_grace_and_the_kill_wait_are_the_documented_five_and_two_seconds() -> None:
+    """The dev doc states the worst-case write-lock hold as ``TERM_GRACE_S`` + ``KILL_WAIT_S`` (5 s + 2 s = 7 s) and the
+    agent doc promises a command 5 seconds to clean up on SIGTERM. The behavioural test (a trap that needs a second) kills a
+    grace that is too SHORT; this pins the numbers themselves, so changing either needs the docs changed with it."""
+    assert pg.TERM_GRACE_S == 5.0
+    assert pg.KILL_WAIT_S == 2.0
