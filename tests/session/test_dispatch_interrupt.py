@@ -1259,6 +1259,97 @@ class TestTheCancelledExitsOtherWorkspaceIoIsBounded:
         assert any("failed to load the on-disk AgentSession slot" in r.getMessage() for r in caplog.records)
 
 
+class TestACancelOfARowThatIsAlreadyOver:
+    """A force-delete of a RUNNING session flags the row, publishes the cancel key and writes ENDED/force_deleted, and
+    then removes the row and its on-disk slot. The worker's cancel arm re-reads the row when the key arrives: it must
+    leave an ENDED row (or one that is already gone) alone. It used to decide from the flag alone, write a CANCELLED
+    record, overwrite the row with ENDED/cancelled and mirror ENDED onto a slot the delete had just removed."""
+
+    async def _run_with(self, how, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider):
+        sid = seeded_session.id
+        sessions = fake_storage_provider.get_storage(WorkspaceSession)
+        mirrored: list[Any] = []
+        published: list[str] = []
+        terminal: list[dict] = []
+        publish = fake_event_bus.publish
+
+        async def spy_publish(key: str, payload: dict) -> None:
+            published.append(key)
+            if key == f"session:{sid}:terminal":
+                terminal.append(dict(payload))
+            await publish(key, payload)
+
+        fake_event_bus.publish = spy_publish
+
+        class _Slot:
+            async def status(self) -> SessionStatus:
+                return SessionStatus.RUNNING
+
+            async def set_status(self, status, *, ended_reason=None) -> None:
+                mirrored.append((status, ended_reason))
+
+        async def the_delete_lands() -> None:
+            await asyncio.sleep(0.1)             # mid-turn: the watcher has subscribed (the bus does not buffer)
+            row = await sessions.get(sid)
+            row.cancel_requested = True
+            if how == "ended":
+                row.status, row.ended_reason = SessionStatus.ENDED, "force_deleted"
+                await sessions.update(row)
+            else:
+                await sessions.update(row)
+                await sessions.delete(sid)
+            await fake_event_bus.publish(f"session:{sid}:cancel", {})
+            await asyncio.sleep(0.1)
+
+        executor = _StopAwareExecutor([TextDelta(text="x", index=0), the_delete_lands, "BLOCK"])
+        executor.session = _Slot()
+        turn_log = _RecordingTurnLog()
+        deps = SessionDispatchDeps(
+            storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus,
+            build_executor=_build_returning(executor), turn_log_writer_factory=lambda _io, _sid: turn_log,
+        )
+        outcome = await asyncio.wait_for(run_one_session_turn(_make_lease(sid), deps), 5.0)
+        return sid, sessions, outcome, mirrored, published, turn_log, terminal
+
+    async def test_an_ended_force_deleted_row_is_not_overwritten_and_gets_no_record_or_mirror(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid, sessions, outcome, mirrored, published, _, terminal = await self._run_with(
+            "ended", seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+        )
+
+        row = await sessions.get(sid)
+        assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "force_deleted"), (
+            f"the delete's ENDED/force_deleted was overwritten with {row.status}/{row.ended_reason}"
+        )
+        assert not [r for r in _records(fake_workspace_io, sid) if r["kind"] == SessionMessageKind.CANCELLED], (
+            "a CANCELLED record was written for a session that was already ended"
+        )
+        assert mirrored == [], f"ENDED was mirrored onto a slot the delete removes: {mirrored}"
+        assert outcome.success and outcome.drop_lease, "the lease was not released"
+        assert f"session:{sid}:terminal" in published, "the terminal event (the webhook hold waits on it) was lost"
+        assert terminal == [{"status": "ended", "ended_reason": "force_deleted"}], (
+            f"the terminal event must carry the row's real reason, not the cancel's: {terminal}"
+        )
+
+    async def test_a_row_that_is_already_gone_gets_no_record_and_the_exit_still_finishes(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid, sessions, outcome, mirrored, published, turn_log, terminal = await self._run_with(
+            "gone", seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+        )
+
+        assert await sessions.get(sid) is None
+        assert not [r for r in _records(fake_workspace_io, sid) if r["kind"] == SessionMessageKind.CANCELLED], (
+            "a CANCELLED record was written into the workspace of a deleted session"
+        )
+        assert mirrored == []
+        assert outcome.success and outcome.drop_lease
+        assert f"session:{sid}:terminal" in published
+        assert terminal == [{"status": "ended", "ended_reason": "force_deleted"}]
+        assert turn_log.cancel_reasons == ["operator_cancel"], "the exit did not finish its turn-log entry"
+
+
 class TestAStopThatLandsBeforeTheBatchThroughTheWholeTurn:
     """The loop-level tests prove the refusal; this proves what the SESSION records and ends as when the loop is the
     real one: the tool never runs, the call is answered in the transcript, and the session rests WAITING."""

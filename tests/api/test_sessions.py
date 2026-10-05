@@ -13,6 +13,7 @@ and that requires a live backend.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -907,6 +908,131 @@ async def test_force_delete_sets_cancel_requested_before_it_publishes_the_cancel
         "force-delete published the cancel key before it wrote cancel_requested=True to the row "
         f"(order {order}): the worker re-reads the row on the signal and would read it as a Stop"
     )
+
+
+class _HeldLock:
+    """Stands in for ``session_lifecycle_lock()``: delegates to the real one and says whether it is held NOW."""
+
+    def __init__(self, real) -> None:
+        self._real = real
+        self.depth = 0
+
+    @property
+    def held(self) -> bool:
+        return self.depth > 0
+
+    def acquire(self, key: str):
+        outer = self
+
+        class _Ctx:
+            async def __aenter__(self_inner):
+                inner = outer._real.acquire(key)
+                self_inner._inner = inner
+                await inner.__aenter__()
+                outer.depth += 1
+
+            async def __aexit__(self_inner, *exc):
+                outer.depth -= 1
+                return await self_inner._inner.__aexit__(*exc)
+
+        return _Ctx()
+
+
+async def _spied_force_delete(sessions_client, seeded_workspace, seeded_agent, app, monkeypatch, *, reread=None):
+    """Create a RUNNING session and force-delete it, recording (kind, lock held, row) for every write and the
+    cancel publish. ``reread(row)`` may return a different row for the SECOND read (what a worker's concurrent
+    write would produce: the fake storage hands back one shared object, so a stale snapshot cannot otherwise be
+    told from a fresh one)."""
+    import primer.api.routers.sessions as sessions_router
+    from primer.model.workspace_session import WorkspaceSession
+    from primer.session.mutation_lock import session_lifecycle_lock
+
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "auto_start": True},
+    )
+    sid = create.json()["id"]
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    lock = _HeldLock(session_lifecycle_lock())
+    monkeypatch.setattr(sessions_router, "session_lifecycle_lock", lambda: lock)
+    events: list[tuple[str, bool, Any]] = []
+    update, get, publish = storage.update, storage.get, app.state.event_bus.publish
+    reads = {"n": 0}
+
+    async def spy_update(row):
+        events.append(("update", lock.held, row))
+        return await update(row)
+
+    async def spy_get(entity_id, **kwargs):
+        row = await get(entity_id, **kwargs)
+        if entity_id == sid:
+            reads["n"] += 1
+            if reread is not None and reads["n"] >= 2 and row is not None:
+                return reread(row)
+        return row
+
+    async def spy_publish(key: str, payload: dict) -> None:
+        if key == f"session:{sid}:cancel":
+            events.append(("publish", lock.held, None))
+        await publish(key, payload)
+
+    monkeypatch.setattr(storage, "update", spy_update)
+    monkeypatch.setattr(storage, "get", spy_get)
+    monkeypatch.setattr(app.state.event_bus, "publish", spy_publish)
+    resp = await sessions_client.delete(f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}?force=true")
+    return resp, events
+
+
+async def test_force_delete_flags_publishes_and_ends_the_row_under_the_lifecycle_lock(
+    sessions_client, seeded_workspace, seeded_agent, app, monkeypatch,
+):
+    """The Cancel route reads and writes under the per-session lifecycle lock; force-delete read the row outside it
+    and wrote that stale snapshot back (twice), so a worker's concurrent write to the same row could be lost."""
+    resp, events = await _spied_force_delete(sessions_client, seeded_workspace, seeded_agent, app, monkeypatch)
+
+    assert resp.status_code == 204, resp.text
+    forced = [e for e in events if e[0] == "publish" or (e[0] == "update" and (e[2].cancel_requested or e[2].ended_reason == "force_deleted"))]
+    assert [e[0] for e in forced].count("publish") == 1 and len(forced) >= 3, events
+    assert all(held for _, held, _ in forced), (
+        "a force-delete write or its cancel publish happened outside the session's lifecycle lock: "
+        f"{[(kind, held) for kind, held, _ in forced]}"
+    )
+
+
+async def test_force_delete_works_on_the_row_it_reads_inside_the_lock(
+    sessions_client, seeded_workspace, seeded_agent, app, monkeypatch,
+):
+    """Every write carries the FRESH row: a field a worker changed since the route's first read (here last_seq)
+    survives, instead of being overwritten by the stale snapshot."""
+    resp, events = await _spied_force_delete(
+        sessions_client, seeded_workspace, seeded_agent, app, monkeypatch,
+        reread=lambda row: row.model_copy(update={"last_seq": 99}),
+    )
+
+    assert resp.status_code == 204, resp.text
+    written = [row for kind, _, row in events if kind == "update"]
+    assert written and all(row.last_seq == 99 for row in written), (
+        f"a write carried the stale snapshot: {[row.last_seq for row in written]}"
+    )
+
+
+async def test_a_session_that_stopped_running_before_the_lock_is_not_marked_force_deleted(
+    sessions_client, seeded_workspace, seeded_agent, app, monkeypatch,
+):
+    """The route saw RUNNING, but by the time it holds the lock the worker has rested the row WAITING. Forcing it
+    would write ENDED/force_deleted over a session no worker holds and signal a cancel nobody is running: it takes
+    the ordinary path for a WAITING row instead."""
+    from primer.model.workspace_session import SessionStatus
+
+    resp, events = await _spied_force_delete(
+        sessions_client, seeded_workspace, seeded_agent, app, monkeypatch,
+        reread=lambda row: row.model_copy(update={"status": SessionStatus.WAITING}),
+    )
+
+    assert resp.status_code == 204, resp.text
+    assert not [e for e in events if e[0] == "publish"], "a cancel was published for a session that was not running"
+    reasons = [row.ended_reason for kind, _, row in events if kind == "update"]
+    assert "force_deleted" not in reasons and "cancelled" in reasons, reasons
 
 
 async def test_pause_running_sets_pause_requested_flag(

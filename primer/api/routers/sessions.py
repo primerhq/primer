@@ -431,36 +431,47 @@ async def delete_session(
             "evict an orphaned row"
         )
     if s.status == SessionStatus.RUNNING and force:
-        # Flag the row BEFORE the key goes out: the worker's cancel arm tells a
-        # Stop from a Cancel by cancel_requested alone (not set means a Stop, which
-        # lands the row WAITING), and it re-reads the row when the signal arrives.
-        # Without the flag this delete preempted the turn as a Stop and WAITING was
-        # written over ENDED/force_deleted until the row delete landed.
-        s.cancel_requested = True
-        s.cancel_requested_at = datetime.now(timezone.utc)
-        await sessions.update(s)
-        # Publish cancel so any worker actually holding the lease
-        # preempts cleanly before its complete_turn CAS. Best-effort -
-        # if the bus publish fails we still proceed with the delete
-        # (force semantics).
-        if event_bus is not None:
-            try:
-                await event_bus.publish(f"session:{session_id}:cancel", {})
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "delete_session(force): event_bus.publish failed",
-                    extra={
-                        "session_id": session_id,
-                        "exception": type(exc).__name__,
-                    },
-                )
-        s.status = SessionStatus.ENDED
-        s.ended_reason = "force_deleted"
-        s.ended_at = datetime.now(timezone.utc)
-        await sessions.update(s)
-        if engine is not None:
-            from primer.int.claim import ClaimKind
-            await engine.delete_lease(ClaimKind.SESSION, session_id)
+        # Under the per-session lifecycle lock, like the Cancel route, and on the row read INSIDE it:
+        # the row read above is a snapshot from before the cancel_pending_external awaits, and writing it
+        # back whole (twice) would overwrite whatever the worker changed in the meantime.
+        async with session_lifecycle_lock().acquire(session_id):
+            fresh = await sessions.get(session_id)
+            if fresh is not None:
+                s = fresh
+            # A session that stopped running since the first read is not forced: it takes the ordinary
+            # path for its status below. Forcing it would write ENDED/force_deleted over a row no worker
+            # holds and signal a cancel nobody is running.
+            if s.status == SessionStatus.RUNNING:
+                # Flag the row BEFORE the key goes out: the worker's cancel arm tells a
+                # Stop from a Cancel by cancel_requested alone (not set means a Stop, which
+                # lands the row WAITING), and it re-reads the row when the signal arrives.
+                # Without the flag this delete preempted the turn as a Stop and WAITING was
+                # written over ENDED/force_deleted until the row delete landed.
+                s.cancel_requested = True
+                s.cancel_requested_at = datetime.now(timezone.utc)
+                await sessions.update(s)
+                # Publish cancel so any worker actually holding the lease
+                # preempts cleanly before its complete_turn CAS. Best-effort -
+                # if the bus publish fails we still proceed with the delete
+                # (force semantics).
+                if event_bus is not None:
+                    try:
+                        await event_bus.publish(f"session:{session_id}:cancel", {})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "delete_session(force): event_bus.publish failed",
+                            extra={
+                                "session_id": session_id,
+                                "exception": type(exc).__name__,
+                            },
+                        )
+                s.status = SessionStatus.ENDED
+                s.ended_reason = "force_deleted"
+                s.ended_at = datetime.now(timezone.utc)
+                await sessions.update(s)
+                if engine is not None:
+                    from primer.int.claim import ClaimKind
+                    await engine.delete_lease(ClaimKind.SESSION, session_id)
 
     # CREATED / WAITING / PAUSED: nobody's holding a lease, so we can
     # transition to ENDED inline. Drop any stale lease and signal the
