@@ -1216,6 +1216,81 @@ class TestAHardCancelDuringTheMarkerCommit:
             await session.aclose()
             await backend.aclose()
 
+    async def test_a_second_cancel_while_waiting_for_the_commit_does_not_make_the_rounds_land_twice(self, tmp_path) -> None:
+        """The shield keeps the commit running through the first cancel, and the handler then waits for it. A SECOND
+        cancel lands on that wait: it cancels the await, not the write (the marker is written by a thread and lands
+        whatever the task does). Reading that cancel as "the commit failed, nothing landed" left the record holding
+        rounds the marker already has, and the chokepoint wrote them again."""
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await _seed(workspace, session)
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            def gate_after_the_commit(executor) -> None:
+                original = executor._replace_compacted_head  # noqa: SLF001
+
+                async def gated(*args, **kwargs):
+                    result = await original(*args, **kwargs)
+                    entered.set()
+                    await release.wait()
+                    return result
+
+                executor._replace_compacted_head = gated  # noqa: SLF001
+
+            task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=gate_after_the_commit))
+            await asyncio.wait_for(entered.wait(), timeout=30)
+            task.cancel()
+            await asyncio.sleep(0.05)        # the first cancel is delivered: the handler is now waiting for the commit
+            task.cancel()                    # a second one lands on that wait
+            await asyncio.sleep(0.05)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert len(_markers(workspace, session)) == 1, "the commit was allowed to finish"
+            shown = await _reload(session)
+            assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the round is in the history once"
+            assert_anthropic_valid(shown)
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+    async def test_a_commit_that_fails_while_the_turn_is_cancelled_is_logged_and_the_rounds_are_written_once(
+        self, tmp_path, caplog,
+    ) -> None:
+        """If the marker never lands (the commit raises under the cancel), nothing is folded: the record keeps the rounds
+        and the chokepoint writes them, once, with no marker; the failure is in the log, not swallowed."""
+        import logging
+
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await _seed(workspace, session)
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            def failing_commit(executor) -> None:
+                async def failing(*args, **kwargs):
+                    entered.set()
+                    await release.wait()
+                    raise OSError("the workspace mount went away")
+
+                executor._replace_compacted_head = failing  # noqa: SLF001
+
+            with caplog.at_level(logging.WARNING, logger="primer.agent.base"):
+                task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=failing_commit))
+                await asyncio.wait_for(entered.wait(), timeout=30)
+                task.cancel()
+                await asyncio.sleep(0.05)
+                release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            assert _markers(workspace, session) == [], "nothing landed"
+            assert any("marker commit failed" in r.getMessage() for r in caplog.records)
+            shown = await _reload(session)
+            assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the round is in the history once, written by the chokepoint"
+            assert_anthropic_valid(shown)
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
 
 @POSIX
 class TestALostLeaseWritesNothing:
