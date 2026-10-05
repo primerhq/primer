@@ -53,11 +53,15 @@ class ConfigError(PrimerError):
 class ContextOverflowUnrecoverable(ConfigError):
     """The prompt does not fit the model's context window and compaction cannot make it fit.
 
-    Raised by the executor when a turn was rejected as a context overflow and the forced compaction
-    found nothing it could shrink (the fixed part of the prompt, the system prompt plus the tool
-    schemas, or the input the model has not answered, already fills the window): replaying the
-    byte-identical prompt would fail the same way. ``code`` is ``context_overflow_unrecoverable``.
-    ``__cause__`` is the provider's rejection.
+    Raised by the executor when a turn was rejected as a context overflow and recovery cannot help, for one
+    of three reasons. The forced compaction found nothing it could shrink (the fixed part of the prompt, the
+    system prompt plus the tool schemas, or the input the model has not answered, already fills the window):
+    replaying the byte-identical prompt would fail the same way. Or the replay after a compaction was rejected
+    too. Or, decided before any compaction, the agent's own ``max_output_tokens`` is not below the model's
+    context window, so no history, however short, fits beside that cap (``forced_compaction`` and
+    ``replay_attempted`` are both false then). A rejection whose own numbers show that the cap does not fit is
+    classified an output-cap error and never gets here: it stays the provider's plain ``bad_request``.
+    ``code`` is ``context_overflow_unrecoverable``. ``__cause__`` is the provider's rejection.
     """
 
     CODE = "context_overflow_unrecoverable"
