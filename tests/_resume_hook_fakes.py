@@ -1,0 +1,241 @@
+"""Fakes shared by the graph resume tests (no database, no real pool).
+
+Three groups, each moved here from the test module that first defined it so a
+test that needs several of them imports one helper instead of other test modules:
+
+* the ``ask_user`` tool_call graph and its executor (from
+  ``tests/graph/test_toolcall_ask_user_value_resume.py``): ``build_ask_user_graph``,
+  ``make_toolcall_executor``, ``drain``, ``drain_until_yield``;
+* the resume-drain tap's pool and session fakes (from
+  ``tests/worker/test_pool_graph_resume.py``): ``DrainTapPool``,
+  ``RecordingWorkspaceIO``, ``FakeSessionRow``, ``FakeSessionStorage``, ``FakeStorage``;
+* the ``resume_graph_engine`` pool fakes (from
+  ``tests/worker/test_resume_graph_tool_wait.py``): ``EngineFakePool``,
+  ``NullWorkspaceIO``, ``EngineStorageProvider``, ``waiting_graph_session``.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+
+from primer.graph.executor import GraphExecutor
+from primer.model.agent import Agent
+from primer.model.chat import Message, StreamEvent, ToolResultPart
+from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge, _ToolCallNode
+from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.model.yield_ import YieldToWorker
+from primer.worker import graph_resume_coordinator
+
+from tests.conftest import _FakeStorageProvider
+
+
+# ---------------------------------------------------------------------------
+# the ask_user tool_call graph
+# ---------------------------------------------------------------------------
+
+
+async def drain_until_yield(
+    it: AsyncIterator[StreamEvent],
+) -> tuple[list[StreamEvent], YieldToWorker | None]:
+    events: list[StreamEvent] = []
+    try:
+        async for ev in it:
+            events.append(ev)
+    except YieldToWorker as exc:
+        return events, exc
+    return events, None
+
+
+async def drain(it: AsyncIterator[StreamEvent]) -> list[StreamEvent]:
+    return [ev async for ev in it]
+
+
+def build_ask_user_graph() -> Graph:
+    return Graph(
+        id="g-ask-user-value",
+        description="begin -> tool(ask_user) -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(
+                id="ask",
+                tool_id="system__ask_user",
+                arguments={"prompt": "Approve access?"},
+            ),
+            _EndNode(id="exit", output_template="{{ nodes.ask.text }}"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="ask"),
+            _StaticEdge(from_node="ask", to_node="exit"),
+        ],
+    )
+
+
+async def _agent_resolver(agent_id: str) -> Agent:
+    raise KeyError(agent_id)
+
+
+async def _llm_resolver(agent):  # pragma: no cover - never reached
+    raise NotImplementedError
+
+
+def make_toolcall_executor(graph, thread, thread_storage, message_storage, dispatcher):
+    return GraphExecutor(
+        graph=graph,
+        agent_resolver=_agent_resolver,
+        llm_resolver=_llm_resolver,  # type: ignore[arg-type]
+        thread_storage=thread_storage,  # type: ignore[arg-type]
+        message_storage=message_storage,  # type: ignore[arg-type]
+        graph_thread_id=thread.id,
+        tool_dispatcher=dispatcher,
+    )
+
+
+# ---------------------------------------------------------------------------
+# the resume-drain tap's pool (resume_graph_from_checkpoint with pool/session)
+# ---------------------------------------------------------------------------
+
+
+class RecordingWorkspaceIO:
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, bytes]] = []
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        self.lines.append((session_id, line))
+
+
+class FakeSessionRow:
+    def __init__(self, *, sid: str, workspace_id: str, turn_no: int, last_seq: int) -> None:
+        self.id = sid
+        self.workspace_id = workspace_id
+        self.turn_no = turn_no
+        self.last_seq = last_seq
+
+    def model_copy(self, *, update: dict):
+        merged = {**self.__dict__, **update}
+        return FakeSessionRow(
+            sid=merged["id"], workspace_id=merged["workspace_id"],
+            turn_no=merged["turn_no"], last_seq=merged["last_seq"],
+        )
+
+
+class FakeSessionStorage:
+    def __init__(self, row) -> None:
+        self._row = row
+
+    async def get(self, sid: str):
+        return self._row if self._row.id == sid else None
+
+    async def update(self, row) -> None:
+        self._row = row
+
+
+class FakeStorage:
+    def __init__(self, session_storage) -> None:
+        self._session_storage = session_storage
+
+    def get_storage(self, _model_cls):
+        return self._session_storage
+
+
+class NoopClaimEngine:
+    """Stands in for WorkerPool._engine: the tests that use these pools exercise the drain tap's persistence or
+    readiness / repark routing, not row-creation content, so upserts are discarded."""
+
+    async def upsert(self, kind, entity_id: str, **kwargs) -> None:
+        return None
+
+
+class DrainTapPool:
+    def __init__(self, *, workspace_io, storage) -> None:
+        self._storage = storage
+        self._event_bus = None
+        self._workspace_io = workspace_io
+        self._engine = NoopClaimEngine()
+
+    async def _load_workspace_for_persist(self, _workspace_id: str):
+        return self._workspace_io
+
+
+# ---------------------------------------------------------------------------
+# the resume_graph_engine pool
+# ---------------------------------------------------------------------------
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def waiting_graph_session(session_id: str = "gs-1") -> WorkspaceSession:
+    return WorkspaceSession(
+        id=session_id, workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag1"),
+        status=SessionStatus.WAITING, created_at=_now(), turn_no=0, parked_at=_now(),
+    )
+
+
+class EngineStorageProvider:
+    """Routes every model through a real _FakeStorageProvider."""
+
+    def __init__(self) -> None:
+        self._inner = _FakeStorageProvider()
+
+    def get_storage(self, model_cls):
+        return self._inner.get_storage(model_cls)
+
+
+class EngineFakePool:
+    def __init__(self, *, storage, workspace_io, executor_factory) -> None:
+        self._storage = storage
+        self._workspace_io = workspace_io
+        self._event_bus = None
+        self._engine = NoopClaimEngine()
+        self._executor_factory = executor_factory
+        self.end_session_calls: list[str] = []
+        self.repark_calls: list = []
+        self.agent_tool_result_session_ids: list = []
+
+    async def _load_workspace_for_persist(self, workspace_id: str):
+        return self._workspace_io
+
+    async def _build_graph_executor(self, session, workspace):
+        return await self._executor_factory()
+
+    async def _end_session(self, session, *, reason: str):
+        self.end_session_calls.append(reason)
+        return f"ENDED:{reason}"
+
+    def _repark_graph_outcome(self, session, repark, *, node_tool_call_seq=None):
+        self.repark_calls.append(repark)
+        return "REPARKED"
+
+    # -- resume_graph_engine's own delegating surface --------------------
+    def _graph_nested_agent_yield(self, checkpoint, tcid):
+        return graph_resume_coordinator.graph_nested_agent_yield(self, checkpoint, tcid)
+
+    def _graph_value_yield_toolcall(self, checkpoint, tcid):
+        return graph_resume_coordinator.graph_value_yield_toolcall(self, checkpoint, tcid)
+
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
+        # Directly supplies the ask_user answer, bypassing the global
+        # resume-hook registry - irrelevant to what these tests prove (the
+        # real hook call is pinned by test_graph_agent_tool_result_real_hooks.py).
+        # It does record the session id the engine passes, because the hook's
+        # ResumeContext is built from it.
+        self.agent_tool_result_session_ids.append(session_id)
+        return Message(role="tool", parts=[ToolResultPart(id=tcid, output="blue")])
+
+    async def _write_approval_record_for_graph(self, *, session, checkpoint, tcid, payload):
+        return None
+
+    async def _persist_resume_tool_result_record_for_graph(
+        self, *, session, checkpoint, tcid, agent_tool_result,
+    ):
+        return None
+
+    async def _resume_graph_continuation(self, *args, **kwargs):
+        raise AssertionError("no nested continuation in these tests")
+
+
+class NullWorkspaceIO:
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        return None
