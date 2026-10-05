@@ -590,6 +590,42 @@ async def test_a_value_no_backend_can_store_fails_the_task_instead_of_escaping_t
 
 
 @pytest.mark.asyncio
+async def test_a_malformed_spec_the_adapter_built_itself_propagates_and_is_not_blamed_on_the_handler(monkeypatch) -> None:
+    """Only a VALUE the patch layer refuses (``PatchValueError``) is the handler's doing. Any other ``PatchSpecError`` is a
+    spec the adapter itself built wrongly (here: a field renamed on the way to ``patch_if``, as a typo in the adapter
+    would), a bug that must surface, not be reported to the model as the handler's unstorable value with the task
+    failed. Control: an unstorable value in the same retry release still fails the task."""
+    from pydantic_core import to_jsonable_python as real_to_jsonable
+
+    from primer.storage import PatchSpecError, PatchValueError
+
+    def with_a_typo(value):
+        out = real_to_jsonable(value)
+        if isinstance(out, dict) and "started_at" in out:        # only the retry branch's patch writes started_at
+            out["started_at_typo"] = out.pop("started_at")
+        return out
+
+    monkeypatch.setattr("primer.claim.adapters.tool_calls.to_jsonable_python", with_a_typo)
+    storage = FakeStorage(_make_task("t1"))
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    before = await storage.get("t1")
+
+    with pytest.raises(PatchSpecError) as excinfo:
+        await adapter.on_release(conn=None, entity_id="t1", outcome=_release("t1", success=False))
+    assert not isinstance(excinfo.value, PatchValueError)
+    assert "started_at_typo" in str(excinfo.value)
+    assert await storage.get("t1") == before, "the adapter's own bug failed the task"
+
+    monkeypatch.undo()
+    await adapter.on_release(
+        conn=None, entity_id="t1", outcome=_release("t1", success=False, entity_update={"last_error": _LONE_SURROGATE}),
+    )
+    failed = await storage.get("t1")
+    assert failed.state == ToolCallTaskState.FAILED
+    assert failed.last_error.startswith("the worker's release was invalid: it gave a value that cannot be stored")
+
+
+@pytest.mark.asyncio
 async def test_a_validation_error_with_no_handler_values_is_a_corrupt_row_and_still_propagates() -> None:
     """With nothing supplied by the handler the unreadable document is the STORED row's doing, which is not the handler's
     to answer for: it propagates exactly as before instead of failing a task for a fault it did not cause."""

@@ -239,7 +239,9 @@ class Storage(ABC, Generic[ModelT]):
             more are raised only AFTER the guarded write, so only a caller whose guard matched sees
             them: a ``set_paths`` leaf the validated model does not carry (a typo under a typed sub-model),
             and a value the model turns into something strict JSON cannot hold (the string ``"nan"``
-            written into a float field); that write is rolled back.
+            written into a float field); that write is rolled back. The refusals about a supplied VALUE (not
+            strict JSON, not encodable as UTF-8, in a value or a key, or such a canonical value) are the
+            subclass ``primer.storage.PatchValueError``; the rest are about the spec's shape.
         pydantic.ValidationError
             A document fails model validation: the stored row is unreadable, or the document the
             write would produce no longer validates against the model. The write is rolled back (a

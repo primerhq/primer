@@ -16,7 +16,7 @@ exposes model-bound :class:`primer.int.Storage` handles via
     await provider.aclose()
 """
 
-from primer.storage._patch import PatchSpecError, raw_generation
+from primer.storage._patch import PatchSpecError, PatchValueError, raw_generation
 from primer.storage.factory import StorageProviderFactory
 from primer.storage.postgres import PostgresStorage, PostgresStorageProvider
 from primer.storage.sqlite import SqliteStorage, SqliteStorageProvider
@@ -24,6 +24,7 @@ from primer.storage.sqlite import SqliteStorage, SqliteStorageProvider
 
 __all__ = [
     "PatchSpecError",
+    "PatchValueError",
     "PostgresStorage",
     "PostgresStorageProvider",
     "SqliteStorage",
