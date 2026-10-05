@@ -33,6 +33,8 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 
+from tests.conftest import _InMemoryStorage
+
 pytestmark = pytest.mark.asyncio
 
 # ---------------------------------------------------------------------------
@@ -57,18 +59,16 @@ def _make_session(session_id: str) -> WorkspaceSession:
     )
 
 
-class _FakeStorage:
-    """Minimal in-memory storage stub matching the Storage protocol."""
+class _FakeStorage(_InMemoryStorage):
+    """One-row in-memory storage (the Storage protocol, ``patch_if`` included); ``_session`` is the stored row."""
 
     def __init__(self, session: WorkspaceSession) -> None:
-        self._session = session
+        super().__init__(WorkspaceSession)
+        self._data[session.id] = session
 
-    async def get(self, id: str, *, conn=None) -> WorkspaceSession | None:
-        return self._session if self._session.id == id else None
-
-    async def update(self, entity: WorkspaceSession, *, conn=None) -> WorkspaceSession:
-        self._session = entity
-        return entity
+    @property
+    def _session(self) -> WorkspaceSession:
+        return next(iter(self._data.values()))
 
 
 def _make_engine(storage: _FakeStorage) -> InMemoryClaimEngine:
@@ -219,24 +219,24 @@ async def test_mark_resumable_idempotent_inmemory() -> None:
 
 
 class _SlowUpdateStorage(_FakeStorage):
-    """Storage whose ``update`` awaits a barrier so a test can interleave a
+    """Storage whose ``patch_if`` awaits a barrier so a test can interleave a
     concurrent ``claim_due`` while the adapter's ``on_release`` park-clear
     write is in flight.
 
-    The release path (non-drop) runs ``on_release`` -> ``storage.update`` to
+    The release path (non-drop) runs ``on_release`` -> ``storage.patch_if`` to
     clear ``parked_status``; the engine must NOT free the lease for
     re-claiming until that write has landed. This stub lets us prove the
-    ordering by pausing inside ``update``.
+    ordering by pausing inside the write.
     """
 
     def __init__(self, session: WorkspaceSession) -> None:
         super().__init__(session)
         self.release_barrier: "object | None" = None
 
-    async def update(self, entity: WorkspaceSession, *, conn=None) -> WorkspaceSession:
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
         if self.release_barrier is not None:
             await self.release_barrier.wait()  # type: ignore[union-attr]
-        return await super().update(entity)
+        return await super().patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
 
 
 async def test_resumable_not_double_claimed_across_release_inmemory() -> None:
@@ -264,15 +264,15 @@ async def test_resumable_not_double_claimed_across_release_inmemory() -> None:
     })
     await storage.update(resumable_row)
 
-    # Pause the next storage.update (the on_release park-clear write).
+    # Pause the next storage.patch_if (the on_release park-clear write).
     barrier = asyncio.Event()
     storage.release_barrier = barrier
 
-    # Start the non-drop release; it will block inside on_release's update.
+    # Start the non-drop release; it will block inside on_release's write.
     release_task = asyncio.create_task(
         engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=False))
     )
-    await asyncio.sleep(0)  # let release run up to the paused update
+    await asyncio.sleep(0)  # let release run up to the paused write
 
     # While the park-clear write is in flight, a concurrent claim attempt
     # must NOT re-claim the still-resumable session.

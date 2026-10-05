@@ -16,6 +16,7 @@ class _RecordingStorage:
         self._row = row
         self.get_conns = []
         self.update_conns = []
+        self.patch_conns = []
 
     async def get(self, id, *, conn=None):
         self.get_conns.append(conn)
@@ -25,6 +26,11 @@ class _RecordingStorage:
         self.update_conns.append(conn)
         self._row = entity
         return entity
+
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        self.patch_conns.append(conn)
+        self._row = type(self._row).model_validate({**self._row.model_dump(mode="json"), **patch})
+        return self._row
 
 
 
@@ -53,8 +59,9 @@ async def test_sessions_adapter_forwards_conn():
         sentinel, "s1", outcome=ReleaseOutcome(success=True, drop_lease=True)
     )
     assert storage.get_conns == [sentinel]
-    assert storage.update_conns
-    assert set(storage.update_conns) == {sentinel}
+    # The release is one field-scoped patch_if on the caller's transaction (no whole-document update).
+    assert storage.patch_conns == [sentinel]
+    assert storage.update_conns == []
 
 
 @pytest.mark.asyncio
