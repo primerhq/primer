@@ -197,8 +197,10 @@ intact, so the next message continues it:
   as well as between chunks. If the model had just asked for tool calls
   when you pressed Stop, none of them run: each is answered "not run:
   stopped by user". A tool call that is already running is not cancelled;
-  it finishes, its result is recorded, and the turn ends before the next
-  model call. If that batch parks (a timer, a long-running tool, an
+  it finishes and its result is recorded, but the calls after it in the
+  same batch that have not started do not run: each is answered "not run:
+  stopped by user" too, and the turn ends before the next model call. If
+  that batch parks (a timer, a long-running tool, an
   approval), the session parks instead of stopping and the Stop is
   dropped; Stop is then refused with 409 and Cancel is the way out. Graph
   sessions and the context-compaction call that can run first are not

@@ -151,12 +151,15 @@ class _OneStreamLLM:
 
 
 class _Manager:
-    """Tools run immediately unless ``gate`` is given, then they wait for it."""
+    """Tools run immediately unless ``gate`` is given, then they wait for it. ``on_start`` is called with each
+    call as it STARTS (e.g. to set the Stop while that call runs); ``executed`` lists the ids that started."""
 
-    def __init__(self, gate: asyncio.Event | None = None) -> None:
+    def __init__(self, gate: asyncio.Event | None = None, on_start=None) -> None:
         self.gate = gate
+        self.on_start = on_start
         self.started = asyncio.Event()
         self.finished = 0
+        self.executed: list[str] = []
 
     def is_notifying(self, tool_name: str) -> bool:
         return False
@@ -166,6 +169,9 @@ class _Manager:
 
     async def execute(self, call, *, principal=None):
         self.started.set()
+        self.executed.append(call.id)
+        if self.on_start is not None:
+            self.on_start(call)
         if self.gate is not None:
             await self.gate.wait()
         self.finished += 1
@@ -449,4 +455,90 @@ class TestAStopBeforeTheBatchStopsTheBatch:
         _, messages_out, interrupted = await _drive(llm, interrupt=asyncio.Event(), manager=manager, stop_after=None)
 
         assert manager.finished == 1 and interrupted == []
+        assert STOPPED not in [p.output for p in _tool_results(messages_out)]
+
+
+def _calls_round(n: int) -> list[StreamEvent]:
+    """One model round that asks for ``n`` tool calls (``tcA-0`` .. ``tcA-{n-1}``)."""
+    events: list[StreamEvent] = []
+    for i in range(n):
+        events += [ToolCallStart(id=f"tcA-{i}", name="loop_tool", index=i), ToolCallEnd(id=f"tcA-{i}", arguments={}, index=i)]
+    return [*events, Done(stop_reason="tool_use", raw_reason="tool_use")]
+
+
+_AFTER = [TextDelta(text="after", index=0), Done(stop_reason="stop", raw_reason="stop")]
+
+
+class TestAStopDuringACallStopsTheRestOfTheBatch:
+    """Calls of a batch run one after another. A Stop that lands while call 1 runs cannot cancel it (slice B), but
+    calls 2..N have not started: running a destructive one now would make Stop a lie, exactly as when the Stop lands
+    before the batch begins. They are answered ``not run: stopped by user`` instead, and the turn ends."""
+
+    async def _stop_during_the_first_call(self, n_calls: int):
+        gate = asyncio.Event()
+        interrupt = asyncio.Event()
+        manager = _Manager(gate, on_start=lambda call: interrupt.set() if call.id == "tcA-0" else None)
+        llm = _ScriptedLLM(_calls_round(n_calls), _AFTER)
+
+        async def release_the_first_call_later() -> None:
+            await manager.started.wait()
+            await asyncio.sleep(0.05)
+            gate.set()
+
+        asyncio.get_running_loop().create_task(release_the_first_call_later())
+        events, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+        return manager, llm, events, messages_out, interrupted
+
+    async def test_the_calls_after_the_running_one_do_not_start(self) -> None:
+        manager, _, _, _, _ = await self._stop_during_the_first_call(3)
+
+        assert manager.executed == ["tcA-0"], f"a call started after the Stop: {manager.executed}"
+        assert manager.finished == 1
+
+    async def test_the_running_call_keeps_its_real_result_and_the_rest_are_refused_in_order(self) -> None:
+        _, _, _, messages_out, _ = await self._stop_during_the_first_call(3)
+
+        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [
+            ("tcA-0", "ok", False), ("tcA-1", STOPPED, True), ("tcA-2", STOPPED, True),
+        ]
+        assert [m.role for m in messages_out] == ["assistant", "tool"], "one paired, completed round"
+
+    async def test_every_result_is_yielded_so_the_durable_log_is_paired_too(self) -> None:
+        _, _, events, _, _ = await self._stop_during_the_first_call(3)
+
+        results = [e.extended for e in events if isinstance(e, ExtendedEvent) and hasattr(e.extended, "call_id")]
+        assert [(r.call_id, r.output, r.error) for r in results] == [
+            ("tcA-0", "ok", False), ("tcA-1", STOPPED, True), ("tcA-2", STOPPED, True),
+        ]
+
+    async def test_the_turn_ends_as_a_stop_before_the_next_model_call(self) -> None:
+        _, llm, _, _, interrupted = await self._stop_during_the_first_call(3)
+
+        assert interrupted == [True] and llm.calls == 1
+
+    async def test_the_persisted_history_is_valid_for_both_providers(self) -> None:
+        _, _, _, messages_out, _ = await self._stop_during_the_first_call(3)
+        history = [Message(role="user", parts=[TextPart(text="go")]), *messages_out]
+
+        assert_anthropic_valid(history)
+        assert_openai_valid(history)
+
+    async def test_a_stop_during_the_last_call_has_nothing_left_to_refuse(self) -> None:
+        interrupt = asyncio.Event()
+        manager = _Manager(on_start=lambda call: interrupt.set() if call.id == "tcA-2" else None)
+        llm = _ScriptedLLM(_calls_round(3), _AFTER)
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert manager.executed == ["tcA-0", "tcA-1", "tcA-2"]
+        assert [p.output for p in _tool_results(messages_out)] == ["ok", "ok", "ok"], "no call was refused"
+        assert interrupted == [True] and llm.calls == 1
+
+    async def test_without_a_stop_every_call_of_the_batch_runs(self) -> None:
+        manager = _Manager()
+        llm = _ScriptedLLM(_calls_round(3), _AFTER)
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=asyncio.Event(), manager=manager, stop_after=None)
+
+        assert manager.executed == ["tcA-0", "tcA-1", "tcA-2"] and interrupted == []
         assert STOPPED not in [p.output for p in _tool_results(messages_out)]
