@@ -78,15 +78,18 @@ SURROGATE_SPECS = [
 async def test_a_string_that_cannot_be_encoded_is_a_patch_spec_error_and_writes_nothing_on_both_backends(
     sqlite_storage, kwargs,
 ):
-    """A lone surrogate used to pass the JSON check and then fail inside the driver: a ProviderError on SQLite, a different
-    backend error on Postgres, for what is the caller's own bad input. It is rejected up front, the same on both, and the
-    message names the field without echoing the value."""
+    """A string holding a surrogate code point used to pass the JSON check and then either fail (in the statement compiler or
+    the driver, differently per backend) or be silently stored (a patch value, on SQLite), for what is the caller's own bad
+    input. It is rejected up front, the same on both, and the message names the field without echoing the value."""
     before = await sqlite_storage.get("a")
     conn = _ScriptedConn(_row())
     for storage, scripted in ((sqlite_storage, None), (_postgres_storage(), conn)):
         with pytest.raises(PatchSpecError) as excinfo:
             await storage.patch_if("a", **kwargs, **({} if scripted is None else {"conn": scripted}))
-        assert "surrogate" in str(excinfo.value) and "ud800" not in str(excinfo.value).lower()
+        assert "surrogate" in str(excinfo.value)
+        # the raw character shows in str(), its escaped form in repr(): neither may carry the value
+        for rendered in (str(excinfo.value), repr(excinfo.value)):
+            assert LONE_SURROGATE not in rendered and "ud800" not in rendered.lower()
     assert conn.calls == [], "Postgres: refused before any statement"
     assert await sqlite_storage.get("a") == before, "SQLite: the row is untouched"
 
@@ -124,6 +127,18 @@ class _TxnConn(_ScriptedConn):
         return _txn()
 
 
+@pytest.fixture
+def floatdoc_event_kind(monkeypatch):
+    """Give FloatDoc an event kind on the Postgres backend (as the sibling trace tests do), so an event append that slips
+    ahead of the refusal would show in the statement trace."""
+    monkeypatch.setattr("primer.storage.postgres.kind_for_model", lambda model: "floatdoc")
+
+
+def _trace(conn: _ScriptedConn) -> list[str]:
+    """The scripted connection's calls: transaction markers as they are, a statement as its first word."""
+    return [sql if sql in (TXN_BEGIN, TXN_END, TXN_ROLLBACK) else sql.lstrip().split()[0] for sql, _ in conn.calls]
+
+
 @pytest_asyncio.fixture
 async def float_storage(sqlite_provider):
     storage = sqlite_provider.get_storage(FloatDoc)
@@ -146,7 +161,7 @@ NON_FINITE_SPECS = [
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kwargs, field, stored, value", NON_FINITE_SPECS)
 async def test_a_value_the_model_coerces_to_a_non_finite_float_is_a_patch_spec_error_and_writes_nothing_on_both_backends(
-    float_storage, kwargs, field, stored, value,
+    float_storage, floatdoc_event_kind, kwargs, field, stored, value,
 ):
     """The strings "nan" and "inf" pass the spec check; the model then reads them as non-finite floats, and the
     canonical rewrite used to hand NaN to the JSON encoder, which failed as a ProviderError (SQLite) or a different backend
@@ -161,9 +176,19 @@ async def test_a_value_the_model_coerces_to_a_non_finite_float_is_a_patch_spec_e
         assert f"FloatDoc.{field} " in message and value not in message.lower()
     assert await float_storage.get("a") == before, "SQLite: the row is untouched"
     # Postgres: the refusal can only come after the guarded statement (the model has to validate its result), so it is
-    # one UPDATE inside the transaction, no rewrite and no event, and the transaction is left by the exception: a rollback.
-    trace = [sql if sql in (TXN_BEGIN, TXN_END, TXN_ROLLBACK) else sql.lstrip().split()[0] for sql, _ in conn.calls]
-    assert trace == [TXN_BEGIN, "UPDATE", TXN_ROLLBACK, TXN_END]
+    # one UPDATE inside the transaction, no rewrite and no event (the model has a registered kind, so an INSERT would show),
+    # and the transaction is left by the exception: a rollback.
+    assert _trace(conn) == [TXN_BEGIN, "UPDATE", TXN_ROLLBACK, TXN_END]
+
+
+@pytest.mark.asyncio
+async def test_a_legal_patch_on_the_same_model_and_kind_appends_its_event(floatdoc_event_kind):
+    """The control for the refusal trace: the kind is registered, so a patch the model can store ends in its one UPDATE and
+    the event INSERT, in one transaction, and nothing is rolled back."""
+    conn = _TxnConn(_row(ratio=0.5))
+    out = await _postgres_storage(FloatDoc).patch_if("a", {"ratio": 0.5}, where={"status": ["created"]}, conn=conn)
+    assert out is not None and out.ratio == 0.5
+    assert _trace(conn) == [TXN_BEGIN, "UPDATE", "INSERT", TXN_END]
 
 
 @pytest.mark.asyncio

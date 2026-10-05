@@ -11,7 +11,7 @@ import copy
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from primer.storage._patch import PatchSpecError, parent_paths
+from primer.storage._patch import PatchSpecError, check_canonical_json, parent_paths
 
 
 def typed_equal(a: Any, b: Any) -> bool:
@@ -132,7 +132,7 @@ def patch_if_reference(
     Mirrors what the backends do, in plain Python: validate the spec, refuse unknown fields, guard against the raw
     document (with defaulted-absent fields matching), apply the patch to the raw document (so keys the model does
     not read survive), validate the result, refuse a set_paths leaf the model does not carry, and rewrite every
-    field the patch touched to the model's canonical dump.
+    field the patch touched to the model's canonical dump (refusing one that strict JSON cannot hold).
     """
     from primer.model.common import dump_for_storage
     from primer.storage._patch import validate_patch
@@ -152,6 +152,7 @@ def patch_if_reference(
             node = node[part]
     for key in {*patch_d, *(p[0] for p in paths_d)}:
         if key in canonical and not same_spelling(produced.get(key), canonical[key]):
+            check_canonical_json(model_cls.__name__, key, canonical[key])   # a "nan" the model made a float is refused
             produced[key] = canonical[key]
     return produced, entity
 

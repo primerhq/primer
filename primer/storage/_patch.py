@@ -238,18 +238,26 @@ def canonical_fixup(
         if key in canonical and not json_identical(stored.get(key), canonical[key])
     }
     for key, value in fixup.items():
-        # validate_patch only saw the caller's raw JSON. The canonical dump is what the model made of it, and that need not
-        # be storable: "nan" is a fine string for a float field and a NaN once validated, which no strict-JSON statement
-        # can carry. Refuse it like any other bad spec value (so the write rolls back) rather than let the rewrite fail in
-        # the driver as a backend error. The message names the field and never echoes the value.
-        try:
-            _check_json(value, key)
-        except PatchSpecError:
-            raise PatchSpecError(
-                f"{type(entity).__name__}.{key} is not representable as strict JSON once the model has validated the patch "
-                "(a non-finite float, a lone surrogate, a non-string key); patch_if writes values the model can store"
-            ) from None
+        check_canonical_json(type(entity).__name__, key, value)
     return fixup
+
+
+def check_canonical_json(model_name: str, key: str, value: Any) -> None:
+    """Refuse a canonical value (what the model made of a patched field) that strict JSON cannot hold.
+
+    ``validate_patch`` only saw the caller's raw JSON. The canonical dump is what the model made of it, and that need not
+    be storable: "nan" is a fine string for a float field and a NaN once validated, which no strict-JSON statement can
+    carry. Refuse it like any other bad spec value (so the write rolls back) rather than let the rewrite fail in the driver
+    as a backend error. Shared by :func:`canonical_fixup` and the test fake's reference. The message names the field and
+    never echoes the value.
+    """
+    try:
+        _check_json(value, key)
+    except PatchSpecError:
+        raise PatchSpecError(
+            f"{model_name}.{key} is not representable as strict JSON once the model has validated the patch "
+            "(a non-finite float or a surrogate code point); patch_if writes values the model can store"
+        ) from None
 
 
 def _check_key(key: Any, what: str) -> None:
@@ -264,19 +272,20 @@ def _check_key(key: Any, what: str) -> None:
 
 
 def _check_encodable(text: str, what: str) -> None:
-    """Reject a string that cannot be UTF-8 encoded (a lone surrogate). ``json.dumps`` escapes one, so it passes the JSON
-    check and then fails inside the driver as a backend error, differently on each backend. Names the field, never echoes the value."""
+    """Reject a string that cannot be UTF-8 encoded (a surrogate code point, alone or half of a split pair). ``json.dumps``
+    escapes one, so it passes the JSON check and then fails (in the statement compiler or the driver, differently per
+    backend) or is silently stored. Names the field, never echoes the value."""
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:
         raise PatchSpecError(
-            f"{what} holds a string that is not valid Unicode (a lone surrogate), which no backend can store"
+            f"{what} holds a string that is not valid Unicode (a surrogate code point), which no backend can store"
         ) from None
 
 
 def _check_json(value: Any, what: str) -> None:
     try:
-        # ensure_ascii=False keeps a lone surrogate (anywhere in the value, keys included) in the text so the encode check sees it.
+        # ensure_ascii=False keeps a surrogate code point (anywhere in the value, keys included) in the text so the encode check sees it.
         text = json.dumps(value, allow_nan=False, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
         raise PatchSpecError(f"{what} is not JSON-ready: {exc}") from exc
@@ -295,10 +304,12 @@ def validate_patch(
 
     * there is a non-empty ``patch`` or ``set_paths`` and a non-empty ``where``, within the key and leaf caps;
     * every key (a patch key, a path element, a ``where`` field) is a non-empty string free of quotes, backslashes,
-      control characters and lone surrogates, and no patch key, path root or ``where`` field is the ``id``;
+      control characters and surrogate code points, and no patch key, path root or ``where`` field is the ``id``;
     * a path is a non-empty tuple at most ``MAX_PATH_DEPTH`` deep, its root is not also a patch key, no path is a prefix
       of another, and at most ``MAX_DISTINCT_PARENTS`` parent objects are involved;
-    * every patch and path value is strict JSON (no NaN or infinity, string keys, encodable text);
+    * every patch and path value is strict JSON (no NaN or infinity, encodable text), checked with ``json.dumps``: a nested
+      dict key that is an int, float, bool or None is accepted (``json.dumps`` writes it as a string), any other non-string
+      key (a tuple, say) is refused;
     * each ``where`` entry is a non-empty list of JSON scalars.
 
     Whether the fields exist on the model is :func:`check_known_fields`; whether the values survive the model is

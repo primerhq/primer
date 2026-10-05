@@ -227,27 +227,32 @@ class Storage(ABC, Generic[ModelT]):
             won the race" and "the row is gone" need different handling.
         primer.storage.PatchSpecError
             The caller's spec is malformed (a ``ValueError`` subclass, so a handler for ``ValueError``
-            still catches it): a patch or path root that is not a field of the model (unless the
-            model allows extras), an empty ``patch``/``set_paths``, an empty ``where`` or one naming
-            ``id``, a ``where`` value that is not a list of JSON scalars (a bare string is rejected),
-            a bad path (too deep, forbidden characters, a prefix of another), a string that cannot be
-            UTF-8 encoded (a lone surrogate), or more than 32 patch keys, 16 leaves or 4 distinct
-            parent objects. Rejected identically on every backend, before any SQL. Two more are
-            raised only AFTER the guarded write, so only a caller whose guard matched sees them: a
-            ``set_paths`` leaf the validated model does not carry (a typo under a typed sub-model),
+            still catches it). Among others: an empty ``patch``/``set_paths`` or an empty ``where``
+            (or an empty allowed-value list in one); a patch key or path root that is ``id`` or, unless
+            the model allows extras, not a field of the model; a ``where`` that names ``id``; a root
+            named in both ``patch`` and ``set_paths``; a key that is empty or not a string, or a
+            ``set_paths`` key that is not a tuple; a bad key or path (forbidden characters, too deep,
+            a prefix of another); a ``where`` value that is not a list of JSON scalars (a bare string
+            is rejected); a value that is not strict JSON (``NaN``, ``Infinity``) or holds a string
+            that cannot be UTF-8 encoded (a surrogate code point); more than 32 patch keys, 16 leaves
+            or 4 distinct parent objects. Rejected identically on every backend, before any SQL. Two
+            more are raised only AFTER the guarded write, so only a caller whose guard matched sees
+            them: a ``set_paths`` leaf the validated model does not carry (a typo under a typed sub-model),
             and a value the model turns into something strict JSON cannot hold (the string ``"nan"``
             written into a float field); that write is rolled back.
         pydantic.ValidationError
-            The row is unreadable or the document the write would produce no longer validates
-            against the model. The write is rolled back (a savepoint inside a caller's transaction)
-            and the row is unchanged. It is also a ``ValueError`` subclass but NOT a
-            ``PatchSpecError``, so a caller that must tell a malformed SPEC from a bad VALUE tests
-            for ``PatchSpecError`` (or lists the two types).
+            A document fails model validation: the stored row is unreadable, or the document the
+            write would produce no longer validates against the model. The write is rolled back (a
+            savepoint inside a caller's transaction) and the row is unchanged. It is a ``ValueError``
+            subclass but NOT a ``PatchSpecError``, and it is re-raised as itself, never wrapped, so a
+            caller that must tell a malformed SPEC from a bad VALUE tests for ``PatchSpecError`` (or
+            lists the two types).
         primer.model.except_.ProviderError
             Any OTHER failure under the write is a backend failure, wrapped like every other one and
-            never reported as the caller's mistake: a ``ValueError`` that is not a ``PatchSpecError``
-            (a corrupt stored document, a driver quirk) is a ``ProviderError`` on both backends. A
-            database error is a ``ProviderError`` from SQLite (a ``ServerError``, its subclass, for a
+            never reported as the caller's mistake: a ``ValueError`` that is neither a
+            ``PatchSpecError`` nor a ``ValidationError`` (a stored document that is not valid JSON, a
+            driver quirk) is a ``ProviderError`` on both backends. A database error is a
+            ``ProviderError`` from SQLite (a ``ServerError``, its subclass, for a
             ``sqlite3.OperationalError`` such as a locked database) and a ``ServerError`` from
             Postgres (any ``asyncpg.PostgresError``; a non-database failure is a ``ProviderError``).
 
