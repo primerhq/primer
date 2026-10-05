@@ -300,7 +300,20 @@ loop emits one `llm_call` event per model call, `translate_stream_event` persist
 it as an `llm_call` record (`SessionMessageKind.LLM_CALL`), and the timeline folds
 those into the turn tree. Both transcript renderers hide the kind, since it is
 Trace material rather than conversation; the paged `/messages` read still returns
-it.
+it. Beyond the call's identity, tokens, duration and status, a record carries, only
+when there is one: `estimated_input_tokens` and `context_length` (the model profile's
+window at the time, so the compaction trigger can be recomputed from the record
+without joining a profile that has since changed) when the provider reported usage,
+`cached_input_tokens` (the cached subset of `input_tokens`; the OpenAI-compatible
+adapter reads it from `prompt_tokens_details.cached_tokens`), and `guard` (`kept` or
+`reduced` when a prompt guard was installed, which today is only the replay after a
+context overflow). A record for a call without usage and without a guard is exactly
+what it was before these keys. They exist for the Phase 0 decision rule of the
+prompt-size accounting work, which groups records by `(provider_id, model)` because
+the `llm_prompt_estimate_ratio` label is `provider_id` only (one OpenRouter or
+aggregated provider hides several tokenizers): `scripts/analyse_estimate_ratio.py DIR
+...` reads the `messages.jsonl` files under the given directories and prints the
+verdict of that rule with the figures it rests on.
 
 Four declared metrics are not yet written by any call site and scrapers will see
 them as never-incremented zeros: `llm_retry_total` (no adapter increments it),
