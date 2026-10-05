@@ -71,8 +71,8 @@ logger = logging.getLogger(__name__)
 _STOPPED_REFUSAL = "not run: stopped by user"
 # ... and when the round it asked for is the one that hit ``max_tool_turns``.
 _TOOL_CAP_REFUSAL = "not executed: tool-turn cap reached"
-# ... and when a Stop landed while the call that asked to park (or one before it) was running: that call, and the ones
-# before it in the batch, started and their results went with the park exception, so it cannot say "not run".
+# ... and when a Stop landed while the call that asked to park was running: it started and never reported a result, so
+# it cannot say "not run". (The calls that finished before it keep their real results.)
 _PARK_STOPPED_REFUSAL = "interrupted: stopped by user (the call may have run, and its result was not recorded)"
 
 
@@ -117,8 +117,13 @@ def _answer_a_stopped_park(
 
     The client actions the batch already delivered go out first (tool_call -> client_action -> tool_result, as in the
     normal path). For a ``tool_wait`` batch the notifying calls already RAN and keep their real results, and the
-    claimable ones never started. For an in-process park the call that asked to wait and every call before it ran (or
-    is running), with their results lost to the exception, and the calls after it never started.
+    claimable ones never started. For an in-process park the dispatch stamped the exception with the position of the
+    call that asked to wait and the results of the calls that had finished before it
+    (:func:`_dispatch_tool_calls`): those keep their REAL results, the call that asked to wait is answered "may have
+    run" (it was running and may have had effects it never reported), and the calls after it never started. The
+    position, not ``park.tool_call_id``, finds the yielding call: for a nested yield (invoke_agent, invoke_graph) that
+    id is the INNER call's raw provider id, which restarts every stream and can equal an earlier outer id. With no
+    stamp every call is answered "may have run": never "not run" for a call that might have run.
     """
     for action in client_actions:
         yield ExtendedEvent(extended=action)
@@ -126,12 +131,13 @@ def _answer_a_stopped_park(
     if isinstance(park, ToolWaitPark):
         own = {result.id: result for _scoped_id, result in park.notifying_results}
     else:
-        started = True
-        for call in tool_calls:
-            if started:
-                own[call.id] = ToolResultPart(id=call.id, output=_PARK_STOPPED_REFUSAL, error=True)
-            if call.id == park.tool_call_id:
-                started = False
+        index = park.batch_index
+        if index is None or not 0 <= index < len(tool_calls):
+            own = {call.id: ToolResultPart(id=call.id, output=_PARK_STOPPED_REFUSAL, error=True) for call in tool_calls}
+        else:
+            own = {part.id: part for part in park.completed_results or []}
+            yielding = tool_calls[index]
+            own[yielding.id] = ToolResultPart(id=yielding.id, output=_PARK_STOPPED_REFUSAL, error=True)
     yield from _answer_undispatched(tool_calls, _STOPPED_REFUSAL, messages_out, results=own)
 
 
@@ -271,6 +277,7 @@ async def run_agent_turn(
     interrupt: "asyncio.Event | None" = None,
     interrupted_out: "list[bool] | None" = None,
     capped_out: "list[bool] | None" = None,
+    stopped_park_out: "list[YieldToWorker | ToolWaitPark] | None" = None,
     intercept_context_overflow: bool = False,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
@@ -409,11 +416,13 @@ async def run_agent_turn(
         park (a timer yield, an approval or answer gate, or a ``tool_wait``
         park). A park that waits on no human decision is ended as a Stop: the
         loop catches the park exception while the event is set, answers the
-        round (the call that asked to wait and every call before it say
-        ``interrupted: stopped by user ...`` because their results went with
-        the exception, the later ones ``not run: stopped by user``, and a
-        ``tool_wait`` batch keeps its notifying calls' real results), appends
-        to ``interrupted_out`` and returns. A park that asks a PERSON (see
+        round (the calls that finished before the one that asked to wait keep
+        their real results, which the dispatch stamps on the exception as it
+        leaves; the call that asked to wait, found by its position in the batch
+        and not by its id, says ``interrupted: stopped by user ...``; the later
+        ones ``not run: stopped by user``; a ``tool_wait`` batch keeps its
+        notifying calls' real results), appends to ``interrupted_out``, hands
+        the park to ``stopped_park_out`` and returns. A park that asks a PERSON (see
         :data:`primer.model.yield_.YIELD_KIND_PREFIXES`) still parks and the
         Stop is dropped: what they answer later wins. Calls later in the batch
         are refused once the Stop is set, so they can neither park nor deliver
@@ -427,6 +436,11 @@ async def run_agent_turn(
         ``messages_out``). ``messages_out`` then holds only COMPLETED rounds: the
         interrupted round's partial assistant text is never appended, so it never
         reaches the model's history.
+    stopped_park_out
+        Optional caller-provided list; the park exception is appended when a Stop
+        ended a park (see ``interrupt``). The dispatch needs it: what the park's
+        tool had already created (an external tool's pending call row) is cleaned
+        up by the cancelled exit, which only the dispatch can reach.
     capped_out
         Optional caller-provided list; ``True`` is appended when the turn ended
         because the model asked for another tool round at ``agent.max_tool_turns``
@@ -713,6 +727,8 @@ async def run_agent_turn(
                 yield answer_event
             if interrupted_out is not None:
                 interrupted_out.append(True)
+            if stopped_park_out is not None:
+                stopped_park_out.append(park)
             return
         # Delivery frames go out BEFORE the results so the session log
         # reads tool_call -> client_action -> tool_result, matching the
@@ -844,6 +860,13 @@ async def _dispatch_tool_calls(
         try:
             rp = await tool_manager.execute(call, principal=principal)
         except AuthRequiredError:
+            raise
+        except YieldToWorker as park:
+            # Say where in this batch the call asked to wait and what had finished before it, as the exception
+            # leaves (a Stop that ends the park answers the round from these; a normal park ignores them). The
+            # outermost batch stamps last, so a nested yield carries the OUTER position, not the subagent's.
+            park.batch_index = index
+            park.completed_results = list(result_parts)
             raise
         except PrimerError as exc:  # defence-in-depth.
             rp = ToolResultPart(id=call.id, output=str(exc), error=True)

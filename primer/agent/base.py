@@ -96,6 +96,7 @@ if TYPE_CHECKING:
     from primer.int.artifact_storage import ArtifactStorage
     from primer.int.llm import LLM
     from primer.model.agent import Agent
+    from primer.model.yield_ import ToolWaitPark, YieldToWorker
     from primer.model_profile import ResolvedModel
 
 
@@ -190,6 +191,10 @@ class _BaseAgentExecutor(ABC):
         # returns cleanly, so there is no exception to read). Reset at the start of
         # every invoke; dispatch reads it after the event stream ends.
         self.was_interrupted: bool = False
+        # The park a Stop ended in the LATEST invoke() (see run_agent_turn's ``stopped_park_out``), else None. Dispatch
+        # reads it in the cancelled exit: what the park's tool had already created (an external tool's pending call
+        # row) is cleaned up there. Reset at the start of every invoke.
+        self.stopped_park: "YieldToWorker | ToolWaitPark | None" = None
         # True when the LATEST invoke() ended because the model asked for another tool
         # round at ``agent.max_tool_turns``. The model's last event is still
         # Done(tool_use), so the post-turn status mapper cannot tell this from a turn
@@ -812,9 +817,11 @@ class _BaseAgentExecutor(ABC):
         full_turn_messages = record.messages
         prompt = self._build_prompt(history, new_messages)
         self.was_interrupted = False
+        self.stopped_park = None
         self.hit_tool_turn_cap = False
         interrupted_holder: list[bool] = []
         capped_holder: list[bool] = []
+        stopped_park_holder: list[Any] = []
 
         # Shared helper handles the LLM+tool dispatch loop. We tap
         # every event into our subscriber fan-out + caller stream;
@@ -839,6 +846,7 @@ class _BaseAgentExecutor(ABC):
                 interrupt=self._interrupt_event,
                 interrupted_out=interrupted_holder,
                 capped_out=capped_holder,
+                stopped_park_out=stopped_park_holder,
                 tools=tools,
                 budget=budget,
                 initial_tool_round=initial_tool_round,
@@ -877,6 +885,7 @@ class _BaseAgentExecutor(ABC):
         # (assistant + tool rounds, always paired); the interrupted round's partial
         # assistant text never became a message, so it never reaches the history.
         self.was_interrupted = bool(interrupted_holder)
+        self.stopped_park = stopped_park_holder[0] if stopped_park_holder else None
         self.hit_tool_turn_cap = bool(capped_holder)
 
         # Persist only when the loop actually produced an assistant

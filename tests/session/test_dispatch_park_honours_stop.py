@@ -20,6 +20,7 @@ What is pinned here, as the session records it:
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -29,11 +30,14 @@ from primer.agent.loop import run_agent_turn
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, Message, TextPart, ToolCallEnd, ToolCallStart, ToolResultPart
 from primer.model.model_profile import ModelProfileConfig
+from primer.model.external_tool import ExternalToolCall
+from primer.model.storage import OffsetPage
 from primer.model.tool_call_task import ToolCallTask
 from primer.model.workspace_session import SessionMessageKind, SessionStatus, WorkspaceSession
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.model_profile import ResolvedModel
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
+from primer.storage.q import Q
 from tests.session.test_dispatch import (  # noqa: F401  (fixtures are used by name)
     _make_lease,
     fake_event_bus,
@@ -117,6 +121,7 @@ class _RealLoopExecutor:
         self.event = None
         self._resolver = None
         self.was_interrupted = False
+        self.stopped_park = None
 
     def bind_interrupt_event(self, event) -> None:
         self.event = event
@@ -126,15 +131,18 @@ class _RealLoopExecutor:
 
     async def invoke(self, messages: list[Any], **_kwargs: Any):
         holder: list[bool] = []
+        stopped: list[Any] = []
+        self.stopped_park = None
         async for ev in run_agent_turn(
             agent=AGENT, llm=self.llm, llm_model=MODEL, tool_manager=self.manager,
             prompt=[Message(role="user", parts=[TextPart(text="go")])],
-            interrupt=self.event, interrupted_out=holder,
+            interrupt=self.event, interrupted_out=holder, stopped_park_out=stopped,
             tool_calls_as_claims_enabled=self._tool_calls_as_claims_enabled,
             resolve_scoped_call=self._resolver, await_dispatch_barrier=self.barrier,
         ):
             yield ev
         self.was_interrupted = bool(holder)
+        self.stopped_park = stopped[0] if stopped else None
 
 
 class _RecordingClaims:
@@ -223,6 +231,28 @@ class TestAStopPendingWhenATurnWouldParkOnATimer:
         assert seen.terminal == [{"status": "waiting", "ended_reason": None}]
         assert "session.parked" not in seen.emitted
 
+    async def test_the_calls_that_finished_before_the_yielding_one_keep_their_real_results_in_the_transcript(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        """A delivered notifying call and a completed call are not reported as 'may have run': they ran, and said so."""
+        sid = seeded_session.id
+        llm = _OneRoundLlm([("n", "notify_tool"), ("x", "wait"), ("a", "wait"), ("b", "wait")])
+        manager = _Manager(parking="a", key="timer:", storage=fake_storage_provider, bus=fake_event_bus, sid=sid)
+
+        outcome = await _turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, _RealLoopExecutor(llm, manager),
+        )
+
+        assert outcome.park is None and manager.executed == ["x", "a"]
+        records = _records(fake_workspace_io, sid)
+        calls = _call_ids(records)
+        results = _results(records)
+        assert sorted(results) == sorted(calls) and len(calls) == 4, f"the round is not paired: {results}"
+        # In the order the round asked for them: n, x, a, b.
+        assert [(results[c]["output"], results[c]["error"]) for c in calls] == [
+            ("delivered", False), ("ran", False), (PARKED_STOP, True), (STOPPED, True),
+        ]
+
     async def test_without_a_stop_the_timer_park_parks_as_before(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
     ) -> None:
@@ -293,6 +323,83 @@ class TestCancelBeatsStop:
         assert records[-1]["kind"] == SessionMessageKind.CANCELLED and records[-1]["payload"]["reason"] == "operator_cancel"
         assert sorted(_results(records)) == sorted(_call_ids(records)), "the call was left unanswered"
         assert seen.terminal == [{"status": "ended", "ended_reason": "cancelled"}]
+
+
+class _ExternalToolManager(_Manager):
+    """What the invoker-supplied tool provider does for ``parking``: write the pending ExternalToolCall row, then yield on
+    its ``external_tool:<session>:<call>`` key (``primer/agent/external_tools.py``). The Stop lands in that window."""
+
+    def __init__(self, *args: Any, land_the_stop: bool = True, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.land_the_stop = land_the_stop
+
+    async def execute(self, call, *, principal=None):
+        self.executed.append(call.id)
+        if call.id != self.parking:
+            return ToolResultPart(id=call.id, output="ran", error=False)
+        row = ExternalToolCall(
+            session_id=self.sid, tool_call_id=call.id, tool_name="external__lookup", created_at=datetime.now(UTC),
+        )
+        await self.storage.get_storage(ExternalToolCall).create(row)
+        if self.land_the_stop:
+            await self.stop_lands()
+        raise YieldToWorker(
+            Yielded(
+                tool_name="external_tool_park", event_key=f"external_tool:{self.sid}:{call.id}",
+                resume_metadata={"external_call_row_id": row.id},
+            ),
+            tool_call_id=call.id,
+        )
+
+
+class TestAStopThatEndsAnExternalToolPark:
+    """An invoker-supplied tool is a park that asks no person (the lead's ruling), so a Stop ends it. Its provider writes
+    a pending ExternalToolCall row BEFORE it yields, and a turn that ends instead of parking would leave that row
+    listed as pending (and answering it a 409). The cancelled exit cancels it, as the cancel and steer routes do."""
+
+    async def _rows(self, storage, sid: str) -> list[ExternalToolCall]:
+        page = await storage.get_storage(ExternalToolCall).find(
+            Q(ExternalToolCall).where("session_id", sid).build(), OffsetPage(offset=0, length=50),
+        )
+        return list(page.items)
+
+    async def test_the_pending_row_is_cancelled_when_the_stop_ends_the_park(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+        llm = _OneRoundLlm([("a", "wait")])
+        manager = _ExternalToolManager(
+            parking="a", key="", storage=fake_storage_provider, bus=fake_event_bus, sid=sid,
+        )
+
+        outcome = await _turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, _RealLoopExecutor(llm, manager),
+        )
+
+        assert outcome.park is None
+        rows = await self._rows(fake_storage_provider, sid)
+        assert [(r.tool_call_id, r.status, r.is_error) for r in rows] == [("a", "cancelled", True)], (
+            f"the stopped call's row was left behind: {[(r.tool_call_id, r.status) for r in rows]}"
+        )
+        assert rows[0].result == {"cancelled": True, "reason": "stopped by user"} and rows[0].resolved_at is not None
+
+    async def test_without_a_stop_the_park_happens_and_the_row_stays_pending(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        """The control: nothing pending, so the park happens and the row is the invoker's to answer."""
+        sid = seeded_session.id
+        llm = _OneRoundLlm([("a", "wait")])
+        manager = _ExternalToolManager(
+            parking="a", key="", storage=fake_storage_provider, bus=fake_event_bus, sid=sid, land_the_stop=False,
+        )
+
+        outcome = await _turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, _RealLoopExecutor(llm, manager),
+        )
+
+        assert outcome.park is not None and outcome.park.parked_event_key == f"external_tool:{sid}:a"
+        rows = await self._rows(fake_storage_provider, sid)
+        assert [(r.tool_call_id, r.status) for r in rows] == [("a", "pending")]
 
 
 class TestAStopPendingWhenABatchWouldParkAsClaims:

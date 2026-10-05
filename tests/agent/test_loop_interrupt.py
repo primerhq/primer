@@ -36,6 +36,7 @@ from primer.model.chat import (
     TextPart,
     Tool,
     ToolCallEnd,
+    ToolCallPart,
     ToolCallStart,
     ToolResultPart,
     _ClientAction,
@@ -161,10 +162,14 @@ class _Manager:
     def __init__(
         self, gate: asyncio.Event | None = None, on_start=None, parks: frozenset[str] = frozenset(),
         notifying: frozenset[str] = frozenset(), park_key_prefix: str = "timer:",
+        park_tool_call_ids: dict[str, str] | None = None,
     ) -> None:
         self.gate = gate
         self.on_start = on_start
         self.parks = parks                       # call ids whose execution parks the session (YieldToWorker)
+        # A nested yield (invoke_agent / invoke_graph) re-raises the INNER call's YieldToWorker, so its tool_call_id is
+        # the inner call's raw provider id, which restarts every stream and can equal an earlier OUTER id.
+        self.park_tool_call_ids = park_tool_call_ids or {}
         self.park_key_prefix = park_key_prefix   # what the parking call waits on: a timer, an approval, an answer
         self.notifying = notifying               # tool NAMES the runner answers itself (client actions)
         self.started = asyncio.Event()
@@ -192,7 +197,7 @@ class _Manager:
         if call.id in self.parks:
             raise YieldToWorker(
                 Yielded(tool_name=call.name, event_key=f"{self.park_key_prefix}{call.id}", resume_metadata={}),
-                tool_call_id=call.id,
+                tool_call_id=self.park_tool_call_ids.get(call.id, call.id),
             )
         if self.gate is not None:
             await self.gate.wait()
@@ -634,11 +639,14 @@ class TestAStopThatLandsWhileACallAsksToPark:
     (so the history stays valid), the loop returns cleanly and reports the interruption. A park that asks a PERSON
     (an approval, an answer) still parks: what they answer later wins over the earlier Stop."""
 
-    async def _drive_parking(self, calls, parking: str, *, key_prefix: str = "timer:", stop: bool = True):
+    async def _drive_parking(
+        self, calls, parking: str, *, key_prefix: str = "timer:", stop: bool = True,
+        notifying: frozenset[str] = frozenset(), inner_ids: dict[str, str] | None = None,
+    ):
         interrupt = asyncio.Event()
         manager = _Manager(
             on_start=(lambda c: interrupt.set() if c.id == parking else None) if stop else None,
-            parks=frozenset({parking}), park_key_prefix=key_prefix,
+            parks=frozenset({parking}), park_key_prefix=key_prefix, notifying=notifying, park_tool_call_ids=inner_ids,
         )
         llm = _ScriptedLLM(_round_of(*calls), _AFTER)
         events, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
@@ -652,18 +660,89 @@ class TestAStopThatLandsWhileACallAsksToPark:
         assert manager.executed == ["a"]
         assert interrupted == [True] and llm.calls == 1, "the turn did not end as a Stop before the next model call"
 
-    async def test_the_running_call_and_the_ones_before_it_say_their_result_was_not_recorded(self) -> None:
-        """The calls before the one that asked to wait ran and their results went with the exception; the calls after
-        it never started. Each is answered with what holds for it."""
-        manager, _, _, messages_out, _ = await self._drive_parking(
-            [("x", "loop_tool"), ("a", "loop_tool"), ("b", "loop_tool")], parking="a",
+    async def test_the_calls_before_the_yielding_one_keep_their_real_results(self) -> None:
+        """Each call is answered with what holds for it. The calls before the one that asked to wait FINISHED: their real
+        results are still in the dispatch's frame when the park exception leaves it, so they are kept (a delivered
+        notifying call, a completed write); only the call that asked to wait may have had effects it never reported, and
+        the calls after it never started."""
+        manager, _, events, messages_out, _ = await self._drive_parking(
+            [("n", "notify_tool"), ("x", "loop_tool"), ("a", "loop_tool"), ("b", "loop_tool")], parking="a",
+            notifying=frozenset({"notify_tool"}),
         )
 
-        assert manager.executed == ["x", "a"]
+        assert manager.executed == ["x", "a"] and manager.delivered == ["n"]
         assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [
-            ("x", PARKED_STOP, True), ("a", PARKED_STOP, True), ("b", STOPPED, True),
+            ("n", "delivered", False), ("x", "ok", False), ("a", PARKED_STOP, True), ("b", STOPPED, True),
         ]
         assert [m.role for m in messages_out] == ["assistant", "tool"], "one paired, completed round"
+        assert _client_actions(events) == ["n"], "the delivered notifying call's client action was lost"
+        history = [Message(role="user", parts=[TextPart(text="go")]), *messages_out]
+        assert_anthropic_valid(history)
+        assert_openai_valid(history)
+
+    async def test_a_nested_yield_whose_inner_id_equals_an_earlier_outer_id_is_matched_by_position(self) -> None:
+        """invoke_agent / invoke_graph re-raise the INNER call's YieldToWorker, so ``tool_call_id`` is the inner call's
+        raw provider id, and raw ids restart every stream ('call_0' again). Matching on that id answered the outer call
+        that RAN the whole subagent 'not run' and the earlier call 'may have run'. The yielding call is the one at the
+        batch position the dispatch stamped."""
+        manager, _, _, messages_out, _ = await self._drive_parking(
+            [("call_0", "loop_tool"), ("call_1", "loop_tool")], parking="call_1", inner_ids={"call_1": "call_0"},
+        )
+
+        assert manager.executed == ["call_0", "call_1"]
+        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [
+            ("call_0", "ok", False), ("call_1", PARKED_STOP, True),
+        ]
+
+    async def test_a_nested_yield_with_a_distinct_inner_id_leaves_the_later_calls_not_run(self) -> None:
+        """Nothing matches by id here, and the call after the yielding one still never started."""
+        manager, _, _, messages_out, _ = await self._drive_parking(
+            [("a", "loop_tool"), ("b", "loop_tool")], parking="a", inner_ids={"a": "inner1"},
+        )
+
+        assert manager.executed == ["a"]
+        assert [(p.id, p.output) for p in _tool_results(messages_out)] == [("a", PARKED_STOP), ("b", STOPPED)]
+
+    def test_a_park_whose_position_is_unknown_is_answered_may_have_run_for_every_call_never_not_run(self) -> None:
+        """No stamp (a yield that did not leave the in-process dispatch): the honest answer for each call is 'may have
+        run'. Claiming 'not run' for a call that might have run is the false statement to avoid."""
+        from primer.agent.loop import _answer_a_stopped_park
+
+        park = YieldToWorker(Yielded(tool_name="t", event_key="timer:x"), tool_call_id="x")
+        calls = [ToolCallPart(id="a", name="loop_tool", arguments={}), ToolCallPart(id="b", name="loop_tool", arguments={})]
+        messages_out: list[Message] = []
+
+        list(_answer_a_stopped_park(park, calls, [], messages_out))
+
+        assert [(p.id, p.output) for p in _tool_results(messages_out)] == [("a", PARKED_STOP), ("b", PARKED_STOP)]
+
+    async def test_the_stopped_park_is_handed_to_the_caller(self) -> None:
+        """Dispatch needs it (a stopped external_tool park leaves a pending row to cancel); a park that still parks, or no
+        Stop at all, hands over nothing."""
+        interrupt = asyncio.Event()
+        manager = _Manager(on_start=lambda c: interrupt.set(), parks=frozenset({"a"}))
+        stopped: list = []
+
+        async def drive(manager, interrupt, stopped_park_out):
+            async for _ in run_agent_turn(
+                agent=AGENT, llm=_ScriptedLLM(_round_of(("a", "loop_tool")), _AFTER), llm_model=MODEL,
+                tool_manager=manager, prompt=[Message(role="user", parts=[TextPart(text="go")])],
+                interrupt=interrupt, interrupted_out=[], stopped_park_out=stopped_park_out,
+            ):
+                pass
+
+        await asyncio.wait_for(drive(manager, interrupt, stopped), 3.0)
+
+        assert len(stopped) == 1 and isinstance(stopped[0], YieldToWorker) and stopped[0].yielded.event_key == "timer:a"
+
+        gated: list = []
+        interrupt = asyncio.Event()
+        manager = _Manager(
+            on_start=lambda c: interrupt.set(), parks=frozenset({"a"}), park_key_prefix="tool_approval:",
+        )
+        with pytest.raises(YieldToWorker):
+            await asyncio.wait_for(drive(manager, interrupt, gated), 3.0)
+        assert gated == [], "a park that asks a person is not a stopped park"
 
     async def test_every_answer_is_yielded_so_the_durable_log_is_paired_too(self) -> None:
         _, _, events, _, _ = await self._drive_parking([("a", "loop_tool"), ("b", "loop_tool")], parking="a")
@@ -741,6 +820,8 @@ class TestAStopThatLandsWhileACallAsksToPark:
         for prefix, kind in YIELD_KIND_PREFIXES:
             assert asks_a_person(park(f"{prefix}x").yielded) is True
             assert _classify_yield_kind(park(f"{prefix}x")) == kind
-        for key in ("timer:t1", "trigger:abc", "mcp_task:1", "watch:w"):
+        # The producers' own keys: timers, triggers, MCP tasks, watches, an invoker's external tool (the invoking system
+        # answers it, not the session's user: ruled a no-person park), an events wait, and a claimed tool_wait batch.
+        for key in ("timer:t1", "trigger:abc", "mcp_task:1", "watch:w", "external_tool:s:c", "evwait:s:c", "tool_wait:x"):
             assert asks_a_person(park(key).yielded) is False
             assert _classify_yield_kind(park(key)) == "subscribe_to_trigger"
