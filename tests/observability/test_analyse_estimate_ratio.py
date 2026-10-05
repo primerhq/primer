@@ -588,6 +588,156 @@ def test_the_percentile_interpolates_between_ranks():
     assert rule.percentile([1.0, 2.0, 3.0], 0.0) == 1.0 and rule.percentile([1.0, 2.0, 3.0], 1.0) == 3.0
 
 
+# ---- rule 3's consequence, at its edges ----------------------------------------------------------------------------------------
+
+def _fired_markers(s: Session, *, premature: int, calm: int, premature_at=0.3, calm_at=0.9) -> Session:
+    """Trigger-fired compactions, each after one call whose usage was ``*_at`` x trigger. The call's ESTIMATE is far under
+    the near-window gate, so it does not join the group whose ratios the verdict reads (only its usage is the occupancy)."""
+    for share, count in ((premature_at, premature), (calm_at, calm)):
+        for _ in range(count):
+            s.turn([{"est": int(0.2 * TRIGGER), "used": int(share * TRIGGER)}], day=5.0)
+            s.marker(day=5.0, before=TRIGGER + 1)
+    return s
+
+
+def test_exactly_a_tenth_of_the_compactions_premature_is_a_visible_consequence_and_a_twentieth_is_not(tmp_path):
+    """20 trigger-fired compactions: 2 premature is exactly 10% (build 1b: kills ``>`` and a share of 0.5), 1 is 5% (1a: kills a
+    share of 0.01)."""
+    assert 2 / 20 == rule.PREMATURE_SHARE
+    ten = _run(_fired_markers(_singles(_wide()), premature=2, calm=18).write(tmp_path / "a"))
+    assert ten["facts"]["premature_compaction_share"] == 0.1 and ten["verdict"] == BUILD_1B, ten["reason"]
+    five = _run(_fired_markers(_singles(_wide()), premature=1, calm=19).write(tmp_path / "b"))
+    assert five["facts"]["premature_compaction_share"] == 0.05
+    assert five["verdict"] == ONLY_1A and "no visible consequence" in five["reason"]
+
+
+def test_a_compaction_after_a_call_at_six_tenths_of_the_trigger_is_premature_and_one_at_eight_tenths_is_not(tmp_path):
+    """Occupancy is compared with 0.75 x trigger: 0.6 is under it (a share of 0.5 would call it fine), 0.8 is over it."""
+    low = _run(_fired_markers(_singles(_wide()), premature=10, calm=0, premature_at=0.6).write(tmp_path / "a"))
+    assert low["facts"]["premature_compaction_share"] == 1.0 and low["verdict"] == BUILD_1B
+    high = _run(_fired_markers(_singles(_wide()), premature=10, calm=0, premature_at=0.8).write(tmp_path / "b"))
+    assert high["facts"]["premature_compaction_share"] == 0.0 and high["verdict"] == ONLY_1A
+
+
+def test_exactly_one_replay_per_200_near_window_turns_is_a_visible_consequence_and_just_under_is_not(tmp_path):
+    """2 replay turns among 400 near-window turns (398 ordinary + the 2) is exactly 1.0 per 200: build 1b (kills ``>`` and a
+    threshold of 1.9); among 401 it is 0.9975: 1a (kills a threshold of 0.5)."""
+    exact = _run(_with_replays(_singles(_wide(398)), 2).write(tmp_path / "a"))
+    assert exact["facts"]["replays_per_200_near_window_turns"] == 1.0 and exact["verdict"] == BUILD_1B, exact["reason"]
+    under = _run(_with_replays(_singles(_wide(399)), 2).write(tmp_path / "b"))
+    assert (under["facts"]["near_window_turns"], under["facts"]["replay_turns"]) == (401, 2)
+    assert under["facts"]["replays_per_200_near_window_turns"] == round(200 * 2 / 401, 4) < 1.0
+    assert under["verdict"] == ONLY_1A and "no visible consequence" in under["reason"]
+
+
+def test_turns_that_are_not_near_window_do_not_dilute_the_replay_rate(tmp_path):
+    """The denominator is near-window turns (and the replay turns themselves): a thousand small turns beside them change
+    nothing, so the same 2 replays per 400 stay a visible consequence."""
+    s = _with_replays(_singles(_wide(398)), 2)
+    for i in range(1000):
+        s.turn([{"ratio": 1.0, "est": int(0.2 * TRIGGER)}], day=8.0 * i / 999)
+    out = _run(s.write(tmp_path))
+    assert out["facts"]["near_window_turns"] == 400 and out["facts"]["replays_per_200_near_window_turns"] == 1.0
+    assert out["verdict"] == BUILD_1B
+
+
+def _uniform(lo: float, hi: float, n: int = 300) -> list[float]:
+    return [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+
+
+def test_a_kappa_error_just_under_and_just_over_fifteen_percent_decides_rule_3(tmp_path):
+    """Uniform ratios in [0.85, 1.15] leave a p90 error of 0.135 after correction by the median, [0.82, 1.18] leave 0.162 (both
+    with a spread over 1.25, so rule 2 does not answer first); replays are present in both."""
+    near = _run(_with_replays(_singles(_uniform(0.85, 1.15)), 3).write(tmp_path / "a"))
+    assert near["groups"][0].kappa_error < 0.15 and near["verdict"] == ONLY_1A and "no material group varies" in near["reason"]
+    over = _run(_with_replays(_singles(_uniform(0.82, 1.18)), 3).write(tmp_path / "b"))
+    assert over["groups"][0].kappa_error > 0.15 and over["verdict"] == BUILD_1B, over["reason"]
+
+
+# ---- the other exact edges ---------------------------------------------------------------------------------------------------------
+
+def test_a_group_at_exactly_five_percent_of_the_near_window_calls_is_material(tmp_path):
+    assert 210 / 4200 == rule.MATERIAL_SHARE
+    def build(small: int, root) -> dict:
+        s = Session()
+        for i in range(4200 - small):
+            s.turn([{"ratio": 1.0, "provider": "big"}], day=8.0 * i / 3989)
+        for i in range(small):
+            s.turn([{"ratio": 1.0, "provider": "small", "model": "m2"}], day=8.0 * i / (small - 1))
+        return {g.key[0]: g for g in _run(s.write(root))["groups"]}
+    at = build(210, tmp_path / "a")
+    assert at["small"].share == 0.05 and at["small"].material
+    below = build(209, tmp_path / "b")
+    assert below["small"].share < 0.05 and not below["small"].material
+
+
+def test_exactly_ninety_nine_percent_of_pairs_non_decreasing_keeps_the_anchor_and_98_5_does_not(tmp_path):
+    """200 pairs: 2 going backwards is exactly 0.99 (allowed: kills ``>``), 3 is 0.985 (demoted)."""
+    assert 198 / 200 == rule.MONOTONIC_FLOOR
+    def build(backwards: int, root) -> rule.Group:
+        s = Session()
+        for turn in range(100):
+            back = turn < backwards
+            s.turn([
+                {"est": NEAR, "used": NEAR}, {"est": NEAR + 2_000, "used": NEAR + 2_000},
+                {"est": NEAR + 4_000, "used": NEAR + 1_500 if back else NEAR + 4_000},
+            ], day=8.0 * turn / 99)
+        (group,) = rule.build_groups(rule.read_corpus([s.write(root)]), set())[0]
+        return group
+    two, three = build(2, tmp_path / "a"), build(3, tmp_path / "b")
+    assert (two.pairs, two.monotonic, two.anchor_allowed) == (200, 0.99, True)
+    assert (three.pairs, three.monotonic, three.anchor_allowed) == (200, 0.985, False)
+
+
+# ---- the recorder itself ---------------------------------------------------------------------------------------------------------
+
+class _Writer:
+    def __init__(self) -> None:
+        self.records: list[SessionMessageRecord] = []
+
+    async def append(self, rec: SessionMessageRecord) -> int:
+        self.records.append(rec)
+        return len(self.records)
+
+
+class _Bus:
+    async def publish(self, *args, **kwargs) -> None:
+        return None
+
+
+async def test_a_delegated_run_written_by_the_real_recorder_is_a_turn_of_its_own(tmp_path):
+    """The same shape as the hand-stamped fixture, but the child's records come out of ``DelegationRecorder.on_event``, so a
+    change to what the recorder stamps (the keys, which records it stamps) turns this red instead of leaving the fixture a
+    comfortable fiction."""
+    from primer.session.delegation import DelegationRecorder
+
+    s = Session()
+    for turn in range(40):
+        day = 8.0 * turn / 39
+        s.records.append(_llm_call(len(s.records) + 1, day, est=NEAR))
+        s.records.append(_done(len(s.records) + 1, day, "tool_use"))
+        writer = _Writer()
+        recorder = DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="s1")
+        child = [(NEAR // 4, NEAR // 4), (NEAR // 4 + 1_000, NEAR // 4 + 1_000)]
+        for k, (est, used) in enumerate(child):
+            call = ExtendedEvent(extended=_LlmCall(
+                profile_id="prof", provider_id="prov-a", model="m1", input_tokens=used, output_tokens=5,
+                estimated_input_tokens=est, context_length=CTX, duration_ms=10, status="ok",
+            ))
+            await recorder.on_event(call, delegate_tool_call_id="call_9")
+            await recorder.on_event(
+                Done(stop_reason="stop" if k == len(child) - 1 else "tool_use", raw_reason="x"), delegate_tool_call_id="call_9",
+            )
+        assert [r.kind.value for r in writer.records] == ["llm_call", "done"] * 2
+        assert all(r.payload["delegated"] is True and r.payload["delegate_tool_call_id"] == "call_9" for r in writer.records)
+        for rec in writer.records:
+            s.records.append(rec.model_copy(update={"seq": len(s.records) + 1, "created_at": _stamp(day)}))
+        s.records.append(_llm_call(len(s.records) + 1, day, est=NEAR + 2_000))
+        s.records.append(_done(len(s.records) + 1, day, "stop"))
+    (group,) = rule.build_groups(rule.read_corpus([s.write(tmp_path)]), set())[0]
+    assert group.pairs == 80 and group.monotonic == 1.0 and group.anchor_allowed is True
+
+
 # ---- the command line -------------------------------------------------------------------------------------------------------
 
 def test_the_cli_prints_a_verdict_json_and_warns_when_no_provider_is_excluded(tmp_path, capsys):
