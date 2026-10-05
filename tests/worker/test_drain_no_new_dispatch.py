@@ -372,3 +372,85 @@ async def test_a_claim_loop_idle_in_a_long_poll_notices_shutdown_promptly():
     finally:
         gate.set()
         await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stuck_loop", ["claim", "bus"])
+async def test_a_loop_that_ignores_its_cancel_is_abandoned_after_the_grace_and_the_drain_reaches_its_turn_wait(
+    stuck_loop, caplog,
+):
+    """``_stop_claiming`` cancels the bus loop (and the claim loop, once its iteration outlives the grace) and then
+    awaited each one WITHOUT a bound: a loop inside a call that ignores cancellation kept the drain from ever
+    reaching its turn wait, so the running turn here was never cancelled by the drain timeout and the drain never
+    ended. Each wait is bounded by the grace now; the stuck loop is abandoned with a WARNING naming it and counted."""
+    adapter = _SpyAdapter()
+    engine = InMemoryClaimEngine(adapters={KIND: adapter})
+    scheduler = InMemoryScheduler()
+    await scheduler.initialize()
+    loop = asyncio.get_event_loop()
+    let_go, entered = asyncio.Event(), asyncio.Event()
+    started: list[str] = []
+    turn_cancelled_at: list[float] = []
+
+    async def ignore_cancels() -> None:
+        entered.set()
+        while not let_go.is_set():
+            try:
+                await let_go.wait()
+            except asyncio.CancelledError:
+                pass                                              # an uninterruptible call
+
+    async def handler(lease):
+        started.append(lease.entity_id)
+        try:
+            await asyncio.Event().wait()                          # runs until the drain cancels it
+        except asyncio.CancelledError:
+            turn_cancelled_at.append(loop.time())
+            raise
+
+    if stuck_loop == "bus":
+        async def stuck_watch_ready():
+            await ignore_cancels()
+            return
+            yield
+
+        engine.watch_ready = stuck_watch_ready  # type: ignore[method-assign]
+    pool = await _pool(engine, scheduler, handler)
+    pool._claim_stop_grace_seconds = 0.3
+    try:
+        await engine.upsert(KIND, "running")
+        await _until(lambda: started == ["running"], "the turn never started")
+        if stuck_loop == "claim":
+            async def stuck_claim_due(worker_id, **kw):
+                await ignore_cancels()
+                return []
+
+            engine.claim_due = stuck_claim_due  # type: ignore[method-assign]
+            pool._wake.set()
+        await asyncio.wait_for(entered.wait(), timeout=3.0)
+
+        real_stop = pool._stop_claiming
+        stop_took: list[float] = []
+
+        async def timed_stop(grace=None):
+            t = loop.time()
+            await real_stop(grace)
+            stop_took.append(loop.time() - t)
+
+        pool._stop_claiming = timed_stop  # type: ignore[method-assign]
+        t0 = loop.time()
+        with caplog.at_level(logging.WARNING, logger="primer.worker.pool"):
+            await asyncio.wait_for(pool.drain_and_stop(timeout=1.0), timeout=5.0)
+
+        assert not let_go.is_set()                                # the stuck call is still stuck
+        assert stop_took and stop_took[0] < 1.0, f"_stop_claiming took {stop_took}: a stuck loop was awaited unbounded"
+        assert len(turn_cancelled_at) == 1, "the drain never reached its turn wait"
+        assert turn_cancelled_at[0] - t0 < 3.0
+        assert pool.metrics_snapshot()["primer_worker_loops_abandoned_on_drain_total"] == 1
+        assert any(
+            f"engine-{stuck_loop}-" in r.getMessage() and "abandoning" in r.getMessage() for r in caplog.records
+        ), "no WARNING named the abandoned loop"
+    finally:
+        let_go.set()
+        await asyncio.sleep(0.05)
+        await scheduler.aclose()

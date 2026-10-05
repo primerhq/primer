@@ -144,6 +144,8 @@ class WorkerPool:
         self._unstarted_releases: set[asyncio.Task] = set()
         self._claims_returned_on_drain_total: int = 0
         self._claim_returns_failed_on_drain_total: int = 0
+        # Claim or bus loops the drain abandoned because they did not stop within the grace (see _await_stopped_loop).
+        self._loops_abandoned_on_drain_total: int = 0
         # A release that has not finished in this long is abandoned (see ``_release_lease``). A slow release does NOT
         # leave the worker's leases heartbeated meanwhile: on Postgres the heartbeat is ONE ``UPDATE`` over every lease
         # this worker holds, the key being released is among them (it stays in ``_in_flight`` until the release ends),
@@ -301,7 +303,9 @@ class WorkerPool:
             logger.exception("drain_worker failed for %s", self._worker_id)
         # The turn wait normally lasts ``drain_timeout`` from here, but it is capped on the drain's own clock: a slow
         # ``drain_worker`` (a database call) must not push it past what the keep-alive deadline covers, or the lease
-        # heartbeat could end while turns still run. The cap allows the two ``_stop_claiming`` waits and no more.
+        # heartbeat could end while turns still run. The cap allows the two ``_stop_claiming`` waits a healthy drain can
+        # spend (the claim loop's last iteration, the hand-backs) and no more: a loop that has to be abandoned costs up to
+        # two more graces, and they come out of the turn wait.
         deadline = min(
             asyncio.get_event_loop().time() + drain_timeout,
             drain_started + drain_timeout + 2 * self._claim_stop_grace_seconds,
@@ -344,14 +348,18 @@ class WorkerPool:
             )
 
     async def _stop_claiming(self, grace: float | None = None) -> None:
-        """Stop the claim and bus loops, then wait for leases handed back unstarted."""
+        """Stop the claim and bus loops, then wait for leases handed back unstarted.
+
+        Every wait here is bounded by ``grace``, including the wait for a CANCELLED loop to finish: a loop stuck in a
+        call that ignores cancellation is abandoned (see :meth:`_await_stopped_loop`) so the drain still reaches its
+        turn wait. The worst case is therefore four graces (the bus loop's cancel, the claim loop's iteration and then
+        its cancel, the hand-backs); ``drain_and_stop`` allows two for it, so a loop that has to be abandoned shortens
+        the turn wait rather than pushing it past what the keep-alive covers.
+        """
         grace = self._claim_stop_grace_seconds if grace is None else grace
         if self._engine_bus_task is not None:
             self._engine_bus_task.cancel()
-            try:
-                await self._engine_bus_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await self._await_stopped_loop(self._engine_bus_task, grace)
             self._engine_bus_task = None
         claim = self._engine_claim_task
         if claim is not None:
@@ -359,14 +367,27 @@ class WorkerPool:
             await asyncio.wait({claim}, timeout=grace)
             if not claim.done():
                 claim.cancel()
-            try:
-                await claim            # retrieves an exception too, so none is logged as never retrieved
-            except (asyncio.CancelledError, Exception):
-                pass
+            await self._await_stopped_loop(claim, grace)
             self._engine_claim_task = None
         if self._unstarted_releases:
             # asyncio.wait, not wait_for(gather(...)): a timeout must not cancel a release.
             await asyncio.wait(set(self._unstarted_releases), timeout=grace)
+
+    async def _await_stopped_loop(self, task: asyncio.Task, grace: float) -> None:
+        """Wait up to ``grace`` for a loop task that was cancelled (or has stopped) to finish.
+
+        One that does not, because it is inside a call that ignores cancellation, is abandoned: a WARNING names it,
+        ``primer_worker_loops_abandoned_on_drain_total`` counts it, and the drain carries on without it.
+        """
+        await asyncio.wait({task}, timeout=grace)
+        if not task.done():
+            self._loops_abandoned_on_drain_total += 1
+            logger.warning(
+                "drain: %s did not stop within %.1fs of being cancelled; abandoning it and carrying on with the drain",
+                task.get_name(), grace,
+            )
+        # Retrieve its outcome (now or whenever it ends), so an exception is never logged as never retrieved.
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
     async def run_one_turn_now(self, session_id: str) -> None:
         """Test helper: claim and execute exactly one turn for ``session_id``.
@@ -406,6 +427,7 @@ class WorkerPool:
             "primer_worker_duplicate_claims_total": self._duplicate_claims_total,
             "primer_worker_claims_returned_on_drain_total": self._claims_returned_on_drain_total,
             "primer_worker_claim_returns_failed_on_drain_total": self._claim_returns_failed_on_drain_total,
+            "primer_worker_loops_abandoned_on_drain_total": self._loops_abandoned_on_drain_total,
             "primer_worker_release_timeouts_total": self._release_timeouts_total,
             "primer_worker_release_timeouts_committed_total": self._release_timeouts_committed_total,
             "primer_session_turns_total": dict(self._turns_total_by_result),
