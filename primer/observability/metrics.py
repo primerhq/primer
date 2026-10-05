@@ -303,6 +303,15 @@ session_interrupt_publish_failures_total = Counter(
     registry=registry,
 )
 
+tool_wait_malformed_scoped_id_total = Counter(
+    "tool_wait_malformed_scoped_id_total",
+    "Tool-call task ids that did not parse as a scoped id where a tool_wait wake key was needed, "
+    "by site (adapter: the last-sibling release woke nothing; materializer, dispatch, repark: "
+    "that batch's key was left out of the park). Any non-zero value is a bug in the id mint.",
+    ["site"],
+    registry=registry,
+)
+
 
 # ---------------------------------------------------------------------------
 # Cardinality guard (S7 section 4, crosscheck m2)
@@ -335,6 +344,9 @@ ALLOWED_LABEL_NAMES = frozenset({
     # Why a Stop was found on the session row (queued_before_turn / missed_while_running):
     # a closed enum, so bounded.
     "reason",
+    # Which code site met a malformed scoped tool-call id (adapter / materializer / dispatch /
+    # repark): a closed enum, so bounded.
+    "site",
 })
 """Every label name any Primer instrument is permitted to carry.
 
@@ -393,6 +405,7 @@ def reset_for_test() -> None:
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
     global llm_prompt_estimate_ratio  # noqa: PLW0603
     global compaction_outcomes_total  # noqa: PLW0603
+    global tool_wait_malformed_scoped_id_total  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
 
@@ -605,6 +618,14 @@ def reset_for_test() -> None:
         "session row and the running worker recovers it by polling, so it is delayed, not lost.",
         registry=registry,
     )
+    tool_wait_malformed_scoped_id_total = Counter(
+        "tool_wait_malformed_scoped_id_total",
+        "Tool-call task ids that did not parse as a scoped id where a tool_wait wake key was needed, "
+        "by site (adapter: the last-sibling release woke nothing; materializer, dispatch, repark: "
+        "that batch's key was left out of the park). Any non-zero value is a bug in the id mint.",
+        ["site"],
+        registry=registry,
+    )
 
 
 __all__ = [
@@ -646,4 +667,6 @@ __all__ = [
     # Stop (interrupt)
     "session_interrupts_via_poll_total",
     "session_interrupt_publish_failures_total",
+    # Tool-call claims
+    "tool_wait_malformed_scoped_id_total",
 ]
