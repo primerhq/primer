@@ -446,7 +446,9 @@ async def test_pure_graph_arm_with_no_parseable_batch_ends_the_turn_failed_inste
 
 
 @pytest.mark.asyncio
-async def test_agent_tool_wait_arm_with_a_malformed_id_ends_the_turn_failed_before_creating_rows(monkeypatch) -> None:
+async def test_agent_tool_wait_arm_with_a_malformed_id_ends_the_turn_failed_instead_of_parking(monkeypatch) -> None:
+    """The key is computed after the rows (row creation is unchanged, as in the graph arm), so a record missing for
+    an id still fails the turn with THAT reason first (test_tool_wait_seam_e2e pins it)."""
     import primer.observability.metrics as metrics
 
     metrics.reset_for_test()
@@ -459,7 +461,7 @@ async def test_agent_tool_wait_arm_with_a_malformed_id_ends_the_turn_failed_befo
     assert outcome.park is None and outcome.success is False
     row = await storage_provider.get_storage(WorkspaceSession).get("s-agent-bad")
     assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
-    assert await storage_provider.get_storage(ToolCallTask).get("s-agent-bad/x:tool:03:1") is None
+    assert await storage_provider.get_storage(ToolCallTask).get("s-agent-bad/x:tool:03:1") is not None
     assert metrics.tool_wait_malformed_scoped_id_total.labels("dispatch")._value.get() == 1.0
     errors = [m for m in _messages(io, "s-agent-bad") if m["kind"] == "error"]
     assert errors and "no wake key" in errors[-1]["payload"]["message"], errors

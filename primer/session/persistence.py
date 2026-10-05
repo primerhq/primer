@@ -1109,7 +1109,11 @@ async def materialize_pending_tool_wait_rows(
     graph node that raised its own ``ToolWaitPark`` in the same
     superstep. Returns each batch's own wake key (see
     ``tool_wait_event_key``), for the caller to fold into its own
-    ``event_keys``/``parked_event_keys``.
+    ``event_keys``/``parked_event_keys``. A batch whose task id does not
+    parse gets no key (logged at ERROR and counted, never guessed) and is
+    left out of the list; its rows are still created. The caller decides
+    what an empty list means: the mixed park still has its human gate's
+    key, a pure tool_wait park arm ends the turn failed.
 
     7a gate review (verdict R2-1): relocated here (from
     ``primer.session.dispatch``, where it was a private helper) so BOTH
@@ -1156,7 +1160,7 @@ async def materialize_pending_tool_wait_rows(
         external_call_id,
         tool_call_task_id,
     )
-    from primer.session.yields import tool_wait_event_key
+    from primer.session.yields import tool_wait_event_key_or_none
 
     if not pending_tool_waits:
         return []
@@ -1262,11 +1266,9 @@ async def materialize_pending_tool_wait_rows(
             (_stored(original, external_call_id(original, session_id)), r)
             for original, r in pw["notifying_results"]
         ]
-        wake_keys.append(
-            tool_wait_event_key(
-                session_id, turn_no, scoped_task_id=node_batch_ids[0],
-            )
-        )
+        wake_key = tool_wait_event_key_or_none(session_id, scoped_task_id=node_batch_ids[0], site="materializer")
+        if wake_key is not None:
+            wake_keys.append(wake_key)
     return wake_keys
 
 

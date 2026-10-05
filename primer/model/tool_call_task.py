@@ -178,9 +178,9 @@ class ToolCallTask(Identifiable):
     # conn param and would read outside this release's own transaction)
     # to determine "am I the last sibling to go terminal" - a genuinely
     # NEW piece of information each row needs (which OTHER ids share its
-    # batch), unlike a wake KEY, which is a pure function of session_id +
-    # turn_no alone (see primer.session.yields.tool_wait_event_key) and
-    # is deliberately NOT stored here for exactly that reason.
+    # batch), unlike a wake KEY, which is a pure function of the row's own
+    # id (see primer.session.yields.tool_wait_event_key) and is
+    # deliberately NOT stored here for exactly that reason.
     batch_task_ids: list[str] = Field(default_factory=list)
 
     # Set only while state == GATED (approval-required or a yielding tool
