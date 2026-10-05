@@ -256,6 +256,37 @@ async def test_two_concurrent_gets_on_a_cold_cache_share_one_workspace_and_only_
     assert other.closed == 1, "the caller that lost the race closed its own"
 
 
+async def test_a_cancel_during_the_losers_close_does_not_close_it_a_second_time(monkeypatch):
+    close_gate = asyncio.Event()
+    c = _Client(close_gate=close_gate)
+    monkeypatch.setattr(k8s_backend, "RuntimeClient", lambda **kwargs: c)
+    backend = _backend()
+    real = SandboxWorkspace.materialise.__func__
+
+    async def materialise_while_another_caller_wins(**kwargs):
+        ws = await real(SandboxWorkspace, **kwargs)
+        backend._workspaces["ws-1"] = object()
+        return ws
+
+    monkeypatch.setattr(SandboxWorkspace, "materialise", staticmethod(materialise_while_another_caller_wins))
+    task = asyncio.create_task(_reattach(backend))
+    for _ in range(100):
+        if c.close_started:
+            break
+        await asyncio.sleep(0.01)
+    assert c.close_started == 1 and not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert c.close_started == 1, "the build did not start a second close of a client that is already being closed"
+    close_gate.set()
+    for _ in range(100):
+        if c.closed:
+            break
+        await asyncio.sleep(0.01)
+    assert c.closed == 1
+
+
 # ---- the close itself --------------------------------------------------------------------------------------------------------------
 
 @BUILDS

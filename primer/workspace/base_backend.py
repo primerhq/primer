@@ -215,26 +215,44 @@ class BaseWorkspaceBackend(WorkspaceBackend):
         raise NotImplementedError
 
 
+#: How long a caller that must release a connection waits for the close before it carries on and leaves the close running.
+#: A peer that has gone silent can keep ``aclose`` (a WebSocket close handshake, an aiohttp session close) waiting for its
+#: own timeouts, and the caller is often under a bound of its own (the relay's read: 5 seconds).
+_CLOSE_WAIT_S = 3.0
+
+#: The closes in flight, held so a close that outlives its caller (a second cancel, the bound above) is not garbage collected
+#: before it has finished.
+_PENDING_CLOSES: "set[asyncio.Future]" = set()
+
+
+def _close_finished(task: "asyncio.Future", what: str) -> None:
+    _PENDING_CLOSES.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("%s: aclose failed: %s", what, task.exception())
+
+
 async def close_shielded(closable: object, *, what: str) -> None:
     """Close what a build that did not finish left open: a ``RuntimeClient``, a ``WSSandbox``, anything with ``aclose``.
 
     Run from the ``except BaseException`` (or ``finally``) of a backend's create or re-attach, so a cancel or a caller's
-    ``asyncio.timeout`` that ended the build is covered too. The close is SHIELDED: a second cancel (a drain, a bound
-    landing again) while it runs must not leave the socket and the aiohttp session half released, so it runs on its own
-    task and carries on. A close that fails is logged and never replaces the error that ended the build.
+    ``asyncio.timeout`` that ended the build is covered too. The close runs on its OWN task, so a second cancel (a drain, a
+    bound landing again) while the caller waits for it cannot leave the socket and the aiohttp session half released, and
+    the caller's wait is BOUNDED (``_CLOSE_WAIT_S``): past it the close carries on in the background and the caller goes on
+    with the error that ended the build, which a silent peer would otherwise have stretched by the close's own timeouts. A
+    close that fails is logged and never replaces that error.
     """
     aclose = getattr(closable, "aclose", None)
     if aclose is None:
         return
     closing = asyncio.ensure_future(aclose())
-    # Retrieve what the close dies of when a second cancel stops us waiting for it: no "never retrieved" noise.
-    closing.add_done_callback(lambda task: None if task.cancelled() else task.exception())
-    try:
-        await asyncio.shield(closing)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("%s: aclose failed: %s", what, exc)
+    _PENDING_CLOSES.add(closing)
+    closing.add_done_callback(lambda task: _close_finished(task, what))
+    # ``asyncio.wait`` does not cancel what it waits on, so a cancel of the caller leaves the close running.
+    done, _ = await asyncio.wait({closing}, timeout=_CLOSE_WAIT_S)
+    if not done:
+        logger.warning(
+            "%s: aclose still running after %gs; carrying on without waiting for it", what, _CLOSE_WAIT_S,
+        )
 
 
 __all__ = ["BaseWorkspaceBackend", "MergedTemplate", "close_shielded"]

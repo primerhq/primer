@@ -679,7 +679,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             k8s_object_name=obj_name,
         )
         client = RuntimeClient(url=url, token=token)
-        cached = False
+        released = False            # the client is no longer this function's to close: cached, or already being closed
         try:
             await client.connect()
             sandbox = WSSandbox(
@@ -702,17 +702,19 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             )
             async with self._lock:
                 existing = self._workspaces.get(workspace_id)
-                if existing is not None:
-                    # Another caller materialised first; drop ours.
-                    await close_shielded(client, what="redundant runtime client")
-                    return existing
-                self._workspaces[workspace_id] = ws
-                cached = True
-            return ws
+                if existing is None:
+                    self._workspaces[workspace_id] = ws
+                    released = True                     # the cache owns the client now
+                    return ws
+            # Another caller materialised first: its workspace wins and OUR client is closed, outside the lock. Marked
+            # released first, so a cancel that lands during the close does not close it a second time below.
+            released = True
+            await close_shielded(client, what="redundant runtime client")
+            return existing
         except BaseException:
             # A failure, a cancel or a caller's timeout anywhere between connect() and the cache insert (including the wait
             # for the lock) leaves the connection open and uncached, and the next call connects and leaks another one.
-            if not cached:
+            if not released:
                 await close_shielded(client, what="re-attach runtime client")
             raise
 
