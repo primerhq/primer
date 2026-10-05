@@ -451,31 +451,53 @@ class _BaseAgentExecutor(ABC):
                 fixed_overhead=fixed_overhead,
                 **self._compaction_tool_kwargs(),
             )
-            if self._replay_is_futile(forced, rounds=rounds):
-                # Nothing can be shrunk (the fixed part, or the input the model has not answered,
-                # already fills the window, or there is nothing before it to summarise): the replay would
-                # send the prompt that was just rejected, so fail now, with a name, instead of spending a
-                # model call on it. The rounds the turn completed are not lost: no marker was written, so
-                # they stay in the record and the chokepoint writes them on the way out.
+            changed = reduced != rounds       # our own reduction of the rounds the turn ran made a smaller prompt
+            if self._replay_is_futile(forced, changed=changed):
+                # Nothing can be shrunk (the fixed part, or the input the model has not answered, fills the
+                # window, or there is nothing before the question to summarise and nothing was reduced): the
+                # replay would send the prompt that was just rejected, so fail now, with a name, instead of
+                # spending a model call on it. The rounds the turn completed are not lost: no marker was
+                # written, so they stay in the record and the chokepoint writes them on the way out.
+                before = size([*history, *messages, *rounds]) + fixed_overhead
                 undercounted = (
-                    forced.budget_tokens is not None and forced.estimated_tokens_after < forced.budget_tokens
+                    not changed
+                    and forced.budget_tokens is not None
+                    and forced.estimated_tokens_after < forced.budget_tokens
                 )
                 raise ContextOverflowUnrecoverable(
                     f"the model rejected the prompt as too large and compaction cannot shrink it "
-                    f"({forced.unreducible}): about {forced.estimated_tokens_after} tokens by our estimate, "
-                    f"of which {forced.fixed_overhead_tokens} are the system prompt and tool schemas, against "
-                    f"a context window of {self._model.context_length}"
+                    f"({forced.unreducible}): about {forced.estimated_tokens_after} tokens by our estimate"
+                    + (
+                        f" ({before} before the {tool_rounds(rounds)} completed tool round(s) were reduced)"
+                        if changed else ""
+                    )
+                    + f", of which {forced.fixed_overhead_tokens} are the system prompt and tool schemas, "
+                    f"against a context window of {self._model.context_length}"
                     + (
                         "; the estimate is under the budget, so it undercounts what the provider counted "
                         "(images, documents and dense text are the usual causes)"
                         if undercounted else ""
                     ),
                     cause=exc,
-                    forced_compaction=False,
+                    forced_compaction=True,
                     replay_attempted=False,
                     persisted_rounds=self._persisted_rounds(record),
                 ) from exc
-            carried = await self._replace_compacted_head(
+            def fold_into_record() -> None:
+                """The marker holds the input and the rounds so far (the newest ones as messages, the rest in its
+                summary): they are durable, so the record lets them go and the replay starts clean."""
+                kept = kept_rounds(forced.new_messages, reduced)
+                record.kept_rounds += kept
+                record.summarised_rounds += tool_rounds(rounds) - kept
+                record.messages = []
+                record.inputs = 0
+
+            # The marker commit runs under a shield. A hard cancel that lands on this await must not leave
+            # the commit half-accounted: if it lands anyway, the rounds are in the marker, and a record that
+            # still held them would write them again on the way out (every tool_use id twice, a 400 on every
+            # later request). So the commit is allowed to finish, and the record is told, before the cancel
+            # goes on.
+            write = asyncio.ensure_future(self._replace_compacted_head(
                 forced.new_messages,
                 summary_message=forced.summary_message,
                 tokens_before=forced.estimated_tokens_before,
@@ -485,29 +507,45 @@ class _BaseAgentExecutor(ABC):
                 trigger_tokens=forced.trigger_tokens,
                 fixed_overhead_tokens=forced.fixed_overhead_tokens,
                 snapshot=history,
-            ) or []
+            ))
+            try:
+                carried = await asyncio.shield(write) or []
+            except asyncio.CancelledError:
+                try:
+                    await write
+                except BaseException:  # noqa: BLE001 -- the commit failed too: nothing landed, nothing to account
+                    pass
+                else:
+                    if forced.summary_message is not None:
+                        fold_into_record()
+                raise
             notes = self._compaction_notes(forced)
-            # The marker holds the input and the rounds so far (the newest ones as messages, the rest in its
-            # summary): they are durable, the replay starts clean.
             record.forced_compaction = True
-            kept = kept_rounds(forced.new_messages, reduced)
-            record.kept_rounds += kept
-            record.summarised_rounds += tool_rounds(rounds) - kept
-            record.messages = []
-            record.inputs = 0
+            if forced.summary_message is not None:
+                fold_into_record()
+            else:
+                # Nothing was summarised, so no marker holds the input and the rounds: they stay in the record,
+                # in the reduced form the replay is sent, and the chokepoint or a normal finish writes them.
+                record.messages = [*record.messages[: record.inputs], *reduced]
         finally:
             drained = await self._close_compaction_window() or []
         for note in notes:
             await self._emit(note)
             yield note
         record.replay_attempted = True
-        record.guard = self._compaction.replay_guard(self._model)
+        record.guard = self._compaction.replay_guard(self._model, fixed_overhead=fixed_overhead)
         # the compacted history, the lines written since it was read (mid-turn steers) and the steers
         # deferred while it ran: a steer is not left for the next turn
-        record.base = [*forced.new_messages, *carried, *drained]
+        replay_history = [*forced.new_messages, *carried, *drained]
+        # what the guard's recorded reductions are keyed against: the prompt before the record's own rounds
+        # (without a marker the reduced rounds are in the record AND at the end of the compacted history)
+        record.base = (
+            replay_history if forced.summary_message is not None
+            else [*forced.new_messages[: len(forced.new_messages) - len(reduced)], *carried, *drained]
+        )
         try:
             async for ev in self._run_loop(
-                history=record.base,
+                history=replay_history,
                 new_messages=[],
                 response_format=response_format,
                 tools=tools,
@@ -610,20 +648,26 @@ class _BaseAgentExecutor(ABC):
         return self._compaction.estimate_fixed_overhead(self._build_prompt([], []), tools)
 
     @staticmethod
-    def _replay_is_futile(forced: "CompactedTurn", *, rounds: "Sequence[Message]" = ()) -> bool:
+    def _replay_is_futile(forced: "CompactedTurn", *, changed: bool = False) -> bool:
         """Whether a forced compaction that came back ``unreducible`` ends the turn instead of replaying it.
 
-        It does when the replayed prompt would be the one the provider just rejected: nothing could be
-        summarised (``unreducible``) and the tier-1 prune changed no tool output. A prune that did shrink
-        something makes the replay a different prompt, so it gets its call. Our own estimate does NOT
-        decide it: an estimate under the budget only says the heuristic undercounts what the provider
-        counted (an image or a document is a flat guess, dense text runs over chars/4), and a byte-identical
-        prompt is rejected again whatever the estimate says. The error says so when they disagree.
+        ``fixed_over_budget`` and ``protected_over_budget`` always do: the compaction itself judged that the
+        part no history can give back (the system prompt and the tool schemas, or those plus the input the
+        model has not answered and the newest round) fills the budget.
 
-        With completed ``rounds`` it always does: an unreducible compaction wrote no marker, so continuing
-        would leave the folded rounds in memory only, and a replay that then failed would lose them. The
-        typed failure keeps them in the turn's record, where the persistence chokepoint writes them."""
-        return forced.outcome == "unreducible" and (bool(rounds) or forced.pruned_tool_outputs == 0)
+        ``empty_head`` (nothing precedes the protected part, so nothing could be summarised) does when the
+        replay would send the prompt the provider just rejected: the tier-1 prune changed no tool output and
+        neither did the caller (``changed``: the rounds the turn ran were reduced before the compaction, as
+        ALREADY RAN placeholders, so the replay is a smaller prompt than the one that was rejected and gets its
+        call; a fresh session whose first round was huge is exactly that case). Our own estimate does NOT
+        decide it: an estimate under the budget only says the heuristic undercounts what the provider counted
+        (an image or a document is a flat guess, dense text runs over chars/4), and a byte-identical prompt is
+        rejected again whatever the estimate says. The error says so when they disagree."""
+        if forced.outcome != "unreducible":
+            return False
+        if forced.unreducible in ("fixed_over_budget", "protected_over_budget"):
+            return True
+        return forced.pruned_tool_outputs == 0 and not changed
 
     @staticmethod
     def _compaction_notes(compacted: "CompactedTurn", *, skip_noted: bool = False) -> list[ExtendedEvent]:
