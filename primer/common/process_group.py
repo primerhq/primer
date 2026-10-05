@@ -28,9 +28,9 @@ logger = logging.getLogger(__name__)
 #: ``create_subprocess_*`` keyword that puts the child in its own session and process group (POSIX; ignored elsewhere).
 NEW_SESSION: dict[str, bool] = {"start_new_session": True} if os.name == "posix" else {}
 
-#: How long to wait for the killed process to be reaped. SIGKILL cannot be ignored, so this only bounds a process stuck
-#: in uninterruptible I/O; the kill has been sent either way.
-REAP_TIMEOUT_S = 5.0
+#: How long to wait for the killed group to be gone. SIGKILL cannot be ignored, so this only bounds a process stuck in
+#: uninterruptible I/O; the kill has been sent either way.
+REAP_TIMEOUT_S = 2.0
 
 _REAP_POLL_S = 0.01
 
@@ -44,10 +44,17 @@ async def kill_process_group(proc: asyncio.subprocess.Process, *, reap_timeout_s
     interrupted. A group that is already gone is not an error. The process itself is killed as well: a process that was
     NOT started in its own session leads no group, so the group kill finds nothing and the process must still die.
 
-    The wait is on ``proc.returncode``, NOT ``proc.wait()``: ``wait()`` also waits for the stdout/stderr pipes to close
-    whenever the exit has not been recorded yet (and it has not, right after the signal), and a process that left the
-    group (``setsid``) can hold those pipes open for as long as it lives. The pipes are then closed here, in a
-    ``finally``, so the caller never inherits them.
+    It returns once the kill has TAKEN EFFECT: ``proc`` has exited and no member of the group is left (a caller releases
+    a write lock after this, and the lock must not be released while a member of the group still runs), bounded by
+    ``reap_timeout_s``. The wait is on ``proc.returncode`` and the group, NOT ``proc.wait()``: ``wait()`` also waits
+    for the stdout/stderr pipes to close whenever the exit has not been recorded yet (and it has not, right after the
+    signal), and a process that left the group (``setsid``) can hold those pipes open for as long as it lives. The pipes
+    are then closed here, in a ``finally``, so the caller never inherits them.
+
+    An accepted edge: once the leader is gone and its group empty, its id is no longer reserved, so the group signal
+    (and the emptiness check) could in theory reach an unrelated group if the pid was recycled to a new group leader in
+    the meantime. That needs a pid wrap inside the caller's timeout; ``LocalWorkspace.diagnostic_exec`` and the init
+    command carry the same edge.
     """
     if os.name == "posix":
         try:
@@ -58,13 +65,30 @@ async def kill_process_group(proc: asyncio.subprocess.Process, *, reap_timeout_s
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + reap_timeout_s
-        while proc.returncode is None:
+        while not _is_gone(proc):
             if loop.time() >= deadline:
-                logger.warning("process %s was not reaped within %gs of its SIGKILL", proc.pid, reap_timeout_s)
+                logger.warning(
+                    "process %s (or a member of its group) was still there %gs after its SIGKILL: stuck in "
+                    "uninterruptible I/O? Giving up the wait; the pipes are closed regardless.",
+                    proc.pid, reap_timeout_s,
+                )
                 break
             await asyncio.sleep(_REAP_POLL_S)
     finally:
         _close_the_pipes(proc)
+
+
+def _is_gone(proc: asyncio.subprocess.Process) -> bool:
+    """``proc`` has exited (its exit recorded) and, on POSIX, nothing is left in the group it led."""
+    if proc.returncode is None:
+        return False
+    if os.name != "posix":
+        return True
+    try:
+        os.killpg(proc.pid, 0)
+    except OSError:
+        return True       # ProcessLookupError: empty; PermissionError: a member we cannot signal, nothing more to wait for
+    return False
 
 
 def _close_the_pipes(proc: asyncio.subprocess.Process) -> None:

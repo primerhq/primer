@@ -179,6 +179,70 @@ async def test_a_process_detached_into_its_own_session_survives_the_kill(tmp_pat
         _kill(detached, foreground)
 
 
+def _open_fds() -> int:
+    import gc
+
+    gc.collect()
+    return len(os.listdir("/proc/self/fd" if os.path.isdir("/proc/self/fd") else "/dev/fd"))
+
+
+@pytest.mark.parametrize("how", ["timeout", "cancel"])
+async def test_a_detached_process_that_holds_the_pipes_does_not_delay_the_kill_or_leak_them(
+    tmp_path: Path, monkeypatch, how: str,
+) -> None:
+    """A setsid'd process that inherited the shim's pipes survives the group kill and keeps them open. The kill must not
+    wait out its bound on them, and must close them itself: none of the shim's descriptors may stay open."""
+    _shell_as_the_shim(
+        monkeypatch,
+        f"setsid sleep 60 & echo $! > {tmp_path}/detached; sleep 60 & echo $! > {tmp_path}/foreground; wait",
+    )
+    detached = foreground = None
+    fds_before = _open_fds()
+    try:
+        run = asyncio.create_task(
+            LocalHardenedRunner().run(_req("sleeper", tmp_path / "unused"), timeout_seconds=1.0 if how == "timeout" else 60.0),
+        )
+        detached, foreground = await _pid(tmp_path / "detached"), await _pid(tmp_path / "foreground")
+        start = time.monotonic()
+        if how == "timeout":
+            out = await run
+            assert out.ok is False and out.error["type"] == "TimeoutError"
+            elapsed = time.monotonic() - start
+            assert elapsed < 1.0 + 2.5, "the kill waited on pipes a detached process holds open"
+        else:
+            run.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await run
+            assert time.monotonic() - start < 2.5, "the kill waited on pipes a detached process holds open"
+
+        assert await _gone(foreground)
+        assert _running(detached), "the group kill reached a process that was detached on purpose"
+        assert _open_fds() <= fds_before, "the shim's pipes are still open: the detached process holds them"
+    finally:
+        _kill(detached, foreground)
+
+
+async def test_a_second_cancel_while_the_kill_is_waiting_does_not_leave_the_shim_running(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The signal is sent FIRST and synchronously, so a second cancel cannot stop it being delivered."""
+    _shell_as_the_shim(monkeypatch, f"sleep 60 & echo $! > {tmp_path}/child; wait")
+    child = None
+    try:
+        run = asyncio.create_task(LocalHardenedRunner().run(_req("sleeper", tmp_path / "unused"), timeout_seconds=60.0))
+        child = await _pid(tmp_path / "child")
+        run.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+
+        assert await _gone(child), "a second cancel left what the shim started running"
+    finally:
+        _kill(child)
+
+
 async def test_a_shim_that_finishes_leaves_a_process_it_started_alone(tmp_path: Path, monkeypatch) -> None:
     """Nothing is killed on a normal finish."""
     _shell_as_the_shim(

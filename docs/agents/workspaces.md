@@ -290,18 +290,6 @@ contention.
   paths instead of the whole working directory, for more parallelism
   with other writers in the same directory.
 
-On a local workspace, `exec` runs the command in its own process
-group. When it times out (`timeout_ms`) or is cancelled, everything
-the command started (children, pipelines, background jobs) is killed
-with it, and the write lock is released only after that. A process the
-command deliberately detached (for example with `setsid`) is not
-killed. Nothing is killed when the command finishes on its own, so a
-job it left running in the background keeps running. To start
-something that must outlive a call that may time out or be cancelled,
-detach it and redirect its output: `setsid cmd >log 2>&1 &` (`nohup`
-alone does not detach it from the group, and without the redirect the
-job holds the call's output open).
-
 This is best-effort scoping, not a hard guarantee across arbitrary
 targets: a `write` to `a/f.txt` and an `exec` with `workdir="a"`
 serialize because they share the same directory scope, but a `write`
@@ -309,6 +297,28 @@ to `a/f.txt` and an `exec` with `workdir="b"` do NOT serialize even if
 that command's actual target is `../a/f.txt`. Declare `writes`
 explicitly whenever a command's real write target lives outside its
 `workdir`.
+
+### Stopping a command, and background jobs
+
+On a local workspace, `exec` runs the command in its own process
+group. When it times out (`timeout_ms`) or is cancelled, everything
+the command started (children, pipelines, background jobs) is killed
+with it, and the write lock is released only after that.
+
+A background job (`cmd &`) does not make the call return by itself:
+the call returns when the command has finished AND its output is
+closed. A job that inherited the call's output (no redirect) keeps it
+open, so the call waits until `timeout_ms`, returns a timeout error,
+and the job is killed with the rest of the group. `nohup` does not
+change that: it only ignores the hangup signal, the job stays in the
+group, and it is killed too. A job whose output is redirected
+(`cmd >log 2>&1 &`) lets the call return at once, and nothing is
+killed when a command finishes on its own, so such a job keeps running.
+
+To start something that must outlive a call that may time out or be
+cancelled (a dev server, a daemon), detach it into its own session AND
+redirect its output: `setsid cmd >log 2>&1 &`. A process in its own
+session is outside the group, so it is not killed.
 
 ## Gotchas
 

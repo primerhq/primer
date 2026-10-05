@@ -66,6 +66,15 @@ async def _pid(path: Path, within: float = 5.0) -> int:
     raise AssertionError(f"{path.name} was never written")
 
 
+def _open_fds() -> int:
+    """How many file descriptors this process has open (the leak a held pipe causes). Collected first so a transport that
+    is merely unreferenced does not count."""
+    import gc
+
+    gc.collect()
+    return len(os.listdir("/proc/self/fd" if os.path.isdir("/proc/self/fd") else "/dev/fd"))
+
+
 def _kill(pid: int) -> None:
     try:
         os.kill(pid, signal.SIGKILL)
@@ -131,18 +140,56 @@ async def test_a_cancel_kills_the_children_and_returns_promptly(tmp_path: Path, 
         _kill(child)
 
 
-async def test_the_write_lock_is_not_released_while_the_command_still_runs(tmp_path: Path) -> None:
-    """The lock must outlive the process, not the task: at the moment it is free the child is already gone."""
+@pytest.mark.parametrize("how", ["cancel", "timeout"])
+async def test_the_write_lock_is_not_released_while_the_command_still_runs(tmp_path: Path, how: str) -> None:
+    """The lock must outlive the process, not the task. A writer is already QUEUED on the scope lock when the command is
+    stopped, and it records, at the instant it acquires and with no polling, whether the child is still running: a kill
+    that is deferred, or that runs after the lock is released, lets it in while the child lives."""
     tool, locks = _tool(tmp_path)
+    run = asyncio.create_task(
+        tool.execute(_args("sleep 60 & echo $! > child.pid; wait", timeout_ms=800 if how == "timeout" else 60_000), None),
+    )
+    child = await _pid(tmp_path / "child.pid")
+    still_running_when_the_writer_got_in: list[bool] = []
+
+    async def queued_writer() -> None:
+        async with locks.hold_scope(str(tmp_path.resolve())):
+            still_running_when_the_writer_got_in.append(_running(child))
+
+    writer = asyncio.create_task(queued_writer())
+    await asyncio.sleep(0.05)                      # the writer is now waiting on the lock the exec holds
+    assert not writer.done()
+    try:
+        if how == "cancel":
+            run.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await run
+        else:
+            with pytest.raises(BadRequestError, match="timed out"):
+                await run
+        await asyncio.wait_for(writer, timeout=5.0)
+
+        assert still_running_when_the_writer_got_in == [False], "the lock was released while the child was still running"
+    finally:
+        writer.cancel()
+        _kill(child)
+
+
+async def test_a_second_cancel_while_the_kill_is_waiting_does_not_leave_the_command_running(tmp_path: Path) -> None:
+    """The signal is sent FIRST and synchronously: a caller that is cancelled again while the kill is still waiting for
+    the process to go (the outer Cancel after a Stop's own cancel) must still have delivered it."""
+    tool, _ = _tool(tmp_path)
     task = asyncio.create_task(tool.execute(_args("sleep 60 & echo $! > child.pid; wait"), None))
     child = await _pid(tmp_path / "child.pid")
     try:
         task.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        assert await _lock_is_free(locks, tmp_path)
-        assert await _gone(child, within=2.0), "the lock was released while the child was still running"
+        assert await _gone(child), "a second cancel left the command running"
     finally:
         _kill(child)
 
@@ -188,6 +235,7 @@ async def test_a_detached_process_that_holds_the_pipes_does_not_delay_the_kill(t
     tool, _ = _tool(tmp_path)
     command = "setsid sleep 60 & echo $! > detached.pid; sleep 60 & echo $! > foreground.pid; wait"
     detached = foreground = None
+    fds_before = _open_fds()
     try:
         run = asyncio.create_task(tool.execute(_args(command, timeout_ms=800 if how == "timeout" else 60_000), None))
         detached, foreground = await _pid(tmp_path / "detached.pid"), await _pid(tmp_path / "foreground.pid")
@@ -203,6 +251,7 @@ async def test_a_detached_process_that_holds_the_pipes_does_not_delay_the_kill(t
         assert time.monotonic() - start < 2.5, "the kill waited on pipes a detached process holds open"
         assert await _gone(foreground)
         assert _running(detached), "the group kill reached a process that was detached on purpose"
+        assert _open_fds() <= fds_before, "the subprocess pipes are still open: the detached process holds them"
     finally:
         for pid in (detached, foreground):
             if pid:
