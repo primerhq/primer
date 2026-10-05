@@ -168,7 +168,9 @@ class TestTheRelayReadsThroughTheWorkspaceTheWayProductionIsWired:
     async def test_a_session_without_a_reply_binding_stays_silent(self, tmp_path) -> None:
         run = await _run_with_the_pools_io(tmp_path, metadata={})
         assert run.texts == []
-        assert run.reads == [], "a session with no channel costs no I/O here: this runs after every clean turn of every session"
+        assert run.reads == [], (
+            "a session with no channel costs no workspace I/O here: this runs after every clean turn of every session"
+        )
 
     async def test_when_the_final_text_cannot_be_read_a_reply_bound_session_says_so_in_the_log(
         self, tmp_path, caplog,
