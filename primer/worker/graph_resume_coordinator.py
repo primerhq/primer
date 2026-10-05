@@ -349,9 +349,17 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     if repark is not None:
         # Human-interaction nodes still pending (not yet replied to) ->
         # re-park on the remaining keys (no re-dispatch).
-        return pool._repark_graph_outcome(
-            session, repark, node_tool_call_seq=node_tool_call_seq,
-        )
+        from primer.session.persistence import TurnInvariantError
+
+        try:
+            return pool._repark_graph_outcome(
+                session, repark, node_tool_call_seq=node_tool_call_seq,
+            )
+        except TurnInvariantError:
+            logger.exception(
+                "resume: graph session %s cannot re-park - ending failed", sid,
+            )
+            return await pool._end_session(session, reason="failed")
 
     # Drained to completion (the graph's own state.json carries the
     # real ended_reason; the session row mirrors _GraphTurnDriver).
@@ -766,9 +774,11 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
     runs. A batch already carried over from an EARLIER park was
     materialized then, by dispatch.py's classic ``except YieldToWorker``
     branch. This just recomputes each
-    batch's wake key (a pure function - see ``tool_wait_event_key``) and
-    writes a fresh ``ParkRequest`` pointing at the same already-claimable
-    rows. ``node_tool_call_seq`` is threaded through unchanged for the
+    batch's wake key (a pure function of the batch's ids - see
+    ``tool_wait_event_key``) and writes a fresh ``ParkRequest`` pointing
+    at the same already-claimable rows. Raises ``TurnInvariantError`` when
+    there are pending batches and none of them has a parseable id (the
+    resume coordinators end the session failed). ``node_tool_call_seq`` is threaded through unchanged for the
     same reason ``_repark_graph_yield_outcome`` does - a FURTHER resume
     of this repark (a node's own next dispatch round) must not re-mint a
     colliding scoped id.
@@ -776,21 +786,31 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
     from datetime import timedelta
     from primer.int.claim import ParkRequest, ReleaseOutcome
     from primer.model.tool_call_task import tool_call_task_id
-    from primer.session.yields import tool_wait_event_key
+    from primer.session.persistence import TurnInvariantError
+    from primer.session.yields import tool_wait_event_key_or_none
     from primer.worker.yield_runtime import ToolWaitParkedState
 
     graph_checkpoint = repark.graph_checkpoint
     pending_tool_waits = list((graph_checkpoint or {}).get("pending_tool_waits") or [])
-    wake_keys = [
-        tool_wait_event_key(
-            session.id, session.turn_no,
+    # Each batch's key from the first id of the entry (a malformed one is logged, counted and left out); a park
+    # with no wake key at all is never written (no parked_event_key means no timeout backstop either).
+    candidate_keys = [
+        tool_wait_event_key_or_none(
+            session.id,
             scoped_task_id=(
                 list(pw["outstanding_task_ids"])
                 + [sid for sid, _ in pw["notifying_results"]]
             )[0],
+            site="repark",
         )
         for pw in pending_tool_waits
     ]
+    wake_keys = [key for key in candidate_keys if key is not None]
+    if pending_tool_waits and not wake_keys:
+        raise TurnInvariantError(
+            f"session {session.id} graph re-park has no wake key: no pending batch's task id parses as a "
+            "scoped tool-call id, and a park nothing can wake is never written"
+        )
     now = datetime.now(timezone.utc)
     timeout = 3600.0
     # The park exception carries scoped call ids; the rows, leases and blobs use the session-qualified form.

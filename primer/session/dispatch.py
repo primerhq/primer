@@ -965,7 +965,7 @@ async def run_one_session_turn(
             ToolCallTaskState,
             tool_call_task_id,
         )
-        from primer.session.yields import tool_wait_event_key
+        from primer.session.yields import tool_wait_event_key_or_none
         from primer.worker.yield_runtime import ToolWaitParkedState
 
         # The park exception carries SCOPED call ids (unique within one session only; the transcript records are
@@ -980,18 +980,6 @@ async def run_one_session_turn(
             for scoped_id, _ in tool_wait.notifying_results
         ]
         all_batch_ids = [*outstanding_ids, *notifying_ids]
-        # 01a0518b (mixed-park wake seam review): the FUNCTIONAL wake key -
-        # a pure function of session_id + turn_no + the batch's own node
-        # segment (see tool_wait_event_key's own docstring), stamped on
-        # every row in the batch as batch_task_ids (not itself, to avoid
-        # the denormalized-projection shape a stored copy would repeat)
-        # so ToolCallClaimAdapter.on_release's last-sibling branch can
-        # recompute it identically with no session-row read. Distinct
-        # from tool_wait.event_key (observability-only, used below only
-        # for the turn log / audit emit, never for parked_event_key).
-        wake_key = tool_wait_event_key(
-            session_id, session.turn_no, scoped_task_id=all_batch_ids[0],
-        )
 
         await _safe_turn_log(turn_log, TurnLogYielded(
             seq=0,
@@ -1128,6 +1116,22 @@ async def run_one_session_turn(
                         ),
                         session_id=session_id,
                     )
+            # 01a0518b (mixed-park wake seam review): the FUNCTIONAL wake key, a pure function of a task id of the
+            # batch (see tool_wait_event_key). The batch's ids are stamped on every row as batch_task_ids (the key
+            # itself is not stored), so ToolCallClaimAdapter.on_release's last-sibling branch recomputes it with no
+            # session-row read. Distinct from tool_wait.event_key (observability-only: the turn log and the audit
+            # emit above, never parked_event_key). A graph park keys on its first batch that parses (the
+            # materializer drops a malformed one); a park with no wake key at all is never written: it would have
+            # no parked_event_key, hence no timeout backstop either.
+            if graph_checkpoint is not None:
+                wake_key = per_node_wake_keys[0] if per_node_wake_keys else None
+            else:
+                wake_key = tool_wait_event_key_or_none(session_id, scoped_task_id=all_batch_ids[0], site="dispatch")
+            if wake_key is None:
+                raise TurnInvariantError(
+                    f"session {session_id} tool_wait park has no wake key: no batch's task id parses as a "
+                    "scoped tool-call id, and a park nothing can wake is never written"
+                )
         except TurnInvariantError as exc:
             return await _end_turn_failed(exc)
         await turn_log.aclose()
