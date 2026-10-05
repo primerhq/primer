@@ -2355,6 +2355,18 @@ async def _transition_session_status(
         ended_reason is None or fresh.ended_reason == ended_reason
     ):
         return
+    if fresh.status == SessionStatus.ENDED:
+        # The first terminal reason wins. Something else ended this session while the turn ran (a
+        # force-delete wrote ENDED/force_deleted, the pool's preempt convergence ENDED/cancelled, the
+        # reconciler ENDED/workspace_lost) and the turn's own outcome arrives after it. Writing it
+        # would hide why the session ended, resurrect the row (a WAITING over an ENDED one) and mirror
+        # the wrong reason onto the on-disk slot. Every caller is a turn writing ITS outcome; none
+        # reopens a session (that is wake_session's job, not a turn's).
+        logger.info(
+            "session %s: the row is already ENDED (%s); not overwriting it with %s/%s",
+            session.id, fresh.ended_reason, new_status.value, ended_reason,
+        )
+        return
     updates: dict[str, object | None] = {"status": new_status}
     if new_status == SessionStatus.ENDED:
         updates["ended_at"] = datetime.now(timezone.utc)
