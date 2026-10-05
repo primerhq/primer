@@ -103,7 +103,7 @@ class _FakePool:
     def _graph_value_yield_toolcall(self, checkpoint, tcid):
         return graph_resume_coordinator.graph_value_yield_toolcall(self, checkpoint, tcid)
 
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id=None):
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
         # Directly supplies the ask_user answer, bypassing the global
         # resume-hook registry - irrelevant to what these tests prove (the
         # real hook call is pinned by test_graph_agent_tool_result_real_hooks.py).

@@ -528,7 +528,7 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
 
 
 async def graph_agent_tool_result(
-    pool: "WorkerPool", checkpoint, tcid, payload, *, session_id: str | None = None,
+    pool: "WorkerPool", checkpoint, tcid, payload, *, session_id: str,
 ):
     """Build the tool_result Message an agent-node yield continues from
     (e.g. the ask_user answer). Returns None for tool_call approvals /
@@ -540,8 +540,9 @@ async def graph_agent_tool_result(
     three arguments, and a two-argument call raised a TypeError that the
     handler below turned into a "resume failed" result, losing every
     plain agent-node ask_user answer and external-tool reply.
-    ``session_id`` is None only on the GraphFrame leaf path, which holds
-    no session of its own."""
+    ``session_id`` is always the session being resumed: the engine resume
+    passes ``session.id`` and the GraphFrame leaf path reaches here through
+    the closure ``build_invocation_services`` binds to its session."""
     from primer.model.chat import Message, ToolResultPart
 
     matches = [
