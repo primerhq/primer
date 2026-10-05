@@ -13,6 +13,7 @@ import json
 
 import pytest
 
+from primer.storage._patch import PatchSpecError
 from primer.storage.postgres import PostgresStorage, _table_ensured
 from tests.storage._patch_scenarios import StrictDoc
 
@@ -134,7 +135,7 @@ async def test_a_guard_naming_a_default_also_matches_the_absent_field_in_the_com
 @pytest.mark.asyncio
 async def test_an_unknown_field_is_refused_before_any_statement():
     conn = _ScriptedConn()
-    with pytest.raises(ValueError):
+    with pytest.raises(PatchSpecError):
         await _storage().patch_if("a", {"cnt": 1}, where={"status": ["created"]}, conn=conn)
     assert conn.calls == []
 

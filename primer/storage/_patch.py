@@ -237,6 +237,7 @@ def canonical_fixup(
 def _check_key(key: Any, what: str) -> None:
     if not isinstance(key, str) or key == "":
         raise PatchSpecError(f"{what} must be a non-empty string, got {key!r}")
+    _check_encodable(key, what)
     if any(ch in key for ch in _FORBIDDEN_IN_KEY) or any(ord(ch) < 0x20 for ch in key):
         raise PatchSpecError(
             f"{what} {key!r} contains a quote, a backslash or a control character, which "
@@ -244,11 +245,24 @@ def _check_key(key: Any, what: str) -> None:
         )
 
 
+def _check_encodable(text: str, what: str) -> None:
+    """Reject a string that cannot be UTF-8 encoded (a lone surrogate). ``json.dumps`` escapes one, so it passes the JSON
+    check and then fails inside the driver as a backend error, differently on each backend. Names the field, never echoes the value."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise PatchSpecError(
+            f"{what} holds a string that is not valid Unicode (a lone surrogate), which no backend can store"
+        ) from None
+
+
 def _check_json(value: Any, what: str) -> None:
     try:
-        json.dumps(value, allow_nan=False)
+        # ensure_ascii=False keeps a lone surrogate (anywhere in the value, keys included) in the text so the encode check sees it.
+        text = json.dumps(value, allow_nan=False, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
         raise PatchSpecError(f"{what} is not JSON-ready: {exc}") from exc
+    _check_encodable(text, what)
 
 
 def validate_patch(

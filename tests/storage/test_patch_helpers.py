@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal, Optional, TypeVar, Union
 from pydantic import BaseModel, Field, SecretStr
 
 from primer.storage._patch import (
+    PatchSpecError,
     _accepts_none,
     json_equal,
     json_identical,
@@ -104,6 +105,6 @@ def test_a_set_paths_leaf_the_validated_model_does_not_carry_is_refused():
         sub: Sub = Sub()
 
     entity = _Typed()
-    with pytest.raises(ValueError, match="not part of"):
+    with pytest.raises(PatchSpecError, match="not part of"):
         canonical_fixup(entity, {"sub": {"a": 0, "typo": 1}}, {}, {("sub", "typo"): 1})
     assert canonical_fixup(entity, {"sub": {"a": "7"}}, {}, {("sub", "a"): "7"}) == {"sub": {"a": 0}}

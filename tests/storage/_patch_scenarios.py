@@ -258,7 +258,7 @@ async def malformed_specs_are_rejected_with_value_error(store: Store) -> None:
         {"patch": {"count": 1}, "where": {"status": [{"a": 1}]}},                  # not a scalar
     ]
     for case in bad:
-        with pytest.raises(ValueError):
+        with pytest.raises(PatchSpecError):
             await store.patch_if(
                 "a", case.get("patch"), where=case.get("where", ok),
                 set_paths=case.get("set_paths"),
@@ -303,14 +303,14 @@ async def a_patch_that_leaves_the_row_unreadable_is_rejected_and_rolled_back(sto
 async def an_empty_or_malformed_where_is_rejected(store: Store) -> None:
     await _mk(store, "a")
     for bad_where in ({}, {"status": "running"}, {"status": b"running"}, {"id": ["a"]}):
-        with pytest.raises(ValueError):
+        with pytest.raises(PatchSpecError):
             await store.patch_if("a", {"count": 1}, where=bad_where)  # type: ignore[arg-type]
     # more distinct parent objects than the cap, and more leaves than the cap
     many_parents = {(f"p{i}", "k"): 1 for i in range(6)}
-    with pytest.raises(ValueError):
+    with pytest.raises(PatchSpecError):
         await store.patch_if("a", None, where={"status": ["created"]}, set_paths=many_parents)
     many_leaves = {("state", f"k{i}"): i for i in range(40)}
-    with pytest.raises(ValueError):
+    with pytest.raises(PatchSpecError):
         await store.patch_if("a", None, where={"status": ["created"]}, set_paths=many_leaves)
 
 
@@ -435,14 +435,14 @@ async def a_key_the_model_ignores_survives_a_patch_and_is_dropped_by_a_whole_doc
 async def patching_a_field_the_model_does_not_have_is_rejected(env: Env) -> None:
     store = env.store(StrictDoc)
     await store.create(StrictDoc(id="a"))
-    with pytest.raises(ValueError):
+    with pytest.raises(PatchSpecError):
         await store.patch_if("a", {"cnt": 1}, where={"status": ["created"]})
-    with pytest.raises(ValueError):
+    with pytest.raises(PatchSpecError):
         await store.patch_if("a", None, where={"status": ["created"]}, set_paths={("cnt", "k"): 1})
     row = await store.get("a")
     assert row is not None and row.count == 0
     # the field names are checked before the row is looked up, so a missing row does not mask the mistake
-    with pytest.raises(ValueError):
+    with pytest.raises(PatchSpecError):
         await store.patch_if("nope", {"cnt": 1}, where={"status": ["created"]})
 
 

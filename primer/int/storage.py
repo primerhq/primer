@@ -225,20 +225,27 @@ class Storage(ABC, Generic[ModelT]):
         primer.model.except_.NotFoundError
             No entity with this id exists. A missing row is NOT reported as ``None``: "someone else
             won the race" and "the row is gone" need different handling.
-        ValueError
-            The spec is malformed: a patch or path root that is not a field of the model (unless the
+        primer.storage.PatchSpecError
+            The caller's spec is malformed (a ``ValueError`` subclass, so a handler for ``ValueError``
+            still catches it): a patch or path root that is not a field of the model (unless the
             model allows extras), an empty ``patch``/``set_paths``, an empty ``where`` or one naming
             ``id``, a ``where`` value that is not a list of JSON scalars (a bare string is rejected),
-            a bad path (too deep, forbidden characters, a prefix of another), or more than 32 patch
-            keys, 16 leaves or 4 distinct parent objects. Rejected identically on every backend,
-            before any SQL. One more is raised only AFTER the guarded write, so only a caller whose
-            guard matched sees it: a ``set_paths`` leaf the validated model does not carry (a typo
-            under a typed sub-model); that write is rolled back.
+            a bad path (too deep, forbidden characters, a prefix of another), a string that cannot be
+            UTF-8 encoded (a lone surrogate), or more than 32 patch keys, 16 leaves or 4 distinct
+            parent objects. Rejected identically on every backend, before any SQL. One more is
+            raised only AFTER the guarded write, so only a caller whose guard matched sees it: a
+            ``set_paths`` leaf the validated model does not carry (a typo under a typed sub-model);
+            that write is rolled back.
         pydantic.ValidationError
-            The document the write would produce no longer validates against the model. The write is
-            rolled back (a savepoint inside a caller's transaction) and the row is unchanged. It is a
-            ``ValueError`` subclass, so a caller that must tell a malformed SPEC from a bad VALUE
-            catches it first.
+            The row is unreadable or the document the write would produce no longer validates
+            against the model. The write is rolled back (a savepoint inside a caller's transaction)
+            and the row is unchanged. It is also a ``ValueError`` subclass but NOT a
+            ``PatchSpecError``, so a caller that must tell a malformed SPEC from a bad VALUE tests
+            for ``PatchSpecError`` (or lists the two types).
+        primer.model.except_.ProviderError
+            Any OTHER ``ValueError`` raised under the write (a corrupt stored document, a driver
+            quirk) is a backend failure and is wrapped like every other one; it is not reported as
+            the caller's mistake.
 
         Comparison rules for ``where``: typed JSON scalars, numbers by value (``1`` equals ``1.0``),
         a number is never a string or a bool, ``None`` matches an absent field or JSON null.
