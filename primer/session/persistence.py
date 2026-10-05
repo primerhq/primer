@@ -948,6 +948,17 @@ def stash_graph_scoped_ids(
     return dict(coalesce_state.tool_call_seq)
 
 
+class TurnInvariantError(RuntimeError):
+    """A deterministic bookkeeping invariant of the turn broke: running it again cannot help, so it must end failed.
+
+    Raised when the state the turn reads proves it (a row of another session holds the id, a parked call has no
+    durable TOOL_CALL record, a row of this session holds the id under a different record_seq), so a retry would
+    run into the same state. The live-turn park arms of ``primer.session.dispatch`` end the session failed on it.
+    It is NOT for transient storage errors: those keep propagating as themselves and do not end the session. A
+    ``RuntimeError``, so a caller that catches that keeps working.
+    """
+
+
 async def _create_tool_call_task_idempotent(
     task_storage, task: "Any", *, session_id: str, strict: bool = True,
 ) -> None:
@@ -1019,7 +1030,7 @@ async def _create_tool_call_task_idempotent(
         if existing is not None and existing.session_id != task.session_id:
             # Row ids are session-qualified (S1b), so this should be unreachable; if a row of ANOTHER session holds
             # this id, adopting it would hand this session that session's result. Never a replay, whatever the seq.
-            raise RuntimeError(
+            raise TurnInvariantError(
                 f"session {session_id} ToolCallTask {task.id!r} already exists for session "
                 f"{existing.session_id!r}: a cross-session id collision, not a crash-retry replay"
             ) from None
@@ -1041,7 +1052,11 @@ async def _create_tool_call_task_idempotent(
                 session_id, task.id, existing.record_seq, task.record_seq,
             )
             return
-        raise RuntimeError(
+        # Deterministic while the row is there: it is still there when the turn runs again, and a re-run gets past it
+        # only with a record_seq that matches by chance, the adoption this doctrine refuses. A row that refused the
+        # create but is gone on read lost a race with a delete, which is no reason to end the turn.
+        error = RuntimeError if existing is None else TurnInvariantError
+        raise error(
             f"session {session_id} ToolCallTask {task.id!r} already exists "
             "with record_seq="
             f"{existing.record_seq if existing is not None else '<gone>'} "
@@ -1144,7 +1159,7 @@ async def materialize_pending_tool_wait_rows(
                 if not strict:
                     skipped.add(scoped_id)
                     continue
-                raise RuntimeError(
+                raise TurnInvariantError(
                     f"session {session_id} pending tool_wait node "
                     f"{pw['node_id']!r} outstanding task {scoped_id!r} has "
                     "no matching TOOL_CALL record in this turn's "
@@ -1180,7 +1195,7 @@ async def materialize_pending_tool_wait_rows(
                 if not strict:
                     skipped.add(scoped_id)
                     continue
-                raise RuntimeError(
+                raise TurnInvariantError(
                     f"session {session_id} pending tool_wait node "
                     f"{pw['node_id']!r} notifying result {scoped_id!r} has "
                     "no matching TOOL_CALL record in this turn's "

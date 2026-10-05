@@ -442,7 +442,9 @@ async def test_crash_retry_with_mismatched_record_seq_fails_loudly() -> None:
     not mint the same durable TOOL_CALL record) - something else created
     this id, and that must fail loudly rather than silently resurrect or
     overwrite scheduling state a worker might already be running
-    against."""
+    against. Loudly means the turn ends FAILED with an ERROR record naming
+    it: propagating the error out of the turn left the session RUNNING, to
+    hit the same row the next time the turn ran."""
     storage_provider = _FakeStorageProvider()
     session_storage = storage_provider.get_storage(WorkspaceSession)
     task_storage = storage_provider.get_storage(ToolCallTask)
@@ -483,8 +485,15 @@ async def test_crash_retry_with_mismatched_record_seq_fails_loudly() -> None:
         build_executor=_build_executor,
         claim_engine=claim_engine,
     )
-    with pytest.raises(RuntimeError, match="not a crash-retry replay"):
-        await run_one_session_turn(_make_lease(session.id), deps)
+    outcome = await run_one_session_turn(_make_lease(session.id), deps)
+
+    assert (outcome.success, outcome.drop_lease, outcome.park) == (False, True, None)
+    row = await session_storage.get(session.id)
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    error = json.loads(fake_io.read_lines(session.id)[-1])
+    assert error["kind"] == SessionMessageKind.ERROR
+    assert "not a crash-retry replay" in error["payload"]["message"]
+    assert (await task_storage.get(_qid(session.id, 1))).record_seq == 999, "the existing row was overwritten"
 
 
 @pytest.mark.asyncio
@@ -495,7 +504,7 @@ async def test_missing_tool_name_fails_loudly_not_unknown() -> None:
     tool_name="unknown" - that would produce an unexecutable
     ToolCallTask row. It must surface as a missing dict entry so the
     except-ToolWaitPark branch's own ``tool_name is None`` check fails
-    loudly instead."""
+    loudly instead: the turn ends FAILED naming the broken invariant."""
     storage_provider = _FakeStorageProvider()
     session_storage = storage_provider.get_storage(WorkspaceSession)
 
@@ -531,14 +540,22 @@ async def test_missing_tool_name_fails_loudly_not_unknown() -> None:
     async def _build_executor(_session: WorkspaceSession):
         return _NoStartExecutor()
 
+    fake_io = _FakeWorkspaceIO()
     deps = SessionDispatchDeps(
         storage_provider=storage_provider,
-        workspace_io=_FakeWorkspaceIO(),
+        workspace_io=fake_io,
         event_bus=_FakeEventBus(),
         build_executor=_build_executor,
     )
-    with pytest.raises(RuntimeError, match="no matching TOOL_CALL record"):
-        await run_one_session_turn(_make_lease(session.id), deps)
+    outcome = await run_one_session_turn(_make_lease(session.id), deps)
+
+    assert (outcome.success, outcome.drop_lease, outcome.park) == (False, True, None)
+    row = await session_storage.get(session.id)
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    error = json.loads(fake_io.read_lines(session.id)[-1])
+    assert error["kind"] == SessionMessageKind.ERROR
+    assert "no matching TOOL_CALL record" in error["payload"]["message"]
+    assert await storage_provider.get_storage(ToolCallTask).get(f"{session.id}/call_a") is None
 
 
 # ===========================================================================
