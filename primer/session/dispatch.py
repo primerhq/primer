@@ -2183,9 +2183,13 @@ async def _sync_agent_session_ended(
     (``get_session`` / ``list_sessions``) agree with the scheduler row.
     Best-effort: a missing executor / already-ENDED slot / commit failure
     must never block the lease release, so every branch is swallowed with a
-    log. ``ended_reason`` is constrained to the three terminal reasons the
-    AgentSession transition table accepts; an unknown value falls back to
-    ``"completed"`` so the on-disk slot still reaches a terminal state.
+    log. ``ended_reason`` is constrained to the four terminal reasons the
+    AgentSession transition table accepts (``completed``, ``failed``,
+    ``cancelled``, ``tool_turn_cap``); an unknown value falls back to
+    ``"completed"`` so the on-disk slot still reaches a terminal state. A
+    reason missing from that list is a bug, not a harmless default: the MCP
+    workspace tools read this slot, so they would report it as completed
+    while REST reports the real reason.
 
     01a06cbc: when a ``build_executor`` failure means no executor was ever
     created, there is no ``.session`` to unwrap -- but the on-disk slot
@@ -2227,7 +2231,7 @@ async def _sync_agent_session_ended(
         if current == SessionStatus.ENDED:
             return
         reason = ended_reason if ended_reason in (
-            "completed", "failed", "cancelled",
+            "completed", "failed", "cancelled", "tool_turn_cap",
         ) else "completed"
         await set_status(SessionStatus.ENDED, ended_reason=reason)
     except Exception:  # noqa: BLE001 -- advisory; never block release

@@ -27,8 +27,10 @@ from primer.session.persistence import WorkspaceMessageWriter
 
 logger = logging.getLogger(__name__)
 
-# ended_reasons that are safe to re-open (studio-agents-interact §5.3).
-_RESTARTABLE = {"completed", "failed", "cancelled"}
+# ended_reasons that are safe to re-open (studio-agents-interact §5.3). ``tool_turn_cap`` (an autonomous
+# session whose turn the agent's max_tool_turns stopped) is restartable: a reopen needs a new human or
+# trigger message, and the reopened invocation starts a fresh round count, so it cannot loop on its own.
+_RESTARTABLE = {"completed", "failed", "cancelled", "tool_turn_cap"}
 
 
 @dataclass

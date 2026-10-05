@@ -681,7 +681,7 @@ class AgentSession:
         self,
         status: SessionStatus,
         *,
-        ended_reason: Literal["completed", "failed", "cancelled"] | None = None,
+        ended_reason: Literal["completed", "failed", "cancelled", "tool_turn_cap"] | None = None,
         waiting_state: WaitingState | None = None,
     ) -> None:
         """Persist a status transition. Called by the agent runtime.

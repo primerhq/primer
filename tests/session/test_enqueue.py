@@ -373,6 +373,34 @@ async def test_ended_restartable_session_reopens_and_runs():
 
 
 @pytest.mark.asyncio
+async def test_a_session_ended_at_the_tool_turn_cap_reopens_and_runs_a_fresh_invocation():
+    """An autonomous session whose turn the agent's max_tool_turns stopped ENDS with ended_reason
+    "tool_turn_cap". It is restartable: a new human (or trigger) message reopens it and the reopened invocation
+    starts a fresh round count, so it cannot loop on its own. Left out of the restartable set, steer and reset
+    answered 409 and a steer queued during the capped turn was stranded (the drain swallows the ConflictError)."""
+    row = _row(SessionStatus.ENDED)
+    row.ended_reason = "tool_turn_cap"
+    deps, slot, sched, eng = _deps(row)
+    ws = deps.workspace_registry._ws
+
+    out = await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="try again",
+        human_intent=True,
+        deps=deps,
+    )
+
+    assert out.status == SessionStatus.RUNNING
+    assert out.ended_reason is None
+    assert out.metadata["invocation"] == 2
+    assert slot.reopened is True and slot.appended == ["try again"]
+    assert sched.enqueued == ["sess-1"]
+    kinds = [r["kind"] for r in _decode_records(ws)]
+    assert kinds.index("invocation_divider") < kinds.index("user_input")
+
+
+@pytest.mark.asyncio
 async def test_ended_non_restartable_raises_conflict():
     """An ENDED session with a non-restartable ended_reason (workspace_lost /
     force_deleted) still cannot be reopened — wake_session raises."""
