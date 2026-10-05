@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from primer.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.trigger.dispatch import FireResult, fire_trigger
 from primer.trigger.subscribers import DispatchDeps
 
@@ -27,6 +27,11 @@ HOLD_MAX_SECONDS = 3600.0
 
 _TERMINAL_PREFIX = "session:"
 _TERMINAL_SUFFIX = ":terminal"
+
+#: ``ended_reason`` values of a run that did not produce a result. The row is checked as well as the transcript
+#: because the CANCELLED record of a cancelled turn is best-effort (skipped when the workspace does not take the
+#: write in time), and without it the log reads as a completed turn whose answer the user had cancelled.
+_NO_RESULT_ENDED_REASONS = frozenset({"cancelled", "failed", "force_deleted", "workspace_lost"})
 
 
 def _terminal_session_id(event_key: str) -> str | None:
@@ -128,6 +133,8 @@ async def _final_text(
             session_id
         )
         if row is None:
+            return None
+        if row.status == SessionStatus.ENDED and row.ended_reason in _NO_RESULT_ENDED_REASONS:
             return None
         workspace = await workspace_registry.get_workspace(row.workspace_id)
         if workspace is None:

@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
+import pytest
+
 import primer.trigger.hold as hold_mod
 from primer.bus.in_memory import InMemoryEventBus
 from primer.model.workspace_session import (
@@ -97,6 +99,57 @@ async def test_hold_returns_final_text_when_the_run_terminates(monkeypatch):
     assert held.timed_out is False
     assert held.fire_result.fire_id == "fire-1"
     assert held.results == [{"artefact_id": "s1", "final_text": "all done"}]
+
+
+async def _held_final_text(monkeypatch, *, status, ended_reason, lines):
+    sp = _FakeStorageProvider()
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="s1", workspace_id="w1",
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=status, ended_reason=ended_reason, created_at=datetime.now(UTC),
+    ))
+    bus = InMemoryEventBus()
+    await bus.initialize()
+
+    async def _fake_fire(**kwargs):
+        await bus.publish("session:s1:terminal", {"status": "ended"})
+        return FireResult(
+            fire_id="fire-1",
+            results=[{"ok": True, "skipped": False, "artefact_id": "s1"}],
+        )
+
+    monkeypatch.setattr(hold_mod, "fire_trigger", _fake_fire)
+    held = await fire_and_hold(
+        trigger_id="tr-1", extra_context={}, deps=await _deps(sp, bus),
+        workspace_registry=_FakeRegistry(_FakeWorkspace(lines)), wait_timeout=2.0,
+    )
+    await bus.aclose()
+    return held.results[0]["final_text"]
+
+
+@pytest.mark.parametrize("ended_reason", ["cancelled", "failed", "force_deleted", "workspace_lost"])
+async def test_a_run_whose_row_says_it_did_not_complete_has_no_final_text(monkeypatch, ended_reason):
+    """The transcript is not the only evidence. The CANCELLED record a cancelled turn writes is best-effort (it is
+    skipped when the workspace does not take the write in time), and then the log reads as a completed turn."""
+    text = await _held_final_text(
+        monkeypatch, status=SessionStatus.ENDED, ended_reason=ended_reason, lines=_LOG,
+    )
+
+    assert text is None
+
+
+async def test_a_run_that_ended_completed_still_returns_its_text(monkeypatch):
+    text = await _held_final_text(
+        monkeypatch, status=SessionStatus.ENDED, ended_reason="completed", lines=_LOG,
+    )
+
+    assert text == "all done"
+
+
+async def test_a_run_that_rests_waiting_still_returns_its_text(monkeypatch):
+    text = await _held_final_text(monkeypatch, status=SessionStatus.WAITING, ended_reason=None, lines=_LOG)
+
+    assert text == "all done"
 
 
 async def test_hold_times_out_when_the_run_never_terminates(monkeypatch):
