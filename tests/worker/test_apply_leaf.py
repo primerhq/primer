@@ -9,8 +9,11 @@ from primer.model.chat import ToolCallResult
 from primer.toolset.python_runner.provider import python_tool_resume, scoped_tool_name
 from primer.worker.session_resume_coordinator import build_invocation_services
 from primer.worker.yield_resume_registry import ResumeContext, register_resume_hook
-from tests.worker.test_child_graph_value_yield_resume import _Pool
-from tests.worker.test_graph_toolcall_value_yield_context import _PythonRegistry, _Registry
+from tests._resume_hook_fakes import (
+    AgentNodeHookPool as _Pool,
+    IdentityToolsetRegistry as _Registry,
+    PythonToolsetRegistry as _PythonRegistry,
+)
 
 def _leaf_approval(call_id="c1"):
     return Yielded(tool_name="_approval", event_key=f"tool_approval:ses:{call_id}",
