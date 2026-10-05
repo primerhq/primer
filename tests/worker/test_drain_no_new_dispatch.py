@@ -18,7 +18,9 @@ Every test uses two keys.
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
+import weakref
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -502,4 +504,51 @@ async def test_an_abandoned_loop_that_later_fails_has_its_exception_logged(caplo
         assert isinstance(late[0].exc_info[1], RuntimeError)
     finally:
         let_go.set()
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_pool_keeps_an_abandoned_loop_alive_until_it_ends():
+    """The drain drops its own reference to a loop it abandons (``_engine_claim_task = None``) and the event loop
+    holds tasks only weakly, so a loop pending on something only it references was garbage-collected mid-flight
+    ("Task was destroyed but it is pending"), its done-callback never run. The pool keeps such a task in
+    ``_abandoned_loops`` until it ends, and the done-callback takes it out."""
+    scheduler = InMemoryScheduler()
+    await scheduler.initialize()
+    pool = WorkerPool(
+        config=_config(), scheduler=scheduler,
+        storage=None,  # type: ignore[arg-type]
+        workspace_registry=None,  # type: ignore[arg-type]
+        provider_registry=None,  # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={KIND: _SpyAdapter()}),
+    )
+
+    async def ignores_one_cancel() -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.create_future()        # a future nothing but this task references
+        except asyncio.CancelledError:
+            pass                              # ignores the drain's cancel ...
+        await loop.create_future()            # ... and stops at the next one
+
+    try:
+        task = asyncio.create_task(ignores_one_cancel(), name="engine-claim-orphan")
+        await asyncio.sleep(0)
+        task.cancel()
+        async with asyncio.timeout(5.0):
+            await pool._await_stopped_loop(task, 0.05)
+        assert pool._loops_abandoned_on_drain_total == 1
+        ref = weakref.ref(task)
+        del task
+        gc.collect()
+        assert ref() is not None, "the abandoned loop task was garbage-collected while still pending"
+        assert pool._abandoned_loops == {ref()}
+
+        ref().cancel()                        # the second cancel ends it
+        async with asyncio.timeout(5.0):
+            while ref() is not None and not ref().done():
+                await asyncio.sleep(0)
+        await asyncio.sleep(0)                # done-callbacks run on the next loop pass
+        assert pool._abandoned_loops == set()
+    finally:
         await scheduler.aclose()
