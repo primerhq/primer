@@ -12,6 +12,7 @@ import pytest
 from primer.int.storage import Storage
 from primer.storage import raw_generation
 from primer.storage._patch import (
+    PatchSpecError,
     compile_postgres,
     compile_sqlite,
     document_matches,
@@ -104,6 +105,21 @@ def test_document_matches_agrees_with_the_independent_oracle(doc, where, expecte
     assert ref.doc_matches(doc, where) is expected
 
 
+@pytest.mark.parametrize(
+    "patch,paths,where",
+    [
+        ({"": 1}, None, {"status": ["a"]}),                       # an empty patch key
+        ({1: 1}, None, {"status": ["a"]}),                        # a patch key that is not a string
+        (None, {("state", ""): 1}, {"status": ["a"]}),            # an empty path element
+        ({"count": 1}, None, {"": ["a"]}),                        # an empty where field
+        (None, {("id", "x"): 1}, {"status": ["a"]}),              # a nested path rooted at the id
+    ],
+)
+def test_validate_patch_refuses_an_empty_or_non_string_key_and_a_path_rooted_at_the_id(patch, paths, where):
+    with pytest.raises(PatchSpecError):
+        validate_patch(patch, paths, where)
+
+
 def test_raw_generation_is_the_stored_json_value_not_a_python_object():
     from datetime import datetime, timezone
 
@@ -111,7 +127,7 @@ def test_raw_generation_is_the_stored_json_value_not_a_python_object():
     assert raw_generation(row, "token") == "t"
     gen = raw_generation(row, "stamp")
     assert isinstance(gen, str) and gen.startswith("2026-10-04T12:00:00.000005")
-    with pytest.raises(ValueError):
+    with pytest.raises(PatchSpecError):
         raw_generation(row, "no_such_field")
 
 

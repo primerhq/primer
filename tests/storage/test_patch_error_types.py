@@ -54,6 +54,41 @@ async def test_a_malformed_spec_is_a_patch_spec_error_on_both_backends(sqlite_st
         assert isinstance(excinfo.value, ValueError), "existing handlers that catch ValueError keep working"
 
 
+LONE_SURROGATE = "\ud800"   # passes json.dumps (escaped) and then cannot be UTF-8 encoded by a driver
+
+SURROGATE_SPECS = [
+    pytest.param(dict(patch={"count": 1}, where={"status": [LONE_SURROGATE]}), id="where-value"),
+    pytest.param(dict(patch={"status": LONE_SURROGATE}, where={"status": ["created"]}), id="patch-value"),
+    pytest.param(dict(patch={"sub": {"a": [LONE_SURROGATE]}}, where={"status": ["created"]}), id="nested-patch-value"),
+    pytest.param(
+        dict(patch=None, set_paths={("sub", "a"): LONE_SURROGATE}, where={"status": ["created"]}), id="set-paths-value",
+    ),
+    pytest.param(dict(patch={LONE_SURROGATE: 1}, where={"status": ["created"]}), id="patch-key"),
+    pytest.param(
+        dict(patch=None, set_paths={("sub", LONE_SURROGATE): 1}, where={"status": ["created"]}), id="set-paths-element",
+    ),
+    pytest.param(dict(patch={"count": 1}, where={LONE_SURROGATE: ["created"]}), id="where-field"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", SURROGATE_SPECS)
+async def test_a_string_that_cannot_be_encoded_is_a_patch_spec_error_and_writes_nothing_on_both_backends(
+    sqlite_storage, kwargs,
+):
+    """A lone surrogate used to pass the JSON check and then fail inside the driver: a ProviderError on SQLite, a different
+    backend error on Postgres, for what is the caller's own bad input. It is rejected up front, the same on both, and the
+    message names the field without echoing the value."""
+    before = await sqlite_storage.get("a")
+    conn = _ScriptedConn(_row())
+    for storage, scripted in ((sqlite_storage, None), (_postgres_storage(), conn)):
+        with pytest.raises(PatchSpecError) as excinfo:
+            await storage.patch_if("a", **kwargs, **({} if scripted is None else {"conn": scripted}))
+        assert "surrogate" in str(excinfo.value) and "ud800" not in str(excinfo.value).lower()
+    assert conn.calls == [], "Postgres: refused before any statement"
+    assert await sqlite_storage.get("a") == before, "SQLite: the row is untouched"
+
+
 @pytest.mark.asyncio
 async def test_a_value_error_that_is_not_a_spec_error_is_wrapped_on_sqlite(sqlite_storage, monkeypatch):
     """A corrupt stored document, say: ``_from_row`` raises a plain ValueError after the UPDATE returned a row."""
