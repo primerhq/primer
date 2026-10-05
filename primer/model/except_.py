@@ -115,6 +115,17 @@ class SummariserOverflow(ContextOverflowUnrecoverable):
     """
 
     CODE = "summariser_overflow"
+    CODE = "summariser_overflow"
+
+    @property
+    def problem_extensions(self) -> dict[str, object]:
+        """``code`` says which overflow this is (the problem type is the turn's own, shared), and the turn-recovery
+        fields only when a turn's forced compaction ran: a manual compaction, or a proactive one ahead of the turn's
+        call, has no recovery to describe, and four zeros there read as a statement about something that never ran."""
+        extensions: dict[str, object] = {"code": self.code}
+        if self.forced_compaction:
+            extensions.update(super().problem_extensions)
+        return extensions
 
 
 class ModelNotFoundError(ConfigError):
