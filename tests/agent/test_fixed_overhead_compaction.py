@@ -648,3 +648,51 @@ class TestTheExecutor:
                 await backend.aclose()
 
         assert _run(scenario) == 1
+
+    def test_a_plain_invoke_reads_the_history_file_twice_not_four_times(self) -> None:
+        """The window's snapshot and the newest compaction's state come from ONE read, and the end-of-turn question check
+        takes the assistant message the turn just persisted instead of re-reading the whole history to find it: what is
+        left is the snapshot and the append (a read-modify-write that must read under the lock). A long session's file is
+        megabytes; each read is a full parse."""
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            reads: list[str] = []
+            state = session._state  # noqa: SLF001
+            original = state.read_state_file
+
+            async def spy(rel, *args, **kwargs):
+                reads.append(rel)
+                return await original(rel, *args, **kwargs)
+
+            state.read_state_file = spy
+            try:
+                await g.append_messages(workspace, session, g.user_message("hi"), g.assistant_message("yo"), g.user_message("Q"))
+                llm.extend([g.Events(g.text_events("done"))])
+                await g.run_turn(session, llm)
+                return [r for r in reads if r.endswith("messages.jsonl")]
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        assert len(_run(scenario)) == 2
+
+    def test_a_turn_that_ends_on_a_question_still_waits_for_the_user_without_re_reading_the_history(self) -> None:
+        from primer.model.workspace_session import SessionStatus
+
+        async def scenario(root):
+            backend, workspace, session = await g.open_session(root)
+            llm = g.ScriptedLLM()
+            llm.session_id = session.session_id
+            try:
+                await g.append_messages(workspace, session, g.user_message("build it"))
+                llm.extend([g.Events(g.text_events("Which database do you want me to use?"))])
+                await g.run_turn(session, llm)
+                return await session.status()
+            finally:
+                await session.aclose()
+                await backend.aclose()
+
+        assert _run(scenario) == SessionStatus.WAITING
+
