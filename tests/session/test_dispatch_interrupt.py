@@ -777,6 +777,161 @@ class TestTheCancelledRecordWriteIsBoundedInTheLock:
         ), "the bound cut a healthy write short"
 
 
+class TestTheCancelledExitSurvivesAHardPreempt:
+    """The pool delivers a Cancel two ways: the cooperative signal this turn watches, and a HARD preempt (a lost-lease
+    verdict after the Cancel route dropped the lease, or the user-cancel path) that cancels the whole task wherever it
+    is. Once the turn has decided it is ending as a cancelled one, a hard preempt landing INSIDE that exit cut it
+    mid-way: the pool's convergence sees a row that is already ENDED and skips it, so the terminal event (the webhook
+    hold waits on it), the turn log, the queued-steer drain and the metric were silently lost."""
+
+    @pytest.mark.parametrize("arm", ["a Cancel found after the stream", "a Stop through the cancel arm"])
+    async def test_a_task_cancel_in_the_middle_of_the_exit_does_not_cut_it_short(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, arm,
+    ) -> None:
+        sid = seeded_session.id
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        ref = dispatch._binding_ref(row)
+        published: list[str] = []
+        publish = fake_event_bus.publish
+
+        async def spy_publish(key: str, payload: dict) -> None:
+            published.append(key)
+            await publish(key, payload)
+
+        monkeypatch.setattr(fake_event_bus, "publish", spy_publish)
+        turn_log = _RecordingTurnLog()
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        if arm == "a Stop through the cancel arm":
+            async def stop_lands() -> None:
+                await _request_stop(fake_storage_provider, fake_event_bus, sid)
+                await asyncio.sleep(0.1)
+
+            script = [stop_lands, "BLOCK"]
+            expect_status, expect_ended, expect_reason = SessionStatus.WAITING, None, "operator_interrupt"
+        else:
+            async def read_status_then_cancel_lands(executor):
+                await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+                return None
+
+            monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+            script = [TextDelta(text="the full answer", index=0), Done(stop_reason="stop", raw_reason="stop")]
+            expect_status, expect_ended, expect_reason = SessionStatus.ENDED, "cancelled", "operator_cancel"
+        deps = SessionDispatchDeps(
+            storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus,
+            build_executor=_build_returning(_StopAwareExecutor(script)),
+            turn_log_writer_factory=lambda _io, _sid: turn_log,
+        )
+        real_transition = dispatch._transition_session_status
+        outer: dict[str, asyncio.Task] = {}
+        fired = {"done": False}
+
+        async def transition_then_the_hard_preempt_lands(*args, **kwargs):
+            if not fired["done"]:
+                fired["done"] = True
+                outer["task"].cancel()                # what scope.cancel("preempted") does to the task
+                await asyncio.sleep(0.05)             # the exit takes real time while the cancel is pending
+            return await real_transition(*args, **kwargs)
+
+        monkeypatch.setattr(dispatch, "_transition_session_status", transition_then_the_hard_preempt_lands)
+        outer["task"] = asyncio.ensure_future(run_one_session_turn(_make_lease(sid), deps))
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(outer["task"], 5.0)   # the cancellation is still delivered to the caller
+
+        assert fired["done"], "the test never reached the cancelled exit's transition"
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status == expect_status and row.ended_reason == expect_ended
+        assert f"session:{sid}:terminal" in published, "the terminal event (the webhook hold waits on it) was lost"
+        assert turn_log.cancel_reasons == [expect_reason], "the turn log entry was lost"
+        assert metrics.turns_total.labels(ref, "cancelled")._value.get() == 1.0, "the cancelled turn was not counted"
+
+    async def test_repeated_cancels_while_the_exit_runs_are_all_absorbed(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        """The heartbeat loop re-delivers the preempt every tick for as long as the lease reads lost."""
+        sid = seeded_session.id
+        published: list[str] = []
+        publish = fake_event_bus.publish
+
+        async def spy_publish(key: str, payload: dict) -> None:
+            published.append(key)
+            await publish(key, payload)
+
+        monkeypatch.setattr(fake_event_bus, "publish", spy_publish)
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def read_status_then_cancel_lands(executor):
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            return None
+
+        monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+        outer: dict[str, asyncio.Task] = {}
+        real_transition, real_terminal = dispatch._transition_session_status, dispatch._publish_terminal
+        cancels = {"n": 0}
+
+        async def cancelling_transition(*args, **kwargs):
+            cancels["n"] += 1
+            outer["task"].cancel()
+            await asyncio.sleep(0)
+            return await real_transition(*args, **kwargs)
+
+        async def cancelling_terminal(*args, **kwargs):
+            cancels["n"] += 1
+            outer["task"].cancel()
+            await asyncio.sleep(0)
+            return await real_terminal(*args, **kwargs)
+
+        monkeypatch.setattr(dispatch, "_transition_session_status", cancelling_transition)
+        monkeypatch.setattr(dispatch, "_publish_terminal", cancelling_terminal)
+        executor = _StopAwareExecutor([TextDelta(text="x", index=0), Done(stop_reason="stop", raw_reason="stop")])
+        outer["task"] = asyncio.ensure_future(run_one_session_turn(_make_lease(sid), _deps(
+            fake_storage_provider, fake_workspace_io, fake_event_bus, executor,
+        )))
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(outer["task"], 5.0)
+
+        assert cancels["n"] == 2, "the second preempt never landed inside the exit"
+        assert f"session:{sid}:terminal" in published, "a repeated preempt cut the exit"
+
+    async def test_an_exit_that_hangs_is_abandoned_after_the_grace_so_a_drain_can_still_abort_it(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        sid = seeded_session.id
+        monkeypatch.setattr(dispatch, "_TERMINAL_EXIT_GRACE_S", 0.2, raising=False)
+        hung = asyncio.Event()
+        cancelled_inside = asyncio.Event()
+
+        async def hanging_transition(*args, **kwargs):
+            hung.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled_inside.set()
+                raise
+
+        monkeypatch.setattr(dispatch, "_transition_session_status", hanging_transition)
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def read_status_then_cancel_lands(executor):
+            await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            return None
+
+        monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+        executor = _StopAwareExecutor([TextDelta(text="x", index=0), Done(stop_reason="stop", raw_reason="stop")])
+        task = asyncio.ensure_future(run_one_session_turn(_make_lease(sid), _deps(
+            fake_storage_provider, fake_workspace_io, fake_event_bus, executor,
+        )))
+
+        await asyncio.wait_for(hung.wait(), 5.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5.0)
+
+        assert cancelled_inside.is_set(), "the hung exit was left running after the grace instead of being abandoned"
+
+
 class TestAStopThatLandsBeforeTheBatchThroughTheWholeTurn:
     """The loop-level tests prove the refusal; this proves what the SESSION records and ends as when the loop is the
     real one: the tool never runs, the call is answered in the transcript, and the session rests WAITING."""

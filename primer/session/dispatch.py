@@ -1186,10 +1186,10 @@ async def run_one_session_turn(
     # 5b. Cancel path — write CANCELLED record, transition row to ENDED
     # ------------------------------------------------------------------
     if cancel_requested:
-        return await _land_cancelled_turn(
+        return await _finish_despite_cancel(_land_cancelled_turn(
             deps, session, executor=executor, writer=writer, turn_log=turn_log,
             started_at=_turn_started_at,
-        )
+        ))
 
     # ------------------------------------------------------------------
     # 6. Clean completion — write DONE record (if not already written by
@@ -1242,10 +1242,10 @@ async def run_one_session_turn(
             await _advance_drain_cursor(session_storage, session_id)
 
     if late_cancel:
-        return await _land_cancelled_turn(
+        return await _finish_despite_cancel(_land_cancelled_turn(
             deps, session, executor=executor, writer=writer, turn_log=turn_log,
             started_at=_turn_started_at,
-        )
+        ))
 
     _observe_turn(
         session,
@@ -1496,6 +1496,49 @@ _CANCELLED_RECORD_WRITE_TIMEOUT_S = 10.0
 # The same bound for the ENDED transition's mirror onto the executor's on-disk slot (``session.json``), which
 # commits through the same runtime connection and runs inside the same lock on a Cancel.
 _SLOT_MIRROR_TIMEOUT_S = 10.0
+
+
+# How long a cancelled turn's exit may keep running after the TASK is cancelled under it (see _finish_despite_cancel).
+_TERMINAL_EXIT_GRACE_S = 30.0
+
+
+async def _finish_despite_cancel(exit_coro: "Awaitable[ReleaseOutcome]") -> ReleaseOutcome:
+    """Run a turn's terminal exit to completion even if the task awaiting it is cancelled meanwhile.
+
+    The worker pool delivers a Cancel two ways: the cooperative signal this turn watches, and a HARD
+    preempt that cancels the whole task wherever it is (a lost-lease verdict after the Cancel route
+    dropped the lease, or the user-cancel path). By the time a turn is in its cancelled exit it has
+    already decided to end, and the exit IS the convergence the hard preempt asks for. Cut mid-way, the
+    pool's own convergence finds a row that is already ENDED and skips it, so the terminal event (the
+    webhook hold waits on it), the turn log, the queued-steer drain and the metric were silently lost.
+
+    So the exit runs as its own task, and a cancellation that arrives while it runs is absorbed until
+    the exit is done, then re-raised: the caller (the pool) still sees the cancellation it asked for.
+    The shelter is BOUNDED by ``_TERMINAL_EXIT_GRACE_S`` from the first cancellation: past that the exit
+    is abandoned (cancelled) and the cancellation propagates, so a drain timeout can still abort an exit
+    that hangs on a dead storage or workspace.
+    """
+    task = asyncio.ensure_future(exit_coro)
+    loop = asyncio.get_running_loop()
+    cancelled = False
+    deadline: float | None = None
+    while not task.done():
+        timeout = None if deadline is None else max(0.0, deadline - loop.time())
+        try:
+            # asyncio.wait does NOT cancel the task it waits on when the awaiting task is cancelled.
+            await asyncio.wait({task}, timeout=timeout)
+        except asyncio.CancelledError:
+            cancelled = True
+            if deadline is None:
+                deadline = loop.time() + _TERMINAL_EXIT_GRACE_S
+            continue
+        if not task.done():
+            task.cancel()           # the grace is up: stop sheltering an exit that is not finishing
+            raise asyncio.CancelledError()
+    outcome = task.result()
+    if cancelled:
+        raise asyncio.CancelledError()
+    return outcome
 
 
 async def _land_cancelled_turn(
