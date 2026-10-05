@@ -235,6 +235,16 @@ llm_profile_tokens_total = Counter(
     registry=registry,
 )
 
+llm_prompt_estimate_ratio = Histogram(
+    "llm_prompt_estimate_ratio",
+    "The provider's reported input tokens divided by our character-heuristic estimate of the prompt that "
+    "was sent, per model call that came back with usage, by provider. 1.0 is a perfect estimate; above 1 "
+    "the heuristic undercounts (a compaction trigger running on it fires late).",
+    ["provider_id"],
+    buckets=(0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0, 3.0, 4.0),
+    registry=registry,
+)
+
 llm_count_tokens_total = Counter(
     "llm_count_tokens_total",
     "Native token counts at the counter wrapper, by provider, what the figure "
@@ -381,6 +391,7 @@ def reset_for_test() -> None:
     global session_interrupts_via_poll_total  # noqa: PLW0603
     global session_interrupt_publish_failures_total  # noqa: PLW0603
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
+    global llm_prompt_estimate_ratio  # noqa: PLW0603
     global compaction_outcomes_total  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
@@ -532,6 +543,15 @@ def reset_for_test() -> None:
         "Total LLM tokens by model profile and direction (in/out). The older "
         "llm_tokens_total keeps the provider-kind view.",
         ["profile_id", "direction"],
+        registry=registry,
+    )
+    llm_prompt_estimate_ratio = Histogram(
+        "llm_prompt_estimate_ratio",
+        "The provider's reported input tokens divided by our character-heuristic estimate of the prompt that "
+        "was sent, per model call that came back with usage, by provider. 1.0 is a perfect estimate; above 1 "
+        "the heuristic undercounts (a compaction trigger running on it fires late).",
+        ["provider_id"],
+        buckets=(0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0, 3.0, 4.0),
         registry=registry,
     )
     llm_count_tokens_total = Counter(

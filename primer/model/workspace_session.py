@@ -851,7 +851,8 @@ class SessionMessageKind(StrEnum):
     # One record per model call at the shared agent-loop seam
     # (primer/agent/loop.py). Payload: ``{"profile_id": str,
     # "provider_id": str, "model": str, "input_tokens": int,
-    # "output_tokens": int, "duration_ms": int, "status": "ok"}``. Adds
+    # "output_tokens": int, "estimated_input_tokens": int (only when the
+    # provider reported usage), "duration_ms": int, "status": "ok"}``. Adds
     # per-CALL resolution inside multi-call turns, which the turn log's
     # per-TURN completed event cannot give. Display/derivation only:
     # prompt rebuild never sees it (only role/parts Message lines are
