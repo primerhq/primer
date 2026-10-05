@@ -186,18 +186,16 @@ def test_switch_is_applied_before_the_queue_drains():
     """
     import inspect
 
-    from primer.session.dispatch import run_one_session_turn
+    from primer.session.dispatch import _land_cancelled_turn, run_one_session_turn
 
-    body = inspect.getsource(run_one_session_turn)
-    calls = [
-        line.strip()
-        for line in body.splitlines()
-        if "_at_checkpoint(deps, session)" in line
-    ]
     switch = "await _apply_pending_switch_at_checkpoint(deps, session)"
     realize = "await _realize_pending_at_checkpoint(deps, session)"
-    assert calls.count(switch) == 4
-    assert calls.count(realize) == 4
-    # They must alternate, switch first, at all four terminal exits (executor failure, cancel/interrupt,
-    # a Cancel that lands inside the completion lock, clean completion).
-    assert calls == [switch, realize] * 4, calls
+    # The executor-failure and clean-completion exits drain inline; every cancelled turn drains once, in the
+    # shared exit. At each of the three, the switch comes first, then the drain.
+    for fn, exits in ((run_one_session_turn, 2), (_land_cancelled_turn, 1)):
+        calls = [
+            line.strip()
+            for line in inspect.getsource(fn).splitlines()
+            if "_at_checkpoint(deps, session)" in line
+        ]
+        assert calls == [switch, realize] * exits, (fn.__name__, calls)

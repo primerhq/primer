@@ -1186,63 +1186,10 @@ async def run_one_session_turn(
     # 5b. Cancel path — write CANCELLED record, transition row to ENDED
     # ------------------------------------------------------------------
     if cancel_requested:
-        # Re-read to see whether this preemption was a Stop (interrupt,
-        # stay alive) or an End/Cancel (terminal). The interrupt path and
-        # the cancel path both fire session:{sid}:cancel on the bus. A
-        # Cancel ALWAYS sets cancel_requested before it publishes, so that
-        # flag alone separates them: not set means a Stop. Do NOT read
-        # interrupt_requested here: a human steer that lands mid-turn flips
-        # turn_status to claimable, and wake_session then clears
-        # interrupt_requested, which turned a Stop into a hard End
-        # (ENDED/cancelled) for exactly the user who pressed Stop and then
-        # typed. A genuine Cancel is never downgraded to a Stop.
-        fresh = await session_storage.get(session_id)
-        is_interrupt = bool(fresh is not None and not fresh.cancel_requested)
-        # The record's reason is what tells a Stop from a Cancel (the console labels the first
-        # "stopped" and the second "cancelled"): it must follow the decision above.
-        cancel_reason = _STOP_REASON if is_interrupt else _CANCEL_REASON
-        await _safe_turn_log(turn_log, TurnLogCancelled(
-            seq=0,
-            ts=_now(),
-            turn_no=session.turn_no,
-            reason=cancel_reason,
-        ))
-        rec = _cancelled_record(cancel_reason)
-        seq = await writer.append(rec)
-        await writer.flush()
-        await deps.event_bus.publish(
-            f"session:{session_id}:tick", {"seq": seq}
+        return await _land_cancelled_turn(
+            deps, session, executor=executor, writer=writer, turn_log=turn_log,
+            started_at=_turn_started_at,
         )
-        if is_interrupt:
-            new_status, ended_reason = _interrupt_post_status()
-        else:
-            new_status, ended_reason = SessionStatus.ENDED, "cancelled"
-        # Serialize the terminal transition + interrupt-flag clear against
-        # a concurrent resume/pause/cancel/interrupt API call (T0432-style
-        # lost update; see primer.session.mutation_lock). The flag is
-        # cleared on BOTH branches (not just the interrupt one) so a flag
-        # that lost the disambiguation above (Cancel won) can't persist
-        # into a future turn either.
-        async with session_lifecycle_lock().acquire(session_id):
-            await _transition_session_status(
-                session_storage,
-                session,
-                new_status=new_status,
-                ended_reason=ended_reason,
-                executor=executor,
-                expected_epoch=session.binding_epoch,
-            )
-            await _clear_interrupt_requested(session_storage, session_id)
-            await _persist_last_seq(session_storage, session_id, writer.last_seq)
-            await _advance_drain_cursor(session_storage, session_id)
-        await _publish_terminal(
-            deps, session, new_status, ended_reason,
-        )
-        await turn_log.aclose()
-        await _apply_pending_switch_at_checkpoint(deps, session)
-        await _realize_pending_at_checkpoint(deps, session)
-        _observe_turn(session, "cancelled", _turn_started_at)
-        return ReleaseOutcome(success=True, drop_lease=True)
 
     # ------------------------------------------------------------------
     # 6. Clean completion — write DONE record (if not already written by
@@ -1271,47 +1218,34 @@ async def run_one_session_turn(
     # it here too -- every terminal path must, or it leaks into a future
     # turn and can downgrade a later genuine Cancel to a Stop.
     late_cancel = False
-    late_seq = 0
     async with session_lifecycle_lock().acquire(session_id):
         # The Cancel route takes this same lock, so the row read here cannot be stale: a Cancel that
         # landed in the window since the check above wins over whatever the turn's own stop reason
         # mapped to (a cancelled session must not come to rest WAITING).
         locked = await session_storage.get(session_id)
         if locked is not None and locked.cancel_requested and locked.status != SessionStatus.ENDED:
-            # This is a cancelled turn, not a completed one with a different status: it gets the whole
-            # cancel arm below (the CANCELLED record, the cancelled metric, no reply event, no relay).
-            # The record is written HERE, before the transition and inside the lock, so last_seq below
-            # covers it and a reader never sees ENDED before the record that explains it.
+            # A cancelled turn, not a completed one with a different status: it takes the SAME exit as
+            # every other cancelled turn (the CANCELLED record, the cancelled metric, no reply event, no
+            # relay), which re-decides and writes inside its own acquisition of this lock below.
             late_cancel = True
-            new_status, ended_reason = SessionStatus.ENDED, "cancelled"
-            late_seq = await writer.append(_cancelled_record(_CANCEL_REASON))
-            await writer.flush()
-        await _transition_session_status(
-            session_storage,
-            session,
-            new_status=new_status,
-            ended_reason=ended_reason,
-            executor=executor,
-            expected_epoch=session.binding_epoch,
-        )
-        await _clear_interrupt_requested(session_storage, session_id)
-        await _persist_last_seq(session_storage, session_id, writer.last_seq)
-        await _advance_drain_cursor(session_storage, session_id)
+        else:
+            await _transition_session_status(
+                session_storage,
+                session,
+                new_status=new_status,
+                ended_reason=ended_reason,
+                executor=executor,
+                expected_epoch=session.binding_epoch,
+            )
+            await _clear_interrupt_requested(session_storage, session_id)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _advance_drain_cursor(session_storage, session_id)
 
     if late_cancel:
-        # The rest of the cancel arm. Nothing below this block describes a turn the user cancelled:
-        # no "session.replied", no TurnLogCompleted, no completed metric, and above all no relay of
-        # the answer to the channel after the user said cancel.
-        await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": late_seq})
-        await _safe_turn_log(turn_log, TurnLogCancelled(
-            seq=0, ts=_now(), turn_no=session.turn_no, reason=_CANCEL_REASON,
-        ))
-        await _publish_terminal(deps, session, new_status, ended_reason)
-        await turn_log.aclose()
-        await _apply_pending_switch_at_checkpoint(deps, session)
-        await _realize_pending_at_checkpoint(deps, session)
-        _observe_turn(session, "cancelled", _turn_started_at)
-        return ReleaseOutcome(success=True, drop_lease=True)
+        return await _land_cancelled_turn(
+            deps, session, executor=executor, writer=writer, turn_log=turn_log,
+            started_at=_turn_started_at,
+        )
 
     _observe_turn(
         session,
@@ -1552,6 +1486,69 @@ def _tool_wait_yielded_record(tool_wait: ToolWaitPark) -> SessionMessageRecord:
 # ends) are told apart by this alone, e.g. by the console's lifecycle label.
 _STOP_REASON = "operator_interrupt"
 _CANCEL_REASON = "operator_cancel"
+
+
+async def _land_cancelled_turn(
+    deps: "SessionDispatchDeps",
+    session: "WorkspaceSession",
+    *,
+    executor: Any,
+    writer: "WorkspaceMessageWriter",
+    turn_log: Any,
+    started_at: datetime,
+) -> ReleaseOutcome:
+    """The ONE exit of a cancelled turn: a Stop (the session stays alive) or a Cancel (it ends).
+
+    Both the cancel arm and the arm that lands a Cancel found after the stream's last event come here, so
+    they cannot drift apart again (the second used to be a half-copy of the first).
+
+    Stop-versus-Cancel is decided from the row INSIDE the lifecycle lock, and the CANCELLED record is written
+    there too, after the decision and before the status transition. The Cancel route takes the same lock, so
+    a Cancel that lands between the turn noticing the signal and this lock is seen (a decision taken before
+    the lock would land WAITING on a row whose ``cancel_requested`` is already set). A Cancel ALWAYS sets
+    ``cancel_requested`` before it publishes, so that flag alone separates the two: not set means a Stop.
+    ``interrupt_requested`` is deliberately NOT read: a human steer that lands mid-turn flips ``turn_status``
+    to claimable and ``wake_session`` then clears it, which turned a Stop into a hard End for exactly the
+    user who pressed Stop and then typed. The record is written before the transition so a reader that sees
+    the new status finds the record that explains it, and its ``reason`` follows the decision (the console
+    labels the first "stopped" and the second "cancelled").
+    """
+    session_id = session.id
+    session_storage = deps.storage_provider.get_storage(WorkspaceSession)
+    # Serialize the terminal transition + interrupt-flag clear against a concurrent resume/pause/cancel/
+    # interrupt API call (T0432-style lost update; see primer.session.mutation_lock). The flag is cleared on
+    # BOTH branches so one that lost the decision (a Cancel won) cannot persist into a future turn either.
+    async with session_lifecycle_lock().acquire(session_id):
+        fresh = await session_storage.get(session_id)
+        is_interrupt = bool(fresh is not None and not fresh.cancel_requested)
+        reason = _STOP_REASON if is_interrupt else _CANCEL_REASON
+        seq = await writer.append(_cancelled_record(reason))
+        await writer.flush()
+        if is_interrupt:
+            new_status, ended_reason = _interrupt_post_status()
+        else:
+            new_status, ended_reason = SessionStatus.ENDED, "cancelled"
+        await _transition_session_status(
+            session_storage,
+            session,
+            new_status=new_status,
+            ended_reason=ended_reason,
+            executor=executor,
+            expected_epoch=session.binding_epoch,
+        )
+        await _clear_interrupt_requested(session_storage, session_id)
+        await _persist_last_seq(session_storage, session_id, writer.last_seq)
+        await _advance_drain_cursor(session_storage, session_id)
+    await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
+    await _safe_turn_log(turn_log, TurnLogCancelled(
+        seq=0, ts=_now(), turn_no=session.turn_no, reason=reason,
+    ))
+    await _publish_terminal(deps, session, new_status, ended_reason)
+    await turn_log.aclose()
+    await _apply_pending_switch_at_checkpoint(deps, session)
+    await _realize_pending_at_checkpoint(deps, session)
+    _observe_turn(session, "cancelled", started_at)
+    return ReleaseOutcome(success=True, drop_lease=True)
 
 
 def _cancelled_record(reason: str) -> SessionMessageRecord:

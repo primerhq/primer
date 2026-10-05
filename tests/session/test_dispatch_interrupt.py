@@ -416,6 +416,190 @@ class TestTheCancelledRecordSaysWhichOneItWas:
         assert turn_log.cancel_reasons == ["operator_cancel"]
 
 
+class TestTheCancelArmDecidesInsideTheLock:
+    """Stop-versus-Cancel is decided from the row, and the row can change between a read and the lifecycle lock:
+    the Cancel route takes that same lock. A decision taken before the lock could land WAITING on a row whose
+    ``cancel_requested`` is already set (a Cancel that arrived in between), so it is taken, and the CANCELLED
+    record is written, inside the lock, in that order and before the status transition."""
+
+    async def test_a_cancel_that_lands_just_before_the_lock_turns_the_stop_into_a_cancel(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        sid = seeded_session.id
+        sessions = fake_storage_provider.get_storage(WorkspaceSession)
+        state = {"armed": False, "acquisitions": 0, "injected": False}
+        real_lock = dispatch.session_lifecycle_lock
+
+        class _Acquire:
+            def __init__(self, inner) -> None:
+                self.inner = inner
+
+            async def __aenter__(self):
+                if state["armed"]:
+                    state["acquisitions"] += 1
+                    # The first lock after the stream ends clears turn_status; the SECOND is the cancel arm's.
+                    if state["acquisitions"] == 2 and not state["injected"]:
+                        state["injected"] = True
+                        row = await sessions.get(sid)
+                        row.cancel_requested = True
+                        await sessions.update(row)
+                return await self.inner.__aenter__()
+
+            async def __aexit__(self, *exc):
+                return await self.inner.__aexit__(*exc)
+
+        class _Lock:
+            def __init__(self) -> None:
+                self.real = real_lock()
+
+            def acquire(self, session_id):
+                return _Acquire(self.real.acquire(session_id))
+
+        monkeypatch.setattr(dispatch, "session_lifecycle_lock", lambda: _Lock())
+
+        async def stop_lands_then_arm() -> None:
+            await _request_stop(fake_storage_provider, fake_event_bus, sid)
+            await asyncio.sleep(0.1)                     # the watcher sets the event
+            state["armed"] = True
+
+        executor = _StopAwareExecutor([stop_lands_then_arm, "BLOCK"])
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        assert state["injected"], "the test never reached the cancel arm's lock"
+        row = await sessions.get(sid)
+        assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled", (
+            f"a Cancel that landed before the lock left the row {row.status!r} with cancel_requested set"
+        )
+        cancelled = next(r for r in _records(fake_workspace_io, sid) if r["kind"] == SessionMessageKind.CANCELLED)
+        assert cancelled["payload"]["reason"] == "operator_cancel"
+
+    @pytest.mark.parametrize("how", ["stop", "cancel", "cancel-inside-the-completion-lock"])
+    async def test_the_cancelled_record_is_written_before_the_row_leaves_the_turn(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, how,
+    ) -> None:
+        """A reader that sees the new status must find the record that explains it already in the transcript.
+        EVERY transition of the turn is checked, not just the last: a premature one would otherwise hide
+        behind a correct later one."""
+        sid = seeded_session.id
+        at_transition: list[list[str]] = []
+        real_transition = dispatch._transition_session_status
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def spy_transition(*args, **kwargs):
+            at_transition.append([r["kind"] for r in _records(fake_workspace_io, sid)])
+            return await real_transition(*args, **kwargs)
+
+        monkeypatch.setattr(dispatch, "_transition_session_status", spy_transition)
+
+        if how == "cancel-inside-the-completion-lock":
+            async def read_status_then_cancel_lands(executor):
+                await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+                return None
+
+            monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_then_cancel_lands)
+
+        async def lands() -> None:
+            if how == "stop":
+                await _request_stop(fake_storage_provider, fake_event_bus, sid)
+            else:
+                await cancel_lands(fake_storage_provider, fake_event_bus, sid)
+            await asyncio.sleep(0.1)
+
+        if how == "stop":
+            script = [lands, "BLOCK"]
+        elif how == "cancel":
+            script = [TextDelta(text="the full answer", index=0), lands, Done(stop_reason="stop", raw_reason="stop")]
+        else:
+            script = [TextDelta(text="the full answer", index=0), Done(stop_reason="stop", raw_reason="stop")]
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, _StopAwareExecutor(script), sid)
+
+        assert at_transition, "the turn never transitioned the row"
+        assert all(SessionMessageKind.CANCELLED in kinds for kinds in at_transition), (
+            f"a transition ran before the CANCELLED record was written: {at_transition}"
+        )
+
+
+class TestAStopThatLandsBeforeTheBatchThroughTheWholeTurn:
+    """The loop-level tests prove the refusal; this proves what the SESSION records and ends as when the loop is the
+    real one: the tool never runs, the call is answered in the transcript, and the session rests WAITING."""
+
+    async def test_a_stop_as_the_model_finishes_runs_no_tool_and_keeps_the_log_paired(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        from primer.agent.loop import run_agent_turn
+        from primer.model.agent import Agent, AgentModel
+        from primer.model.chat import Message, TextPart, ToolCallEnd, ToolCallStart, ToolResultPart
+        from primer.model.model_profile import ModelProfileConfig
+        from primer.model_profile import ResolvedModel
+
+        sid = seeded_session.id
+        executed: list[str] = []
+
+        class _Manager:
+            def is_notifying(self, tool_name: str) -> bool:
+                return False
+
+            async def list_tools(self, *, principal=None):
+                return []
+
+            async def execute(self, call, *, principal=None):
+                executed.append(call.id)
+                return ToolResultPart(id=call.id, output="ran", error=False)
+
+        class _Llm:
+            def stream(self, **_kwargs):
+                async def gen():
+                    yield ToolCallStart(id="tc1", name="loop_tool", index=0)
+                    yield ToolCallEnd(id="tc1", arguments={}, index=0)
+                    yield Done(stop_reason="tool_use", raw_reason="tool_use")
+                    # The model has finished; the provider just has not closed the stream. The Stop lands in
+                    # that drain, so the round is complete (Done and its tool call are in) when it is seen.
+                    await _request_stop(fake_storage_provider, fake_event_bus, sid)
+                    await asyncio.sleep(30)
+
+                return gen()
+
+        class _RealLoopExecutor:
+            last_done_reason = "tool_use"
+
+            def __init__(self) -> None:
+                self.event = None
+                self.was_interrupted = False
+
+            def bind_interrupt_event(self, event) -> None:
+                self.event = event
+
+            async def invoke(self, messages, **_kwargs):
+                holder: list[bool] = []
+                async for ev in run_agent_turn(
+                    agent=Agent(id="ag", description="x", model=AgentModel(profile_id="p--m"), max_tool_turns=10),
+                    llm=_Llm(), llm_model=ResolvedModel(
+                        profile_id="p", provider_id="prov", model_name="m", context_length=4096,
+                        config=ModelProfileConfig(),
+                    ),
+                    tool_manager=_Manager(), prompt=[Message(role="user", parts=[TextPart(text="go")])],
+                    interrupt=self.event, interrupted_out=holder,
+                ):
+                    yield ev
+                self.was_interrupted = bool(holder)
+
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, _RealLoopExecutor(), sid)
+
+        assert executed == [], "a Stop that landed before the batch let the tool run"
+        records = _records(fake_workspace_io, sid)
+        kinds = [r["kind"] for r in records]
+        results = [r for r in records if r["kind"] == SessionMessageKind.TOOL_RESULT]
+        calls = [r for r in records if r["kind"] == SessionMessageKind.TOOL_CALL]
+        # Dispatch rewrites the provider's call id to a scoped one: pair by what the transcript itself records.
+        assert len(calls) == 1 and [r["payload"].get("call_id") for r in results] == [calls[0]["payload"].get("id")], (
+            "the call is not answered in the transcript"
+        )
+        assert results[0]["payload"]["output"] == "not run: stopped by user" and results[0]["payload"]["error"] is True
+        assert kinds.index(SessionMessageKind.TOOL_RESULT) < kinds.index(SessionMessageKind.CANCELLED)
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status == SessionStatus.WAITING and row.ended_reason is None
+
+
 class TestAStopFollowedByAHumanSteer:
     """A steer that lands while a turn runs flips ``turn_status`` to claimable, and ``wake_session`` then
     clears ``interrupt_requested`` on the row. The cancel arm used to decide Stop-vs-End from that flag,
