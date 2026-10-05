@@ -886,14 +886,16 @@ async def test_clean_completion_storage_failure_propagates_not_swallowed(
         return fake_executor
 
     storage = fake_storage_provider.get_storage(WorkspaceSession)
-    orig_update = storage.update
+    # The terminal write is a CONDITIONAL write (update_unless: the backend refuses it if the row is already
+    # ENDED), so that is the call the failure is injected into.
+    orig_update_unless = storage.update_unless
 
-    async def _failing_update(entity, *, conn=None):
+    async def _failing_update_unless(entity, *, field, forbidden, conn=None):
         if entity.status == SessionStatus.ENDED:
             raise RuntimeError("simulated storage failure")
-        return await orig_update(entity, conn=conn)
+        return await orig_update_unless(entity, field=field, forbidden=forbidden, conn=conn)
 
-    storage.update = _failing_update
+    storage.update_unless = _failing_update_unless
 
     published: list[tuple[str, dict]] = []
     orig_publish = fake_event_bus.publish

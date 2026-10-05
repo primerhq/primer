@@ -39,6 +39,14 @@ class _Sessions:
         self.row = row
         return row
 
+    async def update_unless(self, row, *, field, forbidden, conn=None):
+        """What the backends do: refuse the write if the STORED field equals ``forbidden``."""
+        if getattr(self.row, field) == forbidden:
+            return None
+        self.updates += 1
+        self.row = row
+        return row
+
 
 async def test_matching_epoch_writes_the_terminal_status():
     sessions = _Sessions(_row(binding_epoch=2))
