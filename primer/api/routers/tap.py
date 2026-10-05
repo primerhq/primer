@@ -356,6 +356,8 @@ def build_compaction_frame(raw_lines: list[str]) -> dict | None:
         "unreducible": payload.get("unreducible"),
         "trigger_tokens": payload.get("trigger_tokens"),
         "fixed_overhead_tokens": payload.get("fixed_overhead_tokens"),
+        # What was done to the summariser's input when its first call overflowed (null otherwise).
+        "summary_input_reduced": payload.get("summary_input_reduced"),
     }
 
 

@@ -98,6 +98,21 @@ class ContextOverflowUnrecoverable(ConfigError):
         }
 
 
+class SummariserOverflow(ContextOverflowUnrecoverable):
+    """The compaction's OWN summariser call was rejected as too large, and its input could not be reduced to fit.
+
+    The summariser is a model call like any other and is sent the head the compaction replaces; a head
+    over the model's window makes that call overflow. The compaction first retries once, text only, with
+    the input reduced (tool results left out, then a bounded rolling fold, then single units cut); this is
+    what is raised when that is not possible or the retry overflows too. It names the summariser so it is
+    not read as the turn's own prompt not fitting. A :class:`ContextOverflowUnrecoverable`, so the same
+    problem type maps it and a handler that catches that catches this; ``code`` and ``ended_detail`` are
+    ``summariser_overflow``.
+    """
+
+    CODE = "summariser_overflow"
+
+
 class ModelNotFoundError(ConfigError):
     """Requested model isn't in the adapter's declared models list."""
 

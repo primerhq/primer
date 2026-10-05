@@ -18,8 +18,9 @@ second overflow, a summariser overflow failing the turn); these tests pin the re
 * steers written while the compaction ran are in the replay's input;
 * a compaction marker takes its seq from the turn's event-log writer when there is one.
 
-(The overflow classifier, the cap results of ``max_tool_turns`` and the summariser's own recovery are other
-units: tasks 01a108b1-2480, 01a108b1-47d7 and the A.4 follow-up.)
+(The overflow classifier and the cap results of ``max_tool_turns`` are other units: tasks 01a108b1-2480 and
+01a108b1-47d7. The summariser's own overflow is recovered inside the compaction, and is covered by
+``test_summariser_overflow_recovery.py``.)
 """
 
 from __future__ import annotations
