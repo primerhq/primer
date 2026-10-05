@@ -137,9 +137,13 @@ async def test_exec_read_access_takes_no_lock(tmp_path):
     locks = WorkspaceLockTable()
     frames: list = []
 
+    holding = asyncio.Event()
+    release = asyncio.Event()
+
     async def hold_scope():
         async with locks.hold_scope(str(tmp_path)):
-            await asyncio.sleep(0.2)
+            holding.set()
+            await release.wait()               # held until the test says so, not for a fixed time
 
     async def read_exec():
         async for evt in run_exec(
@@ -150,10 +154,16 @@ async def test_exec_read_access_takes_no_lock(tmp_path):
             frames.append(evt)
 
     holder = asyncio.create_task(hold_scope())
-    await asyncio.sleep(0.01)
-    # Read exec must finish without waiting for the 0.2s scope hold.
-    await asyncio.wait_for(read_exec(), timeout=0.1)
-    holder.cancel()
+    await asyncio.wait_for(holding.wait(), timeout=10.0)
+    try:
+        # The scope lock stays held for the whole read exec, so a read that took it would wait forever and hit
+        # this bound. The bound is only a backstop for that failure: it is far longer than spawning a shell
+        # needs even on a loaded runner (a 0.1s bound around a real process spawn failed CI).
+        await asyncio.wait_for(read_exec(), timeout=10.0)
+        assert not holder.done(), "the scope lock was released before the read exec finished"
+    finally:
+        release.set()
+        await holder
     assert any(f.event == "exit" for f in frames)
 
 
