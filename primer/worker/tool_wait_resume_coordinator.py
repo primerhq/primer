@@ -416,8 +416,10 @@ async def persist_resume_tool_result_records(
     What each record holds is read from the TASK, never from the part the model was shown. The result is
     ``task.result_state or {}``; ``output`` is its ``output`` and ``error`` is its ``error``, and each falls back
     (to ``task.last_error``, which may be ``None``, and to ``task.state == "failed"``) only when the KEY is absent,
-    so ``{"output": None}`` stays ``None``. A task with no ``result_state`` is shown to the model as a synthesised
-    part, ``output=last_error or "tool call failed"`` and ``error=True``, whatever its state. A FAILED one is
+    so ``{"output": None}`` stays ``None``. A task whose ``result_state`` is ``None`` is shown to the model as a
+    synthesised part, ``output=last_error or "tool call failed"`` and ``error=True``, whatever its state (the model
+    path tests ``is not None``, so an empty ``{}`` is not synthesised there, while the ``or {}`` above treats it like
+    ``None``). A FAILED one is
     recorded as ``output=last_error`` and ``error=True``: the two agree on the cause but not necessarily on the text.
     A DONE one is recorded as ``output=last_error`` and ``error=False``: the record says it succeeded where the
     model was told it failed.

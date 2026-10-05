@@ -300,6 +300,19 @@ async def a_patch_that_leaves_the_row_unreadable_is_rejected_and_rolled_back(sto
     assert fresh is not None and fresh.count == 2
 
 
+async def a_value_the_model_coerces_to_a_non_finite_float_is_refused_and_the_row_is_unchanged(store: Store) -> None:
+    """The strings "nan" and "inf" are fine JSON and a non-finite float once the model reads them, which no backend can store: the call
+    is a PatchSpecError that names the field and never echoes the value, and a field patched in the same call is not written."""
+    await _mk(store, "a", ratio=1.5, count=2)
+    for value in ("nan", "inf"):
+        with pytest.raises(PatchSpecError) as excinfo:
+            await store.patch_if("a", {"ratio": value, "count": 9}, where={"status": ["created"]})
+        message = str(excinfo.value)
+        assert "PatchDoc.ratio" in message and value not in message.lower()
+        fresh = await store.get("a")
+        assert fresh is not None and (fresh.ratio, fresh.count) == (1.5, 2), f"{value!r}: the refused call wrote something"
+
+
 async def an_empty_or_malformed_where_is_rejected(store: Store) -> None:
     await _mk(store, "a")
     for bad_where in ({}, {"status": "running"}, {"status": b"running"}, {"id": ["a"]}):
@@ -529,6 +542,7 @@ ALL = [
     numbers_compare_by_value_across_int_and_float,
     raw_generation_round_trips_for_float_enum_and_secret,
     a_patch_that_leaves_the_row_unreadable_is_rejected_and_rolled_back,
+    a_value_the_model_coerces_to_a_non_finite_float_is_refused_and_the_row_is_unchanged,
     an_empty_or_malformed_where_is_rejected,
     an_array_parent_is_replaced_like_any_non_object,
 ]
