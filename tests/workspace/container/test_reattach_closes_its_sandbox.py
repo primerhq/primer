@@ -190,6 +190,35 @@ async def test_the_caller_that_lost_the_race_closes_its_own_sandbox_and_gets_the
     assert sandbox.closed == 1 and backend._workspaces == {WORKSPACE_ID: winner}
 
 
+async def test_two_concurrent_gets_on_a_cold_cache_share_one_workspace_and_only_the_loser_closes(tmp_path, monkeypatch):
+    """A REAL race: two callers re-attach at once, each with a sandbox of its own (a new connection to the same container);
+    materialise waits until both have arrived. Both get the same workspace; the cached sandbox, the shared connection, stays
+    open, and only the other caller's is closed (a build that closed the winner's would pass a stand-in-winner test)."""
+    backend, adapter = await _backend(tmp_path)
+    arrived, both_here = 0, asyncio.Event()
+    real = SandboxWorkspace.materialise.__func__
+
+    async def wait_for_the_other_caller(**kwargs):
+        nonlocal arrived
+        arrived += 1
+        if arrived == 2:
+            both_here.set()
+        await both_here.wait()
+        return await real(SandboxWorkspace, **kwargs)
+
+    monkeypatch.setattr(SandboxWorkspace, "materialise", staticmethod(wait_for_the_other_caller))
+    first, second = await asyncio.wait_for(
+        asyncio.gather(backend.get(WORKSPACE_ID, template=_template()), backend.get(WORKSPACE_ID, template=_template())),
+        timeout=10,
+    )
+    assert first is second and backend._workspaces == {WORKSPACE_ID: first}
+    assert len(adapter.handed_out) == 2
+    cached = first.sandbox
+    (other,) = [sb for sb in adapter.handed_out if sb is not cached]
+    assert cached.close_started == 0 and cached.closed == 0, "the cached connection is the shared one: it stays open"
+    assert other.closed == 1, "the caller that lost the race closed its own"
+
+
 async def test_a_close_that_fails_is_logged_and_does_not_replace_the_error(tmp_path, monkeypatch, caplog):
     async def failing(**kwargs):
         raise RuntimeError("the sandbox could not be wrapped")
