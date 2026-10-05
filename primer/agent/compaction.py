@@ -585,8 +585,24 @@ class CompactionStrategy:
         return int(self.DEFAULT_REDUCED_FRACTION * self._effective_budget(model))
 
     def replay_guard(self, model: "ResolvedModel") -> ReplayGuard:
-        """The prompt guard for the replay after an overflow (see :class:`ReplayGuard`)."""
-        return ReplayGuard(target_tokens=self.reduced_target(model), size=self._estimate_tokens)
+        """The prompt guard for the replay after an overflow (see :class:`ReplayGuard`): its target counts
+        the messages and the tool schemas."""
+        return ReplayGuard(
+            target_tokens=self.reduced_target(model),
+            size=self._estimate_tokens,
+            tools_size=lambda tools: self.estimate_fixed_overhead([], tools),
+        )
+
+    def newest_round_cap(self, model: "ResolvedModel", *, fixed_overhead: int, protected_tokens: int) -> int:
+        """The most the newest folded round may weigh for a forced compaction to be able to keep it.
+
+        A forced compaction protects the opening user input (``protected_tokens``) and the newest round,
+        and its result is those two, the fixed part and a summary of the full allowance: what the budget
+        leaves after the last three. ``0`` when nothing is left (the fixed part nearly fills the window):
+        the round is then reduced to its placeholders, which is the most that can be done for it."""
+        return max(
+            0, self._effective_budget(model) - fixed_overhead - protected_tokens - self.summary_max_tokens,
+        )
 
     def _tail_budget(self, room: int) -> int:
         """What the kept tail may weigh, given ``room`` (the trigger minus everything that is not
