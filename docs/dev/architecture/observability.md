@@ -98,13 +98,13 @@ The instrumentation plumbing lives in `primer/observability/`:
   `from`-import would keep writing to the dead registry after any reset.
 - `compaction_outcomes_total{outcome}` is incremented by `CompactionStrategy` (`primer/agent/compaction.py`) once per
   compaction: `pruned` (tier 1 sufficed), `summarised`, `unreducible` (nothing could be summarised, so no marker was
-  written), `skipped` (the trigger cannot be reached and the prompt still fits the window, so it was deliberately not
-  compacted) or `insufficient` (summarised, and the result is still at or over the trigger). `unreducible` and
+  written), `skipped` (the trigger cannot be reached, and the prompt still fits the budget or has not grown since the last
+  compaction left it, so it was deliberately not compacted) or `insufficient` (summarised, and the result is still at or over the trigger). `unreducible` and
   `insufficient` also log a WARNING and are in the session record (the marker's payload, or a `compaction_note`
   record when there is no marker); `skipped` logs at INFO and leaves ONE `compaction_note` per run of skips (the
-  next marker ends the run), not one per turn. A skip is `cannot_reach_trigger` (the prompt fits the window) or
-  `recently_compacted` (it does not fit the budget but has not grown by a summary allowance since the newest
-  marker's `tokens_after`). The trigger, the tail budget and the
+  next marker ends the run), not one per turn. A skip is `cannot_reach_trigger` (the prompt, after the tier-1 prune, fits the budget) or
+  `recently_compacted` (it does not fit the budget but fits the window, and has not grown by a summary allowance
+  since the newest marker's `tokens_after`). The trigger, the tail budget and the
   re-measure count the FIXED overhead (system prompt and tool schemas), so a rising `unreducible` rate with reason
   `fixed_over_budget` is an agent whose fixed part does not fit its model's window (too many or too large tool
   schemas), and a steady `skipped` rate is one whose fixed part keeps it over the trigger without overflowing.
