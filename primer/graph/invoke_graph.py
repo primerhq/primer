@@ -110,6 +110,7 @@ async def run_invoke_graph(
 
 async def resume_invoke_graph(
     *, child, checkpoint, payload, resumed_tcid=None, agent_tool_result=None,
+    resume_session_id=None, resolve_provider=None,
 ):
     """Resume a parked child graph from its checkpoint, returning
     ``(output_text, repark)``. ``output_text`` is the graph's final text once
@@ -117,7 +118,17 @@ async def resume_invoke_graph(
     child's re-park YieldToWorker if another gate is still pending, else None.
 
     Mirrors graph_resume.resume_graph_from_checkpoint's rejection handling but
-    also collects the ``_GraphEndOutputEvent`` output text."""
+    also collects the ``_GraphEndOutputEvent`` output text.
+
+    ``payload`` also reaches the child as ``toolcall_payload``: a
+    value-yielding ``tool_call`` node inside the child (``ask_user``, a python
+    toolset's tool) takes the operator's reply from it, and the executor
+    ignores it for an approval gate. ``resume_session_id`` and
+    ``resolve_provider`` are the session being resumed and the provider
+    registry's ``get_toolset``, for the ``ResumeContext`` that node's resume
+    hook receives. They default ``None`` for a caller with no value-yielding
+    node to resume (``GraphFrame.resume`` delivers a finished child result as
+    ``agent_tool_result`` instead)."""
     from primer.graph.base import _GraphEndOutputEvent, _ToolApprovalRejected
     from primer.model.yield_ import YieldToWorker
     from primer.worker.graph_resume import _decision_from_payload
@@ -138,6 +149,9 @@ async def resume_invoke_graph(
         async for ev in child.resume_from_checkpoint(
             checkpoint, resumed_tcid=resumed_tcid,
             agent_tool_result=agent_tool_result,
+            toolcall_payload=payload,
+            resume_session_id=resume_session_id,
+            resolve_provider=resolve_provider,
         ):
             if isinstance(ev, _GraphEndOutputEvent):
                 end_text = ev.text

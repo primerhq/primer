@@ -532,12 +532,20 @@ def build_invocation_services(pool: "WorkerPool", session, workspace, executor, 
             checkpoint, tcid, payload, session_id=session.id,
         )
 
+    async def resolve_provider(toolset_id):
+        return await provider_registry.get_toolset(toolset_id)
+
     return InvocationServices(
         build_subagent_toolmanager=build_subagent_toolmanager,
         resume_subagent=resume_subagent,
         resolve_graph=resolve_graph,
         build_child_graph_executor=build_child_graph_executor,
         graph_agent_tool_result=graph_agent_tool_result,
+        # The ResumeContext a GraphFrame leaf's value-yielding tool_call node
+        # hands its resume hook: the session being resumed and the registry's
+        # toolset resolver, as the agent-session resume builds them.
+        session_id=getattr(session, "id", None),
+        resolve_provider=resolve_provider if provider_registry is not None else None,
     )
 
 

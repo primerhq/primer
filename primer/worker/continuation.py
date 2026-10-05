@@ -30,7 +30,7 @@ Task 3.3b). The frames themselves reach those callables via
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,6 +72,15 @@ class InvocationServices:
         child graph continues from (from the child checkpoint + tool_call_id +
         raw payload), or ``None`` for approval/verdict leaves. Used by
         :meth:`~primer.worker.frames.GraphFrame.resume_leaf`.
+    session_id
+        The session being resumed, for the ``ResumeContext`` a value-yielding
+        ``tool_call`` node inside a child graph hands its resume hook. Used by
+        :meth:`~primer.worker.frames.GraphFrame.resume_leaf`. ``None`` for a
+        bundle built without a session.
+    resolve_provider
+        The provider registry's ``get_toolset``, for the same context (a python
+        toolset's hook reaches its provider through it). ``None`` where the
+        worker has no registry.
     """
 
     build_subagent_toolmanager: Callable[..., Any]
@@ -79,6 +88,8 @@ class InvocationServices:
     resolve_graph: Callable[..., Any]
     build_child_graph_executor: Callable[..., Any]
     graph_agent_tool_result: Callable[..., Any]
+    session_id: str | None = None
+    resolve_provider: Callable[[str], Awaitable[Any]] | None = None
 
 
 # ===========================================================================
