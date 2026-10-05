@@ -1286,7 +1286,7 @@ class WorkerPool:
             self, session, parked, checkpoint, ay, outcome,
         )
 
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id=None):
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
         return await graph_resume_coordinator.graph_agent_tool_result(
             self, checkpoint, tcid, payload, session_id=session_id,
         )

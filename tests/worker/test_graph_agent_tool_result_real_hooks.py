@@ -41,9 +41,9 @@ def _pool(registry: Any = None) -> SimpleNamespace:
     return SimpleNamespace(_provider_registry=registry)
 
 
-async def _result(tool_name: str, payload: Any, *, pool: Any = None, **kw: Any):
+async def _result(tool_name: str, payload: Any, *, pool: Any = None, session_id: str = "sess-0"):
     message = await graph_resume_coordinator.graph_agent_tool_result(
-        pool if pool is not None else _pool(), _checkpoint(tool_name), "tc1", payload, **kw,
+        pool if pool is not None else _pool(), _checkpoint(tool_name), "tc1", payload, session_id=session_id,
     )
     assert message is not None
     (part,) = message.parts
@@ -113,8 +113,8 @@ async def test_without_a_provider_registry_the_context_says_so():
         return ToolCallResult(output="ok", is_error=False)
 
     register_resume_hook("test_graph_ctx_tool_no_registry", hook)
-    await _result("test_graph_ctx_tool_no_registry", {}, pool=_pool(None))
-    assert seen[0].resolve_provider is None and seen[0].session_id is None
+    await _result("test_graph_ctx_tool_no_registry", {}, pool=_pool(None), session_id="sess-4")
+    assert seen[0].resolve_provider is None and seen[0].session_id == "sess-4"
 
 
 @pytest.mark.asyncio
@@ -134,6 +134,15 @@ async def test_the_pool_method_forwards_the_session_id():
 
 
 @pytest.mark.asyncio
+async def test_the_session_id_is_required():
+    """Every caller holds the session being resumed, so the hook's ``ctx.session_id`` can never silently be None."""
+    with pytest.raises(TypeError, match="session_id"):
+        await graph_resume_coordinator.graph_agent_tool_result(_pool(), _checkpoint("ask_user"), "tc1", {})
+    with pytest.raises(TypeError, match="session_id"):
+        await WorkerPool._graph_agent_tool_result(_pool(), _checkpoint("ask_user"), "tc1", {})
+
+
+@pytest.mark.asyncio
 async def test_the_invocation_services_closure_forwards_the_session_id():
     """The GraphFrame leaf path resolves an ask_user answer through ``InvocationServices.graph_agent_tool_result``."""
     from primer.worker.session_resume_coordinator import build_invocation_services
@@ -147,7 +156,7 @@ async def test_the_invocation_services_closure_forwards_the_session_id():
     register_resume_hook("test_graph_ctx_tool_services", hook)
 
     class _StandIn(SimpleNamespace):
-        async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id=None):
+        async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
             return await WorkerPool._graph_agent_tool_result(self, checkpoint, tcid, payload, session_id=session_id)
 
     pool = _StandIn(_provider_registry=None, _storage=None, _approval_resolver=None)
