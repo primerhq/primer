@@ -40,6 +40,7 @@ Subclasses provide three abstract hooks:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import uuid
 from abc import ABC, abstractmethod
@@ -109,8 +110,22 @@ logger = logging.getLogger(__name__)
 _MARKER_COMMIT_GRACE_S = 30.0
 
 
-def _consume_abandoned_commit(commit: "asyncio.Future") -> None:
-    """Retrieve what an abandoned marker commit dies of, so it is logged and not "never retrieved"."""
+def _consume_abandoned_commit(commit: "asyncio.Future", rounds_lost: int | None = None) -> None:
+    """Retrieve what an abandoned marker commit dies of, so it is logged and not "never retrieved".
+
+    ``rounds_lost`` is set when the turn TOOK the commit as landed and dropped its rounds from the record: a commit
+    that then fails (or is cancelled) means those rounds are in neither the marker nor messages.jsonl, and the next
+    turn runs those tool calls again. It is the number of tool rounds that went with it, and it is logged at ERROR.
+    """
+    if rounds_lost is not None:
+        if commit.cancelled() or commit.exception() is not None:
+            logger.error(
+                "AgentExecutor: the compaction marker commit, taken as landed when the turn was cancelled, did not "
+                "land: the turn's %d completed tool round(s) are in neither the marker nor messages.jsonl, so the "
+                "next turn runs those tool calls again",
+                rounds_lost, exc_info=None if commit.cancelled() else commit.exception(),
+            )
+        return
     if not commit.cancelled() and commit.exception() is not None:
         logger.warning("AgentExecutor: the abandoned compaction marker commit failed", exc_info=commit.exception())
 
@@ -605,7 +620,10 @@ class _BaseAgentExecutor(ABC):
                     # Unknown outcome. The commit is a thread that may still land: assume it will, because writing
                     # the rounds again would put every tool_use id in the history twice (a 400 on every later
                     # request), whereas rounds that never land are only run again.
-                    write.add_done_callback(_consume_abandoned_commit)
+                    write.add_done_callback(functools.partial(
+                        _consume_abandoned_commit,
+                        rounds_lost=tool_rounds(rounds) if forced.summary_message is not None else None,
+                    ))
                     logger.error(
                         "AgentExecutor: the compaction marker commit did not finish within %gs of the cancel; "
                         "assuming it lands, and not writing the turn's rounds a second time",
