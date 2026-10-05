@@ -318,3 +318,53 @@ async def test_tool_call_gate_release_lands_on_a_row_stored_without_gate_seq(sql
     updated = await storage.get(task.id)
     assert updated is not None
     assert (updated.state, updated.gate_seq, updated.claim_token) == (ToolCallTaskState.GATED, 1, None)
+
+
+@pytest.mark.asyncio
+async def test_tool_call_gate_release_is_rejected_by_the_database_when_gate_seq_moves_between_the_read_and_the_write(
+    sqlite_provider,
+):
+    """The gate branch reads ``gate_seq`` and writes ``old + 1`` with ``gate_seq in [old]`` in the fence. The fake-storage
+    test proves the adapter builds that fence; this proves the REAL backend honours it: another writer moves the counter
+    after the adapter's read, so the guarded UPDATE matches no row, the stale gate write is lost loudly (a log, no
+    state change) instead of silently overwriting the counter, and a SECOND row of the same table is untouched."""
+    inner = sqlite_provider.get_storage(ToolCallTask)
+    task = _make_tool_call_task()
+    bystander = _make_tool_call_task("worker:tool:1:2")
+    await inner.create(task)
+    await inner.create(bystander)
+
+    class _MovesUnderneath:
+        """Delegates to the real storage; right after the adapter's single read, another writer bumps the counter."""
+
+        def __init__(self) -> None:
+            self.interposed = False
+
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        async def get(self, id, *, conn=None):
+            row = await inner.get(id, conn=conn)
+            if row is not None and id == task.id and not self.interposed:
+                self.interposed = True
+                moved = await inner.patch_if(id, {"gate_seq": 7}, where={"state": ["running"]})
+                assert moved is not None and moved.gate_seq == 7
+            return row
+
+    wrapper = _MovesUnderneath()
+    adapter = ToolCallClaimAdapter(task_storage=wrapper)
+    gate = ReleaseOutcome(
+        success=False, drop_lease=True, claim_token=_TOKEN,
+        park=ParkRequest(
+            parked_state={"kind": "approval"}, parked_event_key="k", parked_until=None, parked_at=datetime.now(UTC),
+        ),
+    )
+
+    assert await adapter.on_release(conn=None, entity_id=task.id, outcome=gate) is None
+
+    assert wrapper.interposed
+    row = await inner.get(task.id)
+    assert (row.state, row.gate_seq, row.claim_token) == (ToolCallTaskState.RUNNING, 7, _TOKEN), (
+        "the stale gate write landed over the concurrent counter bump"
+    )
+    assert await inner.get(bystander.id) == bystander
