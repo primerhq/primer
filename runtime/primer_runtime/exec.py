@@ -209,7 +209,10 @@ async def run_exec(
             # (GeneratorExit: a task cancelled while it was blocked in ``send`` closes it there, which no ``except`` arm
             # saw, so the process was never signalled). Keyed on ``finished`` and not on ``proc.returncode``: the shell
             # can be gone while a job it left behind, still in the group, is not. The write lock is released only after
-            # this returns (the ``async with lock_ctx`` above).
+            # this returns (the ``async with lock_ctx`` above), with ONE deliberate exception: a consumer cancelled
+            # AGAIN while the stop is waiting out the grace stops waiting. The stop's ``finally`` has sent the SIGKILL
+            # (it cannot be ignored) and the second cancel propagates at once, so the lock is released once the SIGKILL
+            # has been SENT, not once the group is confirmed gone.
             try:
                 if not finished:
                     await stop_process_group(proc)
