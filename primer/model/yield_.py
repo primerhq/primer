@@ -342,8 +342,11 @@ class ToolWaitPark(Exception):
     ids, and the live turn is the only place it is recorded (the turn
     log, the ``session.parked`` event and the YIELDED record). A graph
     RE-park (``_build_pending_tool_wait_park`` after ``restore_state``)
-    starts from a carried-over checkpoint entry, which holds the
-    session-qualified id (a bare one for a park written before S1b).
+    can start from a carried-over checkpoint entry, which holds the
+    session-qualified id (a bare one for a park written before S1b), or,
+    when the cycle resolved every carried-over entry (``resume_from_
+    checkpoint`` drops those) and a node dispatched a new batch, from a
+    fresh scoped id.
     Neither producer has the session id ``external_call_id`` needs to
     normalise it, and nothing reads a re-park's value:
     ``_repark_graph_tool_wait_outcome`` falls back to it only when the

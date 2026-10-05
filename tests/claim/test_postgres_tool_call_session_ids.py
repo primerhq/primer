@@ -73,7 +73,9 @@ def _task(task_id: str, session_id: str) -> ToolCallTask:
 
 async def _create(store, task: ToolCallTask, created_ids: list[str]) -> None:
     await store.create(task)
-    created_ids.append(task.id)  # only once the create succeeded: a refused create names a row this file does not own
+    # Only once the create succeeded: an id whose create the database refused is held by a row this call did not
+    # write (which may not be this file's at all), so it is never registered for deletion.
+    created_ids.append(task.id)
 
 
 @_needs_pg
