@@ -123,21 +123,23 @@ class LocalHardenedRunner(Runner):
             env={**_BASE_ENV, **self._env},
             **NEW_SESSION,
         )
+        finished = False
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(json.dumps(request).encode()),
                 timeout=timeout_seconds,
             )
+            finished = True
         except TimeoutError:
             # The wall clock is the real guarantee; RLIMIT_CPU only catches
-            # CPU-bound work, so a tool sleeping forever needs this kill.
-            await kill_process_group(proc)
+            # CPU-bound work, so a tool sleeping forever needs this kill (the finally below).
             return _timeout_error()
-        except asyncio.CancelledError:
-            # A cancelled run (the hard Cancel, a shutdown, a Stop that cancels the call) must not leave the shim
-            # running: the wait_for above was the only thing enforcing the wall clock, and it is gone.
-            await kill_process_group(proc)
-            raise
+        finally:
+            # Any way out of the wait that is not the shim finishing: the timeout, a cancel (the hard Cancel, a
+            # shutdown, a Stop that cancels the call: the wait_for above was the only thing enforcing the wall
+            # clock, and it is gone), or anything else.
+            if not finished:
+                await kill_process_group(proc)
 
         if proc.returncode != 0 and not stdout:
             return ShimResponse(

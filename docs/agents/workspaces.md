@@ -296,7 +296,11 @@ the command started (children, pipelines, background jobs) is killed
 with it, and the write lock is released only after that. A process the
 command deliberately detached (for example with `setsid`) is not
 killed. Nothing is killed when the command finishes on its own, so a
-job it left running in the background keeps running.
+job it left running in the background keeps running. To start
+something that must outlive a call that may time out or be cancelled,
+detach it and redirect its output: `setsid cmd >log 2>&1 &` (`nohup`
+alone does not detach it from the group, and without the redirect the
+job holds the call's output open).
 
 This is best-effort scoping, not a hard guarantee across arbitrary
 targets: a `write` to `a/f.txt` and an `exec` with `workdir="a"`
