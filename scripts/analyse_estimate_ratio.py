@@ -2,29 +2,44 @@
 
 Phase 0 records, per model call, the provider's reported ``input_tokens`` beside our estimate of the prompt that was sent
 (``estimated_input_tokens``). Whether a better signal than the character heuristic is worth building depends on how that ratio
-behaves on real traffic. This script reads the ``llm_call`` records of session ``messages.jsonl`` files (a dogfood
-instance's workspace directory, a k3s dump, any directory tree that holds them) and prints the verdict of the rule, with
-the figures it rests on, so the decision is mechanical.
+behaves on real traffic. This script reads the ``llm_call`` records of session ``messages.jsonl`` files and prints the
+verdict of the rule with the figures it rests on, so the decision is mechanical.
 
     uv run python scripts/analyse_estimate_ratio.py DIR [DIR ...] [--exclude-provider ID ...] [--min-days 7] [--json]
 
+Where the data is. A session's record log is ``<workspace root>/<state_path>/sessions/<session id>/messages.jsonl`` and
+``state_path`` is ``.state`` unless the template says otherwise. For the dogfood instance that is
+``~/.primer/workspaces/<workspace>/.state/sessions/*/messages.jsonl``: pass ``~/.primer/workspaces``. A docker or k8s
+workspace keeps its state INSIDE the sandbox, so copy it out first, for example
+``kubectl cp <namespace>/<pod>:<workspace root>/.state/sessions ./k3s-dump/<workspace>`` for each workspace pod, then pass
+``./k3s-dump``. Directories are searched recursively for ``messages.jsonl``; a root named twice (or a root inside another)
+is read once. The script prints the distinct provider ids it saw: name the Ollama ones with ``--exclude-provider``, because
+the record carries the provider's id and not its kind and Ollama's ``prompt_eval_count`` leaves out the KV-cached prefix.
+
 The rule (native-token-counting design v3.4, section 8):
 
-* Data: at least ``--min-days`` days of records, grouped by ``(provider_id, model)``, at least 200 calls per group with
+* Data: at least ``--min-days`` days of the calls the verdict rests on (the near-window calls of each material group, not of
+  every record: older records without ``context_length``, aggregated profiles, excluded providers and guarded calls do not
+  count towards the span), grouped by ``(provider_id, model)``, at least 200 calls per material group with
   ``estimated_input_tokens >= 0.33 x trigger`` (``trigger = 0.90 x (context_length - min(8192, max(1, context_length // 2)))``,
   from the record's own ``context_length``). Excluded: aggregated profiles (``provider_id`` null), providers named with
-  ``--exclude-provider`` (Ollama: ``prompt_eval_count`` leaves out the KV-cached prefix), and calls made under a prompt guard
-  (``guard`` present: the replay after an overflow). ``r = input_tokens / estimated_input_tokens``.
+  ``--exclude-provider``, and calls made under a prompt guard (``guard`` present: the replay after an overflow).
+  ``r = input_tokens / estimated_input_tokens``.
 * (1) Every material group (5% or more of the near-window calls) has ``p10(r) >= 0.85`` and ``p90(r) <= 1.10``: do NOT build
   Phase 1.
 * (2) Else, spread within every group small (``p90 / p10 <= 1.25``): build only Phase 1a (rung C x EMA kappa).
 * (3) Else build Phase 1b (the anchor) only if, after kappa correction, ``p90 |r / kappa - 1| > 0.15`` for a material group AND
-  there is a visible consequence: at least 1 overflow replay per 200 near-window turns, or at least 10% of compactions fired
-  with real occupancy (the usage of the call before the marker) below ``0.75 x trigger``.
-* (4) Per group, an anchor or kappa is allowed only if, within a turn, consecutive pure-append calls show non-decreasing
-  ``input_tokens`` in at least 99% of the pairs and a median ``(delta usage / delta estimate)`` in ``[0.7, 1.4]``.
+  there is a visible consequence: at least 1 overflow replay per 200 near-window turns, or at least 10% of the compactions
+  the TRIGGER fired (``tokens_before >= trigger_tokens`` in the marker; manual and overflow-forced compactions are not
+  counted) fired with real occupancy (the usage of the call before the marker) below ``0.75 x trigger``. **Approximation:**
+  kappa here is the group's MEDIAN ratio, a static figure, where Phase 1a's kappa is a per-session EMA; a static median
+  overstates the error left after correction, so this leans towards 1b and a verdict of 1b is the one to double check.
+* (4) Per group, an anchor or kappa is allowed only if, within a turn (and a node and a stretch with no compaction
+  marker), consecutive pure-append calls show non-decreasing ``input_tokens`` in at least 99% of the pairs and a median
+  ``(delta usage / delta estimate)`` in ``[0.7, 1.4]``.
 
-Records written before Phase 0b carry no ``context_length``; they are counted and skipped.
+A TURN ends at a ``done`` whose ``stop_reason`` is not ``tool_use`` (the loop writes a ``done`` after EVERY model call, tool
+rounds included), a ``cancelled`` or an ``error``, counted per ``(file, node_id)`` so graph nodes do not interleave.
 """
 
 from __future__ import annotations
@@ -34,10 +49,10 @@ import json
 import statistics
 import sys
 from collections import defaultdict
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from collections.abc import Iterable, Iterator
 
 GATE = 0.33
 MIN_CALLS = 200
@@ -51,7 +66,6 @@ PREMATURE_OCCUPANCY = 0.75
 MONOTONIC_FLOOR = 0.99
 DELTA_RATIO_BAND = (0.7, 1.4)
 MIN_PAIRS = 30
-TERMINAL_KINDS = ("done", "cancelled", "error")
 
 
 def trigger_tokens(context_length: int) -> int:
@@ -68,7 +82,8 @@ class Call:
     estimated: int
     context_length: int | None
     guard: str | None
-    turn: tuple[str, int]
+    turn: tuple[str, str | None, int]          # (file, node_id, turn index within that node)
+    segment: int                               # compaction markers seen so far in the file: a prompt does not append across one
     when: datetime | None
 
     @property
@@ -83,8 +98,8 @@ class Call:
 @dataclass
 class Corpus:
     calls: list[Call] = field(default_factory=list)
-    turns: set[tuple[str, int]] = field(default_factory=set)
-    markers: list[float] = field(default_factory=list)     # occupancy / trigger of the call before each marker
+    premature: list[bool] = field(default_factory=list)    # per trigger-fired marker: was the prompt before it under 0.75 x trigger
+    manual_or_forced_markers: int = 0
     without_context_length: int = 0
     files: int = 0
 
@@ -97,18 +112,28 @@ def _when(raw: object) -> datetime | None:
 
 
 def find_files(roots: Iterable[Path]) -> Iterator[Path]:
+    seen: set[Path] = set()
     for root in roots:
-        if root.is_file():
-            yield root
-        else:
-            yield from sorted(root.rglob("messages.jsonl"))
+        candidates = [root] if root.is_file() else sorted(root.rglob("messages.jsonl"))
+        for path in candidates:
+            resolved = path.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                yield path
+
+
+def _is_terminal(kind: str | None, payload: dict) -> bool:
+    if kind in ("cancelled", "error"):
+        return True
+    return kind == "done" and payload.get("stop_reason") != "tool_use"
 
 
 def read_corpus(roots: Iterable[Path]) -> Corpus:
     corpus = Corpus()
     for path in find_files(roots):
         corpus.files += 1
-        turn = 0
+        turns: dict[str | None, int] = defaultdict(int)
+        segment = 0
         last_call: Call | None = None
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if not line.strip():
@@ -117,8 +142,11 @@ def read_corpus(roots: Iterable[Path]) -> Corpus:
                 rec = json.loads(line)
             except ValueError:
                 continue
-            kind = rec.get("kind") if isinstance(rec, dict) else None
-            payload = rec.get("payload") or {} if isinstance(rec, dict) else {}
+            if not isinstance(rec, dict):
+                continue
+            kind = rec.get("kind")
+            payload = rec.get("payload") or {}
+            node = rec.get("node_id")
             if kind == "llm_call":
                 used, est = payload.get("input_tokens"), payload.get("estimated_input_tokens")
                 if not (isinstance(used, int) and used > 0 and isinstance(est, int) and est > 0):
@@ -129,16 +157,23 @@ def read_corpus(roots: Iterable[Path]) -> Corpus:
                     ctx = None
                 call = Call(
                     payload.get("provider_id"), payload.get("model"), used, est, ctx, payload.get("guard"),
-                    (str(path), turn), _when(rec.get("created_at")),
+                    (str(path), node, turns[node]), segment, _when(rec.get("created_at")),
                 )
                 corpus.calls.append(call)
-                corpus.turns.add(call.turn)
-                last_call = call
+                if call.guard is None and ctx is not None:
+                    last_call = call
             elif kind == "compaction_marker":
-                if last_call is not None and last_call.context_length is not None:
-                    corpus.markers.append(last_call.input_tokens / trigger_tokens(last_call.context_length))
-            elif kind in TERMINAL_KINDS:
-                turn += 1
+                before, trig = payload.get("tokens_before"), payload.get("trigger_tokens")
+                fired = isinstance(before, int) and isinstance(trig, int) and before >= trig
+                if not fired:
+                    corpus.manual_or_forced_markers += 1     # a manual or an overflow-forced compaction: not the trigger's
+                elif last_call is not None and last_call.context_length is not None:
+                    corpus.premature.append(
+                        last_call.input_tokens < PREMATURE_OCCUPANCY * trigger_tokens(last_call.context_length)
+                    )
+                segment += 1
+            elif _is_terminal(kind, payload):
+                turns[node] += 1
     return corpus
 
 
@@ -155,11 +190,15 @@ def percentile(values: list[float], q: float) -> float:
 @dataclass
 class Group:
     key: tuple[str, str | None]
-    ratios: list[float]
+    calls: list[Call]                          # the near-window calls the verdict rests on
     share: float = 0.0
     pairs: int = 0
     monotonic: float | None = None
     delta_ratio: float | None = None
+
+    @property
+    def ratios(self) -> list[float]:
+        return [c.ratio for c in self.calls]
 
     @property
     def p10(self) -> float:
@@ -179,7 +218,12 @@ class Group:
 
     @property
     def enough(self) -> bool:
-        return len(self.ratios) >= MIN_CALLS
+        return len(self.calls) >= MIN_CALLS
+
+    @property
+    def span_days(self) -> float:
+        stamps = [c.when for c in self.calls if c.when is not None]
+        return (max(stamps) - min(stamps)).total_seconds() / 86400 if len(stamps) > 1 else 0.0
 
     @property
     def spread(self) -> float:
@@ -213,21 +257,22 @@ def build_groups(corpus: Corpus, exclude_providers: set[str]) -> tuple[list[Grou
     total = sum(len(v) for v in near.values())
     groups = []
     for key, calls in sorted(near.items()):
-        group = Group(key, [c.ratio for c in calls], share=len(calls) / total if total else 0.0)
+        group = Group(key, calls, share=len(calls) / total if total else 0.0)
         _pure_append_pairs(group, [c for c in corpus.calls if (c.provider_id, c.model) == key and c.guard is None])
         groups.append(group)
     return groups, skipped
 
 
 def _pure_append_pairs(group: Group, calls: list[Call]) -> None:
-    """Rule 4's evidence: consecutive calls of one turn (no guard), each pair's usage and estimate deltas."""
-    by_turn: dict[tuple[str, int], list[Call]] = defaultdict(list)
+    """Rule 4's evidence: consecutive calls of one turn, node and compaction-free stretch (no guard), each pair's usage and
+    estimate deltas."""
+    by_run: dict[tuple, list[Call]] = defaultdict(list)
     for call in calls:
-        by_turn[call.turn].append(call)
+        by_run[(call.turn, call.segment)].append(call)
     pairs = monotonic = 0
     ratios = []
-    for turn_calls in by_turn.values():
-        for a, b in zip(turn_calls, turn_calls[1:]):
+    for run in by_run.values():
+        for a, b in zip(run, run[1:]):
             pairs += 1
             monotonic += b.input_tokens >= a.input_tokens
             d_est = b.estimated - a.estimated
@@ -240,26 +285,28 @@ def _pure_append_pairs(group: Group, calls: list[Call]) -> None:
 
 def decide(corpus: Corpus, groups: list[Group], min_days: float) -> dict:
     out: dict = {"facts": {}, "verdict": None, "reason": None}
-    stamps = [c.when for c in corpus.calls if c.when is not None]
-    days = (max(stamps) - min(stamps)).total_seconds() / 86400 if len(stamps) > 1 else 0.0
+    material = [g for g in groups if g.material]
+    # The span is measured over the calls the verdict rests on: each material group's own near-window calls.
+    days = min((g.span_days for g in material), default=0.0)
     replay_turns = {c.turn for c in corpus.calls if c.guard is not None}       # a guard is installed for a replay only
     near_turns = {c.turn for c in corpus.calls if c.near_window} | replay_turns
     replays_per_200 = 200 * len(replay_turns) / len(near_turns) if near_turns else 0.0
-    premature = sum(1 for occ in corpus.markers if occ < PREMATURE_OCCUPANCY)
-    premature_share = premature / len(corpus.markers) if corpus.markers else 0.0
+    premature = sum(corpus.premature)
+    premature_share = premature / len(corpus.premature) if corpus.premature else 0.0
     out["facts"] = {
-        "days_of_data": round(days, 2), "near_window_turns": len(near_turns),
+        "days_of_usable_data (shortest material group)": round(days, 2), "near_window_turns": len(near_turns),
         "replay_turns": len(replay_turns), "replays_per_200_near_window_turns": round(replays_per_200, 2),
-        "compactions": len(corpus.markers), "premature_compaction_share": round(premature_share, 3),
+        "trigger_fired_compactions": len(corpus.premature), "premature_compaction_share": round(premature_share, 3),
+        "manual_or_forced_markers_not_counted": corpus.manual_or_forced_markers,
     }
-    material = [g for g in groups if g.material]
-    if days < min_days:
-        out["verdict"], out["reason"] = "INSUFFICIENT DATA", f"{days:.1f} days of records, the rule needs {min_days:g}"
-    elif not material:
+    if not material:
         out["verdict"], out["reason"] = "INSUFFICIENT DATA", "no group carries 5% of the near-window calls"
     elif any(not g.enough for g in material):
-        small = ", ".join(f"{g.key}: {len(g.ratios)}" for g in material if not g.enough)
+        small = ", ".join(f"{g.key}: {len(g.calls)}" for g in material if not g.enough)
         out["verdict"], out["reason"] = "INSUFFICIENT DATA", f"a material group has fewer than {MIN_CALLS} near-window calls ({small})"
+    elif days < min_days:
+        short = ", ".join(f"{g.key}: {g.span_days:.1f} days" for g in material if g.span_days < min_days)
+        out["verdict"], out["reason"] = "INSUFFICIENT DATA", f"the rule needs {min_days:g} days of usable calls per material group ({short})"
     elif all(g.p10 >= P10_FLOOR and g.p90 <= P90_CEIL for g in material):
         out["verdict"], out["reason"] = "DO NOT BUILD PHASE 1", "rule 1: every material group is within [0.85, 1.10] at p10 and p90"
     elif all(g.spread <= SPREAD_CEIL for g in groups if g.enough):
@@ -270,7 +317,8 @@ def decide(corpus: Corpus, groups: list[Group], min_days: float) -> dict:
         if varies and consequence:
             out["verdict"], out["reason"] = "BUILD PHASE 1b", (
                 "rule 3: the error varies within a material group after kappa correction "
-                f"({', '.join(str(g.key) for g in varies)}) and it has a visible consequence"
+                f"({', '.join(str(g.key) for g in varies)}; kappa is the group median, an overstatement of what an EMA "
+                "leaves) and it has a visible consequence"
             )
         else:
             out["verdict"], out["reason"] = "BUILD PHASE 1a ONLY", (
@@ -282,11 +330,15 @@ def decide(corpus: Corpus, groups: list[Group], min_days: float) -> dict:
     return out
 
 
-def render(corpus: Corpus, groups: list[Group], skipped: dict[str, int], decision: dict) -> str:
+def render(corpus: Corpus, groups: list[Group], skipped: dict[str, int], decision: dict, providers: list[str]) -> str:
     lines = [f"files: {corpus.files}, llm_call records with usage and an estimate: {len(corpus.calls)}"]
     lines.append("skipped: " + ", ".join(f"{k}={v}" for k, v in skipped.items()))
+    lines.append("provider ids seen: " + (", ".join(providers) or "none"))
     lines.append("")
-    lines.append(f"{'provider / model':<48} {'n':>6} {'share':>6} {'p10':>6} {'p50':>6} {'p90':>6} {'p90/p10':>8} {'kappa err':>9}  rule 4")
+    lines.append(
+        f"{'provider / model':<48} {'n':>6} {'share':>6} {'days':>5} {'p10':>6} {'p50':>6} {'p90':>6} {'p90/p10':>8} "
+        f"{'kappa err':>9}  rule 4"
+    )
     for g in groups:
         allowed = g.anchor_allowed
         rule4 = "too few pairs" if allowed is None else ("ok" if allowed else "DEMOTE to estimate")
@@ -295,8 +347,8 @@ def render(corpus: Corpus, groups: list[Group], skipped: dict[str, int], decisio
         name = f"{g.key[0]} / {g.key[1]}"
         flag = "" if g.material else "  (not material)"
         lines.append(
-            f"{name:<48} {len(g.ratios):>6} {g.share:>6.1%} {g.p10:>6.2f} {g.p50:>6.2f} {g.p90:>6.2f} {g.spread:>8.2f} "
-            f"{g.kappa_error:>9.2f}  {rule4}{flag}"
+            f"{name:<48} {len(g.calls):>6} {g.share:>6.1%} {g.span_days:>5.1f} {g.p10:>6.2f} {g.p50:>6.2f} {g.p90:>6.2f} "
+            f"{g.spread:>8.2f} {g.kappa_error:>9.2f}  {rule4}{flag}"
         )
     lines.append("")
     for k, v in decision["facts"].items():
@@ -316,19 +368,25 @@ def main(argv: list[str] | None = None) -> int:
     corpus = read_corpus(args.roots)
     groups, skipped = build_groups(corpus, set(args.exclude_provider))
     decision = decide(corpus, groups, args.min_days)
+    providers = sorted({c.provider_id for c in corpus.calls if c.provider_id is not None})
+    if providers and not args.exclude_provider:
+        print(
+            "warning: no --exclude-provider given; if any of the provider ids above is an Ollama server its "
+            "prompt_eval_count leaves out the KV-cached prefix and it must be excluded", file=sys.stderr,
+        )
     if args.json:
         print(json.dumps({
-            "skipped": skipped, **decision,
+            "skipped": skipped, "providers": providers, **decision,
             "groups": [
                 {
-                    "provider_id": g.key[0], "model": g.key[1], "n": len(g.ratios), "share": g.share, "p10": g.p10,
-                    "p50": g.p50, "p90": g.p90, "kappa_error": g.kappa_error, "pairs": g.pairs,
+                    "provider_id": g.key[0], "model": g.key[1], "n": len(g.calls), "share": g.share, "span_days": g.span_days,
+                    "p10": g.p10, "p50": g.p50, "p90": g.p90, "kappa_error": g.kappa_error, "pairs": g.pairs,
                     "non_decreasing": g.monotonic, "delta_ratio": g.delta_ratio, "anchor_allowed": g.anchor_allowed,
                 } for g in groups
             ],
         }, indent=2))
     else:
-        print(render(corpus, groups, skipped, decision))
+        print(render(corpus, groups, skipped, decision, providers))
     return 0
 
 
