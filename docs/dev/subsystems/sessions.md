@@ -17,7 +17,7 @@ The subsystem's job is to glue those together for exactly one turn at a time: cl
 
 A session has two persisted faces that are reconciled at turn boundaries:
 
-- `WorkspaceSession` (`primer/model/workspace_session.py`) is the scheduler-visible row in storage. It carries lifecycle state (`status`), claim/streaming bookkeeping (`turn_no`, `last_seq`, `turn_status`, `cancel_requested_at`, `pause_requested_at`), and the yielding-tool park columns (`parked_status`, `parked_event_key`, `parked_until`, `parked_at`, `parked_state`). It is the row the `ClaimEngine` claims and the row the REST surface mutates.
+- `WorkspaceSession` (`primer/model/workspace_session.py`) is the scheduler-visible row in storage. It carries lifecycle state (`status`), claim/streaming bookkeeping (`turn_no`, `completed_turn_no`, `last_seq`, `next_unprocessed_seq`, `turn_status`, `cancel_requested_at`, `pause_requested_at`), and the yielding-tool park columns (`parked_status`, `parked_event_key`, `parked_until`, `parked_at`, `parked_state`). It is the row the `ClaimEngine` claims and the row the REST surface mutates.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
@@ -93,6 +93,7 @@ erDiagram
         str workspace_id
         SessionStatus status
         int turn_no
+        int completed_turn_no
         int last_seq
         str turn_status
         str parked_status

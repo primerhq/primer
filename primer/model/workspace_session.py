@@ -466,6 +466,24 @@ class WorkspaceSession(Identifiable):
 
     # Fence + scheduler-visible columns
     turn_no: int = Field(default=0, ge=0)
+    completed_turn_no: int | None = Field(
+        default=None,
+        description=(
+            "The turn_no of the last turn whose effects are all committed. "
+            "Written by run_one_session_turn as the LAST write of the "
+            "terminal lock block of a turn that ran (the clean completion "
+            "and the Stop/Cancel exit; never a failed turn, a park or an "
+            "early exit), after last_seq and the drain cursor, and BEFORE "
+            "the release whose transaction bumps turn_no. Cleared by "
+            "nothing. It equals turn_no only between that write and the "
+            "release's commit, so a claim that finds the two equal knows "
+            "the previous turn completed and its release never committed "
+            "(abandoned or rolled back): it takes the no-op path instead of "
+            "calling the model again, and its own release applies the lost "
+            "bump. Additive/optional, no migration: a row without it reads "
+            "None, and an older build ignores the key."
+        ),
+    )
     last_worker_id: str | None = Field(default=None)
 
     # Cancel/pause request flags (set by API, read by worker)

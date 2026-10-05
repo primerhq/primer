@@ -1283,6 +1283,8 @@ async def run_one_session_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
+            # Last write of the block: present means the cursor already advanced.
+            await _mark_turn_completed(session_storage, session_id, session.turn_no)
 
     if late_cancel:
         return await _finish_despite_cancel(_land_cancelled_turn(
@@ -1721,6 +1723,8 @@ async def _land_cancelled_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
+            # Last write of the block: present means the cursor already advanced.
+            await _mark_turn_completed(session_storage, session_id, session.turn_no)
     if seq is not None:
         await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
     await _best_effort_io("the TurnLogCancelled turn log entry", session_id, _safe_turn_log(turn_log, TurnLogCancelled(
@@ -1991,6 +1995,35 @@ async def _advance_drain_cursor(session_storage, session_id: str) -> None:
     if target > fresh.next_unprocessed_seq:
         await session_storage.update(
             fresh.model_copy(update={"next_unprocessed_seq": target})
+        )
+
+
+async def _mark_turn_completed(session_storage, session_id: str, turn_no: int) -> None:
+    """Record that turn ``turn_no`` has committed every effect it has (``WorkspaceSession.completed_turn_no``).
+
+    Called ONLY as the last write of the two terminal lock blocks of a turn that ran (the clean completion and
+    the Stop/Cancel exit), never from ``_end_turn_failed`` (a failed release does not bump ``turn_no``, so a
+    reopened session would match its own marker), a park or an early exit. Unconditional, and deliberately not
+    part of ``_advance_drain_cursor``, which the failed exit shares and which writes only when the cursor moves.
+
+    One field-scoped ``patch_if`` fenced on the turn's own ``turn_no``: it writes nothing else, and it writes
+    nothing if the row has moved on to another turn. Best-effort: a rejected fence or a storage error is logged
+    and never fails the turn (without the marker a rolled-back release re-runs the turn, as it did before).
+    """
+    try:
+        written = await session_storage.patch_if(
+            session_id, {"completed_turn_no": turn_no}, where={"turn_no": [turn_no]},
+        )
+    except Exception:  # noqa: BLE001 - best-effort; the turn's own outcome stands
+        logger.warning(
+            "session %s: could not record turn %d as completed; a rolled-back release would run it again",
+            session_id, turn_no, exc_info=True,
+        )
+        return
+    if written is None:
+        logger.warning(
+            "session %s: turn_no is no longer %d, so the turn is not recorded as completed",
+            session_id, turn_no,
         )
 
 
