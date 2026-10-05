@@ -332,11 +332,16 @@ async def run_agent_turn(
         result in place of its real one. A Stop that has landed BEFORE a round's
         batch starts runs none of it, answered the same way (appended to
         ``messages_out`` and yielded), so the history stays valid for the next
-        request. A batch that PARKS (a ``tool_wait`` park, or a timer yield)
-        leaves the loop before it looks at the Stop, and the dispatch clears the
-        flag as it parks: a Stop pressed during such a turn is dropped rather
-        than ending it (a known gap; a park honouring a pending Stop is its own
-        follow-up). ``None`` (the default) changes nothing.
+        request. Only the call that is RUNNING when the Stop lands can park
+        (a timer yield, an approval or answer gate, or a ``tool_wait`` park):
+        the batch then leaves the loop before it looks at the Stop, and the
+        dispatch clears the flag as it parks, so that Stop is dropped rather
+        than ending the turn (a known gap; a park honouring a pending Stop is
+        its own follow-up). Calls later in the batch are refused once the Stop
+        is set, so they can neither park nor deliver a client action. A Cancel
+        sets the same event and is treated the same way (the dispatch then ends
+        the session instead of resting it). ``None`` (the default) changes
+        nothing.
     interrupted_out
         Optional caller-provided list; ``True`` is appended when the turn ended
         because ``interrupt`` fired (the same output-parameter shape as

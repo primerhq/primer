@@ -5,10 +5,12 @@ a model that had not produced its first token (a cold load has no timeout by def
 turn running however many times the operator pressed Stop. The loop now races the interrupt
 event against every ``stream.__anext__()``.
 
-The TOOL BATCH is deliberately not interruptible here (slice B): a Stop that lands while a tool
-runs lets the batch finish, yields its results (so the log stays paired), and stops at the next
-LLM wait. ``test_a_stop_during_a_tool_waits_for_the_tool_...`` pins that boundary so slice B
-changes it knowingly.
+A tool call that is already RUNNING is deliberately not interruptible here (slice B): a Stop that lands
+while it runs lets that call finish and yields its result (so the log stays paired). The calls of the same
+batch that have not STARTED are refused ("not run: stopped by user") instead of running, and the turn stops at
+the next LLM wait. ``test_a_stop_during_a_tool_waits_for_the_tool_...`` pins the running-call boundary so
+slice B changes it knowingly; ``TestAStopDuringACallStopsTheRestOfTheBatch`` and
+``TestWhatAStopMeansForTheCallsAfterTheRunningOne`` pin the rest.
 
 What the caller gets back: the loop returns CLEANLY (it does not raise), appends True to
 ``interrupted_out``, and leaves ``messages_out`` holding only COMPLETED rounds: the interrupted
@@ -36,8 +38,10 @@ from primer.model.chat import (
     ToolCallEnd,
     ToolCallStart,
     ToolResultPart,
+    _ClientAction,
 )
 from primer.model.model_profile import ModelProfileConfig
+from primer.model.yield_ import Yielded, YieldToWorker
 from primer.model_profile import ResolvedModel
 from tests._support.provider_history import assert_anthropic_valid, assert_openai_valid
 
@@ -154,24 +158,41 @@ class _Manager:
     """Tools run immediately unless ``gate`` is given, then they wait for it. ``on_start`` is called with each
     call as it STARTS (e.g. to set the Stop while that call runs); ``executed`` lists the ids that started."""
 
-    def __init__(self, gate: asyncio.Event | None = None, on_start=None) -> None:
+    def __init__(
+        self, gate: asyncio.Event | None = None, on_start=None, parks: frozenset[str] = frozenset(),
+        notifying: frozenset[str] = frozenset(),
+    ) -> None:
         self.gate = gate
         self.on_start = on_start
+        self.parks = parks                       # call ids whose execution parks the session (YieldToWorker)
+        self.notifying = notifying               # tool NAMES the runner answers itself (client actions)
         self.started = asyncio.Event()
         self.finished = 0
         self.executed: list[str] = []
+        self.delivered: list[str] = []
 
     def is_notifying(self, tool_name: str) -> bool:
-        return False
+        return tool_name in self.notifying
 
     async def list_tools(self, *, principal=None):
         return [TOOL]
+
+    async def deliver_notifying(self, call, *, principal=None):
+        self.delivered.append(call.id)
+        if self.on_start is not None:
+            self.on_start(call)
+        return ToolResultPart(id=call.id, output="delivered", error=False)
 
     async def execute(self, call, *, principal=None):
         self.started.set()
         self.executed.append(call.id)
         if self.on_start is not None:
             self.on_start(call)
+        if call.id in self.parks:
+            raise YieldToWorker(
+                Yielded(tool_name=call.name, event_key=f"timer:{call.id}", resume_metadata={}),
+                tool_call_id=call.id,
+            )
         if self.gate is not None:
             await self.gate.wait()
         self.finished += 1
@@ -542,3 +563,71 @@ class TestAStopDuringACallStopsTheRestOfTheBatch:
 
         assert manager.executed == ["tcA-0", "tcA-1", "tcA-2"] and interrupted == []
         assert STOPPED not in [p.output for p in _tool_results(messages_out)]
+
+
+def _round_of(*calls: tuple[str, str]) -> list[StreamEvent]:
+    """One model round asking for ``(id, tool name)`` calls, in order."""
+    events: list[StreamEvent] = []
+    for i, (call_id, name) in enumerate(calls):
+        events += [ToolCallStart(id=call_id, name=name, index=i), ToolCallEnd(id=call_id, arguments={}, index=i)]
+    return [*events, Done(stop_reason="tool_use", raw_reason="tool_use")]
+
+
+def _client_actions(events: list[StreamEvent]) -> list[str]:
+    return [e.extended.call_id for e in events if isinstance(e, ExtendedEvent) and isinstance(e.extended, _ClientAction)]
+
+
+class TestWhatAStopMeansForTheCallsAfterTheRunningOne:
+    """Once the Stop is set, a call that has not started neither parks the session nor tells the browser to act, even
+    when it is the kind of call that would. Only the call that is RUNNING when the Stop lands can park (a timer, a
+    ``tool_wait``, an approval or an answer gate): the batch has left the loop by the time the Stop could be looked at,
+    and the dispatch drops the Stop as it parks (the park honouring a pending Stop is its own follow-up)."""
+
+    async def test_a_later_call_that_would_park_is_refused_not_parked(self) -> None:
+        interrupt = asyncio.Event()
+        manager = _Manager(on_start=lambda c: interrupt.set() if c.id == "a" else None, parks=frozenset({"b"}))
+        llm = _ScriptedLLM(_round_of(("a", "loop_tool"), ("b", "loop_tool")), _AFTER)
+
+        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert manager.executed == ["a"], "the call that would park was started"
+        assert [(p.id, p.output) for p in _tool_results(messages_out)] == [("a", "ok"), ("b", STOPPED)]
+        assert interrupted == [True]
+
+    async def test_the_call_that_is_running_when_the_stop_lands_can_still_park(self) -> None:
+        """The narrowed caveat, pinned: it parks, so the loop is left by the park exception and the Stop is not seen."""
+        interrupt = asyncio.Event()
+        manager = _Manager(on_start=lambda c: interrupt.set() if c.id == "a" else None, parks=frozenset({"a"}))
+        llm = _ScriptedLLM(_round_of(("a", "loop_tool"), ("b", "loop_tool")), _AFTER)
+
+        with pytest.raises(YieldToWorker):
+            await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert manager.executed == ["a"]
+
+    async def test_a_notifying_call_after_the_stop_emits_no_client_action(self) -> None:
+        interrupt = asyncio.Event()
+        manager = _Manager(
+            on_start=lambda c: interrupt.set() if c.id == "a" else None, notifying=frozenset({"notify_tool"}),
+        )
+        llm = _ScriptedLLM(_round_of(("a", "loop_tool"), ("n", "notify_tool")), _AFTER)
+
+        events, messages_out, _ = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert _client_actions(events) == [], "the browser was told to act after the Stop"
+        assert manager.delivered == []
+        assert [(p.id, p.output) for p in _tool_results(messages_out)] == [("a", "ok"), ("n", STOPPED)]
+
+    async def test_a_notifying_call_before_the_stop_still_emits_its_client_action(self) -> None:
+        interrupt = asyncio.Event()
+        manager = _Manager(
+            on_start=lambda c: interrupt.set() if c.id == "a" else None, notifying=frozenset({"notify_tool"}),
+        )
+        llm = _ScriptedLLM(_round_of(("n", "notify_tool"), ("a", "loop_tool"), ("b", "loop_tool")), _AFTER)
+
+        events, messages_out, _ = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+
+        assert _client_actions(events) == ["n"]
+        assert [(p.id, p.output) for p in _tool_results(messages_out)] == [
+            ("n", "delivered"), ("a", "ok"), ("b", STOPPED),
+        ]

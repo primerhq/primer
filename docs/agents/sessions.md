@@ -199,10 +199,13 @@ intact, so the next message continues it:
   stopped by user". A tool call that is already running is not cancelled;
   it finishes and its result is recorded, but the calls after it in the
   same batch that have not started do not run: each is answered "not run:
-  stopped by user" too, and the turn ends before the next model call. If
-  that batch parks (a timer, a long-running tool, an
-  approval), the session parks instead of stopping and the Stop is
-  dropped; Stop is then refused with 409 and Cancel is the way out. Graph
+  stopped by user" too, and the turn ends before the next model call. Only
+  the call that is running when you press Stop can park the session (a
+  timer, a long-running tool, an approval): then the session parks instead
+  of stopping and the Stop is dropped; Stop is then refused with 409 and
+  Cancel is the way out. Calls later in the batch are refused, so they
+  cannot park. Cancel refuses the calls that have not started in the same
+  way (and then ends the session). Graph
   sessions and the context-compaction call that can run first are not
   interruptible yet.
 - What the model had already written is kept in the transcript. The model
