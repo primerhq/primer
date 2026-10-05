@@ -17,7 +17,7 @@ import json
 from typing import Any
 
 # Keys that describe the capture, not the behaviour: never compared.
-METADATA_KEYS = ("captured_from", "recaptures")
+METADATA_KEYS = ("captured_from", "captured_from_subject", "recaptures")
 
 
 def differences(got: Any, want: Any, path: str = "") -> list[str]:
@@ -65,16 +65,20 @@ def turn_units(fixture: dict[str, Any]) -> list[dict[str, Any]]:
 def changed_turns(new: dict[str, Any], old: dict[str, Any]) -> dict[int, list[str]]:
     """The 1-based turns whose unit differs between ``new`` and ``old``, each with its differing paths.
 
-    A different NUMBER of turns is reported under turn 0 (the scenario itself changed shape).
+    A different NUMBER of turns (the scenario changed shape) is reported under turn 0 AND turn by turn as
+    well: the turns both fixtures have are compared, and a turn only ``new`` has is reported as new. So
+    declaring turn 0 alone does not excuse a change to any other turn: each one still has to be declared.
     """
     new_units, old_units = turn_units(new), turn_units(old)
-    if len(new_units) != len(old_units):
-        return {0: [f"turns: {len(new_units)} != {len(old_units)}"]}
     out: dict[int, list[str]] = {}
+    if len(new_units) != len(old_units):
+        out[0] = [f"turns: {len(new_units)} != {len(old_units)}"]
     for i, (a, b) in enumerate(zip(new_units, old_units), start=1):
         found = differences(a, b)
         if found:
             out[i] = found
+    for i in range(len(old_units) + 1, len(new_units) + 1):
+        out[i] = [f"turn {i} is new"]
     return out
 
 
