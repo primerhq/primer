@@ -120,6 +120,12 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # for inspection (``WAITING``) when the executor exits without
         # having explicitly set the session status itself.
         self.last_done_reason: str | None = None
+        # What the compaction window's snapshot read already says about the newest compaction, for the
+        # ``_last_compaction`` call that follows it in the same invoke (one read of the file, not two),
+        # and the newest assistant message this invoke persisted, for the end-of-turn question check
+        # (no third read of the whole history to find it).
+        self._window_last_compaction: "tuple[int | None, tuple[str, str] | None] | None" = None
+        self._persisted_assistant: Message | None = None
         # The turn's event-log writer, bound by the dispatch layer when it has one (see
         # :meth:`bind_event_log`); ``None`` for an executor driven on its own.
         self._event_log: "_EventLog | None" = None
@@ -157,6 +163,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         """
         async with self._session.messages_lock:
             new_text = await self._appended_jsonl(turn_messages)
+            newest_assistant = next((m for m in reversed(turn_messages) if m.role == "assistant"), None)
             excerpt = _summary_excerpt_from_messages(turn_messages)
             sid_short = self._session.session_id[-12:]
             if excerpt:
@@ -168,6 +175,8 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 op="message",
                 files={"messages.jsonl": new_text},
             )
+            if newest_assistant is not None:
+                self._persisted_assistant = newest_assistant
 
     async def inject_resume_messages(
         self, messages: list[Message],
@@ -348,7 +357,13 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         """
         async with self._session.messages_lock:
             self._session._state.begin_compaction(self._session.session_id)
-            return await self._read_messages_jsonl()
+            text = await self._read_messages_jsonl_text()
+            if not text:
+                self._window_last_compaction = (None, None)
+                return []
+            history, last = await asyncio.to_thread(self._history_and_last_compaction, text)
+            self._window_last_compaction = (last.tokens_after, last.noted)
+            return history
 
     async def _close_compaction_window(self) -> "list[Message]":
         """Clear the ``compacting`` flag AND drain deferred steers; returns the steers applied.
@@ -455,6 +470,8 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # Reset the cached attribute up-front so a stale value from a
         # previous invoke can't leak into the post-turn status mapper.
         self.last_done_reason = None
+        self._window_last_compaction = None
+        self._persisted_assistant = None
         try:
             # ``aclosing``: when this generator is closed (dispatch does that on an error path) the inner
             # one must be closed NOW, not whenever the garbage collector gets to it, because its close is
@@ -572,8 +589,21 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
 
         return await asyncio.to_thread(_parse)
 
+    @staticmethod
+    def _history_and_last_compaction(text: str):
+        """The marker-aware history and the newest compaction's state, from ONE read of ``messages.jsonl``."""
+        # Deferred import, as in _read_messages_jsonl.
+        from primer.workspace.session import last_compaction_state, reconstruct_compacted_history
+
+        lines = text.splitlines()
+        return reconstruct_compacted_history(lines), last_compaction_state(lines)
+
     async def _last_compaction(self) -> tuple[int | None, tuple[str, str] | None]:
-        """``(tokens_after, noted)`` of the newest compaction, read from ``messages.jsonl``."""
+        """``(tokens_after, noted)`` of the newest compaction: what the window's snapshot read already said when the
+        invoke has just opened it (consumed once), else read from ``messages.jsonl``."""
+        cached, self._window_last_compaction = self._window_last_compaction, None
+        if cached is not None:
+            return cached
         text = await self._read_messages_jsonl_text()
         if not text:
             return None, None
@@ -595,8 +625,12 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         return raw.decode("utf-8")
 
     async def _fetch_last_assistant_text(self) -> str | None:
-        """Return the text of the most recent assistant message, or None."""
-        msgs = await self._read_messages_jsonl()
+        """Return the text of the most recent assistant message, or None.
+
+        The turn that just ended persisted it, so it is taken from there; the history is read only when the
+        invoke persisted no assistant message of its own."""
+        newest = self._persisted_assistant
+        msgs = [newest] if newest is not None else await self._read_messages_jsonl()
         for msg in reversed(msgs):
             if msg.role == "assistant":
                 texts: list[str] = []
