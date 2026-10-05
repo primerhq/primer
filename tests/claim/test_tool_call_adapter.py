@@ -553,6 +553,42 @@ async def test_a_value_the_model_refuses_fails_the_task_too_not_just_a_disallowe
     assert failed.attempts == 0 and failed.result_state is None, "the refused value was applied"
 
 
+_LONE_SURROGATE = "\ud800"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [
+    dict(success=True, drop_lease=True, entity_update={
+        "result_state": ToolResultPart(id="t1", output=f"half a pair: {_LONE_SURROGATE}"),
+    }),
+    dict(success=False, drop_lease=True, entity_update={"last_error": _LONE_SURROGATE}),
+    dict(success=False, drop_lease=True, last_error=f"boom {_LONE_SURROGATE}"),
+    dict(success=False, entity_update={"last_error": _LONE_SURROGATE}),
+    dict(success=False, drop_lease=True, park=ParkRequest(
+        parked_state={"prompt": _LONE_SURROGATE}, parked_event_key="tool_approval:sess-1:t1", parked_until=None,
+        parked_at=_now(),
+    )),
+], ids=["terminal-result_state", "terminal-entity-last_error", "terminal-outcome-last_error", "retry-last_error",
+        "gate-parked_state"])
+async def test_a_value_no_backend_can_store_fails_the_task_instead_of_escaping_the_release(kwargs) -> None:
+    """A lone surrogate in anything the handler's release supplies is refused by the patch layer (``PatchSpecError``,
+    before any I/O) on every backend. It used to escape ``on_release``, roll the release back and leave the lease to
+    be claimed and released the same way again for ever; it now fails the task like any other rejected release, and
+    the reason names no value."""
+    storage = FakeStorage(_make_task("t1"))
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+
+    await adapter.on_release(conn=None, entity_id="t1", outcome=_release("t1", **kwargs))
+
+    failed = await storage.get("t1")
+    assert failed.state == ToolCallTaskState.FAILED
+    assert failed.last_error == (
+        "the worker's release was invalid: it gave a value that cannot be stored as JSON "
+        "(a non-finite number, or text that is not valid Unicode)"
+    )
+    assert failed.result_state is None and failed.gate_event_key is None, "the refused value was applied"
+
+
 @pytest.mark.asyncio
 async def test_a_validation_error_with_no_handler_values_is_a_corrupt_row_and_still_propagates() -> None:
     """With nothing supplied by the handler the unreadable document is the STORED row's doing, which is not the handler's
