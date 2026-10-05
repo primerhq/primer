@@ -168,6 +168,17 @@ class TestTheRatio:
         assert _samples("prof-1")[0] == 1, "no provider row: the profile id, as llm_calls_total does"
         assert m.llm_prompt_estimate_ratio._labelnames == ("provider_id",), "no model, no profile, nothing unbounded"
 
+    def test_the_bucket_layout_is_pinned(self):
+        """The buckets are what lets the histogram tell 0.9 from 1.1 and 1.5 from 2.0 (dense around 1.0, out to 0.25 and
+        4.0 for a 2x error either way); prometheus's latency defaults (0.005..10) or a coarser tuple would record the same
+        counts and lose that. The autouse fixture has just rebuilt the instrument through ``reset_for_test``, so this
+        pins that definition (a module-level definition that drifts from it is the one ``primer`` imports: keep both)."""
+        import primer.observability.metrics as m
+
+        assert m.llm_prompt_estimate_ratio._upper_bounds[:-1] == [
+            0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0, 3.0, 4.0,
+        ]
+
     async def test_the_estimate_is_not_computed_for_a_call_that_has_no_usage(self, monkeypatch):
         """No usage means nothing to compare, so no pass over the prompt is spent."""
         import primer.agent.loop as loop
