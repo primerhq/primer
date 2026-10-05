@@ -2210,7 +2210,7 @@ async def _noop_if_turn_already_completed(
     * ``turn_status == "claimable"``: a steer is queued; the pool re-arms it after the release.
     * otherwise the log is read and ``has_open_turn`` (``primer/session/turns.py``: a USER_INPUT at or after the
       drain cursor with no closing record) decides. An open input is armed with a ``turn_status``-only patch
-      (``claimable``), so the pool re-arms it and the next claim answers it. This catches a stale whole-document
+      (``claimable``, fenced on a RUNNING or WAITING row), so the pool re-arms it and the next claim answers it. This catches a stale whole-document
       write that put back an old ``turn_no``, ``turn_status`` and ``last_seq`` over a steer. ``next_unprocessed_seq
       <= last_seq`` is NOT the test: compaction, rewind, reopen and abandon raise ``last_seq`` with a marker record
       and leave the cursor, and a double stale revert can leave the cursor past ``last_seq``.
@@ -2218,30 +2218,41 @@ async def _noop_if_turn_already_completed(
       queued steer, which arms itself through ``wake_session``), recovering a crash between the marker and the
       checkpoint. With nothing queued there is nothing to arm.
 
-    A log that cannot be read returns ``None``: the turn runs, as it did before this guard. It never swallows a
-    turn it cannot see.
+    Input waiting on a row the pool does not re-arm (not RUNNING or WAITING: CREATED or PAUSED after a reset or a
+    stale write), an arming patch that is refused, and a log that cannot be read all return ``None``: the turn runs,
+    as it did before this guard. It never swallows a turn it cannot see or cannot hand on.
     """
     async with session_lifecycle_lock().acquire(session_id):
         fresh = await session_storage.get(session_id)
         if fresh is None or fresh.completed_turn_no is None or fresh.completed_turn_no != fresh.turn_no:
             return None
+        # The pool re-arms only a RUNNING or WAITING row (``_maybe_rearm_session``). Input waiting on any other
+        # row (CREATED or PAUSED after a reset or a stale write) would never be claimed again, so there the turn
+        # runs, as it did before this guard.
+        rearmable = fresh.status in _REARMABLE_STATUSES
         if fresh.turn_status == "claimable":
+            if not rearmable:
+                return None
             work = "a queued steer is armed"
         else:
             lines = await _read_message_lines(deps.workspace_io, fresh)
             if lines is None:
                 return None
             if has_open_turn(lines, cursor=fresh.next_unprocessed_seq):
+                if not rearmable:
+                    return None
                 try:
-                    await session_storage.patch_if(
+                    armed = await session_storage.patch_if(
                         session_id, {"turn_status": "claimable"},
-                        where={"turn_status": ["idle", "running"], "status": _NOT_ENDED},
+                        where={"turn_status": ["idle", "running"], "status": _REARMABLE_STATUSES},
                     )
                 except Exception:  # noqa: BLE001 - cannot arm it: answer it now instead of stranding it
                     logger.warning(
                         "session %s: could not arm the unanswered input of completed turn %d; running the turn",
                         session_id, fresh.turn_no, exc_info=True,
                     )
+                    return None
+                if armed is None:   # the row changed under the patch (another process): answer it now
                     return None
                 work = "an unanswered input was armed"
             else:
@@ -2258,7 +2269,8 @@ async def _noop_if_turn_already_completed(
     return ReleaseOutcome(success=True, drop_lease=True)
 
 
-_NOT_ENDED = [s.value for s in SessionStatus if s != SessionStatus.ENDED]
+# The statuses ``WorkerPool._maybe_rearm_session`` re-arms a claimable row in.
+_REARMABLE_STATUSES = [SessionStatus.RUNNING.value, SessionStatus.WAITING.value]
 
 
 async def _read_message_lines(workspace_io, row: WorkspaceSession) -> list[str] | None:
