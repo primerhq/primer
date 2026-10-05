@@ -77,17 +77,26 @@ async def resume_graph_from_checkpoint(
         :class:`_ToolApprovalRejected` so the resume drain emits the
         ``tool_execution_failed`` terminal event per spec §4.8.
     pool, session
-        01a0690a piece 3/3 (Gap 2). When both are given, every event the
-        resumed drain yields is tapped through the SAME persistence
+        Two jobs, both optional.
+
+        Hook context: they supply the ``ResumeContext`` a value-yielding
+        tool_call node's resume hook receives. The session id is
+        ``session.id`` and the provider resolver is
+        ``pool._provider_registry.get_toolset``; each is ``None`` when its
+        source is absent. They reach the executor as ``resume_session_id``
+        and ``resolve_provider``.
+
+        Tapping (01a0690a piece 3/3, Gap 2): when both are given, every event
+        the resumed drain yields is tapped through the SAME persistence
         vocabulary the live turn uses (translate_stream_event ->
         WorkspaceMessageWriter, see graph/base.py's own "flows through
         translate_stream_event -> WorkspaceMessageWriter.append" comment)
         instead of being silently discarded — a graph that keeps running
         past the resumed node (the node's own LLM continuing, or
         downstream nodes) previously left everything it did, post-resume,
-        missing from the durable record. ``None`` (the default) skips
-        tapping entirely — existing direct callers that only care about
-        the drain's control flow, not its persistence, are unaffected.
+        missing from the durable record. Without both, tapping is skipped
+        entirely, so existing direct callers that only care about the drain's
+        control flow, not its persistence, are unaffected.
     node_tool_call_seq
         Per-node scoped-id mint-seq high-water mark from
         :attr:`ParkedState.node_tool_call_seq` (piece 1) — seeds the tap's
