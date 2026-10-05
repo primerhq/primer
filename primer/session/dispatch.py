@@ -249,8 +249,10 @@ async def run_one_session_turn(
             await _clear_turn_running(session_storage, session_id)
         # Drop the lease but preserve the park columns: a paused session that
         # was 'resumable' keeps its marker + parked_state so a later /resume
-        # re-arms the lease and replays the hook. preserve_park also blocks
-        # the turn_no bump (no turn ran).
+        # re-arms the lease and replays the hook. preserve_park does NOT block
+        # the turn_no bump: the adapter bumps on success in this branch too
+        # (primer/claim/adapters/sessions.py), so this exit also applies a bump
+        # that a rolled-back release of the previous turn lost.
         return ReleaseOutcome(
             success=True, drop_lease=True, preserve_park=True,
         )
