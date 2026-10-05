@@ -1297,8 +1297,10 @@ async def run_one_session_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
-            # Last write of the block: present means the cursor already advanced.
-            await _mark_turn_completed(session_storage, session_id, session.turn_no)
+            # Last write of the block: present means the cursor already advanced. Not for a row another path
+            # ended meanwhile (the turn's own write was skipped).
+            if not _ended_by_another_path(written, new_status, ended_reason):
+                await _mark_turn_completed(session_storage, session_id, session.turn_no)
 
     if late_cancel:
         return await _finish_despite_cancel(_land_cancelled_turn(
@@ -1746,14 +1748,17 @@ async def _land_cancelled_turn(
                 executor=executor,
                 expected_epoch=session.binding_epoch,
             )
+            own_outcome = not _ended_by_another_path(written, new_status, ended_reason)
             # The row may have been ended between the decision above and the write by a writer that does
             # not take this lock: announce what it says.
             new_status, ended_reason = written.status, written.ended_reason
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
-            # Last write of the block: present means the cursor already advanced.
-            await _mark_turn_completed(session_storage, session_id, session.turn_no)
+            # Last write of the block: present means the cursor already advanced. Not for a row another path
+            # ended meanwhile (the turn's own write was skipped), as in the early branch above.
+            if own_outcome:
+                await _mark_turn_completed(session_storage, session_id, session.turn_no)
     if seq is not None:
         await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
     await _best_effort_io("the TurnLogCancelled turn log entry", session_id, _safe_turn_log(turn_log, TurnLogCancelled(
@@ -2027,13 +2032,25 @@ async def _advance_drain_cursor(session_storage, session_id: str) -> None:
         )
 
 
+def _ended_by_another_path(written: "_TerminalWrite", status: SessionStatus, ended_reason: str | None) -> bool:
+    """The turn's terminal write was skipped because something else ended the row first (a force-delete, the pool's
+    preempt convergence, the reconciler), so the row does not carry this turn's outcome.
+
+    Not the same as ``not written.landed``: an identical repeat (the row already had the outcome asked for) and an
+    epoch-voided write also do not land, yet the turn's own outcome stands there.
+    """
+    return not written.landed and (written.status, written.ended_reason) != (status, ended_reason)
+
+
 async def _mark_turn_completed(session_storage, session_id: str, turn_no: int) -> None:
     """Record that turn ``turn_no`` has committed every effect it has (``WorkspaceSession.completed_turn_no``).
 
     Called ONLY as the last write of the two terminal lock blocks of a turn that ran (the clean completion and
-    the Stop/Cancel exit), never from ``_end_turn_failed`` (a failed release does not bump ``turn_no``, so a
-    reopened session would match its own marker), a park or an early exit. Unconditional, and deliberately not
-    part of ``_advance_drain_cursor``, which the failed exit shares and which writes only when the cursor moves.
+    the Stop/Cancel exit), and there only when the turn's own outcome stands (not when another path ended the row
+    first: ``_ended_by_another_path``, and the cancelled exit's early branch). Never from ``_end_turn_failed`` (a
+    failed release does not bump ``turn_no``, so a reopened session would match its own marker), a park or an early
+    exit. It does not depend on the cursor moving, and is deliberately not part of ``_advance_drain_cursor``, which
+    the failed exit shares and which writes only when the cursor moves.
 
     One field-scoped ``patch_if`` fenced on the turn's own ``turn_no``: it writes nothing else, and it writes
     nothing if the row has moved on to another turn. Best-effort: a rejected fence or a storage error is logged
