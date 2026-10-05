@@ -325,10 +325,12 @@ class TestWhenAReplayIsHopeless:
     replay a different prompt, so it gets its call."""
 
     @staticmethod
-    def _forced(*, outcome="unreducible", pruned=0, after=150_000, budget: int | None = 100_000) -> CompactedTurn:
+    def _forced(
+        *, outcome="unreducible", pruned=0, after=150_000, budget: int | None = 100_000, reason="empty_head",
+    ) -> CompactedTurn:
         return CompactedTurn(
             new_messages=[], estimated_tokens_before=after, estimated_tokens_after=after, outcome=outcome,
-            unreducible="empty_head" if outcome == "unreducible" else None, pruned_tool_outputs=pruned,
+            unreducible=reason if outcome == "unreducible" else None, pruned_tool_outputs=pruned,
             budget_tokens=budget,
         )
 
@@ -348,13 +350,27 @@ class TestWhenAReplayIsHopeless:
     def test_the_decision(self, case, futile) -> None:
         assert _BaseAgentExecutor._replay_is_futile(self._forced(**case)) is futile
 
-    def test_with_completed_rounds_an_unreducible_result_always_ends_the_turn(self) -> None:
-        """The replay-continues recovery: an unreducible compaction wrote no marker, so continuing would hold the folded
-        rounds in memory only. (A prune with no rounds is the one case that still gets its replay.)"""
-        rounds = [_msg("assistant", "a round")]
-        assert _BaseAgentExecutor._replay_is_futile(self._forced(pruned=3), rounds=rounds) is True
-        assert _BaseAgentExecutor._replay_is_futile(self._forced(pruned=3)) is False
-        assert _BaseAgentExecutor._replay_is_futile(self._forced(outcome="summarised"), rounds=rounds) is False
+    @pytest.mark.parametrize(
+        ("case", "futile"),
+        [
+            (dict(reason="empty_head"), True),                              # nothing changed: the same prompt
+            (dict(reason="empty_head", pruned=2), False),                   # the prune changed something
+            (dict(reason="empty_head", changed=True), False),               # the caller reduced the rounds it ran
+            (dict(reason="fixed_over_budget"), True),
+            (dict(reason="fixed_over_budget", pruned=2, changed=True), True),
+            (dict(reason="protected_over_budget"), True),
+            (dict(reason="protected_over_budget", pruned=2, changed=True), True),
+            (dict(outcome="summarised", changed=True), False),
+        ],
+    )
+    def test_the_replay_continues_decision(self, case, futile) -> None:
+        """The replay-continues recovery: ``changed`` is the caller having reduced the rounds the turn ran before the
+        compaction. A fresh session whose first round was huge has nothing to summarise (``empty_head``) and a much
+        smaller prompt than the rejected one, so it continues; a fixed or protected part that fills the budget does not
+        yield to any reduction of the rest."""
+        case = dict(case)
+        changed = case.pop("changed", False)
+        assert _BaseAgentExecutor._replay_is_futile(self._forced(**case), changed=changed) is futile
 
     def test_the_strategy_states_the_budget_it_measured_against(self) -> None:
         """The decision reads it from the result, so every verdict has to carry it."""
