@@ -638,6 +638,16 @@ def _answered_in(messages) -> bool:
     return sorted(calls) == sorted(results)
 
 
+async def _messages_lock_is_held(session) -> bool:
+    """Whether something holds the session's real messages lock right now (a probe that takes it and lets go)."""
+    try:
+        async with asyncio.timeout(0.05):
+            async with session.messages_lock:
+                return False
+    except TimeoutError:
+        return True
+
+
 def _markers(workspace, session) -> list[dict]:
     return [r for r in _lines(workspace, session) if r.get("kind") == "compaction_marker"]
 
@@ -1383,8 +1393,33 @@ class TestAHardCancelDuringTheMarkerCommit:
             await session.aclose()
             await backend.aclose()
 
+    @staticmethod
+    def _block_the_marker_commit(
+        session, monkeypatch, entered, *, gate=None, delay: float = 0.0, fail_after: float | None = None,
+    ) -> None:
+        """Make the marker commit slow, hanging or failing INSIDE ``commit_state``. ``_replace_compacted_head`` holds the
+        session's real ``messages_lock`` across it, as in production, so whatever else needs that lock (closing the
+        compaction window, the chokepoint's write) waits for the commit too. Replacing ``_replace_compacted_head``
+        wholesale with a lock-free coroutine hid exactly that: the hang tests passed while the turn, in production, sat
+        in ``_close_compaction_window`` for as long as the commit hung."""
+        real = session.commit_state
+
+        async def commit_state(*args, **kwargs):
+            if "compaction marker" in str(kwargs.get("summary", "")):
+                entered.set()
+                if gate is not None:
+                    await gate.wait()
+                if delay:
+                    await asyncio.sleep(delay)
+                if fail_after is not None:
+                    await asyncio.sleep(fail_after)
+                    raise OSError("the workspace mount went away")
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(session, "commit_state", commit_state)
+
     async def test_a_commit_that_fails_while_the_turn_is_cancelled_is_logged_and_the_rounds_are_written_once(
-        self, tmp_path, caplog,
+        self, tmp_path, monkeypatch, caplog,
     ) -> None:
         """If the marker never lands (the commit raises under the cancel), nothing is folded: the record keeps the rounds
         and the chokepoint writes them, once, with no marker; the failure is in the log, not swallowed."""
@@ -1393,22 +1428,14 @@ class TestAHardCancelDuringTheMarkerCommit:
         backend, workspace, session = await open_session(tmp_path)
         try:
             await _seed(workspace, session)
-            entered, release = asyncio.Event(), asyncio.Event()
-
-            def failing_commit(executor) -> None:
-                async def failing(*args, **kwargs):
-                    entered.set()
-                    await release.wait()
-                    raise OSError("the workspace mount went away")
-
-                executor._replace_compacted_head = failing  # noqa: SLF001
-
+            entered, gate = asyncio.Event(), asyncio.Event()
+            self._block_the_marker_commit(session, monkeypatch, entered, gate=gate, fail_after=0.0)
             with caplog.at_level(logging.WARNING, logger="primer.agent.base"):
-                task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=failing_commit))
+                task = asyncio.create_task(run_turn(session, FnLLM(_reactive())))
                 await asyncio.wait_for(entered.wait(), timeout=30)
                 task.cancel()
                 await asyncio.sleep(0.05)
-                release.set()
+                gate.set()
                 with pytest.raises(asyncio.CancelledError):
                     await task
             assert _markers(workspace, session) == [], "nothing landed"
@@ -1422,9 +1449,10 @@ class TestAHardCancelDuringTheMarkerCommit:
 
     async def test_a_commit_that_hangs_cannot_make_the_turn_uncancellable(self, tmp_path, monkeypatch, caplog) -> None:
         """The wait for the commit is bounded, and the bound runs from the FIRST cancel: a drain must still be able to
-        abort a turn whose commit hangs on a dead storage, however many cancels it has already absorbed. The storm here
-        is spaced closer than the grace and lasts well past it (a cancel every 0.1s for a second, against a 0.3s grace),
-        so a deadline that restarted at every cancel would keep the turn waiting until the storm stopped."""
+        abort a turn whose commit hangs on a dead storage, however many cancels it has already absorbed. The commit hangs
+        inside ``commit_state`` under the real lock, so closing the compaction window would wait for it too if the turn
+        did that. The storm is spaced closer than the grace and lasts well past it (a cancel every 0.1s for a second,
+        against a 0.3s grace), so a deadline that restarted at every cancel would keep the turn waiting until it stopped."""
         import logging
 
         import primer.agent.base as base
@@ -1436,18 +1464,12 @@ class TestAHardCancelDuringTheMarkerCommit:
         try:
             await _seed(workspace, session)
             entered = asyncio.Event()
-
-            def hanging_commit(executor) -> None:
-                async def hang(*args, **kwargs):
-                    entered.set()
-                    await forever.wait()
-
-                executor._replace_compacted_head = hang  # noqa: SLF001
-
+            self._block_the_marker_commit(session, monkeypatch, entered, gate=forever)
             with caplog.at_level(logging.ERROR, logger="primer.agent.base"):
                 loop = asyncio.get_running_loop()
-                task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=hanging_commit))
+                task = asyncio.create_task(run_turn(session, FnLLM(_reactive())))
                 await asyncio.wait_for(entered.wait(), timeout=30)
+                assert await _messages_lock_is_held(session), "the production shape: the commit holds the real lock"
 
                 async def when_done() -> float:
                     await asyncio.wait({task})               # does not cancel it, does not raise what it ended with
@@ -1468,7 +1490,7 @@ class TestAHardCancelDuringTheMarkerCommit:
             assert sent >= 3, "the storm landed more than one cancel inside the grace, so the test says something"
             assert finished_at - first_cancel < grace + 0.5, (
                 f"the turn ended {finished_at - first_cancel:.2f}s after the FIRST cancel, grace {grace}s: the "
-                "deadline moved with later cancels"
+                "deadline moved with later cancels, or the turn waited for the lock the hung commit holds"
             )
             assert any("did not finish within" in r.getMessage() for r in caplog.records), "said so, loudly"
         finally:
@@ -1476,112 +1498,173 @@ class TestAHardCancelDuringTheMarkerCommit:
             await session.aclose()
             await backend.aclose()
 
+    @staticmethod
+    async def _cancelled(
+        tmp_path, monkeypatch, *, cancels, commit: str = "hangs", release_after: float = 0.5, grace: float = 30.0,
+    ):
+        """One turn whose marker commit runs inside the real lock and the cancels a worker delivers, in order.
+
+        ``cancels`` is ``[(seconds to wait first, reason or None), ...]``, sent until the turn has ended. ``commit`` is
+        ``hangs`` (never finishes until the test is over), ``lands`` or ``fails`` (released ``release_after`` seconds after
+        the first cancel). Returns the exception the turn ended with (None if it was still running 4s after the last
+        cancel), the seconds from the last cancel sent to the end of the turn, the history once the commit has had time to
+        finish, the markers, and the executor's compacting flag."""
+        import primer.agent.base as base
+
+        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", grace)
+        backend, workspace, session = await open_session(tmp_path)
+        gate = asyncio.Event()
+        try:
+            await _seed(workspace, session)
+            entered = asyncio.Event()
+            TestAHardCancelDuringTheMarkerCommit._block_the_marker_commit(
+                session, monkeypatch, entered, gate=gate, fail_after=0.0 if commit == "fails" else None,
+            )
+            loop = asyncio.get_running_loop()
+            task = asyncio.create_task(run_turn(session, FnLLM(_reactive())))
+            await asyncio.wait_for(entered.wait(), timeout=30)
+            assert await _messages_lock_is_held(session), "the production shape: the commit holds the real lock while it blocks"
+            if commit != "hangs":
+                loop.call_later(release_after, gate.set)
+            last = loop.time()
+            for wait_first, reason in cancels:
+                if wait_first:
+                    await asyncio.sleep(wait_first)
+                if task.done():
+                    break
+                task.cancel(reason) if reason is not None else task.cancel()
+                last = loop.time()
+            done, _ = await asyncio.wait({task}, timeout=4)
+            elapsed = loop.time() - last
+            ended = None
+            if done:
+                with pytest.raises(asyncio.CancelledError) as info:
+                    task.result()
+                ended = info.value
+            if commit != "hangs":
+                await asyncio.sleep(release_after + 0.5)         # the commit finishes, and the deferred close runs
+            return (
+                ended, elapsed, await _reload(session), _markers(workspace, session),
+                session._state.is_compacting(session.session_id),  # noqa: SLF001
+            )
+        finally:
+            gate.set()
+            await session.aclose()
+            await backend.aclose()
+
     async def test_a_lost_lease_cancel_is_not_held_up_by_the_commit(self, tmp_path, monkeypatch) -> None:
         """A cancel that says the lease was lost (``CANCEL_REASON_PREEMPTED``) is the one the wait is for least: the
         chokepoint writes no rounds for it, so there is no accounting to settle, and the session may belong to another
-        worker. It goes through at once instead of waiting the grace for a commit that hangs."""
-        import primer.agent.base as base
+        worker. It goes through at once instead of waiting the grace for a commit that hangs, and closing the compaction
+        window does not wait for the lock that commit holds either."""
         from primer.model.yield_ import CANCEL_REASON_PREEMPTED
 
-        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 30.0)
-        backend, workspace, session = await open_session(tmp_path)
-        forever = asyncio.Event()
-        try:
-            await _seed(workspace, session)
-            entered = asyncio.Event()
-
-            def hanging_commit(executor) -> None:
-                async def hang(*args, **kwargs):
-                    entered.set()
-                    await forever.wait()
-
-                executor._replace_compacted_head = hang  # noqa: SLF001
-
-            task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=hanging_commit))
-            await asyncio.wait_for(entered.wait(), timeout=30)
-            task.cancel(CANCEL_REASON_PREEMPTED)
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=3)      # not the 30s grace
-            assert _markers(workspace, session) == []
-            shown = await _reload(session)
-            assert _tool_ids(shown) == ([], []), "a worker that lost the lease writes nothing"
-        finally:
-            forever.set()
-            await session.aclose()
-            await backend.aclose()
-
-    @staticmethod
-    async def _cancelled_then_the_lease_is_lost(
-        tmp_path, monkeypatch, *, preempted_first: bool, commit_fails_after: float | None,
-    ):
-        """One turn whose marker commit hangs (``commit_fails_after`` None) or fails after that many seconds, a 30s grace,
-        and the two cancels a worker delivers when a user cancel is followed by a lost lease (or the lost lease alone).
-        Returns the exception the turn ended with, the seconds from the LAST cancel to the end of the turn, the history
-        as it is once the commit has had time to fail, and the markers."""
-        import primer.agent.base as base
-        from primer.model.yield_ import CANCEL_REASON_PREEMPTED
-
-        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 30.0)
-        backend, workspace, session = await open_session(tmp_path)
-        forever = asyncio.Event()
-        try:
-            await _seed(workspace, session)
-            entered = asyncio.Event()
-
-            def commit(executor) -> None:
-                async def run(*args, **kwargs):
-                    entered.set()
-                    if commit_fails_after is None:
-                        await forever.wait()
-                    await asyncio.sleep(commit_fails_after)
-                    raise OSError("the workspace mount went away")
-
-                executor._replace_compacted_head = run  # noqa: SLF001
-
-            loop = asyncio.get_running_loop()
-            task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=commit))
-            await asyncio.wait_for(entered.wait(), timeout=30)
-            if preempted_first:
-                task.cancel(CANCEL_REASON_PREEMPTED)
-            else:
-                task.cancel()                            # the user's hard cancel starts the wait ...
-                await asyncio.sleep(0.1)
-                task.cancel(CANCEL_REASON_PREEMPTED)     # ... and the lease is lost while it waits
-            last_cancel = loop.time()
-            with pytest.raises(asyncio.CancelledError) as ended:
-                await asyncio.wait_for(task, timeout=3)  # not the 30s grace
-            elapsed = loop.time() - last_cancel
-            if commit_fails_after is not None:
-                await asyncio.sleep(commit_fails_after + 0.4)    # the abandoned commit fails on its own
-            return ended.value, elapsed, await _reload(session), _markers(workspace, session)
-        finally:
-            forever.set()
-            await session.aclose()
-            await backend.aclose()
-
-    async def test_a_lost_lease_cancel_that_arrives_second_is_not_held_up_either(self, tmp_path, monkeypatch) -> None:
-        """The skip is for the lost lease whichever cancel it is. A user hard cancel lands first and starts the wait; the
-        lease is then lost and the heartbeat delivers ``CANCEL_REASON_PREEMPTED``. A loop that absorbed it held the turn
-        for the rest of the grace and then raised the FIRST cancel, so the chokepoint never saw the lost lease."""
-        from primer.model.yield_ import CANCEL_REASON_PREEMPTED
-
-        ended, elapsed, shown, markers = await self._cancelled_then_the_lease_is_lost(
-            tmp_path, monkeypatch, preempted_first=False, commit_fails_after=None,
+        ended, elapsed, shown, markers, _ = await self._cancelled(
+            tmp_path, monkeypatch, cancels=[(0, CANCEL_REASON_PREEMPTED)],
         )
-        assert elapsed < 2, f"the turn waited {elapsed:.1f}s after the lost lease"
+        assert ended is not None and elapsed < 2, f"the turn ran on {elapsed:.1f}s after the lost lease (grace 30s)"
+        assert ended.args[:1] == (CANCEL_REASON_PREEMPTED,)
+        assert markers == [] and _tool_ids(shown) == ([], []), "a worker that lost the lease writes nothing"
+
+    @pytest.mark.parametrize(
+        "cancels_kind", ["user_only", "lost_lease_first", "user_then_lost_lease"],
+    )
+    async def test_the_turn_ends_inside_the_grace_whatever_the_cancel_order_while_the_commit_holds_the_lock(
+        self, tmp_path, monkeypatch, cancels_kind,
+    ) -> None:
+        """The bound, in the production shape: the commit hangs inside ``commit_state`` under the real
+        ``messages_lock``. With a 0.5s grace the turn must be gone about that long after the last cancel (a user cancel
+        waits the grace, a lost lease goes at once), not sit in ``_close_compaction_window`` on the lock the commit holds."""
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED as LOST
+
+        cancels = {
+            "user_only": [(0, None)],
+            "lost_lease_first": [(0, LOST)],
+            "user_then_lost_lease": [(0, None), (0.1, LOST)],
+        }[cancels_kind]
+        ended, elapsed, _shown, _markers_, _ = await self._cancelled(
+            tmp_path, monkeypatch, cancels=cancels, grace=0.5,
+        )
+        assert ended is not None and elapsed < 2.0, f"{cancels_kind}: the turn ran on {elapsed:.1f}s past a 0.5s grace"
+
+    async def test_a_lost_lease_after_a_cancel_ends_the_turn_at_once_and_writes_nothing(self, tmp_path, monkeypatch) -> None:
+        """A user hard cancel starts the wait; the lease is then lost while it waits. The turn raises the lost lease at
+        once (the grace is 30s here), the history is untouched, and what the turn ends with says why."""
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+        ended, elapsed, shown, markers, _ = await self._cancelled(
+            tmp_path, monkeypatch, cancels=[(0, None), (0.1, CANCEL_REASON_PREEMPTED)],
+        )
+        assert ended is not None and elapsed < 2, f"the turn waited {elapsed:.1f}s after the lost lease"
         assert ended.args[:1] == (CANCEL_REASON_PREEMPTED,), "the lost lease is what the chokepoint is told"
         assert markers == [] and _tool_ids(shown) == ([], []), "a worker that lost the lease writes nothing"
+
+    @pytest.mark.parametrize(
+        "cancels_kind", ["lost_lease_then_drain", "user_lost_lease_then_drain"],
+    )
+    async def test_a_drain_cancel_after_the_lease_was_lost_does_not_make_the_turn_write_its_rounds_twice(
+        self, tmp_path, monkeypatch, cancels_kind,
+    ) -> None:
+        """The production regression the review found: the lost lease lived only in the exception's args, the turn then
+        waited in ``_close_compaction_window`` for the lock the commit holds, and the drain timeout's cancel landed
+        there, replaced the exception, and let the chokepoint write the rounds AFTER the marker had landed (every tool id
+        twice, written by a worker that no longer owned the session). The commit lands 0.8s after the first cancel."""
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED as LOST
+
+        cancels = {
+            "lost_lease_then_drain": [(0, LOST), (0.2, "worker_drain_timeout")],
+            "user_lost_lease_then_drain": [(0, None), (0.1, LOST), (0.1, "worker_drain_timeout")],
+        }[cancels_kind]
+        ended, _elapsed, shown, markers, compacting = await self._cancelled(
+            tmp_path, monkeypatch, cancels=cancels, commit="lands", release_after=0.8,
+        )
+        assert ended is not None
+        assert len(markers) == 1, "the commit was left to finish alone and landed"
+        assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the rounds are in the history once, in the marker"
+        assert compacting is False, "the deferred close ran once the commit was done"
+
+    async def test_the_lost_lease_is_remembered_on_the_turn_not_only_on_the_exception(self, tmp_path) -> None:
+        """The chokepoint writes nothing for a turn that lost its lease, whatever cancel the turn ends with: a later cancel
+        replaces the exception (and its args), the flag on the record stays. Direct, on the real executor."""
+        from primer.agent.base import _TurnRecord
+        from primer.model.chat import Message, ToolCallPart
+
+        backend, workspace, session = await open_session(tmp_path)
+        try:
+            await _seed(workspace, session)
+
+            def record(lost: bool) -> _TurnRecord:
+                messages = [
+                    user_message("go"),
+                    Message(role="assistant", parts=[ToolCallPart(id="call_z", name="exec", arguments={})]),
+                    Message(role="tool", parts=[ToolResultPart(id="call_z", output="z")]),
+                ]
+                rec = _TurnRecord(messages=messages, inputs=1)
+                rec.lease_lost = lost
+                return rec
+
+            executor = make_executor(session, ScriptedLLM())
+            await executor._persist_failed_turn(record(True), asyncio.CancelledError("worker_drain_timeout"))  # noqa: SLF001
+            assert _tool_ids(await _reload(session)) == ([], []), "the lease was lost: nothing is written"
+            await executor._persist_failed_turn(record(False), asyncio.CancelledError("worker_drain_timeout"))  # noqa: SLF001
+            assert _tool_ids(await _reload(session)) == (["call_z"], ["call_z"]), "control: the same cancel writes"
+        finally:
+            await session.aclose()
+            await backend.aclose()
 
     async def test_a_lost_lease_after_a_cancel_does_not_let_the_turn_write_its_rounds_as_a_non_owner(
         self, tmp_path, monkeypatch,
     ) -> None:
-        """The same order against a commit that FAILS inside the grace. The turn used to wait for it, see the failure,
-        keep the rounds in the record and re-raise the user's cancel: the chokepoint, told nothing about the lost lease,
-        wrote them after the session had passed to another worker."""
-        ended, elapsed, shown, markers = await self._cancelled_then_the_lease_is_lost(
-            tmp_path, monkeypatch, preempted_first=False, commit_fails_after=0.5,
+        """The same order against a commit that FAILS inside the grace (under the lock). The turn used to wait for it,
+        see the failure, keep the rounds in the record and re-raise the user's cancel: the chokepoint, told nothing about
+        the lost lease, wrote them after the session had passed to another worker."""
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+        ended, elapsed, shown, markers, _ = await self._cancelled(
+            tmp_path, monkeypatch, cancels=[(0, None), (0.1, CANCEL_REASON_PREEMPTED)],
+            commit="fails", release_after=0.5,
         )
-        assert elapsed < 2
+        assert ended is not None and elapsed < 2
         assert markers == []
         assert _tool_ids(shown) == ([], []), "the rounds were written by a worker that no longer owned the session"
 
@@ -1593,10 +1676,11 @@ class TestAHardCancelDuringTheMarkerCommit:
         retrieved and logged once (a WARNING, not asyncio's "exception was never retrieved")."""
         import logging
 
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED as LOST
+
+        cancels = [(0, LOST)] if preempted_first else [(0, None), (0.1, LOST)]
         with caplog.at_level(logging.WARNING, logger="primer.agent.base"):
-            await self._cancelled_then_the_lease_is_lost(
-                tmp_path, monkeypatch, preempted_first=preempted_first, commit_fails_after=0.4,
-            )
+            await self._cancelled(tmp_path, monkeypatch, cancels=cancels, commit="fails", release_after=0.4)
         failed = [r for r in caplog.records if "abandoned compaction marker commit failed" in r.getMessage()]
         assert len(failed) == 1 and failed[0].levelno == logging.WARNING, [r.getMessage() for r in caplog.records]
 
@@ -1609,40 +1693,26 @@ class TestAHardCancelDuringTheMarkerCommit:
 
         assert base._MARKER_COMMIT_GRACE_S == dispatch._TERMINAL_EXIT_GRACE_S  # noqa: SLF001
 
+    async def test_the_compaction_window_is_closed_once_an_abandoned_commit_is_done(self, tmp_path, monkeypatch) -> None:
+        """The abandoned commit holds the lock closing the window takes, so the turn does not close it itself; the close
+        runs when the commit is done, and the ``compacting`` flag (which defers steers) does not stay set."""
+        ended, _elapsed, _shown, markers, compacting = await self._cancelled(
+            tmp_path, monkeypatch, cancels=[(0, None)], commit="lands", release_after=1.0, grace=0.3,
+        )
+        assert ended is not None
+        assert len(markers) == 1, "the commit landed after the grace"
+        assert compacting is False
+
     async def test_a_commit_that_lands_after_the_grace_is_not_written_twice(self, tmp_path, monkeypatch) -> None:
-        """Past the grace the outcome is unknown. The commit is a thread that may still land, so the rounds are taken as
-        in the marker: writing them again would put every tool_use id in the history twice."""
-        import primer.agent.base as base
-
-        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 0.2)
-        backend, workspace, session = await open_session(tmp_path)
-        try:
-            await _seed(workspace, session)
-            entered = asyncio.Event()
-
-            def slow_commit(executor) -> None:
-                original = executor._replace_compacted_head  # noqa: SLF001
-
-                async def slow(*args, **kwargs):
-                    entered.set()
-                    await asyncio.sleep(0.6)             # well past the grace ...
-                    return await original(*args, **kwargs)   # ... and then it lands
-
-                executor._replace_compacted_head = slow  # noqa: SLF001
-
-            task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=slow_commit))
-            await asyncio.wait_for(entered.wait(), timeout=30)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=5)
-            await asyncio.sleep(1.2)                     # the abandoned commit finishes on its own
-            assert len(_markers(workspace, session)) == 1
-            shown = await _reload(session)
-            assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the round is in the history once"
-            assert_anthropic_valid(shown)
-        finally:
-            await session.aclose()
-            await backend.aclose()
+        """Past the grace the outcome is unknown. The commit may still land, so the rounds are taken as in the marker:
+        writing them again would put every tool_use id in the history twice."""
+        ended, _elapsed, shown, markers, _ = await self._cancelled(
+            tmp_path, monkeypatch, cancels=[(0, None)], commit="lands", release_after=0.8, grace=0.2,
+        )
+        assert ended is not None
+        assert len(markers) == 1
+        assert _tool_ids(shown) == (["call_a"], ["call_a"]), "the round is in the history once"
+        assert_anthropic_valid(shown)
 
     async def test_a_commit_that_fails_after_the_grace_loses_the_rounds_and_says_how_many(
         self, tmp_path, monkeypatch, caplog,
@@ -1652,38 +1722,16 @@ class TestAHardCancelDuringTheMarkerCommit:
         messages.jsonl (the next turn runs those tool calls again), and the log says how many rounds went."""
         import logging
 
-        import primer.agent.base as base
-
-        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 0.2)
-        backend, workspace, session = await open_session(tmp_path)
-        try:
-            await _seed(workspace, session)
-            entered = asyncio.Event()
-
-            def late_failure(executor) -> None:
-                async def fail_late(*args, **kwargs):
-                    entered.set()
-                    await asyncio.sleep(0.6)             # past the grace ...
-                    raise OSError("the workspace mount went away")   # ... and then it fails
-
-                executor._replace_compacted_head = fail_late  # noqa: SLF001
-
-            with caplog.at_level(logging.WARNING, logger="primer.agent.base"):
-                task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=late_failure))
-                await asyncio.wait_for(entered.wait(), timeout=30)
-                task.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, timeout=5)
-                await asyncio.sleep(1.2)                 # the abandoned commit fails on its own
-            assert _markers(workspace, session) == [], "the marker never landed"
-            shown = await _reload(session)
-            assert _tool_ids(shown) == ([], []), "and the round is not in the history either"
-            lost = [r.getMessage() for r in caplog.records if "did not land" in r.getMessage()]
-            assert len(lost) == 1 and "1 completed tool round(s)" in lost[0], lost
-            assert all(r.levelno == logging.ERROR for r in caplog.records if "did not land" in r.getMessage())
-        finally:
-            await session.aclose()
-            await backend.aclose()
+        with caplog.at_level(logging.WARNING, logger="primer.agent.base"):
+            ended, _elapsed, shown, markers, _ = await self._cancelled(
+                tmp_path, monkeypatch, cancels=[(0, None)], commit="fails", release_after=0.6, grace=0.2,
+            )
+        assert ended is not None
+        assert markers == [], "the marker never landed"
+        assert _tool_ids(shown) == ([], []), "and the round is not in the history either"
+        lost = [r for r in caplog.records if "did not land" in r.getMessage()]
+        assert len(lost) == 1 and "1 completed tool round(s)" in lost[0].getMessage(), [r.getMessage() for r in lost]
+        assert lost[0].levelno == logging.ERROR
 
 
 @POSIX
