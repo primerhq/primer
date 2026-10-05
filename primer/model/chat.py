@@ -1586,7 +1586,7 @@ class _CompactionNote(BaseModel):
     :meth:`primer.agent.base._BaseAgentExecutor.invoke` when a compaction came back
     ``unreducible`` (nothing summarised, so NO compaction marker is written and the
     prompt goes out as it is) or ``skipped`` (the trigger cannot be reached, so it did
-    nothing; noted once per run of skips), so the verdict is in the session record and not
+    nothing; each verdict is noted once per run, not on every turn), so the verdict is in the session record and not
     only in a log. A compaction that summarised and was still over the trigger records the
     same facts in its marker's payload instead. Not produced by any LLM adapter.
     """
