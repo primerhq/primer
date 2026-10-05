@@ -69,6 +69,11 @@ def test_the_prefix_of_another_session_stays_in_the_node() -> None:
         "x:tool:3:1\n",     # a trailing newline (``$`` would accept it)
         "x:tool:٣:1",  # an Arabic-Indic digit three
         "x:tool:3:١",  # an Arabic-Indic digit one in the seq
+        # A non-ASCII digit AFTER the first digit: the leading ``[1-9]`` cannot reject it, only ``[0-9]`` (not
+        # ``\d``) for the rest does (mutation: ``\d`` reads these as turn 13, seq 11 and epoch 13).
+        "x:tool:1٣:1",
+        "x:tool:3:1١",
+        "x:tool:3.1٣:1",
         "x:tool:3.:1",      # an empty epoch
         "x:tool:3.-1:1",    # a negative epoch
         "x:tool:3.1.1:1",   # two epochs
