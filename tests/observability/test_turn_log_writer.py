@@ -390,3 +390,19 @@ class TestToProblemDetails:
         pd = to_problem_details(exc)
         assert pd.status == 429
         assert pd.title == "Rate Limited"
+
+
+def test_a_problem_extensions_attribute_on_the_exception_lands_in_the_problem_details():
+    """An exception that says more about how a turn failed (the executor's ContextOverflowUnrecoverable) carries it
+    through ``problem_extensions``; the ERROR record and the turn log read the same envelope."""
+    from primer.model.except_ import BadRequestError, ContextOverflowUnrecoverable
+    from primer.observability.turn_log_writer import to_problem_details
+
+    exc = ContextOverflowUnrecoverable(
+        "the replay was rejected too", cause=BadRequestError("maximum context length"),
+        forced_compaction=True, replay_attempted=True, persisted_rounds=3,
+    )
+    problem = to_problem_details(exc)
+    assert problem.extensions["forced_compaction"] is True and problem.extensions["persisted_rounds"] == 3
+    assert problem.extensions["exception_class"] == "ContextOverflowUnrecoverable"
+    assert problem.detail.endswith("the replay was rejected too") or "the replay was rejected too" in problem.detail

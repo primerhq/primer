@@ -1125,6 +1125,80 @@ async def test_turn_stream_failure_ended_detail_falls_back_when_code_unset(
 
 
 @pytest.mark.asyncio
+async def test_context_overflow_unrecoverable_ends_the_session_with_its_typed_detail_and_extensions(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """The executor's typed failure after a forced compaction and a rejected replay: the session ends with
+    its own ``ended_detail`` code (not a generic "failed"), and the ERROR record says how far recovery got
+    (so an operator can tell a turn whose tool rounds are safe in the history from one that lost them)."""
+    import json
+
+    from primer.model.except_ import BadRequestError, ContextOverflowUnrecoverable
+
+    fake_executor = FakeExecutor([
+        ContextOverflowUnrecoverable(
+            "the replay was rejected too",
+            cause=BadRequestError("maximum context length"),
+            forced_compaction=True, replay_attempted=True, persisted_rounds=2,
+        ),
+    ])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+
+    assert outcome.success is False
+    row = await fake_storage_provider.get_storage(WorkspaceSession).get(seeded_session.id)
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", "context_overflow_unrecoverable")
+    errors = [r for r in map(json.loads, fake_workspace_io.read_lines(seeded_session.id)) if r["kind"] == "error"]
+    assert len(errors) == 1, "exactly one terminal record"
+    extensions = errors[0]["payload"]["extensions"]
+    assert (extensions["forced_compaction"], extensions["replay_attempted"], extensions["persisted_rounds"]) == (True, True, 2)
+
+
+@pytest.mark.asyncio
+async def test_the_dispatch_binds_the_turns_event_log_writer_to_an_executor_that_takes_one(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """A compaction marker the executor writes mid-turn takes its seq from the writer the dispatch layer
+    appends the turn's events with; an executor without the hook (a fake, a graph executor) is left alone."""
+    class _Binding(FakeExecutor):
+        bound: Any = None
+
+        def bind_event_log(self, writer: Any) -> None:
+            self.bound = writer
+
+    bound = _Binding([TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop")])
+    plain = FakeExecutor([TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop")])
+
+    for executor in (bound, plain):
+        async def _build_executor(session: WorkspaceSession, executor=executor):
+            return executor
+
+        deps = SessionDispatchDeps(
+            storage_provider=fake_storage_provider,
+            workspace_io=fake_workspace_io,
+            event_bus=fake_event_bus,
+            build_executor=_build_executor,
+        )
+        await run_one_session_turn(_make_lease(seeded_session.id), deps)
+    assert bound.bound is not None and hasattr(bound.bound, "reserve_seq")
+
+
+@pytest.mark.asyncio
 async def test_executor_error_mirrors_ended_onto_agent_session_slot(
     fake_workspace_io: FakeWorkspaceIO,
     fake_event_bus: InMemoryEventBus,

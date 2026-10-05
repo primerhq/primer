@@ -62,8 +62,36 @@ class ContextOverflowUnrecoverable(ConfigError):
 
     CODE = "context_overflow_unrecoverable"
 
-    def __init__(self, message: str, *, cause: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        cause: BaseException | None = None,
+        forced_compaction: bool = False,
+        replay_attempted: bool = False,
+        persisted_rounds: int = 0,
+    ) -> None:
         super().__init__(message, code=self.CODE, cause=cause)
+        self.forced_compaction = forced_compaction
+        self.replay_attempted = replay_attempted
+        self.persisted_rounds = persisted_rounds
+
+    @property
+    def ended_detail_code(self) -> str:
+        """The terminal detail the session records when this ends the turn."""
+        return self.CODE
+
+    @property
+    def problem_extensions(self) -> dict[str, object]:
+        """What the ERROR record and the problem details say about how far recovery got:
+        whether a forced compaction ran, whether the turn was replayed after it, and how many
+        completed tool rounds of this turn are durable in the history (so the next turn does
+        not run them again)."""
+        return {
+            "forced_compaction": self.forced_compaction,
+            "replay_attempted": self.replay_attempted,
+            "persisted_rounds": self.persisted_rounds,
+        }
 
 
 class ModelNotFoundError(ConfigError):

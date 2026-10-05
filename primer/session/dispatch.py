@@ -355,6 +355,11 @@ async def run_one_session_turn(
         start_seq=seed_seq,
     )
     turn_log = deps.turn_log_writer_factory(deps.workspace_io, session_id)
+    # A compaction marker the executor writes mid-turn takes its seq from this writer, so it cannot
+    # collide with the events the writer buffers (an executor without the hook is left as it was).
+    _bind_event_log = getattr(executor, "bind_event_log", None)
+    if _bind_event_log is not None:
+        _bind_event_log(writer)
 
     # If the row carries parked_at, this turn is resuming a previously
     # parked session. Emit a `resumed` event before `started` so the UI
@@ -1093,10 +1098,9 @@ async def run_one_session_turn(
                 # fallback), so monitoring can tell "the LLM was
                 # unreachable" apart from "some other internal error"
                 # instead of both reading as an undifferentiated "failed".
-                ended_detail=(
-                    exc.ended_detail_code
-                    if isinstance(exc, TurnStreamFailure) else None
-                ),
+                # Any exception that names why it ended the turn (a TurnStreamFailure, the executor's
+                # ContextOverflowUnrecoverable) carries its own code.
+                ended_detail=getattr(exc, "ended_detail_code", None),
                 executor=executor,
                 expected_epoch=session.binding_epoch,
             )

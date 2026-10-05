@@ -105,7 +105,13 @@ input the model has not answered yet and never splits a tool call
 from its results. The resulting summary replaces the elided range in
 the reconstructed history, followed by the kept tail. The original
 messages stay in storage; the substitution happens at history-
-reconstruction time.
+reconstruction time. If the provider still rejects a call as too
+large, the turn is compacted once more and CONTINUED from the tool
+rounds it already ran (no tool runs twice; a long turn's early rounds
+are summarised, the question and the newest round are kept); if that
+is rejected too, the completed rounds are recorded (cut down, with a
+note that the calls already ran) and the turn ends with
+`context_overflow_unrecoverable`.
 
 Streaming: subscribers (the WS connection, internal taps) see token
 events in the order the LLM produces them. Persisted state is the
