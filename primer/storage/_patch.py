@@ -32,7 +32,9 @@ a validator lower-cases). The database stores what it is given, while a read re-
 so without more a guard built from a read (:func:`raw_generation`) could never match what a patch wrote.
 :func:`canonical_fixup` closes that: after the write the document is validated, and every top-level field the
 patch touched is rewritten, in the same transaction and under the same row lock, to the model's own canonical
-dump. Stored therefore equals canonical for every field a patch wrote.
+dump. Stored therefore equals canonical for every field a patch wrote. A canonical value that strict JSON cannot
+hold (the string ``"nan"`` into a float field, which the model reads as NaN) is refused there as a
+:class:`PatchSpecError` and the write rolls back.
 
 The other half is a document that lacks a field the model now defaults (a row older than the field):
 :func:`normalise_where` lets a guard that names the default also match the absent field, which is how the
@@ -213,6 +215,9 @@ def canonical_fixup(
     ``stored`` is the document the write produced and ``entity`` the model validated from it. The result maps
     each such field to its canonical value, to be written back in the same transaction (empty when the patch
     was already canonical, the common case).
+
+    Raises :class:`PatchSpecError`, to roll the write back, when a ``set_paths`` leaf is not part of the validated
+    model, or when a canonical value cannot be stored as strict JSON (a ``"nan"`` the model coerced into a float).
     """
     canonical = dump_for_storage(entity)
     for path in set_paths:
@@ -227,11 +232,24 @@ def canonical_fixup(
                 )
             node = node[part]
     roots = {*patch, *(path[0] for path in set_paths)}
-    return {
+    fixup = {
         key: canonical[key]
         for key in sorted(roots)
         if key in canonical and not json_identical(stored.get(key), canonical[key])
     }
+    for key, value in fixup.items():
+        # validate_patch only saw the caller's raw JSON. The canonical dump is what the model made of it, and that need not
+        # be storable: "nan" is a fine string for a float field and a NaN once validated, which no strict-JSON statement
+        # can carry. Refuse it like any other bad spec value (so the write rolls back) rather than let the rewrite fail in
+        # the driver as a backend error. The message names the field and never echoes the value.
+        try:
+            _check_json(value, key)
+        except PatchSpecError:
+            raise PatchSpecError(
+                f"{type(entity).__name__}.{key} is not representable as strict JSON once the model has validated the patch "
+                "(a non-finite float, a lone surrogate, a non-string key); patch_if writes values the model can store"
+            ) from None
+    return fixup
 
 
 def _check_key(key: Any, what: str) -> None:
@@ -270,7 +288,24 @@ def validate_patch(
     set_paths: Mapping[tuple[str, ...], Any] | None,
     where: Mapping[str, Sequence[Any]],
 ) -> tuple[dict[str, Any], dict[tuple[str, ...], Any], dict[str, list[Any]]]:
-    """Validate a ``patch_if`` spec and return normalised copies. Raises ``ValueError``."""
+    """Validate a ``patch_if`` spec, before any I/O, and return normalised copies ``(patch, set_paths, where)``.
+
+    Pure and backend-independent, so SQLite, Postgres and the test fake refuse the same spec the same way, before a
+    connection is touched or the row is looked up. It checks the SHAPE of the spec, not the model:
+
+    * there is a non-empty ``patch`` or ``set_paths`` and a non-empty ``where``, within the key and leaf caps;
+    * every key (a patch key, a path element, a ``where`` field) is a non-empty string free of quotes, backslashes,
+      control characters and lone surrogates, and no patch key, path root or ``where`` field is the ``id``;
+    * a path is a non-empty tuple at most ``MAX_PATH_DEPTH`` deep, its root is not also a patch key, no path is a prefix
+      of another, and at most ``MAX_DISTINCT_PARENTS`` parent objects are involved;
+    * every patch and path value is strict JSON (no NaN or infinity, string keys, encodable text);
+    * each ``where`` entry is a non-empty list of JSON scalars.
+
+    Whether the fields exist on the model is :func:`check_known_fields`; whether the values survive the model is
+    :func:`canonical_fixup`, after the write.
+
+    Raises :class:`PatchSpecError` (a ``ValueError`` subclass).
+    """
     patch_d = dict(patch or {})
     paths_d = dict(set_paths or {})
     where_d: dict[str, list[Any]] = {}
