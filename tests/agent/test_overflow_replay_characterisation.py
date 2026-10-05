@@ -1476,6 +1476,40 @@ class TestAHardCancelDuringTheMarkerCommit:
             await session.aclose()
             await backend.aclose()
 
+    async def test_a_lost_lease_cancel_is_not_held_up_by_the_commit(self, tmp_path, monkeypatch) -> None:
+        """A cancel that says the lease was lost (``CANCEL_REASON_PREEMPTED``) is the one the wait is for least: the
+        chokepoint writes no rounds for it, so there is no accounting to settle, and the session may belong to another
+        worker. It goes through at once instead of waiting the grace for a commit that hangs."""
+        import primer.agent.base as base
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+        monkeypatch.setattr(base, "_MARKER_COMMIT_GRACE_S", 30.0)
+        backend, workspace, session = await open_session(tmp_path)
+        forever = asyncio.Event()
+        try:
+            await _seed(workspace, session)
+            entered = asyncio.Event()
+
+            def hanging_commit(executor) -> None:
+                async def hang(*args, **kwargs):
+                    entered.set()
+                    await forever.wait()
+
+                executor._replace_compacted_head = hang  # noqa: SLF001
+
+            task = asyncio.create_task(run_turn(session, FnLLM(_reactive()), configure=hanging_commit))
+            await asyncio.wait_for(entered.wait(), timeout=30)
+            task.cancel(CANCEL_REASON_PREEMPTED)
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=3)      # not the 30s grace
+            assert _markers(workspace, session) == []
+            shown = await _reload(session)
+            assert _tool_ids(shown) == ([], []), "a worker that lost the lease writes nothing"
+        finally:
+            forever.set()
+            await session.aclose()
+            await backend.aclose()
+
     def test_the_marker_commit_grace_is_the_terminal_exit_grace(self) -> None:
         """Both are the bound on how long a cancelled turn may keep a drain waiting (they do not add up: a hard cancel
         during the stream skips the sheltered exit), and the pod budget in worker-system.md is built on that figure.
