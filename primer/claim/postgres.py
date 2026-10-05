@@ -266,14 +266,21 @@ class PostgresClaimEngine(ClaimEngine):
         """Delete the unheld lease rows of ``kind`` whose entity is missing or finished.
 
         One statement. "Finished" is the adapter's :meth:`~primer.int.claim.ClaimAdapter.dead_lease_sql`;
-        "missing" is the engine's own anti-join against the entity table. A kind whose adapter
-        defines no predicate is not pruned at all, so the missing-entity rule cannot delete a lease
-        whose entity this engine has no business judging. A held lease (claimed and unexpired) is
-        never touched.
+        "missing" is a LEFT JOIN miss against the entity table. A kind whose adapter defines no predicate
+        is not pruned at all, so the missing-entity rule cannot delete a lease whose entity this engine
+        has no business judging. A held lease (claimed and unexpired) is never touched.
 
-        The entity table is read under the statement's own snapshot: an entity reset from finished
-        to queued by a concurrent writer inside that window loses its lease row, and the
-        reconciler's re-arm pass restores it.
+        The candidates come from ONE join of the leases to the entity table (a hash join on a large
+        table; the earlier form hashed the entity table twice, once per OR'd sub-select, 420 ms against
+        105 ms on 60k tasks and 85k leases), and the outer DELETE re-states the held-lease predicate so
+        that, under READ COMMITTED, a heartbeat that extends a lapsed lease while this statement waits on
+        the row lock is re-evaluated and the lease survives.
+
+        The entity table is read under the statement's own snapshot: an entity reset from finished to
+        queued by a concurrent writer inside that window loses its lease row. Nothing restores it today
+        (the planned reconciler rule R2 re-arms a QUEUED task with no lease row and is not built), but
+        no writer resets a finished task to queued either: the adapter's retry branch only requeues a
+        live one.
         """
         adapter = self._adapters.get(kind)
         dead = adapter.dead_lease_sql() if adapter is not None else None
@@ -284,11 +291,15 @@ class PostgresClaimEngine(ClaimEngine):
             if not self._entity_tables_ensured:
                 await self._ensure_entity_tables(conn)
             rows = await conn.fetch(
-                f"DELETE FROM {self._table} l"
-                f" WHERE l.kind = $1"
+                f"WITH doomed AS ("
+                f"  SELECT l.entity_id FROM {self._table} l"
+                f"    LEFT JOIN {entity} e ON e.id = l.entity_id"
+                f"   WHERE l.kind = $1"
+                f"     AND (l.claimed_by IS NULL OR l.expires_at < now())"
+                f"     AND (e.id IS NULL OR ({dead})))"
+                f" DELETE FROM {self._table} l USING doomed d"
+                f" WHERE l.kind = $1 AND l.entity_id = d.entity_id"
                 f"   AND (l.claimed_by IS NULL OR l.expires_at < now())"
-                f"   AND (NOT EXISTS (SELECT 1 FROM {entity} e WHERE e.id = l.entity_id)"
-                f"        OR EXISTS (SELECT 1 FROM {entity} e WHERE e.id = l.entity_id AND ({dead})))"
                 f" RETURNING 1",
                 kind.value,
             )

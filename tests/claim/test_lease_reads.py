@@ -199,3 +199,19 @@ async def test_a_lease_claimed_while_prune_awaits_the_entity_is_not_deleted():
     assert claimed.entity_id == "t1"
     assert await engine.has_live_lease(ClaimKind.TOOL_CALL, "t1") is True, "a held lease was deleted"
 
+
+
+@pytest.mark.asyncio
+async def test_an_adapter_with_no_storage_cannot_judge_so_the_in_memory_engine_keeps_every_lease():
+    """``is_dead`` answers False when the adapter cannot read its entity, so the in-memory engine prunes nothing even for
+    a finished task: the conservative answer, documented on ``ClaimAdapter.is_dead``. (The Postgres engine evaluates the
+    SQL predicate in the database and does not depend on the adapter's storage.)"""
+    from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=None)})
+    for tid in ("done", "ghost"):
+        await engine.upsert(ClaimKind.TOOL_CALL, tid)
+
+    assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 0
+    assert await engine.has_lease(ClaimKind.TOOL_CALL, "done") and await engine.has_lease(ClaimKind.TOOL_CALL, "ghost")
