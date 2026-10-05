@@ -30,6 +30,7 @@ from typing import Any
 
 from primer_runtime.locks import WorkspaceLockTable
 from primer_runtime.ops import OpError, _resolve_safe, _strict_write_locking
+from primer_runtime.process_group import NEW_SESSION, stop_process_group
 from primer_runtime.protocol import ErrorCode, Event, Response, serialize
 
 log = logging.getLogger(__name__)
@@ -122,6 +123,9 @@ async def run_exec(
 
         stdin_pipe = asyncio.subprocess.PIPE if stdin_bytes is not None else asyncio.subprocess.DEVNULL
 
+        # Its own session, so every way out of the exec but the command finishing can stop the WHOLE process group
+        # (primer_runtime.process_group): the command is usually ``/bin/sh -c ...``, which forks, and signalling only
+        # the shell left its children running with the pipes and the write lock.
         proc: asyncio.subprocess.Process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=stdin_pipe,
@@ -129,6 +133,7 @@ async def run_exec(
             stderr=asyncio.subprocess.PIPE,
             cwd=workdir,
             env=proc_env,
+            **NEW_SESSION,
         )
 
         # Write stdin if provided, then close the pipe
@@ -169,6 +174,7 @@ async def run_exec(
         # We expect exactly two sentinels (one per reader)
         sentinels_remaining = 2
         timed_out = False
+        finished = False
 
         try:
             async with asyncio.timeout(timeout_s):
@@ -181,39 +187,27 @@ async def run_exec(
 
                 # Wait for process to exit (readers already drained)
                 await proc.wait()
+            finished = True
 
         except TimeoutError:
             timed_out = True
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except TimeoutError:
-                proc.kill()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5.0)
-                except TimeoutError:
-                    pass
-        except asyncio.CancelledError:
-            # WS disconnect: cancel the subprocess
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except TimeoutError:
-                proc.kill()
-            stdout_task.cancel()
-            stderr_task.cancel()
-            try:
-                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-            except Exception:
-                pass
-            raise
         finally:
-            stdout_task.cancel()
-            stderr_task.cancel()
+            # EVERY way out of the exec but the command finishing stops the whole group: the timeout, a cancel (WS close,
+            # an exec cancelled while it awaits the queue), and a generator closed where it is suspended at a ``yield``
+            # (GeneratorExit: a task cancelled while it was blocked in ``send`` closes it there, which no ``except`` arm
+            # saw, so the process was never signalled). Keyed on ``finished`` and not on ``proc.returncode``: the shell
+            # can be gone while a job it left behind, still in the group, is not. The write lock is released only after
+            # this returns (the ``async with lock_ctx`` above).
             try:
-                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-            except Exception:
-                pass
+                if not finished:
+                    await stop_process_group(proc)
+            finally:
+                stdout_task.cancel()
+                stderr_task.cancel()
+                try:
+                    await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                except Exception:
+                    pass
 
         if timed_out:
             yield Event(
