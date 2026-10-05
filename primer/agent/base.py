@@ -598,7 +598,7 @@ class _BaseAgentExecutor(ABC):
                 if cancelled.args[:1] == (CANCEL_REASON_PREEMPTED,):
                     # The lease is lost: the session may belong to another worker, and the chokepoint writes no
                     # rounds for this cancel (``_write_failed_rounds``). What the wait would settle, whether the
-                    # record still holds rounds the marker has, is moot, so this is the one cancel that is not held up.
+                    # record still holds rounds the marker has, is moot, so this is the one kind of cancel that is not held up (in the wait loop below too).
                     write.add_done_callback(_consume_abandoned_commit)
                     raise
                 # Wait for the commit to be DONE, through any further cancel: a cancel that lands on this wait
@@ -613,7 +613,14 @@ class _BaseAgentExecutor(ABC):
                     try:
                         # ``asyncio.wait`` does not cancel what it waits on when this task is cancelled
                         await asyncio.wait({write}, timeout=max(0.0, deadline - loop.time()))
-                    except asyncio.CancelledError:
+                    except asyncio.CancelledError as again:
+                        if again.args[:1] == (CANCEL_REASON_PREEMPTED,):
+                            # The lease was lost AFTER an earlier cancel started this wait. It is raised in
+                            # place of the first cancel for the same reason as above: the chokepoint must see it
+                            # and write nothing (the first cancel's reason, held to the end of the grace, would
+                            # let it write the rounds as a worker that no longer owns the session).
+                            write.add_done_callback(_consume_abandoned_commit)
+                            raise
                         continue
                     if not write.done():
                         break                   # the grace is up
