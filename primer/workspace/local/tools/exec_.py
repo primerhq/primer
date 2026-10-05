@@ -15,6 +15,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
+from primer.common.process_group import NEW_SESSION, kill_process_group
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace._locks import WorkspaceLockTable
@@ -205,12 +206,17 @@ class Exec(WorkspaceTool):
         # Tier-B: hold the write lock for the whole subprocess lifetime so a
         # writing command serializes against same-scope tool writes / execs.
         async with self._exec_lock_ctx(args, cwd):
+            # Its own session, so a timeout or a cancel can kill the WHOLE process group (see
+            # primer.common.process_group): the shell forks, and killing only the shell left its children running
+            # (and the timeout waiting for them, since they hold the pipes). The lock is released only after the
+            # kill, so a stopped command no longer runs on without it.
             proc = await asyncio.create_subprocess_shell(
                 args.command,
                 cwd=str(cwd),
                 env=proc_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **NEW_SESSION,
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -218,14 +224,13 @@ class Exec(WorkspaceTool):
                     timeout=args.timeout_ms / 1000.0,
                 )
             except TimeoutError as exc:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                await proc.wait()
+                await kill_process_group(proc)
                 raise BadRequestError(
                     f"command timed out after {args.timeout_ms}ms: {args.command!r}"
                 ) from exc
+            except asyncio.CancelledError:
+                await kill_process_group(proc)
+                raise
 
         rc = proc.returncode if proc.returncode is not None else -1
         out_text = stdout.decode("utf-8", errors="replace")
