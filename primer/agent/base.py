@@ -623,6 +623,13 @@ class _BaseAgentExecutor(ABC):
                 record.lease_lost = True
                 write.add_done_callback(_consume_abandoned_commit)
                 abandoned = write
+                if not write.done():
+                    logger.warning(
+                        "AgentExecutor: the lease was lost while the compaction marker commit was still running; "
+                        "leaving it to finish on its own (the window closes, and the steers deferred meanwhile are "
+                        "applied, once it is done)",
+                        extra={"agent_id": self._agent.id},
+                    )
 
             try:
                 carried = await asyncio.shield(write) or []
