@@ -404,6 +404,8 @@ class _BaseGraphExecutor(
         agent_tool_result: "Message | None" = None,
         toolcall_payload: "dict[str, Any] | YieldTimeout | YieldCancelled | None" = None,
         resolved_tool_wait: "dict[str, list[ToolResultPart]] | None" = None,
+        resume_session_id: str | None = None,
+        resolve_provider: "Callable[[str], Awaitable[Any]] | None" = None,
     ) -> AsyncIterator[StreamEvent]:
         """Restore from a checkpoint and continue graph execution.
 
@@ -453,6 +455,14 @@ class _BaseGraphExecutor(
         node's entry stays in ``self._pending_tool_waits`` for the
         drain-until-empty re-park below, exactly like an un-replied
         ``_PendingAgentYield``.
+
+        ``resume_session_id`` / ``resolve_provider``: the session being
+        resumed and the provider registry's ``get_toolset``, for the
+        ``ResumeContext`` a value-yielding tool_call node's resume hook
+        receives. This executor holds neither (``_graph_session_id`` names
+        the graph run, not the session), so the worker that drives the
+        resume passes them; both default ``None`` for a caller with no
+        session or registry.
         """
         self.restore_state(checkpoint)
 
@@ -520,6 +530,8 @@ class _BaseGraphExecutor(
                         resume_metadata=entry.resume_metadata or {},
                         tool_call_id=entry.tool_call_id,
                         payload=toolcall_payload,
+                        session_id=resume_session_id,
+                        resolve_provider=resolve_provider,
                     )
                 except Exception as exc:  # noqa: BLE001 -- map to node failure
                     fail_out = NodeOutput(

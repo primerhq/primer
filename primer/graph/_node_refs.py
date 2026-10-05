@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -299,6 +300,8 @@ def _resume_value_yield_toolcall(
     resume_metadata: dict[str, Any],
     tool_call_id: str,
     payload: "dict[str, Any] | Any",
+    session_id: str | None = None,
+    resolve_provider: "Callable[[str], Awaitable[Any]] | None" = None,
 ) -> "ToolResultPart":
     """Run a value-yielding tool's resume hook and shape a ToolResultPart.
 
@@ -306,23 +309,27 @@ def _resume_value_yield_toolcall(
     for an agent-node ask_user yield, but for a **tool_call** node: the hook
     turns the operator payload (``{"response": ...}``) / timeout / cancel into
     the tool result the node's downstream consumers read via ``nodes.<id>.text``.
+
+    ``session_id`` and ``resolve_provider`` fill the hook's
+    :class:`~primer.worker.yield_resume_registry.ResumeContext` exactly as the
+    agent-session and agent-node resumes do. The executor holds neither (its
+    ``_graph_session_id`` names the graph run, not the session), so the worker
+    that drives the resume passes them to ``resume_from_checkpoint``; a caller
+    with no session or registry (a direct test, the GraphFrame child resume)
+    leaves both ``None`` and a hook that needs one must say so.
     """
     from primer.model.chat import ToolResultPart
     from primer.worker.yield_resume_registry import ResumeContext, get_resume_hook
 
     hook = get_resume_hook(tool_name)
-    # resolve_provider is None here: this path holds only the parked blob, so
-    # a hook that needs to reach its toolset (a python tool) must say it
-    # cannot rather than assume a resolver is present. Threading one from the
-    # caller is the follow-up if graph tool_call nodes need python tools.
     hook_result = hook(
         resume_metadata or {},
         payload,
         ResumeContext(
             tool_name=tool_name,
             tool_call_id=tool_call_id,
-            session_id=None,
-            resolve_provider=None,
+            session_id=session_id,
+            resolve_provider=resolve_provider,
         ),
     )
     # The resume hooks in-tree are synchronous; guard against an async hook
