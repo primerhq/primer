@@ -1675,8 +1675,8 @@ async def _land_cancelled_turn(
     a process, and not one on another host, where only the committed flag this read sees is shared.
     The late-cancel arm drops the lock after finding the Cancel and takes it again here, so the row can
     change in between: this re-reads and decides again, and a row that is already ENDED, or gone (a
-    force-delete), is left alone (no record, no overwrite, no slot mirror) while the terminal event and the
-    release still happen. Not every cancelled turn comes through here: a turn whose Cancel was already on
+    force-delete), is left alone (no record, no overwrite; the slot is mirrored with the row's own reason when it
+    accepts one, as in the terminal write's skip) while the terminal event and the release still happen. Not every cancelled turn comes through here: a turn whose Cancel was already on
     the row when it was claimed takes the short-circuit at the top of ``run_one_session_turn`` (ENDED/
     cancelled without running). A Cancel ALWAYS sets
     ``cancel_requested`` before it publishes, so that flag alone separates the two: not set means a Stop.
@@ -1698,8 +1698,11 @@ async def _land_cancelled_turn(
             # ENDED/force_deleted and is removing the row and its on-disk slot, or the row is already gone.
             # Leave it alone: no CANCELLED record (it would recreate a transcript in the workspace of a
             # deleted session), no overwrite of the reason (ENDED/force_deleted would become
-            # ENDED/cancelled), no slot mirror (an orphan session.json). The rest of the exit still runs so
-            # the terminal event (the webhook hold waits on it) and the lease release are not lost.
+            # ENDED/cancelled). The slot follows the row's own reason, as in the terminal write's skip (the
+            # pool's _end_session ends a row without touching it, so nothing else would take session.json
+            # out of RUNNING); a force-deleted row gets no mirror (the delete is removing the slot, and the
+            # reason is not one the slot accepts), nor does a row that is gone. The rest of the exit still
+            # runs so the terminal event (the webhook hold waits on it) and the lease release are not lost.
             logger.info(
                 "session %s: the row is %s; the cancelled exit leaves it as it is",
                 session_id, "gone" if fresh is None else f"already ENDED ({fresh.ended_reason})",
@@ -1707,7 +1710,11 @@ async def _land_cancelled_turn(
             reason = _CANCEL_REASON
             seq = None
             new_status = SessionStatus.ENDED
-            ended_reason = fresh.ended_reason if fresh is not None else "force_deleted"
+            if fresh is None:
+                ended_reason = "force_deleted"
+            else:
+                ended_reason = fresh.ended_reason
+                await _mirror_ended_row_onto_slot(session, fresh, executor=executor, workspace_registry=None)
         else:
             is_interrupt = not fresh.cancel_requested
             reason = _STOP_REASON if is_interrupt else _CANCEL_REASON
@@ -2370,11 +2377,28 @@ async def _leave_ended_row_alone(
         "session %s: the row is already ENDED (%s); not overwriting it with %s/%s",
         session.id, ended.ended_reason, new_status.value, ended_reason,
     )
+    await _mirror_ended_row_onto_slot(session, ended, executor=executor, workspace_registry=workspace_registry)
+    return _TerminalWrite(False, SessionStatus.ENDED, ended.ended_reason)
+
+
+async def _mirror_ended_row_onto_slot(
+    session: WorkspaceSession,
+    ended: WorkspaceSession,
+    *,
+    executor: Any,
+    workspace_registry: Any | None,
+) -> None:
+    """Bring the on-disk slot in line with an ENDED row's OWN reason, when the slot accepts that reason.
+
+    The one slot policy for a row that was ended by something else: the terminal write's skip
+    (:func:`_leave_ended_row_alone`) and the cancelled exit's early branch both use it, so the same row cannot get
+    a mirror or not depending on which side of a race the turn saw it on. Bounded by ``_SLOT_MIRROR_TIMEOUT_S``
+    inside :func:`_sync_agent_session_ended`.
+    """
     if ended.ended_reason in _SLOT_ENDED_REASONS:
         await _sync_agent_session_ended(
             executor, ended.ended_reason, session=session, workspace_registry=workspace_registry,
         )
-    return _TerminalWrite(False, SessionStatus.ENDED, ended.ended_reason)
 
 
 async def _transition_session_status(
@@ -2453,9 +2477,11 @@ async def _transition_session_status(
     # on-disk AgentSession mirror, and the caller's _publish_terminal) never
     # runs for a status this process never actually persisted.
     #
-    # A CONDITIONAL write: the check above is on this helper's own snapshot, and force-delete, the reconciler
-    # and the pool's _end_session write without the lifecycle lock, so the row can be ended between that read
-    # and this write. The backend refuses the write in the same statement if the stored status is ENDED.
+    # A CONDITIONAL write: the check above is on this helper's own snapshot, and the lifecycle lock does not
+    # cover every writer. It is process-local (a force-delete on another API process does not serialize with
+    # this worker), and the reconciler and the pool's _end_session do not take it at all, so the row can be
+    # ended between that read and this write. The backend refuses the write in the same statement if the
+    # stored status is ENDED.
     landed = await session_storage.update_unless(
         fresh.model_copy(update=updates), field="status", forbidden=SessionStatus.ENDED.value,
     )
