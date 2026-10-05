@@ -12,10 +12,10 @@ Two things the fixture glosses over, so a reader does not take more from these t
   record the outstanding ids in the model's call order (Ollama pairs same-name calls by position; every other
   adapter pairs by id and does not care). Only the model's interleaving of an inline call with a claimable one is
   lost, which no adapter depends on.
-* IDS. The fixture gives the park's tool_use ids and the task ids the same strings. In production the park's
-  messages carry the provider's raw ids while a task id is the scoped one, so the synthesised error part (which
-  uses ``task.id``) matches no tool_use there. That is the "Session-qualified ids" gap in claim-machine.md; the
-  xfail below pins it so the fix flips it.
+* IDS. Most tests give the park's tool_use ids and the task ids the same strings, because they pin ORDER, not
+  pairing. In production the park's messages carry the provider's RAW id while a task id is the session-qualified
+  scoped one and the row records the raw id in ``call_id``; ``test_every_synthesised_part_pairs_with_a_tool_use...``
+  below uses exactly those conventions and pins that the synthesised error part is stamped with ``call_id``.
 * The durable TOOL_RESULT records are stubbed here (only their order is pinned); for a task with no result the
   real writer records ``output=None`` and ``error`` from the task state, not the synthesised part's text.
 """
@@ -53,13 +53,13 @@ class _RecordingExecutor:
 
 
 def _task(task_id: str, state=ToolCallTaskState.DONE, *, result: ToolResultPart | None = "auto",
-          finished: int = 0, last_error: str | None = None) -> ToolCallTask:
+          finished: int = 0, last_error: str | None = None, call_id: str | None = None) -> ToolCallTask:
     if result == "auto":
         result = ToolResultPart(id=task_id, output=f"result of {task_id}", error=False)
     return ToolCallTask(
         id=task_id, session_id="s1", turn_no=0, tool_name="t", state=state, record_seq=1,
         result_state=result.model_dump(mode="json") if result is not None else None,
-        last_error=last_error, created_at=T0, finished_at=T0 + timedelta(seconds=finished),
+        last_error=last_error, created_at=T0, finished_at=T0 + timedelta(seconds=finished), call_id=call_id,
     )
 
 
@@ -211,21 +211,17 @@ async def test_a_missing_sibling_row_ends_the_session_failed_and_injects_nothing
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="known gap (claim-machine.md, 'Session-qualified ids'): the synthesised part carries the scoped task id, "
-    "the park's tool_use carries the provider's raw id, so the pair never matches in production. Flip this when "
-    "the task row gains a call_id and the coordinator uses it.",
-)
 async def test_every_synthesised_part_pairs_with_a_tool_use_in_the_parks_own_messages(monkeypatch):
-    """With the id conventions production really has (raw provider id in the park's history, scoped id on the task)."""
-    scoped, raw = "x:tool:0:1", "call_9f2"
+    """With the id conventions production really has: the raw provider id in the park's history, the session-qualified
+    scoped id on the task row (and in the parked blob), and the raw id recorded on the row as ``call_id``."""
+    raw = "call_9f2"
+    qualified = "s1/x:tool:0:1"
     provider = _FakeStorageProvider()
     await provider.get_storage(ToolCallTask).create(
-        _task(scoped, ToolCallTaskState.FAILED, result=None, last_error="boom")
+        _task(qualified, ToolCallTaskState.FAILED, result=None, last_error="boom", call_id=raw)
     )
     parked = ToolWaitParkedState(
-        outstanding_task_ids=[scoped], notifying_task_ids=[], event_key="tool_wait:s1:0:x",
+        outstanding_task_ids=[qualified], notifying_task_ids=[], event_key="tool_wait:s1:0:x",
         llm_messages=[Message(role="assistant", parts=[ToolCallPart(id=raw, name="t", arguments={})]).model_dump(mode="json")],
         turn_no=0, started_at=T0,
     )
