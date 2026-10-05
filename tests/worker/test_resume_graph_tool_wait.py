@@ -22,17 +22,19 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.int.claim import ReleaseOutcome
-from primer.model.chat import Message, ToolResultPart
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
-from primer.model.workspace_session import (
-    AgentSessionBinding, SessionStatus, WorkspaceSession,
-)
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolWaitPark, YieldToWorker
 from primer.worker import graph_resume_coordinator
 from primer.worker.tool_wait_resume_coordinator import resume_graph_tool_wait
 from primer.worker.yield_runtime import ParkedState, ToolWaitParkedState
 
-from tests.conftest import _FakeStorageProvider
+from tests._resume_hook_fakes import (
+    EngineFakePool as _FakePool,
+    EngineStorageProvider as _StorageProvider,
+    NullWorkspaceIO as _FakeWorkspaceIO,
+    waiting_graph_session as _session,
+)
 from tests.graph.test_tool_wait_graph_park import (
     _ask_user_yield,
     _mk_parallel_executor,
@@ -43,90 +45,6 @@ from tests.graph.test_tool_wait_graph_park import (
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _session(session_id: str = "gs-1") -> WorkspaceSession:
-    return WorkspaceSession(
-        id=session_id, workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag1"),
-        status=SessionStatus.WAITING, created_at=_now(), turn_no=0, parked_at=_now(),
-    )
-
-
-class _StorageProvider:
-    """Routes ToolCallTask through a real _FakeStorageProvider; nothing
-    else is touched by these tests."""
-
-    def __init__(self) -> None:
-        self._inner = _FakeStorageProvider()
-
-    def get_storage(self, model_cls):
-        return self._inner.get_storage(model_cls)
-
-
-class _NoopClaimEngine:
-    """Stands in for WorkerPool._engine - these tests exercise readiness
-    / repark routing, not row-creation content, so upserts are discarded."""
-
-    async def upsert(self, kind, entity_id: str, **kwargs) -> None:
-        return None
-
-
-class _FakePool:
-    def __init__(self, *, storage, workspace_io, executor_factory) -> None:
-        self._storage = storage
-        self._workspace_io = workspace_io
-        self._event_bus = None
-        self._engine = _NoopClaimEngine()
-        self._executor_factory = executor_factory
-        self.end_session_calls: list[str] = []
-        self.repark_calls: list = []
-        self.agent_tool_result_session_ids: list = []
-
-    async def _load_workspace_for_persist(self, workspace_id: str):
-        return self._workspace_io
-
-    async def _build_graph_executor(self, session, workspace):
-        return await self._executor_factory()
-
-    async def _end_session(self, session, *, reason: str):
-        self.end_session_calls.append(reason)
-        return f"ENDED:{reason}"
-
-    def _repark_graph_outcome(self, session, repark, *, node_tool_call_seq=None):
-        self.repark_calls.append(repark)
-        return "REPARKED"
-
-    # -- resume_graph_engine's own delegating surface --------------------
-    def _graph_nested_agent_yield(self, checkpoint, tcid):
-        return graph_resume_coordinator.graph_nested_agent_yield(self, checkpoint, tcid)
-
-    def _graph_value_yield_toolcall(self, checkpoint, tcid):
-        return graph_resume_coordinator.graph_value_yield_toolcall(self, checkpoint, tcid)
-
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
-        # Directly supplies the ask_user answer, bypassing the global
-        # resume-hook registry - irrelevant to what these tests prove (the
-        # real hook call is pinned by test_graph_agent_tool_result_real_hooks.py).
-        # It does record the session id the engine passes, because the hook's
-        # ResumeContext is built from it.
-        self.agent_tool_result_session_ids.append(session_id)
-        return Message(role="tool", parts=[ToolResultPart(id=tcid, output="blue")])
-
-    async def _write_approval_record_for_graph(self, *, session, checkpoint, tcid, payload):
-        return None
-
-    async def _persist_resume_tool_result_record_for_graph(
-        self, *, session, checkpoint, tcid, agent_tool_result,
-    ):
-        return None
-
-    async def _resume_graph_continuation(self, *args, **kwargs):
-        raise AssertionError("no nested continuation in these tests")
-
-
-class _FakeWorkspaceIO:
-    async def append_message_line(self, session_id: str, line: bytes) -> None:
-        return None
 
 
 def _make_parked_batch(scoped_id: str, *, state: ToolCallTaskState, output: str) -> ToolCallTask:
