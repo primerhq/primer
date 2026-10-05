@@ -510,11 +510,16 @@ class CompactionStrategy:
                     "cannot_reach_trigger", outcome="skipped",
                     detail="the prompt fits the window and even the smallest result would still be over the trigger",
                 )
-            if last_compaction_tokens is not None and before < last_compaction_tokens + self.summary_max_tokens:
+            if (
+                last_compaction_tokens is not None
+                and before < last_compaction_tokens + self.summary_max_tokens
+                and before < model.context_length
+            ):
                 # The newest compaction already left the prompt at about this size (a summary and the
                 # protected input over the budget), and it has not grown by a summary allowance since:
-                # compacting again would summarise the summary for no gain. The overflow path is still
-                # there if the provider rejects the prompt.
+                # compacting again would summarise the summary for no gain. Not for a prompt that does not
+                # fit the window itself: that one would be rejected, so it is compacted whatever it grew by.
+                # (Past the budget but inside the window the overflow path is still there as the net.)
                 return unreducible(
                     "recently_compacted", outcome="skipped",
                     detail=f"the last compaction left it at about {last_compaction_tokens} and it has not grown "

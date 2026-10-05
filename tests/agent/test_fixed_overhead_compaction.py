@@ -239,6 +239,21 @@ class TestTheBudgetRules:
         )
         assert summariser.calls == 1, "the growth that re-enables it is the summary allowance, not a constant"
 
+    def test_a_prompt_that_does_not_fit_the_window_is_compacted_whatever_it_has_grown_by(self) -> None:
+        """The memory holds a compaction back only while the provider can still take the prompt: past the budget but
+        inside the window it is sent and the overflow path is the net; past the window it would be rejected."""
+        last = 33_000                                   # a stale or high figure: before is under last + 4,096
+        inside = _history(5_000)                        # about 27k with the fixed part: over the budget, inside 32,000
+        result, summariser = _maybe(
+            CompactionStrategy(), history=inside, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=last,
+        )
+        assert summariser.calls == 0 and (result.outcome, result.unreducible) == ("skipped", "recently_compacted")
+        beyond = _history(11_000)                       # about 33k: past the window
+        result, summariser = _maybe(
+            CompactionStrategy(), history=beyond, fixed=self.FIXED, window=self.WINDOW, last_compaction_tokens=last,
+        )
+        assert summariser.calls == 1 and result.summary_message is not None
+
     def test_a_prompt_that_fits_the_budget_is_skipped_as_before_whatever_the_last_compaction_left(self) -> None:
         """A stale or small figure (the fixed part has grown since) must not turn the skip into a compaction: a prompt
         that fits the window is left alone because its trigger cannot be reached, not because of the memory."""
