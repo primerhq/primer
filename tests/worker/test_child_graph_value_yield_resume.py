@@ -87,7 +87,6 @@ async def _park_and_resume(tool_name: str, resume_metadata: dict[str, Any], regi
     return await resume_continuation(parked.value.frames, parked.value.yielded, payload, services)
 
 
-@pytest.mark.xfail(strict=True, reason="resume_invoke_graph drops the operator reply and the ResumeContext for a child graph node")
 @pytest.mark.asyncio
 async def test_the_hook_in_an_invoked_child_graph_gets_the_reply_and_the_context():
     seen: list[tuple[Any, ResumeContext]] = []
@@ -111,7 +110,6 @@ async def test_the_hook_in_an_invoked_child_graph_gets_the_reply_and_the_context
     assert json.loads(json.loads(outcome.tool_result.output)["output"]) == _REPLY
 
 
-@pytest.mark.xfail(strict=True, reason="resume_invoke_graph drops the operator reply and the ResumeContext for a child graph node")
 @pytest.mark.asyncio
 async def test_a_python_toolset_tool_yielding_in_an_invoked_child_graph_resumes():
     name = scoped_tool_name("ts-vy", "ask")

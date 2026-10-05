@@ -84,7 +84,8 @@ class _CompletingExec:
     """Child executor whose resume drains to a terminal End output."""
 
     async def resume_from_checkpoint(self, checkpoint, *, resumed_tcid=None,
-                                     agent_tool_result=None):
+                                     agent_tool_result=None, toolcall_payload=None,
+                                     resume_session_id=None, resolve_provider=None):
         from primer.graph.base import _GraphEndOutputEvent
 
         yield _GraphEndOutputEvent(text="done!", parsed=None, end_node_id="end")
@@ -114,7 +115,8 @@ class _ReparkingExec:
         self.repark.graph_checkpoint = {"snap": "shot2"}
 
     async def resume_from_checkpoint(self, checkpoint, *, resumed_tcid=None,
-                                     agent_tool_result=None):
+                                     agent_tool_result=None, toolcall_payload=None,
+                                     resume_session_id=None, resolve_provider=None):
         raise self.repark
         yield  # unreachable; async generator
 
@@ -131,3 +133,52 @@ async def test_resume_invoke_graph_reparks():
     )
     assert not out  # None or empty
     assert repark is child.repark
+
+
+class _RecordingExec:
+    """Child executor that records what its resume was handed."""
+
+    async def resume_from_checkpoint(self, checkpoint, **kwargs):
+        from primer.graph.base import _GraphEndOutputEvent
+
+        self.kwargs = {"checkpoint": checkpoint, **kwargs}
+        yield _GraphEndOutputEvent(text="done!", parsed=None, end_node_id="end")
+
+
+@pytest.mark.asyncio
+async def test_resume_invoke_graph_hands_the_child_the_reply_and_the_hook_context():
+    """A value-yielding tool_call node in the child (ask_user, a python tool)
+    takes the operator's reply from ``toolcall_payload`` and builds its hook's
+    ResumeContext from ``resume_session_id`` / ``resolve_provider``."""
+    async def resolver(toolset_id):  # pragma: no cover - only identity matters
+        return toolset_id
+
+    child = _RecordingExec()
+    await resume_invoke_graph(
+        child=child,
+        checkpoint={"snap": "shot"},
+        payload={"response": "blue"},
+        resumed_tcid="child-tc",
+        agent_tool_result=None,
+        resume_session_id="sess-1",
+        resolve_provider=resolver,
+    )
+    assert child.kwargs == {
+        "checkpoint": {"snap": "shot"},
+        "resumed_tcid": "child-tc",
+        "agent_tool_result": None,
+        "toolcall_payload": {"response": "blue"},
+        "resume_session_id": "sess-1",
+        "resolve_provider": resolver,
+    }
+
+
+@pytest.mark.asyncio
+async def test_resume_invoke_graph_without_a_session_or_resolver_hands_the_child_none():
+    child = _RecordingExec()
+    await resume_invoke_graph(
+        child=child, checkpoint={}, payload={"response": "blue"}, resumed_tcid="child-tc",
+    )
+    assert child.kwargs["toolcall_payload"] == {"response": "blue"}
+    assert child.kwargs["resume_session_id"] is None
+    assert child.kwargs["resolve_provider"] is None

@@ -113,6 +113,29 @@ async def test_build_invocation_services_forwards_bound_deps(monkeypatch):
     assert graph_services.built == ("GR", "gs1")
 
 
+class _ToolsetRegistry:
+    async def get_toolset(self, toolset_id):
+        return f"toolset::{toolset_id}"
+
+
+async def test_build_invocation_services_binds_the_session_and_the_toolset_resolver():
+    """A GraphFrame leaf's value-yielding tool_call hook builds its ResumeContext
+    from these: the session being resumed and the registry's ``get_toolset``."""
+    pool = _bare_pool(registry=_ToolsetRegistry())
+
+    services = pool._build_invocation_services(_Session(), "workspace", "executor", None)
+
+    assert services.session_id == "ses-1"
+    assert await services.resolve_provider("ts-1") == "toolset::ts-1"
+
+
+def test_build_invocation_services_without_a_registry_has_no_resolver():
+    services = _bare_pool(registry=None)._build_invocation_services(_Session(), "workspace", "executor", None)
+
+    assert services.session_id == "ses-1"
+    assert services.resolve_provider is None
+
+
 class _Session:
     id = "ses-1"
     turn_no = 7

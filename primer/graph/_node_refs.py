@@ -319,9 +319,10 @@ async def _resume_value_yield_toolcall(
     ``resume_from_checkpoint``, and a sub-executor gets a derived
     ``<gsid>__<node>`` id. So the worker that drives the resume passes the
     session id explicitly, with the registry's resolver, to
-    ``resume_from_checkpoint``; a caller with no session or registry (a direct
-    test, the GraphFrame child resume) leaves both ``None`` and a hook that
-    needs one must say so.
+    ``resume_from_checkpoint``. ``GraphFrame.resume_leaf`` does the same for a
+    node inside an invoked child graph, from its ``InvocationServices``; a
+    caller with no session or registry (a direct test) leaves both ``None`` and
+    a hook that needs one must say so.
     """
     from primer.model.chat import ToolResultPart
     from primer.worker.yield_resume_registry import ResumeContext, get_resume_hook

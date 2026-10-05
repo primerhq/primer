@@ -164,9 +164,16 @@ async def test_agent_resume_leaf_repark_retains_self(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+async def _resolve_provider(toolset_id):  # pragma: no cover - only identity matters
+    return toolset_id
+
+
 def _graph_services(recorder):
     @dataclass
     class _Svc:
+        session_id: str = "sess-1"
+        resolve_provider: Any = None
+
         async def resolve_graph(self, graph_id):
             recorder["resolve_graph"] = graph_id
             return f"graph::{graph_id}"
@@ -179,7 +186,9 @@ def _graph_services(recorder):
             recorder["agent_tool_result"] = (checkpoint, tcid, payload)
             return "ATR"
 
-    return _Svc()
+    svc = _Svc()
+    svc.resolve_provider = _resolve_provider
+    return svc
 
 
 @pytest.mark.asyncio
@@ -188,13 +197,18 @@ async def test_graph_resume_leaf_completed(monkeypatch):
     rec: dict[str, Any] = {}
     services = _graph_services(rec)
 
-    async def fake_resume_invoke_graph(*, child, checkpoint, payload, resumed_tcid, agent_tool_result):
+    async def fake_resume_invoke_graph(
+        *, child, checkpoint, payload, resumed_tcid, agent_tool_result,
+        resume_session_id, resolve_provider,
+    ):
         rec["resume_invoke_graph"] = {
             "child": child,
             "checkpoint": checkpoint,
             "payload": payload,
             "resumed_tcid": resumed_tcid,
             "agent_tool_result": agent_tool_result,
+            "resume_session_id": resume_session_id,
+            "resolve_provider": resolve_provider,
         }
         return "graph out", None
 
@@ -218,6 +232,10 @@ async def test_graph_resume_leaf_completed(monkeypatch):
     assert rig["payload"] == {"p": 9}
     assert rig["resumed_tcid"] == "node-tc"
     assert rig["agent_tool_result"] == "ATR"
+    # The services bundle's session and toolset resolver reach the child's
+    # resume, for a value-yielding tool_call node's ResumeContext.
+    assert rig["resume_session_id"] == "sess-1"
+    assert rig["resolve_provider"] is _resolve_provider
 
 
 @pytest.mark.asyncio

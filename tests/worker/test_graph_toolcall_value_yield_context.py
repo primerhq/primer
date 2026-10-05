@@ -160,7 +160,7 @@ async def test_the_executor_hands_the_hook_what_its_caller_passes():
 
 @pytest.mark.asyncio
 async def test_a_caller_that_passes_neither_gets_the_bare_context():
-    """The direct executor callers (tests, the GraphFrame child resume) hold no session or registry."""
+    """The direct executor callers (tests) hold no session or registry."""
     seen = _recording_hook("test_vy_ctx_bare")
     checkpoint, resumer, _raised = await _parked("test_vy_ctx_bare")
 

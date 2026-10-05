@@ -333,7 +333,9 @@ class GraphFrame:
         compute the node's ``agent_tool_result`` from the raw ``payload`` via
         ``services.graph_agent_tool_result`` (None for approval/verdict leaves),
         and hand BOTH the raw ``payload`` and that ``agent_tool_result`` to
-        :func:`resume_invoke_graph`.
+        :func:`resume_invoke_graph`, with the session and toolset resolver the
+        ``services`` bundle carries (the ``ResumeContext`` of a value-yielding
+        ``tool_call`` node inside the child).
 
         Returns a :class:`Reparked` if the child graph raised a fresh yield,
         else a :class:`Completed` carrying a :class:`ToolResultPart` (keyed by
@@ -351,6 +353,8 @@ class GraphFrame:
             payload=payload,
             resumed_tcid=self.node_tcid,
             agent_tool_result=agent_tool_result,
+            resume_session_id=services.session_id,
+            resolve_provider=services.resolve_provider,
         )
         if repark is not None:
             return self._repark_with_advanced_frame(repark)
@@ -404,6 +408,9 @@ class GraphFrame:
         graph = await services.resolve_graph(self.graph_id)
         child = await services.build_child_graph_executor(graph, self.gsid)
         agent_tool_result = Message(role="tool", parts=[child_result])
+        # No session or resolver: the node resumed here is an agent node's
+        # nested chain, delivered as ``agent_tool_result``; no value-yielding
+        # tool_call hook runs, so there is no ResumeContext to fill.
         out, repark = await resume_invoke_graph(
             child=child,
             checkpoint=self.checkpoint,
