@@ -143,7 +143,7 @@ sequenceDiagram
     participant Bus as EventBus
 
     Worker->>Turn: run the claimed turn (lease held)
-    Turn->>Turn: write the YIELDED record (a mixed park: create its ToolCallTask rows)
+    Turn->>Turn: write the YIELDED record (a mixed park also creates its ToolCallTask rows)
     Turn->>YR: await _dispatch_to_channels
     YR->>Disp: dispatch_prompt(envelope)
     Disp->>Reg: get_adapter(channel_id)
@@ -152,7 +152,7 @@ sequenceDiagram
     Ad->>Plat: post message / buttons / thread
     Ad->>CS: upsert_session(channel_id, anchor, workspace_id, session_id, tcid)
     Turn-->>Worker: park outcome
-    Worker->>Worker: release the lease; on_release writes parked_state, flips parked_status
+    Worker->>Worker: release the lease, then on_release writes parked_state and flips parked_status
     Plat-->>Ad: inbound reply / button click
     Ad->>IR: route(channel, anchor, ...)
     IR->>CS: lookup(channel_id, anchor)

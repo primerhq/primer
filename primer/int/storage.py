@@ -247,8 +247,9 @@ class Storage(ABC, Generic[ModelT]):
             write would produce no longer validates against the model. The write is rolled back (a
             savepoint inside a caller's transaction) and the row is unchanged. It is a ``ValueError``
             subclass but NOT a ``PatchSpecError``, and it is re-raised as itself, never wrapped, so a
-            caller that must tell a malformed SPEC from a bad VALUE tests for ``PatchSpecError`` (or
-            lists the two types).
+            caller can tell the three apart: a malformed SPEC is a ``PatchSpecError`` that is not a
+            ``PatchValueError``, a VALUE no backend can store is a ``PatchValueError``, and a value
+            the model refuses is this ``ValidationError``.
         primer.model.except_.ProviderError
             Any OTHER failure under the write is a backend failure, wrapped like every other one and
             never reported as the caller's mistake: a ``ValueError`` that is neither a
