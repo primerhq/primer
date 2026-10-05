@@ -600,6 +600,12 @@ class _BaseAgentExecutor(ABC):
             try:
                 carried = await asyncio.shield(write) or []
             except asyncio.CancelledError as cancelled:
+                if cancelled.args[:1] == (CANCEL_REASON_PREEMPTED,):
+                    # The lease is lost: the session may belong to another worker, and the chokepoint writes no
+                    # rounds for this cancel (``_write_failed_rounds``). What the wait would settle, whether the
+                    # record still holds rounds the marker has, is moot, so this is the one cancel that is not held up.
+                    write.add_done_callback(_consume_abandoned_commit)
+                    raise
                 # Wait for the commit to be DONE, through any further cancel: a cancel that lands on this wait
                 # cancels the await and not the write (a thread writes the marker and it lands whatever the task
                 # does), so reading it as "the commit failed" would leave the record holding rounds the marker has.
