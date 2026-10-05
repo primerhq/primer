@@ -582,3 +582,24 @@ async def test_a_log_that_cannot_be_read_runs_the_turn(world):
 
     assert world.llm_calls == ["first", "first"]
     assert _noops() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_queued_steer_the_skipped_checkpoint_left_is_realized_and_answered_once(world):
+    """A crash between the marker and the drain checkpoint leaves a queued (pending) steer, not yet a USER_INPUT, and
+    the row idle. The no-op runs the checkpoint the turn would have run: the steer is realized through wake_session
+    (USER_INPUT, claimable) and answered exactly once. Arming the row without realizing it would first run a turn with
+    nothing new to answer (a second reply to the completed turn) and only then the steer."""
+    from primer.session.pending_messages import store_pending_steer
+
+    await _complete_a_turn_whose_release_rolled_back(world)
+    await store_pending_steer(
+        storage_provider=world.storage, session=await world.row(), text="queued", workspace_registry=world.registry,
+    )
+    world.expire_lease()
+    await _claim_until_idle(world, world.pool("wrk-b"))
+
+    assert world.llm_calls == ["first", "queued"]
+    assert world.call_turn_nos == [0, 1]
+    assert _noops() == 1
+    assert not has_open_turn(world.ws.lines(), cursor=0)
