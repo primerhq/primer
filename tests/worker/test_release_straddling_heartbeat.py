@@ -277,46 +277,139 @@ async def test_the_harness_handler_marks_its_scope_before_it_releases():
         await scheduler.aclose()
 
 
-def test_no_handler_releases_through_the_engine_directly():
-    """Every release of a RUNNING execution goes through ``WorkerPool._release_lease`` (which marks the
-    scope first). A syntactic scan, so docstrings and comments cannot trip it: every call named
-    ``release`` on something called ``engine`` or ``_engine``, anywhere under ``primer/`` except the engine
-    implementations in ``primer/claim/``. The only allowed callers are the helper itself and the give-back
-    of a lease that never started (it has no scope and is not in flight)."""
-    import ast
-    import pathlib
+def _engine_release_calls(source: str, rel: str) -> set[tuple[str, str]]:
+    """``(file, enclosing function)`` of every ``.release(`` call on a claim engine in ``source``.
 
-    root = pathlib.Path(__file__).resolve().parents[2] / "primer"
+    Syntactic, so docstrings and comments cannot trip it. The receiver counts as an engine when it is a name or
+    an attribute chain whose LAST identifier ends with ``engine`` in any case (``engine``, ``self._engine``,
+    ``claim_engine``, ``deps.claim_engine``), or a local alias assigned from one (``eng = pool._engine``, an alias
+    of an alias, a walrus, a tuple unpacked pairwise) anywhere in the same function or an enclosing one, or at
+    module level. Alias tracking ignores control flow: a name assigned an engine anywhere in the function counts
+    as one throughout it. NOT seen: an engine reached through a function call (``get_engine().release(...)``), a
+    container (``engines[kind].release(...)``), or an attribute or alias whose name does not end in ``engine``
+    (``self.eng = self._engine`` then ``self.eng.release(...)``)."""
+    import ast
+
+    scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+    def own_nodes(scope):
+        todo = list(ast.iter_child_nodes(scope))
+        while todo:
+            node = todo.pop()
+            yield node
+            if not isinstance(node, scopes):
+                todo.extend(ast.iter_child_nodes(node))
+
+    def is_engine(node, aliases: set[str]) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id.lower().endswith("engine") or node.id in aliases
+        return isinstance(node, ast.Attribute) and node.attr.lower().endswith("engine")
+
+    def pairs(target, value):
+        if isinstance(target, ast.Name):
+            return [(target.id, value)]
+        if (
+            isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)
+        ):
+            return [p for t, v in zip(target.elts, value.elts) for p in pairs(t, v)]
+        return []
+
+    def aliases_of(scope, inherited: set[str]) -> set[str]:
+        assigned = []
+        for node in own_nodes(scope):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    assigned += pairs(target, node.value)
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                assigned += pairs(node.target, node.value)
+        names = set(inherited)
+        grew = True
+        while grew:   # to a fixpoint, so an alias of an alias counts whatever the order
+            grew = False
+            for name, value in assigned:
+                if name not in names and is_engine(value, names):
+                    names.add(name)
+                    grew = True
+        return names
+
     found: set[tuple[str, str]] = set()
+    tree = ast.parse(source, filename=rel)
 
     class _Scan(ast.NodeVisitor):
-        def __init__(self, rel: str) -> None:
-            self.rel = rel
+        def __init__(self) -> None:
             self.stack: list[str] = []
+            self.aliases: list[set[str]] = [aliases_of(tree, set())]
 
         def _visit_fn(self, node) -> None:
             self.stack.append(node.name)
+            self.aliases.append(aliases_of(node, self.aliases[-1]))
             self.generic_visit(node)
+            self.aliases.pop()
             self.stack.pop()
 
         visit_FunctionDef = visit_AsyncFunctionDef = _visit_fn
 
         def visit_Call(self, node: ast.Call) -> None:
             func = node.func
-            if isinstance(func, ast.Attribute) and func.attr == "release":
-                owner = func.value
-                name = owner.id if isinstance(owner, ast.Name) else (
-                    owner.attr if isinstance(owner, ast.Attribute) else None
-                )
-                if name in {"engine", "_engine"}:
-                    found.add((self.rel, self.stack[-1] if self.stack else "<module>"))
+            if isinstance(func, ast.Attribute) and func.attr == "release" and is_engine(func.value, self.aliases[-1]):
+                found.add((rel, self.stack[-1] if self.stack else "<module>"))
             self.generic_visit(node)
 
+    _Scan().visit(tree)
+    return found
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "await engine.release(lease, outcome=o)",
+        "await self._engine.release(lease, outcome=o)",
+        "await claim_engine.release(lease, outcome=o)",
+        "await deps.claim_engine.release(lease, outcome=o)",
+        "await app.state.ClaimEngine.release(lease, outcome=o)",
+        "eng = pool._engine\n    await eng.release(lease, outcome=o)",
+        "eng = deps.claim_engine\n    e2 = eng\n    await e2.release(lease, outcome=o)",
+        "(eng, other) = (pool._engine, None)\n    await eng.release(lease, outcome=o)",
+        "if (eng := pool._engine):\n        await eng.release(lease, outcome=o)",
+        "eng = pool._engine\n    async def inner():\n        await eng.release(lease, outcome=o)",
+    ],
+)
+def test_the_release_guard_sees_every_engine_spelling_and_local_alias(body):
+    """The guard below is only as good as its scanner: each of these is a direct engine release it must flag."""
+    source = f"async def handler(self, pool, deps, app, lease, o):\n    {body}\n"
+    assert _engine_release_calls(source, "x.py"), body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "lock.release()",
+        "await self._storage.pool.release(conn)",
+        "await lease.release()",
+        "await SLACK_CONNECTIONS.release(provider)",
+    ],
+)
+def test_the_release_guard_ignores_releases_that_are_not_on_an_engine(body):
+    source = f"async def handler(self, pool, lease, conn, provider):\n    {body}\n"
+    assert not _engine_release_calls(source, "x.py"), body
+
+
+def test_no_handler_releases_through_the_engine_directly():
+    """Every release of a RUNNING execution goes through ``WorkerPool._release_lease`` (which marks the
+    scope first): no ``.release(`` on a claim engine (see :func:`_engine_release_calls` for what counts, and
+    what it cannot see), anywhere under ``primer/`` except the engine implementations in ``primer/claim/``.
+    The only allowed callers are the helper itself and the give-back of a lease that never started (it has
+    no scope and is not in flight)."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "primer"
+    found: set[tuple[str, str]] = set()
     for path in sorted(root.rglob("*.py")):
         rel = path.relative_to(root.parent).as_posix()
         if rel.startswith("primer/claim/"):
             continue
-        _Scan(rel).visit(ast.parse(path.read_text(), filename=rel))
+        found |= _engine_release_calls(path.read_text(), rel)
     assert found == {
         ("primer/worker/pool.py", "_release_lease"),
         ("primer/worker/pool.py", "_release_unstarted"),
