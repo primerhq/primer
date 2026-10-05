@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from primer.model.common import Identifiable
 from primer.model.except_ import ProviderError
-from primer.storage._patch import PatchSpecError, document_matches, json_equal
+from primer.storage._patch import PatchSpecError, check_canonical_json, document_matches, json_equal
 from primer.storage.postgres import PostgresStorage, _table_ensured
 from tests.storage._patch_scenarios import StrictDoc
 from tests.storage.test_patch_if_postgres_fixup import TXN_BEGIN, TXN_END, _Provider, _ScriptedConn, _row
@@ -256,3 +256,24 @@ def test_the_python_guard_check_uses_the_same_equality_as_where():
     import primer.storage._patch as patch_module
 
     assert not hasattr(patch_module, "_typed_equal")
+
+
+@pytest.mark.parametrize("value", [
+    pytest.param(float("nan"), id="non-finite-float"),
+    pytest.param({"inner": [float("inf")]}, id="nested-non-finite-float"),
+    pytest.param(f"half a pair: {LONE_SURROGATE}", id="surrogate-in-a-string"),
+    pytest.param({LONE_SURROGATE: 1}, id="surrogate-in-a-key"),
+    pytest.param({(1, 2): "a"}, id="key-json-cannot-encode"),
+    pytest.param({"inner": object()}, id="value-json-cannot-encode"),
+])
+def test_the_canonical_refusal_names_every_cause_that_can_trigger_it(value):
+    """``check_canonical_json`` runs ``json.dumps(allow_nan=False)`` and then a UTF-8 encode, so it refuses a non-finite
+    float, a surrogate code point in a string or a key, and a value or key JSON cannot encode. Its one message names
+    all three, so whichever fired, the caller is not sent looking for the wrong one; it never echoes the value."""
+    with pytest.raises(PatchSpecError) as excinfo:
+        check_canonical_json("Doc", "field", value)
+    message = str(excinfo.value)
+    assert message.startswith("Doc.field is not representable as strict JSON"), message
+    for cause in ("a non-finite float", "a surrogate code point", "a value or key type JSON cannot encode"):
+        assert cause in message, f"the message does not name {cause!r}: {message}"
+    assert LONE_SURROGATE not in message and "ud800" not in repr(excinfo.value).lower()
