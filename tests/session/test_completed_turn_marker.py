@@ -202,3 +202,114 @@ async def test_the_marker_is_fenced_on_the_turns_own_turn_no(fake_storage_provid
         Done(stop_reason="stop", raw_reason="stop"),
     ]))
     assert (await _row(fake_storage_provider)).completed_turn_no is None
+
+
+# --- a row another path ended under the turn: the turn's own outcome did not land, so no marker ---
+
+
+async def _end_the_row(sessions, reason: str) -> None:
+    """What a force-delete (or the pool's preempt convergence, the reconciler) does to the row under the turn."""
+    row = await sessions.get(SID)
+    await sessions.update(row.model_copy(update={
+        "status": SessionStatus.ENDED, "ended_reason": reason, "cancel_requested": True,
+    }))
+
+
+@pytest.mark.asyncio
+async def test_the_cancelled_exits_early_branch_records_no_completed_turn(
+    fake_storage_provider, fake_workspace_io, fake_event_bus,
+):
+    """The row is already ENDED when the cancelled exit takes the lock: it is left as it is, and so is the marker."""
+    await _seed(fake_storage_provider, completed_turn_no=TURN - 1)
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+
+    async def the_delete_lands():
+        await asyncio.sleep(0.1)             # mid-turn: the watcher has subscribed (the bus does not buffer)
+        await _end_the_row(sessions, "force_deleted")
+        await fake_event_bus.publish(f"session:{SID}:cancel", {})
+
+    outcome = await asyncio.wait_for(_run(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        _StopAwareExecutor([TextDelta(text="partial", index=0), the_delete_lands, "BLOCK"]),
+    ), 5.0)
+    assert outcome.success is True
+    row = await _row(fake_storage_provider)
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "force_deleted"), "the early branch did not run"
+    assert row.completed_turn_no == TURN - 1
+
+
+@pytest.mark.asyncio
+async def test_a_completion_whose_write_another_path_beat_records_no_completed_turn(
+    fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch,
+):
+    """The row is ended after the stream and before the clean lock block: the terminal write is skipped
+    (``_leave_ended_row_alone``) and the row does not carry this turn's outcome."""
+    import primer.session.dispatch as dispatch
+
+    await _seed(fake_storage_provider, completed_turn_no=TURN - 1)
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+
+    async def read_status_while_the_delete_lands(_executor):
+        await _end_the_row(sessions, "force_deleted")
+        return None
+
+    monkeypatch.setattr(dispatch, "_read_agent_session_status", read_status_while_the_delete_lands)
+    outcome = await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, _Clean([
+        TextDelta(text="the answer", index=0), Done(stop_reason="stop", raw_reason="stop"),
+    ]))
+    assert outcome.success is True
+    row = await _row(fake_storage_provider)
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "force_deleted"), "the write was not skipped"
+    assert row.completed_turn_no == TURN - 1
+
+
+@pytest.mark.asyncio
+async def test_a_stop_whose_write_another_path_beat_records_no_completed_turn(
+    fake_storage_provider, fake_workspace_io, fake_event_bus,
+):
+    """The Stop decides WAITING inside the lock, and a writer the lock does not cover ends the row between that read
+    and the conditional write (flipped inside ``update_unless``): the write is refused, and no marker is written."""
+    await _seed(fake_storage_provider, completed_turn_no=TURN - 1)
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    real_update_unless = sessions.update_unless
+    state = {"flipped": False}
+
+    async def update_unless(entity, **kwargs):
+        if kwargs.get("field") == "status" and not state["flipped"]:
+            state["flipped"] = True
+            await _end_the_row(sessions, "force_deleted")
+        return await real_update_unless(entity, **kwargs)
+
+    sessions.update_unless = update_unless  # type: ignore[method-assign]
+
+    async def stop():
+        await asyncio.sleep(0.1)
+        row = await sessions.get(SID)
+        await sessions.update(row.model_copy(update={"interrupt_requested": True}))
+        await fake_event_bus.publish(f"session:{SID}:cancel", {})
+
+    outcome = await asyncio.wait_for(_run(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        _StopAwareExecutor([TextDelta(text="partial", index=0), stop, "BLOCK"]),
+    ), 5.0)
+    assert state["flipped"], "the race never happened: the Stop did not reach the terminal write"
+    assert outcome.success is True
+    row = await _row(fake_storage_provider)
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "force_deleted"), "the Stop overwrote the row"
+    assert row.completed_turn_no == TURN - 1
+
+
+@pytest.mark.asyncio
+async def test_an_identical_repeat_still_records_the_turn_as_completed(
+    fake_storage_provider, fake_workspace_io, fake_event_bus,
+):
+    """A row that already has the outcome the turn asks for (WAITING, completing WAITING) is not written (the write
+    does not land), yet the turn's own outcome stands: it is recorded as completed."""
+    await _seed(fake_storage_provider, status=SessionStatus.WAITING)
+    outcome = await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, _Clean([
+        TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop"),
+    ]))
+    assert outcome.success is True
+    row = await _row(fake_storage_provider)
+    assert row.status == SessionStatus.WAITING
+    assert row.completed_turn_no == TURN
