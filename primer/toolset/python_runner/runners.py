@@ -26,6 +26,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any
 
+from primer.common.process_group import NEW_SESSION, kill_process_group
 from primer.toolset.python_runner._shim import SHIM_SOURCE
 from primer.toolset.python_runner.protocol import ShimResponse, parse_response
 
@@ -112,12 +113,15 @@ class LocalHardenedRunner(Runner):
     async def run(
         self, request: dict[str, Any], *, timeout_seconds: float
     ) -> ShimResponse:
+        # Its own session, so a timeout or a cancel kills the shim's whole process group (primer.common.process_group):
+        # anything the shim started goes with it. A process the tool deliberately detached (setsid) does not.
         proc = await asyncio.create_subprocess_exec(
             *self._argv(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env={**_BASE_ENV, **self._env},
+            **NEW_SESSION,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -127,9 +131,13 @@ class LocalHardenedRunner(Runner):
         except TimeoutError:
             # The wall clock is the real guarantee; RLIMIT_CPU only catches
             # CPU-bound work, so a tool sleeping forever needs this kill.
-            proc.kill()
-            await proc.wait()
+            await kill_process_group(proc)
             return _timeout_error()
+        except asyncio.CancelledError:
+            # A cancelled run (the hard Cancel, a shutdown, a Stop that cancels the call) must not leave the shim
+            # running: the wait_for above was the only thing enforcing the wall clock, and it is gone.
+            await kill_process_group(proc)
+            raise
 
         if proc.returncode != 0 and not stdout:
             return ShimResponse(
