@@ -325,7 +325,7 @@ excluded. It counts a turn from the `done` whose `stop_reason` is not `tool_use`
 loop writes a `done` after every call), per file, node and delegated run: a subagent's
 calls are recorded inline in the parent's log (`payload.delegated` and
 `delegate_tool_call_id`), so a delegated run is a turn of its own and its final `done`
-does not end the parent's. It measures the 7-day requirement over the calls the verdict
+does not end the parent's (the recorder stamps no run id, only the delegating call's raw id, so a delegation nested in a delegation with the same raw id at both levels merges the two runs: ticketed). It measures the 7-day requirement over the calls the verdict
 rests on, applies rules 1 and 2 to the material groups only, and uses the group's median
 ratio as kappa in rule 3, which leans towards Phase 1b compared with the per-session EMA
 Phase 1a would use.
