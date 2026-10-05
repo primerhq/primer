@@ -13,6 +13,7 @@ Nothing here mocks the helper under test. ``run_invoke_graph`` parks the child a
 
 from __future__ import annotations
 
+import itertools
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -37,6 +38,9 @@ from tests.worker.test_graph_toolcall_value_yield_context import _PythonRegistry
 _TCID = "tc-child-vy"
 _SESSION_ID = "sess-agent"
 _REPLY = {"response": "blue"}
+# A closure hook is registered under a fresh name per call: ``register_resume_hook`` refuses a second, different hook
+# for one name, so a fixed name would fail the test on a rerun in the same process.
+_hook_names = itertools.count()
 
 
 class _Pool(SimpleNamespace):
@@ -95,14 +99,15 @@ async def test_the_hook_in_an_invoked_child_graph_gets_the_reply_and_the_context
         seen.append((payload, ctx))
         return ToolCallResult(output=json.dumps(payload), is_error=False)
 
-    register_resume_hook("test_child_vy_ctx", hook)
+    name = f"test_child_vy_ctx_{next(_hook_names)}"
+    register_resume_hook(name, hook)
 
-    outcome = await _park_and_resume("test_child_vy_ctx", {"q": "?"}, _Registry(), _REPLY)
+    outcome = await _park_and_resume(name, {"q": "?"}, _Registry(), _REPLY)
 
     assert isinstance(outcome, Deliver)
     ((payload, ctx),) = seen
     assert payload == _REPLY, "the operator's answer never reached the hook"
-    assert (ctx.tool_name, ctx.tool_call_id) == ("test_child_vy_ctx", _TCID)
+    assert (ctx.tool_name, ctx.tool_call_id) == (name, _TCID)
     assert ctx.session_id == _SESSION_ID, "the hook was not told which session it is answering"
     assert ctx.resolve_provider is not None, "a python toolset's hook could not reach its provider"
     assert await ctx.resolve_provider("ts-any") == "ts-any", "the resolver does not reach the registry"

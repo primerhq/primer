@@ -1,3 +1,4 @@
+import itertools
 import json
 import pytest
 from primer.worker.frames import apply_leaf, AgentFrame, AgentResumeContext, Reparked
@@ -68,6 +69,11 @@ def _real_services(registry):
     return build_invocation_services(pool, SimpleNamespace(id="ses"), None, None, SimpleNamespace())
 
 
+# A closure hook is registered under a fresh name per call: ``register_resume_hook`` refuses a second, different hook
+# for one name, so a fixed name would fail the test on a rerun in the same process.
+_hook_names = itertools.count()
+
+
 @pytest.mark.asyncio
 async def test_apply_leaf_hook_in_a_nested_subagent_gets_the_session_and_the_registry():
     """A yielding tool inside a NESTED SUBAGENT resumes through ``apply_leaf``; its hook gets a real ResumeContext."""
@@ -77,15 +83,16 @@ async def test_apply_leaf_hook_in_a_nested_subagent_gets_the_session_and_the_reg
         seen.append((payload, ctx))
         return ToolCallResult(output='{"ok": true}', is_error=False)
 
-    register_resume_hook("test_apply_leaf_ctx", hook)
-    leaf = Yielded(tool_name="test_apply_leaf_ctx", event_key="test_apply_leaf_ctx:ses:c1", resume_metadata={})
+    name = f"test_apply_leaf_ctx_{next(_hook_names)}"
+    register_resume_hook(name, hook)
+    leaf = Yielded(tool_name=name, event_key=f"{name}:ses:c1", resume_metadata={})
 
     out = await apply_leaf(_agent_frame(session_id="ctx-ses"), leaf, {"response": "blue"}, _real_services(_Registry()))
 
     assert out.error is False and out.id == "c1"
     ((payload, ctx),) = seen
     assert payload == {"response": "blue"}
-    assert (ctx.tool_name, ctx.tool_call_id) == ("test_apply_leaf_ctx", "c1")
+    assert (ctx.tool_name, ctx.tool_call_id) == (name, "c1")
     # The bundle's session (the one being resumed), not the frame context's: the two differ here.
     assert ctx.session_id == "ses", "the hook was not told which session it is answering"
     assert ctx.resolve_provider is not None, "a python toolset's hook could not reach its provider"
