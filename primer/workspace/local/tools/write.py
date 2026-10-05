@@ -48,6 +48,7 @@ class Write(WorkspaceTool):
     """
 
     id: ClassVar[str] = "write"
+    interruptible: ClassVar[bool] = False   # the write runs in a thread under the scope lock: a Stop waits, it never cancels
     description: ClassVar[str] = (
         "Create or replace a file. Refuses to overwrite a file you "
         "haven't read this session unless force=True is set.\n\n"

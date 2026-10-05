@@ -1404,6 +1404,8 @@ def _document_extras(
         make_tool(
             id="put_document",
             toolset_id=SYSTEM_TOOLSET_ID,
+            # DocumentService.upsert: a transaction, then the indexer on another store. A Stop waits for the call.
+            interruptible=False,
             purpose="Upsert a document body at a path within a collection.",
             when=(
                 "Use when you have raw text to store at a path; the body is "

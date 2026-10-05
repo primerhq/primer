@@ -204,6 +204,11 @@ class ToolExecutionManager:
         # agent may not call; the agent loop reads it to pick the self-resume
         # branch.
         self._notifying: set[str] = set()
+        # Scoped ids of every visible tool a Stop must NOT cancel (``Tool.interruptible``
+        # False for a toolset tool, ``WorkspaceTool.interruptible`` False for a workspace
+        # tool). Filled beside the catalogue in ``list_tools``; the loop asks
+        # :meth:`is_interruptible` only once a Stop has fired.
+        self._uninterruptible: set[str] = set()
         # Scoped workspace-tool id (``workspace__bare_name``) -> bare_name.
         # Separate map so dispatch can look up the WorkspaceTool from
         # ``_workspace_tools`` (still keyed by bare name).
@@ -407,6 +412,8 @@ class ToolExecutionManager:
                         continue
                     if t.tool_class == "notifying":
                         self._notifying.add(scoped_id)
+                    if not t.interruptible:
+                        self._uninterruptible.add(scoped_id)
                     scoped_tool = t.model_copy(update={"id": scoped_id})
                     catalogue.append(scoped_tool)
             # Workspace tools (always under the WORKSPACE_TOOLSET_ID scope).
@@ -428,6 +435,9 @@ class ToolExecutionManager:
                     _workspace_tool_descriptor(ws_tool, scoped_id=scoped_id)
                 )
                 self._workspace_scoped[scoped_id] = ws_tool.id
+                # getattr: the ABC always has it, but tests (and embedders) hand in duck-typed tools.
+                if not getattr(ws_tool, "interruptible", True):
+                    self._uninterruptible.add(scoped_id)
             self._catalogue = catalogue
             return list(self._catalogue)
 
@@ -441,6 +451,16 @@ class ToolExecutionManager:
         usual not-registered rejection instead of a synthetic success.
         """
         return tool_name in self._notifying
+
+    def is_interruptible(self, tool_name: str) -> bool:
+        """False iff the SCOPED ``tool_name`` is a tool a Stop must not cancel.
+
+        The loop asks this only after a Stop has fired on a running call: an interruptible call is cancelled, one that
+        is not (a file write, a multi-step mutator) is waited for and its real result recorded. The index is built by
+        :meth:`list_tools`, which runs before the model can name a tool, so every tool a call can reach is in it. A name
+        it does not know is interruptible (cancelling is the default; ``execute`` refuses an unknown tool anyway).
+        """
+        return tool_name not in self._uninterruptible
 
     async def execute(
         self,
@@ -918,6 +938,7 @@ def _workspace_tool_descriptor(
         toolset_id=WORKSPACE_TOOLSET_ID,
         args_schema=ws_tool.parameters().model_json_schema(),
         examples=ws_tool.examples,
+        interruptible=getattr(ws_tool, "interruptible", True),
     )
 
 

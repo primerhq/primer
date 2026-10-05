@@ -122,15 +122,16 @@ def test_a_stop_during_the_model_wait_just_says_stopping() -> None:
         assert _js(ctx, f'SH_stoppingLine({{verb: "{verb}"}})') == "stopping"
 
 
-def test_a_stop_during_a_tool_says_it_waits_for_the_tool_by_name() -> None:
-    """Until a running tool can be cancelled, a Stop lets it finish: say so instead of implying it is instant."""
+def test_a_stop_during_a_tool_says_the_tool_is_being_ended_by_name() -> None:
+    """A Stop cancels a running tool (a file write is waited for instead, a few seconds at most); the strip cannot tell
+    which, so it says the thing that is true of both and does not imply the tool must run to its end."""
     ctx = _ctx()
-    assert _js(ctx, 'SH_stoppingLine({verb: "grep_src", object: "src/"})') == "stopping: waiting for grep_src to finish"
+    assert _js(ctx, 'SH_stoppingLine({verb: "grep_src", object: "src/"})') == "stopping: ending grep_src"
 
 
 def test_a_stop_while_a_tool_runs_but_its_name_is_unknown_says_the_running_tool() -> None:
     ctx = _ctx()
-    assert _js(ctx, 'SH_stoppingLine({verb: "executing"})') == "stopping: waiting for the running tool to finish"
+    assert _js(ctx, 'SH_stoppingLine({verb: "executing"})') == "stopping: ending the running tool"
 
 
 def test_the_line_is_plain_text_with_no_em_dash_and_no_status_prefix() -> None:

@@ -707,6 +707,19 @@ class Tool(Describeable):
             "excluded from serialization."
         ),
     )
+    interruptible: bool = Field(
+        default=True,
+        exclude=True,
+        description=(
+            "False for a tool whose call a Stop must NOT cancel: one that performs two or more durable "
+            "writes with no transaction, or writes inside a lock that outlives the await (a file write "
+            "runs in a thread under the scope lock; cancelling the await releases the lock while the "
+            "thread still writes). The loop waits for such a call (a few seconds) and records its real "
+            "result, and abandons it only if the grace expires; every other call is cancelled. Declared "
+            "explicitly at the make_tool call site; consumed by ToolExecutionManager.is_interruptible. "
+            "In-memory metadata only; excluded from serialization."
+        ),
+    )
     required_role: str | None = Field(
         default=None,
         exclude=True,
@@ -720,7 +733,7 @@ class Tool(Describeable):
 
 
 def tool_catalogue_flags(tool: Any) -> dict[str, Any]:
-    """The four ``exclude=True`` picker flags on a :class:`Tool`, by wire name.
+    """The five ``exclude=True`` picker flags on a :class:`Tool`, by wire name.
 
     Every "list tools for a picker" route re-adds these on top of the
     default ``model_dump()`` (which omits them) so the UI can render
@@ -731,7 +744,7 @@ def tool_catalogue_flags(tool: Any) -> dict[str, Any]:
     A module-level function reading via ``getattr``, not a ``Tool``
     method calling ``self.x`` directly: several routers' tests pass a
     bare ``unittest.mock.MagicMock`` standing in for a ``Tool`` with
-    only the four flag attributes explicitly configured. A bound method
+    only the flag attributes explicitly configured. A bound method
     call (``tool.catalogue_flags()``) would hit the mock's own
     auto-attribute machinery instead of this implementation; ``getattr``
     reads the mock's configured attributes exactly like the plain
@@ -743,6 +756,7 @@ def tool_catalogue_flags(tool: Any) -> dict[str, Any]:
         "requires_workspace": bool(getattr(tool, "requires_workspace", False)),
         "tool_class": getattr(tool, "tool_class", "standard"),
         "required_role": getattr(tool, "required_role", None),
+        "interruptible": bool(getattr(tool, "interruptible", True)),
     }
 
 

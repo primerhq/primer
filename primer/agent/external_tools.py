@@ -53,6 +53,11 @@ def external_event_key(owner_id: str, tool_call_id: str) -> str:
     return f"external_tool:{owner_id}:{tool_call_id}"
 
 
+def is_external_tool_name(scoped_name: str) -> bool:
+    """True for the SCOPED id of an invoker-supplied tool (``external__<name>``, the manager's scope separator)."""
+    return scoped_name.startswith(f"{EXTERNAL_TOOLSET_ID}__")
+
+
 class ExternalToolsetProvider(ToolsetProvider):
     """In-memory ToolsetProvider over one invocation's external tool defs.
 

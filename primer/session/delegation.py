@@ -60,15 +60,29 @@ class DelegationRecorder:
         self._session_id = session_id
         self._turn_no = turn_no
         self._state = _CoalesceState()
+        self._abandoned: set[str] = set()
+
+    def abandon(self, delegate_tool_call_id: str) -> None:
+        """Stop recording the events of one delegated call (stop slice B1).
+
+        Called when a Stop gives up on a subagent call that did not unwind in time, BEFORE the call's synthetic
+        result is recorded: anything the still-running subagent emits afterwards is dropped, so the parent log
+        never shows the subagent continuing past the paired Stop result. Other calls keep recording.
+        """
+        self._abandoned.add(delegate_tool_call_id)
 
     async def on_event(
         self, ev: Any, *, delegate_tool_call_id: str | None,
     ) -> None:
+        if delegate_tool_call_id in self._abandoned:
+            return
         result = translate_stream_event(ev, self._state, turn_no=self._turn_no)
         if result is None:
             return  # coalesced or not persistable; most events land here
         records = result if isinstance(result, list) else [result]
         for rec in records:
+            if delegate_tool_call_id in self._abandoned:
+                return  # abandoned while an earlier record of this event was being written
             rec.payload["delegated"] = True
             rec.payload["delegate_tool_call_id"] = delegate_tool_call_id
             seq = await self._writer.append(rec)

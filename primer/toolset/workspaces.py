@@ -434,6 +434,7 @@ def _tool(
     yields: bool = False,
     requires_workspace: bool = False,
     required_role: str | None = None,
+    interruptible: bool = True,
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
     return name, (
         make_tool(
@@ -446,6 +447,7 @@ def _tool(
             yields=yields,
             requires_workspace=requires_workspace,
             required_role=required_role,
+            interruptible=interruptible,
         ),
         handler,
     )
@@ -1761,6 +1763,9 @@ def build_workspaces_toolset(
             ),
         ],
         required_role="user",
+        # LocalWorkspace deletes in a thread under the scope lock: cancelling the await would release the lock while the
+        # thread still deletes (the hazard of the write and edit tools). A Stop waits for the call.
+        interruptible=False,
     )
     registry[name] = entry
 
@@ -1827,6 +1832,7 @@ def build_workspaces_toolset(
             ),
         ],
         required_role="user",
+        interruptible=False,   # a thread write under the scope lock, as for delete_workspace_file above
     )
     registry[name] = entry
 

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import primer.observability.metrics as _metrics
 
 from primer.agent.interrupt import Interrupted, interruptible
+from primer.agent.stoppable_call import run_stoppable
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.context_overflow import is_context_overflow_error
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
@@ -71,9 +72,10 @@ logger = logging.getLogger(__name__)
 _STOPPED_REFUSAL = "not run: stopped by user"
 # ... and when the round it asked for is the one that hit ``max_tool_turns``.
 _TOOL_CAP_REFUSAL = "not executed: tool-turn cap reached"
-# ... and when a Stop landed while the call that asked to park was running: it started and never reported a result, so
-# it cannot say "not run". (The calls that finished before it keep their real results.)
-_PARK_STOPPED_REFUSAL = "interrupted: stopped by user (the call may have run, and its result was not recorded)"
+# ... and when a Stop landed while the call was RUNNING and it has no result to report: it asked to park, or it was
+# cancelled (or abandoned) by the Stop (slice B1). It started and never reported a result, so it cannot say "not
+# run". One wording for all three. (The calls that finished before it keep their real results.)
+_PARK_STOPPED_REFUSAL ="interrupted: stopped by user (the call may have run, and its result was not recorded)"
 
 
 def _answer_undispatched(
@@ -278,6 +280,7 @@ async def run_agent_turn(
     interrupted_out: "list[bool] | None" = None,
     capped_out: "list[bool] | None" = None,
     stopped_park_out: "list[YieldToWorker | ToolWaitPark] | None" = None,
+    stopped_calls_out: "list[ToolCallPart] | None" = None,
     intercept_context_overflow: bool = False,
 ) -> AsyncIterator[StreamEvent]:
     """Run one full agent turn with tool dispatch; stream events live.
@@ -403,9 +406,15 @@ async def run_agent_turn(
         produced its first token is stoppable too (see
         :func:`primer.agent.interrupt.interruptible`). When it fires the turn
         ends CLEANLY (no exception), after the provider stream is closed.
-        A call that is already RUNNING is not interruptible here: a Stop that
-        lands while a tool runs lets that call finish and its result be yielded
-        (the log stays paired), and the turn ends before the next model call.
+        A call that is already RUNNING is stopped too (slice B1): it runs as its
+        own task (:func:`primer.agent.stoppable_call.run_stoppable`) and an
+        interruptible call is cancelled (its cleanup, an exec's process-group
+        kill, runs before the answer), while one the tool declares not
+        interruptible (a file write) is waited for, a few seconds, and keeps its
+        real result. A call that finishes first, or in the same wake-up as the
+        Stop, always keeps its real result; one with none to give is answered
+        ``interrupted: stopped by user ...`` (yielded and appended, so the log
+        stays paired), and the turn ends before the next model call.
         The calls of the same batch that have not STARTED do not run: the batch
         is run one call after another, and once the Stop is set each remaining
         call is answered with a synthetic ``not run: stopped by user`` error
@@ -441,6 +450,13 @@ async def run_agent_turn(
         ended a park (see ``interrupt``). The dispatch needs it: what the park's
         tool had already created (an external tool's pending call row) is cleaned
         up by the cancelled exit, which only the dispatch can reach.
+    stopped_calls_out
+        Optional caller-provided list; each tool call the Stop CANCELLED or
+        ABANDONED (it had no result to give, so it was answered ``interrupted``)
+        is appended. Like ``stopped_park_out`` the dispatch needs it: a call
+        cancelled after its tool wrote something before it could yield (an
+        external tool's pending call row) never reaches the yield, so the
+        park-keyed cleanup alone would miss it.
     capped_out
         Optional caller-provided list; ``True`` is appended when the turn ended
         because the model asked for another tool round at ``agent.max_tool_turns``
@@ -681,7 +697,7 @@ async def run_agent_turn(
             # model already asked for these calls, but the user has since said stop: running a
             # destructive one now would make Stop a lie. None of the round runs; each call is answered so
             # the history stays valid for the next request. A call that has already STARTED is another
-            # matter (slice B): this only covers a Stop that lands before the batch begins.
+            # matter (see ``_dispatch_tool_calls``): this only covers a Stop that lands before the batch begins.
             for answer_event in _answer_undispatched(tool_calls, _STOPPED_REFUSAL, messages_out):
                 yield answer_event
             if interrupted_out is not None:
@@ -724,10 +740,12 @@ async def run_agent_turn(
                 resolve_scoped_call=resolve_scoped_call,
                 await_dispatch_barrier=await_dispatch_barrier,
                 interrupt=interrupt,
+                stopped_calls_out=stopped_calls_out,
             )
         except (YieldToWorker, ToolWaitPark) as park:
-            # A Stop that landed while the call that asks to wait was running (it cannot be cancelled here: slice
-            # B) would be dropped by parking: the console then offers no Stop, and the timer later runs the work
+            # A Stop that landed while the call that asks to wait was running (it can raise its park in the same
+            # wake-up as the Stop, before a cancel reaches it) would be dropped by parking: the console then
+            # offers no Stop, and the timer later runs the work
             # the user tried to stop. A park that waits on no human decision ends the turn as a Stop instead: the
             # round is answered, so the history stays valid, and the caller sees the interruption exactly as for
             # a Stop before the batch. A park that asks a person still parks (what they answer later wins).
@@ -765,6 +783,18 @@ async def run_agent_turn(
                     yield synth
 
         prompt = prompt + [assistant_msg, *tool_result_msgs]
+
+
+def _abandon_hook(call: ToolCallPart) -> "Callable[[], None] | None":
+    """What to do just before a call is abandoned: tell the turn's delegation recorder to drop whatever a subagent call
+    still emits, so the parent log never shows it continuing after the Stop's answer. None when no recorder is bound
+    (or it is not a :class:`~primer.session.delegation.DelegationRecorder`)."""
+    from primer.session.delegation import current_delegation_sink
+
+    abandon = getattr(current_delegation_sink(), "abandon", None)
+    if abandon is None:
+        return None
+    return lambda: abandon(call.id)
 
 
 def _partition_notifying(
@@ -808,6 +838,7 @@ async def _dispatch_tool_calls(
     resolve_scoped_call: "Callable[[str], tuple[str, int]] | None" = None,
     await_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None,
     interrupt: "asyncio.Event | None" = None,
+    stopped_calls_out: "list[ToolCallPart] | None" = None,
 ) -> list[Message]:
     """Dispatch tool calls; return tool-role messages to feed back to the LLM.
 
@@ -817,11 +848,14 @@ async def _dispatch_tool_calls(
     defensive catch here is belt-and-braces for adapter bugs.
 
     In the in-process loop the calls run one after another, and ``interrupt`` (the Stop
-    signal) is checked before each one: a call that is already running cannot be
-    cancelled here and finishes with its real result, but once the Stop is set every call
-    that has NOT started is answered ``not run: stopped by user`` instead of running, so a
-    Stop pressed during call 1 does not see calls 2..N execute. The batch is still
-    answered in full, in order, so the history stays paired. The claims path
+    signal) is checked before each one: once the Stop is set every call that has NOT
+    started is answered ``not run: stopped by user`` instead of running, so a Stop pressed
+    during call 1 does not see calls 2..N execute. The batch is still answered in full, in
+    order, so the history stays paired. A call that is RUNNING when the Stop lands is
+    handled by :func:`primer.agent.stoppable_call.run_stoppable` (slice B1): it is
+    cancelled, or waited for if its tool is not interruptible, or it keeps its real result
+    if it finishes first; a call with no result to give is answered ``interrupted: stopped
+    by user ...``. The claims path
     (:func:`_dispatch_as_claims`) parks the batch and is not covered by this per-call check. A park raised by the
     call that was RUNNING when the Stop landed leaves through the exception: ``run_agent_turn`` ends it as a Stop
     (see its ``interrupt`` parameter).
@@ -872,7 +906,25 @@ async def _dispatch_tool_calls(
             )
             continue
         try:
-            rp = await tool_manager.execute(call, principal=principal)
+            if interrupt is None:
+                rp = await tool_manager.execute(call, principal=principal)
+            else:
+                # Its own task, raced against the Stop (see primer.agent.stoppable_call): an interruptible call is
+                # cancelled, one that is not is waited for, and a call that finishes keeps its real result. None
+                # means the Stop fired and the call has none to give: the same "interrupted" answer a Stop at a
+                # park gets.
+                result = await run_stoppable(
+                    lambda: tool_manager.execute(call, principal=principal),
+                    interrupt=interrupt,
+                    interruptible=lambda: tool_manager.is_interruptible(call.name),
+                    on_abandon=_abandon_hook(call),
+                    name=call.name,
+                )
+                if result is None:
+                    if stopped_calls_out is not None:
+                        stopped_calls_out.append(call)
+                    result = ToolResultPart(id=call.id, output=_PARK_STOPPED_REFUSAL, error=True)
+                rp = result
         except AuthRequiredError:
             raise
         except YieldToWorker as park:
