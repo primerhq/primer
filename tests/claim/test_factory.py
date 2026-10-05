@@ -13,6 +13,8 @@ from primer.claim.in_memory import InMemoryClaimEngine
 from primer.claim.postgres import PostgresClaimEngine
 from primer.int.claim import ClaimKind, ReleaseOutcome
 
+from tests.conftest import _InMemoryStorage
+
 
 # ---------------------------------------------------------------------------
 # Minimal stubs
@@ -126,18 +128,23 @@ def test_factory_postgres_engine_has_all_four_adapters():
 # ---------------------------------------------------------------------------
 
 
-class _FakeSessionStorage:
+class _FakeSessionStorage(_InMemoryStorage):
+    """One session row; ``updated`` lists every row the adapter wrote (its release is one ``patch_if``)."""
+
     def __init__(self, session) -> None:
-        self._session = session
+        super().__init__(type(session))
+        self._data[session.id] = session
         self.updated = []
 
-    async def get(self, id: str, *, conn=None):
-        return self._session if self._session.id == id else None
+    @property
+    def _session(self):
+        return next(iter(self._data.values()))
 
-    async def update(self, entity, *, conn=None):
-        self.updated.append(entity)
-        self._session = entity
-        return entity
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        written = await super().patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+        if written is not None:
+            self.updated.append(written)
+        return written
 
 
 class _StorageProviderWithSessions(_FakeStorageProvider):
