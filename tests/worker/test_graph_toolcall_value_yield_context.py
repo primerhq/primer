@@ -20,6 +20,7 @@ from primer.graph.executor import GraphExecutor
 from primer.model.chat import ToolCallResult
 from primer.model.graph import GraphNodeMessage, GraphThread
 from primer.model.yield_ import Yielded, YieldToWorker
+from primer.toolset.python_runner.provider import PythonToolsetProvider, python_tool_resume, scoped_tool_name
 from primer.worker import graph_resume_coordinator
 from primer.worker.graph_resume import resume_graph_from_checkpoint
 from primer.worker.yield_resume_registry import ResumeContext, register_resume_hook
@@ -71,13 +72,15 @@ def _recording_hook(tool_name: str) -> list[ResumeContext]:
     return seen
 
 
-async def _parked(tool_name: str):
+async def _parked(tool_name: str, resume_metadata: dict[str, Any] | None = None):
     """Park the ``ask`` tool_call node on a value-yield under ``tool_name``; return what a resume needs."""
     graph = _build_graph()
 
     async def first_dispatcher(node, arguments):
         raise YieldToWorker(
-            Yielded(tool_name=tool_name, event_key=f"{tool_name}:s:{_TCID}", resume_metadata={"q": "?"}),
+            Yielded(
+                tool_name=tool_name, event_key=f"{tool_name}:s:{_TCID}", resume_metadata=resume_metadata or {"q": "?"},
+            ),
             tool_call_id=_TCID,
         )
 
@@ -201,3 +204,35 @@ async def test_the_engine_resume_gives_the_hook_the_session_and_the_registry():
     (ctx,) = seen
     assert ctx.session_id == "gs-engine"
     assert ctx.resolve_provider == registry.get_toolset
+
+
+class _PythonProvider(PythonToolsetProvider):
+    def __init__(self) -> None:  # no runner or source: only the resume half is exercised
+        pass
+
+    async def resume_tool(self, *, tool_id: str, payload: Any, resume_metadata: dict[str, Any]) -> ToolCallResult:
+        return ToolCallResult(output=json.dumps({"tool_id": tool_id, "answer": payload["response"]}), is_error=False)
+
+
+class _PythonRegistry:
+    async def get_toolset(self, toolset_id: str):
+        return _PythonProvider() if toolset_id == "ts-vy" else None
+
+
+@pytest.mark.asyncio
+async def test_a_python_toolset_yield_on_a_graph_tool_call_node_resumes():
+    """The real ``python_tool_resume`` hook is async and reaches its provider through ``ctx.resolve_provider``."""
+    name = scoped_tool_name("ts-vy", "ask")
+    register_resume_hook(name, python_tool_resume)
+    checkpoint, resumer, _raised = await _parked(name, {"toolset_id": "ts-vy", "tool_id": "ask"})
+    pool, session = _pool_and_session(_PythonRegistry())
+
+    _decision, repark, _seq = await resume_graph_from_checkpoint(
+        executor=resumer, checkpoint=checkpoint, payload={"response": "blue"}, resumed_tcid=_TCID,
+        pool=pool, session=session,  # type: ignore[arg-type]
+    )
+
+    assert repark is None
+    node = resumer._context.nodes["ask"]
+    assert node.error is None, f"the python tool's resume failed the node: {node.error}"
+    assert json.loads(node.text) == {"tool_id": "ask", "answer": "blue"}
