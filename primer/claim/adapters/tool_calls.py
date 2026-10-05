@@ -33,7 +33,7 @@ from primer.int.claim import ClaimAdapter, ClaimKind, PostReleaseWake, ReleaseOu
 from primer.int.storage import Storage
 from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
-from primer.storage import PatchSpecError
+from primer.storage import PatchValueError
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,8 @@ _ENTITY_UPDATE_KEYS = {
 
 
 class _InvalidEntityUpdate(ValueError):
-    """A handler's ``ReleaseOutcome.entity_update`` is unusable: a key its branch does not allow, or a value the model refuses.
+    """A handler's release is unusable: an ``entity_update`` key its branch does not allow, a value the model refuses, or
+    a value the release supplies that no backend can store (a ``PatchValueError``).
 
     ``reason`` is what the MODEL is shown (no class names, no values); ``detail`` is for the operator's log only.
     """
@@ -310,10 +311,12 @@ class ToolCallClaimAdapter(ClaimAdapter):
         handler supplied values, the handler's values are the cause and the release is rejected as invalid; with none
         supplied the cause is a corrupt stored row, which is not the handler's doing and propagates as before.
 
-        A ``PatchSpecError`` is about the values this write supplies, never the stored row, and every value here that
-        is not a constant of this adapter came from the handler's ``ReleaseOutcome`` (``entity_update``, ``last_error``,
-        the park): a value no backend can store (a lone surrogate, a non-finite number) is refused before any I/O, so
-        the release is rejected as invalid whether or not ``handler_values`` is empty.
+        A ``PatchValueError`` is about a value this write supplies, never the stored row, and every value here that is
+        not a constant of this adapter came from the handler's ``ReleaseOutcome`` (``entity_update``, ``last_error``,
+        ``claim_token``, the park): a value no backend can store (a lone surrogate, a non-finite number) is refused
+        before any I/O, so the release is rejected as invalid whether or not ``handler_values`` is empty. Any OTHER
+        ``PatchSpecError`` (an unknown field, a malformed ``where``) is a spec this adapter built wrongly: a bug, which
+        propagates instead of being blamed on the handler.
         """
         try:
             updated = await self._storage.patch_if(
@@ -322,7 +325,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
         except NotFoundError:
             logger.warning("tool-call release of %s: the row is gone, nothing written", entity_id)
             return None
-        except PatchSpecError as exc:
+        except PatchValueError as exc:
             raise _InvalidEntityUpdate(
                 "it gave a value that cannot be stored as JSON (a non-finite number, or text that is not valid Unicode)",
                 detail=str(exc)[:300],

@@ -277,3 +277,29 @@ def test_the_canonical_refusal_names_every_cause_that_can_trigger_it(value):
     for cause in ("a non-finite float", "a surrogate code point", "a value or key type JSON cannot encode"):
         assert cause in message, f"the message does not name {cause!r}: {message}"
     assert LONE_SURROGATE not in message and "ud800" not in repr(excinfo.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_value_is_a_patch_value_error_and_a_malformed_spec_is_not_on_both_backends(
+    sqlite_storage, float_storage,
+):
+    """``PatchValueError`` (a ``PatchSpecError``, so a ``ValueError``) marks the refusals about a supplied VALUE: a string
+    or key that cannot be encoded, a value strict JSON cannot hold, a canonical value that is one of those. A spec of the
+    wrong SHAPE stays a plain ``PatchSpecError``, so a caller writing values it was handed can tell the two apart."""
+    from primer.storage import PatchValueError
+
+    assert issubclass(PatchValueError, PatchSpecError) and issubclass(PatchValueError, ValueError)
+    value_cases = [(sqlite_storage, StrictDoc, p.values[0]) for p in SURROGATE_SPECS] + [
+        (sqlite_storage, StrictDoc, dict(patch={"count": float("nan")}, where={"status": ["created"]})),
+        (sqlite_storage, StrictDoc, dict(patch={"sub": {"a": object()}}, where={"status": ["created"]})),
+        (float_storage, FloatDoc, dict(patch={"ratio": "nan"}, where={"status": ["created"]})),       # canonical value
+    ]
+    for storage, model, kwargs in value_cases:
+        for backend, conn in ((storage, None), (_postgres_storage(model), _ScriptedConn(_row(ratio="nan")))):
+            with pytest.raises(PatchValueError):
+                await backend.patch_if("a", **kwargs, **({} if conn is None else {"conn": conn}))
+    for kwargs in MALFORMED:
+        for backend, conn in ((sqlite_storage, None), (_postgres_storage(), _ScriptedConn(_row()))):
+            with pytest.raises(PatchSpecError) as excinfo:
+                await backend.patch_if("a", **kwargs, **({} if conn is None else {"conn": conn}))
+            assert not isinstance(excinfo.value, PatchValueError), kwargs
