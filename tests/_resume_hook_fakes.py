@@ -11,21 +11,31 @@ test that needs several of them imports one helper instead of other test modules
   ``RecordingWorkspaceIO``, ``FakeSessionRow``, ``FakeSessionStorage``, ``FakeStorage``;
 * the ``resume_graph_engine`` pool fakes (from
   ``tests/worker/test_resume_graph_tool_wait.py``): ``EngineFakePool``,
-  ``NullWorkspaceIO``, ``EngineStorageProvider``, ``waiting_graph_session``.
+  ``NullWorkspaceIO``, ``EngineStorageProvider``, ``waiting_graph_session``;
+* the provider registries a resume hook reaches through ``ResumeContext.resolve_provider`` (from
+  ``tests/worker/test_graph_toolcall_value_yield_context.py``): ``IdentityToolsetRegistry``,
+  ``PythonToolsetRegistry`` (and its ``ResumeOnlyPythonProvider``);
+* the pool slice the continuation walk's invocation services read (from
+  ``tests/worker/test_child_graph_value_yield_resume.py``): ``AgentNodeHookPool``.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from typing import Any
 
 from primer.graph.executor import GraphExecutor
 from primer.model.agent import Agent
-from primer.model.chat import Message, StreamEvent, ToolResultPart
+from primer.model.chat import Message, StreamEvent, ToolCallResult, ToolResultPart
 from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge, _ToolCallNode
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import YieldToWorker
+from primer.toolset.python_runner.provider import PythonToolsetProvider
 from primer.worker import graph_resume_coordinator
+from primer.worker.pool import WorkerPool
 
 from tests.conftest import _FakeStorageProvider
 
@@ -239,3 +249,42 @@ class EngineFakePool:
 class NullWorkspaceIO:
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         return None
+
+
+# ---------------------------------------------------------------------------
+# provider registries a resume hook reaches through ResumeContext.resolve_provider
+# ---------------------------------------------------------------------------
+
+
+class IdentityToolsetRegistry:
+    """``get_toolset`` hands back the id it was asked for, so a test can tell the resolver reaches the registry."""
+
+    async def get_toolset(self, toolset_id: str):
+        return toolset_id
+
+
+class ResumeOnlyPythonProvider(PythonToolsetProvider):
+    def __init__(self) -> None:  # no runner or source: only the resume half is exercised
+        pass
+
+    async def resume_tool(self, *, tool_id: str, payload: Any, resume_metadata: dict[str, Any]) -> ToolCallResult:
+        return ToolCallResult(output=json.dumps({"tool_id": tool_id, "answer": payload["response"]}), is_error=False)
+
+
+class PythonToolsetRegistry:
+    """Resolves the toolset ``ts-vy`` to a :class:`ResumeOnlyPythonProvider`, anything else to ``None``."""
+
+    async def get_toolset(self, toolset_id: str):
+        return ResumeOnlyPythonProvider() if toolset_id == "ts-vy" else None
+
+
+# ---------------------------------------------------------------------------
+# the pool slice build_invocation_services reads
+# ---------------------------------------------------------------------------
+
+
+class AgentNodeHookPool(SimpleNamespace):
+    """The slice of ``WorkerPool`` the invocation services read, with the real agent-node hook seam."""
+
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
+        return await WorkerPool._graph_agent_tool_result(self, checkpoint, tcid, payload, session_id=session_id)

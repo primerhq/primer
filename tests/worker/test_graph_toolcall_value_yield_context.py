@@ -23,7 +23,7 @@ from primer.model.chat import ToolCallResult
 from primer.model.graph import GraphNodeMessage, GraphThread, NodeRuntimeStatus
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import Yielded, YieldToWorker
-from primer.toolset.python_runner.provider import PythonToolsetProvider, python_tool_resume, scoped_tool_name
+from primer.toolset.python_runner.provider import python_tool_resume, scoped_tool_name
 from primer.worker import graph_resume_coordinator
 from primer.worker.graph_resume import resume_graph_from_checkpoint
 from primer.worker.yield_resume_registry import ResumeContext, register_resume_hook
@@ -36,7 +36,9 @@ from tests._resume_hook_fakes import (
     FakeSessionRow as _FakeSessionRow,
     FakeSessionStorage as _FakeSessionStorage,
     FakeStorage as _FakeStorage,
+    IdentityToolsetRegistry as _Registry,
     NullWorkspaceIO as _EngineWorkspaceIO,
+    PythonToolsetRegistry as _PythonRegistry,
     RecordingWorkspaceIO as _FakeWorkspaceIO,
     build_ask_user_graph as _build_graph,
     drain as _drain,
@@ -47,11 +49,6 @@ from tests._resume_hook_fakes import (
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
 
 _TCID = "tc-vy"
-
-
-class _Registry:
-    async def get_toolset(self, toolset_id: str):  # pragma: no cover - never awaited here
-        return toolset_id
 
 
 class _PoolWithRegistry(_FakePool):
@@ -209,19 +206,6 @@ async def test_the_engine_resume_gives_the_hook_the_session_and_the_registry(cap
     assert ctx.resolve_provider == registry.get_toolset
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert not errors, f"the resume logged an error it swallowed: {[r.getMessage() for r in errors]}"
-
-
-class _PythonProvider(PythonToolsetProvider):
-    def __init__(self) -> None:  # no runner or source: only the resume half is exercised
-        pass
-
-    async def resume_tool(self, *, tool_id: str, payload: Any, resume_metadata: dict[str, Any]) -> ToolCallResult:
-        return ToolCallResult(output=json.dumps({"tool_id": tool_id, "answer": payload["response"]}), is_error=False)
-
-
-class _PythonRegistry:
-    async def get_toolset(self, toolset_id: str):
-        return _PythonProvider() if toolset_id == "ts-vy" else None
 
 
 @pytest.mark.asyncio
