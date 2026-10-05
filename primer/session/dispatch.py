@@ -61,6 +61,7 @@ from primer.session.delegation import (
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
 from primer.session.persistence import (
+    TurnInvariantError,
     WorkspaceIO,
     WorkspaceMessageWriter,
     _CoalesceState,
@@ -493,6 +494,95 @@ async def run_one_session_turn(
     if delta_buffer is not None:
         await delta_buffer.start()
 
+    # The failure exit of the turn below: an ERROR record, ENDED/failed, the terminal publish and the checkpoint
+    # hooks. Shared by the catch-all ``except Exception`` and the park arms, whose own TurnInvariantError (a
+    # deterministic bookkeeping break while parking) is raised inside an except handler the catch-all never sees.
+    async def _end_turn_failed(exc: BaseException) -> ReleaseOutcome:
+        logger.exception(
+            "session %s executor raised unexpected error; releasing claim",
+            session_id,
+        )
+        # Build the ProblemDetails envelope once and reuse it for BOTH
+        # the structured turn-log event and the messages.jsonl ERROR
+        # record. Operators looking at the Messages tab now see the
+        # real exception type/title/detail (matching what the Turn log
+        # tab shows) instead of the legacy "unexpected executor error"
+        # generic string. Spec §6.1 called for the legacy string to go
+        # away once the turn-log existed; this is that cutover.
+        problem = to_problem_details(exc)
+        await _safe_turn_log(turn_log, TurnLogFailed(
+            seq=0,
+            ts=_now(),
+            turn_no=session.turn_no,
+            duration_ms=max(
+                0,
+                int((_now() - _turn_started_at).total_seconds() * 1000),
+            ),
+            error=problem,
+        ))
+        error_rec = SessionMessageRecord(
+            seq=1,
+            kind=SessionMessageKind.ERROR,
+            payload={
+                # Keep `message` + `code` for backwards-compat with any
+                # operator tooling that consumed the legacy shape; the
+                # values now reflect the real exception instead of the
+                # generic fallback.
+                "message": problem.detail,
+                "code": problem.type,
+                "title": problem.title,
+                "status": problem.status,
+                "extensions": problem.extensions or {},
+            },
+            created_at=_now(),
+        )
+        # Wrap the workspace IO write so that a secondary storage failure
+        # (e.g. disk full, broken workspace mount) cannot prevent the
+        # session from transitioning to ENDED.  If the write fails the
+        # error is logged but execution falls through to the transition
+        # below, which is what guarantees the lease is always released.
+        try:
+            seq = await writer.append(error_rec)
+            await writer.flush()
+            await deps.event_bus.publish(
+                f"session:{session_id}:tick", {"seq": seq}
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "session %s failed to write error record after executor"
+                " failure; session will still be transitioned to ENDED",
+                session_id,
+            )
+        async with session_lifecycle_lock().acquire(session_id):
+            await _transition_session_status(
+                session_storage,
+                session,
+                new_status=SessionStatus.ENDED,
+                ended_reason="failed",
+                # 01a070d6: a TurnStreamFailure means the LLM stream itself
+                # is why the turn failed - ended_detail_code always resolves
+                # to something usable (a real classifier code, or its own
+                # fallback), so monitoring can tell "the LLM was
+                # unreachable" apart from "some other internal error"
+                # instead of both reading as an undifferentiated "failed".
+                # Any exception that names why it ended the turn (a TurnStreamFailure, the executor's
+                # ContextOverflowUnrecoverable) carries its own code.
+                ended_detail=getattr(exc, "ended_detail_code", None),
+                executor=executor,
+                expected_epoch=session.binding_epoch,
+            )
+            await _clear_interrupt_requested(session_storage, session_id)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _advance_drain_cursor(session_storage, session_id)
+        await _publish_terminal(
+            deps, session, SessionStatus.ENDED, "failed",
+        )
+        await turn_log.aclose()
+        await _apply_pending_switch_at_checkpoint(deps, session)
+        await _realize_pending_at_checkpoint(deps, session)
+        _observe_turn(session, "failed", _turn_started_at)
+        return ReleaseOutcome(success=False, drop_lease=True)
+
     # 01a0692f: held so the finally below can explicitly aclose() it on
     # every exit path (break, exception, or normal exhaustion - aclose()
     # on an already-finished generator is a no-op). A bare `break` alone
@@ -632,7 +722,6 @@ async def run_one_session_turn(
             session_id=session_id,
             payload={"event_key": park.yielded.event_key},
         )
-        await turn_log.aclose()
 
         yielded = park.yielded
         parked_at = _now()
@@ -743,11 +832,17 @@ async def run_one_session_turn(
         # accumulation recognizes each batch's wake key too. {} for an
         # agent-bound park or a graph park with no co-pending tool_wait -
         # a no-op, byte-identical to before this arc.
-        extra_wake_keys = await materialize_pending_tool_wait_rows(
-            deps.storage_provider, deps.claim_engine, session.id, session.turn_no,
-            coalesce_state, parked_at,
-            (graph_checkpoint or {}).get("pending_tool_waits") or [],
-        )
+        # A deterministic bookkeeping break here ends the turn failed (a retry would hit it again); the turn log is
+        # closed only after this, so that failure is recorded in it too.
+        try:
+            extra_wake_keys = await materialize_pending_tool_wait_rows(
+                deps.storage_provider, deps.claim_engine, session.id, session.turn_no,
+                coalesce_state, parked_at,
+                (graph_checkpoint or {}).get("pending_tool_waits") or [],
+            )
+        except TurnInvariantError as exc:
+            return await _end_turn_failed(exc)
+        await turn_log.aclose()
 
         # A yield raised inside a NESTED invoke_agent invocation arrives with
         # ``park.frames`` already populated (run_subagent/resume_subagent
@@ -900,7 +995,6 @@ async def run_one_session_turn(
                 "notifying_task_count": len(tool_wait.notifying_results),
             },
         )
-        await turn_log.aclose()
 
         parked_at = _now()
         # No per-batch timeout sentinel exists yet on ToolWaitPark - fall
@@ -920,82 +1014,87 @@ async def run_one_session_turn(
         # flat-field loop unchanged.
         graph_checkpoint = getattr(tool_wait, "graph_checkpoint", None)
         node_tool_call_seq: dict[str, int] | None = None
-        if graph_checkpoint is not None:
-            per_node_wake_keys = await materialize_pending_tool_wait_rows(
-                deps.storage_provider, deps.claim_engine, session.id,
-                session.turn_no, coalesce_state, parked_at,
-                graph_checkpoint.get("pending_tool_waits") or [],
-            )
-            # 01a0518b boundary d: mirrors the mixed (except-YieldToWorker)
-            # branch's own stash - a resumed node that dispatches a
-            # FURTHER tool_calls_as_claims round before finishing must not
-            # re-mint a scoped id THIS turn already used (see
-            # ToolWaitParkedState.node_tool_call_seq's own docstring).
-            node_tool_call_seq = stash_graph_scoped_ids(
-                graph_checkpoint, coalesce_state,
-            )
-        else:
-            per_node_wake_keys = []
-            task_storage = deps.storage_provider.get_storage(ToolCallTask)
-            for scoped_id in tool_wait.outstanding_task_ids:
-                record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
-                tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
-                if record_seq is None or tool_name is None:
-                    raise RuntimeError(
-                        f"session {session_id} ToolWaitPark outstanding task "
-                        f"{scoped_id!r} has no matching TOOL_CALL record in "
-                        "this turn's coalesce_state - the durable-append-"
-                        "before-claimable invariant broke"
-                    )
-                task_id = tool_call_task_id(session_id, scoped_id)
-                await _create_tool_call_task_idempotent(
-                    task_storage,
-                    ToolCallTask(
-                        id=task_id,
-                        session_id=session_id,
-                        turn_no=session.turn_no,
-                        tool_name=tool_name,
-                        state=ToolCallTaskState.QUEUED,
-                        record_seq=record_seq,
-                        call_id=tool_wait.call_ids.get(scoped_id),
-                        created_at=parked_at,
-                        batch_task_ids=all_batch_ids,
-                    ),
-                    session_id=session_id,
+        # The same failure exit as the mixed arm above, for the same deterministic breaks.
+        try:
+            if graph_checkpoint is not None:
+                per_node_wake_keys = await materialize_pending_tool_wait_rows(
+                    deps.storage_provider, deps.claim_engine, session.id,
+                    session.turn_no, coalesce_state, parked_at,
+                    graph_checkpoint.get("pending_tool_waits") or [],
                 )
-                if deps.claim_engine is not None:
-                    # Priority 50, not the fresh-work default 100: a tool call is a continuation of a
-                    # turn a human is waiting on, and must not queue behind fresh sessions.
-                    await deps.claim_engine.upsert(
-                        ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME,
-                    )
-            for scoped_id, result in tool_wait.notifying_results:
-                record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
-                tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
-                if record_seq is None or tool_name is None:
-                    raise RuntimeError(
-                        f"session {session_id} ToolWaitPark notifying result "
-                        f"{scoped_id!r} has no matching TOOL_CALL record in "
-                        "this turn's coalesce_state - the durable-append-"
-                        "before-claimable invariant broke"
-                    )
-                await _create_tool_call_task_idempotent(
-                    task_storage,
-                    ToolCallTask(
-                        id=tool_call_task_id(session_id, scoped_id),
-                        session_id=session_id,
-                        turn_no=session.turn_no,
-                        tool_name=tool_name,
-                        state=ToolCallTaskState.DONE,
-                        record_seq=record_seq,
-                        call_id=tool_wait.call_ids.get(scoped_id),
-                        created_at=parked_at,
-                        finished_at=parked_at,
-                        result_state=result.model_dump(mode="json"),
-                        batch_task_ids=all_batch_ids,
-                    ),
-                    session_id=session_id,
+                # 01a0518b boundary d: mirrors the mixed (except-YieldToWorker)
+                # branch's own stash - a resumed node that dispatches a
+                # FURTHER tool_calls_as_claims round before finishing must not
+                # re-mint a scoped id THIS turn already used (see
+                # ToolWaitParkedState.node_tool_call_seq's own docstring).
+                node_tool_call_seq = stash_graph_scoped_ids(
+                    graph_checkpoint, coalesce_state,
                 )
+            else:
+                per_node_wake_keys = []
+                task_storage = deps.storage_provider.get_storage(ToolCallTask)
+                for scoped_id in tool_wait.outstanding_task_ids:
+                    record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+                    tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+                    if record_seq is None or tool_name is None:
+                        raise TurnInvariantError(
+                            f"session {session_id} ToolWaitPark outstanding task "
+                            f"{scoped_id!r} has no matching TOOL_CALL record in "
+                            "this turn's coalesce_state - the durable-append-"
+                            "before-claimable invariant broke"
+                        )
+                    task_id = tool_call_task_id(session_id, scoped_id)
+                    await _create_tool_call_task_idempotent(
+                        task_storage,
+                        ToolCallTask(
+                            id=task_id,
+                            session_id=session_id,
+                            turn_no=session.turn_no,
+                            tool_name=tool_name,
+                            state=ToolCallTaskState.QUEUED,
+                            record_seq=record_seq,
+                            call_id=tool_wait.call_ids.get(scoped_id),
+                            created_at=parked_at,
+                            batch_task_ids=all_batch_ids,
+                        ),
+                        session_id=session_id,
+                    )
+                    if deps.claim_engine is not None:
+                        # Priority 50, not the fresh-work default 100: a tool call is a continuation of a
+                        # turn a human is waiting on, and must not queue behind fresh sessions.
+                        await deps.claim_engine.upsert(
+                            ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME,
+                        )
+                for scoped_id, result in tool_wait.notifying_results:
+                    record_seq = coalesce_state.tool_call_record_seq.get(scoped_id)
+                    tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
+                    if record_seq is None or tool_name is None:
+                        raise TurnInvariantError(
+                            f"session {session_id} ToolWaitPark notifying result "
+                            f"{scoped_id!r} has no matching TOOL_CALL record in "
+                            "this turn's coalesce_state - the durable-append-"
+                            "before-claimable invariant broke"
+                        )
+                    await _create_tool_call_task_idempotent(
+                        task_storage,
+                        ToolCallTask(
+                            id=tool_call_task_id(session_id, scoped_id),
+                            session_id=session_id,
+                            turn_no=session.turn_no,
+                            tool_name=tool_name,
+                            state=ToolCallTaskState.DONE,
+                            record_seq=record_seq,
+                            call_id=tool_wait.call_ids.get(scoped_id),
+                            created_at=parked_at,
+                            finished_at=parked_at,
+                            result_state=result.model_dump(mode="json"),
+                            batch_task_ids=all_batch_ids,
+                        ),
+                        session_id=session_id,
+                    )
+        except TurnInvariantError as exc:
+            return await _end_turn_failed(exc)
+        await turn_log.aclose()
 
         notifying_task_ids = list(notifying_ids)
         captured_messages = tool_wait.llm_messages or []
@@ -1037,90 +1136,7 @@ async def run_one_session_turn(
         )
 
     except Exception as exc:
-        logger.exception(
-            "session %s executor raised unexpected error; releasing claim",
-            session_id,
-        )
-        # Build the ProblemDetails envelope once and reuse it for BOTH
-        # the structured turn-log event and the messages.jsonl ERROR
-        # record. Operators looking at the Messages tab now see the
-        # real exception type/title/detail (matching what the Turn log
-        # tab shows) instead of the legacy "unexpected executor error"
-        # generic string. Spec §6.1 called for the legacy string to go
-        # away once the turn-log existed; this is that cutover.
-        problem = to_problem_details(exc)
-        await _safe_turn_log(turn_log, TurnLogFailed(
-            seq=0,
-            ts=_now(),
-            turn_no=session.turn_no,
-            duration_ms=max(
-                0,
-                int((_now() - _turn_started_at).total_seconds() * 1000),
-            ),
-            error=problem,
-        ))
-        error_rec = SessionMessageRecord(
-            seq=1,
-            kind=SessionMessageKind.ERROR,
-            payload={
-                # Keep `message` + `code` for backwards-compat with any
-                # operator tooling that consumed the legacy shape; the
-                # values now reflect the real exception instead of the
-                # generic fallback.
-                "message": problem.detail,
-                "code": problem.type,
-                "title": problem.title,
-                "status": problem.status,
-                "extensions": problem.extensions or {},
-            },
-            created_at=_now(),
-        )
-        # Wrap the workspace IO write so that a secondary storage failure
-        # (e.g. disk full, broken workspace mount) cannot prevent the
-        # session from transitioning to ENDED.  If the write fails the
-        # error is logged but execution falls through to the transition
-        # below, which is what guarantees the lease is always released.
-        try:
-            seq = await writer.append(error_rec)
-            await writer.flush()
-            await deps.event_bus.publish(
-                f"session:{session_id}:tick", {"seq": seq}
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "session %s failed to write error record after executor"
-                " failure; session will still be transitioned to ENDED",
-                session_id,
-            )
-        async with session_lifecycle_lock().acquire(session_id):
-            await _transition_session_status(
-                session_storage,
-                session,
-                new_status=SessionStatus.ENDED,
-                ended_reason="failed",
-                # 01a070d6: a TurnStreamFailure means the LLM stream itself
-                # is why the turn failed - ended_detail_code always resolves
-                # to something usable (a real classifier code, or its own
-                # fallback), so monitoring can tell "the LLM was
-                # unreachable" apart from "some other internal error"
-                # instead of both reading as an undifferentiated "failed".
-                # Any exception that names why it ended the turn (a TurnStreamFailure, the executor's
-                # ContextOverflowUnrecoverable) carries its own code.
-                ended_detail=getattr(exc, "ended_detail_code", None),
-                executor=executor,
-                expected_epoch=session.binding_epoch,
-            )
-            await _clear_interrupt_requested(session_storage, session_id)
-            await _persist_last_seq(session_storage, session_id, writer.last_seq)
-            await _advance_drain_cursor(session_storage, session_id)
-        await _publish_terminal(
-            deps, session, SessionStatus.ENDED, "failed",
-        )
-        await turn_log.aclose()
-        await _apply_pending_switch_at_checkpoint(deps, session)
-        await _realize_pending_at_checkpoint(deps, session)
-        _observe_turn(session, "failed", _turn_started_at)
-        return ReleaseOutcome(success=False, drop_lease=True)
+        return await _end_turn_failed(exc)
 
     finally:
         # 01a0692f: close the turn's event stream explicitly and first -
