@@ -114,6 +114,13 @@ REAL_OVERFLOWS = [
         "your prompt contains 1,047,000 input tokens, for a total of 1,049,000 tokens.",
         id="vllm-renderer-comma-numbers-cap-fits",
     ),
+    # A comma is a thousands separator only before exactly three digits: here it ends the number, and the cap is
+    # 4096 (it fits), not 40968192 (which would have called a recoverable overflow an output-cap error).
+    pytest.param(
+        "'max_tokens' is too large: 4096,8192 is the window the server logged. This model's maximum context "
+        "length is 32768 tokens.",
+        id="vllm-comma-without-a-separator-group",
+    ),
     # The OpenAI SDK embeds the response body in the exception text, so an unrelated "too large" can sit next to
     # 'param': 'max_tokens'. Only "<param> is too large" is the output-cap signal (synthetic).
     pytest.param(
@@ -195,6 +202,18 @@ NOT_OVERFLOWS = [
         "'max_tokens' is too large: 130,000. This model's maximum context length is 128,000 tokens and your "
         "request has 50 input tokens (130,000 > 128,000 - 50).",
         id="vllm-comma-numbers-cap-exceeds-the-context",
+    ),
+    # vLLM's input processor words its ENCODER-prompt check with the same f-string as the decoder one, but the limit
+    # it names is the multimodal encoder cache size, not the context window: compaction cannot shrink an image.
+    pytest.param(
+        "The encoder prompt (length 9000) is longer than the maximum model length of 8192.",
+        id="vllm-encoder-prompt",
+    ),
+    pytest.param(
+        "The encoder prompt (length 9000) is longer than the maximum model length of 8192. Make sure that "
+        "`max_model_len` is no smaller than the number of text tokens plus multimodal tokens. For image inputs, "
+        "the number of image tokens depends on the image size.",
+        id="vllm-encoder-prompt-multimodal-suggestion",
     ),
     # One per output parameter, so each name in the veto is pinned on its own (no context number: synthetic).
     pytest.param("max_tokens is too large for this model's context length of 8192 tokens", id="veto-max-tokens"),
