@@ -1522,3 +1522,25 @@ class TestReconcileSessionInfo:
         body = json.loads(result.output)
         assert body["status"] == "ended"
         assert body["info"]["ended_reason"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_session_ended_at_the_tool_turn_cap_reads_tool_turn_cap(
+        self, toolset, seeded, sp,
+    ) -> None:
+        """An autonomous session whose turn max_tool_turns stopped ENDS with ended_reason "tool_turn_cap". The
+        MCP tools must say so, as REST does, and not "completed" (the dispatch's mirror onto the on-disk slot used
+        to collapse any reason outside its short list to "completed")."""
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(
+            sp, status=SessionStatus.ENDED, sid="sess-1", workspace_id=seeded, ended_reason="tool_turn_cap",
+        )
+
+        result = await toolset.call(
+            tool_name="get_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "ended"
+        assert body["info"]["ended_reason"] == "tool_turn_cap"

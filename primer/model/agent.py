@@ -111,8 +111,11 @@ class Agent(Describeable):
     max_tool_turns: PositiveInt | None = Field(
         default=50,
         description=(
-            "Maximum number of tool-call rounds in a single turn before "
-            "the turn is force-stopped. None means unbounded."
+            "Cap on tool-call rounds in a single turn. The turn is "
+            "force-stopped when the model asks for its Nth round: that "
+            "round is answered with 'not executed' results instead of "
+            "being run, so a value of N runs at most N-1 tool rounds. "
+            "None means unbounded."
         ),
     )
     max_output_tokens: PositiveInt | None = Field(

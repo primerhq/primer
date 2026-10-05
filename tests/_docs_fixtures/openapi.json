@@ -406,7 +406,7 @@
               }
             ],
             "default": 50,
-            "description": "Maximum number of tool-call rounds in a single turn before the turn is force-stopped. None means unbounded.",
+            "description": "Cap on tool-call rounds in a single turn. The turn is force-stopped when the model asks for its Nth round: that round is answered with 'not executed' results instead of being run, so a value of N runs at most N-1 tool rounds. None means unbounded.",
             "title": "Max Tool Turns"
           },
           "model": {

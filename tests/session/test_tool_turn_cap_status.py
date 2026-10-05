@@ -42,6 +42,25 @@ class _CapTrippedExecutor:
         yield Done(stop_reason="tool_use", raw_reason="tool_use")
 
 
+class _Slot:
+    """The on-disk AgentSession slot as the dispatch's terminal mirror sees it: it reads RUNNING, and the
+    mirror's ``set_status(ENDED, ended_reason=...)`` is recorded."""
+
+    def __init__(self) -> None:
+        self.set_status_calls: list[tuple[Any, Any]] = []
+
+    async def status(self):
+        return SessionStatus.RUNNING
+
+    async def set_status(self, status, *, ended_reason=None, **_kw) -> None:
+        self.set_status_calls.append((status, ended_reason))
+
+
+class _CapTrippedExecutorWithASlot(_CapTrippedExecutor):
+    def __init__(self) -> None:
+        self.session = _Slot()
+
+
 class _RecordingClaimEngine:
     def __init__(self) -> None:
         self.upserted: list[str] = []
@@ -115,6 +134,33 @@ class TestACapTripThroughTheDispatch:
         engine, scheduler = _RecordingClaimEngine(), _RecordingScheduler()
         await recover_sessions(engine, scheduler, fake_storage_provider)
         assert engine.upserted == [] and scheduler.enqueued == []
+
+    async def test_the_on_disk_slot_is_ended_with_the_cap_reason_not_completed(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        """The MCP tools (get_workspace_session / list_workspace_sessions) read the on-disk AgentSession slot,
+        and the dispatch mirrors ENDED onto it with a reason from a short list; anything else used to fall back to
+        "completed", so MCP said "completed" for a capped autonomous session while REST said tool_turn_cap."""
+        sid = seeded_session.id
+        sessions = fake_storage_provider.get_storage(WorkspaceSession)
+        row = await sessions.get(sid)
+        row.autonomous = True
+        await sessions.update(row)
+        executor = _CapTrippedExecutorWithASlot()
+
+        await _run_turn(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        assert executor.session.set_status_calls == [(SessionStatus.ENDED, "tool_turn_cap")]
+
+    async def test_an_interactive_cap_trip_leaves_the_slot_alone(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        sid = seeded_session.id
+        executor = _CapTrippedExecutorWithASlot()
+
+        await _run_turn(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid)
+
+        assert executor.session.set_status_calls == [], "a resting WAITING session is not an ENDED slot"
 
     async def test_without_the_signal_the_old_mapping_leaves_the_session_running_and_rearmed(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,

@@ -280,8 +280,11 @@ Read the description + system_prompt to confirm fit.
   of its tool calls is answered with an error result ("not executed:
   tool-turn cap reached") so the session stays usable. An interactive
   session then rests waiting for your next message (it does not resume by
-  itself, including after a restart); an autonomous session (a trigger or
-  graph run) ends with `ended_reason` `tool_turn_cap`.
+  itself, including after a restart); an autonomous agent session (for
+  example one fired by a trigger) ends with `ended_reason`
+  `tool_turn_cap`, and a new message reopens it with a fresh round count.
+  A graph node or a subagent that hits its own cap does not report it as
+  a session end (not yet surfaced).
 - **Tool calls can yield.** A tool returning `Yielded(...)` parks
   the agent. See [yielding](yielding.md) for what happens then.
   Outside primer (over MCP) yielding tools are invisible.

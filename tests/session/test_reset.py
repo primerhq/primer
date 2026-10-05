@@ -121,6 +121,21 @@ async def test_reset_reopens_row_and_writes_divider():
 
 
 @pytest.mark.asyncio
+async def test_reset_reopens_a_session_ended_at_the_tool_turn_cap():
+    """tool_turn_cap is restartable (an autonomous session's turn was stopped by max_tool_turns; the reopened
+    invocation starts a fresh round count)."""
+    row = _ended_row(reason="tool_turn_cap")
+    slot = _Slot()
+    ws = _WS(slot)
+    deps = SessionResetDeps(storage_provider=_SP(row), workspace_registry=_Registry(ws))
+
+    out, invocation = await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
+
+    assert out.status == SessionStatus.CREATED and out.ended_reason is None
+    assert slot.reopened is True and invocation == 2
+
+
+@pytest.mark.asyncio
 async def test_reset_clears_stale_interrupt_requested():
     row = _ended_row()
     row.interrupt_requested = True

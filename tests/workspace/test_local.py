@@ -507,6 +507,23 @@ class TestWorkspaceSessions:
         assert await healed.status() == SessionStatus.ENDED
         assert (await healed.info()).ended_reason == "completed"
 
+    async def test_get_session_reads_a_tool_turn_cap_end_back_from_disk(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """The dispatch mirrors a capped autonomous session's ENDED onto the on-disk slot with
+        ended_reason "tool_turn_cap"; the slot must write it and read it back (SessionInfo validates the reason
+        when it is loaded), because the MCP workspace tools read this slot."""
+        ws = await provider.create(_template())
+        session = await ws.start_session(_binding(), id="sess-cap-1")
+        await session.set_status(SessionStatus.ENDED, ended_reason="tool_turn_cap")
+        from primer.model.workspace_session import SessionStatus as _S
+        session._info = session._info.model_copy(update={"status": _S.RUNNING})
+
+        healed = await ws.get_session("sess-cap-1")
+
+        assert await healed.status() == SessionStatus.ENDED
+        assert (await healed.info()).ended_reason == "tool_turn_cap"
+
     async def test_list_sessions_heals_stale_cached_status_from_disk(
         self, provider: LocalWorkspaceBackend
     ) -> None:
