@@ -5,10 +5,17 @@ The fixture pins what the prompt-budget work must NOT change under its ``off`` m
 ``tests/_support/off_golden.py`` for the scenario and ``tests/agent/test_off_mode_golden.py`` for
 the comparison). It is only worth anything if it was captured from the code it claims to pin, so
 run this with ``primer/`` COMMITTED and clean. The fixture records the ``primer/`` TREE hash it ran
-against (``git rev-parse HEAD:primer``), which survives a rebase-merge or a squash (a commit SHA
-does not), and the script refuses to run when ``primer/`` has uncommitted changes (``--allow-dirty``
-overrides that for a deliberate re-capture). Only ``primer/`` is checked: the scenario and this
-script live in ``tests/`` and ``scripts/``, so they may differ from the pinned commit's.
+against (``git rev-parse HEAD:primer``) and the subject of that commit, and the script refuses to run
+when ``primer/`` has uncommitted changes (``--allow-dirty`` overrides that for a deliberate
+re-capture). Only ``primer/`` is checked: the scenario and this script live in ``tests/`` and
+``scripts/``, so they may differ from the pinned commit's.
+
+The tree hash names the exact CONTENT of ``primer/`` the fixture came from; it is not a pointer into
+history. A rebase-merge replays the commit onto a main that has moved, so the merged ``primer/`` tree
+is a different one, and the hash may then match no commit on main (a recorded tree can be reachable
+only from the pull request's own branch). The subject (``captured_from_subject``) is the handle that
+survives a rebase: ``git log --all --grep`` finds the commit again. What the fixture can be trusted
+for does not rest on either: the test runs the scenario and compares it with the fixture byte for byte.
 
 A re-capture is GUARDED. Behaviour is compared turn by turn (``tests/_support/golden_compare.py``: a
 turn's unit is its record plus its own calls, so one turn's change does not renumber the next), and the
@@ -21,9 +28,12 @@ script refuses to write when:
 
 It then records ``{previous_fixture_sha256, previous_captured_from, changed_turns, reason}`` on the
 fixture's ``recaptures`` list, so the history of why the fixture moved is in the fixture. When nothing but
-the capture metadata differs (the ``primer/`` tree moved elsewhere) it updates ``captured_from`` alone.
-``--check`` never writes: it prints which turns differ (with every differing path) and exits non-zero
-unless they are exactly the declared ones. A first capture needs ``--init``.
+the capture metadata differs (the ``primer/`` tree moved elsewhere) it updates ``captured_from`` and its
+subject alone. ``--check`` never writes: it prints which turns differ (with every differing path) and
+exits non-zero unless they are exactly the declared ones, and when there is no fixture to compare with
+(a first capture needs ``--init``). A scenario that changed shape (a different number of turns) reports
+turn 0 and ALSO each turn that differs, so every one of them has to be declared: ``--expect-changed 0``
+alone does not rebaseline the fixture.
 
 MERGE-BASE REPRODUCTION CHECK (do this before declaring a re-capture): on a checkout of the merge base
 with the NEW scenario and script copied in (``git worktree add .claude/worktrees/base <merge-base>``, copy
@@ -124,14 +134,19 @@ def main(argv: list[str] | None = None) -> int:
     # The primer/ TREE hash, not the commit: rebase-merge orphans commit SHAs, while the tree of primer/ is
     # the same object after a rebase, a squash or a cherry-pick of the commit that produced it.
     tree = _git("rev-parse", "HEAD:primer")
+    subject = _git("log", "-1", "--format=%s", "HEAD")
     dirty = _git("status", "--porcelain", "--", "primer")
     if dirty and not args.allow_dirty and not args.check:
         print(f"refusing to capture: primer/ has uncommitted changes, so the fixture would not describe tree {tree}:\n{dirty}",
               file=sys.stderr)
         return 1
-    result = asyncio.run(run_scenario())
     old_text = FIXTURE.read_text() if FIXTURE.exists() else None
     old = json.loads(old_text) if old_text else None
+    if args.check and old is None:
+        # a check with nothing to compare against must not look like a pass
+        print(f"there is no fixture to compare with ({FIXTURE}); a first capture needs --init", file=sys.stderr)
+        return 2
+    result = asyncio.run(run_scenario())
     decision, changed = decide(old=old, new=result, declared=declared, reason=args.reason, init=args.init)
     if args.check:
         ok = sorted(changed) == declared
@@ -153,7 +168,12 @@ def main(argv: list[str] | None = None) -> int:
             "reason": args.reason,
         })
     body = behaviour(old) if decision == "write-metadata" else behaviour(result)
-    fixture = {"captured_from": tree, **({"recaptures": recaptures} if recaptures else {}), **body}
+    fixture = {
+        "captured_from": tree,
+        "captured_from_subject": subject,
+        **({"recaptures": recaptures} if recaptures else {}),
+        **body,
+    }
     FIXTURE.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE.write_text(json.dumps(fixture, indent=1, sort_keys=True) + "\n")
     shown = FIXTURE.relative_to(ROOT) if FIXTURE.is_relative_to(ROOT) else FIXTURE

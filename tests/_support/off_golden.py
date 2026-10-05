@@ -11,7 +11,9 @@ change without failing a unit test:
 * turn 2, TIER 2: user turns that pruning cannot shrink force a full compaction (a summary and a
   marker);
 * turn 3, OVERFLOW REPLAY: the model rejects the turn with a context-overflow error, the executor
-  force-compacts and re-runs the loop;
+  force-compacts and re-runs the loop. The session was compacted before (a marker and its kept tail
+  are seeded), so this compaction runs over a reconstructed ``[summary, *tail, ...]`` and the new
+  summary folds the old one: the chain every long session lives in;
 * turn 4, DEFERRED STEER: two steers arrive while the compaction summary call is in flight, are held
   back and land after the marker, in submission order;
 * turns 5 and 6, THE BOUNDARY: two small sessions whose history estimate PLUS the fixed overhead (system
@@ -34,6 +36,7 @@ import json
 import re
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +52,7 @@ from primer.model.model_profile import ModelProfileConfig
 from primer.model.workspace import (
     LocalWorkspaceConfig, WorkspaceProvider, WorkspaceProviderType, WorkspaceTemplate,
 )
-from primer.model.workspace_session import AgentBinding
+from primer.model.workspace_session import AgentBinding, SessionMessageKind, SessionMessageRecord
 from primer.model_profile import ResolvedModel
 from primer.workspace import WorkspaceBackendFactory
 
@@ -198,6 +201,42 @@ async def append_messages(workspace, session, *messages: Message) -> None:
     """
     for message in messages:
         await workspace.append_message_line(session.session_id, (message.model_dump_json() + "\n").encode())
+
+
+PRIOR_SUMMARY = "[earlier conversation compacted on 2026-10-05T00:00:00+00:00]\n\nSUMMARY-0: what this session did before turn 3"
+
+
+async def append_prior_marker(workspace, session, *, summary: str, kept_tail: list[Message]) -> None:
+    """Seed a compaction that already happened: a ``compaction_marker`` and the tail it kept, written as the
+    executor writes one (see ``WorkspaceAgentExecutor._replace_compacted_head``). Everything physically before
+    it is folded by the reader, except the kept tail, so the history after it reads ``[summary, *kept_tail]``."""
+    path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+    boundary = max(
+        (obj["seq"] for obj in map(json.loads, path.read_text(encoding="utf-8").splitlines())
+         if isinstance(obj, dict) and isinstance(obj.get("seq"), int)),
+        default=0,
+    )
+    created = datetime(2026, 10, 5, tzinfo=timezone.utc)
+    marker = SessionMessageRecord(
+        seq=boundary + 1,
+        kind=SessionMessageKind.COMPACTION_MARKER,
+        payload={
+            "summary": summary,
+            "kept_tail_messages": [json.loads(m.model_dump_json()) for m in kept_tail],
+            "replaced_from_seq": 1,
+            "replaced_to_seq": boundary,
+            "model": "golden-model",
+            "tokens_before": 90_000,
+            "tokens_after": 20_000,
+            "outcome": "summarised",
+            "unreducible": None,
+            "trigger_tokens": trigger_tokens(),
+            "fixed_overhead_tokens": await fixed_overhead(session),
+            "created_at": created.isoformat(),
+        },
+        created_at=created,
+    )
+    await workspace.append_message_line(session.session_id, (marker.model_dump_json() + "\n").encode())
 
 
 def tool_round(i: int) -> list[Message]:
@@ -411,9 +450,15 @@ async def run_scenario() -> dict[str, Any]:
         ))
 
         # Turn 3, overflow replay: the turn's own call is rejected as a context overflow and the forced
-        # compaction replays it. Seven answered exchanges, then this turn's input (the pending suffix, kept
-        # whatever happens), so the forced compaction has a head to summarise.
+        # compaction replays it. The session was compacted before: a marker and the exchange it kept, so the
+        # history is [summary, question, answer, ...] and this compaction summarises (and folds) that summary
+        # too. Then seven answered exchanges and this turn's input (the pending suffix, kept whatever happens),
+        # so the forced compaction has a head to summarise.
         async def seed_3(workspace, session) -> None:
+            await append_prior_marker(
+                workspace, session, summary=PRIOR_SUMMARY,
+                kept_tail=[user_message("turn 3 earlier question"), assistant_message("turn 3 earlier answer")],
+            )
             for i in range(7):
                 await append_messages(
                     workspace, session, user_message(f"turn 3 filler {i}: " + ("f" * 2000)), assistant_message(f"turn 3 reply {i}"),

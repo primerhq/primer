@@ -9,7 +9,12 @@ History of the fixture (``captured_from`` is the ``primer/`` tree hash it was ca
    turn 2 needed answered history to compact (see ``off_golden.py``). Only turns 2 to 4 (the turns with a
    tier-2 marker) and what they feed changed; turns 1, 5 and 6 and calls 0, 5, 8 and 9 are byte-identical;
 3. re-captured, under the guard below, when every turn got its own session (turns 3 and 4 no longer inherit
-   turn 2's marker and tail). The fixture's ``recaptures`` list says which turns moved and why.
+   turn 2's marker and tail);
+4. re-captured for R2 (task 01a10914): the fixed overhead counts, so the markers' figures and the boundary
+   turns' padding moved (turns 2 to 6; every prompt of turns 2 to 4 is byte-identical);
+5. re-captured when turn 3 was seeded with a prior marker and its kept tail, which gives back the chained
+   compaction the per-turn sessions had dropped (only turn 3 moved: it now writes two markers).
+   The fixture's ``recaptures`` list says which turns moved and why.
 
 ``tests/_support/off_golden.py`` runs one scripted session through every path the budget work
 touches (tier 1 pruning, tier 2 summarising, the overflow replay, steers deferred during a
@@ -36,8 +41,11 @@ from typing import Any
 
 import pytest
 
+from primer.model.chat import TextPart
 from tests._support.golden_compare import behaviour, call_sha256, changed_turns, differences, unit_sha256
-from tests._support.off_golden import TOOL_RESULT_CHARS, run_scenario, trigger_tokens
+from tests._support.off_golden import (
+    PRIOR_SUMMARY, TOOL_RESULT_CHARS, part_fingerprint, run_scenario, trigger_tokens,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "off_mode_golden.json"
 
@@ -78,8 +86,11 @@ class TestTheGolden:
         assert call_sha256(golden, 0) == CALL_0_SHA256
 
     def test_the_fixture_names_the_primer_tree_it_was_captured_from(self, golden) -> None:
-        """A tree hash, not a commit SHA: rebase-merge orphans commit SHAs (see scripts/capture_off_golden.py)."""
+        """A tree hash names the exact content of ``primer/`` (a commit SHA is orphaned by a rebase-merge), and the
+        commit subject beside it is the handle that survives one. Neither is a pointer into history: after a
+        rebase onto a main that has moved the tree may match no commit there (see scripts/capture_off_golden.py)."""
         assert len(golden["captured_from"]) == 40 and set(golden["captured_from"]) <= set("0123456789abcdef")
+        assert golden["captured_from_subject"].strip()
 
 
 class TestTheFixtureCrossesWhatItPins:
@@ -117,9 +128,27 @@ class TestTheFixtureCrossesWhatItPins:
     def test_the_overflow_replay_force_compacts_and_reruns_the_loop(self, golden) -> None:
         turn = golden["turns"][2]
         assert turn["llm_calls"] == 3
-        assert len(turn["file"]["markers"]) == 1, "the turn owns its session: the one marker is the forced compaction's"
+        assert len(turn["file"]["markers"]) == 2, "the seeded prior marker, then the forced compaction's"
         rejected, summariser, retry = golden["calls"][3:6]
         assert (bool(rejected["tool_ids"]), bool(summariser["tool_ids"]), bool(retry["tool_ids"])) == (True, False, True)
+
+    def test_the_forced_compaction_runs_over_a_reconstructed_summary_and_folds_it(self, golden) -> None:
+        """Turn 3's session was compacted before, so its history is [summary, tail, ...] when the forced compaction
+        runs: the chain every long session lives in, which the per-turn sessions had stopped pinning."""
+        turn = golden["turns"][2]
+        first, second = turn["file"]["markers"]
+        assert second["seq"] > first["seq"], "the forced marker is written after the seeded one"
+        assert "kept_tail" in first and "kept_tail" in second
+        assert [k["preview"] for k in first["kept_tail"]] == ["turn 3 earlier question", "turn 3 earlier answer"]
+        prior = part_fingerprint(TextPart(text=PRIOR_SUMMARY), "no-session")
+        rejected, summariser, retry = golden["calls"][3:6]
+
+        def holds_the_prior_summary(call) -> bool:
+            return any(prior in message["parts"] for message in call["messages"])
+
+        assert holds_the_prior_summary(rejected), "the rejected prompt began with the reconstructed summary"
+        assert holds_the_prior_summary(summariser), "the summariser read the prior summary with the rest of the head"
+        assert not holds_the_prior_summary(retry), "the retry's prompt holds the new summary, which folded the old one"
 
     def test_steers_during_compaction_land_after_the_marker_in_order_and_the_turn_never_sees_them(self, golden) -> None:
         turn = golden["turns"][3]
