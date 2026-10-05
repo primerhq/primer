@@ -1517,8 +1517,8 @@
    ]
   }
  ],
- "captured_from": "76a176c028bcf9420e14292746e67020ab5c8412",
- "captured_from_subject": "fix(compaction): a summary is transparent to the pending turn, a bottomed-out compaction is not repeated, a forced raise needs proof",
+ "captured_from": "f315496b09e6f1c0cdafd1ddd489c302c68d0197",
+ "captured_from_subject": "test(budget): the golden's provenance names the rebased primer/ tree",
  "recaptures": [
   {
    "changed_turns": [
