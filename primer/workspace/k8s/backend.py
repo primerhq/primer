@@ -29,7 +29,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
     KubernetesTemplateConfig,
 )
-from primer.workspace.base_backend import BaseWorkspaceBackend
+from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded
 from primer.workspace.files import FileResolvers
 from primer.workspace.k8s.httproute import build_httproute_manifest
 from primer.workspace.k8s.naming import k8s_object_name
@@ -40,25 +40,6 @@ from primer.workspace.sandbox.workspace import SandboxWorkspace
 
 
 logger = logging.getLogger(__name__)
-
-
-async def _close_runtime_client(client: RuntimeClient, *, what: str) -> None:
-    """Close a runtime client that a build which did not finish left connected.
-
-    Run from the ``except BaseException`` of ``create`` and ``_reattach``, so a cancel or a caller's ``asyncio.timeout`` that
-    ended the build is covered too. The close is SHIELDED: a second cancel (a drain, a bound landing again) while the client
-    is closing must not leave the socket and the aiohttp session half released, so the close runs on its own task and
-    carries on. A close that fails is logged, never allowed to replace the error that ended the build.
-    """
-    closing = asyncio.ensure_future(client.aclose())
-    # Retrieve what the close dies of when a second cancel stops us waiting for it: no "never retrieved" noise.
-    closing.add_done_callback(lambda t: None if t.cancelled() else t.exception())
-    try:
-        await asyncio.shield(closing)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("%s runtime-client aclose failed: %s", what, exc)
 
 
 def _generate_workspace_id() -> str:
@@ -491,7 +472,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             # Anything that ends the build before the workspace is cached (a failure, a cancel, a caller's timeout) leaves
             # the connection open and nothing to close it: it is ours to release.
             if not cached:
-                await _close_runtime_client(client, what="rollback")
+                await close_shielded(client, what="rollback runtime client")
             raise
 
     async def _create_secret(
@@ -723,7 +704,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                 existing = self._workspaces.get(workspace_id)
                 if existing is not None:
                     # Another caller materialised first; drop ours.
-                    await _close_runtime_client(client, what="redundant")
+                    await close_shielded(client, what="redundant runtime client")
                     return existing
                 self._workspaces[workspace_id] = ws
                 cached = True
@@ -732,7 +713,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             # A failure, a cancel or a caller's timeout anywhere between connect() and the cache insert (including the wait
             # for the lock) leaves the connection open and uncached, and the next call connects and leaks another one.
             if not cached:
-                await _close_runtime_client(client, what="re-attach")
+                await close_shielded(client, what="re-attach runtime client")
             raise
 
     async def _read_runtime_token(self, obj_name: str) -> str:
