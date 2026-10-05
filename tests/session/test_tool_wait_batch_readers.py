@@ -125,7 +125,6 @@ def test_every_allowlisted_module_still_reads_the_batch_keys() -> None:
     assert not stale, f"these modules no longer read the batch keys; remove their ALLOWLIST entries: {stale}"
 
 
-@pytest.mark.xfail(strict=True, reason="red-first: the helper module does not exist yet")
 def test_the_helper_is_the_sanctioned_reader_and_is_not_on_the_allowlist() -> None:
     """The exemption names a real module that does read the keys (an exemption for nothing would be stale too)."""
     assert HELPER in readers(ROOT)
