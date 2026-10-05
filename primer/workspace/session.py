@@ -65,6 +65,14 @@ _waiting_state_adapter: TypeAdapter[WaitingState] = TypeAdapter(WaitingState)
 # ===========================================================================
 
 
+def workspace_system_prompt_fragment(session_id: str) -> str:
+    """The markdown the executor appends to every agent's system prompt in a workspace session.
+
+    A function of the session id alone, so a caller with no live session (the manual compaction route,
+    which sizes the fixed part of the prompt) renders exactly what the executor does."""
+    return _SYSTEM_PROMPT_TEMPLATE.format(session_id=session_id)
+
+
 _SYSTEM_PROMPT_TEMPLATE = """\
 You are running inside a primer Workspace as session `{session_id}`.
 
@@ -446,7 +454,7 @@ class AgentSession:
     @property
     def system_prompt_fragment(self) -> str:
         """Markdown injected into the agent's system prompt at session start."""
-        return _SYSTEM_PROMPT_TEMPLATE.format(session_id=self.session_id)
+        return workspace_system_prompt_fragment(self.session_id)
 
     @property
     def messages_lock(self) -> AbstractAsyncContextManager[None]:
