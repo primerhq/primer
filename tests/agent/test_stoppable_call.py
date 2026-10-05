@@ -23,6 +23,7 @@ import logging
 import pytest
 
 import primer.agent.stoppable_call as sc
+from primer.agent.call_scope import CallScope, current_call_scope
 from primer.agent.stoppable_call import run_stoppable
 from primer.model.chat import ToolResultPart
 from primer.model.except_ import AuthRequiredError, ConfigError
@@ -48,14 +49,21 @@ async def _forever() -> None:
 @pytest.fixture(autouse=True)
 async def _no_leftovers():
     yield
-    # every abandoned task is let go and awaited, and no helper task may outlive the test
-    for task in list(sc._ABANDONED):
+    # every abandoned task is let go and awaited, and no helper task may outlive the test. The wait is BOUNDED: a call that
+    # ignores a cancel only ends when its test releases it, and a test that failed before it got there must report its own
+    # failure here, not hang the teardown (the stubborn task is then dropped, and the loop's shutdown cancels it).
+    abandoned = list(sc._ABANDONED)
+    for task in abandoned:
         task.cancel()
-    await asyncio.gather(*list(sc._ABANDONED), return_exceptions=True)
+    stubborn: set[asyncio.Task] = set()
+    if abandoned:
+        _, stubborn = await asyncio.wait(abandoned, timeout=1.0)
     for _ in range(3):
         await asyncio.sleep(0)
-    assert not sc._ABANDONED, "an abandoned call was never retired"
-    stray = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if not stubborn:
+        assert not sc._ABANDONED, "an abandoned call was never retired"
+    sc._ABANDONED.clear()
+    stray = [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and t not in stubborn]
     assert stray == [], f"tasks left behind: {stray}"
 
 
@@ -399,6 +407,138 @@ async def test_a_second_cancel_during_the_shielded_wait_propagates_promptly() ->
     assert asyncio.get_running_loop().time() - start < 0.5, "a second cancel was held up by the shielded wait"
     assert len(sc._ABANDONED) == 1
     release.set()
+
+
+async def test_a_hard_cancel_that_abandons_a_call_runs_the_abandon_hook_before_the_cancellation_leaves(monkeypatch) -> None:
+    """A worker Cancel (drain, lost lease, operator Cancel) hits the turn while a subagent call runs and does not unwind: the
+    abandon hook (which stops the delegation recorder taking what the subagent still emits) must run on THIS path too, or
+    the subagent writes to the log after the cancelled turn's terminal record."""
+    monkeypatch.setattr(sc, "UNWIND_BOUND_S", 0.1)
+    release = asyncio.Event()
+    started = asyncio.Event()
+    order: list[str] = []
+
+    async def call() -> ToolResultPart:
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        return _ok()
+
+    run = asyncio.create_task(
+        run_stoppable(call, interrupt=asyncio.Event(), interruptible=_yes, on_abandon=lambda: order.append("hook")),
+    )
+    try:
+        await started.wait()
+        run.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, 3.0)
+        order.append("left")
+
+        assert order == ["hook", "left"]
+    finally:
+        release.set()
+
+
+async def test_a_hard_cancel_of_a_call_that_unwinds_in_time_does_not_run_the_abandon_hook() -> None:
+    started = asyncio.Event()
+    hooked: list[bool] = []
+
+    async def call() -> ToolResultPart:
+        started.set()
+        await _forever()
+        return _ok()
+
+    run = asyncio.create_task(
+        run_stoppable(call, interrupt=asyncio.Event(), interruptible=_yes, on_abandon=lambda: hooked.append(True)),
+    )
+    await started.wait()
+    run.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run, 3.0)
+    assert hooked == []
+
+
+def test_the_unwind_bound_has_a_margin_over_the_mcp_stdio_termination_timeout() -> None:
+    """The MCP SDK's stdio client waits up to ``PROCESS_TERMINATION_TIMEOUT`` for a server to exit once its stdin is closed,
+    and only then terminates it. A bound equal to that abandons a cancelled stdio MCP call before its process is reaped,
+    so the answer is recorded while the server is still alive (the cleanup lands afterwards). It needs a margin."""
+    from mcp.client.stdio import PROCESS_TERMINATION_TIMEOUT
+
+    assert sc.UNWIND_BOUND_S >= PROCESS_TERMINATION_TIMEOUT + 0.5
+
+
+# --- the scope of a call: abandonment follows the call's task tree --------------------------------------------------------
+
+
+def test_a_scope_is_abandoned_when_any_enclosing_scope_is() -> None:
+    outer = CallScope()
+    inner = CallScope(parent=outer)
+
+    assert not outer.abandoned and not inner.abandoned
+    inner.abandon()
+    assert inner.abandoned and not outer.abandoned, "abandoning an inner call must not abandon the call around it"
+    inner2 = CallScope(parent=outer)
+    outer.abandon()
+    assert inner2.abandoned, "a call inside an abandoned call is abandoned with it"
+
+
+async def test_a_call_and_everything_it_starts_see_the_scope_and_the_callers_context_never_does(monkeypatch) -> None:
+    monkeypatch.setattr(sc, "NON_INTERRUPTIBLE_GRACE_S", 0.1)         # the call below never finishes: abandon it quickly
+    seen_in_the_call: list[CallScope | None] = []
+    seen_by_a_child: list[bool] = []
+    go = asyncio.Event()
+    started = asyncio.Event()
+    children: list[asyncio.Task] = []
+
+    async def child() -> None:
+        await go.wait()
+        scope = current_call_scope()
+        seen_by_a_child.append(scope is not None and scope.abandoned)
+
+    async def call() -> ToolResultPart:
+        seen_in_the_call.append(current_call_scope())
+        children.append(asyncio.create_task(child()))          # a task the call starts inherits the scope
+        started.set()
+        await _forever()
+        return _ok()
+
+    interrupt = asyncio.Event()
+    run = asyncio.create_task(run_stoppable(call, interrupt=interrupt, interruptible=_no, name="x"))
+    await started.wait()
+    assert current_call_scope() is None, "the call's scope leaked into the caller's context"
+    interrupt.set()
+    assert await asyncio.wait_for(run, 3.0) is None
+
+    scope = seen_in_the_call[0]
+    assert scope is not None and scope.abandoned, "abandoning the call did not mark its scope"
+    go.set()
+    await asyncio.wait_for(asyncio.gather(*children), 3.0)
+    assert seen_by_a_child == [True], "a task the call started did not see that the call was abandoned"
+    assert current_call_scope() is None
+
+
+async def test_a_call_nested_inside_another_call_has_a_scope_that_follows_its_parents() -> None:
+    inner_scopes: list[CallScope | None] = []
+    outer_scopes: list[CallScope | None] = []
+
+    async def inner() -> ToolResultPart:
+        inner_scopes.append(current_call_scope())
+        return _ok()
+
+    async def outer() -> ToolResultPart:
+        outer_scopes.append(current_call_scope())
+        return await run_stoppable(inner, interrupt=asyncio.Event(), interruptible=_yes)  # type: ignore[return-value]
+
+    await run_stoppable(outer, interrupt=asyncio.Event(), interruptible=_yes)
+
+    assert inner_scopes[0] is not outer_scopes[0], "a nested call must get its own scope"
+    outer_scopes[0].abandon()
+    assert inner_scopes[0].abandoned, "the nested call's scope does not follow the enclosing call's"
 
 
 async def test_the_call_runs_in_a_copy_of_the_callers_context() -> None:

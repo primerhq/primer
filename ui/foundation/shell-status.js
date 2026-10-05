@@ -167,7 +167,7 @@ function SH_canStop(session) {
 
 // Verbs that mean "waiting on the model" (or an unknown phase): a Stop interrupts that wait
 // at once, so the strip just says "stopping". Any other verb is a TOOL: a Stop cancels it (and waits for it to
-// unwind, about two seconds at most), except a tool that must not be cancelled (a file write), which it waits for,
+// unwind, about three seconds at most), except a tool that must not be cancelled (a file write), which it waits for,
 // up to five seconds. The strip does not know which, so it says the true common thing: the tool is being ended.
 var SH_STOP_MODEL_WAIT_VERBS = {
   thinking: true, sending: true, responding: true, running: true, claimable: true,

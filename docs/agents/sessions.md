@@ -198,7 +198,7 @@ intact, so the next message continues it:
   when you pressed Stop, none of them run: each is answered "not run:
   stopped by user".
 - A tool call that is already running when you press Stop is stopped too.
-  The call is cancelled and given up to 2 seconds to unwind (so whatever
+  The call is cancelled and given up to 3 seconds to unwind (so whatever
   cleanup the tool does when it is cancelled has run before the turn moves
   on, and a subagent has stopped; what stops with a command is described in
   the workspaces doc), and it is answered "interrupted: stopped by
@@ -247,9 +247,14 @@ intact, so the next message continues it:
   sign-in (an MCP tool asking for consent) when the Stop lands is answered
   "interrupted" instead of sending you to the consent page. A subagent call
   (`invoke_agent`) that is cancelled and does not stop in time is given up
-  on: what it still emits is not added to the session log after the call's
-  "interrupted" answer. Graph sessions and the context-compaction call that
-  can run first are not interruptible yet.
+  on: what it, and any subagent it started in turn, still emits is not
+  added to the session log after the call's "interrupted" answer. Giving up
+  hides the subagent's log records; it does not stop it. A subagent that
+  does not stop can go on in the background and keep using its tools: one
+  cut off while it connects to a stdio MCP server, for example, carries on
+  with its next model call and tool calls after you pressed Stop, and what
+  those do is not undone. Graph sessions and the context-compaction call that can run first are not
+  interruptible yet.
 - What the model had already written is kept in the transcript. The model
   itself does not see that partial text on the next turn, and is not told
   it was stopped (apart from the "not run: stopped by user" results

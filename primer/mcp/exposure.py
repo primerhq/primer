@@ -314,8 +314,9 @@ async def list_available_tools(deps: ExposureDeps) -> list[dict]:
     * ``exposable`` -- :func:`is_exposable` verdict.
     * ``reason`` -- denial reason string (``None`` when ``exposable``).
     * ``currently_allowed`` -- membership in the live allowlist.
-    * ``yields`` / ``requires_workspace`` / ``tool_class`` / ``required_role``
-      -- the same y/w/r/n capability badges every other "list tools"
+    * ``yields`` / ``requires_workspace`` / ``tool_class`` / ``required_role`` /
+      ``interruptible`` -- the same y/w/r/n capability badges (and the
+      ``interruptible`` flag a Stop consults) every other "list tools"
       route re-adds via :func:`~primer.model.chat.tool_catalogue_flags`;
       this was the one catalogue consumer that omitted them (platform
       wave P2, #28) -- an operator building the MCP allowlist could not
