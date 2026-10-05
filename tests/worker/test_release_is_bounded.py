@@ -125,6 +125,27 @@ def test_the_bound_is_one_heartbeat_interval_short_of_the_lease_ttl(ttl, heartbe
     assert pool._release_timeout_seconds < ttl
 
 
+@pytest.mark.parametrize(
+    "config",
+    [WorkerConfig(), WorkerConfig(lease_ttl_seconds=5, heartbeat_interval_seconds=2),
+     WorkerConfig(lease_ttl_seconds=5, heartbeat_interval_seconds=1)],
+    ids=["defaults", "minimum-ttl-heartbeat-2", "minimum-ttl-heartbeat-1"],
+)
+def test_the_probe_after_a_timed_out_release_is_one_heartbeat_and_fits_in_the_ttl_with_the_bound(config):
+    """The ``has_lease`` probe that decides a timed-out release's outcome may take one heartbeat interval, so the
+    bound plus the probe stay within one lease TTL: at the defaults (TTL 30 s, heartbeat 10 s) and at the 5 s minimum
+    TTL the pool tests use."""
+    pool = WorkerPool(
+        config=config,
+        scheduler=InMemoryScheduler(), storage=None,  # type: ignore[arg-type]
+        workspace_registry=None,  # type: ignore[arg-type]
+        provider_registry=None,  # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={}),
+    )
+    assert pool._release_probe_timeout_seconds == config.heartbeat_interval_seconds
+    assert pool._release_timeout_seconds + pool._release_probe_timeout_seconds <= config.lease_ttl_seconds
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("heartbeat", "after_beat"),
