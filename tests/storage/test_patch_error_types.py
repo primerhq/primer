@@ -78,8 +78,8 @@ SURROGATE_SPECS = [
 async def test_a_string_that_cannot_be_encoded_is_a_patch_spec_error_and_writes_nothing_on_both_backends(
     sqlite_storage, kwargs,
 ):
-    """A string holding a surrogate code point used to pass the JSON check and then either fail (in the statement compiler or
-    the driver, differently per backend) or be silently stored (a patch value, on SQLite), for what is the caller's own bad
+    """A string holding a surrogate code point used to pass the JSON check and then either fail as a backend error (differently
+    per backend) or be silently stored (a patch value, on SQLite), for what is the caller's own bad
     input. It is rejected up front, the same on both, and the message names the field without echoing the value."""
     before = await sqlite_storage.get("a")
     conn = _ScriptedConn(_row())

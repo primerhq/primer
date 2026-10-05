@@ -273,7 +273,7 @@ def _check_key(key: Any, what: str) -> None:
 
 def _check_encodable(text: str, what: str) -> None:
     """Reject a string that cannot be UTF-8 encoded (a surrogate code point, alone or half of a split pair). ``json.dumps``
-    escapes one, so it passes the JSON check and then fails (in the statement compiler or the driver, differently per
+    escapes one, so it passes the JSON check and then fails as a backend error (differently per
     backend) or is silently stored. Names the field, never echoes the value."""
     try:
         text.encode("utf-8")
