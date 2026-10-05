@@ -1122,6 +1122,7 @@ async def materialize_pending_tool_wait_rows(
     task_storage = storage_provider.get_storage(ToolCallTask)
     wake_keys: list[str] = []
     for pw in pending_tool_waits:
+        skipped: set[str] = set()   # ids of this entry whose rows an EARLIER park created (non-strict only)
         # An entry's ids are SCOPED when this park produced it and already QUALIFIED when it is carried over from an
         # earlier park (the checkpoint stores the qualified form). The transcript records are keyed on the scoped id,
         # the rows, leases and batch lists on the qualified one; both forms normalise here.
@@ -1141,6 +1142,7 @@ async def materialize_pending_tool_wait_rows(
             tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
             if record_seq is None or tool_name is None:
                 if not strict:
+                    skipped.add(scoped_id)
                     continue
                 raise RuntimeError(
                     f"session {session_id} pending tool_wait node "
@@ -1176,6 +1178,7 @@ async def materialize_pending_tool_wait_rows(
             tool_name = coalesce_state.tool_call_record_name.get(scoped_id)
             if record_seq is None or tool_name is None:
                 if not strict:
+                    skipped.add(scoped_id)
                     continue
                 raise RuntimeError(
                     f"session {session_id} pending tool_wait node "
@@ -1204,12 +1207,19 @@ async def materialize_pending_tool_wait_rows(
             )
         # Store the QUALIFIED form in the entry itself (it is the dict inside the checkpoint that is parked), so the
         # blob, the rows and the leases agree and every later reader looks the rows up by the id it finds there.
+        # An id this call SKIPPED (its rows were created by an earlier park) keeps the form it was stored in: a
+        # park written before ids were qualified (a development flag-on park) has its rows under the BARE id, and
+        # rewriting the entry to a qualified id the rows do not have would make the next wake find nothing.
+        def _stored(original: str, scoped: str) -> str:
+            return original if (scoped in skipped and original == scoped) else tool_call_task_id(session_id, scoped)
+
         pw["outstanding_task_ids"] = [
-            tool_call_task_id(session_id, i) for i in outstanding_scoped
+            _stored(original, scoped)
+            for original, scoped in zip(pw["outstanding_task_ids"], outstanding_scoped)
         ]
         pw["notifying_results"] = [
-            (tool_call_task_id(session_id, external_call_id(i, session_id)), r)
-            for i, r in pw["notifying_results"]
+            (_stored(original, external_call_id(original, session_id)), r)
+            for original, r in pw["notifying_results"]
         ]
         wake_keys.append(
             tool_wait_event_key(

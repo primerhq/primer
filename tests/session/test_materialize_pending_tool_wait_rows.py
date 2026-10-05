@@ -323,3 +323,36 @@ async def test_a_row_of_another_session_under_the_same_id_is_never_adopted_as_a_
             await _create_tool_call_task_idempotent(
                 task_storage, _task(record_seq=1), session_id="s1", strict=strict,
             )
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_legacy_bare_entry_keeps_its_stored_ids_so_its_rows_stay_findable() -> None:
+    """A development flag-on park written before ids were qualified has its rows under the BARE id. On a partial-wake
+    re-park (``strict=False``) that carried-over entry is skipped (this resume never minted it), and rewriting it to a
+    qualified id its rows do not have made the next wake find nothing and end the session failed. A skipped bare id
+    keeps the form it was stored in; an entry this call materialized, and a carried-over entry that is already
+    qualified, end up qualified; the wake keys do not depend on the form."""
+    storage_provider = _FakeStorageProvider()
+    task_storage = storage_provider.get_storage(ToolCallTask)
+    session = _session()
+    cs = _CoalesceState()
+    for tid in ("N:tool:0:1", "N:tool:0:2"):
+        cs.tool_call_record_seq[tid] = 1
+        cs.tool_call_record_name[tid] = "t"
+    legacy = _pending_tool_wait("L", ["L:tool:0:1"], notifying=("L:tool:0:2",))      # bare, never minted by this resume
+    fresh = _pending_tool_wait("N", ["N:tool:0:1"], notifying=("N:tool:0:2",))       # minted by this resume
+    qualified = _pending_tool_wait("Q", [_q("Q:tool:0:1")])                           # carried over, already qualified
+
+    wake_keys = await materialize_pending_tool_wait_rows(
+        storage_provider, None, session.id, session.turn_no, cs, datetime.now(timezone.utc),
+        [legacy, fresh, qualified], strict=False,
+    )
+
+    assert legacy["outstanding_task_ids"] == ["L:tool:0:1"], "a skipped legacy id was rewritten to a form its row does not have"
+    assert [i for i, _ in legacy["notifying_results"]] == ["L:tool:0:2"]
+    assert fresh["outstanding_task_ids"] == [_q("N:tool:0:1")]
+    assert [i for i, _ in fresh["notifying_results"]] == [_q("N:tool:0:2")]
+    assert qualified["outstanding_task_ids"] == [_q("Q:tool:0:1")]
+    assert wake_keys == ["tool_wait:s1:0:L", "tool_wait:s1:0:N", "tool_wait:s1:0:Q"]
+    assert await task_storage.get(_q("N:tool:0:1")) is not None
+    assert await task_storage.get(_q("L:tool:0:1")) is None, "the skipped entry must not gain rows"

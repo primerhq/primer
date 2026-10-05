@@ -34,7 +34,8 @@ def test_dispatches_to_tool_wait_builder_for_toolwaitpark() -> None:
     )
     repark.graph_checkpoint = {
         "pending_tool_waits": [
-            {"node_id": "A", "outstanding_task_ids": ["A:tool:0:1"], "notifying_results": []},
+            # as the park materializer stores it: the session-qualified form (S1b)
+            {"node_id": "A", "outstanding_task_ids": ["gs-1/A:tool:0:1"], "notifying_results": []},
         ],
     }
 
@@ -103,9 +104,9 @@ def test_notifying_results_included_in_task_ids() -> None:
     repark.graph_checkpoint = {
         "pending_tool_waits": [
             {
-                "node_id": "A", "outstanding_task_ids": ["A:tool:0:1"],
+                "node_id": "A", "outstanding_task_ids": ["gs-1/A:tool:0:1"],
                 "notifying_results": [
-                    ("A:tool:0:2", {"id": "A:tool:0:2", "output": "inline", "error": False}),
+                    ("gs-1/A:tool:0:2", {"id": "A:tool:0:2", "output": "inline", "error": False}),
                 ],
             },
         ],
@@ -136,3 +137,46 @@ def test_dispatches_to_yield_builder_for_yieldtoworker() -> None:
     assert outcome.park.parked_event_key == "ask_user:B:tc-b"
     parked_state = ParkedState.from_jsonable(outcome.park.parked_state)
     assert parked_state.tool_call_id == "tc-b"
+
+
+def test_the_flat_lists_keep_the_form_each_entry_stores_a_legacy_park_stays_findable() -> None:
+    """A park written before ids were qualified (a development flag-on park) has its rows under the BARE id. A partial
+    wake re-parks node A's entry as it is stored; blindly qualifying the flat lists made the blob name rows that do not
+    exist, and the next wake ended the session failed. Two entries, one bare (carried over from the legacy park) and
+    one qualified: each keeps its own form, in entry order; the wake keys do not depend on the form."""
+    session = _session()
+    repark = ToolWaitPark(
+        outstanding_task_ids=["A:tool:0:1", "B:tool:0:1"], event_key="tool_wait:A:tool:0:1",
+        notifying_results=[("B:tool:0:2", ToolResultPart(id="B:tool:0:2", output="inline", error=False))],
+    )
+    repark.graph_checkpoint = {
+        "pending_tool_waits": [
+            {"node_id": "A", "outstanding_task_ids": ["A:tool:0:1"], "notifying_results": []},   # legacy, bare
+            {
+                "node_id": "B", "outstanding_task_ids": ["gs-1/B:tool:0:1"],
+                "notifying_results": [
+                    ("gs-1/B:tool:0:2", {"id": "B:tool:0:2", "output": "inline", "error": False}),
+                ],
+            },
+        ],
+    }
+
+    outcome = repark_graph_outcome(None, session, repark)
+
+    parked_state = ToolWaitParkedState.from_jsonable(outcome.park.parked_state)
+    assert parked_state.outstanding_task_ids == ["A:tool:0:1", "gs-1/B:tool:0:1"]
+    assert parked_state.notifying_task_ids == ["gs-1/B:tool:0:2"]
+    assert outcome.park.parked_event_keys == ["tool_wait:gs-1:0:A", "tool_wait:gs-1:0:B"]
+
+
+def test_with_no_entries_the_exceptions_scoped_ids_are_qualified() -> None:
+    session = _session()
+    repark = ToolWaitPark(
+        outstanding_task_ids=["A:tool:0:1"], event_key="tool_wait:A:tool:0:1", notifying_results=[],
+    )
+    repark.graph_checkpoint = {"pending_tool_waits": []}
+
+    outcome = repark_graph_outcome(None, session, repark)
+
+    parked_state = ToolWaitParkedState.from_jsonable(outcome.park.parked_state)
+    assert parked_state.outstanding_task_ids == ["gs-1/A:tool:0:1"]

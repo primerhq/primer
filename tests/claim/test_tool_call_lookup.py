@@ -115,3 +115,33 @@ async def test_raises_on_id_mismatch_no_silent_fallback() -> None:
     task = _make_task(id="w:tool:1:1", record_seq=2)
     with pytest.raises(ToolCallRecordMismatch, match="expected 'w:tool:1:1'"):
         await read_tool_call_record(io, task)
+
+
+@pytest.mark.asyncio
+async def test_a_session_qualified_task_matches_the_transcript_record_by_its_scoped_id() -> None:
+    """S1b: the row id is ``<session_id>/<scoped id>`` while the transcript's TOOL_CALL record carries the scoped id. Two
+    sessions have a record with the SAME scoped id at the same seq; each task reads its own session's log and matches."""
+    io = _FakeWorkspaceIO()
+    for sid, tool in (("sess-1", "tool_one"), ("sess-2", "tool_two")):
+        io.write(_msg_path(sid), _line(1, "user_input") + _line(2, "tool_call", {"id": "w:tool:1:1", "name": tool}))
+
+    for sid, tool in (("sess-1", "tool_one"), ("sess-2", "tool_two")):
+        task = ToolCallTask(
+            id=f"{sid}/w:tool:1:1", session_id=sid, turn_no=1, tool_name=tool,
+            state=ToolCallTaskState.QUEUED, record_seq=2, created_at=_NOW,
+        )
+        record = await read_tool_call_record(io, task)
+        assert record.payload["name"] == tool
+
+
+@pytest.mark.asyncio
+async def test_a_session_qualified_task_does_not_match_a_record_carrying_the_qualified_id() -> None:
+    """The record carries the SCOPED id; a record whose id is the qualified form is a different (wrong) id."""
+    io = _FakeWorkspaceIO()
+    io.write(_msg_path("sess-1"), _line(2, "tool_call", {"id": "sess-1/w:tool:1:1", "name": "x"}))
+    task = ToolCallTask(
+        id="sess-1/w:tool:1:1", session_id="sess-1", turn_no=1, tool_name="x",
+        state=ToolCallTaskState.QUEUED, record_seq=2, created_at=_NOW,
+    )
+    with pytest.raises(ToolCallRecordMismatch, match="expected 'w:tool:1:1'"):
+        await read_tool_call_record(io, task)

@@ -773,13 +773,18 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
     now = datetime.now(timezone.utc)
     timeout = 3600.0
     # The park exception carries scoped call ids; the rows, leases and blobs use the session-qualified form.
+    # The flat lists are the entries' own ids, in the form each entry stores (a carried-over entry parked before ids
+    # were qualified keeps its bare ids, because its rows are under them). Only when there are no entries does the
+    # exception's scoped ids get qualified here.
+    if pending_tool_waits:
+        flat_outstanding = [i for pw in pending_tool_waits for i in pw["outstanding_task_ids"]]
+        flat_notifying = [sid for pw in pending_tool_waits for sid, _ in pw["notifying_results"]]
+    else:
+        flat_outstanding = [tool_call_task_id(session.id, i) for i in repark.outstanding_task_ids]
+        flat_notifying = [tool_call_task_id(session.id, sid) for sid, _ in repark.notifying_results]
     parked_state = ToolWaitParkedState(
-        outstanding_task_ids=[
-            tool_call_task_id(session.id, i) for i in repark.outstanding_task_ids
-        ],
-        notifying_task_ids=[
-            tool_call_task_id(session.id, sid) for sid, _ in repark.notifying_results
-        ],
+        outstanding_task_ids=flat_outstanding,
+        notifying_task_ids=flat_notifying,
         event_key=wake_keys[0] if wake_keys else repark.event_key,
         llm_messages=list(repark.llm_messages or []),
         turn_no=session.turn_no,
