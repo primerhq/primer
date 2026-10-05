@@ -65,6 +65,11 @@ class ContextOverflowUnrecoverable(ConfigError):
     def __init__(self, message: str, *, cause: BaseException | None = None) -> None:
         super().__init__(message, code=self.CODE, cause=cause)
 
+    @property
+    def ended_detail_code(self) -> str:
+        """The terminal detail the session records when this ends the turn."""
+        return self.CODE
+
 
 class ModelNotFoundError(ConfigError):
     """Requested model isn't in the adapter's declared models list."""

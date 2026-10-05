@@ -21,6 +21,7 @@ from primer.model.except_ import (
     BadRequestError,
     ConfigError,
     ConflictError,
+    ContextOverflowUnrecoverable,
     DimensionMismatchError,
     PrimerError,
     ModelNotFoundError,
@@ -147,6 +148,50 @@ def test_auth_required_carries_auth_url_extension() -> None:
     body = response.json()
     assert body["type"] == "/errors/auth-required"
     assert body["extensions"]["auth_url"] == "https://oauth.example/authorize"
+
+
+def test_a_context_overflow_that_compaction_cannot_fix_has_its_own_problem_type() -> None:
+    """Not ``service-unavailable``: that says retry later, and the same turn cannot fit however often it is retried."""
+    app = _make_app()
+    _mount_raiser(app, "/raise", ContextOverflowUnrecoverable("the prompt is too large (fixed_over_budget)"))
+    response = TestClient(app, raise_server_exceptions=False).get("/raise")
+    assert response.status_code == 413
+    assert response.headers["content-type"].startswith(PROBLEM_JSON_MEDIA_TYPE)
+    body = response.json()
+    assert body["type"] == "/errors/context-overflow-unrecoverable"
+    assert body["title"] == "Context Overflow Unrecoverable"
+    assert body["status"] == 413 and "fixed_over_budget" in body["detail"]
+    assert ContextOverflowUnrecoverable("x").ended_detail_code == "context_overflow_unrecoverable"
+
+
+def test_an_exceptions_problem_extensions_are_merged_into_the_envelope() -> None:
+    from primer.session.compaction import NothingToCompact
+
+    app = _make_app()
+    _mount_raiser(app, "/raise", NothingToCompact("empty_head"))
+    response = TestClient(app, raise_server_exceptions=False).get("/raise")
+    assert response.status_code == 422
+    assert response.json()["extensions"] == {"reason": "empty_head"}
+
+
+def test_problem_extensions_are_added_to_the_ones_the_handler_already_sets() -> None:
+    """``auth_url`` comes from the handler itself; an exception's own extensions join it instead of replacing it."""
+    class _Both(AuthRequiredError):
+        @property
+        def problem_extensions(self) -> dict[str, str]:
+            return {"reason": "because"}
+
+    app = _make_app()
+    _mount_raiser(app, "/raise", _Both("oauth needed", auth_url="https://oauth.example/authorize", state="opaque"))
+    body = TestClient(app, raise_server_exceptions=False).get("/raise").json()
+    assert body["extensions"] == {"auth_url": "https://oauth.example/authorize", "reason": "because"}
+
+
+def test_an_exception_without_problem_extensions_adds_nothing() -> None:
+    app = _make_app()
+    _mount_raiser(app, "/raise", ConflictError("taken"))
+    body = TestClient(app, raise_server_exceptions=False).get("/raise").json()
+    assert "extensions" not in body
 
 
 def test_pydantic_validation_error_returns_422_with_errors_extension() -> None:

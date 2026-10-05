@@ -29,11 +29,11 @@ import uuid
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from pydantic import TypeAdapter
 
-from primer.model.chat import Message, Part, TextPart
+from primer.model.chat import CompactionSummary, Message, Part, TextPart
 from primer.model.except_ import ConflictError
 from primer.model.workspace_session import (
     AgentBinding,
@@ -219,10 +219,61 @@ def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
         # else: a non-marker event-log record -> not LLM history, skip.
     msgs = [m for _s, m in carried]
     if summary_text:
-        summary = Message(role="assistant", parts=[TextPart(text=summary_text)])
+        summary = CompactionSummary(role="assistant", parts=[TextPart(text=summary_text)])
         k = min(summary_after, len(msgs))
         return [*msgs[:k], summary, *msgs[k:]]
     return msgs
+
+
+class LastCompaction(NamedTuple):
+    """What ``messages.jsonl`` says about the newest compaction: see :func:`last_compaction_state`."""
+
+    tokens_after: int | None = None
+    skip_noted: bool = False
+
+
+def last_compaction_state(raw_lines: "list[str]") -> LastCompaction:
+    """What the compaction strategy and the executor need to know about the newest compaction.
+
+    ``tokens_after`` is the estimated prompt size the newest compaction marker left. It is ``None`` when
+    the session has no marker, when the newest one was rewound away (its summary no longer stands, as in
+    :func:`reconstruct_compacted_history`), or when it did not record a size (a marker written before the
+    figure was kept says ``0``). The strategy reads it to avoid summarising its own summary again before
+    the prompt has grown.
+
+    ``skip_noted`` says that a ``compaction_note`` record for a skipped compaction was already written
+    since that marker (or since the start of the session, with none). A run of skips is noted once, not
+    on every turn; the next marker ends the run.
+    """
+    marker_kind = SessionMessageKind.COMPACTION_MARKER.value
+    rewind_kind = SessionMessageKind.REWIND_MARKER.value
+    note_kind = SessionMessageKind.COMPACTION_NOTE.value
+    last: tuple[int, int | None] | None = None  # (seq of the marker, its tokens_after)
+    skip_noted = False
+    for line in raw_lines:
+        if marker_kind not in line and rewind_kind not in line and note_kind not in line:
+            continue  # the file is mostly messages and event records: only these lines are parsed
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        seq = obj.get("seq") if isinstance(obj.get("seq"), int) else 0
+        payload = obj.get("payload") or {}
+        kind = obj.get("kind")
+        if kind == marker_kind:
+            tokens = payload.get("tokens_after")
+            known = isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0
+            last = (seq, tokens if known else None)
+            skip_noted = False
+        elif kind == rewind_kind:
+            to_seq = payload.get("to_seq")
+            if last is not None and isinstance(to_seq, int) and last[0] > to_seq:
+                last, skip_noted = None, False
+        elif kind == note_kind and payload.get("outcome") == "skipped":
+            skip_noted = True
+    return LastCompaction(last[1] if last else None, skip_noted)
 
 
 # ---------------------------------------------------------------------------

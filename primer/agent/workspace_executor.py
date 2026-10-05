@@ -537,6 +537,16 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
 
         return await asyncio.to_thread(_parse)
 
+    async def _last_compaction(self) -> tuple[int | None, bool]:
+        """``(tokens_after, skip_noted)`` of the newest compaction, read from ``messages.jsonl``."""
+        text = await self._read_messages_jsonl_text()
+        if not text:
+            return None, False
+        # Deferred import, as in _read_messages_jsonl.
+        from primer.workspace.session import last_compaction_state
+
+        return tuple(await asyncio.to_thread(last_compaction_state, text.splitlines()))  # type: ignore[return-value]
+
     async def _appended_jsonl(self, new_messages: list[Message]) -> str:
         existing = await self._read_messages_jsonl_text()
         if existing and not existing.endswith("\n"):

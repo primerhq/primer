@@ -151,6 +151,9 @@ async def compact_session(
             "outcome": getattr(result, "outcome", "summarised"),
             "unreducible": getattr(result, "unreducible", None),
             "trigger_tokens": getattr(result, "trigger_tokens", None),
+            # ``tokens_before`` / ``tokens_after`` count this part of the prompt too, as far as the
+            # caller could measure it, as the executor's marker records.
+            "fixed_overhead_tokens": getattr(result, "fixed_overhead_tokens", 0),
             "created_at": datetime.now(UTC).isoformat(),
             # The tail kept verbatim after the summary: without it the fold
             # would drop it (see reconstruct_compacted_history).

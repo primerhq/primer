@@ -72,7 +72,7 @@ class TapEventClass(StrEnum):
     # renderer skips it (ui/components/session-adapter.jsx).
     LLM_CALL = "llm_call"
     # Mirrors SessionMessageKind.COMPACTION_NOTE: a compaction could not reduce
-    # the prompt and wrote no marker. Trace material: the transcript renderer
+    # the prompt (or deliberately skipped) and wrote no marker. Trace material: the transcript renderer
     # skips it (ui/components/session-adapter.jsx).
     COMPACTION_NOTE = "compaction_note"
     # Mirrors SessionMessageKind.PAUSE_SUPERSEDED: an operator's pause was
