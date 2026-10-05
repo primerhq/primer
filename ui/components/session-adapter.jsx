@@ -212,10 +212,14 @@ function SA_reducedInputNote(r) {
   if (r.truncated_parts > 0) {
     parts.push(r.truncated_parts + (r.truncated_parts === 1 ? " part" : " parts") + " cut");
   }
+  // a tool-enabled summariser's loop overflowed in a later round and ended with the summary it had written
+  var cut = r.tool_loop_cut_round > 0 ? "tool loop cut in round " + r.tool_loop_cut_round : "";
+  if (parts.length) {
+    return " (summariser input reduced: " + parts.join(", ") + (cut ? "; " + cut : "") + ")";
+  }
+  if (cut) return " (summariser " + cut + ")";
   // all zero: the retry was text only on an input that needed nothing taken out
-  return parts.length
-    ? " (summariser input reduced: " + parts.join(", ") + ")"
-    : " (summariser retried without tools)";
+  return " (summariser retried without tools)";
 }
 
 // Divider label for the four kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
