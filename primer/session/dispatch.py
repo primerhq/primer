@@ -1487,6 +1487,12 @@ def _tool_wait_yielded_record(tool_wait: ToolWaitPark) -> SessionMessageRecord:
 _STOP_REASON = "operator_interrupt"
 _CANCEL_REASON = "operator_cancel"
 
+# How long the CANCELLED record may take to reach the workspace while the session's lifecycle lock is held.
+# A workspace whose runtime connection dropped (a common reason to press Stop) blocks the write until it
+# reconnects, which may be never, and every Cancel, Stop, steer, pause, resume and switch of the session
+# queues behind that lock. Long enough for a slow healthy write, short enough that the session is not wedged.
+_CANCELLED_RECORD_WRITE_TIMEOUT_S = 10.0
+
 
 async def _land_cancelled_turn(
     deps: "SessionDispatchDeps",
@@ -1522,8 +1528,7 @@ async def _land_cancelled_turn(
         fresh = await session_storage.get(session_id)
         is_interrupt = bool(fresh is not None and not fresh.cancel_requested)
         reason = _STOP_REASON if is_interrupt else _CANCEL_REASON
-        seq = await writer.append(_cancelled_record(reason))
-        await writer.flush()
+        seq = await _write_cancelled_record(writer, session_id, reason)
         if is_interrupt:
             new_status, ended_reason = _interrupt_post_status()
         else:
@@ -1539,7 +1544,8 @@ async def _land_cancelled_turn(
         await _clear_interrupt_requested(session_storage, session_id)
         await _persist_last_seq(session_storage, session_id, writer.last_seq)
         await _advance_drain_cursor(session_storage, session_id)
-    await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
+    if seq is not None:
+        await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
     await _safe_turn_log(turn_log, TurnLogCancelled(
         seq=0, ts=_now(), turn_no=session.turn_no, reason=reason,
     ))
@@ -1549,6 +1555,31 @@ async def _land_cancelled_turn(
     await _realize_pending_at_checkpoint(deps, session)
     _observe_turn(session, "cancelled", started_at)
     return ReleaseOutcome(success=True, drop_lease=True)
+
+
+async def _write_cancelled_record(
+    writer: "WorkspaceMessageWriter", session_id: str, reason: str,
+) -> int | None:
+    """Write the CANCELLED record, bounded, for a caller that holds the session's lifecycle lock.
+
+    Returns the record's seq, or ``None`` when the workspace did not take the write within
+    ``_CANCELLED_RECORD_WRITE_TIMEOUT_S``. A record that is lost is logged and the exit carries on: the row's
+    status and ``ended_reason`` still say how the turn ended, and the alternative is a lock that every other
+    operation on the session queues behind for as long as the workspace stays unreachable. Any other failure
+    of the write is not swallowed. A cancellation of the caller is not a timeout and passes through.
+    """
+    try:
+        async with asyncio.timeout(_CANCELLED_RECORD_WRITE_TIMEOUT_S):
+            seq = await writer.append(_cancelled_record(reason))
+            await writer.flush()
+            return seq
+    except TimeoutError:
+        logger.warning(
+            "session %s: the CANCELLED(%s) record was not written within %gs (the workspace is not "
+            "accepting writes); finishing the cancelled exit without it",
+            session_id, reason, _CANCELLED_RECORD_WRITE_TIMEOUT_S,
+        )
+        return None
 
 
 def _cancelled_record(reason: str) -> SessionMessageRecord:

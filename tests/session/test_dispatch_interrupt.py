@@ -519,6 +519,161 @@ class TestTheCancelArmDecidesInsideTheLock:
         )
 
 
+class TestTheCancelledRecordWriteIsBoundedInTheLock:
+    """The CANCELLED record is written while the per-session lifecycle lock is held, and a workspace whose runtime
+    connection dropped (a common reason to press Stop) blocks that write until it reconnects, which may be never.
+    Every Cancel, Stop, steer, pause, resume and switch of the session queues behind that lock, so an unbounded
+    write wedges the whole session. The write is bounded; on a timeout the exit logs, skips the record and still
+    decides, transitions and releases."""
+
+    _NEEDLE = f'"kind":"{SessionMessageKind.CANCELLED.value}"'
+
+    def _script(self, how: str, sid: str, storage, bus) -> list[Any]:
+        cancel_lands = TestACancelThatLandsAfterTheModelFinished()._cancel_lands
+
+        async def stop_lands() -> None:
+            await _request_stop(storage, bus, sid)
+            await asyncio.sleep(0.1)
+
+        async def cancel_lands_mid_turn() -> None:
+            await cancel_lands(storage, bus, sid)
+            await asyncio.sleep(0.1)
+
+        if how == "stop":
+            return [stop_lands, "BLOCK"]
+        return [TextDelta(text="the full answer", index=0), cancel_lands_mid_turn,
+                Done(stop_reason="stop", raw_reason="stop")]
+
+    @pytest.mark.parametrize("how", ["stop", "cancel"])
+    async def test_a_write_that_never_returns_does_not_wedge_the_lock_or_the_turn(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog, how,
+    ) -> None:
+        sid = seeded_session.id
+        ref = dispatch._binding_ref(await fake_storage_provider.get_storage(WorkspaceSession).get(sid))
+        monkeypatch.setattr(dispatch, "_CANCELLED_RECORD_WRITE_TIMEOUT_S", 0.2)
+        loop = asyncio.get_running_loop()
+        hung = asyncio.Event()
+        published: list[tuple[str, dict]] = []
+        publish = fake_event_bus.publish
+
+        async def spy_publish(key: str, payload: dict) -> None:
+            published.append((key, payload))
+            await publish(key, payload)
+
+        monkeypatch.setattr(fake_event_bus, "publish", spy_publish)
+        real_append = fake_workspace_io.append_message_line
+
+        async def append_or_hang(session_id: str, line: bytes) -> None:
+            if self._NEEDLE.encode() in line:
+                hung.set()
+                await asyncio.Event().wait()           # the runtime socket is down and never comes back
+            await real_append(session_id, line)
+
+        monkeypatch.setattr(fake_workspace_io, "append_message_line", append_or_hang)
+        waited: dict[str, float] = {}
+
+        async def another_operation_on_the_session() -> None:
+            """What a steer, a pause or a second Cancel does: take the session's lifecycle lock."""
+            await hung.wait()
+            started = loop.time()
+            async with dispatch.session_lifecycle_lock().acquire(sid):
+                waited["s"] = loop.time() - started
+
+        probe = asyncio.ensure_future(another_operation_on_the_session())
+        turn_log = _RecordingTurnLog()
+        deps = SessionDispatchDeps(
+            storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus,
+            build_executor=_build_returning(_StopAwareExecutor(
+                self._script(how, sid, fake_storage_provider, fake_event_bus))),
+            turn_log_writer_factory=lambda _io, _sid: turn_log,
+        )
+        with caplog.at_level(logging.WARNING):
+            outcome = await asyncio.wait_for(run_one_session_turn(_make_lease(sid), deps), 5.0)
+        await asyncio.wait_for(probe, 2.0)
+
+        assert hung.is_set(), "the test never reached the CANCELLED record's write"
+        assert waited["s"] < 2.0, f"another operation on the session waited {waited['s']:.1f}s for the lifecycle lock"
+        assert outcome.success and outcome.drop_lease
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        if how == "stop":
+            assert row.status == SessionStatus.WAITING and row.ended_reason is None
+        else:
+            assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled"
+        assert not row.interrupt_requested, "the flag was not cleared"
+        assert row.last_seq >= 1 and row.next_unprocessed_seq == row.last_seq + 1, "the exit did not finish its tail"
+        reason = "operator_interrupt" if how == "stop" else "operator_cancel"
+        assert turn_log.cancel_reasons == [reason], "the turn log entry was lost"
+        assert any(key == f"session:{sid}:terminal" for key, _ in published), "the terminal event was lost"
+        assert metrics.turns_total.labels(ref, "cancelled")._value.get() == 1.0
+        assert all(isinstance(p.get("seq"), int) for key, p in published if key == f"session:{sid}:tick"), (
+            "a tick was published for a record that was never written"
+        )
+        assert any(sid in r.getMessage() and "CANCELLED" in r.getMessage() for r in caplog.records), (
+            "the lost record was not logged"
+        )
+        assert not [r for r in _records(fake_workspace_io, sid) if r["kind"] == SessionMessageKind.CANCELLED]
+
+    @pytest.mark.parametrize("hangs_in", ["append", "flush"])
+    async def test_a_hang_in_either_call_of_the_write_is_bounded(self, monkeypatch, hangs_in) -> None:
+        """``append`` can do I/O of its own (it flushes records that sat in the buffer past the age limit before
+        adding the new one), so the bound covers it as well as ``flush``."""
+        monkeypatch.setattr(dispatch, "_CANCELLED_RECORD_WRITE_TIMEOUT_S", 0.1)
+
+        class _HangingWriter:
+            async def append(self, record) -> int:
+                if hangs_in == "append":
+                    await asyncio.Event().wait()
+                return 7
+
+            async def flush(self) -> None:
+                if hangs_in == "flush":
+                    await asyncio.Event().wait()
+
+        seq = await asyncio.wait_for(dispatch._write_cancelled_record(_HangingWriter(), "s1", "operator_cancel"), 2.0)
+
+        assert seq is None
+
+    async def test_a_write_that_fails_outright_is_not_swallowed(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+    ) -> None:
+        """Only a timeout is absorbed. A write that raises (the runtime says it is not connected) is a real
+        failure, and it reaches the pool, which releases the lease as failed, exactly as before."""
+        sid = seeded_session.id
+        real_append = fake_workspace_io.append_message_line
+
+        async def append_or_fail(session_id: str, line: bytes) -> None:
+            if self._NEEDLE.encode() in line:
+                raise RuntimeError("EPROTOCOL", "Not connected")
+            await real_append(session_id, line)
+
+        monkeypatch.setattr(fake_workspace_io, "append_message_line", append_or_fail)
+        with pytest.raises(RuntimeError, match="EPROTOCOL"):
+            await _run(fake_storage_provider, fake_workspace_io, fake_event_bus,
+                       _StopAwareExecutor(self._script("stop", sid, fake_storage_provider, fake_event_bus)), sid)
+
+    @pytest.mark.parametrize("how", ["stop", "cancel"])
+    async def test_a_slow_but_healthy_write_still_lands_its_record(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, how,
+    ) -> None:
+        sid = seeded_session.id
+        monkeypatch.setattr(dispatch, "_CANCELLED_RECORD_WRITE_TIMEOUT_S", 2.0)
+        real_append = fake_workspace_io.append_message_line
+
+        async def slow_append(session_id: str, line: bytes) -> None:
+            if self._NEEDLE.encode() in line:
+                await asyncio.sleep(0.3)               # well inside the bound
+            await real_append(session_id, line)
+
+        monkeypatch.setattr(fake_workspace_io, "append_message_line", slow_append)
+        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus,
+                   _StopAwareExecutor(self._script(how, sid, fake_storage_provider, fake_event_bus)), sid, timeout=5.0)
+
+        cancelled = [r for r in _records(fake_workspace_io, sid) if r["kind"] == SessionMessageKind.CANCELLED]
+        assert [r["payload"]["reason"] for r in cancelled] == (
+            ["operator_interrupt"] if how == "stop" else ["operator_cancel"]
+        ), "the bound cut a healthy write short"
+
+
 class TestAStopThatLandsBeforeTheBatchThroughTheWholeTurn:
     """The loop-level tests prove the refusal; this proves what the SESSION records and ends as when the loop is the
     real one: the tool never runs, the call is answered in the transcript, and the session rests WAITING."""
