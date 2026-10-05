@@ -436,8 +436,14 @@ async def delete_session(
         # back whole (twice) would overwrite whatever the worker changed in the meantime.
         async with session_lifecycle_lock().acquire(session_id):
             fresh = await sessions.get(session_id)
-            if fresh is not None:
-                s = fresh
+            if fresh is None:
+                # Deleted by someone else while this request waited for the lock: there is nothing to
+                # force, and writing the snapshot read before the wait back would re-create it.
+                raise NotFoundError(
+                    f"Session {session_id!r} does not exist on workspace "
+                    f"{workspace_id!r}"
+                )
+            s = fresh
             # A session that stopped running since the first read is not forced: it takes the ordinary
             # path for its status below. Forcing it would write ENDED/force_deleted over a row no worker
             # holds and signal a cancel nobody is running.

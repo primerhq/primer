@@ -1513,8 +1513,11 @@ _SLOT_MIRROR_TIMEOUT_S = 10.0
 
 # The bound for the cancelled exit's best-effort workspace I/O OUTSIDE the lock (the output streamed before the
 # Stop, the turn-log entry, the turn log's close). Nothing else waits on those, but the terminal publish and the
-# lease release come after them. Shorter than the others so the whole exit (up to _CANCELLED_RECORD_WRITE_TIMEOUT_S
-# + _SLOT_MIRROR_TIMEOUT_S under the lock, then two of these) stays within _TERMINAL_EXIT_GRACE_S.
+# lease release come after them. Shorter than the others so the whole exit adds up to _TERMINAL_EXIT_GRACE_S:
+# _CANCELLED_RECORD_WRITE_TIMEOUT_S + _SLOT_MIRROR_TIMEOUT_S under the lock, then two of these (10 + 10 + 5 + 5 = 30)
+# with NO margin, so a step that is merely slow lets the grace cancel the tail; what that skips is only what comes
+# after the terminal publish. (The build-failure path is not this exit, but it can hold the lock for two
+# _SLOT_MIRROR_TIMEOUT_S bounds: loading the slot through the registry, then the mirror.)
 _BEST_EFFORT_IO_TIMEOUT_S = 5.0
 
 
