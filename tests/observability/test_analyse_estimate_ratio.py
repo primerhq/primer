@@ -67,6 +67,27 @@ class Session:
             self.records.append(_done(len(self.records) + 1, day, "stop" if last else "tool_use", node=node))
         return self
 
+    def delegated(self, calls: list[dict], delegate_id: str, *, day: float) -> Session:
+        """A subagent run recorded INLINE in this log, as ``DelegationRecorder`` writes it: node_id null and every record
+        (the done as well) stamped ``delegated`` with the delegating call's id."""
+        for k, kwargs in enumerate(calls):
+            last = k == len(calls) - 1
+            for rec in (
+                _llm_call(len(self.records) + 1, day, **kwargs),
+                _done(len(self.records) + 2, day, "stop" if last else "tool_use"),
+            ):
+                rec.payload["delegated"] = True
+                rec.payload["delegate_tool_call_id"] = delegate_id
+                self.records.append(rec)
+        return self
+
+    def terminal(self, kind: str, *, day: float) -> Session:
+        """A turn that ended without a ``done``: a Stop or Cancel (``cancelled``) or a failure (``error``)."""
+        self.records.append(SessionMessageRecord(
+            seq=len(self.records) + 1, kind=SessionMessageKind(kind), payload={"message": "x"}, created_at=_stamp(day),
+        ))
+        return self
+
     def marker(self, *, day: float, before: int, trigger: int = TRIGGER) -> Session:
         self.records.append(_marker(len(self.records) + 1, day, before=before, trigger=trigger))
         return self
@@ -415,6 +436,156 @@ def test_a_compaction_marker_between_two_calls_is_not_a_pure_append(tmp_path):
         s.records.append(_done(len(s.records) + 1, day, "stop"))
     (group,) = rule.build_groups(rule.read_corpus([s.write(tmp_path)]), set())[0]
     assert group.pairs == 0
+
+
+# ---- delegated runs (a subagent's calls are written inline in the parent's log) ----------------------------------------------
+
+def test_a_delegated_run_inside_a_parent_turn_neither_splits_it_nor_pairs_with_it(tmp_path):
+    """Probe of the review: ``DelegationRecorder`` writes the subagent's llm_call and done records into the parent's file with
+    node_id null. The child's final done (stop) used to end the parent's turn, and a parent call paired with a child call (a
+    'decrease', since a subagent's prompt is smaller), so a monotonic provider looked broken."""
+    s = Session()
+    for turn in range(40):
+        day = 8.0 * turn / 39
+        s.records.append(_llm_call(len(s.records) + 1, day, est=NEAR))
+        s.records.append(_done(len(s.records) + 1, day, "tool_use"))
+        s.delegated([{"est": NEAR // 4, "used": NEAR // 4}, {"est": NEAR // 4 + 1_000, "used": NEAR // 4 + 1_000}],
+                    "call_9", day=day)
+        s.records.append(_llm_call(len(s.records) + 1, day, est=NEAR + 2_000))
+        s.records.append(_done(len(s.records) + 1, day, "stop"))
+    corpus = rule.read_corpus([s.write(tmp_path)])
+    parent = [c for c in corpus.calls if c.turn[2] is None]
+    assert len(parent) == 80 and {c.turn for c in parent[:2]} == {parent[0].turn}, "the parent's two calls are one turn"
+    assert all(c.turn[2] == "call_9" for c in corpus.calls if c.turn[2] is not None)
+    (group,) = rule.build_groups(corpus, set())[0]
+    assert group.pairs == 80 and group.monotonic == 1.0 and group.anchor_allowed is True
+    assert group.pairs == 40 + 40, "one parent pair and one child pair per turn, never a parent-child pair"
+
+
+def test_two_delegated_runs_with_the_same_call_id_are_separate_turns(tmp_path):
+    """Provider call ids restart every stream, so one id can name two delegations: each ends at its own final done."""
+    s = Session()
+    for turn in range(40):
+        day = 8.0 * turn / 39
+        s.delegated([{"est": NEAR, "used": NEAR}, {"est": NEAR + 1_000, "used": NEAR + 1_000}], "call_0", day=day)
+        s.delegated([{"est": NEAR, "used": NEAR}, {"est": NEAR + 1_000, "used": NEAR + 1_000}], "call_0", day=day)
+    (group,) = rule.build_groups(rule.read_corpus([s.write(tmp_path)]), set())[0]
+    assert group.pairs == 80
+
+
+def test_a_delegated_or_guarded_call_is_never_the_prompt_a_compaction_marker_followed(tmp_path):
+    """The call before a trigger-fired marker is the parent's last unguarded call: a small subagent prompt or a small replay
+    prompt in between must not turn a compaction at 0.9 x trigger into a 'premature' one."""
+    s = _singles(_wide())
+    for _ in range(10):
+        s.turn([{"ratio": 1.0, "est": int(0.9 * TRIGGER), "used": int(0.9 * TRIGGER)}], day=5.0)
+        s.delegated([{"est": int(0.3 * TRIGGER), "used": int(0.3 * TRIGGER)}], "call_7", day=5.0)
+        s.turn([{"ratio": 1.0, "est": int(0.3 * TRIGGER), "guard": "reduced"}], day=5.0)
+        s.marker(day=5.0, before=TRIGGER + 1)
+    assert _run(s.write(tmp_path))["facts"]["premature_compaction_share"] == 0.0
+
+
+# ---- the data requirement, at its edges ----------------------------------------------------------------------------------
+
+def test_199_calls_are_not_enough_and_200_are(tmp_path):
+    assert _verdict(tmp_path / "a", [1.0] * 199) == NO_DATA
+    assert _verdict(tmp_path / "b", [1.0] * 200) == DNB
+
+
+def test_the_span_must_reach_the_minimum_days_exactly(tmp_path):
+    assert _verdict(tmp_path / "a", [1.0] * 300, days=6.5) == NO_DATA
+    assert _verdict(tmp_path / "b", [1.0] * 300, days=7.0) == DNB, "seven days to the second is enough"
+
+
+def test_the_command_line_default_is_seven_days(tmp_path, capsys):
+    """No --min-days: 6.5 days of data is not enough; 7.5 is."""
+    _singles([1.0] * 300, days=6.5).write(tmp_path / "a")
+    assert rule.main([str(tmp_path / "a"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["verdict"] == NO_DATA
+    _singles([1.0] * 300, days=7.5).write(tmp_path / "b")
+    assert rule.main([str(tmp_path / "b"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["verdict"] == DNB
+
+
+def test_every_material_group_needs_its_own_week_not_just_the_longest(tmp_path):
+    """Two material groups spanning 8 and 2 days: the shortest decides."""
+    s = Session()
+    for i in range(300):
+        s.turn([{"ratio": 1.0, "provider": "long"}], day=8.0 * i / 299)
+    for i in range(300):
+        s.turn([{"ratio": 1.0, "provider": "short", "model": "m2"}], day=2.0 * i / 299)
+    out = _run(s.write(tmp_path))
+    assert out["verdict"] == NO_DATA and "short" in out["reason"] and "long" not in out["reason"]
+
+
+# ---- rule 2 is about MATERIAL groups ------------------------------------------------------------------------------------------
+
+def test_a_group_below_the_material_share_cannot_turn_rule_2_into_rule_3(tmp_path):
+    """The material group is a steady undercount (spread small, so rule 2 applies); beside it a 200-call group at 4.8% with a
+    wide spread. Rule 1 and rule 2 both look at material groups only, so the verdict is rule 2's, not rule 3's."""
+    s = Session()
+    for i in range(4000):
+        s.turn([{"ratio": 1.30 + 0.20 * (i % 21) / 20, "provider": "big"}], day=8.0 * i / 3999)
+    for i, r in enumerate(_wide(200)):
+        s.turn([{"ratio": r, "provider": "small", "model": "m2"}], day=8.0 * i / 199)
+    out = _run(s.write(tmp_path))
+    small = [g for g in out["groups"] if g.key[0] == "small"][0]
+    assert not small.material and small.enough and small.spread > 1.25
+    assert out["verdict"] == ONLY_1A and out["reason"].startswith("rule 2"), out["reason"]
+
+
+# ---- rule 4 with skewed deltas, turns that end in other ways, and markers at the edge ------------------------------------------
+
+def test_rule_4_uses_the_median_delta_ratio_not_the_mean(tmp_path):
+    """60% of pairs grow at 1.0 times our estimate, 40% at 3.0: the median (1.0) is in the band, the mean (1.8) is not."""
+    s = Session()
+    for turn in range(100):
+        fast = turn % 5 < 2                                  # 40% of the turns
+        step = 6_000 if fast else 2_000
+        s.turn([{"est": NEAR, "used": NEAR}, {"est": NEAR + 2_000, "used": NEAR + step}], day=8.0 * turn / 99)
+    (group,) = rule.build_groups(rule.read_corpus([s.write(tmp_path)]), set())[0]
+    assert group.pairs == 100 and 0.99 < group.delta_ratio < 1.01 and group.anchor_allowed is True
+
+
+def test_a_cancelled_or_an_error_ends_a_turn_like_a_final_done(tmp_path):
+    def build(kind):
+        s = Session()
+        for turn in range(40):
+            day = 8.0 * turn / 39
+            s.records.append(_llm_call(len(s.records) + 1, day, est=NEAR))
+            s.records.append(_done(len(s.records) + 1, day, "tool_use"))
+            if kind:
+                s.terminal(kind, day=day)               # the turn ends here, without a stop done
+            s.records.append(_llm_call(len(s.records) + 1, day, est=NEAR + 2_000))
+            s.records.append(_done(len(s.records) + 1, day, "stop"))
+        return s
+    pairs = {}
+    for kind in (None, "cancelled", "error"):
+        (group,) = rule.build_groups(rule.read_corpus([build(kind).write(tmp_path / str(kind))]), set())[0]
+        pairs[kind] = group.pairs
+    assert pairs == {None: 40, "cancelled": 0, "error": 0}
+
+
+def test_a_marker_at_exactly_the_trigger_was_fired_by_the_trigger(tmp_path):
+    s = _singles(_wide())
+    s.turn([{"ratio": 1.0, "est": int(0.3 * TRIGGER)}], day=5.0)
+    s.marker(day=5.0, before=TRIGGER)                      # tokens_before == trigger_tokens
+    s.turn([{"ratio": 1.0, "est": int(0.3 * TRIGGER)}], day=5.0)
+    s.marker(day=5.0, before=TRIGGER - 1)                  # one under: not the trigger's
+    facts = _run(s.write(tmp_path))["facts"]
+    assert facts["trigger_fired_compactions"] == 1 and facts["manual_or_forced_markers_not_counted"] == 1
+
+
+# ---- the percentile --------------------------------------------------------------------------------------------------------------
+
+def test_the_percentile_interpolates_between_ranks():
+    assert rule.percentile([7.0], 0.9) == 7.0
+    assert rule.percentile([10.0, 20.0], 0.5) == 15.0
+    assert rule.percentile([5.0, 1.0, 3.0, 2.0, 4.0], 0.5) == 3.0, "unsorted input"
+    assert rule.percentile(list(map(float, range(101))), 0.10) == 10.0
+    assert rule.percentile(list(map(float, range(101))), 0.90) == 90.0
+    assert rule.percentile([0.0, 10.0], 0.25) == 2.5
+    assert rule.percentile([1.0, 2.0, 3.0], 0.0) == 1.0 and rule.percentile([1.0, 2.0, 3.0], 1.0) == 3.0
 
 
 # ---- the command line -------------------------------------------------------------------------------------------------------
