@@ -11,6 +11,7 @@ REAL ``GraphExecutor.resume_from_checkpoint`` with a value-yielding test hook th
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +21,7 @@ from primer.graph.base import _GraphErrorEvent
 from primer.graph.executor import GraphExecutor
 from primer.model.chat import ToolCallResult
 from primer.model.graph import GraphNodeMessage, GraphThread, NodeRuntimeStatus
+from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.toolset.python_runner.provider import PythonToolsetProvider, python_tool_resume, scoped_tool_name
 from primer.worker import graph_resume_coordinator
@@ -181,7 +183,7 @@ class _EnginePool(_EngineFakePool):
 
 
 @pytest.mark.asyncio
-async def test_the_engine_resume_gives_the_hook_the_session_and_the_registry():
+async def test_the_engine_resume_gives_the_hook_the_session_and_the_registry(caplog):
     """``resume_graph_engine`` (the coordinator behind every ask_user reply to a graph) reaches the hook with both."""
     seen = _recording_hook("test_vy_ctx_engine")
     checkpoint, resumer, raised = await _parked("test_vy_ctx_engine")
@@ -190,21 +192,27 @@ async def test_the_engine_resume_gives_the_hook_the_session_and_the_registry():
     async def factory():
         return resumer
 
-    pool = _EnginePool(storage=_StorageProvider(), workspace_io=_EngineWorkspaceIO(), executor_factory=factory)
+    storage = _StorageProvider()
+    pool = _EnginePool(storage=storage, workspace_io=_EngineWorkspaceIO(), executor_factory=factory)
     pool._provider_registry = registry
     session = _session("gs-engine")
     session.parked_state = {"resume_event_key": f"test_vy_ctx_engine:s:{_TCID}"}
+    # the resume-drain tap's flush writes last_seq onto the stored row; without one it logs a swallowed NotFoundError
+    await storage.get_storage(WorkspaceSession).create(session)
     parked = ParkedState(
         yielded=raised.yielded, llm_messages=[], turn_no=0, started_at=datetime.now(timezone.utc),
         tool_call_id=_TCID, resume_event_payload={"response": "blue"}, graph_checkpoint=checkpoint,
     )
 
-    outcome = await graph_resume_coordinator.resume_graph_engine(pool, session, parked)
+    with caplog.at_level(logging.WARNING):
+        outcome = await graph_resume_coordinator.resume_graph_engine(pool, session, parked)
 
     assert outcome == "ENDED:completed"
     (ctx,) = seen
     assert ctx.session_id == "gs-engine"
     assert ctx.resolve_provider == registry.get_toolset
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert not errors, f"the resume logged an error it swallowed: {[r.getMessage() for r in errors]}"
 
 
 class _PythonProvider(PythonToolsetProvider):
