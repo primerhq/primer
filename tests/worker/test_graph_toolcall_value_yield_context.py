@@ -1,0 +1,203 @@
+"""A graph ``tool_call`` node that value-yields hands its resume hook a real ``ResumeContext``.
+
+The agent-session resume and the graph agent-node resume build the context from the session being resumed and the provider
+registry (``session_id``, ``resolve_provider=registry.get_toolset``). The graph ``tool_call`` node path
+(``_resume_value_yield_toolcall``) built a bare one, ``session_id=None, resolve_provider=None``, so a hook that needs either
+(every python-toolset tool does: it reaches its provider through ``ctx.resolve_provider``) could not work from a graph
+node. These tests drive the REAL ``resume_graph_from_checkpoint`` (the worker adapter both resume coordinators call) and the
+REAL ``GraphExecutor.resume_from_checkpoint`` with a value-yielding test hook that records the context it receives.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Any
+
+import pytest
+
+from primer.graph.executor import GraphExecutor
+from primer.model.chat import ToolCallResult
+from primer.model.graph import GraphNodeMessage, GraphThread
+from primer.model.yield_ import Yielded, YieldToWorker
+from primer.worker import graph_resume_coordinator
+from primer.worker.graph_resume import resume_graph_from_checkpoint
+from primer.worker.yield_resume_registry import ResumeContext, register_resume_hook
+from primer.worker.yield_runtime import ParkedState
+
+from tests.graph.test_toolcall_ask_user_value_resume import (
+    _build_graph,
+    _drain,
+    _drain_until_yield,
+    _make_executor,
+)
+from tests.graph.test_toolcall_dispatch import _InMemoryStorage
+from tests.worker.test_pool_graph_resume import (
+    _FakePool,
+    _FakeSessionRow,
+    _FakeSessionStorage,
+    _FakeStorage,
+    _FakeWorkspaceIO,
+)
+from tests.worker.test_resume_graph_tool_wait import (
+    _FakePool as _EngineFakePool,
+    _FakeWorkspaceIO as _EngineWorkspaceIO,
+    _StorageProvider,
+    _session,
+)
+
+_TCID = "tc-vy"
+
+
+class _Registry:
+    async def get_toolset(self, toolset_id: str):  # pragma: no cover - never awaited here
+        return toolset_id
+
+
+class _PoolWithRegistry(_FakePool):
+    def __init__(self, *, registry: Any, workspace_io: Any, storage: Any) -> None:
+        super().__init__(workspace_io=workspace_io, storage=storage)
+        self._provider_registry = registry
+
+
+def _recording_hook(tool_name: str) -> list[ResumeContext]:
+    seen: list[ResumeContext] = []
+
+    def hook(meta, payload, ctx: ResumeContext) -> ToolCallResult:
+        seen.append(ctx)
+        return ToolCallResult(output=json.dumps({"response": payload["response"]}), is_error=False)
+
+    register_resume_hook(tool_name, hook)
+    return seen
+
+
+async def _parked(tool_name: str):
+    """Park the ``ask`` tool_call node on a value-yield under ``tool_name``; return what a resume needs."""
+    graph = _build_graph()
+
+    async def first_dispatcher(node, arguments):
+        raise YieldToWorker(
+            Yielded(tool_name=tool_name, event_key=f"{tool_name}:s:{_TCID}", resume_metadata={"q": "?"}),
+            tool_call_id=_TCID,
+        )
+
+    async def resume_dispatcher(node, arguments, bypass_approval=False):  # pragma: no cover - must not re-dispatch
+        raise AssertionError("a value-yielding tool_call must not be re-dispatched")
+
+    thread_storage: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
+    message_storage: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=thread_storage)  # type: ignore[arg-type]
+    parker = _make_executor(graph, thread, thread_storage, message_storage, first_dispatcher)
+    _events, raised = await _drain_until_yield(parker.invoke([]))
+    assert raised is not None
+    checkpoint = parker.snapshot_state()
+    resumer = _make_executor(graph, thread, thread_storage, message_storage, resume_dispatcher)
+    return checkpoint, resumer, raised
+
+
+def _pool_and_session(registry: Any) -> tuple[_PoolWithRegistry, _FakeSessionRow]:
+    row = _FakeSessionRow(sid="gs-vy", workspace_id="ws-1", turn_no=1, last_seq=0)
+    pool = _PoolWithRegistry(
+        registry=registry, workspace_io=_FakeWorkspaceIO(), storage=_FakeStorage(_FakeSessionStorage(row)),
+    )
+    return pool, row
+
+
+@pytest.mark.asyncio
+async def test_the_worker_adapter_gives_the_hook_the_session_and_the_registry():
+    seen = _recording_hook("test_vy_ctx_adapter")
+    checkpoint, resumer, _raised = await _parked("test_vy_ctx_adapter")
+    registry = _Registry()
+    pool, session = _pool_and_session(registry)
+
+    decision, repark, _seq = await resume_graph_from_checkpoint(
+        executor=resumer, checkpoint=checkpoint, payload={"response": "blue"}, resumed_tcid=_TCID,
+        pool=pool, session=session,  # type: ignore[arg-type]
+    )
+
+    assert repark is None
+    (ctx,) = seen
+    assert (ctx.tool_name, ctx.tool_call_id) == ("test_vy_ctx_adapter", _TCID)
+    assert ctx.session_id == "gs-vy", "the hook was not told which session it is answering"
+    assert ctx.resolve_provider == registry.get_toolset, "a python toolset's hook could not reach its provider"
+    assert json.loads(resumer._context.nodes["ask"].text) == {"response": "blue"}
+
+
+@pytest.mark.asyncio
+async def test_a_pool_without_a_provider_registry_still_names_the_session():
+    seen = _recording_hook("test_vy_ctx_no_registry")
+    checkpoint, resumer, _raised = await _parked("test_vy_ctx_no_registry")
+    pool, session = _pool_and_session(None)
+
+    await resume_graph_from_checkpoint(
+        executor=resumer, checkpoint=checkpoint, payload={"response": "x"}, resumed_tcid=_TCID,
+        pool=pool, session=session,  # type: ignore[arg-type]
+    )
+
+    assert seen[0].resolve_provider is None
+    assert seen[0].session_id == "gs-vy"
+
+
+@pytest.mark.asyncio
+async def test_the_executor_hands_the_hook_what_its_caller_passes():
+    seen = _recording_hook("test_vy_ctx_executor")
+    checkpoint, resumer, _raised = await _parked("test_vy_ctx_executor")
+    registry = _Registry()
+
+    await _drain(resumer.resume_from_checkpoint(
+        checkpoint, resumed_tcid=_TCID, toolcall_payload={"response": "x"},
+        resume_session_id="sess-direct", resolve_provider=registry.get_toolset,
+    ))
+
+    (ctx,) = seen
+    assert ctx.session_id == "sess-direct"
+    assert ctx.resolve_provider == registry.get_toolset
+
+
+@pytest.mark.asyncio
+async def test_a_caller_that_passes_neither_gets_the_bare_context():
+    """The direct executor callers (tests, the GraphFrame child resume) hold no session or registry."""
+    seen = _recording_hook("test_vy_ctx_bare")
+    checkpoint, resumer, _raised = await _parked("test_vy_ctx_bare")
+
+    await _drain(resumer.resume_from_checkpoint(checkpoint, resumed_tcid=_TCID, toolcall_payload={"response": "x"}))
+
+    assert seen[0].session_id is None and seen[0].resolve_provider is None
+
+
+class _EnginePool(_EngineFakePool):
+    """The engine test pool, with the REAL agent-node hook seam (a tool_call yield resolves to None there) and a registry."""
+
+    _provider_registry: Any = None
+
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
+        return await graph_resume_coordinator.graph_agent_tool_result(
+            self, checkpoint, tcid, payload, session_id=session_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_engine_resume_gives_the_hook_the_session_and_the_registry():
+    """``resume_graph_engine`` (the coordinator behind every ask_user reply to a graph) reaches the hook with both."""
+    seen = _recording_hook("test_vy_ctx_engine")
+    checkpoint, resumer, raised = await _parked("test_vy_ctx_engine")
+    registry = _Registry()
+
+    async def factory():
+        return resumer
+
+    pool = _EnginePool(storage=_StorageProvider(), workspace_io=_EngineWorkspaceIO(), executor_factory=factory)
+    pool._provider_registry = registry
+    session = _session("gs-engine")
+    session.parked_state = {"resume_event_key": f"test_vy_ctx_engine:s:{_TCID}"}
+    parked = ParkedState(
+        yielded=raised.yielded, llm_messages=[], turn_no=0, started_at=datetime.now(timezone.utc),
+        tool_call_id=_TCID, resume_event_payload={"response": "blue"}, graph_checkpoint=checkpoint,
+    )
+
+    outcome = await graph_resume_coordinator.resume_graph_engine(pool, session, parked)
+
+    assert outcome == "ENDED:completed"
+    (ctx,) = seen
+    assert ctx.session_id == "gs-engine"
+    assert ctx.resolve_provider == registry.get_toolset

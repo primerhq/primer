@@ -186,6 +186,13 @@ async def resume_graph_from_checkpoint(
         # run_agent_turn before its internal dispatch loop acts on them.
         executor.bind_coalesce_state(tap.coalesce_state)
 
+    # The ResumeContext a value-yielding tool_call node's hook receives is
+    # built from the session being resumed and the provider registry, the
+    # same two things the agent-session resume uses. The executor holds
+    # neither, so derive them here, the one adapter every worker graph
+    # resume goes through.
+    registry = getattr(pool, "_provider_registry", None)
+
     repark: "YieldToWorker | ToolWaitPark | None" = None
     try:
         async for ev in executor.resume_from_checkpoint(
@@ -194,6 +201,8 @@ async def resume_graph_from_checkpoint(
             agent_tool_result=agent_tool_result,
             toolcall_payload=payload if value_yield_toolcall else None,
             resolved_tool_wait=resolved_tool_wait,
+            resume_session_id=getattr(session, "id", None),
+            resolve_provider=registry.get_toolset if registry is not None else None,
         ):
             if tap is not None:
                 await tap.observe(ev)
