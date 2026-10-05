@@ -200,12 +200,19 @@ intact, so the next message continues it:
   it finishes and its result is recorded, but the calls after it in the
   same batch that have not started do not run: each is answered "not run:
   stopped by user" too, and the turn ends before the next model call. Only
-  the call that is running when you press Stop can park the session (a
-  timer, a long-running tool, an approval): then the session parks instead
-  of stopping and the Stop is dropped; Stop is then refused with 409 and
-  Cancel is the way out. Calls later in the batch are refused, so they
-  cannot park. Cancel refuses the calls that have not started in the same
-  way (and then ends the session). Graph
+  the call that is running when you press Stop can ask the session to park.
+  If it waits on no person (a timer, a trigger, a remote task, a batch of
+  tool calls handed to workers), the Stop ends the turn instead: the session
+  lands in `waiting` and every call of that round is answered in the
+  transcript ("interrupted: stopped by user ..." for the call that asked to
+  wait and the ones before it, whose results were not recorded, and "not run:
+  stopped by user" for the ones after it). What that tool already started
+  (a remote task it submitted, a timer it set) is not cancelled. If it is
+  asking a person (a tool approval, an `ask_user` question), the session
+  parks as before and the Stop is dropped, because the answer wins; Stop is
+  then refused with 409 and Cancel is the way out. Calls later in the batch
+  are refused, so they cannot park. Cancel refuses the calls that have not
+  started in the same way (and then ends the session). Graph
   sessions and the context-compaction call that can run first are not
   interruptible yet.
 - What the model had already written is kept in the transcript. The model
