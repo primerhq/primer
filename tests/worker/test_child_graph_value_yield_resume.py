@@ -30,21 +30,23 @@ from primer.toolset.python_runner.provider import python_tool_resume, scoped_too
 from primer.worker import yield_resume_registry
 from primer.worker.continuation import Deliver, resume_continuation
 from primer.worker.graph_resume import resume_graph_from_checkpoint
-from primer.worker.pool import WorkerPool
 from primer.worker.session_resume_coordinator import build_invocation_services
 from primer.worker.yield_resume_registry import ResumeContext, register_resume_hook
 
 from tests._resume_hook_fakes import (
+    AgentNodeHookPool as _Pool,
     DrainTapPool,
     FakeSessionRow,
     FakeSessionStorage,
     FakeStorage,
+    IdentityToolsetRegistry as _Registry,
+    PythonToolsetRegistry as _PythonRegistry,
     RecordingWorkspaceIO,
+    build_ask_user_graph as _build_graph,
     drain_until_yield,
+    make_toolcall_executor as _make_executor,
 )
-from tests.graph.test_toolcall_ask_user_value_resume import _build_graph, _make_executor
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
-from tests.worker.test_graph_toolcall_value_yield_context import _PythonRegistry, _Registry
 
 _TCID = "tc-child-vy"
 _SESSION_ID = "sess-agent"
@@ -52,13 +54,6 @@ _REPLY = {"response": "blue"}
 # A closure hook is registered under a fresh name per call: ``register_resume_hook`` refuses a second, different hook
 # for one name, so a fixed name would fail the test on a rerun in the same process.
 _hook_names = itertools.count()
-
-
-class _Pool(SimpleNamespace):
-    """The slice of ``WorkerPool`` the invocation services read, with the real agent-node hook seam."""
-
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
-        return await WorkerPool._graph_agent_tool_result(self, checkpoint, tcid, payload, session_id=session_id)
 
 
 async def _park_and_resume(tool_name: str, resume_metadata: dict[str, Any], registry: Any, payload: Any):
