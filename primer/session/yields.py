@@ -32,8 +32,10 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import primer.observability.metrics as _metrics
 from primer.int.claim import ClaimKind
 from primer.model.except_ import NotFoundError
+from primer.model.tool_call_task import MalformedScopedIdError, parse_scoped_task_id
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 
 if TYPE_CHECKING:
@@ -59,7 +61,17 @@ def _dispatch_key_for(event_key: str, *, session_id: str) -> str:
     bare tail alone silently overwrote one sibling's reply with the
     other's.
 
-    Strips the ``"<kind>:<session_id>:"`` prefix POSITIONALLY: ``kind`` is
+    A ``tool_wait`` key (the reserved kind of :func:`tool_wait_event_key`)
+    is returned WHOLE. Its tail ``<turn_seg>:<node>`` could equal a human
+    gate's ``<node>:<tool_call_id>`` once a node id contains ``:`` (a gate
+    on node ``5`` with tool_call_id ``a:b`` and the batch of node ``a:b``
+    in turn 5 are both ``5:a:b``), and the second write would overwrite the
+    human reply. Nothing reads the dict key (the resume iterates the
+    entries and reads each one's own ``event_key``), so only uniqueness
+    matters, and a tool_wait park exists only with the claims flag on, so
+    no other kind's key changes.
+
+    Every other kind strips the ``"<kind>:<session_id>:"`` prefix POSITIONALLY: ``kind`` is
     recovered with ONE bounded split (safe - it's always a colon-free
     literal), then the prefix is built from that ``kind`` plus the CALLER'S
     OWN KNOWN ``session_id`` (never re-derived by counting colons in the
@@ -72,37 +84,48 @@ def _dispatch_key_for(event_key: str, *, session_id: str) -> str:
     rather than raising.
     """
     kind = event_key.split(":", 1)[0]
+    if kind == "tool_wait":
+        return event_key
     prefix = f"{kind}:{session_id}:"
     if event_key.startswith(prefix):
         return event_key[len(prefix):]
     return event_key
 
 
-def tool_wait_event_key(
-    session_id: str, turn_no: int, *, scoped_task_id: str,
-) -> str:
-    """The wake key for a tool_wait batch's park (01a0518b review).
+def tool_wait_event_key(session_id: str, *, scoped_task_id: str) -> str:
+    """The wake key for a tool_wait batch's park (01a0518b review):
+    ``tool_wait:<session_id>:<turn_seg>:<node>``.
 
-    A PURE function of fields every ``ToolCallTask`` row already carries
-    - deliberately NOT a stored field on the row (an earlier draft
-    stamped it at creation time; review flagged that as the same
+    A PURE function of the batch's task id, with no stored copy and no
+    turn argument - deliberately NOT a stored field on the row (an earlier
+    draft stamped it at creation time; review flagged that as the same
     denormalized-projection shape that caused the ``pending_dispatch``
-    disease elsewhere - two sites carrying what must be one truth). Both
-    dispatch.py's park write (``ParkRequest.parked_event_key`` / the
-    multi-event ``parked_event_keys`` list) and
-    ``ToolCallClaimAdapter.on_release``'s last-sibling flip call THIS
-    function so there is exactly one place the shape can drift from.
+    disease elsewhere - two sites carrying what must be one truth). Every
+    site that needs it (dispatch.py's park arms, the materializer, the
+    graph re-park builder and ``ToolCallClaimAdapter.on_release``'s
+    last-sibling wake) calls THIS function with a task id of the batch, so
+    there is exactly one place the shape can drift from.
 
-    ``scoped_task_id``: any ``ToolCallTask.id`` belonging to the batch
-    (all of a batch's ids share the same node segment). The key's tail
-    node segment is derived from it (``scoped_id.split(":", 1)[0]`` -
-    the ``node_id`` half of the ``node_id:tool:turn_no:seq`` scoped-id
-    shape :func:`primer.tap.delta.scoped_tool_call_id` mints - ``"x"``
-    for the chat/workspace surface's own ``node_id=None`` convention,
-    the real graph node id otherwise) rather than taking a separate
-    ``node_id`` parameter, so BOTH surfaces compute this key from
-    exactly the same source data instead of two independently-maintained
-    formats that could drift.
+    ``scoped_task_id``: any ``ToolCallTask.id`` belonging to the batch,
+    session-qualified or bare (all of a batch's ids share the same node and
+    turn segment). It is parsed by
+    :func:`primer.model.tool_call_task.parse_scoped_task_id` (the one
+    parser), which raises ``MalformedScopedIdError`` for an id it cannot
+    parse; each caller decides what a malformed id means for it.
+
+    * The node is the FULL node id: the id is split from the right, so a
+      graph node id containing ``:`` keeps it (``a:b`` and ``a:c`` are two
+      keys, not one). ``"x"`` for the chat/workspace surface's own
+      ``node_id=None`` convention. Taken from the id rather than a separate
+      ``node_id`` parameter, so BOTH surfaces compute this key from exactly
+      the same source data.
+    * The turn segment is the one the id was minted with, as written:
+      ``<turn_no>``, or ``<turn_no>.<epoch>`` after a retired turn, so keys
+      stay unique across epochs. It is the turn that MATERIALIZED the
+      batch, which a batch's ids carry through every round trip, so the
+      key does not move when the session's own turn counter does (a key
+      computed from ``session.turn_no`` diverged from one computed from
+      ``task.turn_no`` after a park-preserving bump).
 
     The graph surface can have SEVERAL concurrent fan-out siblings each
     raise their OWN ``ToolWaitPark`` in the SAME superstep (same
@@ -118,21 +141,39 @@ def tool_wait_event_key(
     as before.
 
     Shaped like every other event_key producer
-    (``"<kind>:<session_id>:<tail>"``) so :func:`_dispatch_key_for`'s
-    prefix-strip works unchanged for the mixed (multi-event) graph park
-    case.
+    (``"<kind>:<session_id>:<tail>"``); the ``tool_wait`` kind is reserved
+    to this function, and :func:`_dispatch_key_for` returns its keys whole.
 
     Distinct from ``ToolWaitPark.event_key`` (observability-only,
     ``f"tool_wait:{outstanding_task_ids[0]}"`` - never looked up by
     anything, see that class's own docstring) - this is the FUNCTIONAL
     key the wake mechanism actually keys on.
     """
-    # The id may be the session-qualified task id (``<session_id>/<scoped>``, S1b); the node segment is the
-    # scoped id's, so strip the qualification first or every key would start with the session id.
-    from primer.model.tool_call_task import external_call_id
+    parsed = parse_scoped_task_id(scoped_task_id, session_id)
+    return f"tool_wait:{session_id}:{parsed.turn_seg}:{parsed.node}"
 
-    node_segment = external_call_id(scoped_task_id, session_id).split(":", 1)[0]
-    return f"tool_wait:{session_id}:{turn_no}:{node_segment}"
+
+def tool_wait_event_key_or_none(session_id: str, *, scoped_task_id: str, site: str) -> str | None:
+    """:func:`tool_wait_event_key`, or ``None`` for a malformed id: logged at ERROR and counted under ``site``.
+
+    Never a guessed key. What a missing key means is the caller's call: the
+    adapter (``site="adapter"``) wakes nothing, because it runs inside the
+    release transaction and a raise there would roll back the task's
+    result; the materializer and the graph re-park builder leave that
+    batch's key out of the park; and a park arm left with no key at all
+    ends the turn failed rather than write a park nothing can wake (with no
+    ``parked_event_key`` it would have no timeout backstop either). Only an
+    id this code minted itself can get here, so any count is a bug.
+    """
+    try:
+        return tool_wait_event_key(session_id, scoped_task_id=scoped_task_id)
+    except MalformedScopedIdError as exc:
+        _metrics.tool_wait_malformed_scoped_id_total.labels(site).inc()
+        logger.error(
+            "session %s: no tool_wait wake key at %s for task id %r: %s",
+            session_id, site, scoped_task_id, exc,
+        )
+        return None
 
 
 async def durably_mark_session_resumable(
@@ -158,7 +199,7 @@ async def durably_mark_session_resumable(
     * For a MULTI-event park (``parked_event_keys`` set) also accumulate
       ``resume_event_payloads[dispatch_key]`` (see :func:`_dispatch_key_for`
       - 01a0518f: the event_key's tail past the fixed ``kind:session_id:``
-      prefix, node-qualified for a graph park) so a second concurrent reply
+      prefix, node-qualified for a graph park; a tool_wait key whole) so a second concurrent reply
       is preserved rather than overwritten - including two fan-out siblings
       that happen to share a raw provider tool_call_id.
     * ``storage.update_unless`` the flipped row, guarded on ``status`` -
