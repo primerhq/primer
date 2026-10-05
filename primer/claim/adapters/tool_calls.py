@@ -101,6 +101,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
 
     async def is_dead(self, entity_id: str) -> bool:
         if self._storage is None:
+            # Cannot judge: keep the lease (the Postgres engine applies ``dead_lease_sql`` in the database anyway).
             return False
         task = await self._storage.get(entity_id)
         return task is None or task.state in (ToolCallTaskState.DONE, ToolCallTaskState.FAILED)

@@ -12,6 +12,7 @@ then cleans up on exit.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from urllib.parse import parse_qs, urlparse
 
@@ -1576,12 +1577,91 @@ async def test_postgres_prune_is_scoped_to_its_kind_and_skips_kinds_with_no_dead
 @_needs_pg
 @pytest.mark.asyncio
 async def test_postgres_prune_on_a_fresh_schema_ensures_the_entity_table(pg_storage):
-    async with pg_storage.pool.acquire() as conn:
-        await conn.execute(f'DROP TABLE IF EXISTS "{pg_storage.schema}"."toolcalltask" CASCADE')
-    engine = _tool_call_engine(pg_storage)
-    await engine.upsert(ClaimKind.TOOL_CALL, "orphan")
+    """The entity table does not exist yet: the engine creates it and finds no entity. The table is this test's OWN
+    (a unique name), never the shared ``toolcalltask`` that other tests and lanes seed: dropping that one raced them."""
+    import uuid
 
-    assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 1, "no entity table means no entity"
+    from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
+
+    table = f"toolcalltask_fresh_{uuid.uuid4().hex[:10]}"
+
+    class _FreshTableAdapter(ToolCallClaimAdapter):
+        entity_table = table
+
+        def entity_indexes(self, qualified_table):
+            return []      # index names are schema-global: do not let this table take the real table's names
+
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage, adapters={ClaimKind.TOOL_CALL: _FreshTableAdapter(task_storage=None)},
+    )
+    try:
+        await engine.upsert(ClaimKind.TOOL_CALL, "orphan")
+        assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 1, "no entity table means no entity"
+        async with pg_storage.pool.acquire() as conn:
+            assert await conn.fetchval("SELECT to_regclass($1)", f'"{pg_storage.schema}"."{table}"') is not None
+    finally:
+        async with pg_storage.pool.acquire() as conn:
+            await conn.execute(f'DROP TABLE IF EXISTS "{pg_storage.schema}"."{table}" CASCADE')
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_prune_leaves_a_lapsed_lease_a_concurrent_heartbeat_extends_while_the_delete_waits(
+    pg_storage, entity_seeder,
+):
+    """A holder's lease has LAPSED (so prune would take it) and its heartbeat is mid-flight: the UPDATE that extends it has
+    run on another connection but not committed. The DELETE blocks on that row lock; once the heartbeat commits, READ
+    COMMITTED re-evaluates the statement's own predicate on the new row version, the lease is held again, and it survives.
+    A second finished task whose lease nobody touches is pruned in the same statement."""
+    await entity_seeder.seed("toolcalltask", ["racing", "plain"], data={"state": "done"})
+    engine = _tool_call_engine(pg_storage)
+    await engine.upsert(ClaimKind.TOOL_CALL, "racing")
+    await engine.upsert(ClaimKind.TOOL_CALL, "plain")
+    async with pg_storage.pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE {pg_storage.leases_table} SET claimed_by = 'w', claimed_at = now(), "
+            f"expires_at = now() - interval '1 second' WHERE kind = 'tool_call' AND entity_id = 'racing'"
+        )
+
+    heartbeat = await pg_storage.pool.acquire()
+    tx = heartbeat.transaction()
+    await tx.start()
+    pruning: asyncio.Task | None = None
+    committed = False
+    try:
+        await heartbeat.execute(
+            f"UPDATE {pg_storage.leases_table} SET expires_at = now() + interval '60 seconds' "
+            f"WHERE kind = 'tool_call' AND entity_id = 'racing'"
+        )
+        pruning = asyncio.create_task(engine.prune_dead_leases(ClaimKind.TOOL_CALL))
+
+        async def _blocked_on_the_row() -> bool:
+            async with pg_storage.pool.acquire() as probe:
+                return bool(await probe.fetchval(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                    "AND wait_event_type = 'Lock' AND query LIKE '%DELETE FROM%'"
+                ))
+
+        for _ in range(100):
+            if await _blocked_on_the_row():
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("the prune DELETE never blocked on the row the heartbeat holds")
+        assert not pruning.done()
+        await tx.commit()
+        committed = True
+        assert await asyncio.wait_for(pruning, timeout=10.0) == 1, "only the untouched finished task's lease may be pruned"
+    finally:
+        if not committed:
+            await tx.rollback()
+        if pruning is not None and not pruning.done():
+            pruning.cancel()
+            await asyncio.gather(pruning, return_exceptions=True)
+        await pg_storage.pool.release(heartbeat)
+
+    assert await engine.has_lease(ClaimKind.TOOL_CALL, "racing") is True, "the extended lease was deleted"
+    assert await engine.has_lease(ClaimKind.TOOL_CALL, "plain") is False
 
 
 @pytest.mark.asyncio
@@ -1598,9 +1678,13 @@ async def test_prune_statement_shape_without_a_database():
     await engine.prune_dead_leases(ClaimKind.TOOL_CALL)
 
     query, args = conn.fetch_calls[-1]
-    assert query.startswith('DELETE FROM "primer"."leases" l')
+    assert query.startswith("WITH doomed AS (")
     assert args == ("tool_call",)
-    assert "l.claimed_by IS NULL OR l.expires_at < now()" in query, "a held lease must survive"
-    assert "NOT EXISTS" in query and '"primer"."toolcalltask"' in query
+    assert 'DELETE FROM "primer"."leases" l USING doomed d' in query
+    # a held lease must survive, and the DELETE re-states the guard so a heartbeat that lands while it waits is honoured
+    assert query.count("l.claimed_by IS NULL OR l.expires_at < now()") == 2
+    assert "LEFT JOIN" in query and "e.id IS NULL" in query, "a missing entity is a join miss"
+    assert query.count('"primer"."toolcalltask"') == 1, "the entity table is read ONCE (the OR'd sub-selects hashed it twice)"
+    assert "EXISTS" not in query
     assert "e.data->>'state' IN ('done', 'failed')" in query
     assert "RETURNING" in query

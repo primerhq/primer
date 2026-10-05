@@ -201,7 +201,12 @@ class ClaimAdapter(ABC):
         return None
 
     async def is_dead(self, entity_id: str) -> bool:
-        """The in-process twin of :meth:`dead_lease_sql`: the entity is missing or finished."""
+        """The in-process twin of :meth:`dead_lease_sql`: the entity is missing or finished.
+
+        An adapter that cannot read its entity (it has no storage) answers False: the in-memory engine then
+        KEEPS the lease, which is the conservative answer. It does not change what the SQL predicate says,
+        which a Postgres engine evaluates in the database regardless of the adapter's storage.
+        """
         return False
 
 
