@@ -1310,7 +1310,9 @@ class TestACancelOfARowThatIsAlreadyOver:
     leave an ENDED row (or one that is already gone) alone. It used to decide from the flag alone, write a CANCELLED
     record, overwrite the row with ENDED/cancelled and mirror ENDED onto a slot the delete had just removed."""
 
-    async def _run_with(self, how, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider):
+    async def _run_with(
+        self, how, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, *, reason="force_deleted",
+    ):
         sid = seeded_session.id
         sessions = fake_storage_provider.get_storage(WorkspaceSession)
         mirrored: list[Any] = []
@@ -1338,7 +1340,7 @@ class TestACancelOfARowThatIsAlreadyOver:
             row = await sessions.get(sid)
             row.cancel_requested = True
             if how == "ended":
-                row.status, row.ended_reason = SessionStatus.ENDED, "force_deleted"
+                row.status, row.ended_reason = SessionStatus.ENDED, reason
                 await sessions.update(row)
             else:
                 await sessions.update(row)
@@ -1376,6 +1378,26 @@ class TestACancelOfARowThatIsAlreadyOver:
         assert terminal == [{"status": "ended", "ended_reason": "force_deleted"}], (
             f"the terminal event must carry the row's real reason, not the cancel's: {terminal}"
         )
+
+    @pytest.mark.parametrize("row_reason", ["cancelled", "completed", "failed", "tool_turn_cap"])
+    async def test_an_ended_row_whose_reason_the_slot_accepts_is_mirrored_onto_the_slot(
+        self, row_reason, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        """The same policy as the terminal write's own skip (``_leave_ended_row_alone``): the pool's ``_end_session`` ends
+        a row without touching the slot, so with this exit's own mirror skipped nothing else takes ``session.json`` out
+        of RUNNING. Only ``force_deleted`` (the delete removes the slot) and a gone row get nothing."""
+        sid, sessions, outcome, mirrored, published, _, terminal = await self._run_with(
+            "ended", seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, reason=row_reason,
+        )
+
+        row = await sessions.get(sid)
+        assert (row.status, row.ended_reason) == (SessionStatus.ENDED, row_reason), "the row's reason was overwritten"
+        assert not [r for r in _records(fake_workspace_io, sid) if r["kind"] == SessionMessageKind.CANCELLED]
+        assert mirrored == [(SessionStatus.ENDED, row_reason)], (
+            f"the slot was not brought in line with the row's own reason: {mirrored}"
+        )
+        assert outcome.success and outcome.drop_lease
+        assert terminal == [{"status": "ended", "ended_reason": row_reason}]
 
     async def test_a_row_that_is_already_gone_gets_no_record_and_the_exit_still_finishes(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
