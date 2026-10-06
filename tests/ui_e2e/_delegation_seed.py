@@ -16,6 +16,7 @@ so the system never writes a delegated ``tool_result``.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -71,6 +72,21 @@ def _as_list(result) -> list[SessionMessageRecord]:
     return result if isinstance(result, list) else [result]
 
 
+def _run_to_completion(coro):
+    """Run ``coro`` to completion, from a thread that may already have a running event loop.
+
+    A Playwright test body runs inside pytest-playwright's loop, where ``asyncio.run`` raises (the journey's first CI run died
+    on exactly that); a unit test or a plain script has no loop and can use it directly. With one running, the coroutine goes to
+    a worker thread, which has none, and the caller waits for the result.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def build() -> Seeded:
     writer = _Writer()
     parent_state = _CoalesceState()
@@ -100,7 +116,7 @@ def build() -> Seeded:
         await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **child)
         return child_call_seq
 
-    child_call_seq = asyncio.run(delegated())
+    child_call_seq = _run_to_completion(delegated())
 
     writer.add(SessionMessageRecord(
         seq=1, kind=SessionMessageKind.TOOL_RESULT, created_at=placeholder,
