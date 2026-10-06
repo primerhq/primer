@@ -272,15 +272,22 @@ async def test_the_live_member_scan_reads_the_real_state_of_a_real_process(tmp_p
     """Every other test reaches ``_live_member_of`` through a stub or only on its False side (a zombie is not live). This
     one runs it on a real process in its own group, through its whole life: live while it runs, not live once it is killed
     but not yet reaped (the zombie nothing reaps under PID 1), not live once it is reaped. A second, NON-leader process of
-    the group keeps the group live after the leader has died, and only its death empties it. Its ``comm`` is set to
-    ``x) Z 1 2 (``, which a parse that splits at the FIRST ")" would read as state Z and the wrong fields: the scan must
-    split at the last one. It is a ``Popen`` and not an asyncio process so that nothing reaps it behind the test's back."""
+    the group keeps the group live after the leader has died, and only its death empties it. EVERY process of the group
+    has its ``comm`` set to ``x) Z 1 2 (``, which a parse that splits at the FIRST ")" would read as state Z and the wrong
+    fields: the scan must split at the last one. (A member with a plain name, ``sleep``, would be parsed correctly under a
+    first-paren split and keep the group looking live, masking exactly that regression: so no process here may be.) It is
+    a ``Popen`` and not an asyncio process so that nothing reaps it behind the test's back."""
     ready = tmp_path / "ready"
+    member_source = (
+        "import ctypes, os, time\n"
+        "ctypes.CDLL(None).prctl(15, b'x) Z 1 2 (', 0, 0, 0)\n"        # the same tricky name
+        f"open({str(ready)!r}, 'w').write(str(os.getpid()))\n"          # ready only AFTER the name is set
+        "time.sleep(60)\n"
+    )
     source = (
-        "import ctypes, subprocess, time\n"
+        "import ctypes, subprocess, sys, time\n"
         "ctypes.CDLL(None).prctl(15, b'x) Z 1 2 (', 0, 0, 0)\n"        # PR_SET_NAME
-        "member = subprocess.Popen(['sleep', '60'])\n"                 # a second process of the leader's group
-        f"open({str(ready)!r}, 'w').write(str(member.pid))\n"
+        f"subprocess.Popen([sys.executable, '-c', {member_source!r}])\n"   # a second process of the leader's group
         "time.sleep(60)\n"
     )
     child = subprocess.Popen([sys.executable, "-c", source], start_new_session=True)
@@ -291,8 +298,9 @@ async def test_the_live_member_scan_reads_the_real_state_of_a_real_process(tmp_p
             assert time.monotonic() < deadline, "the child never reported ready"
             await asyncio.sleep(0.02)
         member = int(ready.read_text().strip())
-        if Path(f"/proc/{child.pid}/comm").read_text().strip() != "x) Z 1 2 (":
-            pytest.skip("prctl(PR_SET_NAME) was refused: the test is not in the situation it is about")
+        for pid in (child.pid, member):
+            if Path(f"/proc/{pid}/comm").read_text().strip() != "x) Z 1 2 (":
+                pytest.skip("prctl(PR_SET_NAME) was refused: the test is not in the situation it is about")
 
         assert pg._live_member_of(child.pid) is True, "a running process of the group was not found"
 
