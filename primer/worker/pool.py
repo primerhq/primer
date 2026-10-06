@@ -1305,6 +1305,8 @@ class WorkerPool:
             io_shim.register_session(session.id, session.workspace_id)
             await apply_queued_binding_switch(
                 storage_provider=self._storage, workspace_io=io_shim, session_id=session.id,
+                # the row is ENDED by this very write but still carries its park columns until the release
+                guard={"status": [SessionStatus.ENDED.value]},
             )
         else:
             # 01a08bf0: "vanished because something else already ended it"

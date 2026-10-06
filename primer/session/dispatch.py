@@ -25,7 +25,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, NamedTuple, Protocol, runtime_checkable
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 
 from primer.int.claim import (
     CLAIM_PRIORITY_RESUME, ClaimKind, Lease, ParkRequest, ReleaseOutcome,
@@ -59,7 +59,7 @@ from primer.session.delegation import (
     reset_delegation_sink,
     set_delegation_sink,
 )
-from primer.session.mutation_lock import session_lifecycle_lock
+from primer.session.mutation_lock import IN_LOCK_IO_TIMEOUT_S, session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
 from primer.session.turns import has_open_turn
 from primer.session.persistence import (
@@ -1628,7 +1628,8 @@ _CANCEL_REASON = "operator_cancel"
 # A workspace whose runtime connection dropped (a common reason to press Stop) blocks the write until it
 # reconnects, which may be never, and every Cancel, Stop, steer, pause, resume and switch of the session
 # queues behind that lock. Long enough for a slow healthy write, short enough that the session is not wedged.
-_CANCELLED_RECORD_WRITE_TIMEOUT_S = 10.0
+# (The shared in-lock deadline, ``mutation_lock.IN_LOCK_IO_TIMEOUT_S``; this name is kept for the cancelled exit.)
+_CANCELLED_RECORD_WRITE_TIMEOUT_S = IN_LOCK_IO_TIMEOUT_S
 
 # The same bound for the ENDED transition's mirror onto the executor's on-disk slot (``session.json``), which
 # commits through the same runtime connection and runs inside the same lock on a Cancel.
@@ -2500,29 +2501,53 @@ async def _apply_pending_switch_at_checkpoint(
     )
 
 
-async def apply_queued_binding_switch(*, storage_provider, workspace_io, session_id: str) -> None:
+async def apply_queued_binding_switch(
+    *, storage_provider, workspace_io, session_id: str, guard: Mapping[str, Sequence[Any]] | None = None,
+) -> None:
     """Apply the switch queued on a session's row, if any. Best effort: a failure is logged and the request stays queued.
 
     The body of the drain checkpoint, callable without a ``SessionDispatchDeps``: the pool's ``_end_session`` ends a
     session whose resume failed, and no checkpoint runs on that exit, so it applies the switch itself (a switch
     queued on a parked session otherwise survives on the ENDED row and the user's next message, after a reopen, is
     answered by the OUTGOING binding).
+
+    Under ``session_lifecycle_lock``, with the row read INSIDE it (the switch is decided from that read, so a steer or a
+    park that landed before the lock is seen), and the in-lock snapshot resolve, marker append and flush bounded by
+    ``mutation_lock.IN_LOCK_IO_TIMEOUT_S``: an unreachable workspace must not hold the lock Cancel's closure and every steer
+    need. A timeout leaves the switch pending (and a reserved gap in the seqs); a rejected reservation (the row changed:
+    a steer took the next seq, a park committed) writes nothing and the switch stays pending for the next checkpoint.
+    The queued-steer realize that follows is NOT called inside this lock: ``wake_session`` takes it itself.
+
+    ``guard`` is the precondition on the row (default ``{"parked_status": [None]}``: a turn that ran has no park). The
+    pool's ``_end_session`` passes ``{"status": ["ended"]}`` instead: it ends a session whose park columns are still set
+    (the claim's release clears them later), so a "no park" guard would always reject there.
     """
+    from primer.session import mutation_lock
+
     try:
         sessions = storage_provider.get_storage(WorkspaceSession)
-        fresh = await sessions.get(session_id)
-        if fresh is None or fresh.pending_binding_switch is None:
-            return
-        from primer.session.binding_switch import apply_binding_switch
+        async with session_lifecycle_lock().acquire(session_id):
+            fresh = await sessions.get(session_id)
+            if fresh is None or fresh.pending_binding_switch is None:
+                return
+            from primer.session.binding_switch import apply_binding_switch
 
-        await apply_binding_switch(
-            sessions=sessions,
-            workspace_io=workspace_io,
-            row=fresh,
-            request=fresh.pending_binding_switch,
-            actor=str(fresh.pending_binding_switch.get("actor") or "system"),
-            resolve_snapshot=_snapshot_resolver(storage_provider),
-        )
+            try:
+                async with asyncio.timeout(mutation_lock.IN_LOCK_IO_TIMEOUT_S):
+                    await apply_binding_switch(
+                        sessions=sessions,
+                        workspace_io=workspace_io,
+                        row=fresh,
+                        request=fresh.pending_binding_switch,
+                        actor=str(fresh.pending_binding_switch.get("actor") or "system"),
+                        resolve_snapshot=_snapshot_resolver(storage_provider),
+                        guard=guard if guard is not None else {"parked_status": [None]},
+                    )
+            except TimeoutError:
+                logger.error(
+                    "applying a queued binding switch timed out after %ss for %s; it stays queued for the next "
+                    "checkpoint", mutation_lock.IN_LOCK_IO_TIMEOUT_S, session_id,
+                )
     except Exception:
         logger.exception(
             "applying a queued binding switch failed for %s; it stays queued for the next checkpoint",

@@ -8,6 +8,7 @@ switch's marker and its ``last_seq`` / ``turn_status`` written back over. The co
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -83,3 +84,66 @@ async def test_the_route_does_not_switch_over_a_steer_that_landed_after_its_read
     assert row.turn_status == "claimable" and row.last_seq == max(seqs), "the route's write erased the steer's turn or its seq"
     assert response.status_code == 409, f"the route answered {response.status_code} for a switch it could not apply: {response.text}"
     assert row.binding.agent_id == "agent-a"
+
+
+async def _idle_session(app, sid: str):
+    from primer.model.agent import Agent, AgentModel
+
+    sp = app.state.storage_provider
+    for aid in ("agent-a", "agent-b"):
+        if await sp.get_storage(Agent).get(aid) is None:
+            await sp.get_storage(Agent).create(
+                Agent(id=aid, description=aid, model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[])
+            )
+    sessions = sp.get_storage(WorkspaceSession)
+    await sessions.create(_row(id=sid))
+    ws = _FakeWorkspace()
+
+    async def _get_ws(wid):
+        return ws if wid == "ws-1" else None
+
+    app.state.workspace_registry.get_workspace = _get_ws  # type: ignore[assignment]
+    return sessions, ws
+
+
+@pytest.mark.asyncio
+async def test_the_route_switches_under_the_lifecycle_lock(client, app):
+    from primer.session.mutation_lock import session_lifecycle_lock
+
+    sessions, ws = await _idle_session(app, "b-lock")
+
+    async with session_lifecycle_lock().acquire("b-lock"):
+        request = asyncio.create_task(
+            client.post("/v1/workspaces/ws-1/sessions/b-lock/binding", json={"kind": "agent", "agent_id": "agent-b"})
+        )
+        await asyncio.sleep(0.15)
+        assert not request.done() and ws.records("b-lock") == [], "the route switched while another writer held the lock"
+    response = await asyncio.wait_for(request, 3.0)
+
+    assert response.status_code == 200, response.text
+    assert [r["kind"] for r in ws.records("b-lock")] == ["agent_marker"]
+    assert (await sessions.get("b-lock")).binding.agent_id == "agent-b"
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_workspace_gives_a_409_and_frees_the_lock(client, app, monkeypatch):
+    import primer.session.mutation_lock as mutation_lock
+
+    monkeypatch.setattr(mutation_lock, "IN_LOCK_IO_TIMEOUT_S", 0.2)
+    sessions, ws = await _idle_session(app, "b-hang")
+
+    async def hang(session_id: str, line: bytes) -> None:
+        await asyncio.Event().wait()
+
+    ws.append_message_line = hang  # type: ignore[method-assign]
+
+    response = await asyncio.wait_for(
+        client.post("/v1/workspaces/ws-1/sessions/b-hang/binding", json={"kind": "agent", "agent_id": "agent-b"}), 3.0,
+    )
+
+    assert response.status_code == 409, response.text
+    async with asyncio.timeout(1.0):
+        async with mutation_lock.session_lifecycle_lock().acquire("b-hang"):
+            pass
+    stored = await sessions.get("b-hang")
+    assert stored.binding.agent_id == "agent-a" and stored.binding_epoch == 0
