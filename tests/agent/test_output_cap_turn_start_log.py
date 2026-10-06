@@ -71,3 +71,15 @@ async def test_an_aggregated_profile_is_not_checked_against_its_min_window(caplo
         await _turn(executor)
 
     assert _cap_warnings(caplog) == []
+
+
+def test_the_warning_helper_says_what_the_operator_can_do_and_nothing_for_a_cap_that_fits() -> None:
+    from primer.common.context_overflow import output_cap_warning
+
+    text = output_cap_warning(8192, 4096)
+
+    assert text is not None
+    assert "max_output_tokens (8192)" in text and "context window (4096)" in text and "lower max_output_tokens" in text
+    assert output_cap_warning(4095, 4096) is None
+    assert output_cap_warning(None, 4096) is None
+    assert output_cap_warning(4096, None) is None, "an unknown window proves nothing"

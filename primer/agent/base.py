@@ -64,7 +64,7 @@ from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.prune import PruneSet
 from primer.agent.tail import pending_from
 from primer.agent.tool_manager import ToolExecutionManager
-from primer.common.context_overflow import is_context_overflow, output_cap_never_fits
+from primer.common.context_overflow import is_context_overflow, output_cap_never_fits, output_cap_warning
 from primer.model.chat import (
     CompactionSummary,
     ExtendedEvent,
@@ -366,6 +366,23 @@ class _BaseAgentExecutor(ABC):
         non-tool-use stop. Streaming chunks are NOT persisted -- only
         the materialised :class:`Message` is.
         """
+        # An output cap that fills the window can never be served by a provider that checks it. The reactive guard in
+        # ``_recover_from_overflow`` acts only AFTER a rejection, so say it up front, once per turn, and run the turn
+        # anyway (a server that clamps the cap serves it). An aggregated profile (no provider of its own) is skipped:
+        # the window known here is the MIN over its members, and a cap between the windows is served by a larger one.
+        if self._model.provider_id is not None:
+            cap_warning = output_cap_warning(self._agent.max_output_tokens, self._model.context_length)
+            if cap_warning is not None:
+                logger.warning(
+                    "AgentExecutor: the agent's output cap is not below the model's context window; the turn runs "
+                    "anyway (a provider that checks the cap rejects it)",
+                    extra={
+                        "agent_id": self._agent.id,
+                        "max_output_tokens": self._agent.max_output_tokens,
+                        "context_length": self._model.context_length,
+                        "detail": cap_warning,
+                    },
+                )
         # Bracket the pre-turn compaction region with the window hooks so a
         # steer arriving mid-compaction is deferred (workspace surface). The
         # snapshot is taken inside _open_compaction_window under the messages

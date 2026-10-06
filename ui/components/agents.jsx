@@ -1194,6 +1194,8 @@ function AgentDetail({ agentId, pushToast }) {
 function AG_StatusPanel({ id, status }) {
   const ok = status.data?.ok === true;
   const issues = status.data?.issues || [];
+  // Things that may work but probably do not (01a10c6b): shown under the verdict, never part of it.
+  const warnings = status.data?.warnings || [];
   const colour = status.data == null ? "var(--text-3)" : ok ? "var(--green)" : "var(--red)";
   return (
     <div
@@ -1240,6 +1242,17 @@ function AG_StatusPanel({ id, status }) {
                   <Icon name="alert" size={12} className="ico" style={{ color: "var(--red)" }} />
                   <span className="label" style={{ color: "var(--red)" }}>{iss.kind || "issue"}</span>
                   <span className="val">{iss.detail || iss.message || JSON.stringify(iss)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {warnings.length > 0 && (
+            <div className="mt-2" data-testid="ag-status-warnings">
+              {warnings.map((w, i) => (
+                <div key={i} className="ref-row" style={{ borderColor: "var(--amber-dim)" }}>
+                  <Icon name="alert" size={12} className="ico" style={{ color: "var(--amber)" }} />
+                  <span className="label" style={{ color: "var(--amber)" }}>warning</span>
+                  <span className="val">{typeof w === "string" ? w : (w.detail || w.message || JSON.stringify(w))}</span>
                 </div>
               ))}
             </div>

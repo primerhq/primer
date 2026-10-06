@@ -190,6 +190,23 @@ def output_cap_never_fits(max_output_tokens: int | None, context_length: int | N
     return bool(max_output_tokens and context_length and max_output_tokens >= context_length)
 
 
+def output_cap_warning(max_output_tokens: int | None, context_length: int | None) -> str | None:
+    """The operator-facing warning for a cap that fills the window, or ``None`` when there is nothing to say.
+
+    Not a refusal: some servers clamp an oversized cap instead of rejecting it, so a configuration that looks
+    unusable here can work against them, and the reactive guard (:func:`output_cap_never_fits`) still decides what a
+    rejection means. The status endpoint and the start of a turn both say this, once, so the first rejected call is
+    not the operator's first sign of it.
+    """
+    if not output_cap_never_fits(max_output_tokens, context_length):
+        return None
+    return (
+        f"max_output_tokens ({max_output_tokens}) is not below the model's context window ({context_length}): "
+        f"no prompt, however short, fits beside that cap, so a provider that checks it rejects every request; "
+        f"lower max_output_tokens or use a model with a larger window"
+    )
+
+
 def is_context_overflow_error(error: Error) -> bool:
     """True when a terminal ``Error`` event, as an adapter yielded it, is a context overflow."""
     return error.fatal and _yielded_says_overflow(error.code, error.message)

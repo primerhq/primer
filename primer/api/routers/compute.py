@@ -38,6 +38,7 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.api.routers._crud import make_crud_router
+from primer.common.context_overflow import output_cap_warning
 from primer.model.agent import Agent
 from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.graph import Graph
@@ -69,9 +70,12 @@ async def agent_status(
     toolsets=Depends(get_toolset_storage),
     model_profiles=Depends(get_model_profile_storage),
 ) -> dict:
-    """Returns ``{"ok": bool, "issues": [...]}`` describing any
-    unresolved references on the agent. Does NOT call the live LLM
-    or toolset providers — that would belong on a future ``/ready``
+    """Returns ``{"ok": bool, "issues": [...], "warnings": [...]}``.
+
+    ``issues`` describe unresolved references on the agent (they make ``ok``
+    false). ``warnings`` are things that may work but probably do not (01a10c6b):
+    an output cap that fills the model's context window. Does NOT call the live
+    LLM or toolset providers — that would belong on a future ``/ready``
     endpoint with stronger semantics.
     """
     agent: Agent | None = await agents.get(agent_id)
@@ -79,6 +83,7 @@ async def agent_status(
         raise NotFoundError(f"Agent {agent_id!r} does not exist")
 
     issues: list[str] = []
+    warnings: list[str] = []
 
     # The agent names a ModelProfile, which in turn names the provider --
     # OR, for kind="aggregated" (01a067c4), names an ordered pool of
@@ -87,17 +92,22 @@ async def agent_status(
     # is missing rather than just "unhealthy".
     profile_id = agent.model.profile_id
     profile = await model_profiles.get(profile_id)
+    window: int | None = None
     if profile is None:
         issues.append(f"ModelProfile {profile_id!r} does not exist")
     elif profile.kind == "single":
+        window = profile.context_length
         if await llm_providers.get(profile.provider_id) is None:
             issues.append(
                 f"LLMProvider {profile.provider_id!r} referenced by ModelProfile "
                 f"{profile_id!r} does not exist"
             )
     else:  # kind == "aggregated": no provider_id of its own -- walk members.
+        member_windows: list[int] = []
         for member_id in profile.members or []:
             member = await model_profiles.get(member_id)
+            if member is not None and member.kind == "single" and member.context_length:
+                member_windows.append(member.context_length)
             if member is None:
                 issues.append(
                     f"ModelProfile {profile_id!r} member {member_id!r} "
@@ -115,6 +125,14 @@ async def agent_status(
                     f"ModelProfile {profile_id!r} member {member_id!r} "
                     f"does not exist"
                 )
+
+    if profile is not None and profile.kind != "single" and member_windows:
+        # A cap between the member windows can still be taken by the larger one: warn only when NO member could
+        # ever take the call (the executor's own guard reads the MIN window, a separate finding of 01a10c6b item 1).
+        window = max(member_windows)
+    cap_warning = output_cap_warning(agent.max_output_tokens, window)
+    if cap_warning is not None:
+        warnings.append(cap_warning)
 
     # ``agent.tools`` carries scoped tool ids of the form
     # ``<toolset_id>__<bare_name>`` (or, for tools with no scope prefix,
@@ -144,7 +162,7 @@ async def agent_status(
             f"Toolset {ts_id!r} referenced by tools does not exist"
         )
 
-    return {"ok": not issues, "issues": issues}
+    return {"ok": not issues, "issues": issues, "warnings": warnings}
 
 
 # ---- Graph router ----------------------------------------------------------
