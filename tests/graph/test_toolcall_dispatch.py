@@ -326,3 +326,59 @@ async def test_toolcall_dispatcher_raises_maps_to_tool_execution_failed() -> Non
     assert loaded is not None
     assert loaded.ended_reason == "failed"
     assert loaded.ended_detail == "tool_execution_failed"
+
+
+@pytest.mark.asyncio
+async def test_toolcall_dispatcher_returns_an_error_result_fails_the_node() -> None:
+    """01a10b50: a tool that RETURNS an error result fails the node like one that raises, with its own output as the
+    message. Before, the node ended with the error text as ``text`` and ``error`` None, and the next node ran on it."""
+    from primer.graph.base import _GraphErrorEvent
+    from primer.model.workspace_session import SessionStatus
+
+    graph = Graph(
+        id="g-toolcall-error-result",
+        description="begin -> tool(search) -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="search", tool_id="web__web_search", arguments={"q": "x"}),
+            _EndNode(id="exit", output_template="answer from: {{ nodes.search.text }}"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="search"),
+            _StaticEdge(from_node="search", to_node="exit"),
+        ],
+    )
+
+    async def stub_dispatcher(node, arguments):
+        return ToolResultPart(id="tc-1", output='{"type": "tool-error", "message": "search backend down"}', error=True)
+
+    async def agent_resolver(agent_id: str) -> Agent:
+        raise KeyError(agent_id)
+
+    async def llm_resolver(agent):
+        raise NotImplementedError
+
+    thread_storage: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
+    message_storage: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=thread_storage)  # type: ignore[arg-type]
+    executor = GraphExecutor(
+        graph=graph,
+        agent_resolver=agent_resolver,
+        llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        thread_storage=thread_storage,  # type: ignore[arg-type]
+        message_storage=message_storage,  # type: ignore[arg-type]
+        graph_thread_id=thread.id,
+        tool_dispatcher=stub_dispatcher,
+    )
+
+    events = await _drain(executor.invoke([]))
+
+    (error,) = [e for e in events if isinstance(e, _GraphErrorEvent)]
+    assert (error.code, error.node_id) == ("tool_execution_failed", "search")
+    assert error.message == '{"type": "tool-error", "message": "search backend down"}'
+    loaded = await thread_storage.get(thread.id)
+    assert loaded is not None
+    assert (loaded.status, loaded.ended_reason, loaded.ended_detail) == (
+        SessionStatus.ENDED, "failed", "tool_execution_failed",
+    )
+    assert "exit" not in executor._context.nodes, "the graph ran past a node whose tool returned an error"

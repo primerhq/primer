@@ -268,15 +268,17 @@ async def test_a_hook_that_raises_fails_the_node(is_async: bool):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
-async def test_a_hook_result_marked_is_error_still_ends_the_node(is_async: bool):
-    """``ToolResultPart.error`` does not fail a graph node: ``_map_toolcall_result`` maps only ``.output``, as in live dispatch."""
+async def test_a_hook_result_marked_is_error_fails_the_node(is_async: bool):
+    """01a10b50: ``ToolResultPart.error`` fails a graph node, as it does in live dispatch: ``_map_toolcall_result`` judges
+    the result of every ``tool_call`` path (this one included) and an error result is a failed call, with the hook's
+    own text as the message. (It used to end the node with that text as its output and run the rest of the graph.)"""
     name = f"test_vy_is_error_{'async' if is_async else 'sync'}"
     _register(name, is_async=is_async, result=ToolCallResult(output="denied by the hook", is_error=True))
 
     events, resumer = await _resume_events(name)
 
-    assert not [e for e in events if isinstance(e, _GraphErrorEvent)]
-    assert resumer._node_states["ask"].status == NodeRuntimeStatus.ENDED
-    node = resumer._context.nodes["ask"]
-    assert node.text == "denied by the hook" and node.error is None
-    assert resumer._context.nodes["exit"].text == "denied by the hook", "the graph did not continue past the node"
+    (error,) = [e for e in events if isinstance(e, _GraphErrorEvent)]
+    assert (error.code, error.message, error.node_id) == ("tool_execution_failed", "denied by the hook", "ask")
+    assert resumer._node_states["ask"].status == NodeRuntimeStatus.FAILED
+    assert resumer._context.nodes["ask"].error == "denied by the hook"
+    assert "exit" not in resumer._context.nodes, "the graph ran past a failed node"

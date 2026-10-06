@@ -143,3 +143,66 @@ async def test_resume_from_checkpoint_drains_pending_toolcalls() -> None:
     assert loaded.ended_reason == "completed"
     # Pending list cleared.
     assert executor2._pending_toolcalls == []
+
+
+@pytest.mark.asyncio
+async def test_resume_whose_approved_tool_returns_an_error_result_fails_the_node() -> None:
+    """01a10b50: the approved re-dispatch is judged like a live one: an error RESULT fails the node (it used to end it
+    with the error text as its output and run the rest of the graph on it)."""
+    from primer.graph.base import _GraphErrorEvent
+
+    graph = Graph(
+        id="g-resume-error-result",
+        description="begin -> tool -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="t", tool_id="dangerous__tool", arguments={"q": "x"}),
+            _EndNode(id="exit", output_template="{{ nodes.t.text }}"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="t"),
+            _StaticEdge(from_node="t", to_node="exit"),
+        ],
+    )
+
+    async def first_dispatcher(node, arguments):
+        raise YieldToWorker(Yielded(tool_name="_approval", event_key="tool_approval:sid:tc-1"), tool_call_id="tc-1")
+
+    async def resume_dispatcher(node, arguments, bypass_approval=False):
+        return ToolResultPart(id="tc-1", output="permission denied by the sandbox", error=True)
+
+    async def agent_resolver(agent_id: str) -> Agent:
+        raise KeyError(agent_id)
+
+    async def llm_resolver(agent):
+        raise NotImplementedError
+
+    thread_storage: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
+    message_storage: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=thread_storage)  # type: ignore[arg-type]
+
+    def make(dispatcher):
+        return GraphExecutor(
+            graph=graph,
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            thread_storage=thread_storage,  # type: ignore[arg-type]
+            message_storage=message_storage,  # type: ignore[arg-type]
+            graph_thread_id=thread.id,
+            tool_dispatcher=dispatcher,
+        )
+
+    executor = make(first_dispatcher)
+    _events, raised = await _drain_until_yield(executor.invoke([]))
+    assert raised is not None
+    payload = executor.snapshot_state()
+
+    resumer = make(resume_dispatcher)
+    events = await _drain(resumer.resume_from_checkpoint(payload))
+
+    (error,) = [e for e in events if isinstance(e, _GraphErrorEvent)]
+    assert (error.code, error.message, error.node_id) == ("tool_execution_failed", "permission denied by the sandbox", "t")
+    loaded = await thread_storage.get(thread.id)
+    assert loaded is not None
+    assert (loaded.ended_reason, loaded.ended_detail) == ("failed", "tool_execution_failed")
+    assert "exit" not in resumer._context.nodes, "the graph ran past a node whose approved tool returned an error"
