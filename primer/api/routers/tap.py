@@ -8,9 +8,10 @@ Task 2.1.
 It is the first real surface over the Phase-1 tap spine and validates it
 end-to-end:
 
-* **Auth** mirrors the session WS: the auth middleware populates
-  ``request.state.user`` from the signed ``primer_session`` cookie; we reject
-  with HTTP 401 when it is absent (the HTTP analogue of the WS 4401 close).
+* **Auth** is the cookie auth of the rest of the API: the auth middleware
+  populates ``request.state.user`` from the signed ``primer_session`` cookie;
+  we reject with HTTP 401 when it is absent (the HTTP analogue of the
+  terminal WebSocket's 4401 close).
 * **Selector** arrives as an optional ``?selector=`` query parameter carrying a
   base64url- or raw-JSON-encoded :class:`TapSelector`. A GET stream has no
   body, so a query parameter keeps the surface cacheable, reconnect-friendly,

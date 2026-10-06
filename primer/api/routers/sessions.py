@@ -1292,9 +1292,8 @@ async def get_session_messages(
 ) -> dict:
     """Return the recorded ``messages.jsonl`` rows for this session.
 
-    Unlike the WebSocket (which rejects ENDED sessions), this serves the
-    full recorded history for any status, so the console can render the
-    output of a finished run. Reuses the generic JSONL reader; a missing
+    This serves the full recorded history for any status, so the console
+    can render the output of a finished run. Reuses the generic JSONL reader; a missing
     file or absent workspace yields an empty log rather than a 5xx.
     """
     sess = await sessions.get(session_id)
