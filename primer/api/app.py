@@ -291,6 +291,7 @@ def create_test_app(
         storage_provider=storage_provider,
         claim_engine=None,
         event_bus=None,
+        provider_registry=provider_registry,
     )
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001

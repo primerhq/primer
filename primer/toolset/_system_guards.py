@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from primer.model.chat import ToolCallResult
 from primer.model.storage import Op
+from primer.model.tool_approval import ToolApprovalPolicy
 from primer.storage.references import first_referencing_row
 from primer.toolset._helpers import err as _err
 
@@ -140,6 +141,23 @@ AGENT_GUARDS = CrudGuards(kind="agent", managed_by_field="harness_id")
 GRAPH_GUARDS = CrudGuards(kind="graph", managed_by_field="harness_id")
 
 
+def toolset_guards() -> CrudGuards:
+    """The Toolset declaration, shared by the system toolset's table and the python-toolset tools (``create_python_toolset``,
+    ``update_python_toolset_source``), which write Toolset rows directly.
+
+    A function, not a constant: the reserved scope ids live in ``provider_registry``, whose module imports toolsets, so importing it
+    at module level here would be a cycle (the same reason ``system.py`` imports its constants inside the builder).
+    """
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_SCOPE_IDS
+
+    return CrudGuards(
+        kind="toolset",
+        managed_by_field="harness_id",
+        reserved_create_ids=RESERVED_TOOLSET_SCOPE_IDS,
+        references=(ToolReference("tool_approval_policy", ToolApprovalPolicy, "toolset_id"),),
+    )
+
+
 __all__ = [
     "AGENT_GUARDS",
     "GRAPH_GUARDS",
@@ -150,4 +168,5 @@ __all__ = [
     "refuse_delete_id",
     "refuse_delete_if_referenced",
     "refuse_update",
+    "toolset_guards",
 ]

@@ -818,6 +818,8 @@ def _make_lifespan(config: AppConfig):
             storage_provider=storage_provider,
             claim_engine=claim_engine,
             event_bus=event_bus,
+            # update_python_toolset_source evicts the registry's cached adapter, as the toolset router does.
+            provider_registry=provider_registry,
         )
         provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
         app.state.crud_toolset = crud_toolset

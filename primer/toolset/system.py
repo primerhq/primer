@@ -117,7 +117,7 @@ from primer.model.workspace import (
     WorkspaceChannelLink,
 )
 from primer.model.yield_ import ToolContext, Yielded
-from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference
+from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 # Re-exported helpers / argument models / parsers (shared surface).
@@ -237,7 +237,6 @@ def build_system_toolset(
         RESERVED_EMBEDDER_IDS,
         RESERVED_LLM_IDS,
         RESERVED_SSP_IDS,
-        RESERVED_TOOLSET_SCOPE_IDS,
     )
 
     guards_by_label: dict[str, CrudGuards] = {
@@ -253,12 +252,7 @@ def build_system_toolset(
                 ToolReference("model_profile (aggregate member)", ModelProfile, "members", op=Op.CONTAINS),
             ),
         ),
-        "toolset": CrudGuards(
-            kind="toolset",
-            managed_by_field="harness_id",
-            reserved_create_ids=RESERVED_TOOLSET_SCOPE_IDS,
-            references=(ToolReference("tool_approval_policy", ToolApprovalPolicy, "toolset_id"),),
-        ),
+        "toolset": toolset_guards(),
         # reserved bootstrap ids (REST: create 409, delete 403)
         "llm_provider": CrudGuards(
             kind="llm_provider", reserved_create_ids=RESERVED_LLM_IDS, reserved_delete_ids=RESERVED_LLM_IDS,
