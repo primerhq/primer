@@ -40,15 +40,16 @@ The rule (native-token-counting design v3.4, section 8):
   ``(delta usage / delta estimate)`` in ``[0.7, 1.4]``.
 
 A TURN ends at a ``done`` whose ``stop_reason`` is not ``tool_use`` (the loop writes a ``done`` after EVERY model call, tool
-rounds included), a ``cancelled`` or an ``error``, counted per ``(file, node_id, delegate_tool_call_id)``: graph nodes do not
+rounds included), a ``cancelled`` or an ``error``, counted per ``(file, node_id, delegate_run_id)``: graph nodes do not
 interleave, and a delegated (subagent) run, which ``DelegationRecorder`` writes INLINE into the parent's log with
-``payload.delegated`` and the delegating call's id, is a turn of its own, so its final ``done`` does not end the parent's turn
+``payload.delegated`` and a run id, is a turn of its own, so its final ``done`` does not end the parent's turn
 and a parent call is never paired with a child call. Turn segmentation is only as good as the adapters' stop reasons: the Chat Completions adapters now report a tool round
 that the server finished with ``stop`` as ``tool_use`` (they used to record ``stop`` and end the turn early for that provider),
 so logs written BEFORE that fix still split such turns.
-**Limitation:** the recorder stamps no depth or run id, only the delegating call's RAW provider id, and providers that
-synthesise ids (Gemini and Ollama: ``call_{idx}``) reuse them: a delegation nested inside a delegation, with the same raw id
-at both levels, merges the child and the grandchild into one run (sequential reuse of an id is handled). Ticketed.
+**Limitation:** a record written before the recorder stamped ``delegate_run_id`` carries only the delegating call's RAW provider id,
+and providers that synthesise ids (Gemini and Ollama: ``call_{idx}``) reuse them: in an OLD log a delegation nested inside a
+delegation, with the same raw id at both levels, still merges the child and the grandchild into one run (sequential reuse of an
+id is handled); the run is keyed by the call id for such records.
 """
 
 from __future__ import annotations
@@ -158,7 +159,9 @@ def read_corpus(roots: Iterable[Path]) -> Corpus:
             node = rec.get("node_id")
             # A delegated run is its own run: its dones end ITS turns, and its calls pair only with each other.
             delegated = bool(payload.get("delegated"))
-            run = (node, (payload.get("delegate_tool_call_id") or "") if delegated else None)
+            # By the run id the recorder stamps (it tells a child from a grandchild that reuses the raw call id); a record written
+            # before that carries only the delegating call's raw id.
+            run = (node, (payload.get("delegate_run_id") or payload.get("delegate_tool_call_id") or "") if delegated else None)
             if kind == "llm_call":
                 used, est = payload.get("input_tokens"), payload.get("estimated_input_tokens")
                 if not (isinstance(used, int) and used > 0 and isinstance(est, int) and est > 0):
