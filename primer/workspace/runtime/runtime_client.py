@@ -914,14 +914,22 @@ class RuntimeClient:
         if server_proto:
             self._negotiated_version = server_proto
 
-        # Cancel old background tasks before spawning new ones
+        # Cancel old background tasks before spawning new ones. ``asyncio.wait`` waits for the cancelled task without raising what
+        # it ended with, so a cancel aimed at THIS task (``aclose`` sends one to the reconnect task) is not mistaken for the old
+        # task's own CancelledError and swallowed, as ``except (CancelledError, Exception)`` around ``await task`` did.
         for task in (self._receive_task, self._heartbeat_task):
             if task and not task.done():
                 task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await asyncio.wait({task})
+                if not task.cancelled():
+                    task.exception()  # retrieved: nobody else reads what the old task ended with
+
+        if self._closed:
+            # ``aclose`` ran while the old tasks unwound without cancelling this caller (``connect`` is not the reconnect task):
+            # do not start tasks or report a connection on a closed client.
+            if not self._ws.closed:
+                await self._ws.close()
+            raise RuntimeError(ErrorCode.EPROTOCOL, "Client closed")
 
         self._receive_task = asyncio.create_task(
             self._receive_loop(), name="runtime-receive"

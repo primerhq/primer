@@ -832,6 +832,105 @@ async def test_a_gone_client_fails_a_request_at_once(monkeypatch, fake_runtime: 
 
 
 # ---------------------------------------------------------------------------
+# Test: an aclose that lands while a reconnect waits for the old tasks to unwind
+# ---------------------------------------------------------------------------
+
+
+def _client_whose_old_heartbeat_unwinds_slowly(url: str):
+    """A client that counts the receive and heartbeat tasks it starts; its FIRST heartbeat, once cancelled (by a reconnect),
+    sets ``unwinding`` and then waits for ``release`` before it ends."""
+    client = RuntimeClient(url=url, token="test-token")
+    started = {"receive": 0, "heartbeat": 0}
+    unwinding, release = asyncio.Event(), asyncio.Event()
+    real_receive, real_heartbeat = client._receive_loop, client._heartbeat_loop  # type: ignore[attr-defined]
+
+    async def receive_loop() -> None:
+        started["receive"] += 1
+        await real_receive()
+
+    async def heartbeat_loop() -> None:
+        started["heartbeat"] += 1
+        first = started["heartbeat"] == 1
+        try:
+            await real_heartbeat()
+        finally:
+            if first:
+                unwinding.set()
+                await release.wait()
+
+    client._receive_loop = receive_loop  # type: ignore[method-assign]
+    client._heartbeat_loop = heartbeat_loop  # type: ignore[method-assign]
+    return client, started, unwinding, release
+
+
+def _live_runtime_tasks() -> list[str]:
+    return [t.get_name() for t in asyncio.all_tasks() if t.get_name().startswith("runtime-") and not t.done()]
+
+
+async def test_an_aclose_during_a_reconnect_is_not_swallowed_and_starts_nothing(
+    monkeypatch, fake_runtime: tuple[_FakeRuntime, str],
+) -> None:
+    """``_do_connect`` cancels the old receive and heartbeat tasks and waits for them. It awaited each with
+    ``except (CancelledError, Exception): pass``, which also swallowed a cancel aimed at the RECONNECT task itself (what
+    ``aclose`` sends it): the reconnect went on, started a new receive and a new heartbeat task and set ``_connected`` on a
+    client that was already closed. Here the old heartbeat is slow to unwind, so the reconnect is parked on it when
+    ``aclose`` runs."""
+    monkeypatch.setattr(RuntimeClient, "_RECONNECT_DELAYS", (0.01,))
+    _, url = fake_runtime
+    client, started, unwinding, release = _client_whose_old_heartbeat_unwinds_slowly(url)
+    await client.connect()
+    try:
+        await client._ws.close()  # type: ignore[attr-defined]  # the connection drops: the reconnect loop takes over
+        await asyncio.wait_for(unwinding.wait(), timeout=5.0)  # it connected again and now waits for the old heartbeat
+        await client.aclose()
+        release.set()
+        await asyncio.sleep(0.2)
+        reconnect = client._reconnect_task  # type: ignore[attr-defined]
+        assert reconnect is not None and reconnect.cancelled(), "the cancel aimed at the reconnect task was swallowed"
+        assert started == {"receive": 1, "heartbeat": 1}, "a closed client started new tasks"
+        assert not client._connected.is_set()  # type: ignore[attr-defined]
+        assert client._ws.closed and client._session.closed  # type: ignore[attr-defined]
+        assert _live_runtime_tasks() == []
+    finally:
+        release.set()
+        await client.aclose()
+
+
+async def test_a_connect_that_finds_the_client_closed_while_the_old_tasks_unwind_raises_and_starts_nothing(
+    monkeypatch, fake_runtime: tuple[_FakeRuntime, str],
+) -> None:
+    """``connect`` is not the reconnect task, so ``aclose`` does not cancel it: after it has waited for the old tasks it must
+    look at ``_closed`` itself instead of starting new tasks and reporting a connection on a closed client."""
+    monkeypatch.setattr(RuntimeClient, "_RECONNECT_DELAYS", (60.0,))  # keep the reconnect loop out of it
+    _, url = fake_runtime
+    client, started, unwinding, release = _client_whose_old_heartbeat_unwinds_slowly(url)
+    await client.connect()
+    reconnecting = None
+    try:
+        await client._ws.close()  # type: ignore[attr-defined]
+        for _ in range(200):  # the receive loop saw the drop and cleared the connection
+            if not client._connected.is_set():  # type: ignore[attr-defined]
+                break
+            await asyncio.sleep(0.01)
+        reconnecting = asyncio.create_task(client.connect())
+        await asyncio.wait_for(unwinding.wait(), timeout=5.0)  # connect opened a new WS and waits for the old heartbeat
+        await client.aclose()
+        release.set()
+        with pytest.raises(RuntimeError) as raised:
+            await asyncio.wait_for(reconnecting, timeout=5.0)
+        assert raised.value.code == ErrorCode.EPROTOCOL
+        assert started == {"receive": 1, "heartbeat": 1}, "a closed client started new tasks"
+        assert not client._connected.is_set()  # type: ignore[attr-defined]
+        assert client._ws.closed  # type: ignore[attr-defined]
+        assert _live_runtime_tasks() == []
+    finally:
+        release.set()
+        if reconnecting is not None:
+            reconnecting.cancel()
+        await client.aclose()
+
+
+# ---------------------------------------------------------------------------
 # Test: connect rejects wrong token
 # ---------------------------------------------------------------------------
 
