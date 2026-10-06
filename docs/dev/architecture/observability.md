@@ -20,8 +20,7 @@ The whole surface is gated by `ObservabilityConfig` (`primer/api/config.py`) and
 wired in the FastAPI lifespan (`primer/api/app.py`). The first three outputs are
 "plumbing once, instrument everywhere" concerns; the modules in
 `primer/observability/` own the plumbing, and the instrumentation call sites live
-inside the subsystems they measure (LLM adapters, tool manager, claim engines, WS
-routers). The turn-log family is a writer ABC plus implementations that the
+inside the subsystems they measure (LLM adapters, tool manager, claim engines). The turn-log family is a writer ABC plus implementations that the
 session dispatch path and both graph executors share.
 
 The design constraint shared across all four outputs is zero-overhead-when-off:
@@ -231,17 +230,17 @@ Tracing plus metrics are wired at these call sites:
   `claim_due` in `tracer.start_as_current_span("claim.due")`, set `claim.count`, add
   a `claim_assigned` span event per lease, and observe
   `claim_enqueue_latency_seconds{kind}`.
-- The session WS router (`primer/api/routers/sessions.py`) wraps its
-  handler body in a `ws.session` span, increment `ws_connections_active{kind}` on entry and decrement in `finally`,
-  observe `ws_session_duration_seconds{kind}`, set `ws.frames_sent`, and bump
-  `ws_frames_sent_total{kind}` per frame.
+- No call site writes the `ws_*` families any more: the session WebSocket router that wrapped its handler in a
+  `ws.session` span and drove `ws_connections_active{kind}`, `ws_session_duration_seconds{kind}` and
+  `ws_frames_sent_total{kind}` was removed with the route (the workspace tap is SSE, and the terminal WebSocket does not
+  use them). The families are still declared, and unit-tested in `tests/observability/test_metrics.py`.
 
 The declared metric families (`primer/observability/metrics.py`) are LLM
 (`llm_tokens_total`, `llm_duration_seconds`, `llm_failure_total`,
 `llm_retry_total`), tools (`tool_calls_total`, `tool_duration_seconds`), claims
 (`claim_enqueue_latency_seconds`, `claim_queue_depth`, `claim_active_count`),
 WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
-`ws_session_duration_seconds`, `ws_replay_backlog_seconds`), and the worker / turn
+`ws_session_duration_seconds`, `ws_replay_backlog_seconds`; declared, written by no call site, see below), and the worker / turn
 / session families:
 
 - `tool_wait_malformed_scoped_id_total{site}` counts tool-call task ids that did not parse as a scoped id (`parse_scoped_task_id`, `primer/model/tool_call_task.py`) where a tool_wait wake key was needed, through `tool_wait_event_key_or_none` (`primer/session/yields.py`, which also logs ERROR naming the id). `site` is a closed four-value enum, so it is on the label allowlist: `adapter` (the last-sibling release in `primer/claim/adapters/tool_calls.py` committed but woke nothing), `materializer` (`materialize_pending_tool_wait_rows` left that batch's key out of the park), `repark` (`_repark_graph_tool_wait_outcome` left that batch's key out of the park) and `dispatch` (the agent tool_wait park arm: no batch's id parsed, so the park is not written and the turn ends failed). A pure tool_wait graph park or re-park (no human gate) whose batches ALL fail to parse is not written either and ends the turn failed the same way, but it is counted under `materializer` (a pure graph park arm) or `repark` (a re-park), not `dispatch`, which only the agent arm counts. Only an id the code minted itself can be counted, so any non-zero value is a bug in the id mint.
@@ -339,10 +338,10 @@ rests on, applies rules 1 and 2 to the material groups only, and uses the group'
 ratio as kappa in rule 3, which leans towards Phase 1b compared with the per-session EMA
 Phase 1a would use.
 
-Four declared metrics are not yet written by any call site and scrapers will see
+Six declared metrics are not written by any call site and scrapers will see
 them as never-incremented zeros: `llm_retry_total` (no adapter increments it),
-`claim_active_count` (no writer), and `ws_replay_backlog_seconds` (neither WS router
-measures the replayed-row age at connect). In addition, the Postgres
+`claim_active_count` (no writer), and the four `ws_*` families (the session WebSocket
+router that wrote them was removed). In addition, the Postgres
 `claim_enqueue_latency_seconds` is always observed as `0.0` because the returned
 `Lease` shape lacks a `next_attempt_at` / `created_at` field for the wait
 computation; an inline comment in `primer/claim/postgres.py` marks this. Dashboard
