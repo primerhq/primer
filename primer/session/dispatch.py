@@ -841,10 +841,10 @@ async def run_one_session_turn(
         # there ends the session, and an ENDED session must not have asked
         # a human anything. Awaited so delivery is attempted before the
         # lease drops;
-        # _dispatch_to_channels logs and swallows a dispatcher failure,
-        # lets an error in building the envelope or reading ask_user files
-        # propagate (see its docstring), and no-ops when no dispatcher
-        # is wired. Function-local import mirrors the ParkedState import
+        # the fan-out is BEST EFFORT: _dispatch_to_channels never raises (an
+        # envelope that cannot be built, an unreadable ask_user file or a
+        # dispatcher error is logged at ERROR and the park carries on; see
+        # its docstring) and no-ops when no dispatcher is wired. Function-local import mirrors the ParkedState import
         # above to avoid the worker->dispatch circular import.
         from primer.worker.yield_runtime import (
             _dispatch_to_channels,

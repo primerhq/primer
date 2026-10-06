@@ -884,10 +884,12 @@ def _build_prompt_envelope(
 
 
 async def _resolve_files_to_media(
-    *, workspace_registry, artifact_registry, workspace_id, files,
+    *, workspace_registry, artifact_registry, workspace_id, files, session_id: str | None = None,
 ) -> "list[dict] | None":
     """Read ask_user/inform workspace files into artifact-backed media part
-    dicts for a PromptEnvelope. None when files/registries are missing."""
+    dicts for a PromptEnvelope. None when files/registries are missing, or
+    when reading them fails (logged at ERROR with the session id: the prompt
+    is worth more than its attachment, so the caller sends it without media)."""
     import logging
     if not files or workspace_registry is None or artifact_registry is None:
         return None
@@ -899,8 +901,14 @@ async def _resolve_files_to_media(
         logging.getLogger(__name__).warning(
             "ask_user files: workspace/artifact resolve failed")
         return None
-    parts = await media_from_workspace_files(workspace, store, files)
-    return [p.model_dump(mode="json") for p in parts] or None
+    try:
+        parts = await media_from_workspace_files(workspace, store, files)
+        return [p.model_dump(mode="json") for p in parts] or None
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "ask_user files for session %s could not be read into media; sending the prompt without them", session_id,
+        )
+        return None
 
 
 async def _dispatch_to_channels(
@@ -918,26 +926,33 @@ async def _dispatch_to_channels(
 
     AWAITED at the call site, on the lease-holding turn, so delivery is
     attempted before the lease drops (docs/dev/subsystems/channels.md: it
-    is not scheduled as a separate task). A failure of the dispatcher
-    itself (``dispatch_prompt``) is logged and swallowed. It does NOT
-    "never raise": building the prompt envelope and reading an ask_user's
-    ``files`` into media run before that ``try`` (``_resolve_files_to_media``
-    only guards the registry lookups), and an error there propagates to the
-    caller. No-ops when no dispatcher is wired.
+    is not scheduled as a separate task). BEST EFFORT: this function never
+    raises. The park it announces was already decided, so a failure of the
+    fan-out (building the envelope, reading an ask_user's ``files``, the
+    dispatcher itself) must never fail or abort it: each is logged at ERROR
+    with the session id and the function carries on (an unreadable
+    attachment is dropped and the prompt is sent without media; an envelope
+    that cannot be built sends nothing). No-ops when no dispatcher is wired.
     """
     import logging
     if dispatcher is None:
         return
     metadata = yielded.resume_metadata or {}
-    envelope = _build_prompt_envelope(
-        kind=yielded.tool_name,
-        workspace_id=session.workspace_id,
-        session_id=session.id,
-        fallback_tool_call_id=_tool_call_id_from_event_key(yielded.event_key),
-        metadata=metadata,
-        workspace_name=workspace_name,
-        session_label=session_label,
-    )
+    try:
+        envelope = _build_prompt_envelope(
+            kind=yielded.tool_name,
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            fallback_tool_call_id=_tool_call_id_from_event_key(yielded.event_key),
+            metadata=metadata,
+            workspace_name=workspace_name,
+            session_label=session_label,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "channel prompt envelope for session %s could not be built; no prompt is sent", session.id,
+        )
+        return
     if envelope is None:
         return
     # Attach any ask_user `files` as media (read from the workspace + stored).
@@ -947,6 +962,7 @@ async def _dispatch_to_channels(
             artifact_registry=artifact_registry,
             workspace_id=session.workspace_id,
             files=metadata.get("files"),
+            session_id=session.id,
         )
     try:
         await dispatcher.dispatch_prompt(envelope=envelope, session=session)
@@ -1028,15 +1044,24 @@ async def _dispatch_to_channels_multi(
         key = (p.get("node_id"), tcid)
         if key in sent:
             continue
-        envelope = _build_prompt_envelope(
-            kind=p.get("kind", ""),
-            workspace_id=workspace_id,
-            session_id=session_id,
-            fallback_tool_call_id=tcid,
-            metadata=p.get("resume_metadata") or {},
-            workspace_name=workspace_name,
-            session_label=session_label,
-        )
+        try:
+            envelope = _build_prompt_envelope(
+                kind=p.get("kind", ""),
+                workspace_id=workspace_id,
+                session_id=session_id,
+                fallback_tool_call_id=tcid,
+                metadata=p.get("resume_metadata") or {},
+                workspace_name=workspace_name,
+                session_label=session_label,
+            )
+        except Exception:
+            # one node's bad metadata must not drop the other nodes' prompts or abort the park; it is not marked
+            # sent, so a later re-park may try it again
+            logging.getLogger(__name__).exception(
+                "channel prompt envelope for session %s node %s (%s) could not be built; skipping it",
+                session_id, p.get("node_id"), tcid,
+            )
+            continue
         if envelope is None:
             continue
         try:
