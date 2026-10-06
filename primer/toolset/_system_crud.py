@@ -24,6 +24,7 @@ from primer.agent.approval import (
     ApprovalResolver,
     evaluate_approval_gate,
 )
+from primer.common.entity_checks import EntityCheckError
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import ok as _ok
@@ -258,6 +259,11 @@ def _hint(entity_label: str) -> _EntityHint:
 
 _OnMutate = Callable[[str], Awaitable[None]] | None
 
+# The REST routers' pre-create / pre-update validators, as the shared check functions (they raise EntityCheckError): a create hook
+# gets the validated entity, an update hook the entity and the stored row.
+_PreCreate = Callable[[Any], Awaitable[None]] | None
+_PreUpdate = Callable[[Any, Any], Awaitable[None]] | None
+
 
 def _crud_tools_for(
     *,
@@ -270,11 +276,17 @@ def _crud_tools_for(
     on_delete: _OnMutate = None,
     required_role: str | None = None,
     guards: CrudGuards | None = None,
+    pre_create: _PreCreate = None,
+    pre_update: _PreUpdate = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
 
     ``guards`` declares what the entity's REST router guards (harness-managed rows, reserved ids, references that block a
     delete; see :mod:`primer.toolset._system_guards`); ``None`` is no guards.
+
+    ``pre_create`` / ``pre_update`` are the entity's REST pre-write validators (the shared functions the router hooks also call):
+    they run after the guards, before the write, as the router orders them. A refusal (:class:`EntityCheckError`) is answered as a
+    typed error (``conflict`` or ``validation-error`` naming the field) and nothing is stored; ``None`` runs none.
 
     Create/update use a self-contained wrapper-model schema (built via
     ``_create_schema`` / ``_update_schema``) so the embedded ``$defs``
@@ -370,6 +382,11 @@ def _crud_tools_for(
         refusal = refuse_create(guards, entity)
         if refusal is not None:
             return refusal
+        if pre_create is not None:
+            try:
+                await pre_create(entity)
+            except EntityCheckError as exc:
+                return _err(exc.tool_message(), error_type=exc.tool_error_type)
         existing = await storage.get(entity.id)
         if existing is not None:
             return _err(
@@ -384,6 +401,17 @@ def _crud_tools_for(
             await on_create(created.id)
         return _ok(created)
 
+    create_when = (
+        "Use when adding a new row; duplicate id returns "
+        "``type=conflict``, a bad body returns ``type=validation-error``."
+    )
+    if pre_create is not None:
+        create_when += (
+            " The same semantic checks as the REST route run before the write: a body the route would refuse "
+            "(a clash with a stored row, an unknown reference, an invalid config) returns ``type=conflict`` or "
+            "``type=validation-error`` naming the field, and nothing is stored."
+        )
+
     tools[f"create_{entity_label}"] = (
         make_tool(
             id=f"create_{entity_label}",
@@ -392,10 +420,7 @@ def _crud_tools_for(
                 f"Create a new {cls_name} from the full ``entity`` body; "
                 "the ``id`` must be unique."
             ),
-            when=(
-                "Use when adding a new row; duplicate id returns "
-                "``type=conflict``, a bad body returns ``type=validation-error``."
-            ),
+            when=create_when,
             args_schema=_create_schema(model_cls),
             examples=[
                 ToolExample(
@@ -441,6 +466,11 @@ def _crud_tools_for(
         # back (an agent changing one field) would store the mask as the credential. The REST routers run the same
         # helper as an on_pre_update hook; a secret the caller really changed still replaces the stored one.
         preserve_masked_secrets(entity, existing)
+        if pre_update is not None:
+            try:
+                await pre_update(entity, existing)
+            except EntityCheckError as exc:
+                return _err(exc.tool_message(), error_type=exc.tool_error_type)
         try:
             updated = await storage.update(entity)
         except PrimerError as exc:
@@ -459,6 +489,11 @@ def _crud_tools_for(
         update_when += (
             " Mutating provider/toolset/vector-store rows invalidates the "
             "matching cached adapter immediately."
+        )
+    if pre_update is not None:
+        update_when += (
+            " The same semantic checks as the REST route run before the write: a body the route would refuse returns "
+            "``type=conflict`` or ``type=validation-error`` naming the field, and the stored row is unchanged."
         )
 
     tools[f"update_{entity_label}"] = (

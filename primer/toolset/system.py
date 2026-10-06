@@ -71,6 +71,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.agent.approval import ApprovalResolver
+from primer.agent.approval_checks import check_policy
 from primer.agent.invoke import (
     InvocationDepthExceeded,
     invocation_depth_guard,
@@ -277,6 +278,19 @@ def build_system_toolset(
         ),
     }
 
+    # ---- Pre-write validators the REST routers run (task 01a111d1, D5 phase 2b) ----
+    # The checks are shared functions over (entity, storage_provider); the router hooks call the same ones. They run after the guards
+    # and before the write, and a refusal is a typed tool error.
+    async def _policy_pre_create(entity: ToolApprovalPolicy) -> None:
+        await check_policy(entity, storage_provider=storage_provider)
+
+    async def _policy_pre_update(entity: ToolApprovalPolicy, existing: ToolApprovalPolicy) -> None:
+        await check_policy(entity, storage_provider=storage_provider, skip_id=existing.id)
+
+    pre_checks_by_label: dict[str, tuple[Any, Any]] = {
+        "tool_approval_policy": (_policy_pre_create, _policy_pre_update),
+    }
+
     # ---- CRUD sets ----------------------------------------------------
     # Note: VectorStoreConfig was removed from this set when vector
     # store configuration moved into AppConfig (it is no longer a
@@ -306,6 +320,7 @@ def build_system_toolset(
         ("channel", "channels", Channel, None, None, None, "user"),
     ]
     for label, plural, cls, on_c, on_u, on_d, role in crud_specs:
+        pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
         registry.update(
             _crud_tools_for(
                 entity_label=label,
@@ -317,6 +332,8 @@ def build_system_toolset(
                 on_delete=on_d,
                 required_role=role,
                 guards=guards_by_label.get(label),
+                pre_create=pre_create,
+                pre_update=pre_update,
             )
         )
 

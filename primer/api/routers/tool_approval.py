@@ -23,6 +23,8 @@ from fastapi import HTTPException
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router
 from primer.int.claim import ClaimEngine
+from primer.agent.approval_checks import check_approval_config, check_policy_unique
+from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
@@ -52,95 +54,36 @@ def _get_tool_approval_policy_storage(request: Request):
     return sp.get_storage(ToolApprovalPolicy)
 
 
+def _as_rest_error(exc: EntityCheckError) -> Exception:
+    """The exception this router has always raised for the check: a ``ConflictError`` for a clash, a ``RequestValidationError``
+    with a ``body.<field>`` loc for a refused config (the console's modal reads that loc)."""
+    if exc.kind == "conflict":
+        return ConflictError(exc.message)
+    return _validation_error(field_path=exc.field or "", message=exc.message)
+
+
 async def _validate_uniqueness(
     entity: ToolApprovalPolicy,
     *,
-    storage,
+    storage_provider,
     skip_id: str | None = None,
 ) -> None:
-    predicate = (
-        Q(ToolApprovalPolicy)
-        .where("toolset_id", entity.toolset_id)
-        .where("tool_name", entity.tool_name)
-        .build()
-    )
-    page = await storage.find(predicate, OffsetPage(offset=0, length=10))
-    for existing in page.items:
-        if skip_id is not None and existing.id == skip_id:
-            continue
-        raise ConflictError(
-            f"a ToolApprovalPolicy for "
-            f"toolset_id={entity.toolset_id!r}, "
-            f"tool_name={entity.tool_name!r} already exists "
-            f"(id={existing.id!r})"
-        )
+    # The check itself is shared with the system tools: primer/agent/approval_checks.py.
+    try:
+        await check_policy_unique(entity, storage_provider=storage_provider, skip_id=skip_id)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
 
 
 async def _validate_approval_config(
     entity: ToolApprovalPolicy,
     *,
-    provider_registry,
+    storage_provider,
 ) -> None:
-    cfg = entity.approval
-    if isinstance(cfg, PolicyApprovalConfig):
-        from primer.agent.rego import RegoCompileError, evaluate_policy
-        try:
-            evaluate_policy(cfg.policy, {})
-        except RegoCompileError as exc:
-            raise _validation_error(
-                field_path="approval.policy",
-                message=f"rego compile failed: {exc}",
-            ) from exc
-    elif isinstance(cfg, LlmApprovalConfig):
-        from primer.model.provider import LLMProvider
-        # Fetch the stored row directly via storage; the registry only
-        # exposes the live adapter (get_llm), not the row.
-        sp = provider_registry._sp  # noqa: SLF001
-        row = await sp.get_storage(LLMProvider).get(cfg.provider_id)
-        if row is None:
-            raise _validation_error(
-                field_path="approval.provider_id",
-                message=f"unknown LLM provider {cfg.provider_id!r}",
-            )
-        # An LLM provider no longer carries a models[] list: what it
-        # serves is its ModelProfile rows. The judge calls the adapter
-        # with a bare model name (no agent, so no profile to resolve), so
-        # the check stays "is this name published by that provider" -- it
-        # just reads the profiles to answer it.
-        names = await _published_model_names(sp, cfg.provider_id)
-        if cfg.model not in names:
-            raise _validation_error(
-                field_path="approval.model",
-                message=(
-                    f"model {cfg.model!r} not registered on provider "
-                    f"{cfg.provider_id!r} (available: {sorted(names)})"
-                ),
-            )
-
-
-async def _published_model_names(sp, provider_id: str) -> set[str]:
-    """Distinct model names the provider's ModelProfile rows name.
-
-    Mirrors ``GET /v1/llm_providers/{id}/models``. Paged because a
-    provider with many profiles is the expected shape once an operator
-    has fetched a large upstream catalogue.
-    """
-    from primer.model.model_profile import ModelProfile
-    from primer.model.storage import OffsetPage
-    from primer.storage.q import Q
-
-    names: set[str] = set()
-    offset = 0
-    store = sp.get_storage(ModelProfile)
-    while True:
-        page = await store.find(
-            Q(ModelProfile).where("provider_id", provider_id).build(),
-            OffsetPage(offset=offset, length=200),
-        )
-        names.update(p.model_name for p in page.items)
-        if len(page.items) < 200:
-            return names
-        offset += 200
+    try:
+        await check_approval_config(entity, storage_provider=storage_provider)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
 
 
 def _validation_error(*, field_path: str, message: str) -> RequestValidationError:
@@ -425,11 +368,9 @@ def make_tool_approval_router() -> APIRouter:
     async def on_pre_create(entity: ToolApprovalPolicy, request: Request) -> None:
         storage_provider = get_storage_provider(request)
         provider_registry = get_provider_registry(request)
-        storage = storage_provider.get_storage(ToolApprovalPolicy)
-        await _validate_uniqueness(entity, storage=storage)
-        await _validate_approval_config(
-            entity, provider_registry=provider_registry,
-        )
+        await _validate_uniqueness(entity, storage_provider=storage_provider)
+        # The config check reads provider rows through the registry's own storage provider, as it always did.
+        await _validate_approval_config(entity, storage_provider=provider_registry._sp)  # noqa: SLF001
 
     async def on_pre_update(
         entity: ToolApprovalPolicy,
@@ -438,11 +379,8 @@ def make_tool_approval_router() -> APIRouter:
     ) -> None:
         storage_provider = get_storage_provider(request)
         provider_registry = get_provider_registry(request)
-        storage = storage_provider.get_storage(ToolApprovalPolicy)
-        await _validate_uniqueness(entity, storage=storage, skip_id=existing.id)
-        await _validate_approval_config(
-            entity, provider_registry=provider_registry,
-        )
+        await _validate_uniqueness(entity, storage_provider=storage_provider, skip_id=existing.id)
+        await _validate_approval_config(entity, storage_provider=provider_registry._sp)  # noqa: SLF001
 
     crud = make_crud_router(
         model_cls=ToolApprovalPolicy,
