@@ -502,16 +502,28 @@ class TestAggregatedModelProfileTool:
     discriminated shape survives model_validate untouched through the
     generic system toolset" intent against create_model_profile/
     get_model_profile instead. Member existence/kind/self-reference/
-    duplicate checks (model_profiles.py's on_pre_create) do NOT apply
-    here -- this toolset's CRUD is generic Storage[T] access, the same
-    admin-level bypass every other entry in crud_specs gets, not the
-    REST router -- so arbitrary member ids are fine for this roundtrip.
+    duplicate checks (the model profile router's on_pre_create) USED to
+    be skipped here, on the reading that this toolset's CRUD is generic
+    Storage[T] access, an admin-level bypass. Task 01a111d1 (D5 phase
+    2b) reversed that: the tool runs the same shared checks as the REST
+    route, so the members must exist and be single profiles (they are
+    seeded below). The refusals themselves are pinned in
+    tests/toolset/test_system_validators.py.
     """
 
     @pytest.mark.asyncio
     async def test_create_aggregated_model_profile_roundtrips(
-        self, system_toolset
+        self, system_toolset, sp
     ) -> None:
+        from primer.model.model_profile import ModelProfile
+
+        for member_id in ("member-1", "member-2"):
+            await sp.get_storage(ModelProfile).create(
+                ModelProfile(
+                    id=member_id, description="a member", kind="single",
+                    provider_id="anthropic-1", model_name="m", context_length=1000,
+                )
+            )
         body = {
             "id": "agg-tool-1",
             "description": "an aggregated profile",
