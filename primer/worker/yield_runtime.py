@@ -455,10 +455,35 @@ def classify_resume_payload(
             "was set — the park is still in 'parked' state, not "
             "'resumable'"
         )
+    return classify_marker_payload(
+        parked_state.resume_event_payload, parked_at=parked_at, now=now,
+    )
 
+
+def classify_marker_payload(
+    raw: dict[str, Any],
+    *,
+    parked_at: datetime,
+    now: datetime | None = None,
+) -> ResumePayload:
+    """Classify one raw stored resume payload: timeout, cancel or a real reply.
+
+    The body of :func:`classify_resume_payload`, for a caller that holds the
+    raw dict instead of a :class:`ParkedState`: the multi-event graph drain
+    (``resume_graph_engine``'s ``payloads_map`` branch) converts every
+    accumulated entry through it, so a nested leaf or an agent node there
+    receives the same :class:`YieldTimeout` / :class:`YieldCancelled` the
+    single-event path builds (a hook that recognises a marker only by
+    ``isinstance`` would otherwise take the dict for an operator reply).
+
+    A marker is recognised by its KEY being present, whatever its value.
+    ``elapsed_seconds`` is measured from ``parked_at`` (the park's own
+    ``parked_at``) to ``now``. A real reply comes back with the
+    primer-internal control keys (``__yield_*``, ``cancelled_at``) stripped;
+    ``raw`` itself is not modified.
+    """
     current = now or datetime.now(timezone.utc)
     elapsed = (current - parked_at).total_seconds()
-    raw = parked_state.resume_event_payload
 
     if _YIELD_TIMEOUT_KEY in raw:
         return ResumePayload(
@@ -517,6 +542,42 @@ def make_cancelled_payload(
         "reason": reason,
         "cancelled_at": at.isoformat(),
     }
+
+
+def reply_payloads_equal(
+    a: dict[str, Any] | None,
+    b: dict[str, Any] | None,
+) -> bool:
+    """Whether two stored reply payloads carry the same reply.
+
+    Each side is read as ``dict(p or {})`` (so ``None`` equals ``{}``), then
+    compared in a normal form: a payload carrying ``__yield_cancelled__``
+    compares as ``{"__yield_cancelled__": True, "reason": <reason>}`` (its
+    ``cancelled_at`` is stamped when the marker is BUILT, so a resend of the
+    same cancel differs there), a payload carrying ``__yield_timeout__``
+    compares as ``{"__yield_timeout__": True}``, anything else compares as it
+    is. A marker is recognised by its KEY being present, as
+    :func:`classify_marker_payload` recognises it.
+
+    The comparison is :func:`primer.storage._patch.json_equal`, the
+    JSON-typed rule a storage ``where`` uses (``True`` is not ``1``, ``1``
+    equals ``1.0``), so a check made here and a ``where`` on the same stored
+    value cannot disagree.
+    """
+    # Lazy: this module imports only model modules at load time.
+    from primer.storage._patch import json_equal
+
+    return json_equal(_reply_identity(a), _reply_identity(b))
+
+
+def _reply_identity(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """The normal form :func:`reply_payloads_equal` compares."""
+    p = dict(payload or {})
+    if _YIELD_TIMEOUT_KEY in p:
+        return {_YIELD_TIMEOUT_KEY: True}
+    if _YIELD_CANCELLED_KEY in p:
+        return {_YIELD_CANCELLED_KEY: True, "reason": p.get("reason")}
+    return p
 
 
 # ===========================================================================
@@ -999,8 +1060,10 @@ __all__ = [
     "_dispatch_to_channels_multi",
     "_resume_tool_approval",
     "_tool_call_id_from_event_key",
+    "classify_marker_payload",
     "classify_resume_payload",
     "make_cancelled_payload",
     "make_timeout_payload",
     "merge_pending_dispatch",
+    "reply_payloads_equal",
 ]
