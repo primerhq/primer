@@ -180,7 +180,7 @@ class RuntimeClient:
         Idempotent — safe to call when already connected.
         """
         if self._closed:
-            raise RuntimeError("EPROTOCOL", "Client is closed")
+            raise RuntimeError(ErrorCode.EPROTOCOL, "Client is closed")
         if self._connected.is_set():
             return
         async with self._lock:
@@ -625,7 +625,7 @@ class RuntimeClient:
         await self._wait_until_connected()
         ws = self._ws
         if ws is None or ws.closed:
-            raise RuntimeError("EPROTOCOL", "Not connected")
+            raise RuntimeError(ErrorCode.EPROTOCOL, "Not connected")
         from primer.workspace.runtime.protocol import serialize
 
         await ws.send_str(serialize(msg))
@@ -892,7 +892,7 @@ class RuntimeClient:
         if resp_msg.type != aiohttp.WSMsgType.TEXT:
             await self._ws.close()
             raise RuntimeError(
-                "EPROTOCOL",
+                ErrorCode.EPROTOCOL,
                 f"Expected TEXT for hello response, got {resp_msg.type}",
             )
 
@@ -903,7 +903,7 @@ class RuntimeClient:
             err = resp.get("error") or {}
             await self._ws.close()
             raise RuntimeError(
-                err.get("code", "EPROTOCOL"),
+                err.get("code", ErrorCode.EPROTOCOL),
                 err.get("message", "hello failed"),
             )
 
