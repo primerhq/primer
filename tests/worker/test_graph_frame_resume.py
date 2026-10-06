@@ -1,6 +1,7 @@
 import json
 import pytest
 import primer.worker.frames as frames_mod
+from primer.graph.invoke_graph import ChildGraphFailed
 from primer.worker.frames import GraphFrame, Completed, Reparked
 from primer.model.chat import ToolResultPart
 from primer.model.yield_ import Yielded, YieldToWorker
@@ -45,3 +46,14 @@ async def test_graph_frame_resume_reparks(monkeypatch):
     assert isinstance(advanced, GraphFrame)
     assert advanced.checkpoint == {"k": 2} and advanced.node_tcid == "n2"
     assert advanced.tool_call_id == frame.tool_call_id
+
+@pytest.mark.asyncio
+async def test_graph_frame_resume_delivers_a_failed_child_as_an_error_result(monkeypatch):
+    """A child that ends failed after a finished result was delivered to it is an ERROR for the agent's call."""
+    async def _fake_resume(**kw):
+        raise ChildGraphFailed(code="tool_execution_failed", message="disk on fire", node_id="n2")
+    monkeypatch.setattr(frames_mod, "resume_invoke_graph", _fake_resume, raising=False)
+    out = await _frame().resume(ToolResultPart(id="x", output="child", error=False), _Services())
+    assert isinstance(out, Completed)
+    assert out.value.id == "agent-tc" and out.value.error is True
+    assert json.loads(out.value.output) == {"error": "tool_execution_failed", "message": "disk on fire", "node_id": "n2"}
