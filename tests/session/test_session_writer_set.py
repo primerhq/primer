@@ -264,10 +264,14 @@ def test_diff_is_empty_when_the_code_matches() -> None:
 # the scanner, on synthetic sources: it follows the handle TYPE, not the names
 
 
+# Other models of the synthetic package: a name is "another model" only when it is a real class.
+OTHER_MODELS = "class Harness: ...\nclass Collection: ...\n"
+
+
 def scan_sources(tmp_path: pathlib.Path, **files: str) -> ScanResult:
     """Write ``name=source`` modules under ``tmp_path/primer`` and scan them."""
     root = tmp_path / "primer"
-    for name, source in files.items():
+    for name, source in {"_models": OTHER_MODELS, **files}.items():
         path = root / f"{name}.py"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(textwrap.dedent(source), encoding="utf-8")
@@ -705,6 +709,410 @@ def test_the_scan_is_pure_ast_and_does_not_depend_on_the_cwd(
     before = default_root()
     monkeypatch.chdir(tmp_path)
     assert default_root() == before == pathlib.Path(__file__).resolve().parents[2] / "primer"
+
+
+# ---------------------------------------------------------------------------------------------
+# a handle of an UNKNOWN model is never "another model": generic CRUD cannot hide a session writer
+
+UNKNOWN_MODEL_SOURCES = {
+    "storage_of_any": """
+        async def f(rows: Storage[Any], entity):
+            await rows.update(entity)
+    """,
+    "storage_of_a_typevar": """
+        async def f(rows: "Storage[T]", entity):
+            await rows.update(entity)
+    """,
+    "get_storage_of_a_variable": """
+        async def f(sp, model_cls, entity):
+            rows = sp.get_storage(model_cls)
+            await rows.update(entity)
+    """,
+    "get_storage_of_dunder_class": """
+        async def f(sp, session):
+            await sp.get_storage(session.__class__).update(session)
+    """,
+    "get_storage_of_type_of": """
+        async def f(sp, row):
+            await sp.get_storage(type(row)).update(row)
+    """,
+    "get_storage_of_a_loop_variable": """
+        async def f(sp, row):
+            for model in (Harness, Collection):
+                await sp.get_storage(model).update(row)
+    """,
+    "update_unless": """
+        async def f(sp, model_cls, entity):
+            await sp.get_storage(model_cls).update_unless(entity, field="a", forbidden=1)
+    """,
+}
+
+
+@pytest.mark.parametrize("name", UNKNOWN_MODEL_SOURCES)
+def test_a_write_on_a_handle_of_an_unknown_model_is_unresolved_whatever_its_argument(
+    tmp_path: pathlib.Path, name: str
+) -> None:
+    result = scan_sources(tmp_path, a=UNKNOWN_MODEL_SOURCES[name])
+    assert result.writers == ()
+    assert [s.function for s in result.unresolved] == ["f"], result.unresolved
+    assert result.unresolved[0].method.endswith((".update", ".update_unless"))
+
+
+def test_a_write_on_a_receiver_typed_as_another_concrete_model_is_ignored(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = scan_sources(
+        tmp_path,
+        a="""
+        from primer._models import Harness as _H
+
+        async def f(sp, h, rows: Storage[Collection]):
+            await sp.get_storage(Harness).update(h.model_copy(update={"a": 1}))
+            await sp.get_storage(_H).update(h)
+            await rows.update(h.model_copy(update={"a": 1}))
+        """,
+    )
+    assert result.writers == () and result.unresolved == ()
+
+
+def test_a_helper_over_storage_of_t_fed_a_session_handle_is_a_writer(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = scan_sources(
+        tmp_path,
+        a="""
+        from primer.model.workspace_session import WorkspaceSession
+
+        async def save(storage: "Storage[T]", row):
+            await storage.update(row)
+
+        async def f(sp, row):
+            await save(sp.get_storage(WorkspaceSession), row)
+        """,
+    )
+    assert writers(result) == [("primer/a.py", "save", "update")]
+    assert result.unresolved == ()
+
+
+def test_storage_of_any_named_like_a_session_store_is_a_handle(tmp_path: pathlib.Path) -> None:
+    result = scan_sources(
+        tmp_path,
+        a="async def f(sessions: Storage[Any], row):\n    await sessions.update(row)\n",
+    )
+    assert writers(result) == [("primer/a.py", "f", "update")]
+
+
+@pytest.mark.parametrize(
+    "alias_lines",
+    [
+        "M = WorkspaceSession\n    handle = sp.get_storage(M)",
+        "M = WorkspaceSession\n    N = M\n    handle = sp.get_storage(N)",
+        "M: type = WorkspaceSession\n    handle = sp.get_storage(M)",
+    ],
+)
+def test_a_function_local_alias_of_the_model_is_followed(
+    tmp_path: pathlib.Path, alias_lines: str
+) -> None:
+    result = scan_sources(
+        tmp_path,
+        a=f"""
+        from primer.model.workspace_session import WorkspaceSession
+
+        async def f(sp, row):
+            {alias_lines}
+            await handle.update(row)
+        """,
+    )
+    assert writers(result) == [("primer/a.py", "f", "update")]
+
+
+# ---------------------------------------------------------------------------------------------
+# shapes the scan closes: assignment targets, calls, defaults, decorators, same-named defs
+
+CLOSED_SHAPES = {
+    "tuple_unpacking": ("f", """
+        async def f(sp, row):
+            rows, others = sp.get_storage(WorkspaceSession), sp.get_storage(Harness)
+            await rows.update(row)
+    """),
+    "for_target_over_a_literal": ("f", """
+        async def f(sp, row):
+            for rows in (sp.get_storage(WorkspaceSession),):
+                await rows.update(row)
+    """),
+    "comprehension_target": ("f", """
+        async def f(sp, row):
+            return [await h.update(row) for h in [sp.get_storage(WorkspaceSession)]]
+    """),
+    "with_as_target": ("f", """
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def opened(sp):
+            yield sp.get_storage(WorkspaceSession)
+
+        async def f(sp, row):
+            async with opened(sp) as rows:
+                await rows.update(row)
+    """),
+    "cast": ("f", """
+        from typing import cast
+
+        async def f(x, row):
+            rows = cast("Storage[WorkspaceSession]", x)
+            await rows.update(row)
+    """),
+    "default_argument": ("build", """
+        def build(sp):
+            h = sp.get_storage(WorkspaceSession)
+
+            async def handler(row, _write=h.update):
+                await _write(row)
+
+            return handler
+    """),
+    "decorator_of_a_nested_def": ("build", """
+        def build(sp, reg):
+            h = sp.get_storage(WorkspaceSession)
+
+            @reg(h.update)
+            async def handler(row):
+                return row
+
+            return handler
+    """),
+}
+
+
+@pytest.mark.parametrize("name", CLOSED_SHAPES)
+def test_the_scan_follows_a_handle_through(tmp_path: pathlib.Path, name: str) -> None:
+    function, source = CLOSED_SHAPES[name]
+    header = "from primer.model.workspace_session import WorkspaceSession\n"
+    result = scan_sources(tmp_path, a=header + textwrap.dedent(source))
+    assert writers(result) == [("primer/a.py", function, "update")]
+
+
+def test_a_handle_passed_positionally_to_a_staticmethod_lands_on_the_right_parameter(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = scan_sources(
+        tmp_path,
+        a="""
+        from primer.model.workspace_session import WorkspaceSession
+
+        class Helper:
+            @staticmethod
+            async def write(store, row):
+                await store.update(row)
+
+            @classmethod
+            async def write_cls(cls, store, row):
+                await store.update_unless(row, field="a", forbidden=1)
+
+        async def f(sp, row):
+            h = sp.get_storage(WorkspaceSession)
+            await Helper.write(h, row)
+            await Helper.write_cls(h, row)
+        """,
+    )
+    assert writers(result) == [
+        ("primer/a.py", "Helper.write", "update"),
+        ("primer/a.py", "Helper.write_cls", "update_unless"),
+    ]
+
+
+def test_a_handle_passed_positionally_to_a_method_or_a_constructor_is_followed(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = scan_sources(
+        tmp_path,
+        a="""
+        from primer.model.workspace_session import WorkspaceSession
+
+        class Svc:
+            def __init__(self, backing, other=None):
+                self._backing = backing
+
+            async def write(self, row, store):
+                await store.update(row)
+
+            async def via_backing(self, row):
+                await self._backing.update_unless(row, field="a", forbidden=1)
+
+        async def f(sp, svc, row):
+            handle = sp.get_storage(WorkspaceSession)
+            await svc.write(row, handle)
+            await Svc(handle).via_backing(row)
+        """,
+    )
+    assert writers(result) == [
+        ("primer/a.py", "Svc.via_backing", "update_unless"),
+        ("primer/a.py", "Svc.write", "update"),
+    ]
+
+
+def test_two_writes_on_one_line_are_two_sites(tmp_path: pathlib.Path) -> None:
+    result = scan_sources(
+        tmp_path,
+        a="""
+        import asyncio
+        from primer.model.workspace_session import WorkspaceSession
+
+        async def f(sp, a, b):
+            h = sp.get_storage(WorkspaceSession)
+            await asyncio.gather(h.update(a), h.update(b))
+        """,
+    )
+    assert result.counts("writers") == {("primer/a.py", "f", "update"): 2}
+
+
+def test_same_named_defs_in_one_scope_are_separate_keys_by_source_order(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = scan_sources(
+        tmp_path,
+        a="""
+        from primer.model.workspace_session import WorkspaceSession
+
+        def build(sp, flag):
+            h = sp.get_storage(WorkspaceSession)
+            if flag:
+                async def handler(row):
+                    await h.update(row)
+            else:
+                async def handler(row):
+                    await h.update(row)
+                    await h.update(row)
+            return handler
+        """,
+    )
+    assert result.counts("writers") == {
+        ("primer/a.py", "build.handler", "update"): 1,
+        ("primer/a.py", "build.handler#2", "update"): 2,
+    }
+
+
+def test_a_string_named_like_a_session_store_is_not_a_handle(tmp_path: pathlib.Path) -> None:
+    result = scan_sources(
+        tmp_path,
+        a="""
+        def f(session_store_path, session_storage_dir):
+            return session_store_path.replace("a", "b"), session_storage_dir.replace("a", "b")
+        """,
+    )
+    assert result.writers == () and result.unresolved == ()
+
+
+# ---------------------------------------------------------------------------------------------
+# the documented limits are real: each shape is still invisible, and the docstring says so.
+# When the scan learns one of them, move it to CLOSED_SHAPES and delete it from the docstring.
+
+KNOWN_LIMITS = {
+    "generic_rest_crud_through_depends_of_a_parameter": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        def make_crud_router(*, model_cls, storage_dep):
+            async def _update(entity, storage=Depends(storage_dep)):
+                return await storage.update(entity)
+
+        router = make_crud_router(model_cls=WorkspaceSession, storage_dep=get_session_storage)
+    """,
+    "handle_factory_passed_by_reference": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        def make_handler(storage_factory):
+            async def _handler(entity):
+                await storage_factory().update(entity)
+            return _handler
+
+        def build(sp):
+            return make_handler(lambda: sp.get_storage(WorkspaceSession))
+    """,
+    "instance_attribute_read_from_outside_its_class": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        class Adapter:
+            def __init__(self, sp):
+                self._rows = sp.get_storage(WorkspaceSession)
+
+        async def f(sp, row):
+            await Adapter(sp)._rows.update(row)
+    """,
+    "dataclass_field_read_through_a_typed_parameter": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        class Deps:
+            rows: "Storage[WorkspaceSession]"
+
+        async def f(deps: Deps, row):
+            await deps.rows.update(row)
+    """,
+    "unbound_storage_update": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        async def f(sp, row):
+            await Storage.update(sp.get_storage(WorkspaceSession), row)
+    """,
+    "keyword_splat_forwarding": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        async def write(store, row):
+            await store.update(row)
+
+        async def f(sp, row):
+            await write(**{"store": sp.get_storage(WorkspaceSession), "row": row})
+    """,
+    "non_literal_getattr": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        async def f(sp, row, name):
+            await getattr(sp.get_storage(WorkspaceSession), name)(row)
+    """,
+    "tuple_unpacked_from_a_call": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        def pair(sp):
+            return sp.get_storage(WorkspaceSession), 1
+
+        async def f(sp, row):
+            rows, other = pair(sp)
+            await rows.update(row)
+    """,
+    "reassigned_to_another_model_hides_the_session_handle": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        async def f(sp, row, make):
+            rows = sp.get_storage(Harness)
+            rows = make()
+            await rows.update(row)
+    """,
+    "handle_in_a_container": """
+        from primer.model.workspace_session import WorkspaceSession
+
+        async def f(sp, row):
+            handles = {"s": sp.get_storage(WorkspaceSession)}
+            await handles["s"].update(row)
+    """,
+}
+
+
+@pytest.mark.parametrize("name", KNOWN_LIMITS)
+def test_a_documented_limit_is_still_a_limit(tmp_path: pathlib.Path, name: str) -> None:
+    result = scan_sources(tmp_path, a=KNOWN_LIMITS[name])
+    assert result.writers == (), (
+        f"the scan now sees {name}: move it from KNOWN_LIMITS to CLOSED_SHAPES and delete it "
+        "from the module docstring's limits"
+    )
+
+
+def test_an_attribute_chain_named_sessions_is_only_an_unresolved_candidate(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = scan_sources(
+        tmp_path, a="async def f(deps, row):\n    await deps.sessions.update(row)\n"
+    )
+    assert result.writers == ()
+    assert [(s.function, s.method) for s in result.unresolved] == [("f", "deps.sessions.update")]
 
 
 def test_main_prints_the_result_as_json(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture) -> None:
