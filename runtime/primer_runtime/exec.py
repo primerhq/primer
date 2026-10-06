@@ -313,7 +313,10 @@ async def _announce(broadcaster: Any, kind: str, data: dict[str, Any]) -> None:
     The broadcast awaits each subscriber's socket, and an ``exec_cancel`` can land in that window: a client that left
     the wait just as the command ended. Awaited directly, the cancel would abandon the ``exec_exited`` fan-out half done.
     Here the broadcast runs as its own task and the exec task only waits for it behind a shield: a cancel ends the exec
-    task and leaves the broadcast to finish.
+    task and leaves the broadcast to finish. The price is that a broadcast to a subscriber whose socket has stalled
+    outlives the exec task, until the socket answers or the loop is torn down. ``exec_started`` is deliberately not
+    announced this way: it is awaited inside the ``try`` of ``_run_exec_stream``, so a cancel there may leave that one
+    fan-out half done, and the ``finally`` still announces ``exec_exited``.
     """
     task = asyncio.ensure_future(broadcaster.broadcast(kind, data))
     _BROADCASTS.add(task)
@@ -346,11 +349,14 @@ async def _run_exec_stream(
     cmd = list(args.get("cmd") or [])
     t0 = _time.monotonic()
     exit_code = None
-    if broadcaster is not None:
-        await broadcaster.broadcast("exec_started", {
-            "cmd": cmd, "workdir": args.get("workdir"),
-        })
     try:
+        # Inside the try so that the ``finally`` always announces ``exec_exited`` once ``exec_started`` was begun: an
+        # ``exec_cancel`` that lands while the start is being announced ends the task before the command ever runs,
+        # and subscribers must not be left with a start that has no end.
+        if broadcaster is not None:
+            await broadcaster.broadcast("exec_started", {
+                "cmd": cmd, "workdir": args.get("workdir"),
+            })
         async for event in agen:
             if event.event == "exit" and isinstance(event.data, dict):
                 exit_code = event.data.get("code")

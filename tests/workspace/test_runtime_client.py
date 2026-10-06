@@ -462,7 +462,7 @@ async def test_exec_forwards_access_and_writes(monkeypatch):
     client = RuntimeClient(url="ws://x/", token="t")
     sent: list = []
 
-    async def fake_send_raw(msg):
+    async def fake_send_raw(msg, **_kwargs):
         sent.append(msg)
 
     # Drive exec far enough to emit the EXEC Request, then stop the stream.
@@ -487,7 +487,7 @@ async def test_exec_omits_defaults(monkeypatch):
     client = RuntimeClient(url="ws://x/", token="t")
     sent: list = []
 
-    async def fake_send_raw(msg):
+    async def fake_send_raw(msg, **_kwargs):
         sent.append(msg)
 
     async def fake_iter(req_id, q, *, abort=None):
