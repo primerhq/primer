@@ -634,12 +634,12 @@ async def run_agent_turn(
                 status=call_status,
             )
         )
-        # Decided BEFORE anything of this round's end is delivered, so the durable ``done`` record of the round that trips
-        # the cap says so (the model's own ``tool_use`` stays in ``raw_reason``) instead of reading as a mid-chain tool
-        # round. The order is the one the checks below use: a Stop that already landed beats the cap. Once decided the
-        # round ends as capped: a Stop that lands while a consumer holds an event of it does not take it back, so the
-        # record and the turn's outcome agree. The capped round's ``Done`` is delivered AFTER the refusal results (the
-        # cap branch below): the ``done`` closes the turn's window (``closes_turn``), and the results belong inside it.
+        # Decided BEFORE the round's ``Done`` is delivered, so the durable ``done`` record of the round that trips the
+        # cap says so (the model's own ``tool_use`` stays in ``raw_reason``) instead of reading as a mid-chain tool
+        # round. The order is the one the checks below use: a Stop that already landed beats the cap (the ``llm_call``
+        # event above is the last suspension point a Stop can land in before this decision). The capped round's ``Done``
+        # is delivered AFTER the refusal results (the cap branch below): the ``done`` closes the turn's window
+        # (``closes_turn``), and the results belong inside it.
         will_cap = (
             not intercepted
             and no_content is None
@@ -711,6 +711,10 @@ async def run_agent_turn(
         if not tool_calls:
             return
 
+        # ``and not will_cap`` is DEFENSIVE ONLY and is not covered by a test: nothing suspends between the decision
+        # above and this check (the capped ``Done`` is delivered from inside the cap branch, after it), so a Stop
+        # cannot land in between and the guard never changes the outcome. It keeps the record (``tool_turn_cap``) and
+        # ``capped_out`` / ``interrupted_out`` in agreement if a suspension point is ever added there.
         if interrupt is not None and interrupt.is_set() and not will_cap:
             # A Stop that landed as the model finished (or while its terminal event was draining). The
             # model already asked for these calls, but the user has since said stop: running a
