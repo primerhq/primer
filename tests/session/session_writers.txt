@@ -25,7 +25,44 @@
 #                reason; a new one fails until someone has looked. The method column is `<receiver>.<method>`.
 
 [writers]
+primer/api/routers/_test_endpoints.py | test_park_session | update | 1 | test endpoint (stamps a park on a freshly created session for BDD/e2e tests; plan 3.4(e): none)
+primer/api/routers/sessions.py | delete_session | update | 3 | S4 patch_if for the force branch's cancel_requested / cancel_requested_at write (3.8 condition 4); the other two sites write ENDED on a row that is deleted right after (terminal); S2a only pins the non-force RUNNING 409 (C11, N109), C3(a)/(b) closure is S4
+primer/api/routers/sessions.py | pause_session | update | 2 | S4 patch_if on pause_requested for the RUNNING branch (3.8 4b; pause also needs the R7 exclusion, 3.9); UNLISTED IN PLAN: the CREATED/WAITING to PAUSED branch is a second whole-row status write the table does not name, read as idle-row only, same S4 conversion
+primer/api/routers/sessions.py | resume_session | update | 1 | S2a PR-5a patch_if fenced on the read status alone (CREATED, WAITING, PAUSED rows; arms the lease only after a landed write; writes nothing for RUNNING)
+primer/api/routers/workspaces.py | compact_session_endpoint | update | 1 | idle only (already refuses a non-idle or parked session up front); S2a PR-5b removes this whole-row write and adds the guarded seq reservation under session_lifecycle_lock
+primer/api/routers/workspaces.py | interrupt_session | update | 1 | S4 patch_if on interrupt_requested / cancel_requested_at where status == running and parked_status is null (3.8 condition 4); a Stop on a parked row is a 409 with no write
+primer/api/routers/workspaces.py | rename_session | update | 1 | S2a PR-5a patch_if of its one top-level field with its OWN where (cannot erase a park, never refused)
+primer/api/routers/workspaces.py | rewind_session | update | 1 | idle only (already refuses a non-idle or parked session up front); S2a PR-5b removes this whole-row write and adds the guarded seq reservation under session_lifecycle_lock
+primer/api/routers/workspaces.py | set_session_response_format | update | 1 | S2a PR-5a patch_if of its one top-level field with its OWN where (keeps the mid-turn refusal and the schema validation)
+primer/api/routers/workspaces.py | steer_session | update | 1 | the steer's response_format metadata write: reverse-order interleaving test (3.4(b)) for the reverted WAKE; S4 patch_if of its own metadata field for the erased PARK
+primer/api/routers/workspaces.py | switch_session_binding | update | 1 | the busy-session queue write (pending_binding_switch): S2a PR-12b makes it a patch_if of that one field (A0: queues behind a tool batch or a running turn); the idle and gate branches go through apply_binding_switch and abandon_session_gate
+primer/bus/scheduler_tasks.py | StuckSessionSweeper._tick | update | 1 | ends the session (terminal ENDED write); spares parked rows (#299); selectors skip ENDED; S4 adds the marker clear (C5)
+primer/channel/event_dispatch.py | ChannelEventRouter._map_thread | update | 1 | S4 patch_if of its own metadata keys (set_paths: the reply binding and the relay-every-turn flag); an erased park is NOT healed by R1-lite
+primer/session/abandon.py | abandon_session_gate | update | 1 | S2a PR-12b: A2 becomes a patch_if clearing every park field, fenced on the hook's generation, never retried; acts only on a park with no tool batches
+primer/session/binding_switch.py | apply_binding_switch | update | 1 | S2a PR-12a: reserve-first protocol, the row write is fenced (shared by the idle route branch, the post-abandon apply and the checkpoint, which now takes the lifecycle lock)
+primer/session/dispatch.py | _advance_drain_cursor | update | 1 | none, only inside a turn (plan 3.4(e) dispatch row)
+primer/session/dispatch.py | _clear_interrupt_requested | update | 1 | S4 patch_if on interrupt_requested (no read, where interrupt_requested [True]); also the write behind clear_interrupt_for_resume, which pool.py calls before EVERY resume handler, so until then it is a whole-row writer in the resume window
+primer/session/dispatch.py | _clear_turn_running | update_unless | 1 | none, only inside a turn (plan 3.4(e) dispatch row)
+primer/session/dispatch.py | _persist_last_seq | update | 1 | none, only inside a turn (plan 3.4(e) dispatch row)
+primer/session/dispatch.py | _transition_session_status | update_unless | 1 | none, only inside a turn (plan 3.4(e) dispatch row); S4 adds the marker clear on its ENDED transitions (C5)
+primer/session/dispatch.py | _write_agent_phase | update_unless | 1 | none, only inside a turn (plan 3.4(e) dispatch row)
+primer/session/dispatch.py | run_one_session_turn | update | 2 | none, only inside a turn: plan row 'turn-start early exits'; UNLISTED IN PLAN by function name: the sites are the cancel_requested early exit that writes ENDED and the turn-start running / agent_phase stamp under the lifecycle lock (the stamp is not an early exit); S4 adds the marker clear on the ENDED exit (C5)
+primer/session/enqueue.py | wake_session | update | 1 | the steer: reverse-order interleaving test (3.4(b)) for the reverted WAKE; S4 patch_if of its own fields for the erased PARK
+primer/session/reset.py | _reopen_ended_locked | update | 1 | none (reopens an ENDED row, not a parked one); reopen clears the parked_tool_batches marker (3.3)
+primer/session/yields.py | durably_mark_session_resumable | update_unless | 1 | S2a PR-4b converted to the nested patch_if with the generation predicate and the ENDED exclusion, stamping resumable_at (R21; shared builder with the hook)
+primer/toolset/system.py | build_system_toolset._switch_binding_handler | update | 1 | S2b inline-only: system__switch_binding is declared INLINE-ONLY (a batch containing it runs entirely inline, 3.12); the inline-only predicate does not exist yet, it is an S2b deliverable (C7, A8), so nothing enforces this entry until then; converting to patch_if instead is rejected (it queues a request only the turn checkpoint applies)
+primer/worker/graph_resume.py | _ResumeDrainTap.finish | update | 1 | healed by the re-park's recheck_all park-side wake and test; S2b converts to patch_if on the fields it owns (last_seq, status)
+primer/worker/graph_resume_coordinator.py | persist_resume_tool_result_record_for_graph | update | 1 | resume window: healed by recheck_all (S2a); stays whole-row, the plan converts only the flag-on tool_wait writer (persist_resume_tool_result_records)
+primer/worker/pool.py | WorkerPool._end_session | update | 1 | ends the session (terminal ENDED write; selectors skip ENDED); S4 adds the marker clear (C5)
+primer/worker/pool.py | WorkerPool._pause_session | update | 1 | resume window: returns preserve_park (R7 exclusion); healed by recheck_all; test
+primer/worker/session_resume_coordinator.py | _persist_resume_tool_result_record | update | 1 | resume window: healed by recheck_all (S2a); stays whole-row, the plan converts only the flag-on tool_wait writer (persist_resume_tool_result_records)
+primer/worker/tool_wait_resume_coordinator.py | persist_resume_tool_result_records | update | 1 | resume window: healed by recheck_all (S2a); S2b converts this flag-on tool_wait writer to patch_if on last_seq
+primer/workspace/session_factory.py | cancel_session | update | 2 | RUNNING branch: reverse-order cancel test (3.4(b)) for the reverted WAKE, S4 patch_if on the two flag fields (3.8 4b, C1) for the erased PARK; created/waiting/paused branch ends inline only when needs_closure(row) is false (C0), itself a patch_if of three fields fenced on the read status
+primer/workspace/session_factory.py | create_session | update | 1 | none (a new row; the auto_start RUNNING write follows the create)
+primer/workspace/session_reconcile.py | reconcile_sessions_to_workspace_lost | update | 1 | ends the session (terminal ENDED write); 'ENDED wins' holds only once (a) adds status != ENDED to every wake selector and the hook; S4 adds the marker clear (C5)
 
 [deletes]
+primer/api/routers/sessions.py | delete_session | delete | 1 | regression pin only (C11, N109): non-force delete of a RUNNING session answers 409; closure (C3(a)/(b)) in delete is S4
 
 [unresolved]
+primer/worker/executor_builders.py | build_agent_executor | toolset_providers.update | 1 | not a session: dict.update merging the client toolsets into a plain dict of toolset providers (the argument mentions `session`)
