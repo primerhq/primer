@@ -51,6 +51,14 @@ class _Workspace:
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         self.lines.append(line)
 
+    async def read_file(self, path: str) -> bytes:
+        """What every real workspace backend has: the switch reads the log whole to find an orphan marker."""
+        if not self.lines:
+            from primer.model.except_ import NotFoundError
+
+            raise NotFoundError(f"{path!r} not found")  # both real backends raise this for an absent file
+        return b"".join(self.lines)
+
     def records(self) -> list[dict]:
         return [json.loads(ln) for ln in self.lines]
 

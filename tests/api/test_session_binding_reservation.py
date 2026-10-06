@@ -33,6 +33,10 @@ class _FakeWorkspace:
         self._files: dict[str, bytes] = {}
 
     async def read_file(self, path: str) -> bytes:
+        if path not in self._files:
+            from primer.model.except_ import NotFoundError
+
+            raise NotFoundError(f"{path!r} not found")  # both real backends raise this for an absent file
         return self._files[path]
 
     async def append_message_line(self, session_id: str, line: bytes) -> None:

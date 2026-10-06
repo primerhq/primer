@@ -137,3 +137,20 @@ async def test_an_orphan_for_another_target_at_the_tip_is_minted_past_not_comple
     assert [m["payload"]["binding_epoch"] for m in io.markers()] == [1, 2]
     row = await sessions.get(SID)
     assert (row.binding.agent_id, row.binding_epoch, row.last_seq) == ("agent-c", 2, 8)
+
+
+@pytest.mark.asyncio
+async def test_a_log_that_cannot_be_read_leaves_the_switch_queued_and_writes_nothing():
+    """Not knowing whether an earlier attempt left a marker, the switch must not append one (it could reuse its epoch)."""
+    provider, sessions, io = await _world(_switch_to("agent-b"))
+
+    async def unreadable(workspace_id: str, state_relative_path: str) -> bytes:
+        raise OSError("the workspace volume is not answering")
+
+    io.read_state_file = unreadable  # type: ignore[method-assign]
+
+    await apply_queued_binding_switch(storage_provider=provider, workspace_io=io, session_id=SID)
+
+    row = await sessions.get(SID)
+    assert io.lines == [] and row.last_seq == 6
+    assert row.pending_binding_switch == _switch_to("agent-b") and row.binding.agent_id == "agent-a"
