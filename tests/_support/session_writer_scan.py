@@ -17,8 +17,9 @@ one), flow-insensitively, to a fixpoint over the whole package:
 * a parameter annotated ``Storage[WorkspaceSession]`` (quoted or not, ``Optional`` or not), a class
   attribute annotated so, and ``self.x = <handle>`` in any method of the class (or a base class);
 * a parameter with no usable annotation (none, ``Any``, bare ``Storage``) NAMED like a session store:
-  ``*session_storage*``, ``*sessions_storage*``, ``*session_store*`` or exactly ``sessions``; any
-  attribute chain whose last component is named so;
+  a name ending in ``session_storage``, ``sessions_storage``, ``session_store`` or ``sessions_store``
+  (optionally behind a ``<prefix>_``), or exactly ``sessions``; any attribute chain whose last
+  component is named so;
 * a parameter whose default is ``Depends(<fn>)`` where ``<fn>`` returns a handle;
 * a call of a function that returns a handle (found by return annotation or ``return <handle>``, matched
   by the callee's simple name across the package);
@@ -45,24 +46,55 @@ argument and is reported there as ``patch_if_checked``. ``delete`` is reported s
 
 Unresolved candidates
 =====================
-A call ``<receiver>.update(...)`` / ``.update_unless(...)`` whose receiver has NO known storage type
-is a candidate session writer the scan could not resolve. To keep ``dict.update`` and friends out, a
-candidate also needs the whole-document shape: the first argument is a ``.model_copy(...)`` call (or a
-local assigned from one), or an identifier of the receiver or the argument contains ``session``. A
-receiver typed as ``Storage[<another model>]`` is positively classified and never a candidate. The pin
-test makes every candidate carry a hand-written reason, so a NEW unresolved receiver fails until
-someone looks at it. A candidate's ``method`` is ``<receiver>.<method>`` (``storage.update``).
+A call ``<receiver>.update(...)`` / ``.update_unless(...)`` on a receiver the scan cannot PROVE is not
+a session store is a candidate session writer it could not resolve:
+
+* a receiver of an UNKNOWN model (``Storage[Any]``, ``Storage[T]``, ``get_storage(model_cls)``, a model
+  taken from ``type(row)`` or ``row.__class__``, an alias to something that is not a class of the
+  package) is ALWAYS a candidate, whatever it is asked to write: it may be the session model. This is
+  what keeps the generic CRUD factories (``primer/toolset/_system_crud.py``, ``primer/harness/service.py``)
+  visible: adding ``WorkspaceSession`` to a ``crud_specs`` tuple would otherwise ship a whole-document
+  ``update_workspace_session`` tool and the pin would stay green;
+* a receiver with NO type at all is a candidate only when the call has the whole-document shape (the
+  first argument is a ``.model_copy(...)`` call, or a local assigned from one, or an identifier of the
+  receiver or the argument contains ``session``), which keeps ``dict.update`` and friends out;
+* a receiver typed ``Storage[<a REAL class of the package that is not the session model>]`` is
+  positively classified and never a candidate (a name that is not a class defined under the scanned
+  root does not count).
+
+The pin test makes every candidate carry a hand-written reason, so a NEW unresolved receiver fails until
+someone looks at it. A candidate's ``method`` is ``<receiver>.<method>`` (``storage.update``). Sites are
+keyed on ``(file, function, method)`` and counted; two writes on one line are two sites (``col`` tells
+them apart), and a second def of the same name in one scope is reported as ``name#2``.
 
 Limits (the scan is a tripwire, not a proof)
 ============================================
-It cannot see a handle that reaches a write through a container (``handles["s"].update``), through a
-dynamic ``getattr(handle, name)`` with a non-literal name, through a function that returns a handle
-only via a ``@property`` or a ``functools.partial``, through two classes sharing an attribute name
-without a base-class link, through a class that subclasses ``Storage[WorkspaceSession]`` and writes via
-``self`` / ``super()``, or through a call passed to a callee that the name match misses (an aliased
-import, ``*args`` / ``**kwargs`` forwarding, a callback table). It scans ``primer/`` only (nothing under
-``scripts/`` or ``runtime/`` references ``WorkspaceSession`` today). Such a write is caught only when
-its receiver or argument LOOKS like a session or a whole-document copy (the unresolved rule above).
+Closed on purpose, each with a test: tuple / ``for`` / ``with ... as`` binding targets
+(``a, b = x, y``), a handle passed positionally to a ``@staticmethod``, writes inside default arguments
+and decorators (run in the enclosing scope), ``cast(Storage[...], x)``, a model alias bound anywhere in
+a module (``M = WorkspaceSession``), generic handles (the unresolved rule above), two writes on one
+line, two defs of one name in one scope.
+
+NOT seen, so a write like this is caught only when its receiver or argument LOOKS like a session or a
+whole-document copy (the unresolved rule), and a handle that never LOOKS like one is missed:
+
+* the REST generic CRUD: ``make_crud_router(model_cls=WorkspaceSession, storage_dep=get_session_storage)``
+  loses the handle through ``Depends(storage_dep)`` (there are about 24 ``make_crud_router`` instances;
+  none registers the session model today);
+* a handle FACTORY passed by reference (``_make_update_handler(..., storage_factory)`` in
+  ``primer/toolset/workspaces.py`` already has this shape) and a handle behind a ``@property``, a
+  ``functools.partial``, a container (``handles["s"].update``) or a dynamic ``getattr(handle, name)``;
+* ``other._rows.update(...)`` reached from outside the class that owns the attribute, a handle stored
+  in a deps-dataclass field with a non-session name, and the unbound form ``Storage.update(h, row)``;
+* flow: typing is flow-insensitive, so a receiver typed as another model hides a later reassignment of
+  the same name to a session handle, and one name used for two handles merges them;
+* two classes sharing an attribute name without a base-class link, a class that subclasses
+  ``Storage[WorkspaceSession]`` and writes via ``self`` / ``super()``, and a call passed to a callee that
+  the simple-name match misses (an aliased import, ``*args`` / ``**kwargs`` forwarding, a callback
+  table).
+
+It scans ``primer/`` only (nothing under ``scripts/`` or ``runtime/`` references ``WorkspaceSession``
+today). A site SWAP in one function (one converted, one added) keeps the count and passes.
 """
 
 from __future__ import annotations
@@ -77,6 +109,9 @@ from collections import defaultdict
 from typing import Any
 
 SESSION_MODEL = "WorkspaceSession"
+# The model of a handle that is a Storage of SOMETHING the scan cannot name: Storage[Any],
+# Storage[T], get_storage(model_cls). It may be the session model, so it is never "another model".
+UNKNOWN_MODEL = "?"
 WRITE_METHODS = frozenset({"update", "update_unless", "upsert", "replace", "put"})
 DELETE_METHODS = frozenset({"delete"})
 PATCH_METHODS = frozenset({"patch_if"})
@@ -84,7 +119,7 @@ PATCH_FUNCTIONS = frozenset({"patch_if_checked"})
 UNRESOLVED_METHODS = frozenset({"update", "update_unless"})
 
 _TRACKED_METHODS = WRITE_METHODS | DELETE_METHODS | PATCH_METHODS
-_HANDLE_NAME = re.compile(r"session_storage|sessions_storage|session_store")
+_HANDLE_NAME = re.compile(r"(^|_)sessions?_(storage|store)$")
 _UNTYPED_ANNOTATIONS = frozenset(
     {"Any", "object", "Storage", "Any | None", "Optional[Any]", "Storage | None",
      "Optional[Storage]"}
@@ -105,6 +140,7 @@ class Site:
     function: str
     method: str
     line: int
+    col: int = 0
 
     def key(self) -> tuple[str, str, str]:
         return (self.file, self.function, self.method)
@@ -117,16 +153,20 @@ class ScanResult:
     patches: tuple[Site, ...]
     unresolved: tuple[Site, ...]
 
+    def sites_by_key(self, kind: str) -> dict[tuple[str, str, str], tuple[Site, ...]]:
+        """The sites of one bucket per ``(file, function, method)`` key, sorted by key."""
+        out: dict[tuple[str, str, str], list[Site]] = defaultdict(list)
+        for site in getattr(self, kind):
+            out[site.key()].append(site)
+        return {key: tuple(sites) for key, sites in sorted(out.items())}
+
     def counts(self, kind: str) -> dict[tuple[str, str, str], int]:
         """Sites per ``(file, function, method)`` key, sorted by key."""
-        out: dict[tuple[str, str, str], int] = defaultdict(int)
-        for site in getattr(self, kind):
-            out[site.key()] += 1
-        return dict(sorted(out.items()))
+        return {key: len(sites) for key, sites in self.sites_by_key(kind).items()}
 
     def as_json(self) -> dict[str, list[list[Any]]]:
         return {
-            kind: [[s.file, s.line, s.function, s.method] for s in getattr(self, kind)]
+            kind: [[s.file, s.line, s.function, s.method, s.col] for s in getattr(self, kind)]
             for kind in ("writers", "deletes", "patches", "unresolved")
         }
 
@@ -181,18 +221,43 @@ def _mentions_session(*nodes: ast.AST) -> bool:
     return False
 
 
+def _bindings(target: ast.AST, value: ast.AST) -> list[tuple[ast.AST, list[ast.AST], None]]:
+    """``a, b = x, y`` binds a to x and b to y; unpacking a call or a starred value binds nothing."""
+    if not isinstance(target, (ast.Tuple, ast.List)):
+        return [(target, [value], None)]
+    if (
+        isinstance(value, (ast.Tuple, ast.List))
+        and len(value.elts) == len(target.elts)
+        and not any(isinstance(e, ast.Starred) for e in (*target.elts, *value.elts))
+    ):
+        return [b for t, v in zip(target.elts, value.elts, strict=True) for b in _bindings(t, v)]
+    return []
+
+
 def _own_nodes(scope: ast.AST) -> tuple[list[ast.AST], list[ast.AST]]:
-    """Nodes owned by ``scope`` (not by a nested def or class), and the nested defs and classes."""
+    """Nodes owned by ``scope`` (not by a nested def or class), and the nested defs and classes.
+
+    A nested def's decorators and defaults, and a nested class's bases and decorators, run in the
+    enclosing scope, so they are owned by it. The nested defs come back in source order.
+    """
     stack = list(reversed(scope.body))  # type: ignore[attr-defined]
     nodes: list[ast.AST] = []
     nested: list[ast.AST] = []
     while stack:
         node = stack.pop()
-        if isinstance(node, (*_DEFS, ast.ClassDef)):
+        if isinstance(node, _DEFS):
             nested.append(node)
-            continue
-        nodes.append(node)
-        stack.extend(ast.iter_child_nodes(node))
+            # decorators and default values are evaluated in the ENCLOSING scope
+            a = node.args
+            stack.extend(node.decorator_list)
+            stack.extend([*a.defaults, *(d for d in a.kw_defaults if d is not None)])
+        elif isinstance(node, ast.ClassDef):
+            nested.append(node)
+            stack.extend([*node.decorator_list, *node.bases, *(k.value for k in node.keywords)])
+        else:
+            nodes.append(node)
+            stack.extend(ast.iter_child_nodes(node))
+    nested.sort(key=lambda n: (n.lineno, n.col_offset))
     return nodes, nested
 
 
@@ -211,24 +276,36 @@ class _Scope:
         self.mod = mod
         self.is_class = is_class
         self.is_method = is_method
+        self.is_static = isinstance(node, _DEFS) and any(
+            _callee_name(d) == "staticmethod" for d in node.decorator_list
+        )
         self.own, self.nested = _own_nodes(node)
-        self.assigns: list[ast.AST] = []
+        # (target, the expressions whose types it takes, an annotation naming its type)
+        self.bindings: list[tuple[ast.AST, list[ast.AST], ast.AST | None]] = []
         self.calls: list[ast.Call] = []
-        self.returns: list[ast.Return] = []
+        self.results: list[ast.AST] = []  # what the scope returns or yields
+        self.copy_names: set[str] = set()
         for n in self.own:
-            if isinstance(n, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-                self.assigns.append(n)
+            if isinstance(n, ast.Assign):
+                for t in n.targets:
+                    self.bindings.extend(_bindings(t, n.value))
+                    if isinstance(t, ast.Name) and _is_model_copy(n.value):
+                        self.copy_names.add(t.id)
+            elif isinstance(n, ast.AnnAssign):
+                self.bindings.append((n.target, [n.value] if n.value else [], n.annotation))
+            elif isinstance(n, ast.NamedExpr):
+                self.bindings.append((n.target, [n.value], None))
+            elif isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension)):
+                if isinstance(n.iter, (ast.Tuple, ast.List, ast.Set)):
+                    self.bindings.append((n.target, list(n.iter.elts), None))
+            elif isinstance(n, (ast.With, ast.AsyncWith)):
+                for item in n.items:
+                    if item.optional_vars is not None:
+                        self.bindings.append((item.optional_vars, [item.context_expr], None))
             elif isinstance(n, ast.Call):
                 self.calls.append(n)
-            elif isinstance(n, ast.Return) and n.value is not None:
-                self.returns.append(n)
-        self.copy_names = {
-            t.id
-            for n in self.assigns
-            if isinstance(n, ast.Assign) and _is_model_copy(n.value)
-            for t in n.targets
-            if isinstance(t, ast.Name)
-        }
+            elif isinstance(n, (ast.Return, ast.Yield)) and n.value is not None:
+                self.results.append(n.value)
         self.env: dict[str, set[str]] = {}
 
     @property
@@ -247,19 +324,25 @@ class _Scope:
 class _Module:
     def __init__(self, rel: str, tree: ast.Module):
         self.rel = rel
-        self.aliases = {SESSION_MODEL}
+        # `from m import X as Y` -> {"Y": "X"}
+        self.imports: dict[str, str] = {}
         for n in ast.walk(tree):
             if isinstance(n, ast.ImportFrom):
-                for a in n.names:
-                    if a.name == SESSION_MODEL:
-                        self.aliases.add(a.asname or a.name)
-        for n in tree.body:  # `_WS = WorkspaceSession`
-            if (
-                isinstance(n, ast.Assign)
-                and isinstance(n.value, ast.Name)
-                and n.value.id in self.aliases
-            ):
-                self.aliases.update(t.id for t in n.targets if isinstance(t, ast.Name))
+                self.imports.update({a.asname or a.name: a.name for a in n.names})
+        # every name that means the session model: its imports, and `M = WorkspaceSession`
+        # anywhere in the module (a function-local alias too, so this is by name, not by scope)
+        self.aliases = {SESSION_MODEL} | {k for k, v in self.imports.items() if v == SESSION_MODEL}
+        grew = True
+        while grew:
+            grew = False
+            for n in ast.walk(tree):
+                if isinstance(n, (ast.Assign, ast.AnnAssign)) and isinstance(n.value, ast.Name):
+                    targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                    if n.value.id in self.aliases:
+                        for t in targets:
+                            if isinstance(t, ast.Name) and t.id not in self.aliases:
+                                self.aliases.add(t.id)
+                                grew = True
         self.scopes: list[_Scope] = []
         self._build(_Scope(tree, "<module>", None, None, self), "")
 
@@ -268,8 +351,12 @@ class _Module:
         self.scopes.append(scope)
         # a method does not see its class body's names: it sees the scope around the class
         env_parent = scope.parent if scope.is_class else scope
+        seen: dict[str, int] = {}
         for child in scope.nested:
             name = f"{prefix}.{child.name}" if prefix else child.name
+            seen[name] = seen.get(name, 0) + 1
+            if seen[name] > 1:  # a second def of the same name in one scope: `name#2`, by source order
+                name = f"{name}#{seen[name]}"
             if isinstance(child, ast.ClassDef):
                 sub = _Scope(
                     child, f"{name}.<body>", env_parent, (self.rel, child.name), self,
@@ -300,6 +387,9 @@ class _Analysis:
         self.classes_by_name: defaultdict[str, list[tuple[str, str]]] = defaultdict(list)
         self.funcs_by_name: defaultdict[str, list[_Scope]] = defaultdict(list)
         self.ctors_by_name: defaultdict[str, list[_Scope]] = defaultdict(list)
+        self.class_names = {
+            sc.node.name for mod in self.modules for sc in mod.scopes if sc.is_class
+        }
         for mod in self.modules:
             for sc in mod.scopes:
                 if sc.is_class:
@@ -331,7 +421,7 @@ class _Analysis:
             for sc in mod.scopes:
                 self._collect(sc, buckets)
         return ScanResult(*(tuple(sorted(set(buckets[k]))) for k in
-                            ("writers", "deletes", "patches", "unresolved")))
+                            ("writers", "deletes", "patches", "unresolved")))  # (col keeps twins)
 
     def _add(self, target: set[str], types: set[str]) -> bool:
         if types and not types <= target:
@@ -354,7 +444,12 @@ class _Analysis:
 
     # -- type evaluation ------------------------------------------------------------------
 
-    def _model_name(self, node: ast.AST, mod: _Module) -> str | None:
+    def _model_name(self, node: ast.AST, mod: _Module) -> str:
+        """The session model, another class of the package, or UNKNOWN_MODEL.
+
+        Only a REAL class name (defined somewhere under the scanned root) counts as another model:
+        ``Any``, a TypeVar, ``model_cls``, ``type(row)`` or ``row.__class__`` could be the session.
+        """
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             name = node.value.strip()
         elif isinstance(node, ast.Name):
@@ -362,8 +457,11 @@ class _Analysis:
         elif isinstance(node, ast.Attribute):
             name = node.attr
         else:
-            return None
-        return SESSION_MODEL if name in mod.aliases else name
+            return UNKNOWN_MODEL
+        if name in mod.aliases:
+            return SESSION_MODEL
+        name = mod.imports.get(name, name)
+        return name if name in self.class_names else UNKNOWN_MODEL
 
     def _ann_types(self, ann: ast.AST | None, mod: _Module) -> set[str]:
         """Model names M for every ``...Storage[M]`` inside an annotation (quoted forms parsed)."""
@@ -380,7 +478,7 @@ class _Analysis:
                 outer = _callee_name(n.value) or ""
                 if outer.endswith("Storage"):
                     elts = n.slice.elts if isinstance(n.slice, ast.Tuple) else [n.slice]
-                    out |= {m for e in elts if (m := self._model_name(e, mod))}
+                    out |= {self._model_name(e, mod) for e in elts}
         return out
 
     def _ev(self, e: ast.AST, env: dict[str, set[str]], mod: _Module) -> set[str]:
@@ -398,9 +496,10 @@ class _Analysis:
         if isinstance(e, ast.Call):
             f = e.func
             if isinstance(f, ast.Attribute) and f.attr == "get_storage":
-                m = self._model_name(e.args[0], mod) if e.args else None
-                return {m} if m else set()
+                return {self._model_name(e.args[0], mod) if e.args else UNKNOWN_MODEL}
             name = _callee_name(f)
+            if name == "cast" and len(e.args) == 2:
+                return self._ann_types(e.args[0], mod) or self._ev(e.args[1], env, mod)
             if name == "Depends" and e.args:
                 name = _callee_name(e.args[0])
             if name:
@@ -428,7 +527,7 @@ class _Analysis:
                 or ast.unparse(p.annotation).strip("'\"") in _UNTYPED_ANNOTATIONS
             )
             named_like_a_store = _HANDLE_NAME.search(p.arg) or p.arg == "sessions"
-            if not types and untyped and named_like_a_store:
+            if types <= {UNKNOWN_MODEL} and (untyped or types) and named_like_a_store:
                 types.add(SESSION_MODEL)
             types |= self.param_types.get((id(sc.node), p.arg), set())
             if types:
@@ -446,39 +545,32 @@ class _Analysis:
                 env[f"cls.{attr}"] = set(types)
         if sc.is_function:
             self._seed_params(sc)
-        while True:  # assignments, flow-insensitive, to a fixpoint
+        while True:  # bindings, flow-insensitive, to a fixpoint
             grew = False
-            for n in sc.assigns:
-                if isinstance(n, ast.Assign):
-                    targets, types = n.targets, self._ev(n.value, env, mod)
-                elif isinstance(n, ast.AnnAssign):
-                    targets = [n.target]
-                    types = self._ann_types(n.annotation, mod)
-                    if n.value is not None:
-                        types |= self._ev(n.value, env, mod)
-                else:
-                    targets, types = [n.target], self._ev(n.value, env, mod)
+            for target, values, annotation in sc.bindings:
+                key = _expr_key(target)
+                if key is None:
+                    continue
+                types = self._ann_types(annotation, mod)
+                for value in values:
+                    types |= self._ev(value, env, mod)
                 if not types:
                     continue
-                for t in targets:
-                    key = _expr_key(t)
-                    if key is None:
-                        continue
-                    grew |= not types <= env.setdefault(key, set())
-                    env[key] |= types
-                    attr = None
-                    if sc.cls_key and not sc.is_class and key.startswith(("self.", "cls.")):
-                        attr = key.split(".", 1)[1]
-                    elif sc.is_class and "." not in key:
-                        attr = key
-                    if attr and "." not in attr:
-                        self._add(self.class_attrs[sc.cls_key][attr], types)
+                grew |= not types <= env.setdefault(key, set())
+                env[key] |= types
+                attr = None
+                if sc.cls_key and not sc.is_class and key.startswith(("self.", "cls.")):
+                    attr = key.split(".", 1)[1]
+                elif sc.is_class and "." not in key:
+                    attr = key
+                if attr and "." not in attr:
+                    self._add(self.class_attrs[sc.cls_key][attr], types)
             if not grew:
                 break
         if sc.is_function:
             ret = self._ann_types(sc.node.returns, mod)
-            for r in sc.returns:
-                ret |= self._ev(r.value, env, mod)
+            for result in sc.results:
+                ret |= self._ev(result, env, mod)
             self._add(self.returners[sc.node.name], ret)
         for call in sc.calls:
             self._propagate(sc, call)
@@ -500,7 +592,7 @@ class _Analysis:
                 targets.append(t)
         for t in targets:
             names = t.positional()
-            offset = 1 if t.is_method and names else 0
+            offset = 1 if t.is_method and not t.is_static and names else 0
             for i, types in pos:
                 if i + offset < len(names):
                     self._add(self.param_types[(id(t.node), names[i + offset])], types)
@@ -515,7 +607,7 @@ class _Analysis:
         mod, env = sc.mod, sc.env
 
         def site(node: ast.AST, method: str) -> Site:
-            return Site(mod.rel, sc.qualname, method, node.lineno)
+            return Site(mod.rel, sc.qualname, method, node.lineno, node.col_offset)
 
         for n in sc.own:
             if isinstance(n, ast.Attribute) and n.attr in _TRACKED_METHODS:
@@ -537,21 +629,24 @@ class _Analysis:
             if SESSION_MODEL in self._ev(call.args[0], env, mod):
                 method = call.args[1].value
                 buckets[_bucket(method)].append(site(call, method))
-        elif (
-            isinstance(call.func, ast.Attribute)
-            and call.func.attr in UNRESOLVED_METHODS
-            and call.args
-            and not self._ev(call.func.value, env, mod)
-        ):
-            first = call.args[0]
-            whole_document = (
-                _is_model_copy(first)
-                or (isinstance(first, ast.Name) and first.id in sc.copy_names)
-                or _mentions_session(call.func.value, first)
-            )
-            if whole_document:
-                label = _expr_key(call.func.value) or ast.unparse(call.func.value)
-                buckets["unresolved"].append(site(call, f"{label}.{call.func.attr}"))
+        elif isinstance(call.func, ast.Attribute) and call.func.attr in UNRESOLVED_METHODS:
+            types = self._ev(call.func.value, env, mod)
+            if SESSION_MODEL in types or not (call.args or call.keywords):
+                return
+            first = call.args[0] if call.args else call.keywords[0].value
+            # a handle of an UNKNOWN model is a candidate whatever it is asked to write; a receiver
+            # with no type at all must also look like a whole-document write (dict.update does not)
+            if UNKNOWN_MODEL not in types and (
+                types  # positively another model of the package
+                or not (
+                    _is_model_copy(first)
+                    or (isinstance(first, ast.Name) and first.id in sc.copy_names)
+                    or _mentions_session(call.func.value, first)
+                )
+            ):
+                return
+            label = _expr_key(call.func.value) or ast.unparse(call.func.value)
+            buckets["unresolved"].append(site(call, f"{label}.{call.func.attr}"))
 
 
 def main(argv: list[str] | None = None) -> int:
