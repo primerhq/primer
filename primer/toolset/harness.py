@@ -234,6 +234,9 @@ TOOL_UPDATE_OVERRIDES = make_tool(
 TOOL_FETCH = make_tool(
     id="harness__fetch",
     toolset_id=HARNESS_TOOLSET_ID,
+    # The harness row's pending_operation, then its claim lease (announce_enqueued): two writes with no transaction. A
+    # cancel between leaves an operation nothing claims. A Stop waits for the call (same for install, sync, uninstall).
+    interruptible=False,
     purpose="Enqueue a FETCH operation to load the harness bundle and overrides schema.",
     when=(
         "Use when you need to load or refresh a harness's bundle/schema "
@@ -257,6 +260,7 @@ TOOL_FETCH = make_tool(
 TOOL_INSTALL = make_tool(
     id="harness__install",
     toolset_id=HARNESS_TOOLSET_ID,
+    interruptible=False,
     purpose="Enqueue an INSTALL operation to apply the harness.",
     when=(
         "Use when activating a fetched harness; requires status in "
@@ -284,6 +288,7 @@ TOOL_INSTALL = make_tool(
 TOOL_SYNC = make_tool(
     id="harness__sync",
     toolset_id=HARNESS_TOOLSET_ID,
+    interruptible=False,
     purpose="Enqueue a SYNC operation to reconcile an installed harness.",
     when=(
         "Use when re-applying an already-installed harness; requires status "
@@ -311,6 +316,7 @@ TOOL_SYNC = make_tool(
 TOOL_UNINSTALL = make_tool(
     id="harness__uninstall",
     toolset_id=HARNESS_TOOLSET_ID,
+    interruptible=False,
     purpose="Enqueue an UNINSTALL operation to remove an installed harness.",
     when=(
         "Use when tearing down a harness; not to pause/refresh it (use "
