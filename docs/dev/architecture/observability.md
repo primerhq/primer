@@ -254,7 +254,11 @@ WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
 - `turns_total{binding_ref,status}` and
   `turn_duration_seconds{binding_ref,status}` are written by `_observe_turn` at all
   four exits of `run_one_session_turn` (`primer/session/dispatch.py`): parked,
-  failed, cancelled, completed. `binding_ref` is the bound agent or graph id,
+  failed, cancelled, completed. The completion exit counts a turn the agent's
+  `max_tool_turns` stopped (`last_done_reason == "tool_turn_cap"`, interactive or
+  autonomous) as `status="tool_turn_cap"`, neither a normal `completed` nor a
+  `failed`: a dashboard that sums `completed` no longer includes those turns.
+  `binding_ref` is the bound agent or graph id,
   bounded by the number of definitions rather than by session volume.
 - `sessions_active{workspace_id}` is inc/dec'd around the turn body in the same
   function. Six writers mutate `SessionStatus` outside the lifecycle lock, so a
