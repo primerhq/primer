@@ -106,6 +106,10 @@ class _Registry:
     async def get_workspace(self, workspace_id: str):
         return self.ws
 
+    async def check_workspace_allowed(self, workspace_id: str) -> None:
+        """The pool asks this before it resumes a park (ticket 01a1072f); this deployment refuses nothing."""
+        return None
+
 
 class _CountingExecutor:
     """One ``invoke()`` is one model call. It records which user message it answered (the last USER_INPUT in the
