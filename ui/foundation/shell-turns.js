@@ -11,7 +11,11 @@
 //      turn stays fully expanded.
 //   3. Subagent rows nest under the delegating tool call, keyed on the
 //      attribution S1 writes into the parent messages.jsonl
-//      (payload.delegate_tool_call_id; crosscheck C1).
+//      (payload.delegate_tool_call_id; crosscheck C1) and, for a record
+//      that carries run ids, on the run that made the call
+//      (payload.delegate_run_id / delegate_parent_run_id): a raw provider
+//      call id is not unique, and a child's own call can reuse its
+//      parent's.
 
 var SH_TOOL_VERBS = {
   grep: { verb: "searched", tone: "read" },
@@ -92,24 +96,47 @@ function SH_toolChipLabel(row, resultRow) {
   };
 }
 
+// The id a delegated record names its delegating call by: the RAW provider id
+// (DelegationRecorder stamps payload.delegate_tool_call_id with it). A real
+// TOOL_CALL record carries it as payload.raw_id beside the scoped payload.id;
+// one written before raw_id existed has only id (which WAS the raw id then);
+// tool_call_id is the shape the early fixtures used. Reading only tool_call_id
+// meant no real call was ever a parent and nothing nested.
+function SH_callRawId(payload) {
+  return payload.raw_id || payload.id || payload.tool_call_id || null;
+}
+
 function SH_nestSubagentRows(rows) {
-  var byCallId = {};
+  // byRun: "<run that made the call>|<raw id>" -> row ("" for a call the parent
+  // turn itself made). Exact, used for a record that carries delegate_run_id.
+  // byRaw: raw id -> the LAST call with it, for a record from before run ids.
+  var byRun = {};
+  var byRaw = {};
   var out = [];
   for (var i = 0; i < (rows || []).length; i++) {
     var row = rows[i];
     var payload = row.payload || {};
-    if (row.kind === "tool_call" && payload.tool_call_id) {
-      var parent = Object.assign({}, row, { children: [] });
-      byCallId[payload.tool_call_id] = parent;
-      out.push(parent);
-      continue;
-    }
+    var rawId = row.kind === "tool_call" ? SH_callRawId(payload) : null;
+    var node = Object.assign({}, row, {
+      children: rawId ? [] : (row.children || []),
+    });
     var key = payload.delegate_tool_call_id;
-    if (key && byCallId[key]) {
-      byCallId[key].children.push(row);
-      continue;
+    var target = null;
+    if (key) {
+      target = payload.delegate_run_id
+        ? byRun[(payload.delegate_parent_run_id || "") + "|" + key]
+        : byRaw[key];
     }
-    out.push(Object.assign({}, row, { children: row.children || [] }));
+    if (target) {
+      target.children.push(node);
+    } else {
+      out.push(node);
+    }
+    if (rawId) {
+      // A delegated call is itself a parent for what ITS run delegates.
+      byRaw[rawId] = node;
+      byRun[(payload.delegate_run_id || "") + "|" + rawId] = node;
+    }
   }
   return out;
 }

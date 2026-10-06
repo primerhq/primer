@@ -246,6 +246,76 @@ def test_subagent_rows_nest_under_the_delegating_call() -> None:
     assert out == [[1, 3], [2]]
 
 
+def _nest(ctx, rows: list[dict]) -> list:
+    """Run SH_nestSubagentRows over ``rows`` and return the tree as nested ``[seq, [children...]]``."""
+    return json.loads(ctx.eval(
+        "(function () {"
+        "  var out = SH_nestSubagentRows(" + json.dumps(rows) + ");"
+        "  function shape(r) { return [r.seq, (r.children || []).map(shape)]; }"
+        "  return JSON.stringify(out.map(shape));"
+        "})()"
+    ))
+
+
+def _call(seq, *, raw_id, scoped_id=None, **delegation):
+    """A tool_call row as persistence writes it: the scoped id in ``id`` and the raw provider id in ``raw_id``."""
+    payload = {"id": scoped_id or f"t1:{seq}:{raw_id}", "raw_id": raw_id, "name": "system__invoke_agent", "arguments": {}}
+    payload.update(delegation)
+    return {"seq": seq, "kind": "tool_call", "payload": payload}
+
+
+def _delegated(seq, *, call, run=None, parent=None, kind="assistant_message"):
+    payload = {"delegated": True, "delegate_tool_call_id": call}
+    if run is not None:
+        payload["delegate_run_id"] = run
+    if parent is not None:
+        payload["delegate_parent_run_id"] = parent
+    return {"seq": seq, "kind": kind, "label": f"row {seq}", "payload": payload}
+
+
+def test_a_real_tool_call_record_is_a_parent_by_its_raw_id() -> None:
+    """Persistence writes the scoped id in ``payload.id`` and the raw provider id in ``payload.raw_id``; the delegated records
+    name the RAW id. The nesting read only ``payload.tool_call_id``, which a real record does not have, so nothing ever nested."""
+    ctx = _ctx()
+    assert _nest(ctx, [_call(1, raw_id="call_7"), _delegated(2, call="call_7")]) == [[1, [[2, []]]]]
+
+
+def test_a_record_written_before_raw_id_existed_is_a_parent_by_its_id() -> None:
+    ctx = _ctx()
+    old_call = {"seq": 1, "kind": "tool_call", "payload": {"id": "call_7", "name": "system__invoke_agent"}}
+    assert _nest(ctx, [old_call, _delegated(2, call="call_7")]) == [[1, [[2, []]]]]
+
+
+def test_nested_runs_that_reuse_one_raw_call_id_nest_by_run() -> None:
+    """The child's own call reuses the parent's raw id ``call_0`` (providers that synthesise ids restart the numbering every
+    stream). By raw id alone the child's LATER records nested under its own call, and the grandchild under whichever call came
+    last. By the run that made the delegating call each lands under the right one, and the child's own call nests too."""
+    ctx = _ctx()
+    rows = [
+        _call(1, raw_id="call_0"),                                                          # the parent's delegating call
+        _delegated(2, call="call_0", run="R1"),                                             # the child, before it delegates
+        _call(3, raw_id="call_0", delegated=True, delegate_tool_call_id="call_0", delegate_run_id="R1"),  # its own call
+        _delegated(4, call="call_0", run="R2", parent="R1"),                                # the grandchild
+        _delegated(5, call="call_0", run="R1"),                                             # the child, after
+    ]
+    assert _nest(ctx, rows) == [[1, [[2, []], [3, [[4, []]]], [5, []]]]]
+
+
+def test_a_record_with_a_run_id_whose_delegating_call_is_missing_stays_at_the_top() -> None:
+    """Exact by run: a call with the same raw id made by ANOTHER run is not the one that delegated."""
+    ctx = _ctx()
+    rows = [_call(1, raw_id="call_0"), _delegated(2, call="call_0", run="R9", parent="R-not-seen")]
+    assert _nest(ctx, rows) == [[1, []], [2, []]]
+
+
+def test_records_without_run_ids_still_nest_by_raw_id() -> None:
+    """An older log: the delegated rows carry no run id and the call is found by its raw id."""
+    ctx = _ctx()
+    assert _nest(ctx, [_call(1, raw_id="call_7"), _delegated(2, call="call_7"), _delegated(3, call="call_7")]) == [
+        [1, [[2, []], [3, []]]],
+    ]
+
+
 def test_flat_interleaving_is_not_produced_when_attribution_is_absent() -> None:
     """A record with no delegate key is an ordinary row, not a lost child."""
     ctx = _ctx()
