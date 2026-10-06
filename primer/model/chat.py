@@ -1112,6 +1112,65 @@ class TurnStreamOverflow(TurnStreamFailure):
     """
 
 
+class ToolTurnCapReached(Exception):
+    """An agent turn that stopped at ``Agent.max_tool_turns`` and so did not finish (01a1095e).
+
+    ``run_agent_turn`` answers every call of the round that trips the cap with an error result and then returns
+    normally, reporting the trip through ``capped_out``. A caller that hands back a RESULT (a graph agent node, a
+    subagent) must not read that return as a finished answer: without this exception the last round's text went to
+    its caller as a success. It is raised AFTER the turn is over and its messages are persisted, so the history
+    stays valid (every call answered). ``partial_text`` is the last assistant text the turn produced, if any.
+
+    ``ended_detail_code`` is the structured code a graph node's failure carries (``tool_turn_cap``);
+    :meth:`result_body` is the one body every delivery site sends an AGENT that called a subagent.
+    """
+
+    def __init__(
+        self,
+        *,
+        agent_id: str,
+        max_tool_turns: int | None,
+        partial_text: str = "",
+        subject: str | None = None,
+    ) -> None:
+        self.agent_id = agent_id
+        self.max_tool_turns = max_tool_turns
+        self.partial_text = partial_text
+        super().__init__(
+            f"{subject or f'agent {agent_id!r}'} stopped at its tool-turn cap (max_tool_turns={max_tool_turns}) "
+            f"before it finished"
+        )
+
+    @classmethod
+    def after(
+        cls, *, agent_id: str, max_tool_turns: int | None, produced: list[Message], subject: str | None = None,
+    ) -> "ToolTurnCapReached":
+        """Build it from the messages the capped turn produced: the last assistant message that said anything."""
+        partial = ""
+        for message in reversed(produced):
+            if message.role != "assistant":
+                continue
+            text = "".join(p.text for p in message.parts if isinstance(p, TextPart))
+            if text.strip():
+                partial = text
+                break
+        return cls(agent_id=agent_id, max_tool_turns=max_tool_turns, partial_text=partial, subject=subject)
+
+    @property
+    def ended_detail_code(self) -> str:
+        return "tool_turn_cap"
+
+    def result_body(self) -> dict[str, Any]:
+        """The error body a calling agent is sent: what happened, and what the subagent had so far."""
+        return {
+            "type": "tool-turn-cap",
+            "message": f"{self}; its text so far is in partial_output",
+            "agent_id": self.agent_id,
+            "max_tool_turns": self.max_tool_turns,
+            "partial_output": self.partial_text,
+        }
+
+
 # ---- Extended stream events (wrapped via ExtendedEvent) ---------------------
 
 

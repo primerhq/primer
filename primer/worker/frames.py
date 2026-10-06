@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from primer.graph.invoke_graph import ChildGraphFailed, resume_invoke_graph
-from primer.model.chat import ToolCallPart, ToolResultPart, TurnStreamFailure
+from primer.model.chat import ToolCallPart, ToolResultPart, ToolTurnCapReached, TurnStreamFailure
 from primer.model.principal import PrincipalRef
 from primer.model.yield_ import YieldToWorker
 from primer.worker.yield_resume_registry import (
@@ -255,6 +255,12 @@ class AgentFrame:
             )
         except YieldToWorker as yld:
             return Reparked(new_yield=yld)
+        except ToolTurnCapReached as exc:
+            # 01a1095e: the resumed subagent stopped at its own max_tool_turns; the parent is told, with the text so far
+            # (the same body the live path's invoke_agent handler sends).
+            return Completed(
+                value=ToolResultPart(id=self.tool_call_id, output=json.dumps(exc.result_body()), error=True)
+            )
         except TurnStreamFailure as exc:
             # 01a070d6: same reasoning as run_subagent's own first-dispatch
             # caller (primer.toolset.system._invoke_agent_handler) - without

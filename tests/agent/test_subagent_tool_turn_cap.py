@@ -24,7 +24,18 @@ import pytest
 from primer.agent.invoke import resume_subagent
 from primer.api.registries import ProviderRegistry  # noqa: F401  (the system toolset's registry type)
 from primer.model.agent import Agent, AgentModel
-from primer.model.chat import Done, StreamStart, TextDelta, ToolCallEnd, ToolCallStart, ToolResultPart
+from primer.model.chat import (
+    Done,
+    Message,
+    StreamStart,
+    TextDelta,
+    TextPart,
+    ToolCallEnd,
+    ToolCallPart,
+    ToolCallStart,
+    ToolResultPart,
+    ToolTurnCapReached,
+)
 from primer.toolset.system import build_system_toolset
 from primer.worker.frames import AgentFrame, AgentResumeContext, Completed
 from tests.agent.test_run_subagent_yield import (
@@ -36,12 +47,6 @@ from tests.agent.test_run_subagent_yield import (
 )
 
 CAP = 2
-
-xfail_not_yet = pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="01a1095e PR-C: run_subagent/resume_subagent do not pass capped_out, so a subagent that stopped at its "
-    "tool-turn cap returns its last text as a SUCCESS",
-)
 
 
 class _AlwaysCallsATool:
@@ -112,7 +117,6 @@ async def test_scenario_the_subagent_really_stopped_at_its_cap() -> None:
     assert res.output, "the call returned nothing at all"
 
 
-@xfail_not_yet
 async def test_invoke_agent_answers_a_capped_subagent_with_an_error_that_carries_its_text() -> None:
     res, _ = await _invoke_agent_tool()
 
@@ -152,9 +156,37 @@ async def test_scenario_the_resumed_subagent_really_stopped_at_its_cap() -> None
     assert out.value.id == "inv-tc"
 
 
-@xfail_not_yet
 async def test_a_resumed_subagent_that_stops_at_its_cap_completes_its_frame_as_an_error_with_its_text() -> None:
     out, _ = await _resumed_frame()
 
     problems = _what_the_caller_is_told(out.value.error, json.dumps(json.loads(out.value.output)))
     assert not problems, "\n".join(problems)
+
+
+# --- the exception ------------------------------------------------------------------------------------------------
+
+
+def test_the_partial_text_is_the_last_assistant_text_that_said_anything_and_the_body_is_one_shape() -> None:
+    produced = [
+        Message(role="assistant", parts=[TextPart(text="first thought"), ToolCallPart(id="c1", name="t__a", arguments={})]),
+        Message(role="tool", parts=[ToolResultPart(id="c1", output="ok", error=False)]),
+        Message(role="assistant", parts=[ToolCallPart(id="c2", name="t__a", arguments={})]),  # a round with no text
+        Message(role="tool", parts=[ToolResultPart(id="c2", output="not executed: tool-turn cap reached", error=True)]),
+    ]
+
+    exc = ToolTurnCapReached.after(agent_id="a", max_tool_turns=2, produced=produced, subject="subagent 'a'")
+
+    assert exc.partial_text == "first thought"
+    assert exc.ended_detail_code == "tool_turn_cap"
+    assert str(exc) == "subagent 'a' stopped at its tool-turn cap (max_tool_turns=2) before it finished"
+    body = exc.result_body()
+    assert (body["type"], body["agent_id"], body["max_tool_turns"], body["partial_output"]) == (
+        "tool-turn-cap", "a", 2, "first thought",
+    )
+    assert "tool-turn cap" in body["message"]
+
+
+def test_a_turn_that_said_nothing_has_an_empty_partial_text() -> None:
+    exc = ToolTurnCapReached.after(agent_id="a", max_tool_turns=1, produced=[])
+
+    assert exc.partial_text == "" and str(exc).startswith("agent 'a' stopped at its tool-turn cap")
