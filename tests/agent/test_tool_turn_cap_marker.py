@@ -175,10 +175,11 @@ async def test_a_stop_that_landed_before_the_done_leaves_it_a_tool_use_done() ->
 
 
 async def test_a_stop_that_lands_after_the_cap_was_decided_does_not_contradict_the_done() -> None:
-    """The cap is decided before the round's ``llm_call`` record is delivered, and the ``Done`` follows the refusal
-    results. A Stop that lands while a consumer holds that ``llm_call`` event must not leave a done that says
-    ``tool_turn_cap`` on a turn that ends as stopped (or the reverse): the record and the outcome agree, whichever way
-    the tiebreak goes."""
+    """The ``llm_call`` event is the last suspension point before the cap is decided, so a Stop set while a consumer
+    holds it is seen by the decision (the Stop wins, the round is not capped and its done stays ``tool_use``). This
+    pins that the record and the outcome AGREE, whichever way the tiebreak goes; it does NOT exercise the
+    ``and not will_cap`` guard on the interrupt check in the loop, which is defensive only (nothing suspends between
+    the decision and that check, so a Stop cannot land there) and is not covered by a test."""
     interrupt = asyncio.Event()
 
     turn = await _turn(
