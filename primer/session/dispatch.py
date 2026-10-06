@@ -2592,7 +2592,7 @@ async def apply_queued_binding_switch(*, storage_provider, workspace_io, session
 
 
 async def _realize_pending_at_checkpoint(
-    deps: "SessionDispatchDeps", session, 
+    deps: "SessionDispatchDeps", session,
 ) -> None:
     """Turn exactly one queued steer into a real turn.
 
@@ -2609,28 +2609,51 @@ async def _realize_pending_at_checkpoint(
     released its lease, so a storage hiccup here must not unwind that.
     The row stays queued for the next checkpoint.
     """
-    if deps.scheduler is None or deps.claim_engine is None:
+    await realize_queued_steer(
+        storage_provider=deps.storage_provider,
+        workspace_id=session.workspace_id,
+        session_id=session.id,
+        scheduler=deps.scheduler,
+        claim_engine=deps.claim_engine,
+        workspace_registry=deps.workspace_registry,
+        event_bus=deps.event_bus,
+    )
+
+
+async def realize_queued_steer(
+    *, storage_provider, workspace_id: str, session_id: str, scheduler, claim_engine, workspace_registry,
+    event_bus=None,
+) -> None:
+    """Realize the oldest steer queued on a session, if any. Best effort: a failure is logged and the steer stays queued.
+
+    The body of the drain checkpoint, callable without a ``SessionDispatchDeps``: the pool's ``_end_session`` ends a
+    session (a failed resume, a cancelled park, a finished graph resume) with no turn behind it and so no checkpoint, and
+    a steer queued on that session (``route_steer`` counts a parked session as busy) would otherwise wait for some LATER
+    message to reopen it, or forever. A no-op when the wiring a wake needs (scheduler, claim engine, workspace registry)
+    is absent.
+    """
+    if scheduler is None or claim_engine is None:
         return
-    if deps.workspace_registry is None:
+    if workspace_registry is None:
         return
     try:
         wake_deps = SessionWakeDeps(
-            storage_provider=deps.storage_provider,
-            scheduler=deps.scheduler,
-            claim_engine=deps.claim_engine,
-            workspace_registry=deps.workspace_registry,
-            event_bus=deps.event_bus,
+            storage_provider=storage_provider,
+            scheduler=scheduler,
+            claim_engine=claim_engine,
+            workspace_registry=workspace_registry,
+            event_bus=event_bus,
         )
         await realize_next_pending(
-            storage_provider=deps.storage_provider,
-            workspace_id=session.workspace_id,
-            session_id=session.id,
+            storage_provider=storage_provider,
+            workspace_id=workspace_id,
+            session_id=session_id,
             wake_deps=wake_deps,
         )
     except Exception:
         logger.exception(
             "drain checkpoint: realizing a queued steer failed for %s",
-            session.id,
+            session_id,
         )
 
 

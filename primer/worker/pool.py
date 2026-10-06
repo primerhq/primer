@@ -1299,12 +1299,21 @@ class WorkerPool:
             # checkpoint); this one has no turn behind it, so it applies the switch itself. Without it a
             # switch queued on a parked session survives a failed resume on the ENDED row, and after a reopen
             # the user's next message is answered by the OUTGOING binding. Best effort, like the checkpoint.
-            from primer.session.dispatch import apply_queued_binding_switch
+            from primer.session.dispatch import apply_queued_binding_switch, realize_queued_steer
 
             io_shim = _WorkspaceIOShim(workspace_registry=self._workspace_registry)
             io_shim.register_session(session.id, session.workspace_id)
             await apply_queued_binding_switch(
                 storage_provider=self._storage, workspace_io=io_shim, session_id=session.id,
+            )
+            # ... and then realizes ONE queued steer, in the checkpoint's order (switch first, so the follow-up runs
+            # under the incoming binding). A steer sent to a parked session is queued (route_steer counts it as busy);
+            # without this it waited behind the ended session for some later message, or forever. It reopens the ended
+            # session through wake_session and arms a turn; the pool re-arms the claim after the release.
+            await realize_queued_steer(
+                storage_provider=self._storage, workspace_id=session.workspace_id, session_id=session.id,
+                scheduler=self._scheduler, claim_engine=self._engine, workspace_registry=self._workspace_registry,
+                event_bus=self._event_bus,
             )
         else:
             # 01a08bf0: "vanished because something else already ended it"
