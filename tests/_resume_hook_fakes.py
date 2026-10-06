@@ -203,6 +203,7 @@ class EngineFakePool:
         self.end_session_calls: list[str] = []
         self.repark_calls: list = []
         self.agent_tool_result_session_ids: list = []
+        self.agent_tool_result_tcids: list[str] = []   # every reply the engine delivered, by its tool_call_id
 
     async def _load_workspace_for_persist(self, workspace_id: str):
         return self._workspace_io
@@ -232,6 +233,7 @@ class EngineFakePool:
         # It does record the session id the engine passes, because the hook's
         # ResumeContext is built from it.
         self.agent_tool_result_session_ids.append(session_id)
+        self.agent_tool_result_tcids.append(tcid)
         return Message(role="tool", parts=[ToolResultPart(id=tcid, output="blue")])
 
     async def _write_approval_record_for_graph(self, *, session, checkpoint, tcid, payload):

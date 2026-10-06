@@ -360,6 +360,9 @@ async def test_resume_graph_engine_tool_wait_wake_does_not_reject_approved_gate(
     assert outcome == "ENDED:completed"
     assert pool.end_session_calls == ["completed"]
     assert pool.repark_calls == []
+    # The tool_wait entry is NOT delivered as a reply: only the human's reply (tc-b) reaches the node loop. Deleting the
+    # tool_wait filter in the payloads_map branch would hand it a reply for the node id "A" as well.
+    assert pool.agent_tool_result_tcids == ["tc-b"]
 
 
 @pytest.mark.asyncio
@@ -421,6 +424,10 @@ async def test_resume_graph_engine_tool_wait_only_wake_runs_readiness_recheck(
     remaining_ay = repark.graph_checkpoint["pending_agent_yields"]
     assert [ay["node_id"] for ay in remaining_ay] == ["B"]
     assert repark.graph_checkpoint.get("pending_tool_waits") in (None, [])
+    # `replies` was emptied by the tool_wait filter, so the engine ran its "no human reply yet" path: ONE delivery,
+    # the sentinel, which matches no pending gate. Without the filter the tool_wait wake itself (a reply for the node
+    # id "A") would reach the node loop instead and the sentinel path would never run.
+    assert pool.agent_tool_result_tcids == ["__tool_wait_wake_only__"]
 
 
 # ===========================================================================
