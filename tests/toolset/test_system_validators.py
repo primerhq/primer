@@ -14,7 +14,8 @@ from __future__ import annotations
 import pytest
 
 from primer.model.model_profile import ModelProfile
-from primer.model.provider import LLMProvider
+from primer.model.provider import LLMProvider, Toolset, ToolsetProviderType
+from primer.model.providers.toolset import PythonConfig
 from primer.model.tool_approval import (
     LlmApprovalConfig,
     PolicyApprovalConfig,
@@ -142,3 +143,97 @@ class TestToolApprovalPolicy:
 
         assert not is_error
         assert await sp.get_storage(ToolApprovalPolicy).get("tap-llm") is not None
+
+
+PY_V1 = '''
+@primer_tool()
+def greet(name: str) -> str:
+    """Greet a person by name.
+
+    Use when you need a friendly greeting.
+
+    Args:
+        name: Who to greet.
+    """
+    return f"hello {name}"
+'''
+PY_V2 = PY_V1.replace("def greet(", "def salute(")
+PY_NO_DOCSTRING = "@primer_tool()\ndef nodoc(x: str) -> str:\n    return x\n"
+
+
+def _python_toolset(toolset_id: str = "py-1", source: str = PY_V1, version: int = 1) -> dict:
+    return Toolset(
+        id=toolset_id, provider=ToolsetProviderType.PYTHON,
+        config=PythonConfig(source=source, source_version=version, default_timeout_seconds=30),
+    ).model_dump(mode="json")
+
+
+class TestToolset:
+    @pytest.mark.asyncio
+    async def test_a_python_toolset_whose_source_does_not_register_is_refused_on_create(self, world) -> None:
+        sp, toolset, _ = world
+
+        is_error, answer = await _call(toolset, "create_toolset", entity=_python_toolset("py-bad", PY_NO_DOCSTRING))
+
+        assert is_error and answer["type"] == "validation-error" and answer["message"]
+        assert await sp.get_storage(Toolset).get("py-bad") is None, "a toolset that cannot register was stored"
+
+    @pytest.mark.asyncio
+    async def test_an_update_to_a_source_that_does_not_register_is_refused_and_the_row_is_unchanged(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(Toolset).create(Toolset.model_validate(_python_toolset()))
+
+        is_error, answer = await _call(
+            toolset, "update_toolset", id="py-1", entity=_python_toolset("py-1", PY_NO_DOCSTRING),
+        )
+
+        assert is_error and answer["type"] == "validation-error"
+        stored = await sp.get_storage(Toolset).get("py-1")
+        assert stored.config.source == PY_V1 and stored.config.source_version == 1
+
+    @pytest.mark.asyncio
+    async def test_source_version_is_server_owned_when_the_source_changes(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(Toolset).create(Toolset.model_validate(_python_toolset()))
+
+        # The caller claims version 99; the server bumps the stored one, so a session parked in the old code can tell.
+        is_error, _ = await _call(toolset, "update_toolset", id="py-1", entity=_python_toolset("py-1", PY_V2, version=99))
+
+        assert not is_error
+        stored = await sp.get_storage(Toolset).get("py-1")
+        assert stored.config.source == PY_V2 and stored.config.source_version == 2
+
+    @pytest.mark.asyncio
+    async def test_source_version_is_kept_when_the_source_is_unchanged(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(Toolset).create(Toolset.model_validate(_python_toolset()))
+
+        is_error, _ = await _call(toolset, "update_toolset", id="py-1", entity=_python_toolset("py-1", PY_V1, version=99))
+
+        assert not is_error
+        assert (await sp.get_storage(Toolset).get("py-1")).config.source_version == 1
+
+    @pytest.mark.asyncio
+    async def test_a_valid_python_toolset_is_created_as_before(self, world) -> None:
+        sp, toolset, _ = world
+
+        is_error, _ = await _call(toolset, "create_toolset", entity=_python_toolset("py-ok"))
+
+        assert not is_error
+        assert await sp.get_storage(Toolset).get("py-ok") is not None
+
+    @pytest.mark.asyncio
+    async def test_an_http_mcp_toolset_is_created_without_a_reachability_probe(self, world) -> None:
+        # The REST route probes an http/sse MCP endpoint (an 8 s outbound call) and refuses an unreachable one unless
+        # ?allow_unreachable. The tool deliberately does NOT (lead's ruling: an outbound call inside an agent turn); pinned so
+        # the difference is on the record. Port 9 (discard) refuses the connection, so a probe WOULD have refused this.
+        sp, toolset, _ = world
+        body = {
+            "id": "mcp-dead", "provider": "mcp",
+            "config": {"transport": "http", "config": {"url": "http://127.0.0.1:9/mcp", "headers": {}}},
+        }
+
+        is_error, _ = await _call(toolset, "create_toolset", entity=body)
+
+        assert not is_error
+        assert await sp.get_storage(Toolset).get("mcp-dead") is not None
