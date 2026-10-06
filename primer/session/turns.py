@@ -5,9 +5,10 @@ closed by exactly one terminal record, and the next turn is found by
 COUNTING those pairs, never by reading a flag. Counting survives a worker
 dying mid-turn, where a flag would strand the session.
 
-On sessions the terminals are DONE / ERROR / CANCELLED. YIELDED is NOT
-terminal: a parked turn is still open, and the resumed continuation
-writes the closing record. The routing rule in the steer path keeps the
+On sessions the terminals are the DONE / ERROR / CANCELLED that ``terminals.closes_turn`` accepts: a model call that
+ended in a tool call (``done(tool_use)``) ends a round, and a subagent's terminal (``payload.delegated``) ends the
+subagent's turn, so neither closes the user's. YIELDED is NOT terminal: a parked turn is still open, and the resumed
+continuation writes the closing record. The routing rule in the steer path keeps the
 pairing 1:1 by turning a steer that arrives while a turn is open into a
 PendingSessionMessage rather than a second USER_INPUT.
 
@@ -23,12 +24,7 @@ import json
 from dataclasses import dataclass
 
 from primer.model.workspace_session import SessionMessageKind
-
-_TERMINAL_KINDS = frozenset({
-    SessionMessageKind.DONE.value,
-    SessionMessageKind.ERROR.value,
-    SessionMessageKind.CANCELLED.value,
-})
+from primer.session.terminals import closes_turn
 
 
 @dataclass
@@ -64,7 +60,7 @@ def count_turn_state(raw_lines: list[str], *, cursor: int) -> TurnCount:
             if (obj.get("payload") or {}).get("_history_excluded"):
                 continue
             user_inputs += 1
-        elif kind in _TERMINAL_KINDS:
+        elif closes_turn(obj):
             terminals += 1
     return TurnCount(
         open_user_inputs=user_inputs, terminals=terminals, max_seen_seq=max_seq,
