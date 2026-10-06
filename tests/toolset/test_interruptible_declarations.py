@@ -29,10 +29,11 @@ The second review (task 01a10e2f; the lead decided the list) added:
 * ``workspaces`` create / cancel / steer / restart_workspace_session: several writes (state repo commit under the commit
   lock, session row, enqueue, claim lease) with no transaction; a cancel can leave a RUNNING session with no lease (the
   sweeper ends it only after 600 s), a ``last_seq`` behind the log, or a second divider with the same seq.
-* ``system`` update_ / delete_ of llm_provider, embedding_provider, cross_encoder_provider, toolset and
-  semantic_search_provider (the five entities that carry an invalidation hook): the row is written and THEN the registry
-  cache is evicted, with no transaction between; a cancel between leaves a deleted provider still serving, or a rotated key
-  not picked up, until a restart. (A cache eviction is not a durable write; this is the "when unsure" side of the rule.)
+* ``system`` update_ / delete_ of llm_provider, embedding_provider, cross_encoder_provider, toolset,
+  semantic_search_provider and model_profile (the six entities that carry an invalidation hook; model_profile joined them with
+  task 01a111d1 D5, when its aggregated-LLM invalidation was wired as the REST router has it): the row is written and THEN the
+  registry cache is evicted, with no transaction between; a cancel between leaves a deleted provider still serving, or a rotated
+  key not picked up, until a restart. (A cache eviction is not a durable write; this is the "when unsure" side of the rule.)
 
 The third review (task 01a111d1, D1) added:
 
@@ -97,12 +98,14 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     (WORKSPACES_TOOLSET_ID, "cancel_workspace_session"),
     (WORKSPACES_TOOLSET_ID, "steer_workspace_session"),
     (WORKSPACES_TOOLSET_ID, "restart_workspace_session"),
-    # task 01a10e2f: a row write THEN a registry cache eviction (the five entities that carry an invalidation hook)
+    # task 01a10e2f (+ model_profile, task 01a111d1 D5): a row write THEN a registry cache eviction (the entities that carry an
+    # invalidation hook)
     *{
         (SYSTEM_TOOLSET_ID, f"{verb}_{entity}")
         for verb in ("update", "delete")
         for entity in (
             "llm_provider", "embedding_provider", "cross_encoder_provider", "toolset", "semantic_search_provider",
+            "model_profile",
         )
     },
     # task 01a111d1 (D1): the row, then the claim lease (a separate write on another connection)
@@ -122,7 +125,6 @@ EXAMINED_AND_INTERRUPTIBLE = {
     (WORKSPACE_EXT_TOOLSET_ID, "invoke_graph"),
     (WORKSPACES_TOOLSET_ID, "workspace_tap"),
     (SYSTEM_TOOLSET_ID, "create_agent"),
-    (SYSTEM_TOOLSET_ID, "update_model_profile"),
     (SYSTEM_TOOLSET_ID, "delete_channel"),
     (TRIGGER_TOOLSET_ID, "create_subscription"),
     (TRIGGER_TOOLSET_ID, "delete_subscription"),
