@@ -50,6 +50,35 @@ Four rules make that safe:
   on a parked session survived a failed resume on the ENDED row and, after a
   reopen, the user's next message was answered by the OUTGOING binding. That
   exit still does not realize queued steers (unchanged).
+- **The switch itself is ONE protocol for every caller of
+  `apply_binding_switch`, under the session's lifecycle lock (held by the
+  caller; the function never takes it): reserve, append, fence.** (1) RESERVE
+  the marker's seq with a guarded `patch_if({"last_seq": old + 1})` whose
+  `where` is the caller's guard plus `last_seq == old` (`reserve_seq`,
+  `primer/session/seq_reservation.py`); a rejection means the row changed
+  since the caller read it and NOTHING has been written (the route answers 409,
+  the checkpoint leaves the switch queued). (2) Append the marker AT the
+  reserved seq and flush. (3) ONE fenced `patch_if` of `binding`,
+  `binding_epoch`, `pending_binding_switch: None` and `next_unprocessed_seq`,
+  guarded by the same caller guard plus `last_seq == the reserved seq`. The
+  guards: the idle route `{"turn_status": ["idle"], "parked_status": [None]}`
+  (from a row read INSIDE the lock), the abandon-then-switch branch
+  `{"parked_status": [None]}`, a turn's checkpoint `{"parked_status": [None]}`,
+  and the pool's `_end_session` `{"status": ["ended"]}` (it ends a session whose
+  park columns the claim's release has not cleared yet). The old code appended
+  from the `last_seq` of a row read earlier and wrote the whole row back, so a
+  steer that landed in between had its seq repeated by the marker and its
+  `last_seq` and armed turn erased. The in-lock resolve, append and flush of the
+  checkpoint and of the route share ONE deadline,
+  `mutation_lock.IN_LOCK_IO_TIMEOUT_S` (10 s; the cancelled exit's
+  `_CANCELLED_RECORD_WRITE_TIMEOUT_S` is the same value): an unreachable
+  workspace must not hold the lock Cancel and every steer queue behind. A
+  timeout leaves the switch queued and a reserved gap in the seqs (readers
+  tolerate gaps); a marker that lands late after its timeout can precede a
+  second marker of the same epoch on the next attempt (declared; the retry's
+  orphan detection is the next change). A rejected closing write (a park
+  committed after the reservation) is the multi-process residual: the marker
+  stays in the log unapplied.
 - **Epochs fence stale writes.** A terminal status, a park and a resume
   each carry the epoch they began under; the row rejects a write from an
   epoch it has moved past, so a turn finishing under a replaced binding
@@ -305,7 +334,7 @@ S1 adds, on the workspace-scoped sessions router:
 
 | endpoint | purpose |
 | --- | --- |
-| `POST .../sessions/{sid}/binding` | switch which agent or graph runs the next turn; applies immediately when idle, queues when busy, and abandons an open gate first when parked |
+| `POST .../sessions/{sid}/binding` | switch which agent or graph runs the next turn; applies immediately when idle (under the session's lifecycle lock, by the reserve-append-fence protocol below; a 409 and nothing written when the session changed under it or the workspace did not answer within the in-lock bound), queues when busy, and abandons an open gate first when parked |
 | `POST .../sessions/{sid}/rewind` | append a rewind marker; 409 when busy or when the target lies inside compacted history, 422 for a malformed target |
 | `POST .../sessions/{sid}/compact` | summarise the visible history into a fold marker; 409 for a graph binding or a turn in flight |
 | `PUT .../sessions/{sid}/response_format` | persist a structured-output schema for later turns; a steer may carry a one-turn override that outranks it |
