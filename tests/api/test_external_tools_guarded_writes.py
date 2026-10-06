@@ -25,6 +25,9 @@ from primer.model.workspace_session import WorkspaceSession
 from primer.storage.sqlite import SqliteStorageProvider
 from tests._support.held_write import hold_write
 
+# The graph suite's seeding helpers (a graph park over two external calls, tc-g1 on node n1 and tc-g2 on node n2).
+from tests.api.test_external_tools_graph import _seed_graph, _seed_graph_calls, _seed_graph_session
+
 # The steer suite's fixture stack (fake workspace backend + app + client) and seeding helpers. Its ``sp`` fixture
 # is NOT imported: the one below replaces it with a SQLite provider, and ``pr``, ``wsr`` and ``app`` take that one.
 from tests.api.test_external_tools_steer import (  # noqa: F401
@@ -282,3 +285,39 @@ async def test_a_steer_result_with_a_non_finite_number_completes_the_call_as_nul
     assert (row.status, row.result, row.is_error) == ("completed", stored, False)
     session = await sp.get_storage(WorkspaceSession).get("sess-1")
     assert session.parked_state["resume_event_payload"] == {"result": stored, "is_error": False}
+
+
+async def test_an_instruction_steer_wakes_only_the_calls_it_cancelled(app, client, wsr, sp) -> None:
+    """A graph park over two external calls. The result of tc-g1 lands first (its row is ``completed``, the park
+    carries its reply). An instruction-only steer then cancels the calls that are still pending: only tc-g2. It must
+    wake only tc-g2 with the cancelled payload: waking tc-g1 too (every key of the park, as it did) replaces the
+    reply that LANDED with the cancelled marker in the park and publishes a cancel for a call that was answered,
+    while its row says ``completed``."""
+    bus = _RecordingBus()
+    app.state.event_bus = bus
+    wid = await _setup_ws(client, wsr)
+    await _seed_agent(sp, allow=True)
+    await _seed_graph(sp)
+    await _seed_graph_session(sp, wid)
+    await _seed_graph_calls(sp)
+    k1, k2 = "external_tool:sess-1:tc-g1", "external_tool:sess-1:tc-g2"
+
+    first = await client.post(
+        f"/v1/workspaces/{wid}/sessions/sess-1/steer",
+        json={"tool_results": [{"tool_call_id": "tc-g1", "result": "ok"}]},
+    )
+    assert first.status_code == 200, first.text
+    bus.published.clear()
+
+    second = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "stop"})
+
+    assert second.status_code == 200, second.text
+    calls = sp.get_storage(ExternalToolCall)
+    assert (await calls.get("etool-g1")).status == "completed", "the answered call was cancelled"
+    assert (await calls.get("etool-g2")).status == "cancelled"
+    cancel_wakes = [k for k, p in bus.published if p.get("__yield_cancelled__")]
+    assert cancel_wakes == [k2], f"the cancel was published for {cancel_wakes}"
+    park = (await sp.get_storage(WorkspaceSession).get("sess-1")).parked_state
+    leaves = {e["event_key"]: e["payload"] for e in park["resume_event_payloads"].values()}
+    assert leaves[k1] == {"result": "ok", "is_error": False}, "the landed reply was replaced by the cancelled marker"
+    assert leaves[k2].get("__yield_cancelled__") is True
