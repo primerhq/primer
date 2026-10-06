@@ -200,7 +200,11 @@ system toolset for completeness but agents rarely need to touch them.
   `external_id`, optional `label`, optional `id`, and optional
   `config`. Omit `id` and the server assigns `channel-<hex>`.
   `provider` must match the referenced provider's platform. The pair
-  `(provider_id, external_id)` must be unique.
+  `(provider_id, external_id)` must be unique. Both are checked the
+  same way as on the REST route: a `provider_id` that names no stored
+  provider returns `type=validation-error`, and a second channel for
+  the same pair returns `type=conflict` naming the existing one;
+  nothing is stored in either case.
 - `config.chats` controls inbound enablement for the room. Set
   `config.chats.enabled=true` to allow incoming messages to start
   sessions on it; the agent they run under comes from the channel
