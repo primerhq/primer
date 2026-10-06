@@ -43,8 +43,9 @@ A TURN ends at a ``done`` whose ``stop_reason`` is not ``tool_use`` (the loop wr
 rounds included), a ``cancelled`` or an ``error``, counted per ``(file, node_id, delegate_tool_call_id)``: graph nodes do not
 interleave, and a delegated (subagent) run, which ``DelegationRecorder`` writes INLINE into the parent's log with
 ``payload.delegated`` and the delegating call's id, is a turn of its own, so its final ``done`` does not end the parent's turn
-and a parent call is never paired with a child call. Turn segmentation is only as good as the adapters' stop reasons: an
-OpenAI-compatible server that finishes a tool round with ``stop`` (ticketed) would end the turn early for that provider.
+and a parent call is never paired with a child call. Turn segmentation is only as good as the adapters' stop reasons: the Chat Completions adapters now report a tool round
+that the server finished with ``stop`` as ``tool_use`` (they used to record ``stop`` and end the turn early for that provider),
+so logs written BEFORE that fix still split such turns.
 **Limitation:** the recorder stamps no depth or run id, only the delegating call's RAW provider id, and providers that
 synthesise ids (Gemini and Ollama: ``call_{idx}``) reuse them: a delegation nested inside a delegation, with the same raw id
 at both levels, merges the child and the grandchild into one run (sequential reuse of an id is handled). Ticketed.
