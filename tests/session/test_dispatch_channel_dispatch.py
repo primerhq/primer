@@ -283,3 +283,27 @@ async def test_one_pending_node_whose_envelope_cannot_be_built_does_not_drop_the
     assert sent == {("n2", "tc-good")}, f"sent: {sent}"
     assert [c.tool_call_id for c in dispatcher.calls] == ["tc-good"]
     assert any(r.levelno >= logging.ERROR and "s1" in r.getMessage() and "tc-bad" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_during_the_fan_out_still_propagates(monkeypatch) -> None:
+    """Best effort is ``except Exception``: a cancelled turn must still cancel, in the single-node and the graph fan-out."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import primer.worker.yield_runtime as yield_runtime
+
+    def cancelled(**kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(yield_runtime, "_build_prompt_envelope", cancelled)
+    yielded = Yielded(tool_name="ask_user", event_key="ask_user:s1:tc-c", resume_metadata={"prompt": "x?"})
+    with pytest.raises(asyncio.CancelledError):
+        await yield_runtime._dispatch_to_channels(
+            dispatcher=_RecordingDispatcher(), session=SimpleNamespace(id="s1", workspace_id="w1"), yielded=yielded,
+        )
+    pending = [{"kind": "ask_user", "node_id": "n1", "tool_call_id": "tc-c", "resume_metadata": {"prompt": "x?"}}]
+    with pytest.raises(asyncio.CancelledError):
+        await yield_runtime._dispatch_to_channels_multi(
+            dispatcher=_RecordingDispatcher(), workspace_id="w1", session_id="s1", pending=pending, already_sent=set(),
+        )
