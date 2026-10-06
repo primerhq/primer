@@ -779,6 +779,7 @@ def _make_lifespan(config: AppConfig):
         harness_toolset = build_harness_toolset_provider(
             storage_provider=storage_provider,
             event_bus=event_bus,
+            claim_engine=claim_engine,
         )
         provider_registry._harness_toolset_provider = harness_toolset  # noqa: SLF001
         app.state.harness_toolset = harness_toolset
