@@ -60,9 +60,9 @@ A `Session` row carries:
 - `claimed_by` - worker id when running.
 - `parked_status`, `parked_event_key`, `parked_until` - yield state
   (see yielding for what sets them).
-- `parked_tool_batches`, `resumable_at` - internal bookkeeping for
-  tool calls run as claims. Nothing sets them yet, so a session read
-  serves both as null; do not act on them.
+- `parked_tool_batches`, `resumable_at` - internal park bookkeeping
+  (a marker for parks holding tool calls run as claims, and when the
+  park was last woken); do not act on them.
 - `instruction` (optional) - the initial user-message-equivalent.
 
 Per-session state lives at workspace-relative path
