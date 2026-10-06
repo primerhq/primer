@@ -123,11 +123,22 @@ class SemanticSearchRegistry:
         return p.get_vector_store()
 
     async def invalidate(self, ssp_id: str) -> None:
-        """Drop the cached instance for one id; aclose() it."""
+        """Drop the cached instance for one id; aclose() it.
+
+        Called AFTER the provider row was updated or deleted, so a failing close is logged and swallowed, like every
+        other close in this registry: raising would report a write that already landed as failed. The instance is
+        already out of the cache, so the next ``get_provider`` rebuilds it either way.
+        """
         async with self._lock:
             inst = self._instances.pop(ssp_id, None)
         if inst is not None:
-            await inst.aclose()
+            try:
+                await inst.aclose()
+            except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+                logger.warning(
+                    "SemanticSearchRegistry.invalidate: aclose() on the dropped instance for %r failed: %s",
+                    ssp_id, exc,
+                )
 
     async def aclose(self) -> None:
         """Drop + aclose every cached instance."""
