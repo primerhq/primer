@@ -25,7 +25,7 @@ from primer.model.workspace import (
     ResourceLimits,
     VolumeMount,
 )
-from primer.workspace.base_backend import close_shielded
+from primer.workspace.base_backend import close_shielded, roll_back_shielded
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.runtime.runtime_client import RuntimeClient
 from primer.workspace.runtime.ws_sandbox import WSSandbox
@@ -63,6 +63,18 @@ class _DockerContainerHandle:
 # Verify _DockerContainerHandle satisfies the ContainerHandle protocol at import
 # time by using isinstance check once an instance is created; protocol
 # conformance is structural so the assert is best placed in tests.
+
+
+def _is_not_found(exc: BaseException) -> bool:
+    """A ``DockerError`` 404 (or anything whose text says so, as the rest of this module tests it)."""
+    return getattr(exc, "status", None) == 404 or "404" in str(exc)
+
+
+def _refused(exc: BaseException) -> bool:
+    """The daemon answered with a client error (4xx): the request was refused, so nothing was created. A timeout or a dropped
+    connection is NOT a refusal: the daemon may have carried the request out."""
+    status = getattr(exc, "status", None)
+    return isinstance(status, int) and 400 <= status < 500
 
 
 async def _wait_for_ready(container, *, timeout_s: float = _READY_TIMEOUT_S) -> None:
@@ -290,12 +302,6 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                 f"({exc}); the workspace cannot be provisioned"
             ) from exc
 
-        # Create the named volume.
-        try:
-            await self._docker.volumes.create({"Name": volume_name})
-        except Exception as exc:  # noqa: BLE001 -- volume may exist
-            logger.debug("volume create returned %s (likely exists)", exc)
-
         mounts = [
             {
                 "Type": "volume",
@@ -376,13 +382,74 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         if user is not None:
             container_config["User"] = user
 
-        container = await self._docker.containers.create_or_replace(
-            name=name, config=container_config,
-        )
-        await container.start()
-        return await _make_ws_sandbox(
-            self._docker, container, name, token, reachability=reachability,
-        )
+        # What a rollback may remove is only what THIS call made, never what was already there: a retry with the same id finds the
+        # data of an earlier life in the volume, and a create with the id of a LIVE workspace must not remove its container if it
+        # is cancelled before it got to replace it. Each flag is set BEFORE its request is awaited, because a cancel that lands
+        # while the request is in flight may have been carried out by the daemon, and withdrawn when the daemon definitively
+        # refused it (a 4xx).
+        owns_volume = owns_container = False
+        try:
+            # Create the named volume.
+            owns_volume = not await self._volume_exists(volume_name)
+            if owns_volume:
+                try:
+                    await self._docker.volumes.create({"Name": volume_name})
+                except Exception as exc:  # noqa: BLE001 -- volume may exist
+                    logger.debug("volume create returned %s (likely exists)", exc)
+                    if _refused(exc):
+                        owns_volume = False
+
+            owns_container = True
+            try:
+                container = await self._docker.containers.create_or_replace(
+                    name=name, config=container_config,
+                )
+            except Exception as exc:
+                if _refused(exc):
+                    owns_container = False
+                raise
+            await container.start()
+            return await _make_ws_sandbox(
+                self._docker, container, name, token, reachability=reachability,
+            )
+        except BaseException:
+            # Nothing has been handed back yet, so the backend (whose own rollback works on the returned sandbox) cannot
+            # clean up: a readiness timeout, a failed start or connect, a cancel or a caller's timeout anywhere from the
+            # volume's creation on left the container and the volume behind with nothing pointing at them. Remove them, on
+            # their own task and bounded like the backend's rollback (``roll_back_shielded``).
+            if owns_container or owns_volume:
+                await roll_back_shielded(
+                    self._roll_back_create_sandbox(name, volume_name, owns_container, owns_volume),
+                    what=f"docker create_sandbox rollback of {name}",
+                )
+            raise
+
+    async def _volume_exists(self, volume_name: str) -> bool:
+        """Whether the named volume exists; a daemon that cannot say counts as "exists" (never claim a volume it may not own)."""
+        assert self._docker is not None
+        try:
+            await self._docker.volumes.get(volume_name)
+        except Exception as exc:  # noqa: BLE001
+            return not _is_not_found(exc)
+        return True
+
+    async def _roll_back_create_sandbox(
+        self, name: str, volume_name: str, owns_container: bool, owns_volume: bool,
+    ) -> None:
+        """Remove the container and the volume ``create_sandbox`` made, each only if this call made it. The container goes by
+        NAME: the create may have been cancelled before it returned a handle. Each step on its own; a 404 is fine; never raises."""
+        assert self._docker is not None
+        if owns_container:
+            try:
+                await self._docker.containers.container(name).delete(force=True, v=False)
+            except Exception as exc:  # noqa: BLE001
+                if not _is_not_found(exc):
+                    logger.warning("create_sandbox rollback: removing container %r failed: %s", name, exc)
+        if owns_volume:
+            try:
+                await self.remove_volume(volume_name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("create_sandbox rollback: removing volume %r failed: %s", volume_name, exc)
 
     async def get_sandbox(self, name: str) -> Sandbox | None:
         """Re-attach to a running workspace container by name.
