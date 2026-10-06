@@ -158,8 +158,10 @@ or only the rows named by `tool_call_ids`, or only the rows created
 strictly before `created_before` (an aware datetime compared in Python;
 a row with no `created_at` is then spared), and returns the
 `tool_call_id`s whose `cancelled` write landed. A row that was resolved
-meanwhile is not in that list. The steer wakes the parks with the
-cancelled marker only when that list is not empty.
+meanwhile is not in that list. The steer wakes a call's park key with the
+cancelled marker only for a `tool_call_id` in that list: a call whose
+result landed meanwhile keeps the reply the park carries and gets no
+cancel.
 
 ### Read surface (`primer/api/routers/external_tools.py`)
 
