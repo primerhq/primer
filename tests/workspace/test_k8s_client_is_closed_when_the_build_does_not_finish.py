@@ -275,6 +275,7 @@ async def test_a_cancel_during_the_losers_close_does_not_close_it_a_second_time(
             break
         await asyncio.sleep(0.01)
     assert c.close_started == 1 and not task.done()
+    assert not backend._lock.locked(), "the loser's close runs OUTSIDE the cache lock: every get, create and destroy would wait behind it"
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
