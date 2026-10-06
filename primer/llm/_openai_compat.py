@@ -346,12 +346,25 @@ def _build_usage(usage_obj: Any) -> Usage | None:
     )
 
 
-def _map_finish_reason(reason: str | None) -> StopReason:
+def _map_finish_reason(reason: str | None, *, saw_function_call: bool = False) -> StopReason:
+    """Translate a Chat Completions ``finish_reason`` to a universal ``StopReason``.
+
+    ``saw_function_call`` is whether the stream emitted a tool call. OpenAI itself ends a tool round with ``"tool_calls"``,
+    but servers that are not OpenAI (LM Studio, llama.cpp, vLLM and some gateways; UNVERIFIED which ones, and the same as
+    Gemini's ``STOP`` and Ollama's ``stop``, which both already look at the calls) can end one with ``"stop"``. Reporting
+    that as ``"stop"`` said "the turn ended" about a round that did not: the loop dispatched the tools regardless, but the
+    ``done`` record the persistence layer writes carries this reason, and the readers that take a ``done`` that is not
+    ``tool_use`` for the end of a turn (``scripts/analyse_estimate_ratio.py``) cut the turn in two.
+
+    Only a ``"stop"`` is reinterpreted: ``"length"`` with tool calls stays ``max_tokens`` (the call may be truncated, which is
+    not a clean tool round), ``"content_filter"`` stays itself, and an unknown reason stays ``other`` (``raw_reason`` keeps it).
+    ``"function_call"`` is the legacy spelling of ``"tool_calls"``.
+    """
     if reason == "stop":
-        return "stop"
+        return "tool_use" if saw_function_call else "stop"
     if reason == "length":
         return "max_tokens"
-    if reason == "tool_calls":
+    if reason in ("tool_calls", "function_call"):
         return "tool_use"
     if reason == "content_filter":
         return "content_filter"
@@ -464,7 +477,7 @@ def _translate_chunk(  # noqa: C901
 
             out.append(
                 Done(
-                    stop_reason=_map_finish_reason(finish_reason),
+                    stop_reason=_map_finish_reason(finish_reason, saw_function_call=state.saw_function_call),
                     raw_reason=finish_reason,
                 )
             )
