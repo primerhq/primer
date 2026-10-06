@@ -386,14 +386,18 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
         """Await ``call`` (the create of one cluster object) and record ``kind`` in ``created``.
 
         Recorded BEFORE the request is awaited: a cancel or a timeout that lands while it is in flight may have created the
-        object server side. An API error (an ``Exception``: a 409 because a live workspace already holds the name, a 403, a
-        422) means the object was refused, so the kind is withdrawn again.
+        object server side. Withdrawn again only when the API server DEFINITIVELY refused it: an error carrying a 4xx
+        ``status`` (a 409 because a live workspace already holds the name, a 403, a 422). A client-side timeout or a dropped
+        connection is not a refusal (the request may have been carried out), so the record stays and the rollback's delete,
+        which tolerates a 404, is the safe side.
         """
         created.append(kind)
         try:
             return await call
-        except Exception:
-            created.remove(kind)
+        except Exception as exc:
+            status = getattr(exc, "status", None)
+            if isinstance(status, int) and 400 <= status < 500:
+                created.remove(kind)
             raise
 
     async def _build(
