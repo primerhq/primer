@@ -33,9 +33,13 @@ WORKER = "wrk-bounded"
 
 
 async def _until(predicate, message: str, timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
+    # The deadline is the RUNNING LOOP's clock: on the virtual-time loop below the wall clock does not move while the
+    # loop sleeps, so a wall-clock deadline would not bound a wait that never completes; on a real loop
+    # ``loop.time()`` is ``time.monotonic()``.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
     while not predicate():
-        assert time.monotonic() < deadline, message
+        assert loop.time() < deadline, message
         await asyncio.sleep(0.02)
 
 

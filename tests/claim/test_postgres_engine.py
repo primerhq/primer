@@ -1731,38 +1731,46 @@ async def test_postgres_heartbeat_waits_on_an_open_release_and_has_lease_sees_th
     key = [(ClaimKind.HARNESS, "rel-lock")]
 
     heartbeat: asyncio.Future | None = None
-    async with pg_storage.pool.acquire() as releasing:
-        tx = releasing.transaction()
-        await tx.start()
-        try:
-            deleted = await releasing.fetchval(
-                f"DELETE FROM {pg_storage.leases_table}"
-                " WHERE kind = $1 AND entity_id = $2 AND claimed_by = $3 RETURNING 1",
-                lease.kind.value, lease.entity_id, lease.claimed_by,
-            )
-            assert deleted == 1, "precondition: the release transaction deleted the claimed row"
-            assert await engine.has_lease(ClaimKind.HARNESS, "rel-lock") is True, (
-                "another connection stopped seeing the row before the delete committed"
-            )
-            heartbeat = asyncio.ensure_future(engine.heartbeat("worker-A", key))
-            with pytest.raises(TimeoutError):
-                # shield: the timeout must not cancel the heartbeat, which has to complete once the lock goes
-                await asyncio.wait_for(asyncio.shield(heartbeat), timeout=1.0)
-            assert not heartbeat.done(), "the heartbeat returned while the release transaction held the row lock"
-        finally:
-            if end == "commit":
-                await tx.commit()
-            else:
-                await tx.rollback()
+    try:
+        async with pg_storage.pool.acquire() as releasing:
+            tx = releasing.transaction()
+            await tx.start()
+            try:
+                deleted = await releasing.fetchval(
+                    f"DELETE FROM {pg_storage.leases_table}"
+                    " WHERE kind = $1 AND entity_id = $2 AND claimed_by = $3 RETURNING 1",
+                    lease.kind.value, lease.entity_id, lease.claimed_by,
+                )
+                assert deleted == 1, "precondition: the release transaction deleted the claimed row"
+                assert await engine.has_lease(ClaimKind.HARNESS, "rel-lock") is True, (
+                    "another connection stopped seeing the row before the delete committed"
+                )
+                heartbeat = asyncio.ensure_future(engine.heartbeat("worker-A", key))
+                with pytest.raises(TimeoutError):
+                    # shield: the timeout must not cancel the heartbeat, which has to complete once the lock goes
+                    await asyncio.wait_for(asyncio.shield(heartbeat), timeout=1.0)
+                assert not heartbeat.done(), "the heartbeat returned while the release transaction held the row lock"
+            finally:
+                if end == "commit":
+                    await tx.commit()
+                else:
+                    await tx.rollback()
 
-    assert heartbeat is not None
-    confirmed = await asyncio.wait_for(heartbeat, timeout=10.0)
-    if end == "rollback":
-        assert confirmed == key, "after the rollback the row is back and the heartbeat refreshes it"
-        assert await engine.has_lease(ClaimKind.HARNESS, "rel-lock") is True
-    else:
-        assert confirmed == [], "after the commit the row is gone and the heartbeat confirms nothing"
-        assert await engine.has_lease(ClaimKind.HARNESS, "rel-lock") is False
+        assert heartbeat is not None
+        confirmed = await asyncio.wait_for(heartbeat, timeout=10.0)
+        if end == "rollback":
+            assert confirmed == key, "after the rollback the row is back and the heartbeat refreshes it"
+            assert await engine.has_lease(ClaimKind.HARNESS, "rel-lock") is True
+        else:
+            assert confirmed == [], "after the commit the row is gone and the heartbeat confirms nothing"
+            assert await engine.has_lease(ClaimKind.HARNESS, "rel-lock") is False
+    finally:
+        # An assertion above can leave the heartbeat pending (it waits on a row lock that the transaction's end then
+        # releases): never leave an un-awaited task behind for the pool's close to trip over.
+        if heartbeat is not None and not heartbeat.done():
+            heartbeat.cancel()
+        if heartbeat is not None:
+            await asyncio.gather(heartbeat, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

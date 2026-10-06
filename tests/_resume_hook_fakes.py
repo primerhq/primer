@@ -1,6 +1,6 @@
 """Fakes shared by the graph resume tests (no database, no real pool).
 
-Three groups, each moved here from the test module that first defined it so a
+Five groups, each moved here from the test module that first defined it so a
 test that needs several of them imports one helper instead of other test modules:
 
 * the ``ask_user`` tool_call graph and its executor (from

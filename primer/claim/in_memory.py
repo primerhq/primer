@@ -18,11 +18,13 @@ logger = logging.getLogger(__name__)
 class _LeaseRow:
     kind: ClaimKind
     entity_id: str
+    # REQUIRED, with no wall-clock default: the engine's ``clock`` is what every lease timestamp is read from (a test
+    # on a virtual-time loop injects its own), so a row built without the engine's time would silently mix clocks.
+    next_attempt_at: datetime
     claimed_by: str | None = None
     claimed_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
     expires_at: datetime | None = None
-    next_attempt_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     priority_score: int = CLAIM_PRIORITY_FRESH
     attempt_count: int = 0
     last_error: str | None = None
