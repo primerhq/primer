@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from primer.api.deps import get_storage_provider
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.api.routers._references import ReferenceCheck
+from primer.channel.checks import check_channel_on_create
+from primer.common.entity_checks import EntityCheckError
 from primer.model.channel import (
     Channel,
     ChannelProvider,
 )
 from primer.model.except_ import ConflictError
-from primer.model.storage import OffsetPage
-from primer.storage.q import Q
 
 
 logger = logging.getLogger(__name__)
@@ -155,34 +155,14 @@ async def _channel_on_pre_create(entity: Channel, request: Request) -> None:
     Also defaults ``entity.provider`` from the referenced ChannelProvider
     row when the caller omitted it.
     """
-    sp = get_storage_provider(request)
-    # Check provider existence.
-    provider_storage = sp.get_storage(ChannelProvider)
-    provider = await provider_storage.get(entity.provider_id)
-    if provider is None:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=422,
-            detail=f"ChannelProvider {entity.provider_id!r} does not exist",
-        )
-    # Default entity.provider from the ChannelProvider row when unset.
-    if entity.provider is None:
-        object.__setattr__(entity, "provider", provider.provider)
-    # Check (provider_id, external_id) uniqueness.
-    channel_storage = sp.get_storage(Channel)
-    page = await channel_storage.find(
-        Q(Channel)
-        .where("provider_id", entity.provider_id)
-        .where("external_id", entity.external_id)
-        .build(),
-        OffsetPage(offset=0, length=1),
-    )
-    if page.items:
-        raise ConflictError(
-            f"Channel with provider_id={entity.provider_id!r}, "
-            f"external_id={entity.external_id!r} already exists "
-            f"(id={page.items[0].id!r})"
-        )
+    # The check is shared with the system tools (primer/channel/checks.py); this re-raises exactly what it always raised: a 422 whose
+    # detail is a plain string for a missing provider, a ConflictError for a duplicate.
+    try:
+        await check_channel_on_create(entity, storage_provider=get_storage_provider(request))
+    except EntityCheckError as exc:
+        if exc.kind == "conflict":
+            raise ConflictError(exc.message) from exc
+        raise HTTPException(status_code=422, detail=exc.message) from exc
 
 
 def make_channel_router() -> APIRouter:
