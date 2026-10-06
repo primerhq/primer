@@ -27,7 +27,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from pydantic import ValidationError
-from pydantic_core import to_jsonable_python
+from pydantic_core import PydanticSerializationError, to_jsonable_python
 
 from primer.int.claim import ClaimAdapter, ClaimKind, PostReleaseWake, ReleaseOutcome
 from primer.int.storage import Storage
@@ -53,8 +53,8 @@ _ENTITY_UPDATE_KEYS = {
 
 
 class _InvalidEntityUpdate(ValueError):
-    """A handler's release is unusable: an ``entity_update`` key its branch does not allow, a value the model refuses, or
-    a value the release supplies that no backend can store (a ``PatchValueError``).
+    """A handler's release is unusable: an ``entity_update`` key its branch does not allow, a value the model refuses, a
+    value the release supplies that no backend can store (a ``PatchValueError``), or one JSON cannot encode at all.
 
     ``reason`` is what the MODEL is shown (no class names, no values); ``detail`` is for the operator's log only.
     """
@@ -276,8 +276,11 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 entity_id, exc.reason,
             )
             return None
+        # Logged BEFORE the write, which a stale claim token (the task was taken over) refuses: the line says the
+        # attempt is made, never that the task is failed; a refused write is logged by ``_patch`` ("rejected by its
+        # fence ... nothing written").
         logger.error(
-            "tool-call release of %s was invalid (%s), so the task is failed terminally %s",
+            "tool-call release of %s was invalid (%s); failing the task terminally %s",
             entity_id, exc.reason, exc.detail,
         )
         updated = await self._patch(
@@ -316,16 +319,27 @@ class ToolCallClaimAdapter(ClaimAdapter):
         not a constant of this adapter came from the handler's ``ReleaseOutcome`` (``entity_update``, ``last_error``,
         the park, and the ``claim_token`` in the fence): a value no backend can store (a lone surrogate, a non-finite
         number) is refused before any I/O and raised as ``_InvalidEntityUpdate`` whether or not ``handler_values`` is
-        empty. ``on_release`` then fails the task (``_fail_rejected``), EXCEPT when the unstorable value is the claim
+        empty. A value JSON has no form for (an arbitrary object, bytes that are not UTF-8) fails earlier, in
+        ``to_jsonable_python``, and is raised as ``_InvalidEntityUpdate`` the same way. ``on_release`` then fails the task
+        (``_fail_rejected``), EXCEPT when the unstorable value is the claim
         token: ``_fail_rejected`` fences on the same token, its write is refused too, and the ``_InvalidEntityUpdate``
         raises out of ``on_release`` (the release fails, the row is left as it was, and the lease stays claimed until
         it expires). Any OTHER ``PatchSpecError`` (an unknown field, a malformed ``where``) is a spec this adapter built
         wrongly: a bug, which propagates instead of being blamed on the handler.
         """
         try:
-            updated = await self._storage.patch_if(
-                entity_id, to_jsonable_python(patch), where=where, conn=conn,
-            )
+            encoded = to_jsonable_python(patch)
+        except (PydanticSerializationError, UnicodeDecodeError) as exc:
+            # A value JSON has no form for (an arbitrary object, bytes that are not UTF-8) fails HERE, before
+            # patch_if is called, so the PatchValueError catch below never sees it: the handler's release is invalid
+            # exactly like an unstorable value, and the task is failed instead of the release escaping.
+            raise _InvalidEntityUpdate(
+                "it gave a value that cannot be encoded as JSON (an object JSON has no form for, or bytes that are "
+                "not valid UTF-8)",
+                detail=str(exc)[:300],
+            ) from exc
+        try:
+            updated = await self._storage.patch_if(entity_id, encoded, where=where, conn=conn)
         except NotFoundError:
             logger.warning("tool-call release of %s: the row is gone, nothing written", entity_id)
             return None
