@@ -164,3 +164,122 @@ async def test_no_dispatcher_park_is_still_ok(
 
     outcome = await run_one_session_turn(_make_lease(sess.id), deps)
     assert outcome.park is not None
+
+
+# ---------------------------------------------------------------------------
+# the fan-out is best-effort: a failure of it never fails or aborts a park that was already decided
+# ---------------------------------------------------------------------------
+
+
+async def _park_with_dispatcher(storage, bus, dispatcher, yielded, *, deps_extra=None):
+    sess = await _seed_session(storage)
+    exc = YieldToWorker(yielded, tool_call_id="tc-bf", llm_messages=[])
+    deps = _yielding_deps(storage, bus, dispatcher, exc)
+    for name, value in (deps_extra or {}).items():
+        setattr(deps, name, value)
+    return await run_one_session_turn(_make_lease(sess.id), deps)
+
+
+@pytest.mark.asyncio
+async def test_a_prompt_envelope_that_cannot_be_built_does_not_fail_the_park(
+    fake_storage_provider, fake_event_bus, monkeypatch, caplog,
+) -> None:
+    """``_build_prompt_envelope`` ran OUTSIDE the dispatcher's ``try``: an error in it (a malformed ``resume_metadata``)
+    propagated out of ``run_one_session_turn`` and the turn that had decided to park raised instead, with the park
+    never released. It is logged at ERROR with the session id, nothing is sent, and the park lands."""
+    import logging
+
+    import primer.worker.yield_runtime as yield_runtime
+
+    def boom(**kwargs):
+        raise ValueError("resume_metadata is not what the envelope builder expects")
+
+    monkeypatch.setattr(yield_runtime, "_build_prompt_envelope", boom)
+    dispatcher = _RecordingDispatcher()
+    yielded = Yielded(tool_name="ask_user", event_key="ask_user:s1:tc-bf", resume_metadata={"prompt": "name?"})
+
+    with caplog.at_level(logging.ERROR):
+        outcome = await _park_with_dispatcher(fake_storage_provider, fake_event_bus, dispatcher, yielded)
+
+    assert outcome.park is not None and outcome.success is True, "the park did not land"
+    assert dispatcher.calls == [], "a prompt was sent although its envelope could not be built"
+    assert any(
+        r.levelno >= logging.ERROR and "s1" in r.getMessage() and "envelope" in r.getMessage() for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+@pytest.mark.asyncio
+async def test_an_ask_user_files_read_that_fails_still_sends_the_prompt_without_media(
+    fake_storage_provider, fake_event_bus, monkeypatch, caplog,
+) -> None:
+    """Reading an ask_user's ``files`` into media was unguarded past the registry lookups: a failure of it escaped the
+    park. The prompt is worth more than its attachment, so it is sent WITHOUT media, with an ERROR naming the session."""
+    import logging
+    from types import SimpleNamespace
+
+    import primer.channel.media as media
+
+    async def failing_read(workspace, store, files):
+        raise OSError("the workspace volume is not answering")
+
+    monkeypatch.setattr(media, "media_from_workspace_files", failing_read)
+
+    async def get_workspace(workspace_id):
+        return object()
+
+    async def get_default():
+        return object()
+
+    dispatcher = _RecordingDispatcher()
+    yielded = Yielded(
+        tool_name="ask_user", event_key="ask_user:s1:tc-bf",
+        resume_metadata={"prompt": "which file?", "files": ["a.txt"]},
+    )
+
+    with caplog.at_level(logging.ERROR):
+        outcome = await _park_with_dispatcher(
+            fake_storage_provider, fake_event_bus, dispatcher, yielded,
+            deps_extra={
+                "workspace_registry": SimpleNamespace(get_workspace=get_workspace),
+                "artifact_registry": SimpleNamespace(get_default=get_default),
+            },
+        )
+
+    assert outcome.park is not None, "the park did not land"
+    assert len(dispatcher.calls) == 1, "the prompt was not sent"
+    assert not dispatcher.calls[0].media, "the envelope carries media although the read failed"
+    assert any(r.levelno >= logging.ERROR and "s1" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_one_pending_node_whose_envelope_cannot_be_built_does_not_drop_the_others(monkeypatch, caplog) -> None:
+    """The multi-event fan-out of a graph park: an error building ONE node's envelope is logged and skipped; the other
+    nodes are still prompted, none is reported sent for the bad one (so a later re-park may try it again), and nothing
+    propagates."""
+    import logging
+
+    import primer.worker.yield_runtime as yield_runtime
+    from primer.worker.yield_runtime import _dispatch_to_channels_multi
+
+    real = yield_runtime._build_prompt_envelope
+
+    def flaky(**kwargs):
+        if kwargs["fallback_tool_call_id"] == "tc-bad":
+            raise ValueError("malformed metadata")
+        return real(**kwargs)
+
+    monkeypatch.setattr(yield_runtime, "_build_prompt_envelope", flaky)
+    dispatcher = _RecordingDispatcher()
+    pending = [
+        {"kind": "ask_user", "node_id": "n1", "tool_call_id": "tc-bad", "resume_metadata": {"prompt": "a?"}},
+        {"kind": "ask_user", "node_id": "n2", "tool_call_id": "tc-good", "resume_metadata": {"prompt": "b?"}},
+    ]
+
+    with caplog.at_level(logging.ERROR):
+        sent = await _dispatch_to_channels_multi(
+            dispatcher=dispatcher, workspace_id="w1", session_id="s1", pending=pending, already_sent=set(),
+        )
+
+    assert sent == {("n2", "tc-good")}, f"sent: {sent}"
+    assert [c.tool_call_id for c in dispatcher.calls] == ["tc-good"]
+    assert any(r.levelno >= logging.ERROR and "s1" in r.getMessage() and "tc-bad" in r.getMessage() for r in caplog.records)
