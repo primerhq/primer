@@ -150,7 +150,13 @@ async def test_an_ask_user_answer_in_a_child_graph_writes_no_approval_record(poo
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "frames_for",
-    ["child-graph-approval-gate", "child-graph-legacy-park-without-tool_name", "nested-agent-chain-gate", "flat"],
+    [
+        "child-graph-approval-gate",
+        "child-graph-legacy-park-without-tool_name",
+        "child-graph-legacy-agent-yield-without-tool_name",
+        "nested-agent-chain-gate",
+        "flat",
+    ],
 )
 async def test_a_real_approval_gate_still_writes_its_record_exactly_once(pool, frames_for) -> None:
     if frames_for == "child-graph-approval-gate":
@@ -158,6 +164,13 @@ async def test_a_real_approval_gate_still_writes_its_record_exactly_once(pool, f
     elif frames_for == "child-graph-legacy-park-without-tool_name":
         ck = _checkpoint(toolcall="_approval")
         ck["pending_toolcalls"][0].pop("tool_name")
+        frames = [_graph_frame(ck)]
+    elif frames_for == "child-graph-legacy-agent-yield-without-tool_name":
+        # a parked agent node of a checkpoint written before ``tool_name`` was captured: nothing says it is a value
+        # yield, so it falls through as an approval gate and keeps its record (an ``is not None`` -> truthiness or
+        # ``!= "_approval"`` rewrite of the loop's condition would drop it)
+        ck = _checkpoint(agent_yield="_approval")
+        ck["pending_agent_yields"][0].pop("tool_name")
         frames = [_graph_frame(ck)]
     elif frames_for == "nested-agent-chain-gate":
         frames = [_agent_frame()]
