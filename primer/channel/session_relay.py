@@ -197,21 +197,78 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     return out or None
 
 
+def _lines_from_the_end(raw: "bytes | str"):
+    """The ``\\n``-terminated lines of ``raw``, last first, without splitting the whole text into a list.
+
+    ``messages.jsonl`` is one JSON record per ``\\n``-terminated line (the writers append ``model_dump_json() + "\\n"``); splitting
+    on that byte alone, not on ``str.splitlines()``, keeps a record whole when its text holds a character ``splitlines`` also
+    breaks at (U+2028, U+0085, a form feed): ``model_dump_json`` writes those unescaped, and cutting the line there made the
+    record unparseable, so it was silently dropped.
+    """
+    newline = b"\n" if isinstance(raw, bytes) else "\n"
+    end = len(raw)
+    while end > 0:
+        start = raw.rfind(newline, 0, end) + 1  # 0 when there is no earlier newline
+        yield raw[start:end]
+        end = start - 1
+
+
+def _parse_tail(lines_last_first) -> list[dict]:
+    """Parse ``messages.jsonl`` lines, last first, only as far back as the final-text window reaches; return them in file order.
+
+    ``derive_session_final_text`` looks at the records from the second-to-last terminal record on (the window of the last
+    completed turn is the rows between the previous terminal record and the final ``done``, and what follows the final one), and
+    ignores everything before. Parsing stops once two terminal records have been seen, with the second one INCLUDED, so the
+    result has the same last two boundaries as the whole file would and the same answer; if the file has fewer than two it is
+    parsed whole. The cost is the size of the last window, not of the session's history (a relay-every-turn session read and parsed
+    all of it after every turn). Lines that are blank, do not parse, or parse to something that is not a record are skipped
+    (the last kind used to reach ``derive_session_final_text`` and raise ``AttributeError`` there).
+    """
+    tail: list[dict] = []
+    boundaries = 0
+    for line in lines_last_first:
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", "replace")
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(record, dict):
+            continue  # a line that is valid JSON but not a record (a stray number or list): skipped like an unparseable one
+        tail.append(record)
+        if record.get("kind") in _WINDOW_BOUNDARY_KINDS:
+            boundaries += 1
+            if boundaries == 2:
+                break
+    tail.reverse()
+    return tail
+
+
 async def read_session_final_text(workspace_io, session_id: str) -> str | None:
     """Read ``messages.jsonl`` for ``session_id`` and derive the final text.
 
     Reads the per-session ``messages.jsonl`` through whichever read surface the
     workspace IO exposes (the concrete backends offer ``read_file`` over the
-    state path; test fakes expose ``read_lines``), parses each line to a record
-    dict, and runs :func:`derive_session_final_text`. Returns ``None`` and never
-    raises on any read/parse error so the relay degrades silently.
+    state path; test fakes expose ``read_lines``), parses the records of the
+    last window (see :func:`_parse_tail`: from the second-to-last terminal
+    record on, not the whole history), and runs
+    :func:`derive_session_final_text`. Returns ``None`` and never raises on any
+    read/parse error so the relay degrades silently.
+
+    The file is still read whole (the workspace read surface has no ranged
+    read), so on a docker or k8s workspace the bytes still cross the runtime
+    connection; what no longer grows with the session is the decode and the
+    JSON parse.
     """
-    lines: list[str] = []
+    lines_last_first = None
     read_lines = getattr(workspace_io, "read_lines", None)
     if callable(read_lines):
         try:
             result = read_lines(session_id)
-            lines = list(result) if result is not None else []
+            lines_last_first = reversed(list(result) if result is not None else [])
         except Exception:
             _log.warning("session relay: read_lines failed for %s", session_id, exc_info=True)
             return None
@@ -234,20 +291,9 @@ async def read_session_final_text(workspace_io, session_id: str) -> str | None:
         except Exception:
             _log.warning("session relay: reading %s failed", path, exc_info=True)
             return None
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8", "replace")
-        lines = raw.splitlines()
+        lines_last_first = _lines_from_the_end(raw)
 
-    records: list[dict] = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            records.append(json.loads(line))
-        except (json.JSONDecodeError, TypeError):
-            continue
-    return derive_session_final_text(records)
+    return derive_session_final_text(_parse_tail(lines_last_first))
 
 
 __all__ = [
