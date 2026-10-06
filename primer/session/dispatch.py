@@ -1317,9 +1317,13 @@ async def run_one_session_turn(
     # convergence, the reconciler) and the write was skipped: announce what the ROW says, so the durable
     # event log does not contradict it, and relay no answer for a session that was ended under the turn.
     overridden = not written.landed and (written.status, written.ended_reason) != (new_status, ended_reason)
+    # A turn the agent's max_tool_turns stopped is counted under its own status: it is neither a normal completion
+    # (WAITING/None interactive, ENDED/tool_turn_cap autonomous) nor a failure.
     _observe_turn(
         session,
-        "failed" if ended_reason == "failed" else "completed",
+        "failed" if ended_reason == "failed"
+        else "tool_turn_cap" if last_done_reason == "tool_turn_cap"
+        else "completed",
         _turn_started_at,
     )
     await _event_recorder(deps).emit(
@@ -1376,6 +1380,10 @@ async def run_one_session_turn(
         and agent_status != SessionStatus.WAITING
         and last_done_reason in ("stop", "end_turn", "stop_sequence")
     )
+    # A tool-turn-cap trip relays in ALL three shapes (thread-mapped, autonomous ENDED/tool_turn_cap, plain interactive
+    # WAITING), as a stopped-short message and not as a reply: none of the arms above covered it (an autonomous capped
+    # run posted nothing at all; a thread-mapped one posted its partial text as if it were the answer).
+    capped_now = last_done_reason == "tool_turn_cap"
     if deps.channel_dispatcher is not None and not overridden and (
         relay_every_turn
         or (
@@ -1383,12 +1391,14 @@ async def run_one_session_turn(
             and ended_reason == "completed"
         )
         or clean_stop_now_parked
+        or capped_now
     ):
         try:
             from primer.channel.reply_binding import resolve_reply_binding
             from primer.channel.session_relay import (
                 post_session_final_result,
                 read_session_final_text,
+                stopped_short_message,
             )
 
             # The binding FIRST, and nothing is read without one: this runs after every clean turn of every
@@ -1399,6 +1409,7 @@ async def run_one_session_turn(
             binding = await resolve_reply_binding(session, storage_provider=deps.storage_provider)
             if binding is not None and not getattr(binding, "quiet", False):
                 final_text: str | None = None
+                read_timed_out = False
                 try:
                     # Bounded: a read that never returns (the runtime connection is down and its client waits
                     # for it forever) must not hold the lease release that comes after this.
@@ -1407,38 +1418,44 @@ async def run_one_session_turn(
                             await _final_text_source(deps, session), session_id,
                         )
                 except TimeoutError:
+                    read_timed_out = True
                     logger.warning(
                         "session %s: reading the final text for the channel relay did not finish within %gs "
-                        "(the workspace is not answering); nothing was posted to the channel",
+                        "(the workspace is not answering); %s",
                         session_id, _BEST_EFFORT_IO_TIMEOUT_S,
+                        "the stopped-short notice is posted without it" if capped_now
+                        else "nothing was posted to the channel",
                     )
-                else:
-                    if final_text:
-                        try:
-                            # Bounded like the read, for the same reason: the lease release comes after this, and
-                            # a channel API call that never returns (a hung Discord or Slack request) would hold it.
-                            async with asyncio.timeout(_CHANNEL_POST_TIMEOUT_S):
-                                await post_session_final_result(
-                                    dispatcher=deps.channel_dispatcher,
-                                    session=session,
-                                    storage_provider=deps.storage_provider,
-                                    text=final_text,
-                                    binding=binding,
-                                )
-                        except TimeoutError:
-                            logger.warning(
-                                "session %s: posting the final result to the channel did not finish within %gs "
-                                "(the channel API is not answering); it may or may not have been posted",
-                                session_id, _CHANNEL_POST_TIMEOUT_S,
+                if capped_now:
+                    # The notice does not depend on the read: a run that stopped at its tool-turn cap is told to the
+                    # channel even when its partial text could not be read, and the partial text is never posted bare.
+                    final_text = stopped_short_message(final_text)
+                if final_text:
+                    try:
+                        # Bounded like the read, for the same reason: the lease release comes after this, and
+                        # a channel API call that never returns (a hung Discord or Slack request) would hold it.
+                        async with asyncio.timeout(_CHANNEL_POST_TIMEOUT_S):
+                            await post_session_final_result(
+                                dispatcher=deps.channel_dispatcher,
+                                session=session,
+                                storage_provider=deps.storage_provider,
+                                text=final_text,
+                                binding=binding,
                             )
-                    else:
-                        # A reply-bound session that relays nothing was invisible for months (the reader had no
-                        # read surface and returned None, and ``if final_text`` skipped the post). Say so: the
-                        # final text of a turn that reached this point is normally there.
+                    except TimeoutError:
                         logger.warning(
-                            "session %s: reply-bound, but no final text could be derived from its messages.jsonl; "
-                            "nothing was posted to the channel", session_id,
+                            "session %s: posting the final result to the channel did not finish within %gs "
+                            "(the channel API is not answering); it may or may not have been posted",
+                            session_id, _CHANNEL_POST_TIMEOUT_S,
                         )
+                elif not read_timed_out:
+                    # A reply-bound session that relays nothing was invisible for months (the reader had no
+                    # read surface and returned None, and ``if final_text`` skipped the post). Say so: the
+                    # final text of a turn that reached this point is normally there.
+                    logger.warning(
+                        "session %s: reply-bound, but no final text could be derived from its messages.jsonl; "
+                        "nothing was posted to the channel", session_id,
+                    )
         except Exception:  # never block release on a relay failure
             logger.warning(
                 "session %s: final-result relay failed", session_id,
