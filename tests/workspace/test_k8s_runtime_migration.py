@@ -550,12 +550,15 @@ async def test_create_rolls_back_on_httproute_failure(monkeypatch):
     # Secret returns a token; service/sts succeed; httproute POST fails.
     backend._create_secret = AsyncMock(return_value="tok")
     backend._create_service = AsyncMock()
+    class _Denied(Exception):
+        status = 403  # the API server answered: the route was refused (a 4xx), so there is nothing of it to delete
+
     backend._custom_objects.create_namespaced_custom_object = AsyncMock(
-        side_effect=Exception("admission webhook denied the route"),
+        side_effect=_Denied("admission webhook denied the route"),
     )
 
     import pytest as _pytest
-    with _pytest.raises(Exception, match="admission webhook"):
+    with _pytest.raises(_Denied, match="admission webhook"):
         await backend.create(template, workspace_id="ws1")
 
     from primer.workspace.k8s.naming import k8s_object_name

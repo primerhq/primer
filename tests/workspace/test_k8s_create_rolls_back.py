@@ -34,6 +34,14 @@ from tests.workspace.test_k8s_client_is_closed_when_the_build_does_not_finish im
     _materialise_raises,
 )
 
+class _ApiError(Exception):
+    """What the kubernetes client raises when the API server answers with an error: the status is an attribute."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(f"({status}) {message}")
+        self.status = status
+
+
 OBJ = k8s_object_name("ws-1")
 NS = "primer-ns"
 
@@ -116,8 +124,8 @@ async def test_a_plain_failure_after_the_pod_runs_is_rolled_back_too(monkeypatch
 
 async def test_a_statefulset_the_api_refuses_rolls_back_the_secret_and_the_service_only(client):
     backend = _backend()
-    backend._apps_v1.create_namespaced_stateful_set.side_effect = Exception("(422) the StatefulSet is invalid")
-    with pytest.raises(Exception, match="StatefulSet is invalid"):
+    backend._apps_v1.create_namespaced_stateful_set.side_effect = _ApiError(422, "the StatefulSet is invalid")
+    with pytest.raises(_ApiError, match="StatefulSet is invalid"):
         await _create(backend)
     assert _deleted(backend) == {"statefulset": 0, "pvc": 0, "service": 1, "secret": 1}
 
@@ -125,8 +133,8 @@ async def test_a_statefulset_the_api_refuses_rolls_back_the_secret_and_the_servi
 async def test_a_name_that_a_live_workspace_holds_is_left_alone(client):
     """The Secret create answers 409: this create made nothing, so its rollback deletes nothing."""
     backend = _backend()
-    backend._core_v1.create_namespaced_secret.side_effect = Exception("(409) secrets 'ws-1' already exists")
-    with pytest.raises(Exception, match="already exists"):
+    backend._core_v1.create_namespaced_secret.side_effect = _ApiError(409, "secrets 'ws-1' already exists")
+    with pytest.raises(_ApiError, match="already exists"):
         await _create(backend)
     assert _deleted(backend) == NOTHING
 
@@ -236,3 +244,19 @@ async def test_a_create_that_finishes_deletes_nothing(client):
     backend = _backend()
     ws = await _create(backend)
     assert backend._workspaces == {"ws-1": ws} and _deleted(backend) == NOTHING
+
+
+@pytest.mark.parametrize("error", [
+    ConnectionResetError("the connection dropped after the request left"),
+    TimeoutError("the client gave up waiting for the answer"),
+    _ApiError(500, "the API server fell over"),
+    _ApiError(504, "gateway timeout"),
+], ids=["connection-reset", "client-timeout", "http-500", "http-504"])
+async def test_a_request_that_may_have_been_carried_out_is_still_rolled_back(client, error):
+    """Only a 4xx is a refusal. A timeout or a dropped connection (or a 5xx) says nothing about whether the Secret exists, so
+    the record stays and the rollback deletes it (a 404 on the delete is fine)."""
+    backend = _backend()
+    backend._core_v1.create_namespaced_secret.side_effect = error
+    with pytest.raises(type(error)):
+        await _create(backend)
+    assert _deleted(backend) == {"statefulset": 0, "pvc": 0, "service": 0, "secret": 1}
