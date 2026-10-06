@@ -586,26 +586,19 @@ class WorkspaceSession(Identifiable):
     parked_tool_batches: Literal[True] | None = Field(
         default=None,
         description=(
-            "Park-batch marker (Phase 3 stage 7a): true while parked_state "
-            "references at least one tool_wait batch, as "
-            "primer.session.tool_wait_batches.batches_referenced_by_park "
-            "derives it; NULL otherwise. Cleared by writing NULL, never "
-            "false. A selector only: readiness is always recomputed from the "
-            "task rows, never trusted from this flag. Not written yet (the "
-            "claim adapter's park branch sets it on every park and re-park in "
-            "a later change), so it reads NULL on every row today. "
-            "Additive/optional, no migration."
+            "Park-batch marker: true while parked_state references at least "
+            "one tool_wait batch (tool calls parked as claimable tasks), NULL "
+            "otherwise. Cleared by writing NULL, never false. A selector "
+            "only: readiness is always recomputed from the task rows, never "
+            "trusted from this flag. Additive/optional, no migration."
         ),
     )
     resumable_at: datetime | None = Field(
         default=None,
         description=(
-            "When the park was last flipped to resumable: the anchor for the "
-            "tool_wait reconciler's grace period (parked_at is the park "
-            "time, the wrong anchor). Not written yet (the wake hook and "
-            "durably_mark_session_resumable stamp it in a later change), so "
-            "it reads NULL on every row today. Additive/optional, no "
-            "migration."
+            "When the park was last flipped to resumable: the anchor for a "
+            "grace period measured from the wake (parked_at is the park "
+            "time, the wrong anchor). Additive/optional, no migration."
         ),
     )
     external_tools: list[dict[str, Any]] | None = Field(

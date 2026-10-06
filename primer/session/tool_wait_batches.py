@@ -81,7 +81,8 @@ def batches_referenced_by_park(blob: Any) -> dict[str, BatchRef]:
     """Every batch ``blob`` (a session's ``parked_state``) references, keyed on the batch's first stored id.
 
     ``{}`` for no park (``None``), a park that holds no tool_wait batch (a classic agent park, a graph park with no
-    co-pending batch), a foreign or malformed blob. See the module docstring for the shapes and the key.
+    co-pending batch), a foreign blob, or a blob with no well-formed batch; a partly malformed blob gives its
+    well-formed batches. See the module docstring for the shapes and the key.
     """
     batches: dict[str, BatchRef] = {}
     if not isinstance(blob, dict):
