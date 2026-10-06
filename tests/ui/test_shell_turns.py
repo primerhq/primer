@@ -346,6 +346,52 @@ def test_a_delegated_run_written_by_the_real_writers_nests_in_the_console_tree()
     assert not grandchild & {seq for seq, _ in parent_kids}, "and not directly under the parent's call"
 
 
+def test_the_trace_ordinal_counts_the_sessions_turns_and_not_a_subagents() -> None:
+    """Ticket 01a11232: the console numbers turns the way the timeline endpoint does (``terminals.closes_turn``), because the
+    number it asks the trace for is that endpoint's window ordinal. A delegated run's ``done`` is the SUBAGENT's turn end: counted,
+    the trace of every turn after a delegation was asked for under the wrong number."""
+    from tests.ui_e2e import _delegation_seed as seed
+
+    seeded = seed.build()
+    last = seeded.records[-1]["seq"]
+    records = seeded.records + [
+        {"seq": last + 1, "kind": "user_input", "payload": {"text": "and again"}, "created_at": "2026-10-06T12:01:00Z"},
+        {"seq": last + 2, "kind": "done", "payload": {"stop_reason": "stop"}, "created_at": "2026-10-06T12:01:01Z"},
+    ]
+    ctx = _ctx()
+    ordinals = json.loads(ctx.eval(
+        "JSON.stringify(SH_turnOfSeq(SA_toTranscript(" + json.dumps(records) + ", null)))"
+    ))
+    first_turn = {str(r["seq"]) for r in seeded.records} & set(ordinals)
+    assert first_turn and {ordinals[seq] for seq in first_turn} == {0}, "the delegated dones must not start a new turn"
+    assert ordinals[str(last + 1)] == 1 and ordinals[str(last + 2)] == 1
+
+
+def test_the_trace_ordinal_still_splits_turns_at_the_sessions_own_terminals() -> None:
+    ctx = _ctx()
+    ordinals = json.loads(ctx.eval(
+        """JSON.stringify(SH_turnOfSeq([
+          {seq: 1, kind: "user_message", payload: {}},
+          {seq: 2, kind: "done", payload: {stop_reason: "stop"}},
+          {seq: 3, kind: "user_message", payload: {}},
+          {seq: 4, kind: "error", payload: {}},
+          {seq: 5, kind: "user_message", payload: {}},
+          {seq: 6, kind: "cancelled", payload: {}},
+          {seq: 7, kind: "user_message", payload: {}},
+          {seq: 8, kind: "done", payload: {stop_reason: "tool_use"}},
+          {seq: 9, kind: "done", payload: {stop_reason: "stop"}},
+          {seq: 10, kind: "error", payload: {delegated: true}}
+        ]))"""
+    ))
+    assert [ordinals[str(i)] for i in range(1, 11)] == [0, 0, 1, 1, 2, 2, 3, 3, 3, 4]
+
+
+def test_the_session_doc_takes_its_trace_ordinal_from_the_shared_function() -> None:
+    doc = (ROOT / "ui" / "components" / "console" / "nv-session-doc.jsx").read_text(encoding="utf-8")
+    assert "SH_turnOfSeq(flat)" in doc
+    assert 'flat[ti].kind === "done" || flat[ti].kind === "cancelled"' not in doc, "the inline copy of the rule is back"
+
+
 def test_flat_interleaving_is_not_produced_when_attribution_is_absent() -> None:
     """A record with no delegate key is an ordinary row, not a lost child."""
     ctx = _ctx()

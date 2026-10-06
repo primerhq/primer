@@ -244,6 +244,30 @@ function SH_isTerminal(kind) {
   return SH_TERMINAL_KINDS.indexOf(kind) >= 0;
 }
 
+// Does this row end the SESSION's turn? The mirror of primer/session/terminals.py closes_turn, which the timeline endpoint
+// numbers its turn windows by: the trace is asked for under the number counted here, so the two must agree. A subagent's
+// terminal (payload.delegated) is the end of the subagent's turn and never the session's (ticket 01a11232); a model call
+// that ended in a tool call ends a round, not the turn (the adapter already drops those rows; kept here so the rule is whole).
+function SH_closesTurn(row) {
+  if (!row || !SH_isTerminal(row.kind)) return false;
+  var payload = row.payload || {};
+  if (payload.delegated) return false;
+  if (row.kind === "done" && payload.stop_reason === "tool_use") return false;
+  return true;
+}
+
+// 0-based turn ordinal per seq: the number of the session's own turn ends before the row (the row that ends a turn is part
+// of it), matching the timeline endpoint's window ordinal.
+function SH_turnOfSeq(rows) {
+  var out = {};
+  var ordinal = 0;
+  for (var i = 0; i < (rows || []).length; i++) {
+    out[rows[i].seq] = ordinal;
+    if (SH_closesTurn(rows[i])) ordinal += 1;
+  }
+  return out;
+}
+
 function SH_sectionLabel(group) {
   var parts = [];
   for (var i = 0; i < group.length; i++) {
@@ -307,6 +331,8 @@ window.SH_TOOL_VERBS = SH_TOOL_VERBS;
 window.SH_toolChipLabel = SH_toolChipLabel;
 window.SH_nestSubagentRows = SH_nestSubagentRows;
 window.SH_collapseTurns = SH_collapseTurns;
+window.SH_closesTurn = SH_closesTurn;
+window.SH_turnOfSeq = SH_turnOfSeq;
 window.SH_shortTime = SH_shortTime;
 window.SH_traceHeaderLabel = SH_traceHeaderLabel;
 window.SH_thoughtLabel = SH_thoughtLabel;
