@@ -38,6 +38,9 @@ The second review (task 01a10e2f; the lead decided the list) added:
   task 01a111d1 D5, when its aggregated-LLM invalidation was wired as the REST router has it): the row is written and THEN the
   registry cache is evicted, with no transaction between; a cancel between leaves a deleted provider still serving, or a rotated
   key not picked up, until a restart. (A cache eviction is not a durable write; this is the "when unsure" side of the rule.)
+* ``crud`` update_python_toolset_source (task 01a111d1 D5 2a, when it gained the registry eviction the toolset router has on
+  update): the toolset row is written and THEN the registry's cached adapter is evicted, the same shape as the six entities
+  above; a cancel between leaves the old source serving until a restart.
 
 The third review (task 01a111d1, D1) added:
 
@@ -51,8 +54,8 @@ The third review (task 01a111d1, D1) added:
 WRAPS (``ToolExecutionManager.is_interruptible_call``), so ``call_tool`` of a tool above is not cancelled either.
 
 Examined and left interruptible (one atomic write, or none): ``system__move_document`` and the document delete behind
-``DocumentService`` (one transaction), ``refresh_collection`` (a not-implemented stub), and ``create_python_toolset`` /
-``update_python_toolset_source`` (one storage write each; built outside this registry, so not enumerated here); every
+``DocumentService`` (one transaction), ``refresh_collection`` (a not-implemented stub), and the ``crud`` toolset's
+``create_python_toolset`` (registration is in-process parsing, then one storage write; nothing is cached yet); every
 other single-row create / update / delete (the other ten system entities, agent, graph, subscriptions, workspace providers
 and templates, the harness register / update / update_overrides tools: one row write in one transaction); ``invoke_agent`` (a cancel unwinds the subagent, and a
 subagent that swallows it is stopped by the Stop event it is given; the record flush a cancel could interrupt was made
@@ -115,6 +118,8 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
             "model_profile",
         )
     },
+    # task 01a111d1 (D5 2a): the toolset row, then the registry's cached adapter evicted
+    (CRUD_TOOLSET_ID, "update_python_toolset_source"),
     # task 01a111d1 (D1): the row, then the claim lease (a separate write on another connection)
     (HARNESS_TOOLSET_ID, "harness__fetch"),
     (HARNESS_TOOLSET_ID, "harness__install"),
@@ -136,6 +141,7 @@ EXAMINED_AND_INTERRUPTIBLE = {
     (TRIGGER_TOOLSET_ID, "create_subscription"),
     (TRIGGER_TOOLSET_ID, "delete_subscription"),
     (CRUD_TOOLSET_ID, "create_agent"),
+    (CRUD_TOOLSET_ID, "create_python_toolset"),
     (WORKSPACES_TOOLSET_ID, "create_workspace_template"),
     (WORKSPACES_TOOLSET_ID, "delete_workspace_provider"),
     (WORKSPACES_TOOLSET_ID, "pause_workspace_session"),
