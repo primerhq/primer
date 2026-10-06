@@ -33,7 +33,10 @@ class ToolEmit:
 #   batched    every call in ONE delta (some gateways)
 #   fragmented headers (id + name, empty arguments) for every index first, then the argument text in two
 #              fragments per index, interleaved across indexes (what a long parallel batch streams like)
-ToolChunking = Literal["per_call", "batched", "fragmented"]
+#   same_index every call numbered with index 0 (a gateway that does not number parallel calls), streamed one
+#              after the other: header (id + name, first half of the arguments), then the rest of the arguments
+#              as a fragment with no id, before the next call's header
+ToolChunking = Literal["per_call", "batched", "fragmented", "same_index"]
 
 
 @dataclass
@@ -178,6 +181,16 @@ def _multi_tool_chunks(rule: Rule) -> list[list[dict[str, Any]]]:
         return json.dumps(rule.emit_tools[i].args)
 
     n = len(rule.emit_tools)
+    if rule.emit_tools_chunking == "same_index":
+        chunks: list[list[dict[str, Any]]] = []
+        for i in range(n):
+            text = args_json(i)
+            half = len(text) // 2
+            first = header(i, text[:half])
+            first["index"] = 0
+            chunks.append([first])
+            chunks.append([{"index": 0, "function": {"arguments": text[half:]}}])
+        return chunks
     if rule.emit_tools_chunking == "batched":
         return [[header(i, args_json(i)) for i in range(n)]]
     if rule.emit_tools_chunking == "per_call":

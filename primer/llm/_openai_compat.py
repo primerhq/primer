@@ -371,6 +371,15 @@ def _map_finish_reason(reason: str | None, *, saw_function_call: bool = False) -
     return "other"
 
 
+def _end_tool_call(in_progress: _ToolCallInProgress) -> ToolCallEnd:
+    """The ``ToolCallEnd`` of a call whose arguments have all streamed in (a buffer that is not valid JSON ends as ``{}``)."""
+    try:
+        parsed = json.loads(in_progress.arguments_buffer or "{}")
+    except json.JSONDecodeError:
+        parsed = {}
+    return ToolCallEnd(id=in_progress.call_id, arguments=parsed, index=in_progress.index)
+
+
 def _translate_chunk(  # noqa: C901
     chunk: Any, state: _StreamState
 ) -> list[StreamEvent]:
@@ -421,6 +430,15 @@ def _translate_chunk(  # noqa: C901
                 fn_args = getattr(fn, "arguments", None) if fn is not None else None
 
                 existing = state.tool_calls.get(tc_index)
+                if existing is not None and tc_id and fn_name and tc_id != existing.call_id:
+                    # A NEW call (another id) on an index already in progress: a gateway that numbers EVERY call with the same
+                    # index (parallel calls are streamed one after the other, each with its own id, and arguments chunks that
+                    # carry no id belong to the call before them). The one in progress is complete; ending it here is what keeps
+                    # it from swallowing the new call's arguments (it ended with ``{}``) and from losing the new call's header
+                    # (the second call vanished). A chunk that repeats the SAME id is a continuation, not a new call.
+                    out.append(_end_tool_call(existing))
+                    del state.tool_calls[tc_index]
+                    existing = None
                 if existing is None and tc_id and fn_name:
                     in_progress = _ToolCallInProgress(
                         call_id=tc_id, name=fn_name, index=tc_index,
@@ -457,18 +475,7 @@ def _translate_chunk(  # noqa: C901
         finish_reason = getattr(choice, "finish_reason", None)
         if finish_reason is not None:
             for tc_index in sorted(state.tool_calls.keys()):
-                in_progress = state.tool_calls[tc_index]
-                try:
-                    parsed = json.loads(in_progress.arguments_buffer or "{}")
-                except json.JSONDecodeError:
-                    parsed = {}
-                out.append(
-                    ToolCallEnd(
-                        id=in_progress.call_id,
-                        arguments=parsed,
-                        index=in_progress.index,
-                    )
-                )
+                out.append(_end_tool_call(state.tool_calls[tc_index]))
             state.tool_calls.clear()
 
             usage_event = _build_usage(getattr(chunk, "usage", None))

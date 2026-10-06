@@ -450,6 +450,73 @@ class TestFinishReasonSeesTheToolCalls:
         assert out[-1].stop_reason == "max_tokens" and out[-1].raw_reason == "length"
 
 
+def _call(index: int, *, id: str | None = None, name: str | None = None, args: str | None = None) -> NS:
+    return NS(index=index, id=id, function=NS(name=name, arguments=args))
+
+
+class TestToolCallsSharingAnIndex:
+    """A gateway that numbers EVERY parallel call with the same index. The translator keyed in-progress calls on the index alone:
+    the second call's header was dropped and its arguments were appended to the first's, so one call survived, ending with ``{}``."""
+
+    def _run(self, *chunks) -> list:
+        state = _StreamState()
+        out: list = []
+        for chunk in chunks:
+            out += _translate_chunk(chunk, state)
+        return out
+
+    def test_two_calls_with_distinct_ids_on_one_index_are_two_calls(self) -> None:
+        out = self._run(
+            _delta_chunk(role="assistant"),
+            _delta_chunk(tool_calls=[_call(0, id="call_a", name="lookup", args='{"q": "alpha"}')]),
+            _delta_chunk(tool_calls=[_call(0, id="call_b", name="fetch", args='{"url": "u"}')]),
+            _delta_chunk(finish_reason="tool_calls"),
+        )
+        starts = [e for e in out if isinstance(e, ToolCallStart)]
+        ends = [e for e in out if isinstance(e, ToolCallEnd)]
+        assert [(e.id, e.name) for e in starts] == [("call_a", "lookup"), ("call_b", "fetch")]
+        assert [(e.id, e.arguments) for e in ends] == [("call_a", {"q": "alpha"}), ("call_b", {"url": "u"})]
+        assert out[-1].stop_reason == "tool_use"
+        positions = [type(e).__name__ for e in out]
+        assert positions.index("ToolCallEnd") < len(positions) - 1 - positions[::-1].index("ToolCallStart"), (
+            "the first call ends as the second starts, not at the finish"
+        )
+
+    def test_argument_fragments_without_an_id_belong_to_the_call_before_them(self) -> None:
+        out = self._run(
+            _delta_chunk(role="assistant"),
+            _delta_chunk(tool_calls=[_call(0, id="call_a", name="lookup", args='{"q": ')]),
+            _delta_chunk(tool_calls=[_call(0, args='"alpha"}')]),
+            _delta_chunk(tool_calls=[_call(0, id="call_b", name="fetch", args='{"url"')]),
+            _delta_chunk(tool_calls=[_call(0, args=': "u"}')]),
+            _delta_chunk(finish_reason="tool_calls"),
+        )
+        ends = [e for e in out if isinstance(e, ToolCallEnd)]
+        assert [(e.id, e.arguments) for e in ends] == [("call_a", {"q": "alpha"}), ("call_b", {"url": "u"})]
+        deltas = [(e.id, e.arguments_delta) for e in out if type(e).__name__ == "ToolCallDelta"]
+        assert deltas == [("call_a", '{"q": '), ("call_a", '"alpha"}'), ("call_b", '{"url"'), ("call_b", ': "u"}')]
+
+    def test_a_chunk_that_repeats_the_same_id_is_a_continuation_not_a_new_call(self) -> None:
+        """Some servers send the id and the name on EVERY chunk of a call."""
+        out = self._run(
+            _delta_chunk(role="assistant"),
+            _delta_chunk(tool_calls=[_call(0, id="call_a", name="lookup", args='{"q": ')]),
+            _delta_chunk(tool_calls=[_call(0, id="call_a", name="lookup", args='"alpha"}')]),
+            _delta_chunk(finish_reason="tool_calls"),
+        )
+        assert [e.id for e in out if isinstance(e, ToolCallStart)] == ["call_a"]
+        assert [(e.id, e.arguments) for e in out if isinstance(e, ToolCallEnd)] == [("call_a", {"q": "alpha"})]
+
+    def test_calls_with_distinct_indexes_are_untouched(self) -> None:
+        out = self._run(
+            _delta_chunk(role="assistant"),
+            _delta_chunk(tool_calls=[_call(0, id="call_a", name="lookup", args='{"q": 1}'), _call(1, id="call_b", name="fetch", args="{}")]),
+            _delta_chunk(finish_reason="tool_calls"),
+        )
+        ends = [e for e in out if isinstance(e, ToolCallEnd)]
+        assert [(e.index, e.id) for e in ends] == [(0, "call_a"), (1, "call_b")]
+
+
 class TestBuildUsage:
     def test_none(self) -> None:
         assert _build_usage(None) is None
