@@ -15,12 +15,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import tempfile
 from pathlib import Path
 
 import pytest
 
 import tests._support.off_golden as g
+from tests._support.scratch_dir import run_in_scratch_dir
 from primer.agent.compaction import CompactionStrategy
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.agent.workspace_executor import WorkspaceAgentExecutor
@@ -63,11 +63,7 @@ async def _compacting_turn(root: Path, *, pairs: int = 6, question: str = QUESTI
 
 
 def _run(coro_factory):
-    async def _main():
-        with tempfile.TemporaryDirectory(prefix="tier2-") as tmp:
-            return await coro_factory(Path(tmp))
-
-    return asyncio.run(_main())
+    return run_in_scratch_dir(coro_factory, prefix="tier2-")
 
 
 class TestTheNextTurnAfterTierTwo:
