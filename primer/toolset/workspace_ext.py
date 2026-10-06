@@ -178,6 +178,17 @@ def build_workspace_ext_toolset(
                         returns="{output: <graph output text>}",
                         note="runs a subgraph in this session; can park on HITL",
                     ),
+                    ToolExample(
+                        args={
+                            "graph_id": "graph-review",
+                            "input": "Review the diff.",
+                        },
+                        returns=(
+                            "is_error: {rejected: true, reason, tool_name} when an approval inside the graph was "
+                            "refused, timed out or was cancelled; otherwise {error: <code>, message, node_id}"
+                        ),
+                        note="the invoked graph ended failed; it is an error, not an empty output",
+                    ),
                 ],
                 yields=True,
                 required_role="user",
