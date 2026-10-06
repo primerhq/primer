@@ -62,6 +62,15 @@ class TestCreatePythonToolset:
         assert is_error and answer["type"] == "conflict" and scope in answer["message"]
         assert await fake_storage_provider.get_storage(Toolset).get(scope) is None, "a python toolset took a reserved scope id"
 
+    async def test_a_reserved_id_is_refused_before_the_source_is_parsed(self, fake_storage_provider) -> None:
+        toolset = build_crud_toolset(storage_provider=fake_storage_provider)
+
+        # The source would fail registration (no docstring). If registration ran first the answer would be the untyped
+        # {"ok": false}; the guard must decide first, so no code of a refused toolset is parsed.
+        is_error, answer = await _call(toolset, "create_python_toolset", toolset_id="external", source=NO_DOCSTRING)
+
+        assert is_error and answer["type"] == "conflict"
+
     async def test_an_ordinary_id_is_created_as_before(self, fake_storage_provider) -> None:
         toolset = build_crud_toolset(storage_provider=fake_storage_provider)
 

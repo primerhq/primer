@@ -12,10 +12,13 @@ resolved from ``app.state.provider_registry`` (a reserved id, no storage row), t
 
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
+import primer.api
 from primer.api.registries import ProviderRegistry
 from primer.model.provider import Toolset, ToolsetProviderType
 
@@ -79,6 +82,20 @@ async def test_a_source_update_is_seen_by_the_warm_toolset(app) -> None:
     assert stored.config.source == SRC_V2, "the row was not updated, so this test would prove nothing about the cache"
     after = await registry.get_toolset("py-warm")
     assert await _tool_ids(after) == ["salute"], "the warm toolset still serves the source from before the update"
+
+
+def test_every_build_crud_toolset_call_in_the_app_wiring_passes_the_registry() -> None:
+    """The test app factory builds the crud toolset the way the lifespan does, but only the lifespan serves production: pin the
+    keyword on both calls, so dropping it from either one cannot pass unnoticed (the API test above exercises the factory only)."""
+    root = Path(primer.api.__file__).parent
+    callers: dict[str, bool] = {}
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", None)) == "build_crud_toolset":
+                callers[path.name] = any(keyword.arg == "provider_registry" for keyword in node.keywords)
+
+    assert set(callers) >= {"_app_lifespan.py", "app.py"}, f"the scan did not find both wiring sites ({callers}); it would pass vacuously"
+    assert all(callers.values()), f"build_crud_toolset calls without provider_registry=: {[n for n, ok in callers.items() if not ok]}"
 
 
 async def test_a_refused_update_leaves_the_warm_toolset_alone(app) -> None:
