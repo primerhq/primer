@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from primer.worker.yield_resume_registry import ResumeContext, get_resume_hook
 from primer.worker.yield_runtime import (
     classify_approval_payload,
+    classify_marker_payload,
     classify_resume_payload,
     ParkedState,
 )
@@ -186,9 +187,11 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     # (graph_value_yield_toolcall etc., which key checkpoint entries by
     # tool_call_id, not the compound dispatch key) is recovered from
     # THAT, the same rsplit-last-segment extraction used everywhere else
-    # on this path - never from the dict key itself. A single-event park
-    # / timeout / cancel uses the singular path (classified payload,
-    # resumed_tcid from the fired key, or None for the legacy drain-all).
+    # on this path - never from the dict key itself. Both paths hand a
+    # node the CLASSIFIED payload (a timeout or cancel marker becomes
+    # YieldTimeout / YieldCancelled). A single-event park uses the singular
+    # path (resumed_tcid from the fired key, or None for the legacy
+    # drain-all).
     raw_state = session.parked_state or {}
     payloads_map = raw_state.get("resume_event_payloads")
     ck = parked.graph_checkpoint
@@ -209,13 +212,42 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
         # by the shared tool_wait_event_key helper's own shape - the
         # "tool_wait:" prefix is reserved to it, never produced by any
         # human-gate event_key.
+        #
+        # S2a: ONE reply per event_key. A park written by an older build
+        # holds a leaf under the RAW dispatch key; once the durable flip
+        # writes leaves under their encoded key (leaf_key_for), a resend or
+        # an echo of the same reply lands a second entry under the encoded
+        # spelling. Keep the entry whose dict key IS the raw spelling (only
+        # older code writes it, so it is the older entry). jsonb does not
+        # keep key insertion order, so the order of .values() says nothing
+        # about which entry is older.
+        from primer.session.yields import _dispatch_key_for
+
+        kept: dict[str, dict] = {}
+        for dict_key, entry in payloads_map.items():
+            entry = entry or {}
+            event_key = entry.get("event_key", "")
+            if event_key.startswith("tool_wait:"):
+                continue
+            if event_key not in kept or dict_key == _dispatch_key_for(
+                event_key, session_id=sid,
+            ):
+                kept[event_key] = entry
+        # Each kept payload is classified as the singular path classifies
+        # its one payload: a __yield_timeout__ / __yield_cancelled__ marker
+        # becomes YieldTimeout / YieldCancelled (elapsed from the park's
+        # parked_at), a real reply loses the internal control keys.
+        # ask_user's and the external tool's resume hooks recognise a marker
+        # only by isinstance, so a raw marker dict reached them as an
+        # operator reply.
         replies = [
             (
-                (entry or {}).get("event_key", "").rsplit(":", 1)[-1] or None,
-                (entry or {}).get("payload") or {},
+                event_key.rsplit(":", 1)[-1] or None,
+                classify_marker_payload(
+                    entry.get("payload") or {}, parked_at=session.parked_at,
+                ).payload,
             )
-            for entry in payloads_map.values()
-            if not (entry or {}).get("event_key", "").startswith("tool_wait:")
+            for event_key, entry in kept.items()
         ]
         if not replies:
             # Every accumulated reply this cycle was a tool_wait wake -
