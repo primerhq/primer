@@ -22,12 +22,12 @@ from typing import Any
 from primer.model.turn_log import TurnLogKind
 from primer.model.workspace_session import SessionMessageKind
 from primer.session.replay import visible_records
+from primer.session.terminals import closes_turn, is_session_terminal
 
 _DONE = SessionMessageKind.DONE.value
 _ERROR = SessionMessageKind.ERROR.value
 _CANCELLED = SessionMessageKind.CANCELLED.value
 
-_TERMINAL_KINDS = frozenset({_DONE, _ERROR, _CANCELLED})
 _GRAPH_TRANSITION = SessionMessageKind.GRAPH_TRANSITION.value
 _YIELDED_RECORD = SessionMessageKind.YIELDED.value
 
@@ -35,23 +35,6 @@ _YIELDED_RECORD = SessionMessageKind.YIELDED.value
 # YIELDED record kind, but a different vocabulary: this one names a
 # turn-log envelope event, not a messages.jsonl row.
 _YIELDED = TurnLogKind.YIELDED.value
-
-
-def closes_turn(rec: dict[str, Any]) -> bool:
-    """True when ``rec`` ends a turn rather than a tool round.
-
-    The agent loop issues one ``llm.stream`` call per tool round and every
-    stream ends with its own ``Done`` (primer/agent/loop.py), so an
-    intermediate round produces a DONE record carrying
-    ``stop_reason="tool_use"``. Counting those as terminals would split
-    one turn into several windows.
-    """
-    kind = rec.get("kind")
-    if kind not in _TERMINAL_KINDS:
-        return False
-    if kind == _DONE:
-        return (rec.get("payload") or {}).get("stop_reason") != "tool_use"
-    return True
 
 
 def _parse_records(message_lines: list[str]) -> list[dict[str, Any]]:
@@ -240,13 +223,17 @@ def _turn_status(
             return "cancelled"
         if kind == _YIELDED:
             return "parked"
-    kind = records[-1].get("kind") if records else None
-    if kind == _ERROR:
-        return "failed"
-    if kind == _CANCELLED:
-        return "cancelled"
-    if kind == _DONE and closes_turn(records[-1]):
-        return "completed"
+    # Read from the last record, but only a terminal of the SESSION's own run says how the turn went: a subagent's
+    # failed / cancelled / done (payload.delegated) is the end of the subagent's turn, and its parent carries on.
+    last = records[-1] if records else None
+    if last is not None and is_session_terminal(last):
+        kind = last.get("kind")
+        if kind == _ERROR:
+            return "failed"
+        if kind == _CANCELLED:
+            return "cancelled"
+        if kind == _DONE and closes_turn(last):
+            return "completed"
     return "running"
 
 

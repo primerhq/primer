@@ -30,6 +30,7 @@ import logging
 from primer.channel.adapter import PromptEnvelope
 from primer.channel.reply_binding import resolve_reply_binding
 from primer.model.except_ import NotFoundError
+from primer.session.terminals import is_delegated, is_session_terminal
 
 
 _log = logging.getLogger(__name__)
@@ -44,9 +45,6 @@ def stopped_short_message(partial_text: str | None) -> str:
     partial = (partial_text or "").strip()
     return f"{TOOL_TURN_CAP_NOTICE}\n\nWhat it had so far:\n\n{partial}" if partial else TOOL_TURN_CAP_NOTICE
 
-
-# The records that end a turn's window of assistant text (see derive_session_final_text).
-_WINDOW_BOUNDARY_KINDS = ("done", "cancelled", "error")
 
 
 def _count_reached(results: list) -> int:
@@ -154,7 +152,11 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     Session assistant tokens carry their text under ``payload['text']`` (the
     coalesced buffer; see :mod:`primer.session.persistence`).
     """
-    boundaries = [i for i, r in enumerate(records) if r.get("kind") in _WINDOW_BOUNDARY_KINDS]
+    # A window ends at a terminal of the SESSION's own run (a ``done`` / ``cancelled`` / ``error``; a model call that ended in
+    # a tool call is one, so what is relayed is the text after the last round). A subagent's terminal (payload.delegated)
+    # is the end of the subagent's turn: as a boundary it made the subagent's last words the session's result whenever
+    # the parent died after it (its own ``cancelled`` / ``error`` write is best-effort).
+    boundaries = [i for i, r in enumerate(records) if is_session_terminal(r)]
     if not boundaries:
         return None
     # The LATEST turn must have completed. If the last terminal record is a ``cancelled`` or an ``error``,
@@ -200,7 +202,8 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     prev_boundary = boundaries[-2] if len(boundaries) > 1 else -1
     chunks: list[str] = []
     for r in records[prev_boundary + 1:last_done]:
-        if r.get("kind") == "assistant_token":
+        # The subagents' text sits inside the parent's window now that their terminals are not boundaries; it is theirs.
+        if r.get("kind") == "assistant_token" and not is_delegated(r):
             text = (r.get("payload") or {}).get("text")
             if isinstance(text, str):
                 chunks.append(text)
@@ -250,7 +253,7 @@ def _parse_tail(lines_last_first) -> list[dict]:
         if not isinstance(record, dict):
             continue  # a line that is valid JSON but not a record (a stray number or list): skipped like an unparseable one
         tail.append(record)
-        if record.get("kind") in _WINDOW_BOUNDARY_KINDS:
+        if is_session_terminal(record):
             boundaries += 1
             if boundaries == 2:
                 break
