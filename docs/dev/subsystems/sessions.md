@@ -74,9 +74,20 @@ Four rules make that safe:
   `_CANCELLED_RECORD_WRITE_TIMEOUT_S` is the same value): an unreachable
   workspace must not hold the lock Cancel and every steer queue behind. A
   timeout leaves the switch queued and a reserved gap in the seqs (readers
-  tolerate gaps); a marker that lands late after its timeout can precede a
-  second marker of the same epoch on the next attempt (declared; the retry's
-  orphan detection is the next change). A rejected closing write (a park
+  tolerate gaps). A marker an earlier attempt left behind (a timeout or a
+  cancellation between the marker and the closing write; the local workspace
+  appends through `asyncio.to_thread`, which keeps writing after its await is
+  abandoned) is found on the retry: before reserving, `apply_binding_switch`
+  reads the log whole through the io shim and looks for AGENT_MARKER records
+  above the row's applied epoch. An orphan AT THE TIP (the record at the row's
+  `last_seq`, epoch `+ 1`, same target) is COMPLETED (only the closing write is
+  made, no second marker); any other orphan (a full turn ran since, or another
+  target) is MINTED PAST: the new marker takes `max(every marker epoch in the
+  log, the row's epoch) + 1` and the orphan stays a structural record that was
+  never applied (completing from one below the tip would write
+  `next_unprocessed_seq = seq + 1` and move the drain cursor BACKWARDS). A log
+  that cannot be read leaves the switch queued. A marker that lands late AFTER
+  the retry's read is the declared residual. A rejected closing write (a park
   committed after the reservation) is the multi-process residual: the marker
   stays in the log unapplied.
 - **Epochs fence stale writes.** A terminal status, a park and a resume
