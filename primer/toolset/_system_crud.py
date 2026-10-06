@@ -28,7 +28,7 @@ from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import ok as _ok
 from primer.model.collection import Collection, Document
-from primer.model.common import Identifiable
+from primer.model.common import Identifiable, preserve_masked_secrets
 from primer.model.except_ import (
     ConflictError,
     PrimerError,
@@ -416,6 +416,10 @@ def _crud_tools_for(
             return _err(
                 f"{cls_name} {entity_id!r} does not exist", error_type="not-found"
             )
+        # get_* serves every SecretStr masked and this is a full replace, so a caller that reads a row and writes it
+        # back (an agent changing one field) would store the mask as the credential. The REST routers run the same
+        # helper as an on_pre_update hook; a secret the caller really changed still replaces the stored one.
+        preserve_masked_secrets(entity, existing)
         try:
             updated = await storage.update(entity)
         except PrimerError as exc:
@@ -426,7 +430,9 @@ def _crud_tools_for(
 
     update_when = (
         "Use when overwriting a whole row; the body ``id`` must "
-        "equal the path ``id``. Unknown id returns ``type=not-found``."
+        "equal the path ``id``. Unknown id returns ``type=not-found``. "
+        "A secret field the matching ``get_`` served masked and you send "
+        "back unchanged keeps its stored value."
     )
     if on_update is not None:
         update_when += (
