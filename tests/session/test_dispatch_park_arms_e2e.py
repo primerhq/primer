@@ -461,6 +461,9 @@ async def test_agent_tool_wait_arm_with_a_malformed_id_ends_the_turn_failed_inst
     assert outcome.park is None and outcome.success is False
     row = await storage_provider.get_storage(WorkspaceSession).get("s-agent-bad")
     assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    # PINS A DECLARED RESIDUAL, not a wanted outcome: a malformed pure batch leaves its QUEUED rows and TOOL_CALL
+    # upserts behind before the turn ends failed (the key is computed after the rows). The abandon work of plan
+    # section 3.8 flips this; this assertion is expected to change then.
     assert await storage_provider.get_storage(ToolCallTask).get("s-agent-bad/x:tool:03:1") is not None
     assert metrics.tool_wait_malformed_scoped_id_total.labels("dispatch")._value.get() == 1.0
     errors = [m for m in _messages(io, "s-agent-bad") if m["kind"] == "error"]
