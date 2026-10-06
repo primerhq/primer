@@ -380,10 +380,15 @@ def test_the_trace_ordinal_still_splits_turns_at_the_sessions_own_terminals() ->
           {seq: 7, kind: "user_message", payload: {}},
           {seq: 8, kind: "done", payload: {stop_reason: "tool_use"}},
           {seq: 9, kind: "done", payload: {stop_reason: "stop"}},
-          {seq: 10, kind: "error", payload: {delegated: true}}
+          {seq: 10, kind: "error", payload: {delegated: true}},
+          {seq: 11, kind: "user_message", payload: {}},
+          {seq: 12, kind: "done", payload: {stop_reason: "tool_turn_cap"}},
+          {seq: 13, kind: "user_message", payload: {}}
         ]))"""
     ))
     assert [ordinals[str(i)] for i in range(1, 11)] == [0, 0, 1, 1, 2, 2, 3, 3, 3, 4]
+    # a done that says the tool-turn cap stopped the run is not a tool round: it ends the turn (#437)
+    assert [ordinals[str(i)] for i in (11, 12, 13)] == [4, 4, 5]
 
 
 def test_the_session_doc_takes_its_trace_ordinal_from_the_shared_function() -> None:
