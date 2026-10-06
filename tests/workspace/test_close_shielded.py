@@ -58,7 +58,7 @@ async def test_a_close_that_never_finishes_does_not_hold_the_caller_past_the_bou
     loop = asyncio.get_running_loop()
     started = loop.time()
     with caplog.at_level(logging.WARNING, logger="primer.workspace"):
-        await close_shielded(c, what="the test client")
+        await asyncio.wait_for(close_shielded(c, what="the test client"), timeout=2.0)   # unbounded: fails in seconds
     assert 0.15 < loop.time() - started < 2.0
     assert any("still running after 0.2s" in r.getMessage() for r in caplog.records)
     assert c.closed == 0 and len(base_backend._PENDING_CLOSES) == 1, "still running, and still referenced"  # noqa: SLF001

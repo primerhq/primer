@@ -190,6 +190,33 @@ async def test_the_caller_that_lost_the_race_closes_its_own_sandbox_and_gets_the
     assert sandbox.closed == 1 and backend._workspaces == {WORKSPACE_ID: winner}
 
 
+async def test_the_losers_close_runs_outside_the_cache_lock(tmp_path, monkeypatch):
+    """While the race loser's sandbox is being closed (held on a gate) the cache lock is free: every get, create and destroy
+    on the backend would otherwise wait behind a close that a silent peer can stretch."""
+    close_gate = asyncio.Event()
+    winner = object()
+    backend, adapter = await _backend(tmp_path, close_gate=close_gate)
+    real = SandboxWorkspace.materialise.__func__
+
+    async def materialise_while_another_caller_wins(**kwargs):
+        ws = await real(SandboxWorkspace, **kwargs)
+        backend._workspaces[WORKSPACE_ID] = winner
+        return ws
+
+    monkeypatch.setattr(SandboxWorkspace, "materialise", staticmethod(materialise_while_another_caller_wins))
+    task = asyncio.create_task(backend.get(WORKSPACE_ID, template=_template()))
+    try:
+        for _ in range(200):
+            if adapter.handed_out and adapter.handed_out[0].close_started:
+                break
+            await asyncio.sleep(0.01)
+        assert adapter.handed_out[0].close_started == 1 and not task.done()
+        assert not backend._lock.locked(), "the loser's close runs outside the cache lock"
+    finally:
+        close_gate.set()
+    assert await asyncio.wait_for(task, timeout=5) is winner
+
+
 async def test_two_concurrent_gets_on_a_cold_cache_share_one_workspace_and_only_the_loser_closes(tmp_path, monkeypatch):
     """A REAL race: two callers re-attach at once, each with a sandbox of its own (a new connection to the same container);
     materialise waits until both have arrived. Both get the same workspace; the cached sandbox, the shared connection, stays
