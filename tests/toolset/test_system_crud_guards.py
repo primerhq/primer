@@ -115,6 +115,19 @@ class TestHarnessManagedRowsAreNotWritableThroughATool:
         assert is_error and answer["type"] == "conflict"
 
     @pytest.mark.asyncio
+    async def test_a_managed_row_cannot_be_released_by_an_update_that_omits_harness_id(self, world, kind) -> None:
+        sp, toolset, _ = world
+        model, body, entity_id = MANAGED_KINDS[kind]
+        await sp.get_storage(model).create(model.model_validate({**body(), "harness_id": "hns_x"}))
+        _, served = await _call(toolset, f"get_{kind}", id=entity_id)
+        without_owner = {key: value for key, value in served.items() if key != "harness_id"}
+
+        is_error, answer = await _call(toolset, f"update_{kind}", id=entity_id, entity=without_owner)
+
+        assert is_error and answer["type"] == "conflict"
+        assert (await sp.get_storage(model).get(entity_id)).harness_id == "hns_x", "an update released a managed row"
+
+    @pytest.mark.asyncio
     async def test_a_managed_row_cannot_be_deleted(self, world, kind) -> None:
         sp, toolset, _ = world
         model, body, entity_id = MANAGED_KINDS[kind]
