@@ -20,9 +20,10 @@ from primer.model.trigger import (
     Trigger,
 )
 from primer.model.workspace_session import WorkspaceSession
+import primer.trigger.dispatch as dispatch_module
 from primer.trigger.dispatch import fire_trigger
 from primer.trigger.fire_id import make_fire_id
-from primer.trigger.subscribers import DispatchDeps
+from primer.trigger.subscribers import DispatchDeps, SubscriptionDispatchResult
 
 
 def _now() -> datetime:
@@ -158,3 +159,63 @@ async def test_skip_parallelism_serialized_busy_check(
         if s.metadata.get("subscription_id") == "sb-1"
     ]
     assert len(fired) == 1
+
+
+class _ProcessDied(BaseException):
+    """Stands for the worker dying inside a fan-out (a kill, a cancel): a BaseException, so the per-subscription
+    isolation in ``fire_trigger`` (``except Exception``) does not turn it into an ``ok=False`` result."""
+
+
+@pytest.mark.asyncio
+async def test_the_dedup_marker_is_recorded_after_the_fan_out_so_a_crash_inside_it_is_redelivered(
+    fake_storage_provider, fake_claim_engine, fake_scheduler, fake_workspace_registry, monkeypatch,
+):
+    """``last_fired_id`` is written AFTER every subscription was dispatched (see the comment in ``fire_trigger``), so
+    a fire that dies half way leaves no marker and the redelivery of the same tick dispatches AGAIN, including to the
+    subscriptions the first pass already served: at-least-once, not exactly-once. That is the documented best-effort
+    v1 (docs/dev/subsystems/triggers.md); this pins it so a change of the marker's position is a decision, not an
+    accident (before the dispatch it would lose the unserved subscriptions on a crash, the opposite trade)."""
+    triggers = fake_storage_provider.get_storage(Trigger)
+    subs = fake_storage_provider.get_storage(Subscription)
+    await triggers.create(Trigger(
+        id="tr-1", slug="tr-x", name="x", description=None,
+        config=ScheduledTriggerConfig(cron="0 * * * *", timezone="UTC"),
+        enabled=True, next_fire_at=_now(), created_at=_now(),
+    ))
+    for sub_id in ("sb-1", "sb-2"):
+        await subs.create(Subscription(
+            id=sub_id, trigger_id="tr-1",
+            config=AgentFreshSubConfig(workspace_id="ws-x", agent_id="ag-x"),
+            parallelism="queue", enabled=True, created_at=_now(),
+        ))
+
+    delivered: list[str] = []
+    calls = {"n": 0, "crash_on": 2}
+
+    class _Dispatcher:
+        async def dispatch(self, sub, *, rendered_payload, fire_context, fire_id, deps):
+            calls["n"] += 1
+            if calls["n"] == calls["crash_on"]:
+                raise _ProcessDied()
+            delivered.append(sub.id)
+            return SubscriptionDispatchResult(ok=True, artefact_id=f"art-{sub.id}")
+
+    monkeypatch.setattr(dispatch_module, "get_dispatcher", lambda kind: _Dispatcher())
+    deps = DispatchDeps(
+        storage_provider=fake_storage_provider, claim_engine=fake_claim_engine,
+        scheduler=fake_scheduler, workspace_registry=fake_workspace_registry,
+    )
+    tick = datetime(2026, 6, 1, 9, 0, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(_ProcessDied):
+        await fire_trigger(trigger_id="tr-1", scheduled_for=tick, deps=deps)
+    assert len(delivered) == 1, "precondition: the first subscription was served before the fire died"
+    assert (await triggers.get("tr-1")).last_fired_id is None, "the marker was recorded before the fan-out finished"
+
+    calls["crash_on"] = -1
+    redelivery = await fire_trigger(trigger_id="tr-1", scheduled_for=tick, deps=deps)
+
+    assert redelivery.skipped is False, "the redelivery was deduplicated against a fire that never finished"
+    assert len(delivered) == 3, "every subscription is dispatched on the redelivery, the served one a second time"
+    assert delivered[0] == delivered[1], "the subscription the first pass served was served again"
+    assert (await triggers.get("tr-1")).last_fired_id == redelivery.fire_id, "a finished fire records its marker"
