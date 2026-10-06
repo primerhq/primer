@@ -92,6 +92,33 @@ def _dispatch_key_for(event_key: str, *, session_id: str) -> str:
     return event_key
 
 
+_LEAF_KEY_ESCAPED = frozenset('%"\\')
+
+
+def leaf_key_for(dispatch_key: str) -> str:
+    """The ``resume_event_payloads`` dict key under which the leaf for ``dispatch_key`` is stored.
+
+    The dispatch key (see :func:`_dispatch_key_for`) ends in a graph NODE id (constrained only by
+    ``min_length=1``) or, on a non-graph park, a raw provider ``tool_call_id``, so it can hold any character.
+    ``patch_if`` refuses a ``set_paths`` element that holds a double quote, a backslash or a control character
+    (``PatchSpecError``: the SQLite JSON path is built as ``$."<element>"`` and a backslash-escaped quote is a bad
+    path on SQLite 3.45), so a write that used the raw key would make a park with such an id unwakeable, which
+    the whole-document write it replaces never was.
+
+    The key is percent-encoded for exactly ``%``, ``"``, ``\\`` and every character below U+0020 (``%`` is
+    escaped too, so the mapping is injective: ``a"b`` becomes ``a%22b`` and the literal ``a%22b`` becomes
+    ``a%2522b``). A key with none of those characters is returned UNCHANGED, so the keys every producer writes
+    today keep their spelling. Only uniqueness of the dict key matters: graph resume and the executors iterate
+    ``.values()`` and read each entry's own ``event_key``, which stays the original string.
+
+    A key that holds a surrogate code point is still refused by ``patch_if`` (nothing can store it); that is not
+    this function's to repair.
+    """
+    return "".join(
+        f"%{ord(ch):02X}" if ch in _LEAF_KEY_ESCAPED or ord(ch) < 0x20 else ch for ch in dispatch_key
+    )
+
+
 def tool_wait_event_key(session_id: str, *, scoped_task_id: str) -> str:
     """The wake key for a tool_wait batch's park (01a0518b review):
     ``tool_wait:<session_id>:<turn_seg>:<node>``.
@@ -477,6 +504,7 @@ __all__ = [
     "RespondToYieldDeps",
     "durably_mark_session_resumable",
     "durably_wake_session",
+    "leaf_key_for",
     "respond_to_yield",
 ]
 
