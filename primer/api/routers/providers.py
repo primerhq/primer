@@ -67,7 +67,9 @@ from primer.api.registries.provider_registry import (
 )
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.common.entity_checks import EntityCheckError
 from primer.model.common import preserve_masked_secrets
+from primer.toolset.toolset_checks import check_python_toolset, own_python_source_version
 from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderProvider,
@@ -1343,24 +1345,17 @@ def _validate_python_toolset(entity: Toolset) -> None:
     missing. The RFC7807 extensions carry ``field`` and ``lineno`` so the
     console can point at the offending line.
     """
-    from primer.toolset.python_runner.registration import (
-        RegistrationError,
-        register_module,
-    )
-
-    config = entity.config
+    # The check is shared with the system tools (primer/toolset/toolset_checks.py); this re-raises exactly what it always raised.
     try:
-        register_module(
-            config.source, entity.id, config.default_timeout_seconds
-        )
-    except RegistrationError as exc:
+        check_python_toolset(entity)
+    except EntityCheckError as exc:
         raise HTTPException(
             status_code=422,
             detail={
-                "error": "invalid_python_toolset",
-                "message": str(exc),
+                "error": exc.code,
+                "message": exc.message,
                 "field": exc.field,
-                "lineno": exc.lineno,
+                "lineno": exc.extra["lineno"],
             },
         ) from exc
 
@@ -1385,11 +1380,7 @@ async def _toolset_on_pre_update(
     if entity.provider != ToolsetProviderType.PYTHON:
         return
     _validate_python_toolset(entity)
-    prior = existing.config if existing is not None else None
-    if prior is not None and getattr(prior, "source", None) == entity.config.source:
-        entity.config.source_version = prior.source_version
-    elif prior is not None:
-        entity.config.source_version = prior.source_version + 1
+    own_python_source_version(entity, existing)
 
 
 # ---- Toolset router --------------------------------------------------------
