@@ -3,7 +3,8 @@
 ``tests/session/test_session_writer_set.py`` pins the result of :func:`scan` against
 ``tests/session/session_writers.txt``. This module is pure ``ast`` over source files: it imports
 nothing from ``primer``, reads nothing but ``*.py`` under the root it is given, and its output is
-sorted, so two runs over the same tree are byte-identical.
+sorted, so two runs over the same tree are byte-identical. ``python -m tests._support.session_writer_scan
+[<package dir>]`` prints the result as JSON (default: the repo's ``primer/``), for reading a diff by eye.
 
 What a handle is
 ================
@@ -57,9 +58,11 @@ Limits (the scan is a tripwire, not a proof)
 It cannot see a handle that reaches a write through a container (``handles["s"].update``), through a
 dynamic ``getattr(handle, name)`` with a non-literal name, through a function that returns a handle
 only via a ``@property`` or a ``functools.partial``, through two classes sharing an attribute name
-without a base-class link, or through a call passed to a callee that the name match misses (an
-aliased import, ``getattr``, a callback table). Such a write is caught only when its receiver or
-argument LOOKS like a session or a whole-document copy (the unresolved rule above).
+without a base-class link, through a class that subclasses ``Storage[WorkspaceSession]`` and writes via
+``self`` / ``super()``, or through a call passed to a callee that the name match misses (an aliased
+import, ``*args`` / ``**kwargs`` forwarding, a callback table). It scans ``primer/`` only (nothing under
+``scripts/`` or ``runtime/`` references ``WorkspaceSession`` today). Such a write is caught only when
+its receiver or argument LOOKS like a session or a whole-document copy (the unresolved rule above).
 """
 
 from __future__ import annotations
@@ -71,7 +74,6 @@ import pathlib
 import re
 import sys
 from collections import defaultdict
-from collections.abc import Iterator
 from typing import Any
 
 SESSION_MODEL = "WorkspaceSession"
@@ -283,7 +285,6 @@ class _Module:
 
 class _Analysis:
     def __init__(self, root: pathlib.Path):
-        self.root = root
         self.modules: list[_Module] = []
         for path in sorted(root.rglob("*.py")):
             if "__pycache__" in path.parts:
@@ -412,10 +413,11 @@ class _Analysis:
         a = sc.node.args
         positional = [*a.posonlyargs, *a.args]
         defaults: dict[str, ast.AST] = dict(
-            zip((p.arg for p in positional[len(positional) - len(a.defaults):]), a.defaults)
+            zip((p.arg for p in positional[len(positional) - len(a.defaults):]), a.defaults,
+                strict=True)
         )
         defaults.update(
-            {p.arg: d for p, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None}
+            {p.arg: d for p, d in zip(a.kwonlyargs, a.kw_defaults, strict=True) if d is not None}
         )
         for p in sc.params():
             types = self._ann_types(p.annotation, sc.mod)
