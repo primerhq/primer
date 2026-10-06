@@ -9,7 +9,8 @@ Now the call runs as its own task and the Stop races it. The rules, each pinned 
 * an interruptible call is cancelled and given a bounded wait to unwind, so its own cleanup (the process-group kill) and
   any records it writes land BEFORE the answer; a non-interruptible one (a file write) is not cancelled, only waited for;
 * a call that will not go is ABANDONED: a strong reference keeps it from being collected mid-flight, a done-callback
-  retrieves its exception, and the abandon hook runs before the answer is recorded;
+  retrieves its exception, and its scope is flipped before the answer is recorded (the delegation recorder then drops
+  whatever the call, and every subagent it started, still emits);
 * a hard Cancel of the turn cancels the call, waits for it (shielded, bounded) and re-raises: it is never swallowed.
 """
 
@@ -49,9 +50,11 @@ async def _forever() -> None:
 @pytest.fixture(autouse=True)
 async def _no_leftovers():
     yield
-    # every abandoned task is let go and awaited, and no helper task may outlive the test. The wait is BOUNDED: a call that
-    # ignores a cancel only ends when its test releases it, and a test that failed before it got there must report its own
-    # failure here, not hang the teardown (the stubborn task is then dropped, and the loop's shutdown cancels it).
+    # every abandoned task is let go and awaited, and no helper task may outlive the test. The wait is BOUNDED, so a test
+    # that fails reports its own failure here instead of hanging the teardown. A call that ignores a cancel only ends when
+    # its test releases it, so EVERY such test releases it in a ``finally``; if one is somehow still stubborn here it is
+    # dropped from the set and skipped by the checks below, but it is NOT stopped (the loop's shutdown cancelling cannot
+    # end a task that swallows cancels, so it outlives the test: that is a bug in the test, which the finally prevents).
     abandoned = list(sc._ABANDONED)
     for task in abandoned:
         task.cancel()
