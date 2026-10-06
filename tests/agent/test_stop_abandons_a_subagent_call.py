@@ -17,8 +17,10 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-from primer.agent.call_scope import CallScope
+import pytest
+
 import primer.agent.stoppable_call as stoppable_call
+from primer.agent.call_scope import CallScope
 from primer.agent.invoke import run_subagent
 from primer.agent.loop import run_agent_turn
 from primer.model.agent import Agent, AgentModel
@@ -269,9 +271,11 @@ def _world(*, nested: bool):
     return storage, registry, _ParentManager(agent_id, storage, registry), stuck
 
 
-async def _stop_a_blocked_subagent(monkeypatch, *, nested: bool, with_the_abandon: bool):
-    """Run the parent turn, press Stop while the (innermost) subagent is blocked, and return what the log held at the answer
-    and what it held after the unresponsive subagent was finally let go."""
+async def _stop_a_blocked_subagent(monkeypatch, *, nested: bool, with_the_abandon: bool, how: str = "stop"):
+    """Run the parent turn, end it while the (innermost) subagent is blocked, and return what the log held at that point and
+    what it held after the unresponsive subagent was finally let go. ``how`` is ``"stop"`` (press Stop: the turn ends
+    cleanly with the call answered "interrupted") or ``"cancel"`` (a worker's hard Cancel: the turn task is cancelled and the
+    ``CancelledError`` leaves)."""
     monkeypatch.setattr(stoppable_call, "UNWIND_BOUND_S", 0.1)
     if not with_the_abandon:
         monkeypatch.setattr(CallScope, "abandon", lambda self: None)       # the control: nobody tells the recorder
@@ -296,9 +300,16 @@ async def _stop_a_blocked_subagent(monkeypatch, *, nested: bool, with_the_abando
         interrupt.set()
 
     try:
-        stopper = asyncio.create_task(press_stop())
-        await asyncio.wait_for(drive(), 5.0)
-        await stopper
+        if how == "stop":
+            stopper = asyncio.create_task(press_stop())
+            await asyncio.wait_for(drive(), 5.0)
+            await stopper
+        else:
+            turn = asyncio.create_task(drive())
+            await asyncio.wait_for(stuck.started.wait(), 3.0)
+            turn.cancel()                                    # the worker's hard Cancel
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(turn, 5.0)
         at_the_answer = len(writer.records)
 
         stuck.release.set()                                  # the unresponsive subagent finally carries on
@@ -309,6 +320,7 @@ async def _stop_a_blocked_subagent(monkeypatch, *, nested: bool, with_the_abando
         late = writer.records[at_the_answer:]
         return stuck, messages_out, interrupted, at_the_answer, len(writer.records), late
     finally:
+        stuck.release.set()                                  # a failing run must not leave the stubborn subagent hanging
         reset_delegation_sink(token)
 
 
@@ -361,6 +373,30 @@ async def test_the_nested_control_without_the_abandon_shows_late_records_tagged_
     )
 
     assert at_the_end > at_the_answer
+    assert INNER_CALL_ID in _tagged(late), f"no late record carried the inner call id: {_tagged(late)}"
+
+
+async def test_a_hard_cancel_abandons_a_nested_subagent_too_and_nothing_is_recorded_after_it(monkeypatch) -> None:
+    """The production hard-Cancel path (the worker cancels the turn task; no Stop is involved): the call that does not unwind
+    within the bound is abandoned through its scope, so neither the subagent nor the one it delegated to appends to the
+    parent log after the cancelled turn's ``CancelledError``."""
+    stuck, _, interrupted, at_the_end_of_the_turn, at_the_end, late = await _stop_a_blocked_subagent(
+        monkeypatch, nested=True, with_the_abandon=True, how="cancel",
+    )
+
+    assert stuck.cancels_swallowed >= 1, "the inner subagent was not cancelled: the test is not in the situation it is about"
+    assert interrupted == [], "a hard Cancel is not a Stop: the turn must not report an interruption"
+    assert at_the_end == at_the_end_of_the_turn, f"an abandoned subagent wrote after the cancelled turn: {_tagged(late)}"
+
+
+async def test_the_hard_cancel_control_without_the_abandon_shows_late_records(monkeypatch) -> None:
+    """The control for the test above: with nobody abandoning, what the unresponsive subagents emit once they carry on IS
+    appended after the cancelled turn."""
+    _, _, _, at_the_end_of_the_turn, at_the_end, late = await _stop_a_blocked_subagent(
+        monkeypatch, nested=True, with_the_abandon=False, how="cancel",
+    )
+
+    assert at_the_end > at_the_end_of_the_turn
     assert INNER_CALL_ID in _tagged(late), f"no late record carried the inner call id: {_tagged(late)}"
 
 

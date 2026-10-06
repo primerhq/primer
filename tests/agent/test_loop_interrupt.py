@@ -721,17 +721,23 @@ class TestANonInterruptibleCallIsWaitedFor:
             interrupt.set()
 
         asyncio.get_running_loop().create_task(stop_during_the_call())
-        _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
+        try:
+            _, messages_out, interrupted = await _drive(llm, interrupt=interrupt, manager=manager, stop_after=None)
 
-        assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [("tcA-0", PARKED_STOP, True)]
-        assert interrupted == [True]
-        assert manager.cancelled == 0, "a call that is not interruptible was cancelled"
-        assert len(stoppable_call._ABANDONED) == 1
+            assert [(p.id, p.output, p.error) for p in _tool_results(messages_out)] == [("tcA-0", PARKED_STOP, True)]
+            assert interrupted == [True]
+            assert manager.cancelled == 0, "a call that is not interruptible was cancelled"
+            assert len(stoppable_call._ABANDONED) == 1
 
-        gate.set()                                  # the write completes after the answer: nothing is torn
-        for _ in range(5):
-            await asyncio.sleep(0)
-        assert manager.finished == 1 and not stoppable_call._ABANDONED, "the abandoned call was not left to finish"
+            gate.set()                              # the write completes after the answer: nothing is torn
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert manager.finished == 1 and not stoppable_call._ABANDONED, "the abandoned call was not left to finish"
+        finally:
+            gate.set()                              # a failing run must not leave the abandoned call waiting
+            for task in list(stoppable_call._ABANDONED):
+                task.cancel()
+            stoppable_call._ABANDONED.clear()
 
 
 def _round_of(*calls: tuple[str, str]) -> list[StreamEvent]:

@@ -242,39 +242,43 @@ async def test_a_non_interruptible_call_is_not_cancelled_and_its_real_result_is_
     assert cancelled == []
 
 
-async def test_a_non_interruptible_call_past_the_grace_is_abandoned_with_the_hook_first(monkeypatch) -> None:
+async def test_a_non_interruptible_call_past_the_grace_is_abandoned_with_its_scope_flipped_before_the_answer(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(sc, "NON_INTERRUPTIBLE_GRACE_S", 0.1)
     release = asyncio.Event()
     started = asyncio.Event()
-    order: list[str] = []
+    scopes: list[CallScope | None] = []
 
     async def call() -> ToolResultPart:
+        scopes.append(current_call_scope())
         started.set()
         await release.wait()
         return _ok("late")
 
     interrupt = asyncio.Event()
-    run = asyncio.create_task(
-        run_stoppable(call, interrupt=interrupt, interruptible=_no, on_abandon=lambda: order.append("hook")),
-    )
-    await started.wait()
-    interrupt.set()
-    answer = await asyncio.wait_for(run, 3.0)
-    order.append("answered")
+    run = asyncio.create_task(run_stoppable(call, interrupt=interrupt, interruptible=_no))
+    try:
+        await started.wait()
+        assert scopes[0] is not None and not scopes[0].abandoned
+        interrupt.set()
+        answer = await asyncio.wait_for(run, 3.0)
 
-    assert answer is None
-    assert order == ["hook", "answered"], "the abandon hook must run before the answer is recorded"
-    assert len(sc._ABANDONED) == 1, "an abandoned call needs a strong reference"
-    release.set()
+        assert answer is None
+        assert scopes[0].abandoned, "the call's scope must be flipped by the time the answer is recorded"
+        assert len(sc._ABANDONED) == 1, "an abandoned call needs a strong reference"
+    finally:
+        release.set()
 
 
 async def test_an_interruptible_call_that_will_not_unwind_is_abandoned(monkeypatch) -> None:
     monkeypatch.setattr(sc, "UNWIND_BOUND_S", 0.1)
     release = asyncio.Event()
     started = asyncio.Event()
-    hooked: list[bool] = []
+    scopes: list[CallScope | None] = []
 
     async def call() -> ToolResultPart:
+        scopes.append(current_call_scope())
         started.set()
         while not release.is_set():
             try:
@@ -284,16 +288,16 @@ async def test_an_interruptible_call_that_will_not_unwind_is_abandoned(monkeypat
         return _ok("late")
 
     interrupt = asyncio.Event()
-    run = asyncio.create_task(
-        run_stoppable(call, interrupt=interrupt, interruptible=_yes, on_abandon=lambda: hooked.append(True)),
-    )
-    await started.wait()
-    interrupt.set()
+    run = asyncio.create_task(run_stoppable(call, interrupt=interrupt, interruptible=_yes))
+    try:
+        await started.wait()
+        interrupt.set()
 
-    assert await asyncio.wait_for(run, 3.0) is None
-    assert hooked == [True]
-    assert len(sc._ABANDONED) == 1
-    release.set()
+        assert await asyncio.wait_for(run, 3.0) is None
+        assert scopes[0] is not None and scopes[0].abandoned
+        assert len(sc._ABANDONED) == 1
+    finally:
+        release.set()
 
 
 async def test_an_abandoned_calls_error_is_retrieved_logged_and_its_reference_released(monkeypatch, caplog) -> None:
@@ -314,21 +318,22 @@ async def test_an_abandoned_calls_error_is_retrieved_logged_and_its_reference_re
 
     interrupt = asyncio.Event()
     run = asyncio.create_task(run_stoppable(call, interrupt=interrupt, interruptible=_no))
-    await started.wait()
-    interrupt.set()
-    assert await asyncio.wait_for(run, 3.0) is None
-    release.set()
-    for _ in range(5):
-        await asyncio.sleep(0)
-    gc.collect()
-    for _ in range(3):
-        await asyncio.sleep(0)
-
     try:
+        await started.wait()
+        interrupt.set()
+        assert await asyncio.wait_for(run, 3.0) is None
+        release.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        gc.collect()
+        for _ in range(3):
+            await asyncio.sleep(0)
+
         assert not sc._ABANDONED, "the strong reference was never released"
         assert unretrieved == [], f"asyncio complained: {unretrieved}"
         assert any("failed after being abandoned" in r.getMessage() for r in caplog.records)
     finally:
+        release.set()
         loop.set_exception_handler(None)
 
 
@@ -370,16 +375,18 @@ async def test_a_hard_cancel_is_reraised_even_when_the_call_ignores_it(monkeypat
         return _ok()
 
     run = asyncio.create_task(run_stoppable(call, interrupt=asyncio.Event(), interruptible=_yes))
-    await started.wait()
-    run.cancel()
+    try:
+        await started.wait()
+        run.cancel()
 
-    start = asyncio.get_running_loop().time()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(run, 3.0)
-    assert asyncio.get_running_loop().time() - start < 1.5, "the bounded wait was not bounded"
-    assert run.cancelled()
-    assert len(sc._ABANDONED) == 1, "the call that would not go is abandoned, not dropped"
-    release.set()
+        start = asyncio.get_running_loop().time()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, 3.0)
+        assert asyncio.get_running_loop().time() - start < 1.5, "the bounded wait was not bounded"
+        assert run.cancelled()
+        assert len(sc._ABANDONED) == 1, "the call that would not go is abandoned, not dropped"
+    finally:
+        release.set()
 
 
 async def test_a_second_cancel_during_the_shielded_wait_propagates_promptly() -> None:
@@ -396,29 +403,33 @@ async def test_a_second_cancel_during_the_shielded_wait_propagates_promptly() ->
         return _ok()
 
     run = asyncio.create_task(run_stoppable(call, interrupt=asyncio.Event(), interruptible=_yes))
-    await started.wait()
-    run.cancel()
-    await asyncio.sleep(0.05)
-    run.cancel()
+    try:
+        await started.wait()
+        run.cancel()
+        await asyncio.sleep(0.05)
+        run.cancel()
 
-    start = asyncio.get_running_loop().time()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(run, 3.0)
-    assert asyncio.get_running_loop().time() - start < 0.5, "a second cancel was held up by the shielded wait"
-    assert len(sc._ABANDONED) == 1
-    release.set()
+        start = asyncio.get_running_loop().time()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, 3.0)
+        assert asyncio.get_running_loop().time() - start < 0.5, "a second cancel was held up by the shielded wait"
+        assert len(sc._ABANDONED) == 1
+    finally:
+        release.set()
 
 
-async def test_a_hard_cancel_that_abandons_a_call_runs_the_abandon_hook_before_the_cancellation_leaves(monkeypatch) -> None:
+async def test_a_hard_cancel_that_abandons_a_call_flips_its_scope_before_the_cancellation_leaves(monkeypatch) -> None:
     """A worker Cancel (drain, lost lease, operator Cancel) hits the turn while a subagent call runs and does not unwind: the
-    abandon hook (which stops the delegation recorder taking what the subagent still emits) must run on THIS path too, or
-    the subagent writes to the log after the cancelled turn's terminal record."""
+    call's scope must be flipped on THIS path too (the delegation recorder drops what a flipped scope's tree still emits),
+    or the subagent writes to the log after the cancelled turn's terminal record. It is flipped by the time the
+    ``CancelledError`` leaves."""
     monkeypatch.setattr(sc, "UNWIND_BOUND_S", 0.1)
     release = asyncio.Event()
     started = asyncio.Event()
-    order: list[str] = []
+    scopes: list[CallScope | None] = []
 
     async def call() -> ToolResultPart:
+        scopes.append(current_call_scope())
         started.set()
         while not release.is_set():
             try:
@@ -427,40 +438,87 @@ async def test_a_hard_cancel_that_abandons_a_call_runs_the_abandon_hook_before_t
                 continue
         return _ok()
 
-    run = asyncio.create_task(
-        run_stoppable(call, interrupt=asyncio.Event(), interruptible=_yes, on_abandon=lambda: order.append("hook")),
-    )
+    run = asyncio.create_task(run_stoppable(call, interrupt=asyncio.Event(), interruptible=_yes))
     try:
         await started.wait()
+        assert scopes[0] is not None and not scopes[0].abandoned
         run.cancel()
 
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(run, 3.0)
-        order.append("left")
 
-        assert order == ["hook", "left"]
+        assert scopes[0].abandoned, "a call that outlived a hard Cancel was not abandoned"
     finally:
         release.set()
 
 
-async def test_a_hard_cancel_of_a_call_that_unwinds_in_time_does_not_run_the_abandon_hook() -> None:
+async def test_a_hard_cancel_of_a_call_that_unwinds_in_time_leaves_its_scope_alone() -> None:
     started = asyncio.Event()
-    hooked: list[bool] = []
+    scopes: list[CallScope | None] = []
 
     async def call() -> ToolResultPart:
+        scopes.append(current_call_scope())
         started.set()
         await _forever()
         return _ok()
 
-    run = asyncio.create_task(
-        run_stoppable(call, interrupt=asyncio.Event(), interruptible=_yes, on_abandon=lambda: hooked.append(True)),
-    )
+    run = asyncio.create_task(run_stoppable(call, interrupt=asyncio.Event(), interruptible=_yes))
     await started.wait()
     run.cancel()
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(run, 3.0)
-    assert hooked == []
+    assert scopes[0] is not None and not scopes[0].abandoned, "a call that unwound in time was marked abandoned"
+
+
+async def test_a_scope_never_leaks_into_the_callers_context_even_after_a_call_was_abandoned(monkeypatch) -> None:
+    """``run_stoppable`` is awaited INLINE here, in the test task (the loop awaits it in the turn task): the scope must be
+    bound inside the call TASK's own copy of the context. If it were bound in the caller's context it would stay there, every
+    later call's scope would chain to the abandoned one, and once call 1 was abandoned everything a later call (or the
+    next turn in the same task) delegates would be silently dropped."""
+    from primer.session.delegation import DelegationRecorder, reset_delegation_sink, set_delegation_sink
+
+    class _Writer:
+        def __init__(self) -> None:
+            self.records: list = []
+
+        async def append(self, rec) -> int:
+            self.records.append(rec)
+            return len(self.records)
+
+    class _Bus:
+        async def publish(self, key, payload) -> None:
+            return None
+
+    monkeypatch.setattr(sc, "NON_INTERRUPTIBLE_GRACE_S", 0.1)
+    release = asyncio.Event()
+    interrupt = asyncio.Event()
+
+    async def call_one() -> ToolResultPart:
+        await release.wait()
+        return _ok()
+
+    writer = _Writer()
+    token = set_delegation_sink(DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="s"))
+    try:
+        asyncio.get_running_loop().call_later(0.05, interrupt.set)
+        assert await run_stoppable(call_one, interrupt=interrupt, interruptible=_no) is None      # call 1 is abandoned
+        assert current_call_scope() is None, "an abandoned call's scope leaked into the caller's context"
+
+        async def call_two() -> ToolResultPart:
+            from primer.model.chat import Done, TextDelta
+            from primer.session.delegation import current_delegation_sink
+
+            sink = current_delegation_sink()
+            await sink.on_event(TextDelta(index=0, text="from call two"), delegate_tool_call_id="two")
+            await sink.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="two")
+            return _ok()
+
+        await run_stoppable(call_two, interrupt=asyncio.Event(), interruptible=_yes)
+        assert writer.records, "a later call's delegated records were dropped: it inherited the abandoned call's scope"
+    finally:
+        release.set()
+        reset_delegation_sink(token)
 
 
 def test_the_unwind_bound_has_a_margin_over_the_mcp_stdio_termination_timeout() -> None:
