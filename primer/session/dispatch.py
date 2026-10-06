@@ -2455,7 +2455,7 @@ async def _publish_terminal(
         )
 
 
-def _snapshot_resolver(deps: "SessionDispatchDeps"):
+def _snapshot_resolver(storage_provider):
     """Resolve the live definition of a switch's incoming target.
 
     Returns None when the row is gone rather than raising, so a switch
@@ -2469,10 +2469,10 @@ def _snapshot_resolver(deps: "SessionDispatchDeps"):
 
         try:
             if getattr(binding, "kind", None) == "graph":
-                return await deps.storage_provider.get_storage(Graph).get(
+                return await storage_provider.get_storage(Graph).get(
                     binding.graph_id
                 )
-            return await deps.storage_provider.get_storage(Agent).get(
+            return await storage_provider.get_storage(Agent).get(
                 binding.agent_id
             )
         except Exception:  # noqa: BLE001 - a missing target is not fatal
@@ -2495,25 +2495,38 @@ async def _apply_pending_switch_at_checkpoint(
     already terminated and released its lease. The request stays queued
     and applies at the next checkpoint.
     """
+    await apply_queued_binding_switch(
+        storage_provider=deps.storage_provider, workspace_io=deps.workspace_io, session_id=session.id,
+    )
+
+
+async def apply_queued_binding_switch(*, storage_provider, workspace_io, session_id: str) -> None:
+    """Apply the switch queued on a session's row, if any. Best effort: a failure is logged and the request stays queued.
+
+    The body of the drain checkpoint, callable without a ``SessionDispatchDeps``: the pool's ``_end_session`` ends a
+    session whose resume failed, and no checkpoint runs on that exit, so it applies the switch itself (a switch
+    queued on a parked session otherwise survives on the ENDED row and the user's next message, after a reopen, is
+    answered by the OUTGOING binding).
+    """
     try:
-        sessions = deps.storage_provider.get_storage(WorkspaceSession)
-        fresh = await sessions.get(session.id)
+        sessions = storage_provider.get_storage(WorkspaceSession)
+        fresh = await sessions.get(session_id)
         if fresh is None or fresh.pending_binding_switch is None:
             return
         from primer.session.binding_switch import apply_binding_switch
 
         await apply_binding_switch(
             sessions=sessions,
-            workspace_io=deps.workspace_io,
+            workspace_io=workspace_io,
             row=fresh,
             request=fresh.pending_binding_switch,
             actor=str(fresh.pending_binding_switch.get("actor") or "system"),
-            resolve_snapshot=_snapshot_resolver(deps),
+            resolve_snapshot=_snapshot_resolver(storage_provider),
         )
     except Exception:
         logger.exception(
-            "drain checkpoint: applying a queued binding switch failed for %s",
-            session.id,
+            "applying a queued binding switch failed for %s; it stays queued for the next checkpoint",
+            session_id,
         )
 
 
