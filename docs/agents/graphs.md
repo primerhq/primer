@@ -98,7 +98,14 @@ level** (there is no `config` wrapper).
   **string leaves are each Jinja-rendered** against the context;
   non-string leaves pass through), or `arguments_template` (a
   full-JSON Jinja template that shadows `arguments` for dynamic
-  shapes), optional `output_schema`.
+  shapes), optional `output_schema`. A tool that fails fails the node:
+  whether it raises or returns an error result (bad arguments, an
+  unavailable tool, a backend error), the node ends `failed` with code
+  `tool_execution_failed` and the tool's own output as the error, and
+  nothing downstream sees that output as data (inside a `fan_out` with
+  `on_failure: collect` only that instance is marked failed).
+  `tool_output_invalid` is for a tool that SUCCEEDED but whose output does
+  not conform to `output_schema`.
 - **`graph`** - delegates to another stored Graph (sub-graph). Fields:
   `graph_id`, `input_template` (rendered to the sub-graph's input).
   The reference resolves at execution time, so edits to the sub-graph
@@ -479,7 +486,10 @@ testing whether the critic has run yet (`nodes.critique is defined`) -
 directly (no agent turn), and a writer answers from the results. The
 tool's `arguments` are templated per leaf: the string `query` is
 rendered from the planner's structured output; the non-string
-`max_results` passes through unchanged.
+`max_results` passes through unchanged. If the search itself fails (the
+backend is down, the query is rejected), the `search` node fails with
+`tool_execution_failed` and the run ends `failed`: the writer is never
+handed an error message as if it were results.
 
 ```json
 {
