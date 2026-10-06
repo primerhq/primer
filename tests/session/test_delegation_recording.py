@@ -58,6 +58,33 @@ async def test_subagent_events_become_delegated_records():
     assert b.published[0][0] == "session:s:tick"
 
 
+async def test_the_run_id_the_parent_run_and_the_depth_are_stamped_when_given():
+    """Raw call ids are not unique (a child's own call can reuse its parent's), so what tells two runs apart is a run id minted
+    when the run starts, with the id of the run whose call delegated to it and the nesting depth."""
+    w, b = _Writer(), _Bus()
+    rec = DelegationRecorder(writer=w, event_bus=b, session_id="s")
+    await rec.on_event(
+        Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_0",
+        delegate_run_id="run-2", delegate_parent_run_id="run-1", delegate_depth=2,
+    )
+    (r,) = w.records
+    assert r.payload["delegate_tool_call_id"] == "call_0"
+    assert r.payload["delegate_run_id"] == "run-2"
+    assert r.payload["delegate_parent_run_id"] == "run-1"
+    assert r.payload["delegate_depth"] == 2
+
+
+async def test_nothing_is_stamped_for_what_is_not_given():
+    """A direct delegation of the parent turn has no parent run; a caller that predates the ids passes none of them."""
+    w, b = _Writer(), _Bus()
+    rec = DelegationRecorder(writer=w, event_bus=b, session_id="s")
+    await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_0", delegate_run_id="run-1", delegate_depth=1)
+    await rec.on_event(Done(stop_reason="stop", raw_reason="stop"), delegate_tool_call_id="call_0")
+    direct, legacy = (r.payload for r in w.records)
+    assert "delegate_parent_run_id" not in direct and direct["delegate_run_id"] == "run-1"
+    assert not {"delegate_run_id", "delegate_parent_run_id", "delegate_depth"} & set(legacy)
+
+
 async def test_records_are_event_log_lines_not_llm_history():
     """The stamps ride SessionMessageRecords, which the history reader
     never admits: only role/parts Message lines rebuild a prompt. That
