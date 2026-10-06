@@ -1490,7 +1490,6 @@ async def switch_session_binding(
     from primer.model.agent import Agent
     from primer.model.graph import Graph
     from primer.session.abandon import abandon_session_gate
-    from primer.session.binding_switch import apply_binding_switch
     from primer.worker.io_shim import _WorkspaceIOShim
 
     sessions = storage_provider.get_storage(WorkspaceSession)
@@ -1546,13 +1545,10 @@ async def switch_session_binding(
                 row=fresh,
                 reason="binding switched",
             )
-            return await apply_binding_switch(
-                sessions=sessions,
-                workspace_io=io_shim,
-                row=abandoned,
-                request=request,
-                actor="user",
-                resolve_snapshot=_resolve,
+            return await _apply_switch_in_lock(
+                sessions=sessions, workspace_io=io_shim, row=abandoned, request=request,
+                resolve_snapshot=_resolve, guard={"parked_status": [None]},
+                changed="the session changed after its gate was closed; the gate is closed and the switch was not applied, retry",
             )
 
     if row.turn_status in ("claimable", "running"):
@@ -1560,14 +1556,53 @@ async def switch_session_binding(
         await sessions.update(queued)
         return queued
 
-    return await apply_binding_switch(
-        sessions=sessions,
-        workspace_io=io_shim,
-        row=row,
-        request=request,
-        actor="user",
-        resolve_snapshot=_resolve,
-    )
+    # An idle session switches under the lifecycle lock, from a row read INSIDE it, by the shared protocol (reserve the
+    # marker's seq, append, one fenced write): a steer that took the next seq or armed a turn since the read above
+    # rejects the reservation and nothing is written (409), instead of the marker repeating the steer's seq and the
+    # whole-row write erasing its armed turn.
+    async with session_lifecycle_lock().acquire(session_id):
+        fresh = await sessions.get(session_id)
+        if fresh is None:
+            raise NotFoundError(f"Session {session_id!r} does not exist")
+        if fresh.status is SessionStatus.ENDED:
+            raise ConflictError(f"session {session_id!r} has ended; reopen it before switching")
+        if fresh.turn_status != "idle" or fresh.parked_status is not None:
+            raise ConflictError(
+                f"session {session_id!r} started a turn while the switch was being applied; nothing was changed, retry"
+            )
+        return await _apply_switch_in_lock(
+            sessions=sessions, workspace_io=io_shim, row=fresh, request=request, resolve_snapshot=_resolve,
+            guard={"turn_status": ["idle"], "parked_status": [None]},
+            changed="the session changed while the switch was being applied; nothing was changed, retry",
+        )
+
+
+async def _apply_switch_in_lock(
+    *, sessions, workspace_io, row, request, resolve_snapshot, guard, changed: str,
+) -> WorkspaceSession:
+    """Run the shared switch protocol from a route that already holds the session's lifecycle lock.
+
+    Bounded by ``mutation_lock.IN_LOCK_IO_TIMEOUT_S`` (an unreachable workspace must not hold the lock every Cancel and
+    steer of the session queue behind); a timeout or a rejected reservation is a 409 and the switch was not applied.
+    """
+    import asyncio
+
+    from primer.session import mutation_lock
+    from primer.session.binding_switch import apply_binding_switch
+
+    try:
+        async with asyncio.timeout(mutation_lock.IN_LOCK_IO_TIMEOUT_S):
+            applied = await apply_binding_switch(
+                sessions=sessions, workspace_io=workspace_io, row=row, request=request, actor="user",
+                resolve_snapshot=resolve_snapshot, guard=guard,
+            )
+    except TimeoutError:
+        raise ConflictError(
+            "the workspace did not answer in time; the switch was not applied, retry"
+        ) from None
+    if applied is None:
+        raise ConflictError(changed)
+    return applied
 
 
 class ResponseFormatBody(BaseModel):
