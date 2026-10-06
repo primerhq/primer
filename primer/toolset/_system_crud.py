@@ -50,6 +50,14 @@ from primer.toolset._system_common import (
     _parse_page,
 )
 from primer.toolset._helpers import err as _err
+from primer.toolset._system_guards import (
+    CrudGuards,
+    refuse_create,
+    refuse_delete,
+    refuse_delete_id,
+    refuse_delete_if_referenced,
+    refuse_update,
+)
 from primer.toolset.internal import ToolHandler
 
 
@@ -259,8 +267,12 @@ def _crud_tools_for(
     on_update: _OnMutate = None,
     on_delete: _OnMutate = None,
     required_role: str | None = None,
+    guards: CrudGuards | None = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
+
+    ``guards`` declares what the entity's REST router guards (harness-managed rows, reserved ids, references that block a
+    delete; see :mod:`primer.toolset._system_guards`); ``None`` is no guards.
 
     Create/update use a self-contained wrapper-model schema (built via
     ``_create_schema`` / ``_update_schema``) so the embedded ``$defs``
@@ -271,6 +283,7 @@ def _crud_tools_for(
     cls_name = model_cls.__name__
     tools: dict[str, tuple[Tool, ToolHandler]] = {}
     hint = _hint(entity_label)
+    guards = guards or CrudGuards(kind=entity_label)
 
     # ---- list ---------------------------------------------------------
     async def _list_handler(arguments: dict[str, Any]) -> ToolCallResult:
@@ -352,6 +365,9 @@ def _crud_tools_for(
             entity = model_cls.model_validate(body)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        refusal = refuse_create(guards, entity)
+        if refusal is not None:
+            return refusal
         existing = await storage.get(entity.id)
         if existing is not None:
             return _err(
@@ -416,6 +432,9 @@ def _crud_tools_for(
             return _err(
                 f"{cls_name} {entity_id!r} does not exist", error_type="not-found"
             )
+        refusal = refuse_update(guards, entity, existing)
+        if refusal is not None:
+            return refusal
         # get_* serves every SecretStr masked and this is a full replace, so a caller that reads a row and writes it
         # back (an agent changing one field) would store the mask as the credential. The REST routers run the same
         # helper as an on_pre_update hook; a secret the caller really changed still replaces the stored one.
@@ -471,11 +490,20 @@ def _crud_tools_for(
             args = _DeleteByIdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # A reserved id is protected whether or not a row exists, so this runs before the lookup (REST's on_pre_delete_id).
+        refusal = refuse_delete_id(guards, args.id)
+        if refusal is not None:
+            return refusal
         existing = await storage.get(args.id)
         if existing is None:
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
+        refusal = refuse_delete(guards, existing)
+        if refusal is None:
+            refusal = await refuse_delete_if_referenced(guards, existing, storage_provider)
+        if refusal is not None:
+            return refusal
         try:
             await storage.delete(args.id)
         except PrimerError as exc:

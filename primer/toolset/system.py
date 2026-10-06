@@ -110,12 +110,14 @@ from primer.trigger.service import (
     get_trigger,
     list_subscriptions,
 )
+from primer.model.storage import Op
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.workspace import (
     Workspace,
     WorkspaceChannelLink,
 )
 from primer.model.yield_ import ToolContext, Yielded
+from primer.toolset._system_guards import CrudGuards, ToolReference
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 # Re-exported helpers / argument models / parsers (shared surface).
@@ -221,6 +223,64 @@ def build_system_toolset(
         if semantic_search_registry is not None:
             await semantic_search_registry.invalidate(eid)
 
+    async def _inv_mp(eid: str) -> None:
+        # The ModelProfile REST router drops the profile's cached AggregatedLLM on every update and delete (a no-op when
+        # it was never cached), so the next resolve rebuilds it from the row's current members and routing policy.
+        await provider_registry.invalidate_aggregated_llm(eid)
+
+    # ---- Guards the REST routers carry (task 01a111d1, D5 phase 1) ------
+    # Imported here, not at module level: the registries import toolsets, so a module-level import would be a cycle.
+    from primer.api.registries.artifact_storage_registry import DEFAULT_ARTIFACT_PROVIDER_ID
+    from primer.api.registries.provider_registry import (
+        RESERVED_CROSS_ENCODER_IDS,
+        RESERVED_EMBEDDER_IDS,
+        RESERVED_LLM_IDS,
+        RESERVED_SSP_IDS,
+        RESERVED_TOOLSET_SCOPE_IDS,
+    )
+
+    guards_by_label: dict[str, CrudGuards] = {
+        # harness-managed rows (REST ``managed_by_field="harness_id"``)
+        "agent": CrudGuards(kind="agent", managed_by_field="harness_id"),
+        "graph": CrudGuards(kind="graph", managed_by_field="harness_id"),
+        "collection": CrudGuards(kind="collection", managed_by_field="harness_id"),
+        "model_profile": CrudGuards(
+            kind="model_profile",
+            managed_by_field="harness_id",
+            references=(
+                ToolReference("agent", Agent, "model.profile_id"),
+                ToolReference("model_profile (aggregate member)", ModelProfile, "members", op=Op.CONTAINS),
+            ),
+        ),
+        "toolset": CrudGuards(
+            kind="toolset",
+            managed_by_field="harness_id",
+            reserved_create_ids=RESERVED_TOOLSET_SCOPE_IDS,
+            references=(ToolReference("tool_approval_policy", ToolApprovalPolicy, "toolset_id"),),
+        ),
+        # reserved bootstrap ids (REST: create 409, delete 403)
+        "llm_provider": CrudGuards(
+            kind="llm_provider", reserved_create_ids=RESERVED_LLM_IDS, reserved_delete_ids=RESERVED_LLM_IDS,
+        ),
+        "embedding_provider": CrudGuards(
+            kind="embedding_provider", reserved_create_ids=RESERVED_EMBEDDER_IDS, reserved_delete_ids=RESERVED_EMBEDDER_IDS,
+        ),
+        "cross_encoder_provider": CrudGuards(
+            kind="cross_encoder_provider",
+            reserved_create_ids=RESERVED_CROSS_ENCODER_IDS,
+            reserved_delete_ids=RESERVED_CROSS_ENCODER_IDS,
+        ),
+        "semantic_search_provider": CrudGuards(
+            kind="semantic_search_provider", reserved_create_ids=RESERVED_SSP_IDS, reserved_delete_ids=RESERVED_SSP_IDS,
+        ),
+        "artifact_storage_provider": CrudGuards(
+            kind="artifact_storage_provider", reserved_delete_ids=frozenset({DEFAULT_ARTIFACT_PROVIDER_ID}),
+        ),
+        "channel_provider": CrudGuards(
+            kind="channel_provider", references=(ToolReference("channel", Channel, "provider_id"),),
+        ),
+    }
+
     # ---- CRUD sets ----------------------------------------------------
     # Note: VectorStoreConfig was removed from this set when vector
     # store configuration moved into AppConfig (it is no longer a
@@ -234,7 +294,7 @@ def build_system_toolset(
         ("llm_provider", "llm_providers", LLMProvider, None, _inv_llm, _inv_llm, "admin"),
         # A profile names a provider and its API-level tunables, so it is
         # provider configuration => admin, matching its REST router.
-        ("model_profile", "model_profiles", ModelProfile, None, None, None, "admin"),
+        ("model_profile", "model_profiles", ModelProfile, None, _inv_mp, _inv_mp, "admin"),
         ("embedding_provider", "embedding_providers", EmbeddingProvider, None, _inv_emb, _inv_emb, "admin"),
         ("cross_encoder_provider", "cross_encoder_providers", CrossEncoderProvider, None, _inv_ce, _inv_ce, "admin"),
         ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts, "user"),
@@ -260,6 +320,7 @@ def build_system_toolset(
                 on_update=on_u,
                 on_delete=on_d,
                 required_role=role,
+                guards=guards_by_label.get(label),
             )
         )
 

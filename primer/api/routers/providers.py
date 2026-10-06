@@ -63,6 +63,7 @@ from primer.api.registries.provider_registry import (
     RESERVED_CROSS_ENCODER_IDS,
     RESERVED_EMBEDDER_IDS,
     RESERVED_LLM_IDS,
+    RESERVED_TOOLSET_SCOPE_IDS,
 )
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
@@ -99,7 +100,7 @@ logger = logging.getLogger(__name__)
 # the invoker-supplied per-invocation tool scope; ``workspace`` /
 # ``workspace_ext`` are the workspace-tool scopes composed by the tool
 # manager. None of them may exist as stored Toolset rows.
-RESERVED_TOOLSET_IDS = frozenset({"external", "workspace", "workspace_ext"})
+RESERVED_TOOLSET_IDS = RESERVED_TOOLSET_SCOPE_IDS
 
 
 def _make_reserved_create_guard(reserved_ids: frozenset[str], kind: str):
