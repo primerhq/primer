@@ -283,8 +283,9 @@ WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
 - `session_completed_turn_noop_total` (no labels) counts session claims that found the previous turn completed
   (`completed_turn_no == turn_no`) but its release never committed, and released without calling the model
   again (`_noop_if_turn_already_completed` in `primer/session/dispatch.py`; see `docs/dev/subsystems/sessions.md`).
-  That includes a claim whose arming patch was refused because another process had just paused or ended the row,
-  which releases it without running the turn. Each one is a turn that would otherwise have run twice; a steady rate points at releases being abandoned at the
+  That includes a claim that finds the row PAUSED or ENDED by another process (at the guard's first read or after a
+  refused arming patch), which releases it without running the turn; a row that is gone (deleted) is NOT counted, it
+  gets the vanished-before-dispatch outcome. Each one is a turn that would otherwise have run twice; a steady rate points at releases being abandoned at the
   worker's release bound (`primer_worker_release_timeouts_total`) or failing.
 - `llm_count_tokens_total{provider_id,source,outcome}` and
   `llm_count_tokens_seconds{provider_id,source}` are written by

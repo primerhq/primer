@@ -64,7 +64,11 @@ class ReleaseOutcome:
     # turn_no on success (the session adapter's preserve-park branch). Used
     # by the pause-while-parked path: the operator paused a resumable session,
     # so the lease drops but the park is retained for a later /resume to
-    # replay. Mutually exclusive with ``park`` (which re-parks instead).
+    # replay. Three producers set it: the pause exit of run_one_session_turn
+    # (primer/session/dispatch.py), WorkerPool._pause_session
+    # (primer/worker/pool.py), and the completed-turn guard's PAUSED no-op
+    # (_release_settled_row in primer/session/dispatch.py). Mutually exclusive
+    # with ``park`` (which re-parks instead).
     preserve_park: bool = False
     # When True, the ENGINE gives the lease back (drop it with ``drop_lease``, or requeue it) and
     # does NOT call the kind's ``adapter.on_release`` at all: the entity row is not read or written.
