@@ -916,9 +916,14 @@ async def _dispatch_to_channels(
     """Fan a parked-on-user-input session out to every channel
     associated with the session's workspace.
 
-    Fire-and-forget at the call site (the worker schedules this
-    on the event loop). Internal errors are logged; this function
-    never raises.
+    AWAITED at the call site, on the lease-holding turn, so delivery is
+    attempted before the lease drops (docs/dev/subsystems/channels.md: it
+    is not scheduled as a separate task). A failure of the dispatcher
+    itself (``dispatch_prompt``) is logged and swallowed. It does NOT
+    "never raise": building the prompt envelope and reading an ask_user's
+    ``files`` into media run before that ``try`` (``_resolve_files_to_media``
+    only guards the registry lookups), and an error there propagates to the
+    caller. No-ops when no dispatcher is wired.
     """
     import logging
     if dispatcher is None:
