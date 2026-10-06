@@ -340,9 +340,11 @@ async def test_flip_external_row_leaves_a_terminal_row_alone(provider) -> None:
 
 async def test_flip_external_row_swallows_a_missing_row_and_a_storage_error(provider, monkeypatch, caplog) -> None:
     calls = provider.get_storage(ExternalToolCall)
-    # no row id, and a row that does not exist: nothing to resolve, nothing raised
-    await flip_external_row(calls, row_id=None, status="cancelled", result={"cancelled": True})
-    await flip_external_row(calls, row_id="etool-missing", status="cancelled", result={"cancelled": True})
+    # no row id, and a row that does not exist: nothing to resolve, nothing raised, and nothing logged as a failure
+    with caplog.at_level("ERROR", logger="primer.session.external_calls"):
+        await flip_external_row(calls, row_id=None, status="cancelled", result={"cancelled": True})
+        await flip_external_row(calls, row_id="etool-missing", status="cancelled", result={"cancelled": True})
+    assert [r for r in caplog.records if r.name == "primer.session.external_calls"] == []
 
     await calls.create(_call("etool-1", "tc-1"))
 
