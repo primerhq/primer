@@ -117,7 +117,7 @@ from primer.model.workspace import (
     WorkspaceChannelLink,
 )
 from primer.model.yield_ import ToolContext, Yielded
-from primer.toolset._system_guards import CrudGuards, ToolReference
+from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 # Re-exported helpers / argument models / parsers (shared surface).
@@ -242,8 +242,8 @@ def build_system_toolset(
 
     guards_by_label: dict[str, CrudGuards] = {
         # harness-managed rows (REST ``managed_by_field="harness_id"``)
-        "agent": CrudGuards(kind="agent", managed_by_field="harness_id"),
-        "graph": CrudGuards(kind="graph", managed_by_field="harness_id"),
+        "agent": AGENT_GUARDS,
+        "graph": GRAPH_GUARDS,
         "collection": CrudGuards(kind="collection", managed_by_field="harness_id"),
         "model_profile": CrudGuards(
             kind="model_profile",

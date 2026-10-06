@@ -14,8 +14,8 @@ expressible in one place.
 Tool catalog (9 tools, none yielding)
 -------------------------------------
 
-* ``create_agent`` / ``update_agent``     - primer/toolset/_system_crud.py
-* ``create_graph`` / ``update_graph``     - primer/toolset/_system_crud.py
+* ``create_agent`` / ``update_agent``     - primer/toolset/_system_crud.py (managed-row guard: ``AGENT_GUARDS``)
+* ``create_graph`` / ``update_graph``     - primer/toolset/_system_crud.py (managed-row guard: ``GRAPH_GUARDS``)
 * ``create_trigger`` / ``update_trigger`` - primer/toolset/trigger.py
 * ``create_python_toolset`` / ``update_python_toolset_source`` /
   ``list_python_tools``                   - primer/toolset/_python_tools.py
@@ -34,6 +34,7 @@ from primer.model.chat import Tool
 from primer.model.graph import Graph
 from primer.toolset._python_tools import build_python_toolset_tools
 from primer.toolset._system_crud import _crud_tools_for
+from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.toolset.trigger import (
     TOOL_CREATE as _TRIGGER_CREATE,
@@ -74,16 +75,19 @@ def build_crud_toolset(
     """Construct the immutable ``crud`` toolset."""
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
 
-    for label, plural, model_cls in (
-        ("agent", "agents", Agent),
-        ("graph", "graphs", Graph),
+    for label, plural, model_cls, guards in (
+        ("agent", "agents", Agent, AGENT_GUARDS),
+        ("graph", "graphs", Graph, GRAPH_GUARDS),
     ):
+        # The factory's default is NO guards, so they are passed here: a builder must not be able to create a row that claims a
+        # harness, or edit and release a managed one, through a scope the system toolset's own guards do not cover.
         produced = _crud_tools_for(
             entity_label=label,
             entity_label_plural=plural,
             model_cls=model_cls,
             storage_provider=storage_provider,
             required_role="user",
+            guards=guards,
         )
         for bare in (f"create_{label}", f"update_{label}"):
             tool, handler = produced[bare]
