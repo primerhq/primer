@@ -5,7 +5,7 @@ tools re-implemented the six verbs with none of them (the audit behind this file
 real toolset). Through a tool an agent could create, edit and delete harness-managed rows, create and delete the reserved
 bootstrap providers, and delete a model profile that agents still use. This pins the same behaviour as REST for each:
 
-* **managed rows** (agent, collection, model_profile, toolset): a body that sets ``harness_id`` is refused on create; an update or a
+* **managed rows** (agent, graph, collection, model_profile, toolset): a body that sets ``harness_id`` is refused on create; an update or a
   delete of a row that has one is refused (REST 422 / 409 / 409), and so is SETTING it on an unmanaged row (stricter than REST,
   which only looks at the stored row; a tool must not claim a row for a harness);
 * **reserved ids**: creating a reserved id is a conflict, deleting one is forbidden even when no row exists (REST 409 / 403),
@@ -28,6 +28,7 @@ from primer.api.registries import ProviderRegistry
 from primer.model.agent import Agent
 from primer.model.channel import Channel, ChannelProvider, ChannelProviderType, SlackChannelProviderConfig
 from primer.model.collection import Collection
+from primer.model.graph import Graph
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import (
     ArtifactStorageProvider,
@@ -83,6 +84,7 @@ def _profile(profile_id: str = "mp-1", **fields) -> ModelProfile:
 # kind -> (model class, a valid body for it, the id inside the body)
 MANAGED_KINDS = {
     "agent": (Agent, lambda: _agent().model_dump(mode="json"), "agt-1"),
+    "graph": (Graph, lambda: Graph(id="gr-1", description="a draft graph").model_dump(mode="json"), "gr-1"),
     "collection": (Collection, lambda: _collection().model_dump(mode="json"), "kb-1"),
     "model_profile": (ModelProfile, lambda: _profile().model_dump(mode="json"), "mp-1"),
     "toolset": (Toolset, _toolset_body, "ts-1"),
