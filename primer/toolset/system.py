@@ -143,6 +143,7 @@ from primer.toolset._system_crud import (
     _crud_tools_for,
     _document_extras,
     _document_service_factory,
+    _document_tree_factory,
     _EntityHint,
     _ENTITY_HINTS,
     _fetch_models_tool,
@@ -679,13 +680,21 @@ def build_system_toolset(
             semantic_search_registry=semantic_search_registry,
         )
     )
+    # Registered AFTER the generic CRUD loop on purpose: the document create/update/delete tools in here REPLACE the generic
+    # row-level ones of the same ids (see ``_document_write_tools``).
     registry.update(
         _document_extras(
             service_factory=_document_service_factory(
                 storage_provider=storage_provider,
                 provider_registry=provider_registry,
                 semantic_search_registry=semantic_search_registry,
-            )
+            ),
+            storage_provider=storage_provider,
+            tree_factory=_document_tree_factory(
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+            ),
         )
     )
 

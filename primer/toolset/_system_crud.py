@@ -30,6 +30,7 @@ from primer.toolset._helpers import ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.common import Identifiable, preserve_masked_secrets
 from primer.model.except_ import (
+    BadRequestError,
     ConflictError,
     PrimerError,
     NotFoundError,
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
     from primer.api.registries.semantic_search_registry import SemanticSearchRegistry
     from primer.int.storage_provider import StorageProvider
     from primer.knowledge.document_service import DocumentService
+    from primer.knowledge.tree import DocumentTreeService
 
 
 logger = logging.getLogger("primer.toolset.system")
@@ -1340,11 +1342,302 @@ def _document_service_factory(
     return _build
 
 
+def _document_tree_factory(
+    *,
+    storage_provider: "StorageProvider",
+    provider_registry: "ProviderRegistry",
+    semantic_search_registry: "SemanticSearchRegistry | None",
+) -> "Callable[[], DocumentTreeService]":
+    """Return a lazily-memoised builder for the :class:`DocumentTreeService` the document write tools delegate to.
+
+    Wired like the collections toolset's: with a SemanticSearchRegistry (search on) the service gets the best-effort indexer,
+    unindexer and path rewriter of :mod:`primer.knowledge.indexing`, so a write through a tool reaches the vector store the
+    way the REST tree routes' does. Construction is deferred to first use, like :func:`_document_service_factory`, so building
+    the toolset over a provider with no content store (in-memory unit-test fakes) never touches ``get_content_store``.
+    """
+    cached: dict[str, "DocumentTreeService"] = {}
+
+    def _build() -> "DocumentTreeService":
+        if "svc" in cached:
+            return cached["svc"]
+        from primer.knowledge.indexing import (
+            make_document_indexer,
+            make_document_path_rewriter,
+            make_document_unindexer,
+        )
+        from primer.knowledge.tree import DocumentTreeService
+
+        indexer = unindexer = rewriter = None
+        if semantic_search_registry is not None:
+            unindexer = make_document_unindexer(
+                storage_provider=storage_provider, semantic_search_registry=semantic_search_registry,
+            )
+            rewriter = make_document_path_rewriter(
+                storage_provider=storage_provider, semantic_search_registry=semantic_search_registry,
+            )
+            indexer = make_document_indexer(
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+            )
+        svc = DocumentTreeService(
+            storage_provider, indexer=indexer, unindexer=unindexer, path_rewriter=rewriter,
+        )
+        cached["svc"] = svc
+        return svc
+
+    return _build
+
+
+def _document_error(exc: PrimerError) -> ToolCallResult:
+    if isinstance(exc, NotFoundError):
+        return _err_from_primer(exc, error_type="not-found")
+    if isinstance(exc, ConflictError):
+        return _err_from_primer(exc, error_type="conflict")
+    if isinstance(exc, BadRequestError):
+        return _err_from_primer(exc, error_type="bad-request")
+    return _err_from_primer(exc, error_type="storage-error")
+
+
+def _document_write_tools(
+    *,
+    storage_provider: "StorageProvider",
+    tree_factory: "Callable[[], DocumentTreeService]",
+) -> dict[str, tuple[Tool, ToolHandler]]:
+    """``create_document`` / ``update_document`` / ``delete_document``, delegating to the document tree service.
+
+    These replace the generic row-level CRUD tools of the same ids, which wrote only the ``Document`` entity row and so left a
+    created document unreadable, unlisted and unindexed, and a deleted one behind as a ghost (its content row and chunks stayed,
+    and its path could never be written again). Ruling for task 01a111d1 (D3): create ignores the caller's id (the service mints
+    it), update changes title and meta only, and all three refuse system collections and harness-managed rows, as the REST
+    routes do.
+    """
+    docs = storage_provider.get_storage(Document)
+    collections = storage_provider.get_storage(Collection)
+    out: dict[str, tuple[Tool, ToolHandler]] = {}
+
+    async def _refuse_unwritable(collection_id: str, *, harness_id: str | None) -> ToolCallResult | None:
+        coll = await collections.get(collection_id)
+        if coll is not None and coll.system:
+            return _err(
+                f"collection {collection_id!r} is system-owned and read-only", error_type="forbidden",
+            )
+        if harness_id is not None:
+            return _err(
+                f"this document is managed by harness {harness_id!r}; change it through the harness",
+                error_type="conflict",
+            )
+        return None
+
+    # ---- create -------------------------------------------------------
+    async def _create(arguments: dict[str, Any]) -> ToolCallResult:
+        body = arguments.get("entity")
+        if body is None:
+            return _err("missing required argument 'entity'", error_type="bad-request")
+        try:
+            entity = Document.model_validate(body)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        if await collections.get(entity.collection_id) is None:
+            return _err(f"collection {entity.collection_id!r} does not exist", error_type="not-found")
+        refusal = await _refuse_unwritable(entity.collection_id, harness_id=None)
+        if refusal is not None:
+            return refusal
+        if entity.harness_id is not None:
+            return _err(
+                "harness_id is set by the harness that manages a document and cannot be set here",
+                error_type="bad-request",
+            )
+        parent_path = ""
+        if entity.parent_id is not None:
+            parent = await docs.get(entity.parent_id)
+            if parent is None:
+                return _err(f"parent document {entity.parent_id!r} does not exist", error_type="not-found")
+            if parent.collection_id != entity.collection_id:
+                return _err("the parent document is in another collection", error_type="bad-request")
+            parent_path = parent.path
+        expected = f"{parent_path}/{entity.slug}" if parent_path else entity.slug
+        if entity.path != expected:
+            return _err(
+                f"path is derived from parent_id and slug: expected {expected!r}, got {entity.path!r}",
+                error_type="bad-request",
+            )
+        try:
+            doc = await tree_factory().create(
+                collection_id=entity.collection_id, parent=parent_path, slug=entity.slug,
+                body="", title=entity.title, meta=entity.meta,
+            )
+        except PrimerError as exc:
+            return _document_error(exc)
+        return _ok(doc)
+
+    out["create_document"] = (
+        make_tool(
+            id="create_document",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            # DocumentTreeService.create: a transaction over the entity and content rows, then the indexer on another store.
+            # A Stop waits for the call.
+            interruptible=False,
+            purpose=(
+                "Create an EMPTY document at ``parent_id``/``slug`` in a collection and return it; "
+                "the service assigns the id."
+            ),
+            when=(
+                "Use when you want a document node with no body yet (put the text in afterwards with "
+                "``put_document``, or create it with its body in one call using ``put_document`` alone). "
+                "Any ``id`` in ``entity`` is IGNORED: read the id from the result. ``path`` must equal the parent's path "
+                "plus ``/slug`` (or just ``slug`` at the root), ``slug`` matches ``[a-z0-9-]+``, and ``harness_id`` must "
+                "be unset. ``type=conflict`` when the path exists, ``type=not-found`` for an unknown collection or "
+                "parent, ``type=forbidden`` for a system-owned collection."
+            ),
+            args_schema=_create_schema(Document),
+            examples=[
+                ToolExample(
+                    args={"entity": {"collection_id": "kb-1", "slug": "notes", "path": "notes", "title": "Notes"}},
+                    returns="the created Document, with its assigned id",
+                ),
+            ],
+            required_role="user",
+        ),
+        _create,
+    )
+
+    # ---- update -------------------------------------------------------
+    async def _update(arguments: dict[str, Any]) -> ToolCallResult:
+        entity_id = arguments.get("id")
+        body = arguments.get("entity")
+        if not entity_id:
+            return _err("missing required argument 'id'", error_type="bad-request")
+        if body is None:
+            return _err("missing required argument 'entity'", error_type="bad-request")
+        if isinstance(body, dict) and not body.get("id"):
+            body = {**body, "id": entity_id}
+        try:
+            entity = Document.model_validate(body)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        if entity.id != entity_id:
+            return _err(
+                f"path id {entity_id!r} does not match body id {entity.id!r}", error_type="conflict",
+            )
+        existing = await docs.get(entity_id)
+        if existing is None:
+            return _err(f"Document {entity_id!r} does not exist", error_type="not-found")
+        refusal = await _refuse_unwritable(existing.collection_id, harness_id=existing.harness_id)
+        if refusal is not None:
+            return refusal
+        for field in ("path", "slug", "parent_id", "collection_id"):
+            if getattr(entity, field) != getattr(existing, field):
+                return _err(
+                    f"a document's {field} cannot be changed here; use move_document to relocate it",
+                    error_type="bad-request",
+                )
+        if entity.harness_id != existing.harness_id:
+            return _err(
+                "harness_id is set by the harness that manages a document and cannot be changed here",
+                error_type="bad-request",
+            )
+        updated = existing.model_copy(update={"title": entity.title, "meta": entity.meta, "updated_at": datetime.now(UTC)})
+        try:
+            updated = await docs.update(updated)
+        except PrimerError as exc:
+            return _document_error(exc)
+        return _ok(updated)
+
+    out["update_document"] = (
+        make_tool(
+            id="update_document",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Change a document's ``title`` and ``meta`` by ``id``; the body, path and place in the tree are untouched.",
+            when=(
+                "Use when renaming or re-labelling a document: send the full entity you read with ``get_document``. A "
+                "changed ``path``, ``slug``, ``parent_id`` or ``collection_id`` is refused (``type=bad-request``): use "
+                "``move_document``. The body is written with ``put_document``. ``type=forbidden`` for a system-owned "
+                "collection, ``type=conflict`` for a harness-managed document, ``type=not-found`` for an unknown id."
+            ),
+            args_schema=_update_schema(Document),
+            examples=[
+                ToolExample(
+                    args={
+                        "id": "document-0123456789ab",
+                        "entity": {
+                            "id": "document-0123456789ab", "collection_id": "kb-1", "slug": "notes", "path": "notes",
+                            "title": "Meeting notes", "meta": {"owner": "ops"},
+                        },
+                    },
+                    returns="the updated Document",
+                ),
+            ],
+            required_role="user",
+        ),
+        _update,
+    )
+
+    # ---- delete -------------------------------------------------------
+    async def _delete(arguments: dict[str, Any]) -> ToolCallResult:
+        try:
+            args = _DeleteByIdArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        doc = await docs.get(args.id)
+        if doc is None:
+            return _err(f"Document {args.id!r} does not exist", error_type="not-found")
+        refusal = await _refuse_unwritable(doc.collection_id, harness_id=doc.harness_id)
+        if refusal is not None:
+            return refusal
+        tree = tree_factory()
+        try:
+            try:
+                resolved = await tree.resolve(collection_id=doc.collection_id, path=doc.path)
+            except NotFoundError:
+                resolved = None
+            if resolved is None or resolved.id != doc.id:
+                # An entity row with no content row of its own (what the old create_document left behind; the path may even
+                # belong to a real document now): remove only that row, never the document the PATH resolves to.
+                await docs.delete(doc.id)
+            else:
+                try:
+                    await tree.delete(collection_id=doc.collection_id, path=doc.path, recursive=False)
+                except ConflictError:
+                    return _err(
+                        f"document {doc.path!r} has child documents; delete them first (the collections toolset's "
+                        "delete_document can delete a whole subtree with recursive=true)",
+                        error_type="conflict",
+                    )
+        except PrimerError as exc:
+            return _document_error(exc)
+        return _ok({"deleted": True, "id": args.id})
+
+    out["delete_document"] = (
+        make_tool(
+            id="delete_document",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            # DocumentTreeService.delete: a transaction over the entity and content rows, then the unindexer on another store.
+            # A Stop waits for the call.
+            interruptible=False,
+            purpose="Delete a document by ``id``: its entity, its body and its search index entries; returns ``{deleted, id}``.",
+            when=(
+                "Use when removing one document. A document with child documents is refused (``type=conflict``): delete "
+                "the children first. ``type=forbidden`` for a system-owned collection, ``type=conflict`` for a "
+                "harness-managed document, ``type=not-found`` for an unknown id."
+            ),
+            args_schema=_DeleteByIdArgs.model_json_schema(),
+            examples=[ToolExample(args={"id": "document-0123456789ab"}, returns="{deleted: true, id: ...}")],
+            required_role="user",
+        ),
+        _delete,
+    )
+    return out
+
+
 def _document_extras(
     *,
     service_factory: "Callable[[], DocumentService]",
+    storage_provider: "StorageProvider",
+    tree_factory: "Callable[[], DocumentTreeService]",
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     out: dict[str, tuple[Tool, ToolHandler]] = {}
+    out.update(_document_write_tools(storage_provider=storage_provider, tree_factory=tree_factory))
 
     async def _get_content(arguments: dict[str, Any]) -> ToolCallResult:
         try:
