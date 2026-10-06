@@ -330,6 +330,10 @@ Read the description + system_prompt to confirm fit.
   itself, including after a restart); an autonomous agent session (for
   example one fired by a trigger) ends with `ended_reason`
   `tool_turn_cap`, and a new message reopens it with a fresh round count.
+  A session bound to a channel thread is told it stopped short (a message
+  saying it stopped at its tool-turn cap, with what it had so far), in all
+  three cases, and the turn is counted as `tool_turn_cap` in the turn metrics,
+  not as `completed`.
   A graph node or a subagent that hits its own cap does not report it as
   a session end (not yet surfaced).
 - **Tool calls can yield.** A tool returning `Yielded(...)` parks
