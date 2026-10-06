@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
@@ -36,6 +36,10 @@ from primer.model.scheduler import (
     SchedulerProviderType,
     WorkerConfig,
 )
+
+
+if TYPE_CHECKING:
+    from primer.workspace.local_policy import LocalWorkspacePolicy
 
 
 # Headroom (extra pool connections beyond worker.concurrency) the Postgres
@@ -83,6 +87,34 @@ class AuthConfig(BaseModel):
     cookie_name: str = "primer_session"
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
+
+
+class LocalWorkspacesConfig(BaseModel):
+    """Where a workspace on a local provider may be used (ticket 01a1072f).
+
+    A local workspace's write lock exists only inside one process, so a deployment whose API and worker are
+    separate processes, or whose scheduler is Postgres (so any process may claim), must use docker or
+    kubernetes workspaces, which carry their own locking.
+    """
+
+    refuse_when_distributed: bool = Field(
+        default=False,
+        description=(
+            "Refuse to hand out a workspace on a local provider when the deployment is distributed "
+            "(runtime_mode is not 'api+worker', or the scheduler is postgres). OFF by default: turn it on "
+            "only after the existing local workspaces have been migrated to a docker or kubernetes "
+            "provider and default_workspace_template points at one. A refused workspace fails its turn "
+            "and leaves the session resumable; it is never treated as lost."
+        ),
+    )
+    single_process: bool = Field(
+        default=False,
+        description=(
+            "Operator assertion that exactly one process runs the API and the worker together, which the "
+            "rule would otherwise refuse when the scheduler is postgres. Logged at boot and shown on "
+            "/v1/health. Never set it for a deployment that may run a second replica."
+        ),
+    )
 
 
 class AppConfig(BaseSettings):
@@ -161,6 +193,12 @@ class AppConfig(BaseSettings):
     worker: WorkerConfig = Field(
         default_factory=WorkerConfig,
         description="Worker pool knobs (concurrency, lease TTL, etc.).",
+    )
+    local_workspaces: LocalWorkspacesConfig = Field(
+        default_factory=LocalWorkspacesConfig,
+        description=(
+            "Where workspaces on a local provider may be used; see LocalWorkspacesConfig."
+        ),
     )
 
     # --- MCP toolset stdio safety ----------------------------------------
@@ -289,6 +327,19 @@ class AppConfig(BaseSettings):
             "False uses a human-readable single-line formatter."
         ),
     )
+
+    def local_workspace_policy(self) -> "LocalWorkspacePolicy":
+        """The local-workspace policy this process's topology and config give (ticket 01a1072f)."""
+        from primer.workspace.local_policy import LocalWorkspacePolicy
+
+        return LocalWorkspacePolicy.from_topology(
+            runtime_mode=self.runtime_mode,
+            scheduler_provider=(
+                self.scheduler.provider if self.scheduler is not None else None
+            ),
+            enforce=self.local_workspaces.refuse_when_distributed,
+            single_process=self.local_workspaces.single_process,
+        )
 
     @model_validator(mode="after")
     def _validate_worker_pool_headroom(self) -> "AppConfig":
