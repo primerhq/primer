@@ -28,8 +28,13 @@ LABEL runtime.primer.version="1.0.0"
 # an exec op inside the container, and session/graph history is committed
 # there. python:3.12-slim ships without git, so install it (slim base ->
 # apt). Without it, materialise hangs on a missing-binary exec failure.
+#
+# tini is the init the ENTRYPOINT runs the runtime under (see below): without
+# one, the runtime is PID 1, which never wait()s for the processes reparented
+# to it, so every process an exec left behind that later dies stays a zombie
+# for the life of the container.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends git tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Install runtime in its own directory so workspace files are not mixed in.
@@ -62,4 +67,11 @@ WORKDIR /workspace
 
 EXPOSE 5959
 
-ENTRYPOINT ["python", "-m", "primer_runtime.server"]
+# Exec form, so tini and not a shell is PID 1 and gets the signals, which it
+# forwards to the runtime. tini reaps the orphans reparented to PID 1; `-s`
+# registers it as a child subreaper when it is NOT PID 1 (Docker's own `--init`,
+# or a pod with a shared process namespace, puts another init above it), so it
+# reaps either way. A Kubernetes `command:` replaces this ENTRYPOINT (the k8s
+# backend always sets one), so the pod gets its reaping from a shared process
+# namespace instead (primer/workspace/k8s/backend.py).
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "python", "-m", "primer_runtime.server"]

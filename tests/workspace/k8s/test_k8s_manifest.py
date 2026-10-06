@@ -131,6 +131,36 @@ def test_pod_overrides_deep_merge() -> None:
     assert pod_spec["restartPolicy"] == "Always"
 
 
+def _pod_spec(**template_overrides) -> dict:
+    manifest = _build_statefulset_manifest(
+        sts_name="primer-ws-abc",
+        namespace="default",
+        workspace_id="abc",
+        template=_template(**template_overrides),
+        provider_cfg=_provider_cfg(),
+    )
+    return manifest["spec"]["template"]["spec"]
+
+
+def test_the_pod_shares_its_process_namespace_so_the_pods_pid_1_reaps_orphans() -> None:
+    """The container ALWAYS gets a ``command`` here (the template's entrypoint, or ``sleep infinity``), and a Kubernetes
+    ``command`` replaces the image's ENTRYPOINT, so the tini baked into the runtime image never runs in a workspace pod.
+    With a shared process namespace the pod's pause container is PID 1 and reaps what the command leaves orphaned."""
+    assert _pod_spec()["shareProcessNamespace"] is True
+
+
+def test_a_template_can_turn_the_shared_process_namespace_off() -> None:
+    assert _pod_spec(pod_overrides={"shareProcessNamespace": False})["shareProcessNamespace"] is False
+
+
+def test_the_shared_process_namespace_does_not_widen_what_the_pod_may_share_with_the_host() -> None:
+    """``hostPID`` (the NODE's process namespace) stays refused in ``pod_overrides``; ``shareProcessNamespace`` is the
+    pod's own, and is not a way around it."""
+    with pytest.raises(ConfigError, match="hostPID"):
+        _validate_template_overrides(_template(pod_overrides={"hostPID": True}))
+    _validate_template_overrides(_template(pod_overrides={"shareProcessNamespace": False}))   # does not raise
+
+
 def test_template_storage_class_lands_on_pvc() -> None:
     cfg = _provider_cfg()
     template = _template(storage_class="fast-ssd")

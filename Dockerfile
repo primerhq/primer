@@ -63,12 +63,17 @@ ENV PYTHONUNBUFFERED=1 \
 #                     ctypes.LoadLibrary and every policy-type create
 #                     leaks as 500 instead of the intended 422. Surfaced
 #                     by U0114 (UI loop) on the primer-app image.
+# - tini              the init the ENTRYPOINT runs everything under (see
+#                     below): without one, Python is PID 1, which never
+#                     wait()s for the processes reparented to it, so every
+#                     process a workspace command left behind that later
+#                     dies stays a zombie for the life of the container.
 # Most python deps (asyncpg, grpcio, pgvector, torch, transformers)
 # ship manylinux wheels for cp313, so no build toolchain is needed.
 # Add `build-essential` here if a future dep requires compilation.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates git libatomic1 \
-       libgl1 libglib2.0-0 libxcb1 \
+       libgl1 libglib2.0-0 libxcb1 tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (standalone binary, ~25 MB) directly to /usr/local/bin so
@@ -131,7 +136,16 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \
 # Entrypoint renders /app/config.yaml from PRIMER_* env vars, then
 # exec's CMD. The primer CLI requires --config; the rendered file is
 # always used.
-ENTRYPOINT ["/usr/local/bin/primer-entrypoint.sh"]
+#
+# It runs under tini (exec form, so tini and not a shell is PID 1 and gets
+# the signals, which it forwards to the entrypoint and so to primer).
+# tini reaps the orphans reparented to PID 1. `-s` registers it as a child
+# subreaper when it is NOT PID 1 (Docker's own `--init`, or a pod with a
+# shared process namespace, puts another init above it), so it reaps either
+# way. A Kubernetes `command:` or a compose `entrypoint:` replaces the
+# ENTRYPOINT and so bypasses tini; a Kubernetes `args:` or a compose
+# `command:` replaces only CMD, and keeps it.
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/primer-entrypoint.sh"]
 
 # Default command. Override at `podman run` time or via compose
 # `command:` if you want a non-worker process (e.g. `primer api
