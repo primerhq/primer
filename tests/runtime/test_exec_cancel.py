@@ -26,6 +26,7 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestServer
 
+import primer_runtime.exec as exec_module
 from primer_runtime.exec import ExecRegistry, start_exec
 from primer_runtime.locks import WorkspaceLockTable
 
@@ -225,11 +226,56 @@ async def test_an_exec_cancel_that_lands_while_the_exit_is_being_announced_does_
         assert registry.cancel(7) is True
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=5.0)
+        # The exec task is gone and the announcement is still in flight: it is kept referenced (the loop holds tasks weakly).
+        assert len(exec_module._BROADCASTS) == 1
         gate.set()
         for _ in range(20):
             await asyncio.sleep(0)
 
         assert seen == ["exec_started", "exec_exited"], f"the exit announcement was cut off by the cancel: {seen}"
+        assert not exec_module._BROADCASTS, "a finished announcement was never released"
+    finally:
+        gate.set()
+        registry.cancel_all()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_an_exec_cancel_that_lands_while_the_start_is_being_announced_still_announces_the_exit(
+    tmp_path: Path,
+) -> None:
+    """``exec_started`` and ``exec_exited`` are a pair for subscribers. A cancel that lands while the start is announced ends
+    the task before its command ever runs; the exit must still be announced, or subscribers see a start with no end."""
+    gate, announcing, seen = asyncio.Event(), asyncio.Event(), []
+    marker = tmp_path / "ran"
+
+    class Broadcaster:
+        async def broadcast(self, kind: str, data: dict) -> None:
+            if kind == "exec_started":
+                announcing.set()
+                await gate.wait()                            # a subscriber whose socket is slow to take the frame
+            seen.append(kind)
+
+    registry = ExecRegistry()
+
+    async def send(frame: str) -> None:
+        pass
+
+    task = start_exec(
+        7, _args(tmp_path, f"echo ran > {marker}"), str(tmp_path), WorkspaceLockTable(), send, registry,
+        broadcaster=Broadcaster(),
+    )
+    try:
+        await asyncio.wait_for(announcing.wait(), timeout=10.0)
+
+        assert registry.cancel(7) is True
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+        gate.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+        assert seen == ["exec_exited"], f"the exit of an exec whose start was cancelled was not announced: {seen}"
+        assert not marker.exists(), "the command ran although the exec was cancelled before it started"
     finally:
         gate.set()
         registry.cancel_all()

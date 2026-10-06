@@ -72,6 +72,10 @@ def _cancels(ws: _FakeWs) -> list[dict]:
     return [f for f in ws.sent if f["op"] == OpName.EXEC_CANCEL]
 
 
+def _execs(ws: _FakeWs) -> list[dict]:
+    return [f for f in ws.sent if f["op"] == OpName.EXEC]
+
+
 async def test_a_cancelled_exec_tells_the_runtime_to_stop_the_command() -> None:
     client, ws = _client("1.4")
     task = asyncio.create_task(client.exec("sleep 60"))
@@ -116,6 +120,92 @@ async def test_an_exec_that_could_not_get_a_connection_sends_no_cancel() -> None
     await _spin()
 
     assert _cancels(ws) == [] and not client._background_tasks
+
+
+async def test_an_exec_is_never_sent_on_a_connection_it_will_not_be_cancelled_on() -> None:
+    """The socket an exec waited for can drop before the exec task resumes. The request must then not go out on the NEXT
+    socket while the cancel's check still points at the dead one (the command would run in the runtime for ever, with
+    nothing able to cancel it). Whatever the client does there (fail the exec, or send and cancel on the new socket), no
+    connection may carry an exec that it does not also carry the cancel of.
+
+    The real connection wait runs; the test only lets the socket it returned drop, once, right after it returns (the window
+    between the wait returning and the exec task acting on it), and the next socket arrive a loop iteration later."""
+    client = RuntimeClient(url="ws://x/", token="t")
+    client._negotiated_version = "1.4"
+    dead, next_ws = _FakeWs(), _FakeWs()
+    dropped = False
+    real_wait = client._wait_until_connected
+
+    def next_socket_arrives() -> None:
+        client._ws = next_ws                                 # type: ignore[assignment]
+        client._connected.set()
+
+    async def wait_then_the_socket_drops() -> None:
+        nonlocal dropped
+        await real_wait()
+        if not dropped:
+            dropped = True
+            dead.closed = True
+            client._connected.clear()
+            asyncio.get_running_loop().call_soon(next_socket_arrives)
+
+    client._wait_until_connected = wait_then_the_socket_drops    # type: ignore[method-assign]
+    task = asyncio.create_task(client.exec("sleep 60"))
+    await _spin()                                            # parked in the connection wait
+    client._ws = dead                                        # type: ignore[assignment]
+    client._connected.set()
+    await _spin()
+
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    await _spin()
+
+    for name, ws in (("the socket that dropped", dead), ("the next socket", next_ws)):
+        assert len(_execs(ws)) == len(_cancels(ws)), (
+            f"{name} carries {len(_execs(ws))} exec(s) and {len(_cancels(ws))} cancel(s): a command was left running"
+        )
+
+
+async def test_an_exec_issued_while_disconnected_is_cancelled_on_the_socket_it_went_out_on() -> None:
+    """The common case the connection wait serves: the exec waits for the reconnect, goes out on the new socket, and a cancel
+    after that must reach the runtime on that same socket."""
+    client = RuntimeClient(url="ws://x/", token="t")
+    client._negotiated_version = "1.4"
+    ws = _FakeWs()
+    task = asyncio.create_task(client.exec("sleep 60"))
+    await _spin()
+    assert ws.sent == []
+
+    client._ws = ws                                          # type: ignore[assignment]
+    client._connected.set()
+    exec_req_id = (await _exec_frame(ws))["req_id"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await _spin()
+
+    assert [c["args"] for c in _cancels(ws)] == [{"target_req_id": exec_req_id}]
+
+
+async def test_an_exec_whose_stream_was_closed_while_it_waited_for_the_connection_is_not_sent() -> None:
+    """A disconnect closes every stream, including that of an exec still waiting for the connection. Sent after the
+    reconnect, the command would run in the runtime with nobody listening: its frames are dropped and the caller would get
+    exit code -1 with no output. It must fail with the connection loss instead, and send nothing."""
+    client = RuntimeClient(url="ws://x/", token="t")
+    client._negotiated_version = "1.4"
+    ws = _FakeWs()
+    task = asyncio.create_task(client.exec("sleep 60"))
+    await _spin()                                            # parked in the connection wait
+
+    client._on_disconnect()                                  # the connection it was waiting to get back dropped again
+    client._ws = ws                                          # type: ignore[assignment]
+    client._connected.set()
+
+    with pytest.raises(RuntimeOpError, match="Connection lost"):
+        await asyncio.wait_for(task, timeout=5.0)
+    await _spin()
+
+    assert _execs(ws) == [] and _cancels(ws) == [] and not client._background_tasks
 
 
 async def test_an_exec_on_a_closed_client_fails_at_once_instead_of_waiting_for_a_connection_it_can_never_get() -> None:

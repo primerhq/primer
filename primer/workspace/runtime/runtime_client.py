@@ -19,7 +19,7 @@ import asyncio
 import base64
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -412,13 +412,20 @@ class RuntimeClient:
         sent_on: aiohttp.ClientWebSocketResponse | None = None
         finished = False
 
+        def record_the_connection(ws: aiohttp.ClientWebSocketResponse) -> None:
+            """Called by ``_send_raw`` with the socket the request is about to be written to, in the same synchronous
+            segment as the write. Recorded BEFORE the send is awaited: ``send_str`` waits for the socket to drain, a cancel
+            can land while it does, and by then the request is on the wire and the command may be running."""
+            nonlocal sent_on
+            # A disconnect while this exec waited for the connection closed every stream, this one included. Sent after
+            # the reconnect, the command would run in the runtime with nobody listening (its frames are dropped) and the
+            # caller would get exit code -1 with no output: fail with the connection loss, send nothing, record nothing.
+            if self._streams.get(req_id) is not q:
+                raise RuntimeError(ErrorCode.EPROTOCOL, "Connection lost")
+            sent_on = ws
+
         try:
-            # Recorded BEFORE the send is awaited: ``send_str`` waits for the socket to drain, a cancel can land while it
-            # does, and by then the request is on the wire and the command may be running. This is the connection
-            # ``_send_raw`` is about to use: nothing suspends between this read and its own (the event is already set).
-            await self._wait_until_connected()
-            sent_on = self._ws
-            await self._send_raw(Request(req_id=req_id, op=OpName.EXEC, args=args))
+            await self._send_raw(Request(req_id=req_id, op=OpName.EXEC, args=args), before_send=record_the_connection)
             async for item in self._iter_stream(req_id, q, abort=abort):
                 if not isinstance(item, dict):
                     continue
@@ -637,14 +644,26 @@ class RuntimeClient:
         if self._closed:
             raise RuntimeError(ErrorCode.EPROTOCOL, "Client closed")
 
-    async def _send_raw(self, msg: Request) -> None:
-        """Serialize *msg* and send it over the active WebSocket."""
+    async def _send_raw(
+        self,
+        msg: Request,
+        *,
+        before_send: Callable[[aiohttp.ClientWebSocketResponse], None] | None = None,
+    ) -> None:
+        """Serialize *msg* and send it over the active WebSocket.
+
+        *before_send*, when given, is called with the connection the message is about to be written to, in the same
+        synchronous segment as the write (after the connection wait and the liveness check, nothing suspends in
+        between), so what it records is the connection the message really goes out on. It may raise to refuse the send.
+        """
         await self._wait_until_connected()
         ws = self._ws
         if ws is None or ws.closed:
             raise RuntimeError(ErrorCode.EPROTOCOL, "Not connected")
         from primer.workspace.runtime.protocol import serialize
 
+        if before_send is not None:
+            before_send(ws)
         await ws.send_str(serialize(msg))
 
     def _runtime_has(self, minimum: tuple[int, int]) -> bool:
