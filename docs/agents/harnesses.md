@@ -148,9 +148,18 @@ both the verb-style operations and plain listing/fetching.
   re-installing replaces the bundle.
 - `harness::harness__sync` - diff + update. Fast-path no-op if no changes
   upstream. Returns 202.
-- `harness::harness__uninstall` - remove managed entities. Returns 202.
-  The Harness row stays (re-install is one click); only the
-  managed entities are deleted.
+- `harness::harness__uninstall` - remove the harness. Returns 202. An
+  installed (inbound) harness takes the objects it installed with it
+  (agents, graphs, collections, documents, toolsets), then its rendering and
+  the Harness row itself; an outbound harness keeps the objects it merely
+  tracks (the same defaults as `DELETE /v1/harnesses/{id}`).
+
+Fetch, install and sync are inbound operations: on an outbound harness they
+are refused with `type=direction-mismatch`. Each of these four tools queues
+the operation for the worker; if one answers with a conflict, the harness
+already has an operation pending. A Stop waits for these calls instead of
+cancelling them, because the operation is queued in two steps (the harness
+row, then its claim lease).
 
 ## Workflows
 
