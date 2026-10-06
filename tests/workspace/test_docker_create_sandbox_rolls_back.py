@@ -373,3 +373,17 @@ async def test_a_container_request_the_daemon_refused_does_not_remove_what_holds
         await _create(_adapter(docker))
     assert docker.containers_present == {NAME}  # not this call's to remove
     assert docker.volumes_present == set()  # the volume this call made is
+
+
+async def test_a_container_request_that_dropped_the_connection_is_still_removed():
+    """No answer is not a refusal: the daemon may have made the container before the connection went."""
+    docker = _FakeDocker()
+
+    async def made_then_dropped(fake: _FakeDocker, name: str) -> None:
+        fake.containers_present.add(name)
+        raise ConnectionResetError("the daemon went away after making it")
+
+    docker.create_or_replace_hook = made_then_dropped
+    with pytest.raises(ConnectionResetError):
+        await _create(_adapter(docker))
+    assert _nothing_left(docker)
