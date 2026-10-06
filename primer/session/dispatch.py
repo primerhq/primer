@@ -34,6 +34,7 @@ from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 import primer.observability.metrics as _metrics
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
+from primer.model.except_ import NotFoundError
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
     SessionMessageKind,
@@ -2222,29 +2223,41 @@ async def _noop_if_turn_already_completed(
       queued steer, which arms itself through ``wake_session``), recovering a crash between the marker and the
       checkpoint. With nothing queued there is nothing to arm.
 
-    An arming patch the row refuses means another process changed it under the patch; the row is read again under
-    the same lock acquisition and decides:
+    The row is judged by its status, on every read the guard makes under the lock. A row another process PAUSED or
+    ENDED after this turn's own top read (the ENDED, cancel and pause exits of ``run_one_session_turn`` decided from
+    that read, and nothing re-checks the status afterwards) is settled, whatever its ``turn_status`` and its input:
 
-    * ENDED: the lease is dropped as the ENDED exit of ``run_one_session_turn`` does (a stale ``turn_status ==
-      "running"`` healed, the same outcome), and the input is not answered;
+    * ENDED: the lease is dropped as the ENDED exit does (a stale ``turn_status == "running"`` healed, the same
+      outcome), and the input is not answered;
     * PAUSED: the no-op with the pause exit's outcome (``preserve_park=True``: a park is kept for /resume, and the
-      adapter still applies the lost ``turn_no`` bump on success), leaving the input for /resume (a stale
-      ``running`` is healed here too);
-    * still RUNNING or WAITING, gone, or any other status (CREATED): ``None``, the turn runs and answers it now.
+      adapter still applies the lost ``turn_no`` bump on success), leaving the input for /resume (a stale ``running``
+      is healed and a stale ``interrupt_requested`` cleared, as the pause exit does);
+    * RUNNING or WAITING: the rules above;
+    * CREATED (a reset or a stale write): ``None``, the turn runs, as it did before this guard (the pool does not
+      re-arm a CREATED row, so an input left on it would wait for ever);
+    * GONE (deleted): the vanished-before-dispatch outcome of ``run_one_session_turn`` (``success=False,
+      drop_lease=True``), logged as a vanished row. There is nothing to answer and nothing to bump.
 
-    Both refused-patch releases count as no-ops and log the WARNING, and neither runs the drain checkpoint. Input
-    waiting on a row the pool does not re-arm (not RUNNING or WAITING: CREATED or PAUSED after a reset or a stale
-    write), an arming patch that raises, and a log that cannot be read all return ``None``: the turn runs, as it did
-    before this guard. It never swallows a turn it cannot see or cannot hand on.
+    The same rule applies after an arming patch the row refuses (another process changed it under the patch): the
+    row is read again under the same lock acquisition and judged the same way (RUNNING or WAITING: ``None``, the turn
+    runs and answers the input now). A ``NotFoundError`` from the patch is a gone row; any other storage error from
+    it, and a log that cannot be read, return ``None``: the turn runs, as it did before this guard.
+
+    A PAUSED or ENDED release counts in ``session_completed_turn_noop_total`` and logs the no-op WARNING; neither runs
+    the drain checkpoint. A gone row is not a completed-turn no-op and is not counted. The guard never swallows a turn
+    it cannot see or cannot hand on.
     """
-    paused = False
     async with session_lifecycle_lock().acquire(session_id):
         fresh = await session_storage.get(session_id)
-        if fresh is None or fresh.completed_turn_no is None or fresh.completed_turn_no != fresh.turn_no:
+        if fresh is None:
+            return _drop_vanished_row(session_id)
+        if fresh.completed_turn_no is None or fresh.completed_turn_no != fresh.turn_no:
             return None
-        # The pool re-arms only a RUNNING or WAITING row (``_maybe_rearm_session``). Input waiting on any other
-        # row (CREATED or PAUSED after a reset or a stale write) would never be claimed again, so there the turn
-        # runs, as it did before this guard.
+        if fresh.status in _SETTLED_STATUSES:
+            return await _release_settled_row(session_storage, fresh, "at the guard's first read")
+        # The pool re-arms only a RUNNING or WAITING row (``_maybe_rearm_session``). Input waiting on a CREATED row
+        # (after a reset or a stale write) would never be claimed again, so there the turn runs, as it did before
+        # this guard.
         rearmable = fresh.status in _REARMABLE_STATUSES
         if fresh.turn_status == "claimable":
             if not rearmable:
@@ -2262,6 +2275,8 @@ async def _noop_if_turn_already_completed(
                         session_id, {"turn_status": "claimable"},
                         where={"turn_status": ["idle", "running"], "status": _REARMABLE_STATUSES},
                     )
+                except NotFoundError:
+                    return _drop_vanished_row(session_id)
                 except Exception:  # noqa: BLE001 - cannot arm it: answer it now instead of stranding it
                     logger.warning(
                         "session %s: could not arm the unanswered input of completed turn %d; running the turn",
@@ -2271,20 +2286,14 @@ async def _noop_if_turn_already_completed(
                 if armed is not None:
                     work = "an unanswered input was armed"
                 else:
-                    # The row changed under the patch (another process: this lock is per-process). Decide from the
-                    # row as it is now, under the same lock acquisition.
+                    # The row changed under the patch (another process: this lock is per-process). Judge the row as
+                    # it is now, under the same lock acquisition.
                     now = await session_storage.get(session_id)
-                    if now is None or now.status not in (SessionStatus.ENDED, SessionStatus.PAUSED):
-                        return None   # still RUNNING or WAITING (or gone, or CREATED): answer it now
-                    # Running the turn would undo the pause, or answer on an ended session. Heal a stale "running"
-                    # as the ENDED and pause exits of run_one_session_turn do.
-                    if now.turn_status == "running":
-                        await _clear_turn_running(session_storage, session_id)
-                    paused = now.status == SessionStatus.PAUSED
-                    work = (
-                        "the row was paused under the arming patch; its input is left for /resume" if paused
-                        else "the row ended under the arming patch"
-                    )
+                    if now is None:
+                        return _drop_vanished_row(session_id)
+                    if now.status in _SETTLED_STATUSES:
+                        return await _release_settled_row(session_storage, now, "under the arming patch")
+                    return None   # still RUNNING or WAITING (or CREATED): answer it now
             else:
                 work = None
     if work is None:
@@ -2296,10 +2305,44 @@ async def _noop_if_turn_already_completed(
         "the model again (%s)",
         session_id, fresh.turn_no, work or "no unanswered input",
     )
+    return ReleaseOutcome(success=True, drop_lease=True)
+
+
+def _drop_vanished_row(session_id: str) -> ReleaseOutcome:
+    """The outcome of a claim whose row was deleted: the vanished-before-dispatch exit of ``run_one_session_turn``."""
+    logger.warning("session %s vanished under the completed-turn guard; dropping the lease", session_id)
+    return ReleaseOutcome(success=False, drop_lease=True)
+
+
+async def _release_settled_row(session_storage, row: WorkspaceSession, where: str) -> ReleaseOutcome:
+    """The no-op release of a completed turn's claim on a row another process PAUSED or ENDED (under the lock).
+
+    ENDED returns the ENDED exit's outcome and PAUSED the pause exit's (``preserve_park=True``: the park is kept for
+    a later /resume, and the adapter still applies the lost ``turn_no`` bump once on success). A stale
+    ``turn_status == "running"`` is healed on both, a stale ``interrupt_requested`` cleared on PAUSED (the pause
+    exit does both: it must not leak into the turn that eventually resumes the row and downgrade a later Cancel to a
+    Stop). The input is not answered and the drain checkpoint does not run. Counted as a no-op.
+    """
+    if row.turn_status == "running":
+        await _clear_turn_running(session_storage, row.id)
+    paused = row.status == SessionStatus.PAUSED
+    if paused:
+        await _clear_interrupt_requested(session_storage, row.id)
+    _metrics.session_completed_turn_noop_total.inc()
+    logger.warning(
+        "session %s: turn %d already completed but its release never committed; releasing it without calling "
+        "the model again (the row was %s %s%s)",
+        row.id, row.turn_no, "paused" if paused else "ended", where,
+        "; its input is left for /resume" if paused else "",
+    )
     # A PAUSED row gets the pause exit's release: its park is kept for /resume. preserve_park does not block the
     # turn_no bump (the adapter bumps on success in that branch too), so the lost bump is still applied once.
     return ReleaseOutcome(success=True, drop_lease=True, preserve_park=paused)
 
+
+# The statuses another process can have settled under a completed turn's claim: the claim neither answers input on
+# them nor runs a turn.
+_SETTLED_STATUSES = (SessionStatus.PAUSED, SessionStatus.ENDED)
 
 # The statuses ``WorkerPool._maybe_rearm_session`` re-arms a claimable row in.
 _REARMABLE_STATUSES = [SessionStatus.RUNNING.value, SessionStatus.WAITING.value]
