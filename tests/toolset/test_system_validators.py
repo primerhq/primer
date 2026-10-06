@@ -12,7 +12,9 @@ One class per entity, in the order the plan ranked them: tool-approval policies 
 from __future__ import annotations
 
 import pytest
+from pydantic import SecretStr
 
+from primer.model.channel import Channel, ChannelProvider, ChannelProviderType, SlackChannelProviderConfig
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import Toolset, ToolsetProviderType
 from primer.model.providers.toolset import PythonConfig
@@ -359,3 +361,73 @@ class TestModelProfile:
 
         assert not (single_error or aggregate_error or update_error)
         assert (await sp.get_storage(ModelProfile).get("mp-1")).description == "edited"
+
+
+def _slack_provider(provider_id: str) -> ChannelProvider:
+    return ChannelProvider(
+        id=provider_id, provider=ChannelProviderType.SLACK,
+        config=SlackChannelProviderConfig(app_token=SecretStr("xapp-1-live-0123456789"), bot_token=SecretStr("xoxb-live-9876543210")),
+    )
+
+
+def _channel(channel_id: str, provider_id: str = "cp-1", external_id: str = "C1") -> dict:
+    return Channel(id=channel_id, provider_id=provider_id, provider="slack", external_id=external_id).model_dump(mode="json")
+
+
+class TestChannel:
+    @pytest.mark.asyncio
+    async def test_a_channel_naming_a_missing_provider_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+
+        is_error, answer = await _call(toolset, "create_channel", entity=_channel("chan-x", provider_id="cp-ghost"))
+
+        assert is_error and answer["type"] == "validation-error"
+        assert "ChannelProvider" in answer["message"] and "cp-ghost" in answer["message"]
+        assert await sp.get_storage(Channel).get("chan-x") is None, "a channel naming a missing provider was stored"
+
+    @pytest.mark.asyncio
+    async def test_a_second_channel_for_the_same_provider_and_external_id_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1")))
+
+        is_error, answer = await _call(toolset, "create_channel", entity=_channel("chan-2"))
+
+        assert is_error and answer["type"] == "conflict"
+        assert "already exists" in answer["message"] and "chan-1" in answer["message"]
+        assert await sp.get_storage(Channel).get("chan-2") is None
+
+    @pytest.mark.asyncio
+    async def test_a_valid_channel_is_created_as_before(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+
+        is_error, _ = await _call(toolset, "create_channel", entity=_channel("chan-1"))
+
+        assert not is_error
+        assert await sp.get_storage(Channel).get("chan-1") is not None
+
+    @pytest.mark.asyncio
+    async def test_the_same_external_id_under_another_provider_is_allowed(self, world) -> None:
+        # Uniqueness is per (provider_id, external_id), not per external_id.
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-2"))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1", provider_id="cp-1")))
+
+        is_error, _ = await _call(toolset, "create_channel", entity=_channel("chan-2", provider_id="cp-2"))
+
+        assert not is_error
+        assert await sp.get_storage(Channel).get("chan-2") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_channel_can_be_updated_as_before(self, world) -> None:
+        # The REST route has no pre-update channel check, so neither does the tool: an update is not re-validated.
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1")))
+        _, served = await _call(toolset, "get_channel", id="chan-1")
+
+        is_error, _ = await _call(toolset, "update_channel", id="chan-1", entity=served)
+
+        assert not is_error
