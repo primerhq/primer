@@ -5,8 +5,8 @@ worker pool calls this with the :class:`Lease` it received from the
 :class:`ClaimEngine`; the function drives one full execution turn,
 persists every :class:`StreamEvent` as a :class:`SessionMessageRecord`
 to the workspace's ``messages.jsonl`` via :class:`WorkspaceMessageWriter`,
-publishes a ``session:{sid}:tick`` event per record so live WebSocket
-subscribers see real-time deltas, honours cancel signals delivered over
+publishes a ``session:{sid}:tick`` event per record so the workspace tap
+(and any other bus subscriber) sees new records in real time, honours cancel signals delivered over
 the event bus, and handles :class:`YieldToWorker` parks.
 
 Return value:
