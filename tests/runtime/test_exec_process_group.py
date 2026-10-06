@@ -390,7 +390,10 @@ async def test_a_second_cancel_inside_the_grace_still_kills_a_command_that_ignor
 ) -> None:
     """The SIGKILL is sent in a ``finally`` and the first signal synchronously, so a consumer cancelled AGAIN while the stop
     is waiting out the grace still delivers the kill: a command that ignores SIGTERM must not outlive the second cancel (it
-    would, with the lock released over it, if the SIGKILL were skipped by the second cancel or delayed behind an await)."""
+    would, with the lock released over it, if the SIGKILL were skipped by the second cancel or delayed behind an await).
+
+    The lock is released once the SIGKILL has been SENT, not once the command is confirmed gone, so a queued writer may
+    start a moment before the killed process has exited: the writer is given a short grace to see it gone."""
     from primer_runtime import process_group
 
     monkeypatch.setattr(process_group, "TERM_GRACE_S", 2.0)
@@ -399,11 +402,11 @@ async def test_a_second_cancel_inside_the_grace_still_kills_a_command_that_ignor
     task = asyncio.create_task(_drain(_exec(tmp_path, f"trap '' TERM; sleep 60 & echo $! > {tmp_path}/child; wait", locks)))
     try:
         child = await _pid(tmp_path / "child")
-        running_when_the_writer_got_in: list[bool] = []
+        gone_soon_after_the_writer_got_in: list[bool] = []
 
         async def writer() -> None:
             async with locks.hold_scope(str(tmp_path.resolve())):
-                running_when_the_writer_got_in.append(_running(child))
+                gone_soon_after_the_writer_got_in.append(await _gone(child, within=0.5))
 
         queued = asyncio.create_task(writer())
         await asyncio.sleep(0.05)
@@ -423,7 +426,45 @@ async def test_a_second_cancel_inside_the_grace_still_kills_a_command_that_ignor
         assert asyncio.get_running_loop().time() - start < 1.0, "the second cancel waited out the grace"
         assert await _gone(child, within=1.0), "a command that ignores SIGTERM outlived the second cancel"
         await asyncio.wait_for(queued, timeout=5.0)
-        assert running_when_the_writer_got_in == [False], "the lock was released while the command still ran"
+        assert gone_soon_after_the_writer_got_in == [True], "the command still ran 0.5 s after a writer got the lock"
+    finally:
+        _kill(child)
+
+
+async def test_a_cancel_after_the_timeout_started_the_stop_does_not_wait_out_the_grace_either(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The exception is not limited to a SECOND cancel: a consumer's FIRST cancel that arrives while a stop started by the
+    TIMEOUT is waiting out the grace also delivers the SIGKILL at once and propagates, and the lock goes to the next writer
+    without waiting the grace out."""
+    from primer_runtime import process_group
+
+    monkeypatch.setattr(process_group, "TERM_GRACE_S", 2.0)
+    locks = WorkspaceLockTable()
+    child = None
+    task = asyncio.create_task(
+        _drain(_exec(tmp_path, f"trap '' TERM; sleep 60 & echo $! > {tmp_path}/child; wait", locks, timeout_s=0.3)),
+    )
+    try:
+        child = await _pid(tmp_path / "child")
+        gone_soon_after_the_writer_got_in: list[bool] = []
+
+        async def writer() -> None:
+            async with locks.hold_scope(str(tmp_path.resolve())):
+                gone_soon_after_the_writer_got_in.append(await _gone(child, within=0.5))
+
+        queued = asyncio.create_task(writer())
+        await asyncio.sleep(0.8)                          # the timeout fired at 0.3 s: the stop is waiting out its grace
+        assert not task.done() and not queued.done(), "the stop was not waiting out the grace: the test is not in its situation"
+
+        task.cancel()                                     # the consumer's FIRST cancel
+        start = asyncio.get_running_loop().time()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+        assert asyncio.get_running_loop().time() - start < 1.0, "the cancel waited out the grace"
+        assert await _gone(child, within=1.0), "a command that ignores SIGTERM outlived the cancel"
+        await asyncio.wait_for(queued, timeout=5.0)
+        assert gone_soon_after_the_writer_got_in == [True]
     finally:
         _kill(child)
 
