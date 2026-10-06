@@ -20,9 +20,11 @@ from primer.model.chat import Tool, ToolExample
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import ok as _ok
 from primer.toolset._system_common import SYSTEM_TOOLSET_ID
+from primer.toolset._system_guards import refuse_create, refuse_update, toolset_guards
 from primer.toolset.internal import ToolHandler
 
 if TYPE_CHECKING:
+    from primer.api.registries.provider_registry import ProviderRegistry
     from primer.int.storage_provider import StorageProvider
 
 
@@ -79,8 +81,17 @@ def build_python_toolset_tools(
     *,
     storage_provider: "StorageProvider",
     toolset_id: str = SYSTEM_TOOLSET_ID,
+    provider_registry: "ProviderRegistry | None" = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
-    """Build the three python-toolset management tools under ``toolset_id``."""
+    """Build the three python-toolset management tools under ``toolset_id``.
+
+    These tools write Toolset rows directly, so they carry the toolset router's guards themselves (the shared
+    :func:`~primer.toolset._system_guards.toolset_guards`): a reserved scope id cannot be created and a harness-managed toolset's
+    source cannot be edited, both answered as typed errors. Registration failures and an unknown id keep their untyped
+    ``{"ok": false, ...}`` answers. ``provider_registry`` is the registry whose cached adapter an update must evict (the toolset
+    router does it on every update): ``None`` (standalone builds) skips it; the app wiring always passes it.
+    """
+    guards = toolset_guards()
 
     async def _create_python_toolset_handler(args_json: dict):
         from primer.model.providers.toolset import (
@@ -91,15 +102,6 @@ def build_python_toolset_tools(
         from primer.toolset.python_runner.registration import RegistrationError
 
         args = _CreatePythonToolsetArgs(**args_json)
-        try:
-            tools = _derived(
-                args.source, args.toolset_id, args.default_timeout_seconds
-            )
-        except RegistrationError as exc:
-            return _ok(
-                {"ok": False, "error": str(exc), "field": exc.field,
-                 "lineno": exc.lineno}
-            )
         row = Toolset(
             id=args.toolset_id,
             provider=ToolsetProviderType.PYTHON,
@@ -109,6 +111,19 @@ def build_python_toolset_tools(
                 default_timeout_seconds=args.default_timeout_seconds,
             ),
         )
+        # Refused BEFORE registration: no code of a refused toolset is parsed.
+        refusal = refuse_create(guards, row)
+        if refusal is not None:
+            return refusal
+        try:
+            tools = _derived(
+                args.source, args.toolset_id, args.default_timeout_seconds
+            )
+        except RegistrationError as exc:
+            return _ok(
+                {"ok": False, "error": str(exc), "field": exc.field,
+                 "lineno": exc.lineno}
+            )
         await storage_provider.get_storage(Toolset).create(row)
         return _ok({"ok": True, "toolset_id": args.toolset_id, "tools": tools})
 
@@ -121,6 +136,11 @@ def build_python_toolset_tools(
         existing = await store.get(args.toolset_id)
         if existing is None:
             return _ok({"ok": False, "error": "not-found"})
+        # The stored row decides (as REST): a harness-managed toolset's source is not editable here. ``existing`` is passed as the
+        # incoming entity too, because this tool replaces only the source, never the owner.
+        refusal = refuse_update(guards, existing, existing)
+        if refusal is not None:
+            return refusal
         try:
             tools = _derived(
                 args.source,
@@ -135,6 +155,11 @@ def build_python_toolset_tools(
         existing.config.source = args.source
         existing.config.source_version += 1
         await store.update(existing)
+        if provider_registry is not None:
+            # The registry caches the adapter built from the row at first use, and the python adapter registers its tools from
+            # ``config.source`` when it is built, so without this the OLD source keeps serving until a restart. Same call the
+            # toolset router makes on every update (``_invalidate_toolset``); it publishes on the invalidation bus when one is bound.
+            await provider_registry.invalidate_toolset(args.toolset_id)
         return _ok(
             {
                 "ok": True,
@@ -213,7 +238,11 @@ def build_python_toolset_tools(
                 when=(
                     "Use when a python tool needs changing. The version is "
                     "bumped so a session parked in one of its tools resumes "
-                    "against the code that parked, not the new code."
+                    "against the code that parked, not the new code. The "
+                    "running toolset is dropped from the registry's cache, so "
+                    "the next call resolves the new source. A harness-managed "
+                    "toolset returns ``type=conflict``; an unknown id returns "
+                    "``{ok: false, error: not-found}``."
                 ),
                 args_schema=(
                     _UpdatePythonToolsetSourceArgs.model_json_schema()
@@ -228,6 +257,10 @@ def build_python_toolset_tools(
                     )
                 ],
                 required_role="admin",
+                # A row write THEN a registry cache eviction, no transaction between (the shape of the system toolset's hooked
+                # updates, see tests/toolset/test_interruptible_declarations.py). Unconditional: the app wiring always passes the
+                # registry, and a standalone build merely over-declares, which is the safe side of "when unsure".
+                interruptible=False,
             ),
             _update_python_toolset_source_handler,
         ),

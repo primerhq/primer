@@ -44,6 +44,7 @@ from primer.toolset.trigger import (
 )
 
 if TYPE_CHECKING:
+    from primer.api.registries.provider_registry import ProviderRegistry
     from primer.int.storage_provider import StorageProvider
 
 
@@ -71,8 +72,13 @@ def build_crud_toolset(
     claim_engine: Any = None,
     event_bus: Any = None,
     toolset_id: str = CRUD_TOOLSET_ID,
+    provider_registry: "ProviderRegistry | None" = None,
 ) -> InternalToolsetProvider:
-    """Construct the immutable ``crud`` toolset."""
+    """Construct the immutable ``crud`` toolset.
+
+    ``provider_registry`` is the registry whose cached toolset adapter ``update_python_toolset_source`` must evict (the app wiring
+    passes it; ``None`` for standalone builds).
+    """
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
 
     for label, plural, model_cls, guards in (
@@ -111,7 +117,7 @@ def build_crud_toolset(
 
     registry.update(
         build_python_toolset_tools(
-            storage_provider=storage_provider, toolset_id=toolset_id,
+            storage_provider=storage_provider, toolset_id=toolset_id, provider_registry=provider_registry,
         )
     )
 
