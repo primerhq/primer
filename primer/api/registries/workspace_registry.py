@@ -23,6 +23,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from primer.model.except_ import NotFoundError
+from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace import (
     WorkspaceProvider,
@@ -30,6 +31,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
 )
 from primer.workspace.files import FileResolvers
+from primer.workspace.local_policy import LocalWorkspacePolicy
 from primer.workspace.resolvers import (
     make_document_resolver,
     make_secret_resolver,
@@ -84,9 +86,13 @@ class WorkspaceRegistry:
         factory: Callable[[WorkspaceProvider], "WorkspaceBackend"] | None = None,
         subprocess_timeout_seconds: float = 120.0,
         secret_provider: "SecretProvider | None" = None,
+        local_policy: LocalWorkspacePolicy | None = None,
     ) -> None:
         self._sp = storage_provider
         self._secret_provider = secret_provider
+        # Where a workspace on a local provider may be used (ticket 01a1072f). The default is the
+        # permissive policy, so a registry built without one behaves exactly as before.
+        self._local_policy = local_policy or LocalWorkspacePolicy()
         # If a custom factory is supplied, use it as-is; otherwise build a
         # default factory that captures the configured subprocess timeout.
         self._factory = factory or _make_default_factory(subprocess_timeout_seconds)
@@ -95,7 +101,19 @@ class WorkspaceRegistry:
 
     # ---- backend cache -----------------------------------------------
 
+    @property
+    def local_policy(self) -> LocalWorkspacePolicy:
+        """Where a workspace on a local provider may be used; the health route and the create paths read it."""
+        return self._local_policy
+
     async def get_backend(self, provider_id: str) -> "WorkspaceBackend":
+        """The backend for *provider_id*; the ONE funnel every workspace access passes through.
+
+        Raises :class:`WorkspaceRefusedError` for a local provider the deployment refuses
+        (:class:`LocalWorkspacePolicy`), BEFORE the backend is built, so a refused provider never creates its
+        directories on this process's disk. The policy is fixed for the registry's life and only an allowed
+        backend is ever cached, so a cache hit needs no check of its own.
+        """
         async with self._lock:
             cached = self._cache.get(provider_id)
             if cached is not None:
@@ -105,10 +123,29 @@ class WorkspaceRegistry:
                 raise NotFoundError(
                     f"WorkspaceProvider {provider_id!r} does not exist"
                 )
+            self._local_policy.check_provider(row)
             backend = self._factory(row)
             await backend.initialize()
             self._cache[provider_id] = backend
             return backend
+
+    async def check_workspace_allowed(self, workspace_id: str) -> None:
+        """Raise :class:`WorkspaceRefusedError` when *workspace_id* sits on a provider this deployment refuses.
+
+        A policy-only look (the workspace row and its provider row, no backend built, nothing attached), for a caller
+        that must know BEFORE it reports or clears anything that depends on the workspace being usable. Costs nothing
+        while the policy refuses nothing, which is the default.
+        """
+        if not self._local_policy.refuses_local:
+            return
+        row = await self.get_workspace_row(workspace_id)
+        provider = await self._sp.get_storage(WorkspaceProvider).get(row.provider_id)
+        if provider is None:
+            return
+        try:
+            self._local_policy.check_provider(provider)
+        except WorkspaceRefusedError as exc:
+            raise exc.for_workspace(workspace_id) from None
 
     async def invalidate(self, provider_id: str) -> None:
         async with self._lock:
@@ -150,7 +187,11 @@ class WorkspaceRegistry:
         long-lived sandbox they materialised on a previous boot.
         """
         row = await self.get_workspace_row(workspace_id)
-        backend = await self.get_backend(row.provider_id)
+        try:
+            backend = await self.get_backend(row.provider_id)
+        except WorkspaceRefusedError as exc:
+            # The gate only sees a provider; say which workspace the caller was resolving.
+            raise exc.for_workspace(workspace_id) from None
         template = await self._sp.get_storage(WorkspaceTemplate).get(
             row.template_id,
         )
@@ -206,9 +247,21 @@ class WorkspaceRegistry:
         destroyed workspace were silently orphaned instead of ending).
         """
         row = await self.get_workspace_row(workspace_id)
-        backend = await self.get_backend(row.provider_id)
         try:
-            await backend.destroy(workspace_id)
+            backend = await self.get_backend(row.provider_id)
+        except WorkspaceRefusedError:
+            # An explicit destroy is how an operator abandons a workspace this deployment refuses
+            # (ticket 01a1072f). The backend is not reachable by policy, so only the row goes (and its
+            # sessions, below): whatever the workspace left on the provider's disk stays for the operator.
+            logger.warning(
+                "WorkspaceRegistry: destroying workspace %s on the refused local provider %s drops "
+                "its row only; its files are left in place",
+                workspace_id, row.provider_id,
+            )
+            backend = None
+        try:
+            if backend is not None:
+                await backend.destroy(workspace_id)
         except NotFoundError:
             # Row exists but backend has no live instance; still drop
             # the row so callers can re-materialise without a stale

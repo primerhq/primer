@@ -189,10 +189,13 @@ def _make_lifespan(config: AppConfig):
         # The chat-channel warm task is deferred until AFTER the claim engine is
         # built (~app.state.claim_engine below) so warmed adapters receive it and
         # can wake the worker on inbound chat messages.
+        local_workspace_policy = config.local_workspace_policy()
+        local_workspace_policy.log_boot()
         workspace_registry = WorkspaceRegistry(
             storage_provider,
             subprocess_timeout_seconds=config.subprocess_timeout_seconds,
             secret_provider=secret_provider,
+            local_policy=local_workspace_policy,
         )
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
@@ -820,6 +823,13 @@ def _make_lifespan(config: AppConfig):
         app.state.crud_toolset = crud_toolset
 
         from primer.bootstrap.seed import run_ensure_pass
+        from primer.workspace.local_policy import validate_default_template
+
+        # Fail the boot, loudly, when the default workspace would be seeded on a provider this
+        # deployment refuses (the ensure pass below swallows a step's error and would only log it).
+        await validate_default_template(
+            local_workspace_policy, storage_provider, config.default_workspace_template,
+        )
 
         _ensure = await run_ensure_pass(
             storage_provider,

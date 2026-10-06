@@ -258,3 +258,76 @@ async def test_health_stays_200_while_the_database_is_down(app, client) -> None:
     health = await client.get("/v1/health")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# workspaces.local: the topology rule for local-provider workspaces (ticket 01a1072f)
+# ---------------------------------------------------------------------------
+
+
+def _policy(*, enforce: bool, single_process: bool = False):
+    from primer.model.scheduler import RuntimeMode, SchedulerProviderType
+    from primer.workspace.local_policy import LocalWorkspacePolicy
+
+    return LocalWorkspacePolicy.from_topology(
+        runtime_mode=RuntimeMode.WORKER, scheduler_provider=SchedulerProviderType.POSTGRES,
+        enforce=enforce, single_process=single_process,
+    )
+
+
+class _CensusProbe:
+    def __init__(self, count) -> None:
+        self.local_workspace_count = count
+
+
+def _wire(app, policy, census) -> None:
+    """Only what /v1/health may read: in-process state, never a registry call that reaches storage."""
+    from types import SimpleNamespace
+
+    app.state.workspace_registry = SimpleNamespace(local_policy=policy)
+    app.state.workspace_probe = _CensusProbe(census)
+
+
+@pytest.mark.asyncio
+async def test_health_reports_the_local_workspace_rule_off_by_default(client) -> None:
+    body = (await client.get("/v1/health")).json()
+    local = body["workspaces"]["local"]
+    assert local["enforcing"] is False
+    assert local["refusing_local"] is False
+    assert local["distributed"] is False
+    assert local["signals"] == []
+
+
+@pytest.mark.asyncio
+async def test_health_counts_the_workspaces_a_refusing_deployment_cannot_use(app, client) -> None:
+    _wire(app, _policy(enforce=True), census=3)
+    local = (await client.get("/v1/health")).json()["workspaces"]["local"]
+    assert local["distributed"] is True and local["enforcing"] is True and local["refusing_local"] is True
+    assert local["local_workspaces"] == 3
+    assert local["unusable"] == 3
+    assert len(local["signals"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_health_shows_what_switching_the_rule_on_would_do(app, client) -> None:
+    """Switch OFF: nothing is unusable yet, but the operator can see the count flipping it would strand."""
+    _wire(app, _policy(enforce=False), census=3)
+    local = (await client.get("/v1/health")).json()["workspaces"]["local"]
+    assert local["distributed"] is True and local["enforcing"] is False and local["refusing_local"] is False
+    assert local["local_workspaces"] == 3
+    assert local["unusable"] == 0
+
+
+@pytest.mark.asyncio
+async def test_health_shows_the_single_process_opt_in(app, client) -> None:
+    _wire(app, _policy(enforce=True, single_process=True), census=2)
+    local = (await client.get("/v1/health")).json()["workspaces"]["local"]
+    assert local["single_process"] is True and local["refusing_local"] is False and local["unusable"] == 0
+
+
+@pytest.mark.asyncio
+async def test_health_does_not_guess_a_count_the_probe_has_not_made(app, client) -> None:
+    _wire(app, _policy(enforce=True), census=None)
+    local = (await client.get("/v1/health")).json()["workspaces"]["local"]
+    assert local["local_workspaces"] is None
+    assert local["unusable"] is None, "a refusing deployment with no count yet must say unknown, not zero"

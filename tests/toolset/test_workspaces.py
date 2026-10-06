@@ -804,6 +804,34 @@ class TestSubResourceHandlers:
         assert json.loads(result.output)["type"] == "not-found"
 
     @pytest.mark.asyncio
+    async def test_create_workspace_on_a_refused_local_provider_creates_nothing(self, sp) -> None:
+        """Ticket 01a1072f: the tool returns the same refusal the REST route does, as its error text, with no
+        backend built and no row written."""
+        from primer.model.scheduler import RuntimeMode, SchedulerProviderType
+        from primer.workspace.local_policy import LocalWorkspacePolicy
+
+        registry = WorkspaceRegistry(
+            sp, factory=_StubBackend,
+            local_policy=LocalWorkspacePolicy.from_topology(
+                runtime_mode=RuntimeMode.WORKER, scheduler_provider=SchedulerProviderType.POSTGRES, enforce=True,
+            ),
+        )
+        refusing = build_workspaces_toolset(storage_provider=sp, workspace_registry=registry)
+        await refusing.call(
+            tool_name="create_workspace_provider",
+            arguments={"entity": _provider().model_dump(mode="json")},
+        )
+        await refusing.call(tool_name="create_workspace_template", arguments={"entity": _template_body()})
+
+        result = await refusing.call(tool_name="create_workspace", arguments={"id": "ws-no", "template_id": "tpl-1"})
+
+        assert result.is_error
+        assert "local workspace provider" in result.output and "k3s-default" in result.output
+        assert registry._cache == {}, "a refused provider's backend must not be built"
+        got = await refusing.call(tool_name="get_workspace", arguments={"id": "ws-no"})
+        assert got.is_error, "no workspace row may exist"
+
+    @pytest.mark.asyncio
     async def test_delete_workspace_via_toolset(self, toolset, seeded) -> None:
         result = await toolset.call(
             tool_name="delete_workspace", arguments={"id": seeded}

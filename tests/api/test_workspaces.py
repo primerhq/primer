@@ -1253,6 +1253,56 @@ class TestWorkspaceRouter:
 # ===========================================================================
 
 
+class TestRefusedLocalWorkspaces:
+    """Ticket 01a1072f: a deployment whose topology forbids local workspaces answers a create with a typed 409,
+    still lets an operator see and abandon the workspaces it refuses, and hands out nothing."""
+
+    @pytest.fixture
+    def wsr(self, sp) -> WorkspaceRegistry:
+        from primer.model.scheduler import RuntimeMode, SchedulerProviderType
+        from primer.workspace.local_policy import LocalWorkspacePolicy
+
+        return WorkspaceRegistry(
+            sp, factory=_FakeBackend,
+            local_policy=LocalWorkspacePolicy.from_topology(
+                runtime_mode=RuntimeMode.API, scheduler_provider=SchedulerProviderType.POSTGRES, enforce=True,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_is_a_409_with_its_own_type_and_writes_nothing(self, client, wsr, sp) -> None:
+        await client.post("/v1/workspace_providers", json=_provider().model_dump(mode="json"))
+        await client.post("/v1/workspace_templates", json=_template().model_dump(mode="json"))
+
+        post = await client.post("/v1/workspaces", json={"template_id": "tpl-1", "id": "ws-refused"})
+
+        assert post.status_code == 409, post.text
+        body = post.json()
+        assert body["type"] == "/errors/workspace-refused"
+        assert "k3s-default" in body["detail"] and "single_process" in body["detail"]
+        assert body["extensions"]["provider_id"] == "local-1"
+        assert wsr._cache == {}, "the refused provider's backend must never be built"
+        assert (await client.get("/v1/workspaces/ws-refused")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_an_existing_refused_workspace_can_still_be_seen_and_abandoned(self, client, sp) -> None:
+        from primer.model.workspace import Workspace as WorkspaceRow
+
+        await client.post("/v1/workspace_providers", json=_provider().model_dump(mode="json"))
+        await client.post("/v1/workspace_templates", json=_template().model_dump(mode="json"))
+        await sp.get_storage(WorkspaceRow).create(WorkspaceRow(
+            id="ws-old", template_id="tpl-1", provider_id="local-1", created_at=datetime.now(timezone.utc),
+            phase="running", runtime_meta={"url": "ws://unused", "token": "unused"},
+        ))
+
+        shown = await client.get("/v1/workspaces/ws-old")
+        assert shown.status_code == 200, "the row is what an operator needs in order to migrate it"
+
+        deleted = await client.delete("/v1/workspaces/ws-old")
+        assert deleted.status_code == 204, deleted.text
+        assert (await client.get("/v1/workspaces/ws-old")).status_code == 404
+
+
 class TestSessionsSubResource:
     async def _setup(self, client, wsr):
         await client.post(

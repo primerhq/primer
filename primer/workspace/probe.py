@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 from primer.model.storage import OffsetPage
 from primer.model.workspace import Workspace as WorkspaceRow
+from primer.model.workspace import WorkspaceProvider, WorkspaceProviderType
+from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.workspace.session_reconcile import reconcile_sessions_to_workspace_lost
 
 
@@ -78,6 +80,10 @@ class WorkspaceProbeTask:
         self._miss_counts: dict[str, int] = defaultdict(int)
         self._hit_counts: dict[str, int] = defaultdict(int)
         self._stop_event = asyncio.Event()
+        # How many workspace rows (any phase) sit on a local provider, as of the last tick; None until the first
+        # one. /v1/health reads in-process state only, so the count is kept here, where the database is already
+        # read on a timer, instead of being fetched per request (ticket 01a1072f).
+        self.local_workspace_count: int | None = None
 
     async def start(self) -> None:
         """Run the probe loop until :meth:`stop` is called.
@@ -117,6 +123,8 @@ class WorkspaceProbeTask:
         back to storage.
         """
         storage = self._sp.get_storage(WorkspaceRow)
+        local_provider_ids = await self._local_provider_ids()
+        local_count = 0
 
         offset = 0
         while True:
@@ -125,12 +133,35 @@ class WorkspaceProbeTask:
             )
             items = list(page.items)
             for ws in items:
+                if local_provider_ids is not None and ws.provider_id in local_provider_ids:
+                    local_count += 1
                 if ws.phase not in ("pending", "running", "failed"):
                     continue
                 await self._probe_one(storage, ws)
             if len(items) < _LIST_PAGE_SIZE:
                 break
             offset += _LIST_PAGE_SIZE
+        if local_provider_ids is not None:
+            self.local_workspace_count = local_count
+
+    async def _local_provider_ids(self) -> set[str] | None:
+        """Ids of the providers of kind ``local``, or None when they could not be listed (the census keeps its last
+        value then; a failed listing must never break the probe's real job)."""
+        try:
+            ids: set[str] = set()
+            offset = 0
+            while True:
+                page = await self._sp.get_storage(WorkspaceProvider).list(
+                    OffsetPage(offset=offset, length=_LIST_PAGE_SIZE)
+                )
+                items = list(page.items)
+                ids.update(p.id for p in items if p.provider == WorkspaceProviderType.LOCAL)
+                if len(items) < _LIST_PAGE_SIZE:
+                    return ids
+                offset += _LIST_PAGE_SIZE
+        except Exception:  # noqa: BLE001 -- best-effort census
+            logger.warning("workspace probe: could not list the workspace providers for the census", exc_info=True)
+            return None
 
     async def _probe_one(self, storage: Any, ws: Any) -> None:
         """Ping one workspace and update its row with the result."""
@@ -139,6 +170,12 @@ class WorkspaceProbeTask:
         try:
             handle = await self._registry.get_workspace(ws.id)
             ok = bool(await handle.ping())
+        except WorkspaceRefusedError:
+            # The deployment refuses this workspace's provider (a local one where the topology forbids it,
+            # ticket 01a1072f). The workspace is intact, so this is neither a hit nor a miss: counting it would
+            # flip the row to failed and end every open session on it workspace_lost, which is permanent.
+            # Leave the row and its streaks exactly as they are.
+            return
         except Exception as exc:  # noqa: BLE001 -- treat as a miss
             fail_reason = f"{type(exc).__name__}: {exc}"
 

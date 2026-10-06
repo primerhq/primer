@@ -95,6 +95,58 @@ class WorkerPoolHealth(BaseModel):
     )
 
 
+class LocalWorkspacesHealth(BaseModel):
+    distributed: bool = Field(
+        ...,
+        description=(
+            "True when this deployment's topology means more than one process could touch a local workspace: "
+            "runtime_mode is not 'api+worker', or the scheduler is postgres."
+        ),
+    )
+    enforcing: bool = Field(
+        ...,
+        description="The local_workspaces.refuse_when_distributed switch (off by default).",
+    )
+    single_process: bool = Field(
+        ...,
+        description=(
+            "The local_workspaces.single_process operator assertion that exactly one process runs everything."
+        ),
+    )
+    refusing_local: bool = Field(
+        ...,
+        description=(
+            "True when this process refuses to hand out a workspace on a local provider "
+            "(enforcing, distributed and not single_process)."
+        ),
+    )
+    signals: list[str] = Field(
+        default_factory=list,
+        description="Which topology signals made the deployment distributed; empty when it is not.",
+    )
+    local_workspaces: int | None = Field(
+        default=None,
+        description=(
+            "Workspaces (any phase) on a local provider, as of the workspace probe's last tick; null before the "
+            "first tick. Reported with the switch OFF too, so an operator can see what turning it on would strand."
+        ),
+    )
+    unusable: int | None = Field(
+        default=None,
+        description=(
+            "Workspaces this process refuses right now: local_workspaces while refusing_local, else 0; null when "
+            "refusing but not counted yet (unknown, not zero)."
+        ),
+    )
+
+
+class WorkspacesHealth(BaseModel):
+    local: LocalWorkspacesHealth = Field(
+        ...,
+        description="Whether, and how much of, the deployment's local-provider workspaces this process refuses.",
+    )
+
+
 class HealthStatus(BaseModel):
     status: Literal["ok"] = Field(
         default="ok",
@@ -112,6 +164,32 @@ class HealthStatus(BaseModel):
         ...,
         description="In-flight + capacity + metrics of the worker pool.",
     )
+    workspaces: WorkspacesHealth | None = Field(
+        default=None,
+        description=(
+            "The local-provider workspace rule (ticket 01a1072f). Null when this process has no workspace "
+            "registry to ask."
+        ),
+    )
+
+
+def _workspaces_health(request: Request) -> WorkspacesHealth | None:
+    """The local-workspace rule and its census, from in-process state only (this route must stay 200 without the DB)."""
+    registry = getattr(request.app.state, "workspace_registry", None)
+    policy = getattr(registry, "local_policy", None)
+    if policy is None:
+        return None
+    census = getattr(getattr(request.app.state, "workspace_probe", None), "local_workspace_count", None)
+    described = policy.describe()
+    return WorkspacesHealth(local=LocalWorkspacesHealth(
+        distributed=described["distributed"],
+        enforcing=described["enforcing"],
+        single_process=described["single_process"],
+        refusing_local=described["refusing_local"],
+        signals=described["signals"],
+        local_workspaces=census,
+        unusable=(census if described["refusing_local"] else 0),
+    ))
 
 
 @router.get(
@@ -169,6 +247,7 @@ async def health(request: Request) -> HealthStatus:
             pool_capacity = None
 
     return HealthStatus(
+        workspaces=_workspaces_health(request),
         version=APP_VERSION,
         scheduler=SchedulerHealth(
             alive=scheduler is not None,
