@@ -590,6 +590,81 @@ async def test_a_value_no_backend_can_store_fails_the_task_instead_of_escaping_t
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [
+    dict(success=True, drop_lease=True, entity_update={"last_error": object()}),
+    dict(success=True, drop_lease=True, entity_update={"last_error": b"\xff"}),
+    dict(success=False, drop_lease=True, last_error=b"\xff"),
+    dict(success=False, entity_update={"last_error": object()}),
+    dict(success=False, drop_lease=True, park=ParkRequest(
+        parked_state={"prompt": object()}, parked_event_key="tool_approval:sess-1:t1", parked_until=None,
+        parked_at=_now(),
+    )),
+], ids=["terminal-object", "terminal-bytes", "terminal-outcome-last_error-bytes", "retry-object", "gate-object"])
+async def test_a_value_json_cannot_encode_fails_the_task_instead_of_escaping_the_release(kwargs) -> None:
+    """The other family of unstorable values: one JSON has no form for (an arbitrary object, bytes that are not UTF-8).
+    ``to_jsonable_python`` raises ``PydanticSerializationError`` / ``UnicodeDecodeError`` BEFORE ``patch_if`` is called,
+    so the ``PatchValueError`` catch never saw it and it escaped ``on_release``: the release rolled back and the lease
+    was claimed and released the same way again for ever. It now fails the task like the surrogate and the non-finite
+    number, with a reason that names no value."""
+    storage = FakeStorage(_make_task("t1"))
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+
+    await adapter.on_release(conn=None, entity_id="t1", outcome=_release("t1", **kwargs))
+
+    failed = await storage.get("t1")
+    assert failed.state == ToolCallTaskState.FAILED
+    assert failed.last_error == (
+        "the worker's release was invalid: it gave a value that cannot be encoded as JSON "
+        "(an object JSON has no form for, or bytes that are not valid UTF-8)"
+    )
+    assert failed.result_state is None and failed.gate_event_key is None, "the refused value was applied"
+
+
+@pytest.mark.asyncio
+async def test_an_unstorable_claim_token_leaves_the_row_alone_and_raises_out_of_the_release() -> None:
+    """The one unstorable value the failure path cannot absorb is the claim token itself: ``_fail_rejected`` fences its
+    own write on the same token, so that write is refused too and the ``_InvalidEntityUpdate`` leaves ``on_release``
+    (the release fails, the row is left as it was and the lease stays claimed until it expires)."""
+    from primer.claim.adapters.tool_calls import _InvalidEntityUpdate
+
+    task = _make_task("t1", claim_token=_LONE_SURROGATE)
+    storage = FakeStorage(task)
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    before = await storage.get("t1")
+
+    with pytest.raises(_InvalidEntityUpdate):
+        await adapter.on_release(
+            conn=None, entity_id="t1",
+            outcome=ReleaseOutcome(success=True, drop_lease=True, claim_token=_LONE_SURROGATE),
+        )
+
+    assert await storage.get("t1") == before, "a release whose token cannot be stored wrote something"
+
+
+@pytest.mark.asyncio
+async def test_the_invalid_release_log_does_not_claim_a_failure_its_fence_refused(caplog) -> None:
+    """``_fail_rejected`` logs BEFORE its write. A stale claim token (the task was taken over) refuses that write, so
+    the task is NOT failed: the ERROR line must say the attempt was made, not that the task is failed."""
+    storage = FakeStorage(_make_task("t1"))
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    before = await storage.get("t1")
+
+    with caplog.at_level(logging.ERROR, logger="primer.claim.adapters.tool_calls"):
+        await adapter.on_release(
+            conn=None, entity_id="t1",
+            outcome=ReleaseOutcome(
+                success=True, drop_lease=True, claim_token="tok-of-another-claim", entity_update={"attempts": 1, "bogus": 2},
+            ),
+        )
+
+    assert await storage.get("t1") == before, "a stale release failed the task"
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors, "the invalid release was not logged"
+    assert not any("is failed terminally" in m for m in errors), errors
+    assert any("failing the task terminally" in m for m in errors), errors
+
+
+@pytest.mark.asyncio
 async def test_a_malformed_spec_the_adapter_built_itself_propagates_and_is_not_blamed_on_the_handler(monkeypatch) -> None:
     """Only a VALUE the patch layer refuses (``PatchValueError``) is the handler's doing. Any other ``PatchSpecError`` is a
     spec the adapter itself built wrongly (here: a field renamed on the way to ``patch_if``, as a typo in the adapter
