@@ -20,6 +20,7 @@ What is pinned here, as the session records it:
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -459,6 +460,68 @@ class TestAStopThatEndsAnExternalToolPark:
         assert outcome.park is not None and outcome.park.parked_event_key == f"external_tool:{sid}:a"
         rows = await self._rows(fake_storage_provider, sid)
         assert [(r.tool_call_id, r.status) for r in rows] == [("a", "pending")]
+
+
+class TestTheExternalCallCleanupCannotFailOrStallTheCancelledExit:
+    """``_cancel_the_stopped_external_call`` runs on the cancelled exit, between the CANCELLED record and the terminal
+    publish (so a listener never sees a pending row for a turn that has ended). It is best effort: storage that never
+    answers may delay the exit by at most ``_BEST_EFFORT_IO_TIMEOUT_S``, and storage that fails must not fail it. In both
+    cases the terminal event still goes out exactly once, the session is left stopped (WAITING) and the outcome
+    succeeds. The storage is the real in-memory one with ONE method made to hang or raise, so the real
+    ``cancel_pending_external`` and the real exit run."""
+
+    async def _stopped_external_turn(self, seeded_session, io, bus, storage, monkeypatch, update):
+        monkeypatch.setattr(storage.get_storage(ExternalToolCall), "update", update)
+        seen = _Observed(monkeypatch, bus, seeded_session.id)
+        llm = _OneRoundLlm([("a", "wait")])
+        manager = _ExternalToolManager(parking="a", key="", storage=storage, bus=bus, sid=seeded_session.id)
+        outcome = await _turn(seeded_session, io, bus, storage, _RealLoopExecutor(llm, manager))
+        return seen, outcome
+
+    async def _assert_the_exit_finished(self, seen, outcome, storage, sid: str) -> None:
+        assert outcome.success and outcome.drop_lease and outcome.park is None
+        assert seen.terminal == [{"status": "waiting", "ended_reason": None}], f"the terminal event: {seen.terminal}"
+        row = await storage.get_storage(WorkspaceSession).get(sid)
+        assert row.status == SessionStatus.WAITING and row.interrupt_requested is False
+
+    async def test_a_cleanup_that_never_returns_delays_the_exit_by_the_bound_and_does_not_stop_it(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,
+    ) -> None:
+        monkeypatch.setattr(dispatch, "_BEST_EFFORT_IO_TIMEOUT_S", 0.2)
+        caplog.set_level(logging.WARNING, logger="primer.session.dispatch")
+        reached: list[str] = []
+
+        async def never(row) -> None:
+            reached.append(row.tool_call_id)
+            await asyncio.Event().wait()
+
+        seen, outcome = await self._stopped_external_turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, never,
+        )
+
+        assert reached == ["a"], "the cleanup never ran: the test is not in its situation"
+        await self._assert_the_exit_finished(seen, outcome, fake_storage_provider, seeded_session.id)
+        assert any("was not confirmed within" in r.getMessage() for r in caplog.records), "the timeout was not logged"
+
+    async def test_a_cleanup_that_raises_does_not_fail_the_exit(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,
+    ) -> None:
+        caplog.set_level(logging.WARNING, logger="primer.session.dispatch")
+        reached: list[str] = []
+
+        async def broken(row) -> None:
+            reached.append(row.tool_call_id)
+            raise RuntimeError("the storage is down")
+
+        seen, outcome = await self._stopped_external_turn(
+            seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, broken,
+        )
+
+        assert reached == ["a"], "the cleanup never ran: the test is not in its situation"
+        await self._assert_the_exit_finished(seen, outcome, fake_storage_provider, seeded_session.id)
+        assert any(
+            "could not cancel the pending external tool call" in r.getMessage() for r in caplog.records
+        ), "the failure was not logged"
 
 
 class TestAStopCancelsTheCallThatWouldPark:
