@@ -2218,10 +2218,22 @@ async def _noop_if_turn_already_completed(
       queued steer, which arms itself through ``wake_session``), recovering a crash between the marker and the
       checkpoint. With nothing queued there is nothing to arm.
 
-    Input waiting on a row the pool does not re-arm (not RUNNING or WAITING: CREATED or PAUSED after a reset or a
-    stale write), an arming patch that is refused, and a log that cannot be read all return ``None``: the turn runs,
-    as it did before this guard. It never swallows a turn it cannot see or cannot hand on.
+    An arming patch the row refuses means another process changed it under the patch; the row is read again under
+    the same lock acquisition and decides:
+
+    * ENDED: the lease is dropped as the ENDED exit of ``run_one_session_turn`` does (a stale ``turn_status ==
+      "running"`` healed, the same outcome), and the input is not answered;
+    * PAUSED: the no-op with the pause exit's outcome (``preserve_park=True``: a park is kept for /resume, and the
+      adapter still applies the lost ``turn_no`` bump on success), leaving the input for /resume (a stale
+      ``running`` is healed here too);
+    * still RUNNING or WAITING, gone, or any other status (CREATED): ``None``, the turn runs and answers it now.
+
+    Both refused-patch releases count as no-ops and log the WARNING, and neither runs the drain checkpoint. Input
+    waiting on a row the pool does not re-arm (not RUNNING or WAITING: CREATED or PAUSED after a reset or a stale
+    write), an arming patch that raises, and a log that cannot be read all return ``None``: the turn runs, as it did
+    before this guard. It never swallows a turn it cannot see or cannot hand on.
     """
+    paused = False
     async with session_lifecycle_lock().acquire(session_id):
         fresh = await session_storage.get(session_id)
         if fresh is None or fresh.completed_turn_no is None or fresh.completed_turn_no != fresh.turn_no:
@@ -2252,9 +2264,23 @@ async def _noop_if_turn_already_completed(
                         session_id, fresh.turn_no, exc_info=True,
                     )
                     return None
-                if armed is None:   # the row changed under the patch (another process): answer it now
-                    return None
-                work = "an unanswered input was armed"
+                if armed is not None:
+                    work = "an unanswered input was armed"
+                else:
+                    # The row changed under the patch (another process: this lock is per-process). Decide from the
+                    # row as it is now, under the same lock acquisition.
+                    now = await session_storage.get(session_id)
+                    if now is None or now.status not in (SessionStatus.ENDED, SessionStatus.PAUSED):
+                        return None   # still RUNNING or WAITING (or gone, or CREATED): answer it now
+                    # Running the turn would undo the pause, or answer on an ended session. Heal a stale "running"
+                    # as the ENDED and pause exits of run_one_session_turn do.
+                    if now.turn_status == "running":
+                        await _clear_turn_running(session_storage, session_id)
+                    paused = now.status == SessionStatus.PAUSED
+                    work = (
+                        "the row was paused under the arming patch; its input is left for /resume" if paused
+                        else "the row ended under the arming patch"
+                    )
             else:
                 work = None
     if work is None:
@@ -2266,7 +2292,9 @@ async def _noop_if_turn_already_completed(
         "the model again (%s)",
         session_id, fresh.turn_no, work or "no unanswered input",
     )
-    return ReleaseOutcome(success=True, drop_lease=True)
+    # A PAUSED row gets the pause exit's release: its park is kept for /resume. preserve_park does not block the
+    # turn_no bump (the adapter bumps on success in that branch too), so the lost bump is still applied once.
+    return ReleaseOutcome(success=True, drop_lease=True, preserve_park=paused)
 
 
 # The statuses ``WorkerPool._maybe_rearm_session`` re-arms a claimable row in.
