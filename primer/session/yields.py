@@ -119,13 +119,17 @@ def tool_wait_event_key(session_id: str, *, scoped_task_id: str) -> str:
       ``node_id=None`` convention. Taken from the id rather than a separate
       ``node_id`` parameter, so BOTH surfaces compute this key from exactly
       the same source data.
-    * The turn segment is the one the id was minted with, as written:
-      ``<turn_no>``, or ``<turn_no>.<epoch>`` after a retired turn, so keys
-      stay unique across epochs. It is the turn that MATERIALIZED the
-      batch, which a batch's ids carry through every round trip, so the
-      key does not move when the session's own turn counter does (a key
-      computed from ``session.turn_no`` diverged from one computed from
-      ``task.turn_no`` after a park-preserving bump).
+    * The turn segment is the one the id was minted with, as written.
+      Every id written today carries the plain turn number
+      (``scoped_tool_call_id`` formats an int turn number only, so the
+      segment is ``<turn_no>``). The parser also ACCEPTS
+      ``<turn_no>.<epoch>`` (a retired-turn epoch, epoch > 0), which
+      nothing writes yet, so that a future writer's ids keep working and
+      their keys stay distinct from the retired turn's. It is the turn
+      that MATERIALIZED the batch, which a batch's ids carry through every
+      round trip, so the key does not move when the session's own turn
+      counter does (a key computed from ``session.turn_no`` diverged from
+      one computed from ``task.turn_no`` after a park-preserving bump).
 
     The graph surface can have SEVERAL concurrent fan-out siblings each
     raise their OWN ``ToolWaitPark`` in the SAME superstep (same

@@ -314,8 +314,9 @@ session_completed_turn_noop_total = Counter(
 tool_wait_malformed_scoped_id_total = Counter(
     "tool_wait_malformed_scoped_id_total",
     "Tool-call task ids that did not parse as a scoped id where a tool_wait wake key was needed, "
-    "by site (adapter: the last-sibling release woke nothing; materializer, dispatch, repark: "
-    "that batch's key was left out of the park). Any non-zero value is a bug in the id mint.",
+    "by site (adapter: the last-sibling release woke nothing; materializer, repark: that batch's key "
+    "was left out of the park; dispatch: no batch's id parsed, so the park was not written and the "
+    "turn ended failed). Any non-zero value is a bug in the id mint.",
     ["site"],
     registry=registry,
 )
@@ -637,8 +638,9 @@ def reset_for_test() -> None:
     tool_wait_malformed_scoped_id_total = Counter(
         "tool_wait_malformed_scoped_id_total",
         "Tool-call task ids that did not parse as a scoped id where a tool_wait wake key was needed, "
-        "by site (adapter: the last-sibling release woke nothing; materializer, dispatch, repark: "
-        "that batch's key was left out of the park). Any non-zero value is a bug in the id mint.",
+        "by site (adapter: the last-sibling release woke nothing; materializer, repark: that batch's key "
+        "was left out of the park; dispatch: no batch's id parsed, so the park was not written and the "
+        "turn ended failed). Any non-zero value is a bug in the id mint.",
         ["site"],
         registry=registry,
     )
