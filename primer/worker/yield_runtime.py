@@ -471,10 +471,11 @@ def classify_marker_payload(
     The body of :func:`classify_resume_payload`, for a caller that holds the
     raw dict instead of a :class:`ParkedState`: the multi-event graph drain
     (``resume_graph_engine``'s ``payloads_map`` branch) converts every
-    accumulated entry through it, so a nested leaf or an agent node there
-    receives the same :class:`YieldTimeout` / :class:`YieldCancelled` the
-    single-event path builds (a hook that recognises a marker only by
-    ``isinstance`` would otherwise take the dict for an operator reply).
+    accumulated entry through it, so every node there (a value-yielding
+    tool_call node, an agent node, a nested leaf) receives the same
+    :class:`YieldTimeout` / :class:`YieldCancelled` the single-event path
+    builds (a hook that recognises a marker only by ``isinstance`` would
+    otherwise take the dict for an operator reply).
 
     A marker is recognised by its KEY being present, whatever its value.
     ``elapsed_seconds`` is measured from ``parked_at`` (the park's own
