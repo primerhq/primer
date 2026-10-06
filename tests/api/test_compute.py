@@ -72,7 +72,7 @@ class TestAgentStatus:
 
         resp = await client.get("/v1/agents/agt-1/status")
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "issues": []}
+        assert resp.json() == {"ok": True, "issues": [], "warnings": []}
 
     @pytest.mark.asyncio
     async def test_status_flags_missing_provider(self, client) -> None:
@@ -121,7 +121,7 @@ class TestAgentStatus:
         await client.post("/v1/agents", json=body)
         resp = await client.get("/v1/agents/agt-1/status")
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "issues": []}
+        assert resp.json() == {"ok": True, "issues": [], "warnings": []}
 
 
 class TestAgentStatusAggregatedProfile:
@@ -182,7 +182,7 @@ class TestAgentStatusAggregatedProfile:
 
         resp = await client.get("/v1/agents/agt-1/status")
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "issues": []}
+        assert resp.json() == {"ok": True, "issues": [], "warnings": []}
 
     @pytest.mark.asyncio
     async def test_status_flags_missing_member(

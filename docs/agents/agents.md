@@ -150,6 +150,14 @@ either, but the turn ends with the provider's own error, not
 stream error's own code as `ended_detail` (`bad_request`) when the adapter
 reported it as a stream error (Ollama, Gemini).
 
+Primer warns about such a cap before a turn is lost to it, and does not refuse it
+(some servers clamp an oversized cap instead of rejecting it, so a refusal would
+break setups that work): `GET /v1/agents/{id}/status` returns a `warnings` list
+next to `issues` (a warning does not make `ok` false, and the agent page shows
+it), and a turn logs a warning at its start. For an aggregated profile the check
+uses the largest member window, so it warns only when no member could ever take
+the call.
+
 Streaming: subscribers (workspace tap clients, internal taps) see token
 events in the order the LLM produces them. Persisted state is the
 complete messages, not the token-by-token stream - reconnect

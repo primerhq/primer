@@ -6170,3 +6170,40 @@ async def test_t0414_delete_agent_flips_graph_status_to_failed(
         await client.delete(f"/v1/graphs/{graph_id}")
         # agent already deleted (the body of the test)
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# 01a10c6b item 2 - Agent status WARNS about an output cap that fills the window
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_agent_status_warns_when_the_output_cap_fills_the_window(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """The provider's model has a 200_000-token window (`_llm_body`). An agent whose `max_output_tokens` is not below it
+    still saves and `ok` stays true, but the status carries a warning; one whose cap fits carries none."""
+    provider_id = f"llm-cap-{unique_suffix}"
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        for cap, expect_warning in ((200_000, True), (1_000, False)):
+            agent_id = f"agent-cap-{cap}-{unique_suffix}"
+            body = _agent_body(agent_id, provider_id=provider_id, tools=[])
+            body["max_output_tokens"] = cap
+            ag = await client.post("/v1/agents", json=body)
+            assert ag.status_code == 201, ag.text
+            try:
+                resp = await client.get(f"/v1/agents/{agent_id}/status")
+                assert resp.status_code == 200, resp.text
+                status = resp.json()
+                assert status["ok"] is True and status["issues"] == [], status
+                if expect_warning:
+                    assert len(status["warnings"]) == 1, status
+                    assert f"max_output_tokens ({cap})" in status["warnings"][0], status
+                else:
+                    assert status["warnings"] == [], status
+            finally:
+                await client.delete(f"/v1/agents/{agent_id}")
+    finally:
+        await client.delete(f"/v1/llm_providers/{provider_id}")
