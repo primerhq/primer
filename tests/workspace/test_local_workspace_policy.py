@@ -8,6 +8,7 @@ an operator (destroy, the single-process opt-in) and the boot validation of the 
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -362,3 +363,37 @@ async def test_boot_does_not_validate_when_the_policy_allows_local() -> None:
 
 async def test_boot_leaves_an_absent_template_to_the_seed() -> None:
     await validate_default_template(_policy(WORKER, POSTGRES), _templates(), "nope")
+
+
+# ---------------------------------------------------------------------------
+# The boot line says which way the rule is set
+# ---------------------------------------------------------------------------
+
+
+def _boot_lines(policy: LocalWorkspacePolicy, caplog) -> list[tuple[int, str]]:
+    with caplog.at_level(logging.INFO, logger="primer.workspace.local_policy"):
+        policy.log_boot()
+    return [(r.levelno, r.getMessage()) for r in caplog.records]
+
+
+def test_the_boot_warns_that_local_workspaces_are_refused(caplog) -> None:
+    [(level, message)] = _boot_lines(_policy(WORKER, POSTGRES), caplog)
+    assert level == logging.WARNING
+    assert "REFUSED" in message and "migrated" in message and "runtime_mode" in message
+
+
+def test_the_boot_warns_when_the_operator_overrides_a_distributed_looking_deployment(caplog) -> None:
+    [(level, message)] = _boot_lines(_policy(BOTH, POSTGRES, single_process=True), caplog)
+    assert level == logging.WARNING
+    assert "single_process" in message and "ALLOWED" in message and "postgres" in message
+
+
+def test_the_boot_only_notes_a_distributed_deployment_whose_switch_is_off(caplog) -> None:
+    [(level, message)] = _boot_lines(_policy(WORKER, POSTGRES, enforce=False), caplog)
+    assert level == logging.INFO
+    assert "refuse_when_distributed is off" in message
+
+
+def test_the_boot_says_nothing_for_a_single_process_deployment(caplog) -> None:
+    assert _boot_lines(_policy(BOTH, None), caplog) == []
+    assert _boot_lines(_policy(BOTH, None, enforce=False), caplog) == []
