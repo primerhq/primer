@@ -91,19 +91,25 @@ class _HandshakeNeverCompletes(McpToolsetProvider):
 
 
 class _Recorder:
-    """A toolset whose one tool records that it ran: the side effect a stopped subagent must not have."""
+    """A toolset whose one tool records that it ran: the side effect a stopped subagent must not have.
 
-    def __init__(self) -> None:
+    ``on_call`` runs inside the tool call (for a test where the Stop lands DURING a call that then finishes)."""
+
+    def __init__(self, tool_id: str = "exec", on_call: Callable[[], None] | None = None) -> None:
         self.executed: list[str] = []
+        self.tool_id = tool_id
+        self.on_call = on_call
 
     def required_role(self, tool_name: str) -> str:
         return "user"
 
     async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
-        yield Tool(id="exec", description="runs a command", toolset_id="rec", args_schema=_SCHEMA)
+        yield Tool(id=self.tool_id, description="runs a command", toolset_id="rec", args_schema=_SCHEMA)
 
     async def call(self, *, tool_name: str, arguments: dict[str, Any], principal: str | None = None, ctx=None):
         self.executed.append(tool_name)
+        if self.on_call is not None:
+            self.on_call()
         return ToolCallResult(output="ran", is_error=False)
 
 
@@ -262,18 +268,61 @@ async def test_a_subagent_outside_any_call_is_given_no_stop_event(monkeypatch) -
     assert text == "all done" and llm.requests == 1
 
 
-@pytest.mark.parametrize(
-    "partial_text", [None, "I looked at the repository and found the file"], ids=["no-text-yet", "partial-text-already-streamed"],
-)
-async def test_a_subagent_cut_off_in_the_stdio_handshake_does_nothing_more_after_the_stop(
-    monkeypatch, partial_text: str | None,
-) -> None:
-    """With ``partial-text-already-streamed`` the subagent has already said something when the Stop lands, so what it
-    produced so far is a text the parent could be handed as the call's result (``_final_assistant_text`` would return it).
-    The call must be answered "interrupted" and NOT with that text: with no text yet, returning it and raising are the same
-    (``None``), so only this case tells ``run_subagent`` raising from ``run_subagent`` returning."""
+async def test_a_subagent_that_ends_on_the_stop_check_does_not_return_what_it_had_produced(monkeypatch) -> None:
+    """``run_subagent`` returns ``_final_assistant_text(produced)`` for a turn that ENDED. A turn that ended because the
+    Stop was set has produced something (here: round 1's assistant message, text plus a fast tool call), and returning it
+    would hand the parent a stopped subagent's partial answer as the call's REAL result (a call that finishes after the
+    Stop with a value is used as it is). It must raise instead, so the call ends cancelled and is answered "interrupted".
+
+    The Stop lands DURING the tool call, which then finishes (a call that finishes in the same wake-up as the Stop keeps its
+    real result), so the subagent reaches the loop's top-of-round Stop check with no cancel arriving: that check, and not a
+    cancel propagating through the subagent's own ``run_stoppable``, is what ends the turn. The call runs in a task that is
+    bound to a scope carrying the event, as ``run_stoppable`` would, but nobody cancels it, so what ``run_subagent`` does
+    with an ended-by-the-Stop turn is the only thing under test."""
+    from primer.agent.call_scope import CallScope, bind_call_scope
+
+    stop = asyncio.Event()
+    recorder = _Recorder(tool_id="quick", on_call=stop.set)
+    llm = _ScriptedLlm([[("c1", "rec__quick")], [("c2", "rec__quick")], None], first_round_text="I checked the repository")
+    manager = ToolExecutionManager(
+        toolset_providers={"rec": recorder},  # type: ignore[arg-type]
+        initiated_by=PrincipalRef(type="user", id="u1", display="u1", role="user", source="local"),
+    )
+
+    async def resolve(agent_id, *, storage_provider, provider_registry):
+        return AGENT, llm, MODEL
+
+    async def build(context, *, storage_provider=None, provider_registry=None, approval_resolver=None):
+        return manager
+
+    monkeypatch.setattr(invoke, "_resolve_agent_runtime", resolve)
+    monkeypatch.setattr(invoke, "build_subagent_toolmanager", build)
+
+    async def in_a_call():
+        bind_call_scope(CallScope(interrupt=stop))                   # inside the task: its own copy of the context
+        return await run_subagent(agent_id="sub", prompt="go", storage_provider=None, provider_registry=None)
+
+    task = asyncio.create_task(in_a_call())
+    done, pending = await asyncio.wait({task}, timeout=10.0)
+    try:
+        assert not pending, "the subagent never ended"
+        outcome = "was cancelled" if task.cancelled() else f"returned {task.result()!r}"
+        assert task.cancelled(), f"the stopped subagent {outcome}: its partial text would reach the parent as a result"
+        assert recorder.executed == ["quick"], f"only the call the Stop landed in may have run: {recorder.executed}"
+        assert llm.requests == 1, f"the subagent asked the model again after the Stop: {llm.requests} requests"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_a_subagent_cut_off_in_the_stdio_handshake_does_nothing_more_after_the_stop(monkeypatch) -> None:
+    """End to end through the REAL stdio provider. Which path ends the subagent here is worth knowing: the parent's cancel
+    reaches the subagent through ITS OWN ``run_stoppable`` (its tool call now runs in a task, because it has the event), so
+    the subagent ends by that cancel propagating, not by the loop's Stop check. Before this change the cancel was swallowed
+    inside the handshake and the subagent went on to its next model call. What ends a turn on the Stop check instead (and
+    must not return its text) is pinned by ``test_a_subagent_that_ends_on_the_stop_check_...`` above."""
     marker = f"primer-handshake-{uuid.uuid4().hex}"
-    llm = _ScriptedLlm([[("c1", "ext__hang")], [("c2", "rec__exec")], None], first_round_text=partial_text)
+    llm = _ScriptedLlm([[("c1", "ext__hang")], [("c2", "rec__exec")], None])
     recorder = _Recorder()
     provider = _HandshakeNeverCompletes(
         toolset_id="ext",
