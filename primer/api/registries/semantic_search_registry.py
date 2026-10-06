@@ -134,7 +134,7 @@ class SemanticSearchRegistry:
         if inst is not None:
             try:
                 await inst.aclose()
-            except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            except Exception as exc:  # noqa: BLE001 - best-effort cleanup
                 logger.warning(
                     "SemanticSearchRegistry.invalidate: aclose() on the dropped instance for %r failed: %s",
                     ssp_id, exc,
