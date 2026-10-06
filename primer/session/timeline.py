@@ -276,6 +276,7 @@ def _attach(
     nodes: dict[str, dict[str, Any]],
     calls: dict[tuple[str | None, str], dict[str, Any]],
     calls_by_raw_id: dict[str, dict[str, Any]],
+    calls_by_run: dict[tuple[str | None, str], dict[str, Any]],
 ) -> None:
     """Place one child entry: delegation wins, then node, else the root.
 
@@ -290,11 +291,27 @@ def _attach(
     reliably share a node_id either, see _tree()'s docstring), NOT
     ``calls`` (node+scoped-id -> entry, for TOOL_RESULT/CLIENT_ACTION
     pairing).
+
+    The raw id is not unique, and a raw-id lookup alone mis-nests when two
+    runs reuse one (a child's own call reuses its parent's id and replaces
+    the parent's entry in the map, so everything after it nests under the
+    CHILD's call, and a grandchild's records under whichever entry came
+    last). A record that carries ``delegate_run_id`` (everything written
+    since the recorder stamps one) is therefore looked up by the run that
+    MADE the delegating call, ``(delegate_parent_run_id, raw id)`` in
+    ``calls_by_run``, which is exact; a record that is not found that way
+    stays at the node or the root rather than under a wrong call. A record
+    without a run id (written before) keeps the raw-id lookup.
     """
     delegate = payload.get("delegate_tool_call_id")
-    if payload.get("delegated") and delegate in calls_by_raw_id:
-        calls_by_raw_id[delegate]["children"].append(entry)
-        return
+    if payload.get("delegated"):
+        if payload.get("delegate_run_id") is not None:
+            target = calls_by_run.get((payload.get("delegate_parent_run_id"), delegate))
+        else:
+            target = calls_by_raw_id.get(delegate)
+        if target is not None:
+            target["children"].append(entry)
+            return
     node = nodes.get(rec.get("node_id"))
     if node is not None:
         node["children"].append(entry)
@@ -327,6 +344,9 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     nodes: dict[str, dict[str, Any]] = {}
     calls: dict[tuple[str | None, str], dict[str, Any]] = {}
     calls_by_raw_id: dict[str, dict[str, Any]] = {}
+    # (the run that made the call, raw id) -> entry: ``None`` for a call the parent turn itself made, otherwise the
+    # ``delegate_run_id`` the call's own record carries (it is a delegated record).
+    calls_by_run: dict[tuple[str | None, str], dict[str, Any]] = {}
     for rec in records:
         kind = rec.get("kind")
         payload = rec.get("payload") or {}
@@ -394,6 +414,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # not just defensive.
                 raw_id = payload.get("raw_id") or payload["id"]
                 calls_by_raw_id[raw_id] = entry
+                calls_by_run[(payload.get("delegate_run_id"), raw_id)] = entry
         elif kind == _TOOL_RESULT:
             parent = calls.get((rec.get("node_id"), payload.get("call_id")))
             if parent is not None:
@@ -419,7 +440,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         else:
             continue
-        _attach(entry, rec, payload, roots, nodes, calls, calls_by_raw_id)
+        _attach(entry, rec, payload, roots, nodes, calls, calls_by_raw_id, calls_by_run)
     return roots
 
 

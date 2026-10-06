@@ -67,17 +67,22 @@ class Session:
             self.records.append(_done(len(self.records) + 1, day, "stop" if last else "tool_use", node=node))
         return self
 
-    def delegated(self, calls: list[dict], delegate_id: str, *, day: float) -> Session:
+    def delegated(
+        self, calls: list[dict], delegate_id: str, *, day: float, run_id: str | None = None, ends_turn: bool = True,
+    ) -> Session:
         """A subagent run recorded INLINE in this log, as ``DelegationRecorder`` writes it: node_id null and every record
-        (the done as well) stamped ``delegated`` with the delegating call's id."""
+        (the done as well) stamped ``delegated`` with the delegating call's id, and with the run's id when given (a log written
+        since the recorder stamps one). ``ends_turn=False`` leaves the last call a tool round (the run continues later)."""
         for k, kwargs in enumerate(calls):
-            last = k == len(calls) - 1
+            last = ends_turn and k == len(calls) - 1
             for rec in (
                 _llm_call(len(self.records) + 1, day, **kwargs),
                 _done(len(self.records) + 2, day, "stop" if last else "tool_use"),
             ):
                 rec.payload["delegated"] = True
                 rec.payload["delegate_tool_call_id"] = delegate_id
+                if run_id is not None:
+                    rec.payload["delegate_run_id"] = run_id
                 self.records.append(rec)
         return self
 
@@ -484,6 +489,39 @@ def test_two_delegated_runs_with_the_same_call_id_are_separate_turns(tmp_path):
         s.delegated([{"est": NEAR, "used": NEAR}, {"est": NEAR + 1_000, "used": NEAR + 1_000}], "call_0", day=day)
     (group,) = rule.build_groups(rule.read_corpus([s.write(tmp_path)]), set())[0]
     assert group.pairs == 80
+
+
+def _child_with_a_grandchild(s: Session, day: float, *, child: str | None, grandchild: str | None) -> None:
+    """The child makes a call, delegates (the grandchild makes two calls), then makes its final call: one raw id, ``call_0``, at
+    both levels, the records interleaved as they are written."""
+    s.delegated([{"est": NEAR, "used": NEAR}], "call_0", day=day, run_id=child, ends_turn=False)
+    s.delegated([{"est": NEAR // 4, "used": NEAR // 4}, {"est": NEAR // 4 + 1_000, "used": NEAR // 4 + 1_000}],
+                "call_0", day=day, run_id=grandchild)
+    s.delegated([{"est": NEAR + 3_000, "used": NEAR + 3_000}], "call_0", day=day, run_id=child)
+
+
+def test_a_child_and_a_grandchild_that_reuse_one_call_id_are_separate_runs_when_the_records_carry_run_ids(tmp_path):
+    """The recorder stamped only the delegating call's raw id, so a nested delegation whose ids collide merged the child and the
+    grandchild into one run: the grandchild's final done ended the child's turn and the child's call paired with the grandchild's
+    (a 'decrease', since a subagent's prompt is smaller). Keyed by ``delegate_run_id`` each is its own run."""
+    s = Session()
+    for turn in range(40):
+        _child_with_a_grandchild(s, 8.0 * turn / 39, child=f"R1-{turn}", grandchild=f"R2-{turn}")
+    corpus = rule.read_corpus([s.write(tmp_path)])
+    assert {c.turn[2] for c in corpus.calls} == {f"R{level}-{turn}" for level in (1, 2) for turn in range(40)}
+    (group,) = rule.build_groups(corpus, set())[0]
+    assert group.pairs == 80, "one pair per run: the child's two calls, the grandchild's two calls"
+    assert group.monotonic == 1.0 and group.anchor_allowed is True
+
+
+def test_records_without_a_run_id_are_keyed_by_the_call_id_as_before(tmp_path):
+    """A log written before the recorder stamped run ids still reads: its runs are keyed by the delegating call's id (and a
+    nested delegation that reuses it still merges, the documented limitation of such a log)."""
+    s = Session()
+    for turn in range(40):
+        _child_with_a_grandchild(s, 8.0 * turn / 39, child=None, grandchild=None)
+    corpus = rule.read_corpus([s.write(tmp_path)])
+    assert {c.turn[2] for c in corpus.calls} == {"call_0"}
 
 
 def test_a_delegated_or_guarded_call_is_never_the_prompt_a_compaction_marker_followed(tmp_path):
