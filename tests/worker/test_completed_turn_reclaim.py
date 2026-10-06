@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -27,7 +29,7 @@ import primer.observability.metrics as metrics
 from primer.bus.in_memory import InMemoryEventBus
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
-from primer.int.claim import ClaimKind
+from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.model.chat import Done, TextDelta
 from primer.model.except_ import NotFoundError
 from primer.model.scheduler import WorkerConfig
@@ -157,11 +159,13 @@ class _World:
         # How many of the next releases are abandoned: they never reach the real release (= rolled back).
         self.abandon_next_releases = 0
         self.abandoned = 0
+        self.outcomes: list[ReleaseOutcome] = []   # every outcome handed to engine.release, abandoned or not
         self.pools: list[WorkerPool] = []
 
         real_release = self.engine.release
 
         async def release(lease, *, outcome):
+            self.outcomes.append(outcome)
             if self.abandon_next_releases > 0:
                 self.abandon_next_releases -= 1
                 self.abandoned += 1
@@ -665,12 +669,13 @@ async def test_the_noop_that_arms_an_open_input_leaves_a_pending_steer_queued(wo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [SessionStatus.CREATED, SessionStatus.PAUSED])
+@pytest.mark.parametrize("status", [SessionStatus.CREATED])
 @pytest.mark.parametrize("armed", ["open", "claimable"])
 async def test_input_waiting_on_a_row_the_pool_does_not_rearm_runs_the_turn(world, status, armed):
-    """A stale marker (completed_turn_no == turn_no with no release pending) on a CREATED or PAUSED row with a
-    USER_INPUT waiting, open in the log or already claimable. The pool re-arms only RUNNING/WAITING rows, so a no-op
-    here would leave the input with no lease for good: the claim runs the turn instead, one model call."""
+    """A stale marker (completed_turn_no == turn_no with no release pending) on a CREATED row with a USER_INPUT
+    waiting, open in the log or already claimable. The pool re-arms only RUNNING/WAITING rows, so a no-op here would
+    leave the input with no lease for good: the claim runs the turn instead, one model call. (A PAUSED or ENDED row
+    runs no turn: ``test_a_row_paused_or_ended_at_the_guards_first_read_runs_no_turn``.)"""
     await world.create_session(turn_no=1, completed_turn_no=1)
     await world.steer("waiting")                    # USER_INPUT, claimable, RUNNING, a lease
     row = await world.row()
@@ -829,3 +834,228 @@ async def test_the_ended_cancel_and_pause_exits_win_over_the_noop(world, flag, e
     assert _noops() == 0, "the completed-turn no-op ran before the exit"
     assert world.llm_calls == ["first"]
     assert KEY not in world.engine._leases
+
+
+# ---------------------------------------------------------------------------
+# The guard's first read and a gone row (the lead's ruling, task 01a11045)
+# ---------------------------------------------------------------------------
+
+
+def _commit_before_the_guards_first_read(world: _World, competing: dict | None) -> list:
+    """Another process writes the row AFTER the turn's own top read (unlocked: the ENDED, cancel and pause exits have
+    already passed on the row as it was) and just BEFORE the guard's first fresh read under the lifecycle lock (the
+    lock is per-process, so it does not order the two). ``competing`` is committed as a whole-document update from a
+    fresh read (the way the pause and cancel routes write), or the row is deleted when it is ``None``; then the REAL
+    ``get`` runs. Only the guard's first read is preceded by the write: the read is told apart by the function that
+    awaits it. Returns the list the write is recorded in, so a test can tell that it happened."""
+    real_get = world.sessions.get
+    fired: list = []
+
+    async def get(id, *, conn=None):
+        if not fired and sys._getframe(1).f_code.co_name == "_noop_if_turn_already_completed":
+            fired.append(competing)
+            if competing is None:
+                await world.sessions.delete(id)
+            else:
+                row = await real_get(id)
+                await world.sessions.update(row.model_copy(update=competing))
+        return await real_get(id, conn=conn)
+
+    world.sessions.get = get  # type: ignore[method-assign]
+    return fired
+
+
+def _delete_at_the_arming_patch(world: _World, *, after_a_refusal: bool) -> list:
+    """Another process deletes the row at the arming patch. Without ``after_a_refusal`` the delete commits just BEFORE
+    the REAL ``patch_if`` runs, which raises ``NotFoundError`` on the missing row (as both backends do). With it, a
+    steer's ``claimable`` commits first, so the REAL patch is refused by its ``turn_status`` fence, and the delete
+    commits after the refusal, before the guard reads the row again. Returns the list the arming patch's result (or
+    the exception it raised) is appended to."""
+    real_patch_if = world.sessions.patch_if
+    results: list = []
+
+    async def patch_if(id, patch=None, *, where, set_paths=None, conn=None):
+        if patch != {"turn_status": "claimable"} or results:
+            return await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+        if after_a_refusal:
+            row = await world.row()
+            await world.sessions.update(row.model_copy(update={"turn_status": "claimable"}))
+        else:
+            await world.sessions.delete(id)
+        try:
+            out = await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+        except NotFoundError as exc:
+            results.append(exc)
+            raise
+        results.append(out)
+        if after_a_refusal:
+            await world.sessions.delete(id)
+        return out
+
+    world.sessions.patch_if = patch_if  # type: ignore[method-assign]
+    return results
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turn_status", ["claimable", "idle", "running"])
+@pytest.mark.parametrize("status", [SessionStatus.PAUSED, SessionStatus.ENDED])
+async def test_a_row_paused_or_ended_at_the_guards_first_read_runs_no_turn(world, status, turn_status):
+    """Another process pauses or ends the row between the turn's top read and the guard's first fresh read. The
+    ENDED and pause exits decided from the top read, and nothing re-checks the status after the guard, so the turn used
+    to run on that row (its running flip a whole-document update over the stale snapshot) for a queued steer
+    (``claimable``: the claimable branch) or an open input (``idle``, or a stale ``running``: the has_open_turn branch).
+    The guard applies the rule of a refused arming patch: PAUSED takes the no-op with the pause exit's park-preserving
+    release (the input waits for /resume), ENDED drops the lease as the ENDED exit does (park cleared). Both heal a
+    stale ``running``, both releases apply the lost bump once, and both count as a no-op."""
+    await _open_input_over_a_stale_revert(world, **_PARK)
+    competing: dict = {"status": status, "turn_status": turn_status}
+    if status == SessionStatus.ENDED:
+        competing |= {"ended_reason": "cancelled", "ended_at": datetime.now(UTC)}
+    fired = _commit_before_the_guards_first_read(world, competing)
+
+    assert await world.claim_and_run(world.pool("wrk-b")) == 1
+
+    assert fired == [competing], "the competing write did not land before the guard's first read"
+    assert world.llm_calls == ["first"], f"the turn ran on a row another process set to {status.value}"
+    assert world.builds == 1, "the claim built an executor"
+    row = await world.row()
+    assert row.status == status, "the row lost the status the other process gave it"
+    expected_turn_status = "claimable" if turn_status == "claimable" else "idle"
+    assert row.turn_status == expected_turn_status, f"turn_status is {row.turn_status!r}: a stale running was left"
+    assert row.turn_no == 1 and row.completed_turn_no == 0, "the release applies the lost bump exactly once"
+    assert row.last_worker_id is None
+    park = {k: getattr(row, k) for k in _PARK}
+    if status == SessionStatus.PAUSED:
+        assert world.outcomes[-1] == ReleaseOutcome(success=True, drop_lease=True, preserve_park=True)
+        assert park == _PARK, "the paused row lost its park (the release did not preserve it)"
+        assert has_open_turn(world.ws.lines(), cursor=row.next_unprocessed_seq), "the input is left for /resume"
+    else:
+        assert world.outcomes[-1] == ReleaseOutcome(success=True, drop_lease=True)
+        assert row.ended_reason == "cancelled"
+        assert park == dict.fromkeys(_PARK), "the ENDED exit's release clears the park"
+    assert _noops() == 1
+    assert KEY not in world.engine._leases, "the lease was not dropped"
+    assert await world.engine.claim_due("wrk-c", max_count=10) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turn_status", ["claimable", "idle"])
+async def test_the_input_left_on_a_row_paused_at_the_guards_first_read_is_answered_once_after_resume(
+    world, turn_status,
+):
+    """The PAUSED no-op of the first read leaves the input for /resume: nothing runs while the row is PAUSED, and
+    after the resume the input is answered exactly once, at the bumped turn_no."""
+    await _open_input_over_a_stale_revert(world)
+    _commit_before_the_guards_first_read(world, {"status": SessionStatus.PAUSED, "turn_status": turn_status})
+    assert await world.claim_and_run(world.pool("wrk-b")) == 1
+    assert world.llm_calls == ["first"], "the turn ran on a paused row"
+    assert await world.engine.claim_due("wrk-c", max_count=10) == []
+
+    async with session_lifecycle_lock().acquire(SID):        # what POST .../resume does to a PAUSED row
+        row = await world.row()
+        await world.sessions.update(row.model_copy(update={"status": SessionStatus.RUNNING}))
+        await world.engine.upsert(ClaimKind.SESSION, SID)
+    await _claim_until_idle(world, world.pool("wrk-c"))
+
+    assert world.llm_calls == ["first", "second"]
+    assert world.call_turn_nos == [0, 1]
+    assert _noops() == 1
+    assert (await world.row()).turn_no == 2
+    assert not has_open_turn(world.ws.lines(), cursor=0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["first_read", "arming_patch"])
+async def test_the_paused_noop_clears_a_stale_interrupt_requested(world, where):
+    """The PAUSED no-op clears ``interrupt_requested`` under the lock, as the pause exit does: a stale Stop carried
+    into the PAUSED row would leak into the turn that eventually resumes it and could downgrade a later genuine Cancel
+    to a Stop. Both paths: PAUSED at the guard's first read, and PAUSED under a refused arming patch."""
+    await _open_input_over_a_stale_revert(world)
+    competing = {"status": SessionStatus.PAUSED, "interrupt_requested": True}
+    if where == "first_read":
+        fired = _commit_before_the_guards_first_read(world, competing)
+    else:
+        fired = _commit_before_the_arming_patch(world, competing)
+
+    assert await world.claim_and_run(world.pool("wrk-b")) == 1
+
+    assert len(fired) == 1, "the competing write did not land"
+    assert world.llm_calls == ["first"], "the turn ran on a paused row"
+    assert world.outcomes[-1] == ReleaseOutcome(success=True, drop_lease=True, preserve_park=True)
+    row = await world.row()
+    assert row.status == SessionStatus.PAUSED
+    assert row.interrupt_requested is False, "a stale Stop was left on the PAUSED row"
+
+
+@pytest.mark.asyncio
+async def test_an_arming_patch_refused_on_a_row_another_process_reset_to_created_runs_the_turn(world):
+    """CREATED after a refused arming patch (a reset or a stale write under the patch): the pool does not re-arm a
+    CREATED row, so the claim answers the input now, as before the guard."""
+    await _open_input_over_a_stale_revert(world)
+    refusals = _commit_before_the_arming_patch(world, {"status": SessionStatus.CREATED})
+
+    await _claim_until_idle(world, world.pool("wrk-b"))
+
+    assert refusals == [None], "the status fence did not refuse the arming patch"
+    assert world.llm_calls == ["first", "second"]
+    assert _noops() == 0
+    assert not has_open_turn(world.ws.lines(), cursor=0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["first_read", "before_the_arming_patch", "after_a_refused_arming_patch"])
+async def test_a_row_gone_under_the_guard_drops_the_lease_and_runs_no_turn(world, where, caplog):
+    """The row is deleted under the guard: before its first read, just before the arming patch (which raises
+    ``NotFoundError``), or after a refused arming patch and before the re-read. Running the turn on a row that is gone
+    answers nothing anyone can see; the claim mirrors the vanished-before-dispatch exit of ``run_one_session_turn``
+    (``success=False, drop_lease=True``) and logs that the row vanished, not that it is running the turn. It is not a
+    completed-turn no-op, so it is not counted as one."""
+    await _open_input_over_a_stale_revert(world)
+    if where == "first_read":
+        fired = _commit_before_the_guards_first_read(world, None)
+    else:
+        fired = _delete_at_the_arming_patch(world, after_a_refusal=where == "after_a_refused_arming_patch")
+
+    with caplog.at_level(logging.WARNING, logger="primer.session.dispatch"):
+        assert await world.claim_and_run(world.pool("wrk-b")) == 1
+
+    assert len(fired) == 1, "the delete did not land"
+    if where == "before_the_arming_patch":
+        assert isinstance(fired[0], NotFoundError), "the arming patch on the missing row did not raise NotFoundError"
+    if where == "after_a_refused_arming_patch":
+        assert fired == [None], "the arming patch was not refused"
+    assert await world.sessions.get(SID) is None
+    assert world.llm_calls == ["first"], "the turn ran on a row that is gone"
+    assert world.builds == 1, "the claim built an executor"
+    assert world.outcomes[-1] == ReleaseOutcome(success=False, drop_lease=True)
+    assert _noops() == 0, "a gone row is not a completed-turn no-op"
+    assert KEY not in world.engine._leases, "the lease was not dropped"
+    messages = [r.getMessage() for r in caplog.records if r.name == "primer.session.dispatch"]
+    assert any("vanished" in m for m in messages), messages
+    assert not any("running the turn" in m for m in messages), messages
+
+
+@pytest.mark.asyncio
+async def test_an_arming_patch_that_raises_a_storage_error_runs_the_turn(world, caplog):
+    """A storage error from the arming patch is not a gone row (that is ``NotFoundError``): the claim cannot tell what
+    the row holds, so it answers the input now, as before the guard, and logs that it does."""
+    await _open_input_over_a_stale_revert(world)
+    real_patch_if = world.sessions.patch_if
+    raised: list = []
+
+    async def patch_if(id, patch=None, *, where, set_paths=None, conn=None):
+        if patch == {"turn_status": "claimable"} and not raised:
+            raised.append(True)
+            raise ConnectionError("the database is not answering")
+        return await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    world.sessions.patch_if = patch_if  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING, logger="primer.session.dispatch"):
+        await _claim_until_idle(world, world.pool("wrk-b"))
+
+    assert raised == [True]
+    assert world.llm_calls == ["first", "second"], "the input was not answered"
+    assert _noops() == 0
+    assert not has_open_turn(world.ws.lines(), cursor=0)
+    messages = [r.getMessage() for r in caplog.records if r.name == "primer.session.dispatch"]
+    assert any("running the turn" in m for m in messages), messages
