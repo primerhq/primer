@@ -121,7 +121,7 @@ async def test_the_checkpoint_switch_times_out_without_holding_the_lock(monkeypa
     switch stays pending for the next checkpoint."""
     import primer.session.mutation_lock as mutation_lock
 
-    monkeypatch.setattr(mutation_lock, "IN_LOCK_IO_TIMEOUT_S", 0.2, raising=False)
+    monkeypatch.setattr(mutation_lock, "IN_LOCK_IO_TIMEOUT_S", 0.2)
     provider, sessions, io = await _seeded()
     io.hang = True
 

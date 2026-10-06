@@ -35,16 +35,16 @@ def _row(**kw):
     return WorkspaceSession(**base)
 
 
-class _Sessions:
-    def __init__(self, row):
-        self.row = row
+async def _stored(row):
+    """The real in-memory session storage (it has ``patch_if``) holding ``row``."""
+    from tests.conftest import _FakeStorageProvider
 
-    async def get(self, _sid):
-        return self.row
+    sessions = _FakeStorageProvider().get_storage(WorkspaceSession)
+    await sessions.create(row)
+    return sessions
 
-    async def update(self, row):
-        self.row = row
-        return row
+
+_GUARD = {"parked_status": [None]}
 
 
 class _IO:
@@ -119,11 +119,11 @@ class TestApply:
                 "kind": "agent", "agent_id": "agent-b", "actor": "agent",
             },
         )
-        sessions, io = _Sessions(row), _IO()
+        sessions, io = await _stored(row), _IO()
         updated = await apply_binding_switch(
             sessions=sessions, workspace_io=io, row=row,
             request=row.pending_binding_switch, actor="agent",
-            resolve_snapshot=_no_snapshot,
+            resolve_snapshot=_no_snapshot, guard=_GUARD,
         )
         assert updated.binding.agent_id == "agent-b"
         assert updated.binding_epoch == 4
@@ -141,10 +141,10 @@ class TestApply:
 
     async def test_noop_without_a_request(self):
         row = _row()
-        sessions, io = _Sessions(row), _IO()
+        sessions, io = await _stored(row), _IO()
         updated = await apply_binding_switch(
             sessions=sessions, workspace_io=io, row=row, request=None,
-            actor="user", resolve_snapshot=_no_snapshot,
+            actor="user", resolve_snapshot=_no_snapshot, guard=_GUARD,
         )
         assert updated.binding_epoch == 0
         assert io.lines == []
@@ -165,15 +165,88 @@ class TestApply:
             "kind": "agent", "agent_id": "agent-b", "actor": "user",
         })
         updated = await apply_binding_switch(
-            sessions=_Sessions(row), workspace_io=_IO(), row=row,
+            sessions=await _stored(row), workspace_io=_IO(), row=row,
             request=row.pending_binding_switch, actor="user",
-            resolve_snapshot=_resolve,
+            resolve_snapshot=_resolve, guard=_GUARD,
         )
         assert captured == {"kind": "agent", "id": "agent-b"}
         # A missing target degrades to a snapshot-less binding the
         # executor builder resolves live, rather than failing the switch.
         assert updated.binding.agent_snapshot is None
         assert updated.binding.agent_id == "agent-b"
+
+
+class TestApplyProtocol:
+    """Reserve the seq, append the marker at it, then ONE fenced write (plan 3.8 A3)."""
+
+    @staticmethod
+    def _queued(**over):
+        return _row(pending_binding_switch={"kind": "agent", "agent_id": "agent-b", "actor": "user"}, **over)
+
+    async def test_the_marker_takes_the_reserved_seq_and_the_row_ends_consistent(self):
+        row = self._queued()
+        sessions, io = await _stored(row), _IO()
+
+        updated = await apply_binding_switch(
+            sessions=sessions, workspace_io=io, row=row, request=row.pending_binding_switch, actor="user",
+            resolve_snapshot=_no_snapshot, guard=_GUARD,
+        )
+
+        stored = await sessions.get("s")
+        assert (stored.last_seq, stored.next_unprocessed_seq, stored.binding.agent_id) == (7, 8, "agent-b")
+        assert (stored.binding_epoch, stored.pending_binding_switch) == (1, None)
+        assert updated == stored
+        assert [json.loads(line)["seq"] for line in io.lines] == [7]
+
+    async def test_a_rejected_reservation_writes_no_marker_and_changes_nothing(self):
+        """N142: the marker must not be appended before the reservation is known to hold."""
+        row = self._queued()
+        sessions, io = await _stored(self._queued(last_seq=7)), _IO()  # a steer took seq 7 after `row` was read
+
+        result = await apply_binding_switch(
+            sessions=sessions, workspace_io=io, row=row, request=row.pending_binding_switch, actor="user",
+            resolve_snapshot=_no_snapshot, guard=_GUARD,
+        )
+
+        assert result is None and io.lines == []
+        stored = await sessions.get("s")
+        assert (stored.last_seq, stored.binding.agent_id, stored.binding_epoch) == (7, "agent-a", 0)
+        assert stored.pending_binding_switch is not None
+
+    async def test_the_callers_guard_rejects_the_reservation(self):
+        row = self._queued()
+        sessions, io = await _stored(self._queued(turn_status="claimable")), _IO()
+
+        result = await apply_binding_switch(
+            sessions=sessions, workspace_io=io, row=row, request=row.pending_binding_switch, actor="user",
+            resolve_snapshot=_no_snapshot, guard={"turn_status": ["idle"], "parked_status": [None]},
+        )
+
+        assert result is None and io.lines == []
+
+    async def test_a_park_committed_after_the_reservation_rejects_the_closing_write_and_leaves_the_marker(self):
+        """The multi-process residual: nothing in one process can move the row between the steps under the lock. The
+        marker stays in the log (seq 7, reserved), the binding is NOT switched, and the call says so."""
+        row = self._queued()
+        sessions = await _stored(row)
+
+        class _ParkingIO(_IO):
+            async def append_message_line(self, session_id, line):
+                await super().append_message_line(session_id, line)
+                current = await sessions.get(session_id)
+                await sessions.update(current.model_copy(update={"parked_status": "parked"}))
+
+        io = _ParkingIO()
+        result = await apply_binding_switch(
+            sessions=sessions, workspace_io=io, row=row, request=row.pending_binding_switch, actor="user",
+            resolve_snapshot=_no_snapshot, guard=_GUARD,
+        )
+
+        assert result is None
+        assert [json.loads(line)["seq"] for line in io.lines] == [7]
+        stored = await sessions.get("s")
+        assert (stored.last_seq, stored.binding.agent_id, stored.binding_epoch) == (7, "agent-a", 0)
+        assert stored.parked_status == "parked"
 
 
 def test_switch_is_applied_before_the_queue_drains():

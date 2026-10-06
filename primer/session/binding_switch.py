@@ -8,12 +8,23 @@ that was waiting behind the turn runs under the INCOMING binding.
 Every caller funnels through :func:`apply_binding_switch`, so the epoch
 bump, the re-snapshot and the attribution marker are written in exactly
 one place and cannot drift apart.
+
+The switch is one protocol for every caller, under ``session_lifecycle_lock``
+(held by the CALLER: this module never takes the non-reentrant lock): RESERVE
+the marker's seq with a guarded ``patch_if``, append the marker with the
+reserved seq, then ONE fenced ``patch_if`` of the binding fields. A rejected
+reservation writes nothing; the old whole-row write from a stale read repeated
+a seq a steer had just taken and erased the steer's ``last_seq`` and armed turn.
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
+
+from pydantic_core import to_jsonable_python
 
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -23,6 +34,9 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.session.persistence import WorkspaceMessageWriter
+from primer.session.seq_reservation import reserve_seq
+
+logger = logging.getLogger(__name__)
 
 
 def build_switched_binding(
@@ -93,13 +107,29 @@ async def apply_binding_switch(
     request: dict[str, Any] | None,
     actor: str,
     resolve_snapshot: Any,
-) -> WorkspaceSession:
-    """Apply a queued switch: re-snapshot, bump the epoch, mark, persist.
+    guard: Mapping[str, Sequence[Any]],
+) -> WorkspaceSession | None:
+    """Apply a queued switch: re-snapshot, reserve the seq, mark, then ONE fenced write.
 
     ``resolve_snapshot`` is injected so this module never imports the
     agent or graph storage, and so a deleted target degrades to a
     snapshot-less binding the executor builder resolves live rather than
     failing the switch.
+
+    ``guard`` is the CALLER's precondition on the row (for example the idle
+    route: ``{"turn_status": ["idle"], "parked_status": [None]}``; a turn's
+    checkpoint: ``{"parked_status": [None]}``; the pool ending a session whose
+    park columns are still set: ``{"status": ["ended"]}``), checked atomically
+    with the reservation (together with ``last_seq == row.last_seq``, the
+    generation the caller read) AND again with the closing write (together with
+    ``last_seq == the reserved seq``). It must not name ``last_seq``. Callers
+    hold ``session_lifecycle_lock``; this function never takes it.
+
+    Returns the row as written, or ``None`` when the switch was NOT applied:
+    the reservation was rejected (the row changed since it was read; NOTHING
+    was written) or the closing write was (a park committed after the
+    reservation; in one process the lock rules that out, so this is the
+    multi-process residual, and the marker stays in the log unapplied).
     """
     if not request:
         return row
@@ -119,10 +149,20 @@ async def apply_binding_switch(
         )
 
     new_epoch = row.binding_epoch + 1
+    # (1) RESERVE the marker's seq: the guard and "last_seq is still what the caller read" are one atomic condition,
+    # so a steer that took last_seq + 1 in the meantime rejects this and nothing has been written.
+    seq = await reserve_seq(sessions, row.id, last_seq=row.last_seq, where=guard)
+    if seq is None:
+        logger.info(
+            "binding switch of session %s not applied: the row changed since it was read; nothing was written", row.id,
+        )
+        return None
+
+    # (2) append the marker AT the reserved seq and flush.
     writer = WorkspaceMessageWriter(
-        workspace_io=workspace_io, session_id=row.id, start_seq=row.last_seq,
+        workspace_io=workspace_io, session_id=row.id, start_seq=seq - 1,
     )
-    seq = await writer.append(SessionMessageRecord(
+    appended = await writer.append(SessionMessageRecord(
         seq=1,  # overwritten by the writer's monotonic counter
         kind=SessionMessageKind.AGENT_MARKER,
         payload=agent_marker_payload(
@@ -133,20 +173,28 @@ async def apply_binding_switch(
         ),
         created_at=datetime.now(UTC),
     ))
+    if appended != seq:  # pragma: no cover - the writer was seeded from the reservation
+        raise RuntimeError(f"binding switch of session {row.id}: marker took seq {appended}, reserved {seq}")
     await writer.flush()
 
-    updated = row.model_copy(update={
-        "binding": new_binding,
-        "binding_epoch": new_epoch,
-        "pending_binding_switch": None,
-        "last_seq": seq,
-        # The marker is a closed structural record, neither a user input
-        # nor a terminal, so the pairing count is untouched and the
-        # cursor may pass it. Leaving it behind would hand the next
-        # route_steer slow path a record it cannot classify.
-        "next_unprocessed_seq": seq + 1,
-    })
-    await sessions.update(updated)
+    # (3) ONE fenced write of the binding fields. The marker is a closed structural record, neither a user input nor
+    # a terminal, so the pairing count is untouched and the drain cursor may pass it; leaving it behind would hand the
+    # next route_steer slow path a record it cannot classify.
+    updated = await sessions.patch_if(
+        row.id,
+        to_jsonable_python({
+            "binding": new_binding,
+            "binding_epoch": new_epoch,
+            "pending_binding_switch": None,
+            "next_unprocessed_seq": seq + 1,
+        }),
+        where={**guard, "last_seq": [seq]},
+    )
+    if updated is None:
+        logger.warning(
+            "binding switch of session %s: the row changed after the marker at seq %d was reserved and written; the "
+            "switch was not applied and its marker stays in the log", row.id, seq,
+        )
     return updated
 
 

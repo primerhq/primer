@@ -28,7 +28,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-__all__ = ["KeyedLock", "session_lifecycle_lock"]
+__all__ = ["IN_LOCK_IO_TIMEOUT_S", "KeyedLock", "session_lifecycle_lock"]
 
 
 class KeyedLock:
@@ -70,6 +70,14 @@ class KeyedLock:
                 self._refs.pop(key, None)
                 self._locks.pop(key, None)
 
+
+#: How long workspace I/O may take while a writer holds a session's lifecycle lock. ONE deadline for every in-lock
+#: writer that appends to a session's log (the checkpoint switch, the binding route, compact and rewind): a workspace
+#: whose runtime connection dropped blocks a write until it reconnects, which may be never, and every Cancel, Stop,
+#: steer, pause, resume and switch of the session queues behind the lock. Long enough for a slow healthy write, short
+#: enough that the session is not wedged. Read as ``mutation_lock.IN_LOCK_IO_TIMEOUT_S`` at the call (not imported by
+#: name) so a test can shorten it.
+IN_LOCK_IO_TIMEOUT_S: float = 10.0
 
 # Process-wide lock guarding session lifecycle transitions. resume / pause /
 # cancel acquire it on the session id before reading-and-writing the row +
