@@ -30,8 +30,8 @@ from typing import Any
 from fastapi import Request
 
 from primer.model.except_ import ConflictError
-from primer.model.storage import FieldRef, Op, Predicate, Value
-from primer.model.storage import OffsetPage
+from primer.model.storage import Op
+from primer.storage.references import first_referencing_row
 
 
 @dataclass(frozen=True)
@@ -105,21 +105,20 @@ def build_reference_block_hook(
         entity_id: str = entity.id
         for check in checks:
             storage = check.child_storage(request)
-            predicate = Predicate(
-                left=FieldRef(name=check.child_field),
-                op=check.op,
-                right=Value(value=entity_id),
+            # The query is shared with the system CRUD tools (primer.storage.references), so the two surfaces cannot
+            # drift on how a reference is looked for.
+            child = await first_referencing_row(
+                storage, field=check.child_field, op=check.op, parent_id=entity_id,
             )
-            page = await storage.find(predicate, OffsetPage(offset=0, length=1))
-            if page.items:
+            if child is not None:
                 # RFC7807 conflict envelope (consistent with every other
                 # error surface). The detail names the blocking child kind,
                 # count, and the first referencing id so the message is
                 # actionable; the error_code is carried as the message lead.
                 raise ConflictError(
-                    f"{check.error_code}: {len(page.items)} "
+                    f"{check.error_code}: 1 "
                     f"{check.child_kind}(s) reference {entity_id!r} "
-                    f"(first: {page.items[0].id!r})"
+                    f"(first: {child.id!r})"
                 )
 
     return _hook

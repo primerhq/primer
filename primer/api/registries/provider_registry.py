@@ -199,6 +199,11 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _CRUD_TOOLSET_ID,
 })
 
+# Toolset ids that are SCOPES of the tool manager, not built-in providers: ``external`` is the invoker-supplied per-invocation
+# tool scope, ``workspace`` / ``workspace_ext`` the workspace-tool scopes. None of them may exist as a stored Toolset row.
+# The toolset REST router and the system toolset's ``create_toolset`` both refuse them (one definition, so they cannot drift).
+RESERVED_TOOLSET_SCOPE_IDS: frozenset[str] = frozenset({"external", "workspace", "workspace_ext"})
+
 # ---------------------------------------------------------------------------
 # Reserved ids for auto-bootstrap provider kinds
 #
@@ -873,5 +878,6 @@ __all__ = [
     "RESERVED_LLM_IDS",
     "RESERVED_SSP_IDS",
     "RESERVED_TOOLSET_IDS",
+    "RESERVED_TOOLSET_SCOPE_IDS",
     "RESERVED_WORKSPACE_PROVIDER_IDS",
 ]
