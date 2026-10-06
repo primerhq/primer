@@ -143,7 +143,7 @@ flowchart TD
   registry of session handles, across local, container, and Kubernetes backends.
 - [sessions](subsystems/sessions.md) - one execution of one agent or graph on one
   workspace: the seam where the claim machine, the executor, the workspace, and the
-  REST plus WebSocket surface meet to run one turn at a time.
+  REST surface and the workspace tap meet to run one turn at a time.
 - [agents](subsystems/agents.md) - the runtime that drives one LLM turn end to end:
   prompt assembly, model streaming, tool dispatch, compaction, the approval gate, and
   turn persistence.

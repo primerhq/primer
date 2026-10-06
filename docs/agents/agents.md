@@ -147,7 +147,7 @@ Anthropic's `max_tokens: N > M`) is not an overflow at all: nothing is compacted
 either, but the turn ends with the provider's own `bad_request` error, not
 `context_overflow_unrecoverable`.
 
-Streaming: subscribers (the WS connection, internal taps) see token
+Streaming: subscribers (workspace tap clients, internal taps) see token
 events in the order the LLM produces them. Persisted state is the
 complete messages, not the token-by-token stream - reconnect
 replays the complete messages, not the tokens.

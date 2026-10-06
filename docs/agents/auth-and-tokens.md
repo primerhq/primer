@@ -63,9 +63,10 @@ operator console without an explicit token grant.
 
 ### WebSocket authentication
 
-The live session stream is a WebSocket
-(`/v1/workspaces/{wid}/sessions/{sid}/ws`).
-WebSocket handshakes carry auth the same way HTTP requests do - the
+The live session stream is not a WebSocket: it is the workspace tap, a read-only SSE
+stream (`GET /v1/workspaces/{wid}/tap`), authenticated by the same middleware as every
+HTTP route (no valid credential is an HTTP 401). The one WebSocket left in the API is the
+workspace terminal (`/v1/workspaces/{wid}/terminal`). Its handshakes carry auth the same way HTTP requests do - the
 signed session cookie, or an `Authorization: Bearer <token>` header -
 and the same middleware populates the connection's principal before
 the handler runs. A handshake that carries no valid cookie or bearer
@@ -194,10 +195,11 @@ server side.
   If the agent is mid-streaming-tool-result, the current response
   completes; the *next* call gets 401.
 - **WebSocket auth failures close with 4401, not HTTP 401.** A bad or
-  missing cookie/bearer on a session WS handshake does not get a
+  missing cookie/bearer on a terminal WS handshake does not get a
   401 response body - the socket is accepted then closed with code
   4401. Distinguish this in client code from the other documented WS
-  close codes (4404 not-found, 4410 ended).
+  close codes (4403 forbidden role, 4404 workspace not found). The
+  session stream is SSE and answers an HTTP 401 instead.
 - **Most of `/v1/workers` is a public probe surface, but the drain
   mutation is not.** `GET /v1/workers` stays reachable without auth so
   liveness/readiness probes work pre-login; `POST /v1/workers/{id}/drain`
