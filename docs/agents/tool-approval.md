@@ -197,6 +197,17 @@ but require human review for any other host.
   timeout, resolver storage outage - all of these produce a
   `required` outcome with the original exception captured for the
   operator. The agent never silently slips through a broken gate.
+- **A policy is validated when it is saved**, through the console, the
+  REST route or the `system::create_tool_approval_policy` /
+  `system::update_tool_approval_policy` tools, with the same rules. A
+  second policy for the same `(toolset_id, tool_name)` returns
+  `type=conflict` naming the existing one, Rego that does not compile
+  returns `type=validation-error` on `approval.policy`, and an LLM judge
+  must name a stored provider (`approval.provider_id`) and a model that
+  provider publishes (`approval.model`). Nothing is stored on a refusal.
+  Keep one policy per tool: the gate looks up a single policy for the
+  tool, so a leftover duplicate would make which one applies depend on
+  storage order.
 - **A new user turn supersedes a pending approval.** If a session is
   parked on approval and the user sends another message, the approval
   is auto-rejected with reason "superseded by new user input". The
