@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -122,7 +123,8 @@ class DocumentTreeService:
 
     async def create(self, *, collection_id: str, parent: str, slug: str,
                      body: str, title: str | None = None,
-                     strict_slugs: bool = True) -> Document:
+                     strict_slugs: bool = True,
+                     meta: dict[str, Any] | None = None) -> Document:
         # The API edge enforces the strict charset. The system-collection
         # regenerator writes entity ids (agent-a, graph_x) that satisfy the
         # model charset but not the strict one, so it opts out here rather
@@ -143,6 +145,7 @@ class DocumentTreeService:
             slug=slug,
             title=title,
             path=path,
+            meta=meta or {},
         )
         async with self._sp.transaction() as conn:
             await self._docs.create(doc, conn=conn)
