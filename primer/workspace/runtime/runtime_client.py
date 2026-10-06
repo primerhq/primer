@@ -413,7 +413,12 @@ class RuntimeClient:
         finished = False
 
         try:
-            sent_on = await self._send_raw(Request(req_id=req_id, op=OpName.EXEC, args=args))
+            # Recorded BEFORE the send is awaited: ``send_str`` waits for the socket to drain, a cancel can land while it
+            # does, and by then the request is on the wire and the command may be running. This is the connection
+            # ``_send_raw`` is about to use: nothing suspends between this read and its own (the event is already set).
+            await self._wait_until_connected()
+            sent_on = self._ws
+            await self._send_raw(Request(req_id=req_id, op=OpName.EXEC, args=args))
             async for item in self._iter_stream(req_id, q, abort=abort):
                 if not isinstance(item, dict):
                     continue
@@ -632,8 +637,8 @@ class RuntimeClient:
         if self._closed:
             raise RuntimeError(ErrorCode.EPROTOCOL, "Client closed")
 
-    async def _send_raw(self, msg: Request) -> aiohttp.ClientWebSocketResponse:
-        """Serialize *msg* and send it over the active WebSocket; returns the connection it went out on."""
+    async def _send_raw(self, msg: Request) -> None:
+        """Serialize *msg* and send it over the active WebSocket."""
         await self._wait_until_connected()
         ws = self._ws
         if ws is None or ws.closed:
@@ -641,7 +646,6 @@ class RuntimeClient:
         from primer.workspace.runtime.protocol import serialize
 
         await ws.send_str(serialize(msg))
-        return ws
 
     def _runtime_has(self, minimum: tuple[int, int]) -> bool:
         """Whether the runtime reported a protocol of at least *minimum* (major, minor) in its hello.

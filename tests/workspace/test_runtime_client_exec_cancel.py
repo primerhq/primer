@@ -27,16 +27,19 @@ from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeOpErr
 class _FakeWs:
     """Records the frames the client sends. ``stall_cancels`` makes sending an ``exec_cancel`` frame hang for ever."""
 
-    def __init__(self, *, stall_cancels: bool = False) -> None:
+    def __init__(self, *, stall_cancels: bool = False, stall_execs: bool = False) -> None:
         self.closed = False
         self.sent: list[dict] = []
         self.stall_cancels = stall_cancels
+        self.stall_execs = stall_execs
 
     async def send_str(self, text: str) -> None:
         frame = json.loads(text)
         if self.stall_cancels and frame["op"] == OpName.EXEC_CANCEL:
             await asyncio.Event().wait()
         self.sent.append(frame)
+        if self.stall_execs and frame["op"] == OpName.EXEC:
+            await asyncio.Event().wait()                   # the frame is on the wire, the socket is draining
 
     async def close(self) -> None:
         self.closed = True
@@ -82,6 +85,37 @@ async def test_a_cancelled_exec_tells_the_runtime_to_stop_the_command() -> None:
     (cancel,) = _cancels(ws)
     assert cancel["args"] == {"target_req_id": exec_req_id}
     assert cancel["req_id"] != exec_req_id, "the control request needs a req_id of its own"
+
+
+async def test_a_cancel_that_lands_while_the_exec_request_is_still_being_sent_cancels_it_too() -> None:
+    """``send_str`` waits for the socket to drain, and a cancel can arrive while it does: by then the request is on the wire and
+    the command may be running in the runtime, so the connection it went out on has to be known BEFORE the send is awaited."""
+    client, ws = _client("1.4", _FakeWs(stall_execs=True))
+    task = asyncio.create_task(client.exec("sleep 60"))
+    exec_req_id = (await _exec_frame(ws))["req_id"]
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await _spin()
+
+    assert [c["args"] for c in _cancels(ws)] == [{"target_req_id": exec_req_id}]
+
+
+async def test_an_exec_that_could_not_get_a_connection_sends_no_cancel() -> None:
+    """Nothing went out: the runtime has nothing to cancel (and there is no connection to send on)."""
+    client = RuntimeClient(url="ws://x/", token="t")
+    client._negotiated_version = "1.4"
+    ws = _FakeWs()
+    task = asyncio.create_task(client.exec("sleep 60"))      # never connected: it waits for the connection
+    await _spin()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await _spin()
+
+    assert _cancels(ws) == [] and not client._background_tasks
 
 
 @pytest.mark.parametrize("version", ["1.3", "1.0", "0.0", "", "garbage"])
