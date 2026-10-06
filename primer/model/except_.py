@@ -60,7 +60,8 @@ class ContextOverflowUnrecoverable(ConfigError):
     too. Or, decided before any compaction, the agent's own ``max_output_tokens`` is not below the model's
     context window, so no history, however short, fits beside that cap (``forced_compaction`` and
     ``replay_attempted`` are both false then). A rejection whose own numbers show that the cap does not fit is
-    classified an output-cap error and never gets here: it stays the provider's plain ``bad_request``.
+    classified an output-cap error and never gets here: it stays the provider's own rejection
+    (a plain ``BadRequestError``, problem type ``/errors/bad-request``, when the adapter raised it).
     ``code`` is ``context_overflow_unrecoverable``. ``__cause__`` is the provider's rejection.
     """
 
