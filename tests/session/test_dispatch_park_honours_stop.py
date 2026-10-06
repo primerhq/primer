@@ -471,7 +471,14 @@ class TestTheExternalCallCleanupCannotFailOrStallTheCancelledExit:
     ``cancel_pending_external`` and the real exit run."""
 
     async def _stopped_external_turn(self, seeded_session, io, bus, storage, monkeypatch, update):
-        monkeypatch.setattr(storage.get_storage(ExternalToolCall), "update", update)
+        # The cleanup's row write is the guarded ``patch_if`` of ``resolve_external_row`` (it was a whole-row
+        # ``update``): hand the row it is writing to the test's hook, so the hook still sees the row.
+        rows = storage.get_storage(ExternalToolCall)
+
+        async def patch_if(row_id, *args, **kwargs):
+            return await update(await rows.get(row_id))
+
+        monkeypatch.setattr(rows, "patch_if", patch_if)
         seen = _Observed(monkeypatch, bus, seeded_session.id)
         llm = _OneRoundLlm([("a", "wait")])
         manager = _ExternalToolManager(parking="a", key="", storage=storage, bus=bus, sid=seeded_session.id)
