@@ -111,6 +111,85 @@ class TestReadThenWriteKeepsTheStoredSecret:
         assert _stored_env_token(sp) == ENV_TOKEN
 
 
+def _channel_provider_body() -> dict:
+    from pydantic import SecretStr
+
+    from primer.model.channel import ChannelProvider, ChannelProviderType, SlackChannelProviderConfig
+
+    body = ChannelProvider(
+        id="cp-1",
+        provider=ChannelProviderType.SLACK,
+        config=SlackChannelProviderConfig(app_token=SecretStr("xapp-1-live-0123456789"), bot_token=SecretStr("xoxb-live-9876543210")),
+    ).model_dump(mode="json")
+    body["config"]["app_token"] = "xapp-1-live-0123456789"
+    body["config"]["bot_token"] = "xoxb-live-9876543210"
+    return body
+
+
+class TestEveryEntityNotOnlyTheOnesWithAnInvalidationHook:
+    """The three entities above all carry a cache-invalidation hook. The protection is the generic update handler's, so an
+    entity with secrets and NO hook (an artifact storage provider's S3 keys) is covered too."""
+
+    @pytest.mark.asyncio
+    async def test_an_artifact_storage_provider_keeps_its_s3_keys(self, system_toolset, sp) -> None:
+        from pydantic import SecretStr
+
+        from primer.model.provider import ArtifactStorageProvider
+        from primer.model.providers.artifact import ArtifactStorageProviderType, S3ArtifactConfig
+
+        body = ArtifactStorageProvider(
+            id="asp-1",
+            provider=ArtifactStorageProviderType.S3,
+            config=S3ArtifactConfig(bucket="b", access_key=SecretStr("AKIA-live-0123456789"), secret_key=SecretStr("sec-live-9876543210")),
+        ).model_dump(mode="json")
+        body["config"]["access_key"] = "AKIA-live-0123456789"
+        body["config"]["secret_key"] = "sec-live-9876543210"
+        await _create(system_toolset, "artifact_storage_provider", body)
+        served = await _served(system_toolset, "artifact_storage_provider", "asp-1")
+        assert served["config"]["secret_key"] != "sec-live-9876543210", "precondition: served masked"
+
+        result = await system_toolset.call(tool_name="update_artifact_storage_provider", arguments={"id": "asp-1", "entity": served})
+
+        assert not result.is_error, result.output
+        config = sp.get_storage(ArtifactStorageProvider)._data["asp-1"].config
+        assert config.access_key.get_secret_value() == "AKIA-live-0123456789"
+        assert config.secret_key.get_secret_value() == "sec-live-9876543210"
+
+
+class TestAModelThatValidatesItsSecretRefusesTheMaskInsteadOfStoringIt:
+    """A Slack token must start with ``xapp-`` / ``xoxb-``, so the served mask never validates: the body is rejected before any
+    secret could be restored (the REST route does the same: its PUT validates the body before the pre-update hook). Not
+    round-trippable, but nothing is corrupted: the stored tokens are untouched, and a real rotation still works. Tracked as its
+    own follow-up; this pins that the failure is loud and harmless."""
+
+    @pytest.mark.asyncio
+    async def test_a_masked_channel_provider_body_is_refused_and_the_tokens_are_untouched(self, system_toolset, sp) -> None:
+        from primer.model.channel import ChannelProvider
+
+        await _create(system_toolset, "channel_provider", _channel_provider_body())
+        served = await _served(system_toolset, "channel_provider", "cp-1")
+
+        result = await system_toolset.call(tool_name="update_channel_provider", arguments={"id": "cp-1", "entity": served})
+
+        assert result.is_error and json.loads(result.output)["type"] == "validation-error"
+        config = sp.get_storage(ChannelProvider)._data["cp-1"].config
+        assert config.bot_token.get_secret_value() == "xoxb-live-9876543210"
+        assert config.app_token.get_secret_value() == "xapp-1-live-0123456789"
+
+    @pytest.mark.asyncio
+    async def test_a_real_token_rotation_is_stored(self, system_toolset, sp) -> None:
+        from primer.model.channel import ChannelProvider
+
+        await _create(system_toolset, "channel_provider", _channel_provider_body())
+        body = _channel_provider_body()
+        body["config"]["bot_token"] = "xoxb-rotated-1122334455"
+
+        result = await system_toolset.call(tool_name="update_channel_provider", arguments={"id": "cp-1", "entity": body})
+
+        assert not result.is_error, result.output
+        assert sp.get_storage(ChannelProvider)._data["cp-1"].config.bot_token.get_secret_value() == "xoxb-rotated-1122334455"
+
+
 class TestARealChangeIsStillStored:
     @pytest.mark.asyncio
     async def test_a_new_api_key_replaces_the_stored_one(self, system_toolset, sp) -> None:
