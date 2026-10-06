@@ -182,11 +182,15 @@ function SH_stoppingLine(status) {
 
 // The slim lifecycle marker in the transcript. A Stop and a Cancel both write a "cancelled"
 // record; only the reason tells them apart, and a Stop (the session stays alive) must not read
-// as the end-of-session wording.
+// as the end-of-session wording. A turn that tripped the agent's max_tool_turns ends on a done
+// whose stop_reason is "tool_turn_cap": the work it started is unfinished, so it reads as a stop.
 function SH_lifecycleLabel(kind, payload) {
   if (kind === "cancelled") {
     return payload && payload.reason === "operator_interrupt"
       ? "■ stopped" : "■ cancelled";
+  }
+  if (kind === "done" && payload && payload.stop_reason === "tool_turn_cap") {
+    return "■ stopped at the tool-turn cap";
   }
   return "· " + kind;
 }

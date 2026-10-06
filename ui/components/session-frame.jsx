@@ -264,16 +264,20 @@ function _SLS_Frame({ m }) {
   // Event markers: done, cancelled, yielded, resumed.
   if (kind === "done" || kind === "cancelled" || kind === "yielded" || kind === "resumed") {
     const stopReason = m.stop_reason || m.reason || "";
+    // A turn that tripped max_tool_turns ends on a done that says so: it did not finish, so it is not green.
+    const capped = kind === "done" && stopReason === "tool_turn_cap";
     return (
       <div style={{ marginLeft: 64, marginTop: 4, marginBottom: 8 }}>
         <span
           className="muted text-sm mono"
           style={{
             color: kind === "cancelled" ? "var(--red)"
+                 : capped ? "var(--amber)"
                  : kind === "done" ? "var(--green)"
                  : "var(--amber)",
           }}
-        >· {kind}{stopReason ? ` (${stopReason})` : ""}</span>
+        >{capped ? "■ stopped at the tool-turn cap"
+          : `· ${kind}${stopReason ? ` (${stopReason})` : ""}`}</span>
       </div>
     );
   }

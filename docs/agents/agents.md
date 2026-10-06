@@ -327,7 +327,9 @@ Read the description + system_prompt to confirm fit.
   of its tool calls is answered with an error result ("not executed:
   tool-turn cap reached") so the session stays usable. An interactive
   session then rests waiting for your next message (it does not resume by
-  itself, including after a restart); an autonomous agent session (for
+  itself, including after a restart; the turn's last `done` record has
+  `stop_reason` `tool_turn_cap`, which the console shows as "stopped at the
+  tool-turn cap"); an autonomous agent session (for
   example one fired by a trigger) ends with `ended_reason`
   `tool_turn_cap`, and a new message reopens it with a fresh round count.
   A session bound to a channel thread is told it stopped short (a message

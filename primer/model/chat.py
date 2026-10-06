@@ -789,13 +789,18 @@ StopReason = Literal[
     "content_filter",
     "error",
     "other",
+    "tool_turn_cap",
 ]
 """Normalised stop reason emitted on :class:`Done`.
 
 Adapters should map provider-specific reasons onto this set and preserve the
 original string in :attr:`Done.raw_reason` for callers that need full
 fidelity (Google in particular has 16 distinct finish reasons that collapse
-into this 7-value set).
+into the 7 values below that adapters produce).
+
+``tool_turn_cap`` is the one value no adapter produces: the agent loop sets it
+on the Done of the round that tripped ``max_tool_turns`` (the model's own
+reason, ``tool_use``, stays in ``raw_reason``).
 """
 
 
