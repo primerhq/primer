@@ -220,11 +220,22 @@ intact, so the next message continues it:
   document tools (`create_document`, `update_document`,
   `move_document`, `delete_document` in the collections toolset, and
   `put_document`) commit a database transaction and then update the search
-  index, so cancelling between the two would leave the index stale. A Stop
+  index, so cancelling between the two would leave the index stale. So are
+  the tools that change more than one thing, each with no transaction around
+  the steps: creating, updating, deleting or firing a trigger (the row, then
+  its schedule), creating or deleting a workspace (the live instance, then
+  its row), creating, cancelling, steering or restarting a workspace session,
+  and updating or deleting an LLM, embedding, cross-encoder or
+  semantic-search provider or a toolset (the row, then the cached adapter
+  built from it). A tool called through `call_tool` is judged by the tool it
+  calls: `call_tool` of a tool above is waited for too. A Stop
   waits for such a call, up to 5 seconds, and records its real result. If it
   takes longer the turn ends anyway: the call is answered "interrupted:
   stopped by user ..." and runs on to its end in the background, so it can
-  still complete after the Stop. Each tool declares this with the
+  still complete after the Stop. An operator Cancel of the session cancels
+  every call, whatever it declares: a workspace create cancelled that way
+  removes the instance it made, and a workspace delete cancelled that way
+  still runs to its end. Each tool declares this with the
   `interruptible` flag (false for the tools above, true for every other
   tool). It is served next to `yields` wherever tools are listed: the
   `interruptible` field of each tool in `GET /v1/tools` and the toolset
