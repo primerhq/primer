@@ -40,6 +40,7 @@ from primer.model.except_ import NotFoundError
 from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
+    NON_ENDED_STATUSES,
     NON_ENDED_STATUSES_NOT_PAUSED,
     SessionMessageKind,
     SessionMessageRecord,
@@ -2709,6 +2710,12 @@ async def pause_session_for_refused_workspace(
     ``messages.jsonl`` lives INSIDE the refused workspace and cannot hold it. The turn stamps are cleared so nothing
     re-claims it in a loop, and an ENDED row is never brought back. Never ``workspace_lost``: the workspace is intact.
 
+    ONE ``patch_if`` of exactly the fields this owns (the status, the reason, the Stop flag, the turn stamps), guarded on
+    the row not being ENDED: never a write of a copy of the row it read, which would put back whatever another process
+    committed since (a steer's ``last_seq``, a wake's ``turn_status``). ``turn_status`` goes to ``idle`` even where a
+    wake had armed it ``claimable``: the pool re-arms only a RUNNING or WAITING row, and ``/resume`` claims the session
+    whatever that flag says, so a PAUSED row has no use for it.
+
     The lease is given back with ``entity_noop``: the engine does not call the session adapter's release, which would
     clear the park, bump ``turn_no`` for a turn that never ran and try to write its error record into the very
     workspace that was refused.
@@ -2717,18 +2724,21 @@ async def pause_session_for_refused_workspace(
         "session %s: the deployment refuses its workspace, so the turn failed and the session is paused, "
         "resumable: %s", session_id, refused.message,
     )
+    patch = to_jsonable_python({
+        "status": SessionStatus.PAUSED,
+        "workspace_refusal": refused.message,
+        "interrupt_requested": False,
+        "turn_status": "idle",
+        "turn_started_at": None,
+        "agent_phase": None,
+        "agent_phase_turn_no": None,
+        "agent_phase_stamped_at": None,
+    })
     async with session_lifecycle_lock().acquire(session_id):
-        fresh = await session_storage.get(session_id)
-        if fresh is not None and fresh.status != SessionStatus.ENDED:
-            await session_storage.update_unless(
-                fresh.model_copy(update={
-                    "status": SessionStatus.PAUSED,
-                    "workspace_refusal": refused.message,
-                }),
-                field="status", forbidden=SessionStatus.ENDED.value,
-            )
-        await _clear_interrupt_requested(session_storage, session_id)
-        await _clear_turn_running(session_storage, session_id)
+        try:
+            await session_storage.patch_if(session_id, patch, where={"status": NON_ENDED_STATUSES()})
+        except NotFoundError:
+            logger.warning("session %s vanished before its refused turn could pause it", session_id)
     return ReleaseOutcome(success=False, drop_lease=True, entity_noop=True)
 
 

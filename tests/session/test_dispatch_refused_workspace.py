@@ -134,6 +134,69 @@ async def test_a_turn_that_starts_clears_an_earlier_refusal(storage_provider) ->
     assert seen["refusal_when_building"] is None, "the banner must not outlive the retry that got past the workspace"
 
 
+class _NoWholeDocumentWrites:
+    """A session storage that refuses every whole-document writer, so a test can prove a path writes by ``patch_if`` alone.
+
+    A whole-document write from a stale snapshot is the writer class that puts back whatever another process committed
+    since the read (a wake's ``turn_status``, a steer's ``last_seq``); the refusal helper owns a handful of fields and
+    writes exactly those.
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.patches: list[tuple] = []
+
+    async def get(self, *args, **kwargs):
+        return await self._inner.get(*args, **kwargs)
+
+    async def patch_if(self, id, patch, *, where, **kwargs):
+        self.patches.append((id, dict(patch), dict(where)))
+        return await self._inner.patch_if(id, patch, where=where, **kwargs)
+
+    def __getattr__(self, name):
+        if name in {"update", "update_unless", "create", "upsert", "delete"}:
+            raise AssertionError(f"the refusal helper must not call the whole-document writer {name}()")
+        return getattr(self._inner, name)
+
+
+async def test_the_refusal_is_one_field_scoped_patch_and_never_a_whole_document_write(storage_provider) -> None:
+    from primer.session.dispatch import pause_session_for_refused_workspace
+
+    await _seed(storage_provider, interrupt_requested=True)
+    storage = _NoWholeDocumentWrites(storage_provider.get_storage(WorkspaceSession))
+
+    outcome = await pause_session_for_refused_workspace(storage, "s1", REFUSAL)
+
+    assert len(storage.patches) == 1, "the status, the reason, the Stop flag and the turn stamps go in ONE conditional write"
+    _, patch, where = storage.patches[0]
+    assert patch["status"] == "paused" and patch["workspace_refusal"] == REFUSAL.message
+    assert set(patch) <= {
+        "status", "workspace_refusal", "interrupt_requested", "turn_status", "turn_started_at",
+        "agent_phase", "agent_phase_turn_no", "agent_phase_stamped_at",
+    }, "only the fields the helper owns: nothing it did not mean to write can be put back"
+    assert where == {"status": [s.value for s in SessionStatus if s is not SessionStatus.ENDED]}, "an ENDED row is refused"
+    row = await _row(storage_provider)
+    assert row.status == SessionStatus.PAUSED and row.turn_status == "idle" and row.interrupt_requested is False
+    assert outcome.entity_noop is True
+
+
+async def test_a_field_the_helper_does_not_own_is_left_exactly_as_another_writer_committed_it(storage_provider) -> None:
+    """The stale-snapshot class this removes: the helper used to write a copy of the row it had read, which puts back
+    whatever another process committed since (a steer's ``last_seq``, a pause, a wake). It reads nothing and writes only
+    the fields it owns, so those survive."""
+    from primer.session.dispatch import pause_session_for_refused_workspace
+
+    await _seed(storage_provider)
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    await sessions.patch_if("s1", {"last_seq": 41, "cancel_requested": True, "name": "kept"}, where={"status": ["running"]})
+
+    await pause_session_for_refused_workspace(sessions, "s1", REFUSAL)
+
+    row = await _row(storage_provider)
+    assert row.status == SessionStatus.PAUSED
+    assert (row.last_seq, row.cancel_requested, row.name) == (41, True, "kept")
+
+
 async def test_a_session_ended_meanwhile_is_not_brought_back_by_the_refusal(storage_provider) -> None:
     from primer.session.dispatch import pause_session_for_refused_workspace
 
