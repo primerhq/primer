@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage, Op
 from primer.model.trigger import (
     Subscription,
@@ -270,8 +271,10 @@ async def delete_trigger(*, trigger_id: str, deps: ServiceDeps) -> None:
     for sub in await list_subscriptions(trigger_id=trigger_id, deps=deps):
         try:
             await subs_storage.delete(sub.id)
-        except Exception:
-            # Already-gone is fine; keep cascading.
+        except NotFoundError:
+            # Already gone (a concurrent delete) is fine; keep cascading. Any other failure propagates BEFORE the
+            # trigger row is deleted: swallowing it left the subscription behind as an orphan, silently, and the
+            # delete can be retried while the trigger is still there.
             pass
     await storage.delete(trigger_id)
 
