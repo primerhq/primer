@@ -29,7 +29,14 @@ from pydantic import SecretStr
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus
+from primer.harness.enqueue import announce_enqueued
+from primer.model.harness import (
+    Harness,
+    HarnessDirection,
+    HarnessOperation,
+    HarnessRendering,
+    HarnessStatus,
+)
 from primer.model.storage import (
     FieldRef,
     OffsetPage,
@@ -60,6 +67,20 @@ HARNESS_TOOLSET_ID = "harness"
 def _harness_dict(harness: Harness) -> dict:
     """Serialize harness to JSON-safe dict with SecretStr redacted."""
     return harness.model_dump(mode="json")
+
+
+def _refuse_if_outbound(harness: Harness, operation: str) -> ToolCallResult | None:
+    """The REST routes' 409 ``direction_mismatch``: fetch, install and sync are inbound operations.
+
+    Checked right after the harness is found, before anything else, as the routes do. An operation the worker now claims
+    (the lease is upserted) is not harmless on a harness it was never meant for.
+    """
+    if harness.direction == HarnessDirection.OUTBOUND:
+        return _err(
+            f"Harness {harness.id!r} is outbound; {operation} is an inbound operation",
+            error_type="direction-mismatch",
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +520,7 @@ def _make_update_overrides_handler(storage_provider: "StorageProvider") -> ToolH
 def _make_enqueue_handler(
     storage_provider: "StorageProvider",
     event_bus: Any,
+    claim_engine: Any,
     operation: HarnessOperation,
 ) -> ToolHandler:
     """Build a handler for FETCH or UNINSTALL (simple enqueue with 409 guard)."""
@@ -510,6 +532,12 @@ def _make_enqueue_handler(
         if harness is None:
             return _err(f"Harness {harness_id!r} does not exist", error_type="not-found")
 
+        # Fetch is inbound only; the delete route does not guard uninstall by direction.
+        if operation == HarnessOperation.FETCH:
+            refusal = _refuse_if_outbound(harness, "fetch")
+            if refusal is not None:
+                return refusal
+
         if harness.pending_operation is not None:
             return _err(
                 f"Harness {harness_id!r} already has a pending operation: "
@@ -518,15 +546,21 @@ def _make_enqueue_handler(
             )
 
         harness.pending_operation = operation
+        if operation == HarnessOperation.UNINSTALL:
+            # As the delete route's default: an inbound harness removes the objects it installed, an outbound one keeps
+            # the objects it merely tracks. The model default (False) would leave everything an agent's uninstall
+            # was meant to remove.
+            harness.uninstall_cascade = harness.direction == HarnessDirection.INBOUND
         updated = await storage.update(harness)
-        if event_bus is not None:
-            await event_bus.publish("harness-claimable", {"harness_id": harness_id})
+        await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
     return _handler
 
 
-def _make_install_handler(storage_provider: "StorageProvider", event_bus: Any) -> ToolHandler:
+def _make_install_handler(
+    storage_provider: "StorageProvider", event_bus: Any, claim_engine: Any,
+) -> ToolHandler:
     _INSTALL_ALLOWED = {HarnessStatus.DRAFT, HarnessStatus.READY, HarnessStatus.OUTDATED}
 
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
@@ -535,6 +569,10 @@ def _make_install_handler(storage_provider: "StorageProvider", event_bus: Any) -
         harness = await storage.get(harness_id)
         if harness is None:
             return _err(f"Harness {harness_id!r} does not exist", error_type="not-found")
+
+        refusal = _refuse_if_outbound(harness, "install")
+        if refusal is not None:
+            return refusal
 
         if harness.pending_operation is not None:
             return _err(
@@ -578,14 +616,15 @@ def _make_install_handler(storage_provider: "StorageProvider", event_bus: Any) -
 
         harness.pending_operation = HarnessOperation.INSTALL
         updated = await storage.update(harness)
-        if event_bus is not None:
-            await event_bus.publish("harness-claimable", {"harness_id": harness_id})
+        await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
     return _handler
 
 
-def _make_sync_handler(storage_provider: "StorageProvider", event_bus: Any) -> ToolHandler:
+def _make_sync_handler(
+    storage_provider: "StorageProvider", event_bus: Any, claim_engine: Any,
+) -> ToolHandler:
     _SYNC_ALLOWED = {HarnessStatus.INSTALLED, HarnessStatus.OUTDATED}
 
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
@@ -594,6 +633,10 @@ def _make_sync_handler(storage_provider: "StorageProvider", event_bus: Any) -> T
         harness = await storage.get(harness_id)
         if harness is None:
             return _err(f"Harness {harness_id!r} does not exist", error_type="not-found")
+
+        refusal = _refuse_if_outbound(harness, "sync")
+        if refusal is not None:
+            return refusal
 
         if harness.pending_operation is not None:
             return _err(
@@ -617,8 +660,7 @@ def _make_sync_handler(storage_provider: "StorageProvider", event_bus: Any) -> T
 
         harness.pending_operation = HarnessOperation.SYNC
         updated = await storage.update(harness)
-        if event_bus is not None:
-            await event_bus.publish("harness-claimable", {"harness_id": harness_id})
+        await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
     return _handler
@@ -633,9 +675,15 @@ def build_harness_toolset_provider(
     *,
     storage_provider: "StorageProvider",
     event_bus: Any = None,
+    claim_engine: Any = None,
     toolset_id: str = HARNESS_TOOLSET_ID,
 ) -> InternalToolsetProvider:
-    """Construct the ``harness`` internal toolset."""
+    """Construct the ``harness`` internal toolset.
+
+    ``claim_engine`` is what makes an enqueued operation CLAIMABLE: the worker claims harness work only through lease rows,
+    so a toolset built without one still writes ``pending_operation`` and publishes, but nothing will run the operation.
+    The API lifespan passes the live engine; ``None`` is for standalone builds and tests.
+    """
     registry: dict[str, tuple[Tool, ToolHandler]] = {
         "harness__list": (TOOL_LIST, _make_list_handler(storage_provider)),
         "harness__get": (TOOL_GET, _make_get_handler(storage_provider)),
@@ -647,13 +695,15 @@ def build_harness_toolset_provider(
         ),
         "harness__fetch": (
             TOOL_FETCH,
-            _make_enqueue_handler(storage_provider, event_bus, HarnessOperation.FETCH),
+            _make_enqueue_handler(storage_provider, event_bus, claim_engine, HarnessOperation.FETCH),
         ),
-        "harness__install": (TOOL_INSTALL, _make_install_handler(storage_provider, event_bus)),
-        "harness__sync": (TOOL_SYNC, _make_sync_handler(storage_provider, event_bus)),
+        "harness__install": (
+            TOOL_INSTALL, _make_install_handler(storage_provider, event_bus, claim_engine),
+        ),
+        "harness__sync": (TOOL_SYNC, _make_sync_handler(storage_provider, event_bus, claim_engine)),
         "harness__uninstall": (
             TOOL_UNINSTALL,
-            _make_enqueue_handler(storage_provider, event_bus, HarnessOperation.UNINSTALL),
+            _make_enqueue_handler(storage_provider, event_bus, claim_engine, HarnessOperation.UNINSTALL),
         ),
     }
     logger.info(

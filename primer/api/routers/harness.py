@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from primer.api.deps import get_claim_engine, get_event_bus, get_storage_provider
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
+from primer.harness.enqueue import announce_enqueued
 from primer.harness.hashes import hash_overrides
 from primer.harness.outbound import (
     OutboundBuildError,
@@ -366,11 +367,7 @@ async def delete_harness(
         else harness.direction == HarnessDirection.INBOUND
     )
     updated = await storage.update(harness)
-    await event_bus.publish("harness-claimable", {"harness_id": harness_id})
-    # Also notify the ClaimEngine (forward-compat; no-op when not wired).
-    if engine is not None:
-        from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
-        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=CLAIM_PRIORITY_OPERATOR)
+    await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
@@ -476,11 +473,7 @@ async def fetch_harness(
 
     harness.pending_operation = HarnessOperation.FETCH
     updated = await storage.update(harness)
-    await event_bus.publish("harness-claimable", {"harness_id": harness_id})
-    # Also notify the ClaimEngine (forward-compat; no-op when not wired).
-    if engine is not None:
-        from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
-        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=CLAIM_PRIORITY_OPERATOR)
+    await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
@@ -563,11 +556,7 @@ async def install_harness(
 
     harness.pending_operation = HarnessOperation.INSTALL
     updated = await storage.update(harness)
-    await event_bus.publish("harness-claimable", {"harness_id": harness_id})
-    # Also notify the ClaimEngine (forward-compat; no-op when not wired).
-    if engine is not None:
-        from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
-        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=CLAIM_PRIORITY_OPERATOR)
+    await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
@@ -631,11 +620,7 @@ async def sync_harness(
 
     harness.pending_operation = HarnessOperation.SYNC
     updated = await storage.update(harness)
-    await event_bus.publish("harness-claimable", {"harness_id": harness_id})
-    # Also notify the ClaimEngine (forward-compat; no-op when not wired).
-    if engine is not None:
-        from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
-        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=CLAIM_PRIORITY_OPERATOR)
+    await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
@@ -758,10 +743,7 @@ async def build_harness(
 
     harness.pending_operation = HarnessOperation.BUILD
     updated = await storage.update(harness)
-    await event_bus.publish("harness-claimable", {"harness_id": harness_id})
-    if engine is not None:
-        from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
-        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=CLAIM_PRIORITY_OPERATOR)
+    await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
@@ -886,10 +868,7 @@ async def push_harness(
 
     harness.pending_operation = HarnessOperation.PUSH
     updated = await storage.update(harness)
-    await event_bus.publish("harness-claimable", {"harness_id": harness_id})
-    if engine is not None:
-        from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
-        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=CLAIM_PRIORITY_OPERATOR)
+    await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
