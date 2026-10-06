@@ -634,7 +634,26 @@ async def run_agent_turn(
                 status=call_status,
             )
         )
-        if held_done is not None and not intercepted:
+        # Decided BEFORE anything of this round's end is delivered, so the durable ``done`` record of the round that trips
+        # the cap says so (the model's own ``tool_use`` stays in ``raw_reason``) instead of reading as a mid-chain tool
+        # round. The order is the one the checks below use: a Stop that already landed beats the cap. Once decided the
+        # round ends as capped: a Stop that lands while a consumer holds an event of it does not take it back, so the
+        # record and the turn's outcome agree. The capped round's ``Done`` is delivered AFTER the refusal results (the
+        # cap branch below): the ``done`` closes the turn's window (``closes_turn``), and the results belong inside it.
+        will_cap = (
+            not intercepted
+            and no_content is None
+            and assistant_msg is not None
+            and not isinstance(held_done, Error)
+            and any(isinstance(p, ToolCallPart) for p in assistant_msg.parts)
+            and not (interrupt is not None and interrupt.is_set())
+            and agent.max_tool_turns is not None
+            and tool_round + 1 >= agent.max_tool_turns
+        )
+        capped_done: Done | None = None
+        if will_cap and isinstance(held_done, Done):
+            capped_done = held_done.model_copy(update={"stop_reason": "tool_turn_cap"})
+        if held_done is not None and not intercepted and capped_done is None:
             yield held_done
 
         if no_content is not None:
@@ -692,7 +711,7 @@ async def run_agent_turn(
         if not tool_calls:
             return
 
-        if interrupt is not None and interrupt.is_set():
+        if interrupt is not None and interrupt.is_set() and not will_cap:
             # A Stop that landed as the model finished (or while its terminal event was draining). The
             # model already asked for these calls, but the user has since said stop: running a
             # destructive one now would make Stop a lie. None of the round runs; each call is answered so
@@ -705,10 +724,7 @@ async def run_agent_turn(
             return
 
         tool_round += 1
-        if (
-            agent.max_tool_turns is not None
-            and tool_round >= agent.max_tool_turns
-        ):
+        if will_cap:
             # The assistant keeps emitting tool calls. Force-stop the turn
             # before dispatching another round so a model that never stops
             # cannot spend tokens / loop unbounded.
@@ -727,6 +743,8 @@ async def run_agent_turn(
                 yield answer_event
             if capped_out is not None:
                 capped_out.append(True)
+            if capped_done is not None:
+                yield capped_done
             return
 
         client_actions: list[_ClientAction] = []

@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from primer.agent.loop import run_agent_turn
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
     Done,
+    ExtendedEvent,
     Message,
     StreamEvent,
     TextDelta,
@@ -89,9 +90,11 @@ class _Turn:
         return [e for e in self.events if isinstance(e, Done)]
 
 
-async def _turn(llm, *, cap: int, interrupt: asyncio.Event | None = None, stop_on_first_done: bool = False) -> _Turn:
-    """Drive the real loop. ``stop_on_first_done`` is a consumer that sets the Stop on receiving the first Done: a Stop
-    that lands while the Done is being delivered (the persistence writer awaits storage there)."""
+async def _turn(
+    llm, *, cap: int, interrupt: asyncio.Event | None = None, stop_when: Callable[[StreamEvent], bool] | None = None,
+) -> _Turn:
+    """Drive the real loop. ``stop_when`` is a consumer that sets the Stop on receiving the first event it matches: a
+    Stop that lands while that event is being delivered (the persistence writer awaits storage there)."""
     turn = _Turn()
 
     async def drive() -> None:
@@ -101,7 +104,7 @@ async def _turn(llm, *, cap: int, interrupt: asyncio.Event | None = None, stop_o
             interrupt=interrupt, interrupted_out=turn.interrupted, capped_out=turn.capped,
         ):
             turn.events.append(ev)
-            if stop_on_first_done and isinstance(ev, Done) and interrupt is not None:
+            if stop_when is not None and interrupt is not None and not interrupt.is_set() and stop_when(ev):
                 interrupt.set()
 
     await asyncio.wait_for(drive(), 5.0)
@@ -122,6 +125,24 @@ async def test_a_cap_of_one_marks_the_only_round() -> None:
 
     assert turn.capped == [True]
     assert [d.stop_reason for d in turn.dones] == ["tool_turn_cap"]
+
+
+async def test_the_capped_done_is_the_last_event_of_its_turn_after_the_refusal_results() -> None:
+    """The ``done`` closes the turn's window, so the refusal results of the capped round (yielded by the loop after it
+    decided to cap) must come BEFORE it, or they land in the NEXT turn's window, orphaned from their calls."""
+    turn = await _turn(_ToolRoundsThenStop(), cap=2)
+
+    kinds = [type(e).__name__ for e in turn.events]
+    done_at = max(i for i, e in enumerate(turn.events) if isinstance(e, Done))
+    assert turn.dones[-1].stop_reason == "tool_turn_cap"
+    assert done_at == len(turn.events) - 1, f"events followed the capped done: {kinds[done_at:]}"
+    refusal_at = [
+        i for i, e in enumerate(turn.events)
+        if isinstance(e, ExtendedEvent) and type(e.extended).__name__ == "_ExecutorToolResult"
+        and "tool-turn cap reached" in str(e.extended.output)
+    ]
+    assert len(refusal_at) == 1, f"the capped round's one call was not answered with the refusal: {kinds}"
+    assert refusal_at[0] < done_at, "the refusal result came after the capped done"
 
 
 async def test_a_turn_that_stops_before_the_cap_keeps_its_own_stop_reason() -> None:
@@ -153,13 +174,18 @@ async def test_a_stop_that_landed_before_the_done_leaves_it_a_tool_use_done() ->
     assert [d.stop_reason for d in turn.dones] == ["tool_use"]
 
 
-async def test_a_stop_that_lands_while_the_done_is_delivered_does_not_contradict_it() -> None:
-    """The record and the turn's outcome must agree whichever way the tiebreak goes: a done that says
-    ``tool_turn_cap`` is a capped turn, and a stopped turn's done does not say it was capped."""
+async def test_a_stop_that_lands_after_the_cap_was_decided_does_not_contradict_the_done() -> None:
+    """The cap is decided before the round's ``llm_call`` record is delivered, and the ``Done`` follows the refusal
+    results. A Stop that lands while a consumer holds that ``llm_call`` event must not leave a done that says
+    ``tool_turn_cap`` on a turn that ends as stopped (or the reverse): the record and the outcome agree, whichever way
+    the tiebreak goes."""
     interrupt = asyncio.Event()
 
-    turn = await _turn(_ToolRoundsThenStop(), cap=1, interrupt=interrupt, stop_on_first_done=True)
+    turn = await _turn(
+        _ToolRoundsThenStop(), cap=1, interrupt=interrupt, stop_when=lambda ev: isinstance(ev, ExtendedEvent),
+    )
 
+    assert interrupt.is_set(), "the Stop never landed: the harness did not reach the llm_call event"
     says_capped = turn.dones[-1].stop_reason == "tool_turn_cap"
     assert says_capped == (turn.capped == [True]), (
         f"the done says {turn.dones[-1].stop_reason!r} but capped_out={turn.capped} interrupted_out={turn.interrupted}"
@@ -195,6 +221,9 @@ async def test_the_translator_writes_the_marker_and_the_capped_turn_is_its_own_w
     assert [p["stop_reason"] for p in done_payloads] == ["tool_use", "tool_use", "tool_turn_cap", "stop"]
     assert len(windows) == 2, f"the capped turn ran on into the next one: {[w['terminal_seq'] for w in windows]}"
     assert windows[0]["terminal_seq"] == last, "the capped turn's window closes at its own done"
+    assert [r["kind"] for r in windows[0]["records"]][-2:] == ["tool_result", "done"], (
+        "the capped round's refusal result belongs to the capped turn's window, not the next one's"
+    )
     assert windows[1]["terminal_seq"] == last + 2
 
 
