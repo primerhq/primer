@@ -7622,7 +7622,7 @@
                 "type": "null"
               }
             ],
-            "description": "Park-batch marker: true while parked_state references at least one tool_wait batch (tool calls parked as claimable tasks), NULL otherwise. Cleared by writing NULL, never false. A selector only: readiness is always recomputed from the task rows, never trusted from this flag. Additive/optional, no migration.",
+            "description": "Park-batch marker: will be set to true when parked_state references at least one tool_wait batch (tool calls parked as claimable tasks) and left NULL otherwise. Cleared by writing NULL, never false. A selector only: readiness is always recomputed from the task rows, never trusted from this flag.",
             "title": "Parked Tool Batches"
           },
           "parked_until": {
@@ -7700,7 +7700,7 @@
                 "type": "null"
               }
             ],
-            "description": "When the park was last flipped to resumable: the anchor for a grace period measured from the wake (parked_at is the park time, the wrong anchor). Additive/optional, no migration.",
+            "description": "When the park was last flipped to resumable (stamped by the wake): the anchor for a grace period measured from the wake (parked_at is the park time, the wrong anchor).",
             "title": "Resumable At"
           },
           "started_at": {
@@ -10210,7 +10210,7 @@
                 "type": "null"
               }
             ],
-            "description": "Park-batch marker: true while parked_state references at least one tool_wait batch (tool calls parked as claimable tasks), NULL otherwise. Cleared by writing NULL, never false. A selector only: readiness is always recomputed from the task rows, never trusted from this flag. Additive/optional, no migration.",
+            "description": "Park-batch marker: will be set to true when parked_state references at least one tool_wait batch (tool calls parked as claimable tasks) and left NULL otherwise. Cleared by writing NULL, never false. A selector only: readiness is always recomputed from the task rows, never trusted from this flag.",
             "title": "Parked Tool Batches"
           },
           "parked_until": {
@@ -10280,7 +10280,7 @@
                 "type": "null"
               }
             ],
-            "description": "When the park was last flipped to resumable: the anchor for a grace period measured from the wake (parked_at is the park time, the wrong anchor). Additive/optional, no migration.",
+            "description": "When the park was last flipped to resumable (stamped by the wake): the anchor for a grace period measured from the wake (parked_at is the park time, the wrong anchor).",
             "title": "Resumable At"
           },
           "started_at": {

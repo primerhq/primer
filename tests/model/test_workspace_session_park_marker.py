@@ -1,8 +1,9 @@
 """WorkspaceSession's park-batch marker and wake stamp, and the derived status lists (plan 3.3 and 3.4 b-0).
 
 ``parked_tool_batches`` is a selector-only marker: ``True`` while the park references a tool_wait batch, cleared by
-writing ``None`` (JSON null) and never ``False``, because a ``False`` would sit under the ``IS NOT NULL`` partial
-index and index every cleared row. ``resumable_at`` is the wake's own timestamp. Nothing writes either yet, so both
+writing ``None`` (JSON null) and never ``False``, because a ``False`` would be a second "unset" spelling that a
+partial index on the marker (none exists yet; a selector PR may add one) would have to exclude, and an ``IS NOT NULL``
+index would hold every cleared row. ``resumable_at`` is the wake's own timestamp. Nothing writes either yet, so both
 are served as null on every session read.
 
 ``NON_ENDED_STATUSES()`` / ``NON_ENDED_STATUSES_NOT_PAUSED()`` are computed from ``SessionStatus`` at call time, so a
@@ -58,7 +59,7 @@ def test_a_marked_and_stamped_row_round_trips_through_json_and_storage() -> None
 
 
 def test_the_marker_is_cleared_to_null_and_false_is_refused() -> None:
-    """``Literal[True] | None``: the only cleared value is ``None``; ``False`` would land in the partial index."""
+    """``Literal[True] | None``: the only cleared value is ``None``; ``False`` would be a second "unset" spelling (a partial index on the marker, if one is added, would hold it)."""
     cleared = _session(parked_tool_batches=True).model_copy(update={"parked_tool_batches": None})
 
     assert dump_for_storage(cleared)["parked_tool_batches"] is None
