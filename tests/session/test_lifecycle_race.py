@@ -56,15 +56,16 @@ class _EventBus:
 
 
 class _GatedStorage:
-    """Models the real backend and parks the FIRST ``update`` mid-flight.
+    """Models the real backend and parks the FIRST write mid-flight.
 
     Two fidelity points that make this match the SQLite/Postgres lane the bug
     lives in:
 
     * ``get`` returns a fresh deep copy (the real backend round-trips through
       a JSON blob), so concurrent handlers read INDEPENDENT row objects; and
-    * the first ``update`` call parks on ``release`` after announcing itself
-      via ``at_gate``. The test starts the handler it wants to hold the lock
+    * the first write (cancel's whole-row ``update``, or resume's field-scoped
+      ``patch_if``) parks on ``release`` after announcing itself via
+      ``at_gate``. The test starts the handler it wants to hold the lock
       first and waits on ``at_gate``, so that handler is deterministically
       inside its critical section before the sibling is launched.
     """
@@ -75,16 +76,24 @@ class _GatedStorage:
         self.release = asyncio.Event()
         self._first = True
 
+    async def _gate(self) -> None:
+        if self._first:
+            self._first = False
+            self.at_gate.set()
+            await self.release.wait()
+
     async def get(self, sid: str, conn=None):
         row = await self._inner.get(sid, conn=conn)
         return row.model_copy(deep=True) if row is not None else None
 
     async def update(self, s, conn=None):
-        if self._first:
-            self._first = False
-            self.at_gate.set()
-            await self.release.wait()
+        await self._gate()
         return await self._inner.update(s.model_copy(deep=True), conn=conn)
+
+    async def patch_if(self, sid: str, patch=None, *, where, set_paths=None, conn=None):
+        await self._gate()
+        written = await self._inner.patch_if(sid, patch, where=where, set_paths=set_paths, conn=conn)
+        return written.model_copy(deep=True) if written is not None else None
 
     def __getattr__(self, name: str):
         return getattr(self._inner, name)

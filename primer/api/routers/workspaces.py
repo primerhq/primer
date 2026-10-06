@@ -35,6 +35,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Reques
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from pydantic import ValidationError as PydanticValidationError
+from pydantic_core import to_jsonable_python
 
 from primer.api.deps import (
     get_claim_engine,
@@ -92,6 +93,7 @@ from primer.model.workspace import (
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.pending_gates import enumerate_pending_gates
+from primer.storage import raw_generation
 
 
 logger = logging.getLogger(__name__)
@@ -1217,11 +1219,23 @@ async def rename_session(
     # and the Studio center panel) reflect the rename too. A missing row
     # (e.g. an on-disk-only session) must not fail the rename. session_storage
     # is the Storage[WorkspaceSession] (see get_session_storage).
+    #
+    # The mirror writes ONLY the name (one field-scoped patch_if), fenced on the
+    # row's workspace_id, which never changes: the fence always holds, so a
+    # running or parked session still renames, and a park, a flag or a wake
+    # committed after the read is not written back over.
     try:
         row = await session_storage.get(session_id)
         if row is not None and row.workspace_id == workspace_id:
-            row.name = info.name
-            await session_storage.update(row)
+            written = await session_storage.patch_if(
+                session_id, {"name": info.name},
+                where={"workspace_id": [raw_generation(row, "workspace_id")]},
+            )
+            if written is None:
+                logger.warning(
+                    "rename_session: the scheduler row no longer matched its workspace; name not mirrored",
+                    extra={"session_id": session_id, "workspace_id": workspace_id},
+                )
     except Exception as exc:  # noqa: BLE001 - advisory mirror, never fatal
         logger.warning(
             "rename_session: failed to mirror name onto scheduler row",
@@ -1561,6 +1575,11 @@ async def set_session_response_format(
 
     Refused mid-turn: the in-flight turn already resolved its format,
     so accepting would suggest an effect this call cannot have.
+
+    The write is ONE field-scoped ``patch_if`` of ``response_format`` alone,
+    fenced on the row's ``workspace_id`` (immutable, so the fence always
+    holds): a turn, a park or a flag committed after the read is not written
+    back over. The mid-turn refusal is decided on the row read, as before.
     """
     sessions = storage_provider.get_storage(WorkspaceSession)
     row = await sessions.get(session_id)
@@ -1581,8 +1600,13 @@ async def set_session_response_format(
         raise SemanticValidationError(
             f"response_format is not a valid JSON Schema: {exc}"
         ) from exc
-    await sessions.update(updated)
-    return updated
+    written = await sessions.patch_if(
+        session_id, to_jsonable_python({"response_format": body.response_format}),
+        where={"workspace_id": [raw_generation(row, "workspace_id")]},
+    )
+    if written is None:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    return written
 
 
 class RewindBody(BaseModel):

@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field, model_validator
+from pydantic_core import to_jsonable_python
 
 from primer.model.external_tool import (
     ExternalToolDef,
@@ -29,6 +30,7 @@ from primer.api.errors import common_responses
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.timeline import build_turn_timeline
+from primer.storage import raw_generation
 from primer.model.except_ import (
     ConflictError,
     NotFoundError,
@@ -233,6 +235,19 @@ async def resume_session(
       ``started_at`` if unset, clears the pause flag, and enqueues with
       the scheduler.
     * 409 when the session is ENDED.
+
+    The write is ONE field-scoped ``patch_if`` of the fields resume changes
+    (``status``, ``pause_requested``, and ``started_at`` when the row it read
+    has none), fenced on the status it read ALONE. It writes no park field, so
+    a park, the hook's ``parked -> resumable`` flip or a cancel flag committed
+    after the read is never written back over, and a PAUSED row whose park is
+    ``resumable`` still resumes (the hook flips ``parked`` to ``resumable``
+    under a PAUSED row, so a park term in the fence would reject resume in
+    normal use). A rejected write means the status moved: the row is re-read
+    ONCE and the decision taken again (ENDED is 409, RUNNING the no-op, any
+    other resumable status retries the write once; a second rejection is 409).
+    The session is enqueued and its lease upserted only after a write that
+    LANDED.
     """
     # Serialize against a concurrent cancel/pause on the same session: the
     # status read-modify-write and the lease upsert must not interleave with
@@ -246,24 +261,43 @@ async def resume_session(
                 f"Session {session_id!r} does not exist on workspace "
                 f"{workspace_id!r}"
             )
-        if s.status == SessionStatus.ENDED:
-            raise ConflictError(f"Session {session_id!r} has ended")
-        if s.status == SessionStatus.RUNNING:
-            return s  # idempotent no-op
-        if s.status in _RESUMABLE:
-            s.status = SessionStatus.RUNNING
+        for attempt in range(2):
+            if s.status == SessionStatus.ENDED:
+                raise ConflictError(f"Session {session_id!r} has ended")
+            if s.status == SessionStatus.RUNNING:
+                return s  # idempotent no-op: nothing written, nothing armed
+            if s.status not in _RESUMABLE:
+                raise ConflictError(
+                    f"Session {session_id!r} cannot resume from status {s.status.value}"
+                )
+            patch: dict[str, Any] = {"status": SessionStatus.RUNNING, "pause_requested": False}
             if s.started_at is None:
-                s.started_at = datetime.now(timezone.utc)
-            s.pause_requested = False
-            await sessions.update(s)
-            await scheduler.enqueue(session_id)
-            # Notify the ClaimEngine (forward-compat; no-op when not wired).
-            if engine is not None:
-                from primer.int.claim import ClaimKind
-                await engine.upsert(ClaimKind.SESSION, session_id)
-            return s
+                patch["started_at"] = datetime.now(timezone.utc)
+            written = await sessions.patch_if(
+                session_id, to_jsonable_python(patch),
+                where={"status": [raw_generation(s, "status")]},
+            )
+            if written is not None:
+                await scheduler.enqueue(session_id)
+                # Notify the ClaimEngine (forward-compat; no-op when not wired).
+                if engine is not None:
+                    from primer.int.claim import ClaimKind
+                    await engine.upsert(ClaimKind.SESSION, session_id)
+                return written
+            logger.warning(
+                "resume of session %s: its status moved from %s under the write; %s",
+                session_id, s.status.value, "re-reading once" if attempt == 0 else "giving up",
+            )
+            if attempt == 0:
+                fresh = await sessions.get(session_id)
+                if fresh is None:
+                    raise NotFoundError(
+                        f"Session {session_id!r} does not exist on workspace "
+                        f"{workspace_id!r}"
+                    )
+                s = fresh
         raise ConflictError(
-            f"Session {session_id!r} cannot resume from status {s.status.value}"
+            f"Session {session_id!r} changed status twice while resuming; try again"
         )
 
 
