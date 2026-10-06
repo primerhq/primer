@@ -37,6 +37,7 @@ from primer.int.storage_provider import StorageProvider
 import primer.observability.metrics as _metrics
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.except_ import NotFoundError
+from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
     NON_ENDED_STATUSES_NOT_PAUSED,
@@ -339,6 +340,11 @@ async def run_one_session_turn(
     # here so the row always reaches a terminal state and the lease drops.
     try:
         executor = await deps.build_executor(session)
+    except WorkspaceRefusedError as refused:
+        # The deployment refuses this session's workspace (ticket 01a1072f). That is not a failure of the
+        # session: its workspace is intact and usable once moved, so the turn fails and the session stays
+        # resumable instead of ending ``failed``.
+        return await pause_session_for_refused_workspace(session_storage, session_id, refused)
     except Exception:
         logger.exception(
             "session %s failed to build executor; ending failed",
@@ -2373,6 +2379,9 @@ async def _flip_to_running(
         "agent_phase": "thinking",
         "agent_phase_turn_no": session.turn_no,
         "agent_phase_stamped_at": stamp,
+        # A turn that starts is past any earlier refusal of its workspace (ticket 01a1072f); the refusal arm writes it
+        # again if this attempt is refused too.
+        "workspace_refusal": None,
     })
     for _ in range(_RUNNING_FLIP_ATTEMPTS):
         try:
@@ -2689,6 +2698,38 @@ async def clear_interrupt_for_resume(session_storage, session_id: str) -> None:
     """
     async with session_lifecycle_lock().acquire(session_id):
         await _clear_interrupt_requested(session_storage, session_id)
+
+
+async def pause_session_for_refused_workspace(
+    session_storage, session_id: str, refused: WorkspaceRefusedError,
+) -> ReleaseOutcome:
+    """Fail the turn of a session whose workspace the deployment refuses, and leave the session resumable.
+
+    The session goes PAUSED (the existing ``/resume`` re-arms it), carrying the refusal text on the row because
+    ``messages.jsonl`` lives INSIDE the refused workspace and cannot hold it. The turn stamps are cleared so nothing
+    re-claims it in a loop, and an ENDED row is never brought back. Never ``workspace_lost``: the workspace is intact.
+
+    The lease is given back with ``entity_noop``: the engine does not call the session adapter's release, which would
+    clear the park, bump ``turn_no`` for a turn that never ran and try to write its error record into the very
+    workspace that was refused.
+    """
+    logger.warning(
+        "session %s: the deployment refuses its workspace, so the turn failed and the session is paused, "
+        "resumable: %s", session_id, refused.message,
+    )
+    async with session_lifecycle_lock().acquire(session_id):
+        fresh = await session_storage.get(session_id)
+        if fresh is not None and fresh.status != SessionStatus.ENDED:
+            await session_storage.update_unless(
+                fresh.model_copy(update={
+                    "status": SessionStatus.PAUSED,
+                    "workspace_refusal": refused.message,
+                }),
+                field="status", forbidden=SessionStatus.ENDED.value,
+            )
+        await _clear_interrupt_requested(session_storage, session_id)
+        await _clear_turn_running(session_storage, session_id)
+    return ReleaseOutcome(success=False, drop_lease=True, entity_noop=True)
 
 
 async def _clear_turn_running(session_storage, session_id: str) -> None:

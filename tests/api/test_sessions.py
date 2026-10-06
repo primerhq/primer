@@ -592,6 +592,34 @@ async def test_resume_already_running_is_idempotent_200(
     assert resp.status_code == 200
 
 
+async def test_resume_clears_the_refusal_a_paused_session_carried(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    """A session paused because its workspace was refused shows why on its row; resuming it drops the reason at once
+    (the console must not show a refusal banner on a RUNNING session while the worker is still to claim it)."""
+    from primer.model.workspace_session import SessionStatus, WorkspaceSession
+
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+    )
+    sid = create.json()["id"]
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(sid)
+    await storage.update(row.model_copy(update={
+        "status": SessionStatus.PAUSED, "workspace_refusal": "provider 'local' is refused here",
+    }))
+
+    shown = await sessions_client.get(f"/v1/sessions/{sid}")
+    assert shown.json()["workspace_refusal"] == "provider 'local' is refused here"
+
+    resumed = await sessions_client.post(f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}/resume")
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "running"
+    assert resumed.json()["workspace_refusal"] is None
+    assert (await storage.get(sid)).workspace_refusal is None
+
+
 async def test_resume_ended_session_is_409(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):

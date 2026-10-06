@@ -531,6 +531,19 @@ class WorkspaceSession(Identifiable):
         ),
     )
 
+    workspace_refusal: str | None = Field(
+        default=None,
+        description=(
+            "Why this session's turn could not run: the deployment REFUSES its workspace (a workspace on a "
+            "local provider where the topology forbids one, ticket 01a1072f). Written when a turn meets the "
+            "refusal, which pauses the session instead of ending it, and cleared when a turn starts or the "
+            "session is resumed. The text lives on the row because messages.jsonl lives INSIDE the refused "
+            "workspace and cannot be written. A refused session is intact and resumable once its workspace "
+            "moves to a docker or kubernetes provider; it is never workspace_lost. Additive/optional, no "
+            "migration: a row without it reads None, and an older build ignores the key."
+        ),
+    )
+
     # ----------------------------------------------------------------------
     # Yielding-tool park state (M1 of the yielding-tools feature).
     # See docs/superpowers/specs/2026-05-22-yielding-tools-design.md §5.
