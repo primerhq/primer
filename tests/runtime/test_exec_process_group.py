@@ -230,7 +230,9 @@ async def test_a_detached_process_that_holds_the_pipes_survives_and_does_not_hol
         events = await asyncio.wait_for(
             _drain(_exec(
                 tmp_path,
-                f"setsid sleep 60 & echo $! > {tmp_path}/detached; sleep 60 & echo $! > {tmp_path}/foreground; wait",
+                # the detached process writes its OWN pid after setsid(): ``$!`` is known the moment the shell forks, before
+                # the child has left the group, and a pid read then is a process the group stop still reaches
+                f"setsid sh -c 'echo $$ > {tmp_path}/detached; exec sleep 60' & sleep 60 & echo $! > {tmp_path}/foreground; wait",
                 WorkspaceLockTable(), timeout_s=1.0,
             )),
             timeout=15.0,

@@ -47,8 +47,11 @@ async def stop_process_group(proc: asyncio.subprocess.Process, *, grace_s: float
     synchronously, and the SIGKILL is sent in a ``finally``, so a caller that is cancelled again while this is waiting
     still delivers it. The wait is on ``proc.returncode`` and the group, NOT ``proc.wait()``: ``wait()`` also waits for the
     pipes to close, and a process that left the group (``setsid``) can hold them open for as long as it lives. The pipes
-    are closed here, in a ``finally``, so the caller never inherits them. Returns once the stop has TAKEN EFFECT (the
-    caller releases a write lock after it) or the bounds have run out.
+    are closed here, in a ``finally``, so the caller never inherits them. Returns once the stop has TAKEN EFFECT (no live
+    member left; the caller releases a write lock after it) or the bounds have run out. A CANCEL that arrives while it is
+    waiting (a second cancel, or a first one after a timeout started the stop; in the grace or in the kill wait) does not
+    wait it out: the SIGKILL goes out in the ``finally`` if it has not yet, the pipes are closed, and the cancel
+    propagates. The caller's lock is then released once the SIGKILL has been SENT, not once the group is confirmed gone.
 
     "No member left" means no LIVE member: a ZOMBIE does not count. The runtime is PID 1 in its image (no init), so the
     children a stop takes down are orphaned to a process that never reaps them, and ``killpg(pgid, 0)`` reports a zombie
@@ -113,11 +116,13 @@ def _group_has_a_live_member(pgid: int) -> bool:
 
 def _live_member_of(pgid: int) -> bool | None:
     """Is any process of group ``pgid`` alive, that is, in a state other than zombie (``Z``) or dead (``X``)? None where
-    ``/proc`` cannot say (not Linux): the caller then has only ``killpg`` to go on."""
+    ``/proc`` cannot say (not Linux, or no ``stat`` file could be read at all): the caller then has only ``killpg`` to go
+    on. The same body as the local copy (``primer/common/process_group.py``); a test keeps them in step."""
     try:
         names = os.listdir("/proc")
     except OSError:
         return None
+    read_any = False
     for name in names:
         if not name.isdigit():
             continue
@@ -129,9 +134,10 @@ def _live_member_of(pgid: int) -> bool | None:
             state, group = fields[0], int(fields[2])
         except (OSError, ValueError, IndexError):
             continue  # it exited while we looked, or is not ours to read
+        read_any = True
         if group == pgid and state not in (b"Z", b"X"):
             return True
-    return False
+    return False if read_any else None
 
 
 async def _wait_gone(proc: asyncio.subprocess.Process, within: float) -> bool:

@@ -87,7 +87,7 @@ async def test_a_group_that_never_empties_is_killed_after_the_grace_and_given_up
     _, sent = _script_the_probe(monkeypatch, probes_present=None)
     caplog.set_level(logging.WARNING, logger="primer_runtime.process_group")
     proc = await asyncio.create_subprocess_shell(
-        f"setsid sleep 60 & echo $! > {tmp_path}/detached; wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
+        f"setsid sh -c 'echo $$ > {tmp_path}/detached; exec sleep 60' & wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
     )
     detached = await _child_pid(tmp_path / "detached")
     try:
@@ -145,6 +145,41 @@ async def test_a_refused_direct_signal_does_not_raise_and_the_pipes_are_closed(m
     finally:
         monkeypatch.undo()
         _kill(proc.pid)
+
+
+async def test_a_cancel_in_the_kill_wait_does_not_wait_it_out(tmp_path: Path, monkeypatch) -> None:
+    """The early release is not limited to the SIGTERM grace: a cancel that lands in the KILL wait (the SIGKILL has already
+    gone out, the stop is waiting to see the group gone) propagates at once, with the pipes closed, instead of waiting the
+    rest of ``KILL_WAIT_S``. A member that never goes (scripted) puts the stop in that wait."""
+    monkeypatch.setattr(pg, "TERM_GRACE_S", 0.1)
+    monkeypatch.setattr(pg, "KILL_WAIT_S", 3.0)
+    _, sent = _script_the_probe(monkeypatch, probes_present=None)
+    proc = await asyncio.create_subprocess_shell(
+        f"setsid sh -c 'echo $$ > {tmp_path}/detached; exec sleep 60' & wait", stdout=asyncio.subprocess.PIPE, **NEW_SESSION,
+    )
+    detached = await _child_pid(tmp_path / "detached")
+    stop = asyncio.create_task(stop_process_group(proc))
+    try:
+        await asyncio.sleep(0.5)                                  # past the 0.1 s grace: the SIGKILL is out, the kill wait runs
+        assert not stop.done() and sent == [signal.SIGTERM, signal.SIGKILL], f"not in the kill wait (signals: {sent})"
+
+        stop.cancel()
+        start = time.monotonic()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(stop, timeout=2.0)
+
+        assert time.monotonic() - start < 0.5, "the cancel waited out the kill wait"
+        assert proc._transport.is_closing(), "the pipes were left open"
+    finally:
+        _kill(detached)
+
+
+def test_a_scan_that_read_no_stat_file_says_it_cannot_tell(monkeypatch) -> None:
+    """None, not False: the caller then has only ``killpg`` to go on (a /proc that lists pids but has no readable ``stat``,
+    as a non-Linux procfs, must not make every group look empty). The same behaviour as the local copy's."""
+    monkeypatch.setattr(pg.os, "listdir", lambda path: ["4194999"])      # a pid that is not there
+
+    assert pg._live_member_of(12345) is None
 
 
 def test_the_grace_and_the_kill_wait_are_the_documented_five_and_two_seconds() -> None:
