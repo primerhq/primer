@@ -60,7 +60,7 @@ _MUTATING_OPS: frozenset[str] = frozenset({
 # Version constants
 # ---------------------------------------------------------------------------
 
-PROTOCOL_VERSION: str = "1.3"
+PROTOCOL_VERSION: str = "1.4"
 RUNTIME_VERSION: str = "1.0.0"
 
 _PROTOCOL_MAJOR: int = int(PROTOCOL_VERSION.split(".")[0])
@@ -309,6 +309,26 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                     registry=exec_registry,
                     broadcaster=broadcaster,
                 )
+                continue
+
+            # exec_cancel (protocol 1.4): a single-shot control request carrying target_req_id (mirrors PTY_CLOSE). The
+            # exec's task is cancelled, which stops the command's process group and releases its write lock; one still
+            # queued on the lock never starts. Guarded like the PTY control ops: the args come from a client frame, and
+            # an exception escaping here would skip the teardown after the loop and leak every exec on this connection.
+            if op_name == OpName.EXEC_CANCEL:
+                exec_target = args.get("target_req_id") if isinstance(args, dict) else None
+                if not isinstance(exec_target, int) or isinstance(exec_target, bool):
+                    await ws.send_str(serialize(Response(
+                        req_id=frame_req_id, ok=False,
+                        error={"code": ErrorCode.EPROTOCOL, "message": "exec_cancel: 'target_req_id' must be an integer"},
+                    )))
+                elif exec_registry.cancel(exec_target):
+                    await ws.send_str(serialize(Response(req_id=frame_req_id, ok=True, result={"ok": True})))
+                else:
+                    await ws.send_str(serialize(Response(
+                        req_id=frame_req_id, ok=False,
+                        error={"code": ErrorCode.ENOENT, "message": f"no exec for target_req_id={exec_target}"},
+                    )))
                 continue
 
             # --- Single-shot ops ------------------------------------------

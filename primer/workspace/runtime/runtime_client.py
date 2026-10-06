@@ -151,6 +151,9 @@ class RuntimeClient:
         self._receive_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
+        # Fire-and-forget sends (the ``exec_cancel`` of an exec that was left early), held so the loop does not drop a
+        # task nobody awaits; each removes itself when done and ``aclose`` cancels what is left.
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
         self._closed = False
         # Set when the runtime server reports the workspace no longer exists
@@ -197,7 +200,7 @@ class RuntimeClient:
         self._closed_event.set()
         self._connected.clear()
 
-        for task in (self._receive_task, self._heartbeat_task, self._reconnect_task):
+        for task in (self._receive_task, self._heartbeat_task, self._reconnect_task, *self._background_tasks):
             if task and not task.done():
                 task.cancel()
 
@@ -403,9 +406,14 @@ class RuntimeClient:
         stderr_chunks: list[bytes] = []
         exit_code = -1
         t_start = time.monotonic()
+        # The connection the request went out on, and whether the runtime has had its say (the exit event, or a refusal of
+        # the request itself): leaving the wait before that (a cancel of this task, an ``abort``, the stream closing)
+        # leaves the command running in the container, holding the workspace write lock, so it is told to stop.
+        sent_on: aiohttp.ClientWebSocketResponse | None = None
+        finished = False
 
         try:
-            await self._send_raw(Request(req_id=req_id, op=OpName.EXEC, args=args))
+            sent_on = await self._send_raw(Request(req_id=req_id, op=OpName.EXEC, args=args))
             async for item in self._iter_stream(req_id, q, abort=abort):
                 if not isinstance(item, dict):
                     continue
@@ -413,6 +421,7 @@ class RuntimeClient:
                 # stream (runtime rejected the exec request, e.g. bad argv):
                 # surface it instead of waiting forever for an exit event.
                 if "ok" in item and not item["ok"]:
+                    finished = True
                     err = item.get("error") or {}
                     raise RuntimeError(
                         err.get("code", ErrorCode.EPROTOCOL),
@@ -430,10 +439,13 @@ class RuntimeClient:
                 elif event == "stderr":
                     stderr_chunks.append(base64.b64decode(payload.get("data_b64", "")))
                 elif event == "exit":
+                    finished = True
                     exit_code = int(payload.get("code", -1))
                     break
         finally:
             self._streams.pop(req_id, None)
+            if sent_on is not None and not finished:
+                self._cancel_exec_in_background(req_id, sent_on)
 
         duration = time.monotonic() - t_start
         return ExecResult(
@@ -620,8 +632,8 @@ class RuntimeClient:
         if self._closed:
             raise RuntimeError(ErrorCode.EPROTOCOL, "Client closed")
 
-    async def _send_raw(self, msg: Request) -> None:
-        """Serialize *msg* and send it over the active WebSocket."""
+    async def _send_raw(self, msg: Request) -> aiohttp.ClientWebSocketResponse:
+        """Serialize *msg* and send it over the active WebSocket; returns the connection it went out on."""
         await self._wait_until_connected()
         ws = self._ws
         if ws is None or ws.closed:
@@ -629,6 +641,49 @@ class RuntimeClient:
         from primer.workspace.runtime.protocol import serialize
 
         await ws.send_str(serialize(msg))
+        return ws
+
+    def _runtime_has(self, minimum: tuple[int, int]) -> bool:
+        """Whether the runtime reported a protocol of at least *minimum* (major, minor) in its hello.
+
+        Compared as numbers ("1.10" is above "1.4") and read from what the SERVER reported, never from the version this
+        client advertised: an older runtime answers an op it does not know with EUNSUPPORTED. ``"0.0"`` (never connected)
+        and anything that is not ``major.minor`` count as "no".
+        """
+        try:
+            major, minor = (int(part) for part in self._negotiated_version.split(".")[:2])
+        except ValueError:
+            return False
+        return (major, minor) >= minimum
+
+    def _cancel_exec_in_background(self, req_id: int, sent_on: aiohttp.ClientWebSocketResponse) -> None:
+        """Tell the runtime to stop the exec requested as *req_id*, without making the caller wait for the send.
+
+        Called from the ``finally`` of an ``exec`` that is being left early, usually by a cancel: that task must not await
+        a send (a second cancel would interrupt it, and a socket that has stalled would hold the cancel up), so a separate
+        task sends it, held in ``_background_tasks``. Not sent to a runtime that did not report protocol 1.4 (the command
+        then runs on until its own timeout or until the connection closes, as before), and not on any connection but the
+        one the exec went out on: after a reconnect that exec is gone with its connection, and req_ids mean nothing to the
+        new one.
+        """
+        ws = self._ws
+        if self._closed or ws is None or ws is not sent_on or ws.closed or not self._runtime_has((1, 4)):
+            return
+        task = asyncio.get_running_loop().create_task(self._send_exec_cancel(req_id, ws), name=f"exec-cancel:{req_id}")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _send_exec_cancel(self, target_req_id: int, ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Send one ``exec_cancel``; best effort. The runtime's answer is not awaited (a frame for a req_id nobody waits on
+        is dropped by the receive loop), and a failed send is not an error: the runtime stops the command when the
+        connection closes anyway."""
+        from primer.workspace.runtime.protocol import serialize
+
+        request = Request(req_id=self._alloc_req_id(), op=OpName.EXEC_CANCEL, args={"target_req_id": target_req_id})
+        try:
+            await ws.send_str(serialize(request))
+        except Exception as exc:  # noqa: BLE001 - best effort
+            logger.debug("exec_cancel for req_id=%s was not sent: %s", target_req_id, exc)
 
     # ------------------------------------------------------------------
     # Receive loop

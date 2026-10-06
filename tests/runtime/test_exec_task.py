@@ -74,7 +74,7 @@ async def test_start_exec_streams_and_deregisters(tmp_path: Path) -> None:
     assert exit_evt["req_id"] == 1
     assert exit_evt["data"]["code"] == 0
     # Done-callback deregisters the finished task.
-    assert registry._tasks == set()
+    assert not registry._tasks
 
 
 @pytest.mark.asyncio
@@ -121,7 +121,7 @@ async def test_exec_cancel_all_terminates(tmp_path: Path) -> None:
     registry.cancel_all()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert registry._tasks == set()
+    assert not registry._tasks
 
 
 # ---------------------------------------------------------------------------
