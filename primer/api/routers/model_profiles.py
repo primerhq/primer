@@ -45,10 +45,16 @@ from primer.api.deps import (
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
 from primer.api.routers.providers import _make_invalidator
+from primer.common.entity_checks import EntityCheckError
 from primer.model.agent import Agent
 from primer.model.graph import Graph
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
+from primer.model_profile.checks import (
+    check_aggregation_valid,
+    check_not_a_member_becoming_aggregated,
+    check_provider_exists,
+)
 from primer.model.storage import (
     CursorPageResponse,
     FieldRef,
@@ -151,34 +157,6 @@ async def _enrich_with_usage(
     return resp.model_copy(update={"items": enriched})
 
 
-async def _check_provider_exists(entity: ModelProfile, request: Request) -> None:
-    """422 when ``provider_id`` names an LLMProvider that does not exist.
-
-    Only meaningful for ``kind="single"`` -- an aggregated profile has no
-    ``provider_id`` of its own (see :class:`ModelProfile`'s own
-    kind-shape validator, which already guarantees it is None here).
-
-    Uses 422 rather than 404: the request itself is well-formed, but a
-    body field fails a semantic check, which is the same shape the CRUD
-    factory uses for other reference validation.
-    """
-    if entity.kind != "single":
-        return
-    storage = request.app.state.storage_provider.get_storage(LLMProvider)
-    if await storage.get(entity.provider_id) is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "provider_not_found",
-                "field": "provider_id",
-                "message": (
-                    f"LLMProvider {entity.provider_id!r} does not exist; "
-                    "create the provider before registering a profile on it"
-                ),
-            },
-        )
-
-
 def _aggregation_error(error: str, field: str, message: str) -> HTTPException:
     return HTTPException(
         status_code=422,
@@ -186,90 +164,41 @@ def _aggregation_error(error: str, field: str, message: str) -> HTTPException:
     )
 
 
+def _as_rest_error(exc: EntityCheckError) -> HTTPException:
+    """The exception this router has always raised for the check: a 422 with ``{error, field, message}``."""
+    return _aggregation_error(exc.code or "", exc.field or "", exc.message)
+
+
+# The three checks below are shared with the system tools (primer/model_profile/checks.py): each adapter calls the shared check and
+# re-raises exactly what it always raised, so the wire bodies are unchanged by construction.
+
+
+async def _check_provider_exists(entity: ModelProfile, request: Request) -> None:
+    """422 when ``provider_id`` names an LLMProvider that does not exist (single profiles only)."""
+    try:
+        await check_provider_exists(entity, storage_provider=request.app.state.storage_provider)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
+
+
 async def _check_aggregation_valid(entity: ModelProfile, request: Request) -> None:
-    """422 when an aggregated profile's ``members`` violate the
-    aggregation invariants (see module docstring's second bullet for the
-    full list). No-op for ``kind="single"``.
-    """
-    if entity.kind != "aggregated":
-        return
-    members = entity.members or []
-    if len(members) < 2:
-        raise _aggregation_error(
-            "aggregation_too_small",
-            "members",
-            "an aggregated profile must name at least two member "
-            "profiles, per the aggregation directive: \"an aggregated "
-            "profile is an aggregation of two or more model profiles\"",
-        )
-    if entity.id in members:
-        raise _aggregation_error(
-            "self_reference",
-            "members",
-            f"profile {entity.id!r} cannot name itself as a member",
-        )
-    if len(set(members)) != len(members):
-        raise _aggregation_error(
-            "duplicate_member",
-            "members",
-            "members must not contain duplicates; order is the "
-            "routing/failover chain, so a duplicate would silently "
-            "change behaviour rather than being a harmless repeat",
-        )
-    storage = request.app.state.storage_provider.get_storage(ModelProfile)
-    for member_id in members:
-        member = await storage.get(member_id)
-        if member is None:
-            raise _aggregation_error(
-                "member_not_found",
-                "members",
-                f"member profile {member_id!r} does not exist",
-            )
-        if member.kind != "single":
-            raise _aggregation_error(
-                "nested_aggregation",
-                "members",
-                f"member profile {member_id!r} is itself "
-                "kind='aggregated'; nested aggregation is not "
-                "supported (v1)",
-            )
+    """422 when an aggregated profile's ``members`` violate the aggregation invariants (see the module docstring's second bullet
+    for the full list). No-op for ``kind="single"``."""
+    try:
+        await check_aggregation_valid(entity, storage_provider=request.app.state.storage_provider)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
 
 
 async def _check_not_a_member_becoming_aggregated(
     entity: ModelProfile, request: Request,
 ) -> None:
-    """422 when an UPDATE turns a profile into ``kind="aggregated"``
-    while it is currently named as a member of some OTHER aggregate.
-
-    _check_aggregation_valid only validates an aggregate's OWN members at
-    ITS OWN write time -- it has no reason to re-check every aggregate
-    that might reference THIS profile as a member. Without this guard,
-    PUT'ing member profile A to kind="aggregated" passes every existing
-    hook cleanly, silently leaving the containing aggregate G in
-    violation of "every member must be kind=single" -- a nested
-    aggregation G never agreed to, discovered only later at resolve time
-    with an error that misattributes the problem to G instead of A.
-    Same CONTAINS lookup ReferenceCheck already uses to block deleting a
-    member out from under its aggregate (primer/api/routers/
-    _references.py) -- this is that same relationship, checked on the
-    OTHER kind of mutation (an in-place shape change, not a delete).
-    """
-    if entity.kind != "aggregated":
-        return
-    storage = request.app.state.storage_provider.get_storage(ModelProfile)
-    predicate = Predicate(
-        left=FieldRef(name="members"), op=Op.CONTAINS, right=Value(value=entity.id),
-    )
-    page = await storage.find(predicate, OffsetPage(offset=0, length=1))
-    if page.items:
-        raise _aggregation_error(
-            "member_of_another_aggregate",
-            "kind",
-            f"profile {entity.id!r} is a member of aggregate "
-            f"{page.items[0].id!r} and cannot become kind='aggregated' "
-            "itself (nested aggregation is not supported); remove it "
-            "from that aggregate's members first",
-        )
+    """422 when an UPDATE turns a profile into ``kind="aggregated"`` while it is currently named as a member of some OTHER
+    aggregate (nested aggregation is not supported)."""
+    try:
+        await check_not_a_member_becoming_aggregated(entity, storage_provider=request.app.state.storage_provider)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
 
 
 async def _on_pre_create(entity: ModelProfile, request: Request) -> None:
