@@ -34,6 +34,17 @@ from primer.model.except_ import NotFoundError
 
 _log = logging.getLogger(__name__)
 
+# What a channel is told when a turn was stopped by the agent's ``max_tool_turns`` instead of finishing: said as a
+# notice, never posted as if it were the answer (the partial text, when there is any, follows it).
+TOOL_TURN_CAP_NOTICE = "This run stopped at its tool-turn cap (the agent's max_tool_turns) before it finished."
+
+
+def stopped_short_message(partial_text: str | None) -> str:
+    """The message a tool-turn-cap trip posts: the notice, then what the agent had so far when it had something."""
+    partial = (partial_text or "").strip()
+    return f"{TOOL_TURN_CAP_NOTICE}\n\nWhat it had so far:\n\n{partial}" if partial else TOOL_TURN_CAP_NOTICE
+
+
 # The records that end a turn's window of assistant text (see derive_session_final_text).
 _WINDOW_BOUNDARY_KINDS = ("done", "cancelled", "error")
 
