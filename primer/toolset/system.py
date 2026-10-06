@@ -120,6 +120,7 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
+from primer.toolset.toolset_checks import check_toolset_on_create, check_toolset_on_update
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 # Re-exported helpers / argument models / parsers (shared surface).
@@ -287,8 +288,16 @@ def build_system_toolset(
     async def _policy_pre_update(entity: ToolApprovalPolicy, existing: ToolApprovalPolicy) -> None:
         await check_policy(entity, storage_provider=storage_provider, skip_id=existing.id)
 
+    async def _toolset_pre_create(entity: Toolset) -> None:
+        # Not the router's reachability probe (an 8 s outbound call for http / sse MCP toolsets): a tool runs inside an agent turn.
+        check_toolset_on_create(entity)
+
+    async def _toolset_pre_update(entity: Toolset, existing: Toolset) -> None:
+        check_toolset_on_update(entity, existing)
+
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "tool_approval_policy": (_policy_pre_create, _policy_pre_update),
+        "toolset": (_toolset_pre_create, _toolset_pre_update),
     }
 
     # ---- CRUD sets ----------------------------------------------------
