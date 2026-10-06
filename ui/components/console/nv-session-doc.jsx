@@ -846,6 +846,57 @@ function NV_toolCallElement(row, result, running) {
     : <NV_ToolBlock key={row.seq} row={row} result={result} running={running} />;
 }
 
+// A subagent's rows nest under the tool call that delegated to it (S8 rule 3,
+// SH_nestSubagentRows): they ride the call row's `children`. The call's block
+// (NV_toolCallElement) does not draw them, so every site that draws a call goes
+// through NV_toolCallWithRows, and a nested call draws ITS delegated rows the
+// same way (a subagent that delegates again).
+function NV_subagentRows(row, resultFor, running) {
+  var kids = (row && row.children) || [];
+  if (!kids.length) return null;
+  return (
+    <div className="nv-subagent-rows" data-testid={"nv-subagent-rows:" + row.seq}>
+      {kids.map(function (child) {
+        if (child.kind === "tool_call") {
+          return (
+            <div key={child.seq} className="nv-subagent">
+              <div className="nv-subagent-head">
+                <span className="nv-subagent-name">
+                  {(child.payload && child.payload.agent_id) || "subagent"}
+                </span>
+              </div>
+              {NV_toolCallWithRows(child, resultFor, running)}
+            </div>
+          );
+        }
+        if (!child.label) return null;
+        return (
+          <div key={child.seq} className="nv-subagent">
+            <div className="nv-subagent-head">
+              <span className="nv-subagent-name">
+                {(child.payload && child.payload.agent_id) || "subagent"}
+              </span>
+            </div>
+            <div className="nv-turn-text">{child.label}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function NV_toolCallWithRows(row, resultFor, running) {
+  var block = NV_toolCallElement(row, resultFor(row), running);
+  var nested = NV_subagentRows(row, resultFor, running);
+  if (!nested) return block;
+  return (
+    <div key={row.seq} className="nv-call-with-subagents">
+      {block}
+      {nested}
+    </div>
+  );
+}
+
 function NV_AskCard(props) {
   var con = NV_useConsole();
   var item = props.item;
@@ -2399,7 +2450,7 @@ function NV_SessionDoc(props) {
           <div className="nv-turn-sections">
             {(row.rows || []).map(function (child) {
               if (child.kind === "tool_call") {
-                return NV_toolCallElement(child, resultFor(child), shownActive);
+                return NV_toolCallWithRows(child, resultFor, shownActive);
               }
               if (child.kind === "reasoning") {
                 return <NV_Thought key={child.seq} row={child} />;
@@ -2490,7 +2541,7 @@ function NV_SessionDoc(props) {
     // Tool traffic in the LIVE turn: same expandable block as folded
     // sections use, so a call reads identically mid-run and after.
     if (row.kind === "tool_call") {
-      return NV_toolCallElement(row, resultFor(row), shownActive);
+      return NV_toolCallWithRows(row, resultFor, shownActive);
     }
     if (row.kind === "tool_result") return null;
     // Lifecycle markers: a slim muted line, not a full agent block. The
@@ -2608,32 +2659,7 @@ function NV_SessionDoc(props) {
                 String(row.label || "").replace(/^\s+/, ""))
               : row.label}
           </div>
-          {(row.children || []).map(function (child) {
-            if (child.kind === "tool_call") {
-              return (
-                <div key={child.seq} className="nv-subagent">
-                  <div className="nv-subagent-head">
-                    <span className="nv-subagent-name">
-                      {(child.payload && child.payload.agent_id)
-                        || "subagent"}
-                    </span>
-                  </div>
-                  {NV_toolCallElement(child, resultFor(child), shownActive)}
-                </div>
-              );
-            }
-            if (!child.label) return null;
-            return (
-              <div key={child.seq} className="nv-subagent">
-                <div className="nv-subagent-head">
-                  <span className="nv-subagent-name">
-                    {(child.payload && child.payload.agent_id) || "subagent"}
-                  </span>
-                </div>
-                <div className="nv-turn-text">{child.label}</div>
-              </div>
-            );
-          })}
+          {NV_subagentRows(row, resultFor, shownActive)}
         </div>
       </div>
     );

@@ -42,6 +42,20 @@ def test_session_doc_reuses_the_pure_modules():
         assert mod in DOC, mod
 
 
+def test_every_tool_call_site_draws_the_rows_nested_under_the_call():
+    """SH_nestSubagentRows puts a subagent's rows in the delegating call's ``children``, and NV_toolCallElement (the call's block)
+    does not draw them: a site that drew a call through it alone would hide those rows, now that the nesting works on real
+    records. The three sites (live turn, folded sections, a nested call) go through NV_toolCallWithRows, and the generic
+    bubble draws its children through the same NV_subagentRows."""
+    assert DOC.count("NV_toolCallWithRows(") >= 4  # the definition, the live turn, the folded sections, and the recursive nested call
+    assert "return NV_toolCallElement(row, resultFor(row)" not in DOC
+    assert "NV_toolCallElement(child, resultFor(child)" not in DOC
+    helper = DOC[DOC.index("function NV_subagentRows"):DOC.index("function NV_AskCard")]
+    assert 'data-testid={"nv-subagent-rows:" + row.seq}' in helper
+    assert "NV_toolCallWithRows(child, resultFor, running)" in helper, "a subagent's own delegation draws ITS rows too"
+    assert "{NV_subagentRows(row, resultFor, shownActive)}" in DOC
+
+
 def test_session_state_chip_always_visible_in_the_header():
     """Phase 2 (01a04ddf): the ONE served session_state, rendered as an
     always-visible header chip right beside the binding chip - unlike the
@@ -242,7 +256,7 @@ def test_streaming_cursor_at_the_text_tail():
     rather than match the reference.
     """
     start = DOC.index('<div className="nv-turn-text md-body"')
-    end = DOC.index("(row.children || []).map(function (child) {", start)
+    end = DOC.index("{NV_subagentRows(row, resultFor, shownActive)}", start)
     turn_text = DOC[start:end]
     assert 'data-streaming={row.payload && row.payload.streaming' in turn_text
 
@@ -1567,10 +1581,15 @@ def test_answered_ask_routes_through_a_dedicated_dispatcher_at_every_call_site()
     # subagent children) must go through NV_toolCallElement - a raw
     # <NV_ToolBlock ...> at any of them would silently regress that one
     # surface back to the bare generic block for an answered ask_user.
-    assert DOC.count("NV_toolCallElement(") >= 3
-    assert 'if (row.kind === "tool_call") {\n      return NV_toolCallElement(' in DOC
-    assert 'if (child.kind === "tool_call") {\n                return NV_toolCallElement(' in DOC
-    assert "{NV_toolCallElement(child, resultFor(child), shownActive)}" in DOC
+    # They reach it through NV_toolCallWithRows (which also draws the rows
+    # nested under the call), whose one NV_toolCallElement call is the
+    # dispatcher.
+    assert 'if (row.kind === "tool_call") {\n      return NV_toolCallWithRows(' in DOC
+    assert 'if (child.kind === "tool_call") {\n                return NV_toolCallWithRows(' in DOC
+    assert "{NV_toolCallWithRows(child, resultFor, running)}" in DOC
+    wrapper = DOC[DOC.index("function NV_toolCallWithRows"):DOC.index("function NV_AskCard")]
+    assert "NV_toolCallElement(row, resultFor(row), running)" in wrapper
+    assert "<NV_ToolBlock" not in DOC.replace(DOC[DOC.index("function NV_toolCallElement"):DOC.index("function NV_subagentRows")], "")
 
 
 def test_dispatcher_only_diverts_answered_ask_user_everything_else_is_the_generic_block():
