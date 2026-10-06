@@ -53,20 +53,26 @@ class _ScriptedLlm:
     """Round N asks for ``rounds[N]`` (a list of (call id, tool name)); ``None`` is the final answer. A request past the end
     is answered with the final answer, so a subagent that is not stopped finishes by itself instead of hanging."""
 
-    def __init__(self, rounds: list[list[tuple[str, str]] | None]) -> None:
+    def __init__(self, rounds: list[list[tuple[str, str]] | None], *, first_round_text: str | None = None) -> None:
         self.rounds = rounds
         self.requests = 0
+        # Text the model streams in round 1 BEFORE its tool calls: a subagent that was stopped after it had already said
+        # something (so that it has a "partial answer" the parent must not be handed as a result).
+        self.first_round_text = first_round_text
 
     def stream(self, **_kwargs: Any):
         self.requests += 1
         calls = self.rounds[min(self.requests, len(self.rounds)) - 1]
+        lead = self.first_round_text if self.requests == 1 else None
 
         async def gen():
             if calls is None:
                 yield TextDelta(text="all done", index=0)
                 yield Done(stop_reason="stop", raw_reason="stop")
                 return
-            for index, (call_id, name) in enumerate(calls):
+            if lead:
+                yield TextDelta(text=lead, index=0)
+            for index, (call_id, name) in enumerate(calls, start=1 if lead else 0):
                 yield ToolCallStart(id=call_id, name=name, index=index)
                 yield ToolCallEnd(id=call_id, arguments={}, index=index)
             yield Done(stop_reason="tool_use", raw_reason="tool_use")
@@ -167,6 +173,21 @@ async def test_a_calls_scope_carries_the_turns_stop_event_to_everything_the_call
     assert current_interrupt() is None, "the event leaked out of the call's own context"
 
 
+async def test_a_scope_without_an_event_inside_one_that_has_it_still_finds_the_outer_event() -> None:
+    """``current_interrupt`` walks up the chain. A scope that carries no event of its own (what any scope that
+    ``run_stoppable`` did not make looks like) bound inside one that does must not hide it: reading only the innermost
+    scope would give a subagent started there no Stop event at all."""
+    from primer.agent.call_scope import CallScope, bind_call_scope, current_call_scope, current_interrupt
+
+    outer_stop = asyncio.Event()
+
+    async def call():
+        bind_call_scope(CallScope(parent=current_call_scope()))      # no ``interrupt``: a child scope with no event
+        return current_interrupt()
+
+    assert await run_stoppable(call, interrupt=outer_stop, interruptible=lambda: True) is outer_stop
+
+
 async def test_a_nested_call_sees_its_own_events_scope_and_the_outer_one_is_restored() -> None:
     from primer.agent.call_scope import current_interrupt
 
@@ -241,9 +262,18 @@ async def test_a_subagent_outside_any_call_is_given_no_stop_event(monkeypatch) -
     assert text == "all done" and llm.requests == 1
 
 
-async def test_a_subagent_cut_off_in_the_stdio_handshake_does_nothing_more_after_the_stop(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "partial_text", [None, "I looked at the repository and found the file"], ids=["no-text-yet", "partial-text-already-streamed"],
+)
+async def test_a_subagent_cut_off_in_the_stdio_handshake_does_nothing_more_after_the_stop(
+    monkeypatch, partial_text: str | None,
+) -> None:
+    """With ``partial-text-already-streamed`` the subagent has already said something when the Stop lands, so what it
+    produced so far is a text the parent could be handed as the call's result (``_final_assistant_text`` would return it).
+    The call must be answered "interrupted" and NOT with that text: with no text yet, returning it and raising are the same
+    (``None``), so only this case tells ``run_subagent`` raising from ``run_subagent`` returning."""
     marker = f"primer-handshake-{uuid.uuid4().hex}"
-    llm = _ScriptedLlm([[("c1", "ext__hang")], [("c2", "rec__exec")], None])
+    llm = _ScriptedLlm([[("c1", "ext__hang")], [("c2", "rec__exec")], None], first_round_text=partial_text)
     recorder = _Recorder()
     provider = _HandshakeNeverCompletes(
         toolset_id="ext",
