@@ -153,8 +153,12 @@ class BaseWorkspaceBackend(WorkspaceBackend):
 
         Evicts (and returns ``None`` for) a handle whose runtime client has
         gone ``gone`` -- the runtime self-evicts on a 404 handshake but the
-        cache would otherwise keep handing out the dead handle. The evicted
-        handle is closed best-effort so its WS + aiohttp session don't leak.
+        cache would otherwise keep handing out the dead handle. The gone client
+        has already closed its own WS + aiohttp session when it gave up; what
+        is left to do is the handle's ``aclose``, which ends its live sessions
+        over that dead connection (each fails at once, as a closed client
+        refuses a request), run through ``close_shielded`` so a failure is
+        logged and the wait is bounded.
         """
         async with self._lock:
             cached = self._workspaces.get(workspace_id)
