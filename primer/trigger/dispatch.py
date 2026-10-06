@@ -192,11 +192,20 @@ async def fire_trigger(
     # Idempotency gate: if this exact fire_id already dispatched, treat
     # the redelivery as a no-op. Per-trigger serialization is provided
     # by the claim engine (one TRIGGER claim per entity_id at a time),
-    # so redeliveries arrive sequentially; recording last_fired_id on
-    # the row before dispatch makes the second pass a logged skip. This
-    # closes the sequential-redelivery window; it does not guard two
-    # truly-concurrent fires of the same tick from distinct workers
-    # (the claim engine prevents that upstream).
+    # so redeliveries arrive sequentially. The marker (last_fired_id) is
+    # recorded AFTER the whole fan-out, at the end of this function, so
+    # the gate only dedups the redelivery of a fire that FINISHED. A fire
+    # that dies part way through leaves no marker, and its redelivery
+    # dispatches every subscription again, including those the first
+    # pass already served: at-least-once, not exactly-once (the
+    # dispatchers do not yet look for an existing artefact by fire_id;
+    # tests/trigger/test_fire_idempotency.py pins this). Recording the
+    # marker before the dispatch would lose the unserved subscriptions
+    # on a crash instead. It does not guard two truly-concurrent fires
+    # of the same tick from distinct workers (the claim engine prevents
+    # that upstream), and fire_now has no logical tick, so its fire_id
+    # comes from the wall clock (milliseconds): a retried fire_now is a
+    # new fire, not a redelivery, and is dispatched to every subscription.
     if trigger.last_fired_id == fire_id:
         logger.info(
             "trigger %s: duplicate fire_id %s; skipping (already dispatched)",
