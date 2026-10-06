@@ -2,7 +2,12 @@
 
 ``invoke_agent`` runs a REAL subagent inside the delegating turn and feeds every event it emits to the turn's
 ``DelegationRecorder``, stamped with the id of the call that asked for it. When a Stop cancels the call but the subagent
-does not unwind in time (here: it swallows the cancel and carries on), ``run_stoppable`` abandons the call. Abandonment
+does not unwind in time (here: it swallows the cancel and carries on), ``run_stoppable`` abandons the call.
+
+A subagent is now given the turn's Stop event (``current_interrupt``), and one that is given it ends at its next check
+whatever its cancel did (``tests/agent/test_subagent_stop.py``), so it would not carry on emitting here. This file is about
+what the PARENT does with a call that does not stop, whatever the reason (a subagent resumed after a park still gets no
+event), so the Stop-path tests WITHHOLD the event from the subagent on purpose (``_stop_a_blocked_subagent``). Abandonment
 follows the call's TASK TREE, not one id: a subagent that itself delegated (``invoke_agent`` inside ``invoke_agent``) tags
 its events with the INNER call's id, and those must be dropped too, or the parent log would show the subagent continuing
 after the Stop's answer.
@@ -19,6 +24,7 @@ from typing import Any
 
 import pytest
 
+import primer.agent.invoke as invoke_module
 import primer.agent.stoppable_call as stoppable_call
 from primer.agent.call_scope import CallScope
 from primer.agent.invoke import run_subagent
@@ -277,6 +283,7 @@ async def _stop_a_blocked_subagent(monkeypatch, *, nested: bool, with_the_abando
     cleanly with the call answered "interrupted") or ``"cancel"`` (a worker's hard Cancel: the turn task is cancelled and the
     ``CancelledError`` leaves)."""
     monkeypatch.setattr(stoppable_call, "UNWIND_BOUND_S", 0.1)
+    monkeypatch.setattr(invoke_module, "current_interrupt", lambda: None)  # a subagent that is NOT given the Stop event
     if not with_the_abandon:
         monkeypatch.setattr(CallScope, "abandon", lambda self: None)       # the control: nobody tells the recorder
     storage, registry, manager, stuck = _world(nested=nested)
@@ -313,8 +320,12 @@ async def _stop_a_blocked_subagent(monkeypatch, *, nested: bool, with_the_abando
         at_the_answer = len(writer.records)
 
         stuck.release.set()                                  # the unresponsive subagent finally carries on
-        for task in list(stoppable_call._ABANDONED):
-            await asyncio.wait_for(asyncio.shield(task), 3.0)
+        # An abandoned call may now END CANCELLED (a subagent given the Stop stops at its next check and re-raises the
+        # cancel; its own tool call is cancelled through its own ``run_stoppable``), so wait for it without re-raising.
+        abandoned = list(stoppable_call._ABANDONED)
+        if abandoned:
+            _, unfinished = await asyncio.wait(abandoned, timeout=3.0)
+            assert not unfinished, f"an abandoned call never finished after the release: {unfinished}"
         for _ in range(5):
             await asyncio.sleep(0)
         late = writer.records[at_the_answer:]

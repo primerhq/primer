@@ -252,11 +252,14 @@ intact, so the next message continues it:
   (`invoke_agent`) that is cancelled and does not stop in time is given up
   on: what it, and any subagent it started in turn, still emits is not
   added to the session log after the call's "interrupted" answer. Giving up
-  hides the subagent's log records; it does not stop it. A subagent that
-  does not stop can go on in the background and keep using its tools: one
-  cut off while it connects to a stdio MCP server, for example, carries on
-  with its next model call and tool calls after you pressed Stop, and what
-  those do is not undone. Graph sessions and the context-compaction call that can run first are not
+  hides the subagent's log records; it does not stop it. A subagent is
+  given the same Stop, so it ends at its own next check (before its next
+  model call and before each of its tool calls), including one cut off
+  while it connects to a stdio MCP server, and its partial answer is not
+  handed back as a result: the call is answered "interrupted". A subagent
+  that is already inside a tool call that does not stop can finish that one
+  call in the background, and what it does is not undone; a subagent that
+  was resumed after a park does not get the Stop yet. Graph sessions and the context-compaction call that can run first are not
   interruptible yet.
 - What the model had already written is kept in the transcript. The model
   itself does not see that partial text on the next turn, and is not told

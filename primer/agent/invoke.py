@@ -4,11 +4,13 @@ invocation-depth guard reused by the invoke_agent and invoke_graph tools.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import os
 from typing import TYPE_CHECKING, Any
 
+from primer.agent.call_scope import current_interrupt
 from primer.model.chat import Message, TextPart
 
 
@@ -280,6 +282,12 @@ async def run_subagent(
     # this path), so this buffer - not ``yld.llm_messages`` - is the source of
     # truth for the AgentFrame's mid-flight history.
     produced: list[Message] = []
+    # The Stop event of the turn this call belongs to (its scope, see ``primer.agent.call_scope``), so the subagent's own
+    # loop stops at its next check instead of relying on the parent's cancel of this task, which can be swallowed (the MCP
+    # stdio handshake clears every pending cancel): a subagent whose cancel was swallowed would otherwise go on with its
+    # next model call and its tools after the Stop. None outside a stoppable call: nothing changes there.
+    stop = current_interrupt()
+    interrupted: list[bool] = []
     try:
         from primer.session.delegation import current_delegation_sink
 
@@ -291,7 +299,7 @@ async def run_subagent(
         async for _ev in run_agent_turn(
             agent=agent, llm=llm, llm_model=llm_model, tool_manager=tool_manager,
             prompt=prompt_msgs, principal=principal, messages_out=produced,
-            turn_no=turn_no,
+            turn_no=turn_no, interrupt=stop, interrupted_out=interrupted,
         ):
             if _sink is not None:
                 await _sink.on_event(
@@ -307,6 +315,13 @@ async def run_subagent(
             context=context,
         )
         raise
+
+    if interrupted:
+        # The subagent's turn ended because the Stop was set, not because it had an answer. What it produced so far is not
+        # a result, and returning it would hand the parent a partial answer as the call's REAL result (a call that
+        # finishes after the Stop with a value is used as it is). Re-deliver the cancel that may have been swallowed on
+        # the way: the call task then ends cancelled, which ``run_stoppable`` answers as ``interrupted: stopped by user``.
+        raise asyncio.CancelledError("subagent stopped by user")
 
     return _final_assistant_text(produced)
 
