@@ -1762,7 +1762,11 @@ async def steer_session(
         )
         if cancelled and row is not None:
             payload = make_cancelled_payload(reason=CANCEL_REASON_SUPERSEDED)
-            for _tcid, key in _pending_targets(row).items():
+            for tcid, key in _pending_targets(row).items():
+                # Only a call whose cancel LANDED is woken: a call whose result landed meanwhile (its guarded
+                # row write was rejected, so it is not in ``cancelled``) keeps the reply the park carries.
+                if tcid not in cancelled:
+                    continue
                 await durably_wake_session(
                     row,
                     event_key=key,
