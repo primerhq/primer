@@ -84,9 +84,11 @@ def parse_scoped_task_id(task_id: str, session_id: str) -> ScopedId:
     The ``<session_id>/`` qualification is stripped by :func:`external_call_id` (the one place it is stripped). The
     rest is split from the RIGHT (``rsplit(":", 3)``), because graph node ids are free-form and may contain ``:``
     or ``.``: the node keeps everything left of ``:tool:``. The turn segment is ``<turn_no>`` or
-    ``<turn_no>.<epoch>`` (epoch > 0) and the seq is 1-based, both canonical ASCII integers; anything ``int()``
-    would also accept (a sign, whitespace, ``_``, a leading zero, a non-ASCII digit) is malformed. An empty node is
-    malformed too: a graph node id has ``min_length=1`` and the agent surface mints ``x``.
+    ``<turn_no>.<epoch>`` (epoch > 0; the epoch form is ACCEPTED so a future writer's ids keep working, nothing
+    writes it today: ``scoped_tool_call_id`` formats an int turn number only) and the seq is 1-based, both
+    canonical ASCII integers; anything ``int()`` would also accept (a sign, whitespace, ``_``, a leading zero, a
+    non-ASCII digit) is malformed. An empty node is malformed too: a graph node id has ``min_length=1`` and the
+    agent surface mints ``x``.
 
     ``session_id`` is required: parsed without it, a qualified id would yield the node ``<session_id>/<node>`` and
     no error. Raises :class:`MalformedScopedIdError` naming the id.

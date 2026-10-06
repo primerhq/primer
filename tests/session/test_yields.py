@@ -243,8 +243,8 @@ def test_tool_wait_event_key_depends_only_on_the_id(turn_seg: str, node: str) ->
 
 
 def test_tool_wait_event_key_keeps_the_epoch() -> None:
-    """A turn that was retired and replayed mints ``<turn>.<epoch>`` ids; its batch must not share the key of the
-    retired turn's batch (mutation N46, pure leg: drop the epoch segment)."""
+    """The parser accepts a ``<turn>.<epoch>`` turn segment (nothing writes one yet), so the key of such an id must
+    not be the key of the retired turn's batch (mutation N46, pure leg: drop the epoch segment)."""
     assert tool_wait_event_key("s1", scoped_task_id="x:tool:3:1") == "tool_wait:s1:3:x"
     assert tool_wait_event_key("s1", scoped_task_id="x:tool:3.1:1") == "tool_wait:s1:3.1:x"
 
