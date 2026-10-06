@@ -33,6 +33,7 @@ from primer.model.model_profile import ModelProfile
 from primer.model.provider import (
     ArtifactStorageProvider,
     EmbeddingProvider,
+    LLMProvider,
     SqliteConfig,
     Toolset,
 )
@@ -40,13 +41,16 @@ from primer.model.tool_approval import ToolApprovalPolicy
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.system import build_system_toolset
 from tests.api.test_semantic_search_registry import _make_row as _ssp_row
-from tests.toolset.test_system import _agent, _ce, _collection, _emb, _required_policy, _toolset_body
+from tests.toolset.test_system import _agent, _ce, _collection, _emb, _llm, _required_policy, _toolset_body
 
 
 @pytest.fixture
 async def world(tmp_path: Path):
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
     await sp.initialize()
+    # The provider the test profiles name (``_profile()`` defaults to anthropic-1): since task 01a111d1 D5 phase 2b the tools refuse a
+    # single profile whose provider does not exist, as the REST route does.
+    await sp.get_storage(LLMProvider).create(_llm())
     registry = ProviderRegistry(
         sp,
         llm_factory=lambda p: object(),

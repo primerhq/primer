@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from primer.model.model_profile import ModelProfile
-from primer.model.provider import LLMProvider, Toolset, ToolsetProviderType
+from primer.model.provider import Toolset, ToolsetProviderType
 from primer.model.providers.toolset import PythonConfig
 from primer.model.tool_approval import (
     LlmApprovalConfig,
@@ -22,8 +22,7 @@ from primer.model.tool_approval import (
     RequiredApprovalConfig,
     ToolApprovalPolicy,
 )
-from tests.toolset.test_system import _llm
-from tests.toolset.test_system_crud_guards import _call, _profile, world  # noqa: F401  (world is a fixture)
+from tests.toolset.test_system_crud_guards import _call, _profile, world  # noqa: F401  (world is a fixture; it seeds anthropic-1)
 
 REGO_OK = 'package primer.tool_approval\ndefault required := false\nrequired if input.tool_name == "x"\n'
 REGO_BROKEN = "this is not valid rego"
@@ -122,7 +121,6 @@ class TestToolApprovalPolicy:
     @pytest.mark.asyncio
     async def test_an_llm_policy_naming_a_model_the_provider_does_not_publish_is_refused(self, world) -> None:
         sp, toolset, _ = world
-        await sp.get_storage(LLMProvider).create(_llm())
         await sp.get_storage(ModelProfile).create(_profile("mp-judge", provider_id="anthropic-1", model_name="claude-x"))
         body = _policy("tap-llm", approval=LlmApprovalConfig(provider_id="anthropic-1", model="not-published", prompt="judge"))
 
@@ -135,7 +133,6 @@ class TestToolApprovalPolicy:
     @pytest.mark.asyncio
     async def test_an_llm_policy_for_a_published_model_is_created_as_before(self, world) -> None:
         sp, toolset, _ = world
-        await sp.get_storage(LLMProvider).create(_llm())
         await sp.get_storage(ModelProfile).create(_profile("mp-judge", provider_id="anthropic-1", model_name="claude-x"))
         body = _policy("tap-llm", approval=LlmApprovalConfig(provider_id="anthropic-1", model="claude-x", prompt="judge"))
 
@@ -237,3 +234,128 @@ class TestToolset:
 
         assert not is_error
         assert await sp.get_storage(Toolset).get("mcp-dead") is not None
+
+
+def _aggregate(profile_id: str, members: list[str]) -> ModelProfile:
+    return ModelProfile(id=profile_id, description="a pool", kind="aggregated", members=members)
+
+
+class TestModelProfile:
+    """A single profile needs its provider to exist; an aggregate needs two or more distinct, existing, single members and cannot
+    name itself; a profile another aggregate lists cannot become an aggregate itself (nested aggregation is not supported)."""
+
+    async def _seed_singles(self, sp, *ids: str) -> None:
+        for profile_id in ids:
+            await sp.get_storage(ModelProfile).create(_profile(profile_id))
+
+    @pytest.mark.asyncio
+    async def test_a_single_profile_naming_a_missing_provider_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+
+        is_error, answer = await _call(
+            toolset, "create_model_profile", entity=_profile("mp-dangling", provider_id="no-such-provider").model_dump(mode="json"),
+        )
+
+        assert is_error and answer["type"] == "validation-error"
+        assert "provider_id" in answer["message"] and "no-such-provider" in answer["message"]
+        assert await sp.get_storage(ModelProfile).get("mp-dangling") is None
+
+    @pytest.mark.asyncio
+    async def test_an_update_to_a_missing_provider_is_refused_and_the_row_is_unchanged(self, world) -> None:
+        sp, toolset, _ = world
+        await self._seed_singles(sp, "mp-1")
+
+        is_error, answer = await _call(
+            toolset, "update_model_profile", id="mp-1", entity=_profile("mp-1", provider_id="no-such-provider").model_dump(mode="json"),
+        )
+
+        assert is_error and answer["type"] == "validation-error" and "provider_id" in answer["message"]
+        assert (await sp.get_storage(ModelProfile).get("mp-1")).provider_id == "anthropic-1"
+
+    @pytest.mark.asyncio
+    async def test_an_aggregate_naming_fewer_than_two_members_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+        await self._seed_singles(sp, "mp-1")
+
+        is_error, answer = await _call(
+            toolset, "create_model_profile", entity=_aggregate("agg-one", ["mp-1"]).model_dump(mode="json"),
+        )
+
+        assert is_error and answer["type"] == "validation-error" and "members" in answer["message"]
+        assert await sp.get_storage(ModelProfile).get("agg-one") is None
+
+    @pytest.mark.asyncio
+    async def test_an_aggregate_naming_itself_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+        await self._seed_singles(sp, "mp-1")
+
+        is_error, answer = await _call(
+            toolset, "create_model_profile", entity=_aggregate("agg-self", ["agg-self", "mp-1"]).model_dump(mode="json"),
+        )
+
+        assert is_error and answer["type"] == "validation-error" and "cannot name itself" in answer["message"]
+
+    @pytest.mark.asyncio
+    async def test_an_aggregate_with_a_duplicate_member_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+        await self._seed_singles(sp, "mp-1")
+
+        is_error, answer = await _call(
+            toolset, "create_model_profile", entity=_aggregate("agg-dup", ["mp-1", "mp-1"]).model_dump(mode="json"),
+        )
+
+        assert is_error and answer["type"] == "validation-error" and "duplicates" in answer["message"]
+
+    @pytest.mark.asyncio
+    async def test_an_aggregate_naming_a_missing_member_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+        await self._seed_singles(sp, "mp-1")
+
+        is_error, answer = await _call(
+            toolset, "create_model_profile", entity=_aggregate("agg-missing", ["mp-1", "mp-ghost"]).model_dump(mode="json"),
+        )
+
+        assert is_error and answer["type"] == "validation-error" and "mp-ghost" in answer["message"]
+        assert await sp.get_storage(ModelProfile).get("agg-missing") is None
+
+    @pytest.mark.asyncio
+    async def test_an_aggregate_naming_an_aggregate_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+        await self._seed_singles(sp, "mp-1", "mp-2")
+        await sp.get_storage(ModelProfile).create(_aggregate("agg-inner", ["mp-1", "mp-2"]))
+
+        is_error, answer = await _call(
+            toolset, "create_model_profile", entity=_aggregate("agg-outer", ["agg-inner", "mp-1"]).model_dump(mode="json"),
+        )
+
+        assert is_error and answer["type"] == "validation-error" and "nested aggregation" in answer["message"]
+        assert await sp.get_storage(ModelProfile).get("agg-outer") is None
+
+    @pytest.mark.asyncio
+    async def test_a_member_cannot_become_an_aggregate_while_another_aggregate_lists_it(self, world) -> None:
+        sp, toolset, _ = world
+        await self._seed_singles(sp, "mp-1", "mp-2", "mp-3")
+        await sp.get_storage(ModelProfile).create(_aggregate("agg-1", ["mp-1", "mp-2"]))
+
+        is_error, answer = await _call(
+            toolset, "update_model_profile", id="mp-1", entity=_aggregate("mp-1", ["mp-2", "mp-3"]).model_dump(mode="json"),
+        )
+
+        assert is_error and answer["type"] == "validation-error" and "agg-1" in answer["message"]
+        assert (await sp.get_storage(ModelProfile).get("mp-1")).kind == "single"
+
+    @pytest.mark.asyncio
+    async def test_valid_single_and_aggregated_profiles_are_created_and_updated_as_before(self, world) -> None:
+        sp, toolset, _ = world
+        await self._seed_singles(sp, "mp-1", "mp-2")
+
+        single_error, _ = await _call(toolset, "create_model_profile", entity=_profile("mp-3").model_dump(mode="json"))
+        aggregate_error, _ = await _call(
+            toolset, "create_model_profile", entity=_aggregate("agg-ok", ["mp-1", "mp-2"]).model_dump(mode="json"),
+        )
+        _, served = await _call(toolset, "get_model_profile", id="mp-1")
+        served["description"] = "edited"
+        update_error, _ = await _call(toolset, "update_model_profile", id="mp-1", entity=served)
+
+        assert not (single_error or aggregate_error or update_error)
+        assert (await sp.get_storage(ModelProfile).get("mp-1")).description == "edited"
