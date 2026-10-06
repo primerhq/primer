@@ -603,7 +603,12 @@ POST /v1/sessions/{session_id}/ask_user/respond   {"tool_call_id": "...", "respo
 `response_schema`; POST the operator's `response` (validated against that
 schema) to `ask_user/respond` and the graph resumes from its checkpoint,
 routing on the reply. To skip a pending decision instead of answering it,
-`POST /v1/sessions/{session_id}/yields/{tool_call_id}/cancel`. If several
+`POST /v1/sessions/{session_id}/yields/{tool_call_id}/cancel`. A skipped
+question (or one that times out) reaches the node as a cancel (or a
+timeout), never as an empty answer: `ask_user` returns
+`{"cancelled": true, "reason": ...}` (or `{"timed_out": true,
+"elapsed_seconds": ...}`), whether the node asked the question itself or a
+subagent it invoked did. If several
 nodes parked at once, answer each `tool_call_id` in turn; the run
 re-parks until every pending decision is resolved, then advances.
 
