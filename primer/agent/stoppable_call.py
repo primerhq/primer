@@ -78,7 +78,7 @@ async def run_stoppable(
     events with its INNER call's id.
     """
     loop = asyncio.get_running_loop()
-    scope = CallScope(parent=current_call_scope())
+    scope = CallScope(parent=current_call_scope(), interrupt=interrupt)
 
     async def in_the_calls_scope() -> T:
         bind_call_scope(scope)        # inside the task: its own copy of the context, never the caller's
@@ -115,7 +115,10 @@ async def run_stoppable(
 def _outcome(task: asyncio.Task, interrupt: asyncio.Event, *, stopped_first: bool, name: str):
     """The finished call's result, or None when it is to be answered as a Stop, or its error as it was inline."""
     if task.cancelled():
-        if stopped_first:
+        # A call that ends cancelled while the Stop is set is a stopped call, whichever finished first: a subagent that has
+        # the Stop event ends cancelled by itself and can do so in the same wake-up as the Stop, before this looked at
+        # whether the call was still running (``stopped_first``). Re-raising there would cancel the PARENT's dispatch.
+        if stopped_first or interrupt.is_set():
             return None
         raise asyncio.CancelledError            # cancelled by something else, as an inline await would have been
     exc = task.exception()
