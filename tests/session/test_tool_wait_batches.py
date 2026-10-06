@@ -10,7 +10,12 @@ FLATTENED across its nodes; they are a projection of the entries and never a bat
 The graph blobs here are the real ones: the real ``GraphExecutor`` parks two fan-out siblings in one superstep (or one
 beside a human gate) and the real ``run_one_session_turn`` park arms store them, qualifying the ids and adding the
 flattened lists. The agent-surface shapes the turn loop cannot produce (a batch with no outstanding id) come from
-``ToolWaitParkedState.to_jsonable``. Every blob goes through JSON first, because the helper reads what the row stores.
+``ToolWaitParkedState.to_jsonable``.
+
+The helper reads two forms of one blob: the in-memory ``parked_state`` a park outcome carries (what the claim adapter
+will derive the marker from; a graph entry's ``notifying_results`` pairs are TUPLES there) and the JSON the row stores
+(the pairs become lists). Every blob the real turn loop produces is checked in both forms and must name the same
+batches; the hand-built shapes are given in their stored (JSON) form.
 """
 
 from __future__ import annotations
@@ -83,8 +88,12 @@ class _ReplaysCallsThenRaises:
         yield  # pragma: no cover - unreachable, keeps this a generator
 
 
-async def _stored_park(session_id: str, calls: list[tuple[str | None, str]], park: BaseException) -> dict:
-    """Run the real turn loop over ``park`` and return the ``parked_state`` its park arm stores."""
+async def _stored_park(
+    session_id: str, calls: list[tuple[str | None, str]], park: BaseException, *, live: bool = False,
+) -> dict:
+    """Run the real turn loop over ``park`` and return the ``parked_state`` its park arm stores (the JSON the row
+    holds), or with ``live`` the in-memory blob of the park outcome. Either way the two forms must name the same
+    batches."""
     storage_provider = _FakeStorageProvider()
     await storage_provider.get_storage(WorkspaceSession).create(_session(session_id))
     executor = _ReplaysCallsThenRaises(calls, park)
@@ -102,7 +111,10 @@ async def _stored_park(session_id: str, calls: list[tuple[str | None, str]], par
     )
     outcome = await run_one_session_turn(lease, deps)
     assert outcome.success is True and outcome.park is not None, outcome
-    return _as_stored(outcome.park.parked_state)
+    in_memory = outcome.park.parked_state
+    stored = _as_stored(in_memory)
+    assert batches_referenced_by_park(in_memory) == batches_referenced_by_park(stored)
+    return in_memory if live else stored
 
 
 async def _real_graph_park(monkeypatch, behavior: dict) -> BaseException:
@@ -128,7 +140,7 @@ def _node_park(outstanding: list[str], notifying: list[str] = (), *, graph_node:
     )
 
 
-async def _pure_graph_blob(monkeypatch, session_id: str) -> dict:
+async def _pure_graph_blob(monkeypatch, session_id: str, *, live: bool = False) -> dict:
     """Node A parks two claimable calls, node B one claimable call and one notifying call, in ONE superstep."""
     park = await _real_graph_park(monkeypatch, {
         "agent-a": _node_park(["A:tool:0:1", "A:tool:0:2"]),
@@ -136,17 +148,18 @@ async def _pure_graph_blob(monkeypatch, session_id: str) -> dict:
     })
     assert isinstance(park, ToolWaitPark)
     calls = [("A", "call_a1"), ("A", "call_a2"), ("B", "call_b1"), ("B", "call_b2")]
-    return await _stored_park(session_id, calls, park)
+    return await _stored_park(session_id, calls, park, live=live)
 
 
 async def _mixed_graph_blob(monkeypatch, session_id: str) -> dict:
-    """Node A parks a batch of two claimable calls while node B waits on a human (ask_user): a classic mixed park."""
+    """Node A parks a batch (two claimable calls, one answered inline) while node B waits on a human (ask_user): a
+    classic mixed park."""
     park = await _real_graph_park(monkeypatch, {
-        "agent-a": _node_park(["A:tool:0:1", "A:tool:0:2"]),
+        "agent-a": _node_park(["A:tool:0:1", "A:tool:0:2"], ["A:tool:0:3"]),
         "agent-b": _ask_user_yield("B", "tc-b"),
     })
     assert isinstance(park, YieldToWorker)
-    return await _stored_park(session_id, [("A", "call_a1"), ("A", "call_a2")], park)
+    return await _stored_park(session_id, [("A", "call_a1"), ("A", "call_a2"), ("A", "call_a3")], park)
 
 
 def _agent_blob(session_id: str, outstanding: list[str], notifying: list[str]) -> dict:
@@ -188,6 +201,22 @@ async def test_a_pure_graph_tool_wait_park_has_one_batch_per_node_and_its_flatte
     assert all(ref.node_id is not None for ref in batches.values())
 
 
+async def test_the_in_memory_blob_of_a_park_outcome_names_the_same_batches_as_the_stored_one(monkeypatch) -> None:
+    """The claim adapter derives the marker from the outcome's in-memory ``parked_state``, where the materializer left
+    each notifying pair a TUPLE; the row stores lists. Both forms name the same batches, notifying ids included."""
+    sid = "s-live"
+    live = await _pure_graph_blob(monkeypatch, sid, live=True)
+    by_node = {e["node_id"]: e for e in live["graph_checkpoint"]["pending_tool_waits"]}
+    pairs = by_node["B"]["notifying_results"]
+    assert pairs and all(type(pair) is tuple for pair in pairs)
+    b1, b2 = f"{sid}/B:tool:0:1", f"{sid}/B:tool:0:2"
+
+    batches = batches_referenced_by_park(live)
+
+    assert batches[b1] == _ref("B", [b1], [b2])
+    assert batches == batches_referenced_by_park(_as_stored(live))
+
+
 async def test_a_stale_or_reordered_flattened_projection_still_names_no_batch(monkeypatch) -> None:
     """The flattened lists are ignored whatever they say: an id ONLY they carry is referenced by no batch."""
     sid = "s-pure-stale"
@@ -215,7 +244,7 @@ async def test_a_mixed_park_reads_its_batches_from_the_classic_blobs_checkpoint(
     assert [e["node_id"] for e in blob["graph_checkpoint"]["pending_agent_yields"]] == ["B"]
 
     assert batches_referenced_by_park(blob) == {
-        f"{sid}/A:tool:0:1": _ref("A", [f"{sid}/A:tool:0:1", f"{sid}/A:tool:0:2"], []),
+        f"{sid}/A:tool:0:1": _ref("A", [f"{sid}/A:tool:0:1", f"{sid}/A:tool:0:2"], [f"{sid}/A:tool:0:3"]),
     }
 
 
@@ -234,6 +263,49 @@ def test_a_graph_blob_whose_checkpoint_has_no_entries_has_no_batch() -> None:
 
     assert batches_referenced_by_park(pure) == {}
     assert batches_referenced_by_park(classic) == {}
+
+
+def test_an_empty_graph_checkpoint_is_still_a_graph_park_and_its_flattened_lists_are_not_a_batch() -> None:
+    """``graph_checkpoint: {}`` is present (not None), so the blob is a graph park with no entries: ``{}``, never a
+    fall-back to the top-level lists as if it were the agent surface."""
+    sid = "s-empty-dict-ck"
+    blob = _as_stored(ToolWaitParkedState(
+        outstanding_task_ids=[f"{sid}/A:tool:0:1"], notifying_task_ids=[f"{sid}/A:tool:0:2"],
+        event_key=f"tool_wait:{sid}:0:A", llm_messages=[], turn_no=0, started_at=_now(), graph_checkpoint={},
+    ).to_jsonable())
+    assert blob["graph_checkpoint"] == {} and blob["outstanding_task_ids"]
+
+    assert batches_referenced_by_park(blob) == {}
+
+
+@pytest.mark.parametrize("entries", [{"A": {"outstanding_task_ids": ["s/A:tool:0:1"]}}, "s/A:tool:0:1", None, 5])
+def test_pending_tool_waits_that_is_not_a_list_names_no_batch_and_does_not_raise(entries) -> None:
+    """Only a list of entries is read. A dict, a string or None names no batch; an int would raise if anything but a
+    list were iterated."""
+    blob = {"kind": "tool_wait", "outstanding_task_ids": ["s/A:tool:0:1"],
+            "graph_checkpoint": {"pending_tool_waits": entries}}
+
+    assert batches_referenced_by_park(blob) == {}
+
+
+def test_two_batches_with_the_same_first_id_keep_the_first_one_stored() -> None:
+    """Ids are unique within a well-formed park; if a broken one repeats a first id, the first batch keeps the key."""
+    blob = {"graph_checkpoint": {"pending_tool_waits": [
+        {"node_id": "A", "outstanding_task_ids": ["s/A:tool:0:1"], "notifying_results": []},
+        {"node_id": "B", "outstanding_task_ids": ["s/A:tool:0:1", "s/B:tool:0:1"], "notifying_results": []},
+    ]}}
+
+    assert batches_referenced_by_park(blob) == {"s/A:tool:0:1": _ref("A", ["s/A:tool:0:1"], [])}
+
+
+def test_a_foreign_kind_names_no_batch_even_with_graph_entries() -> None:
+    """Only a kind-less (classic) or tool_wait blob is read: a foreign kind is refused before its checkpoint is."""
+    entry = {"node_id": "A", "outstanding_task_ids": ["s/A:tool:0:1"], "notifying_results": []}
+
+    assert batches_referenced_by_park({"graph_checkpoint": {"pending_tool_waits": [entry]}}) != {}
+    assert batches_referenced_by_park(
+        {"kind": "something_else", "graph_checkpoint": {"pending_tool_waits": [entry]}},
+    ) == {}
 
 
 # ---------------------------------------------------------------------------
