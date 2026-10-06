@@ -48,8 +48,14 @@ Four rules make that safe:
   applies a queued switch itself through `apply_queued_binding_switch`
   (best effort; nothing queued writes nothing). Without that, a switch queued
   on a parked session survived a failed resume on the ENDED row and, after a
-  reopen, the user's next message was answered by the OUTGOING binding. That
-  exit still does not realize queued steers (unchanged).
+  reopen, the user's next message was answered by the OUTGOING binding. It
+  then realizes ONE queued steer through `realize_queued_steer` (the
+  checkpoint's body, best effort), on every reason (failed, completed,
+  cancelled), as the dispatch exits do: `route_steer` counts a parked session
+  as busy, so a steer sent to it is queued, and without this it waited behind
+  the ended session for some later message (then ran after it) or forever. The
+  realized steer reopens the ended session through `wake_session` and arms a
+  turn; the pool re-arms the claim after the release.
 - **Epochs fence stale writes.** A terminal status, a park and a resume
   each carry the epoch they began under; the row rejects a write from an
   epoch it has moved past, so a turn finishing under a replaced binding
