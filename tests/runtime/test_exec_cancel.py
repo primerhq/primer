@@ -153,6 +153,31 @@ async def test_cancelling_an_exec_that_is_still_queued_on_the_lock_means_it_neve
         _kill(first, second)
 
 
+async def test_an_older_exec_finishing_does_not_deregister_a_newer_one_under_the_same_req_id(tmp_path: Path) -> None:
+    """``RuntimeClient`` never reuses a req_id, but a frame is client input: when one is reused, the older exec's
+    done-callback must not drop the registration of the newer one (it could then no longer be cancelled)."""
+    locks, registry = WorkspaceLockTable(), ExecRegistry()
+    older_dir, newer_dir = tmp_path / "older", tmp_path / "newer"
+    older_dir.mkdir()
+    newer_dir.mkdir()
+    child = None
+    older = _start(older_dir, "sleep 0.5", 7, locks, registry)
+    newer = _start(newer_dir, f"sleep 60 & echo $! > {newer_dir}/child; wait", 7, locks, registry)
+    try:
+        child = await _pid(newer_dir / "child")
+        await asyncio.wait_for(older, timeout=10.0)
+        await asyncio.sleep(0)                               # the older exec's done-callback runs
+
+        assert registry.cancel(7) is True, "the finished older exec took the newer one's registration with it"
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(newer, timeout=10.0)
+        assert await _gone(child)
+    finally:
+        registry.cancel_all()
+        await asyncio.gather(older, newer, return_exceptions=True)
+        _kill(child)
+
+
 async def test_a_repeated_exec_cancel_does_not_cut_the_commands_grace_short(tmp_path: Path, monkeypatch) -> None:
     """A second cancel of the exec TASK is what skips the SIGTERM grace (the stop's ``finally`` goes straight to SIGKILL), and a
     client that sends ``exec_cancel`` twice (a retry) must not be able to do that: the command still gets its time to clean up."""
@@ -289,7 +314,9 @@ async def test_exec_cancel_for_an_exec_that_is_not_running_answers_enoent(server
     assert answer["ok"] is False and answer["error"]["code"] == "ENOENT"
 
 
-@pytest.mark.parametrize("args", [{}, {"target_req_id": "five"}, {"target_req_id": None}, {"target_req_id": True}])
+@pytest.mark.parametrize(
+    "args", [{}, {"target_req_id": "five"}, {"target_req_id": None}, {"target_req_id": True}, [5], "five"],
+)
 async def test_a_malformed_exec_cancel_is_refused_and_the_connection_stays_usable(server, args) -> None:
     """Arguments come from client frames: whatever they hold, the message loop must survive (an exception escaping it would
     skip the connection's teardown and leak every exec on it)."""
@@ -304,5 +331,30 @@ async def test_a_malformed_exec_cancel_is_refused_and_the_connection_stays_usabl
         finally:
             await ws.close()
 
-    assert answer["ok"] is False and answer["error"]["code"] in ("EPROTOCOL", "ENOENT")
+    assert answer["ok"] is False and answer["error"]["code"] == "EPROTOCOL"
     assert health["ok"] is True, "the connection was left unusable by a malformed exec_cancel"
+
+
+async def test_a_boolean_target_is_refused_and_does_not_cancel_the_exec_numbered_1(server) -> None:
+    """``True`` is an ``int`` in Python and equals 1: it must be refused, not taken for the exec whose req_id is 1."""
+    test_server, root = server
+    child = None
+    async with aiohttp.ClientSession() as session:
+        ws = await _connect(test_server, session)
+        try:
+            await ws.send_str(json.dumps({
+                "req_id": 1, "op": "exec",
+                "args": {"cmd": ["/bin/sh", "-c", f"sleep 60 & echo $! > {root}/child; wait"], "workdir": str(root)},
+            }))
+            child = await _pid(root / "child")
+
+            await ws.send_str(json.dumps({"req_id": 6, "op": "exec_cancel", "args": {"target_req_id": True}}))
+            answer = await _response_for(ws, 6)
+            await asyncio.sleep(0.3)
+            still_running = _running(child)
+        finally:
+            await ws.close()
+            _kill(child)
+
+    assert answer["ok"] is False and answer["error"]["code"] == "EPROTOCOL"
+    assert still_running, "a boolean target cancelled the exec numbered 1"
