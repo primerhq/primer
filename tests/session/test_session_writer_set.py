@@ -92,11 +92,15 @@ def parse_allowlist(text: str) -> tuple[dict[str, dict[Key, Entry]], list[str]]:
 _NEW = {
     "writers": (
         "new whole-document session writer {file}: {function}.{method}; add it to "
-        f"{ALLOWLIST_REL} with a disposition, and read plan section 3.4(e) first"
+        f"{ALLOWLIST_REL} with a disposition: say which later change turns it into a field-scoped patch_if, or why it needs none "
+        "(a whole-document write of a session row can erase a park or a cancel flag committed since its read; "
+        "see the header of that file)"
     ),
     "deletes": (
         "new session delete site {file}: {function}.{method}; add it to "
-        f"{ALLOWLIST_REL} with a disposition, and read plan section 3.4(e) first"
+        f"{ALLOWLIST_REL} with a disposition: say which later change turns it into a field-scoped patch_if, or why it needs none "
+        "(a whole-document write of a session row can erase a park or a cancel flag committed since its read; "
+        "see the header of that file)"
     ),
     "unresolved": (
         "new update on a receiver the scan cannot type {file}: {function}.{method}; if it can write "
@@ -118,7 +122,8 @@ def diff_against_allowlist(
         file, function, method = key
         out.append(
             f"stale entry: {file}: {function}.{method} ({ALLOWLIST_REL} line {listed[key].line_no}): "
-            "the writer was converted or removed, delete the line (good news)"
+            "the writer was converted or removed, delete the line (good news); if the function was only renamed, "
+            "rename the line instead of deleting it"
         )
     for key in sorted(found.keys() & listed.keys()):
         file, function, method = key
@@ -127,7 +132,7 @@ def diff_against_allowlist(
             out.append(
                 f"new whole-document site in an allowlisted function {file}: {function}.{method}: "
                 f"the code has {have}, {ALLOWLIST_REL} line {listed[key].line_no} says {want}; classify "
-                "the new site and raise the count, and read plan section 3.4(e) first"
+                "the new site (say which later change converts it, or why it needs none) and raise the count"
             )
         elif have < want:
             out.append(
@@ -171,6 +176,59 @@ def test_pinned_set_matches_the_allowlist(
 ) -> None:
     problems = diff_against_allowlist(section, repo_scan.counts(section), allowlist[section])
     assert not problems, f"[{section}] differs from the code:\n" + "\n".join(problems)
+
+
+GENERIC_CRUD_FACTORIES = frozenset({"make_crud_router", "_crud_tools_for"})
+SESSION_MODEL_NAMES = frozenset({"WorkspaceSession", "get_session_storage"})
+
+
+def _names_the_session_model(node: ast.AST) -> bool:
+    return any(
+        (n.id if isinstance(n, ast.Name) else getattr(n, "attr", "")).lstrip("_")
+        in SESSION_MODEL_NAMES
+        for n in ast.walk(node)
+    )
+
+
+def _calls_a_generic_factory(node: ast.AST) -> bool:
+    return any(
+        isinstance(n, ast.Call)
+        and (getattr(n.func, "id", None) or getattr(n.func, "attr", None)) in GENERIC_CRUD_FACTORIES
+        for n in ast.walk(node)
+    )
+
+
+def test_the_generic_crud_factories_never_receive_the_session_model() -> None:
+    """The scan cannot follow the model through make_crud_router / _crud_tools_for (the model is a
+    parameter there), so it lists their writes as unresolved. This pins the other half: nothing hands
+    them the session model. Registering WorkspaceSession would ship a whole-document session writer
+    (a REST route or an MCP tool) that no other test names."""
+    offenders: list[str] = []
+    for path in sorted(default_root().rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                hit = name in GENERIC_CRUD_FACTORIES and _names_the_session_model(node)
+            elif isinstance(node, ast.For):
+                hit = _names_the_session_model(node.iter) and _calls_a_generic_factory(node)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                hit = (
+                    any("crud_specs" in (getattr(t, "id", "") or "") for t in targets)
+                    and node.value is not None
+                    and _names_the_session_model(node.value)
+                )
+            else:
+                continue
+            if hit:
+                offenders.append(f"{path.relative_to(default_root().parent).as_posix()}:{node.lineno}")
+    assert not offenders, (
+        "WorkspaceSession reaches a generic CRUD factory at " + ", ".join(offenders) + ": that adds "
+        "a whole-document session writer (a REST route or an MCP tool) the writer scan cannot name. "
+        "Write a purpose-built route that patches only the fields it owns, or list the new writer "
+        "in tests/session/session_writers.txt with a disposition."
+    )
 
 
 # ---------------------------------------------------------------------------------------------
@@ -245,11 +303,14 @@ def test_diff_names_a_new_writer_a_stale_entry_and_a_count_change() -> None:
     joined = "\n".join(problems)
     assert (
         "new whole-document session writer primer/n.py: new.update; add it to "
-        "tests/session/session_writers.txt with a disposition, and read plan section 3.4(e) first"
+        "tests/session/session_writers.txt with a disposition: say which later change turns it into a field-scoped patch_if, or why it needs none "
+        "(a whole-document write of a session row can erase a park or a cancel flag committed since its read; "
+        "see the header of that file)"
     ) in joined
     assert (
         "stale entry: primer/o.py: old.update (tests/session/session_writers.txt line 10): "
-        "the writer was converted or removed, delete the line (good news)"
+        "the writer was converted or removed, delete the line (good news); if the function was only renamed, "
+        "rename the line instead of deleting it"
     ) in joined
     assert "primer/m.py: more.update: the code has 3" in joined and "says 2" in joined
     assert "primer/l.py: less.update" in joined and "lower the count" in joined
@@ -805,21 +866,22 @@ def test_storage_of_any_named_like_a_session_store_is_a_handle(tmp_path: pathlib
 @pytest.mark.parametrize(
     "alias_lines",
     [
-        "M = WorkspaceSession\n    handle = sp.get_storage(M)",
-        "M = WorkspaceSession\n    N = M\n    handle = sp.get_storage(N)",
-        "M: type = WorkspaceSession\n    handle = sp.get_storage(M)",
+        ("M = WorkspaceSession", "handle = sp.get_storage(M)"),
+        ("M = WorkspaceSession", "N = M", "handle = sp.get_storage(N)"),
+        ("M: type = WorkspaceSession", "handle = sp.get_storage(M)"),
     ],
 )
 def test_a_function_local_alias_of_the_model_is_followed(
-    tmp_path: pathlib.Path, alias_lines: str
+    tmp_path: pathlib.Path, alias_lines: tuple[str, ...]
 ) -> None:
+    body = "\n            ".join(alias_lines)
     result = scan_sources(
         tmp_path,
         a=f"""
         from primer.model.workspace_session import WorkspaceSession
 
         async def f(sp, row):
-            {alias_lines}
+            {body}
             await handle.update(row)
         """,
     )
@@ -1125,7 +1187,7 @@ def test_main_prints_the_result_as_json(tmp_path: pathlib.Path, capsys: pytest.C
     )
     assert scanner.main([str(tmp_path / "primer")]) == 0
     printed = json.loads(capsys.readouterr().out)
-    assert printed["writers"] == [["primer/a.py", 3, "f", "update"]]
+    assert printed["writers"] == [["primer/a.py", 3, "f", "update", 10]]
     assert set(printed) == {"writers", "deletes", "patches", "unresolved"}
 
 
