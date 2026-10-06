@@ -19,6 +19,7 @@ import json
 import pytest
 
 from primer.channel.session_relay import _parse_tail, derive_session_final_text
+from primer.session.terminals import is_session_terminal
 from primer.session.timeline import _turn_status, closes_turn
 from primer.session.turns import count_turn_state, has_open_turn
 from tests.ui_e2e._delegation_seed import PARENT_FINAL, CHILD_AFTER, build
@@ -96,6 +97,22 @@ def test_a_subagents_done_does_not_mark_the_running_parent_turn_completed(seeded
     assert before_the_final_done[-1]["kind"] == "done" and before_the_final_done[-1]["payload"].get("delegated")
     assert _turn_status([], before_the_final_done) == "running"
     assert _turn_status([], seeded) == "completed"
+
+
+def test_a_done_that_says_the_tool_turn_cap_stopped_the_turn_closes_it() -> None:
+    """The capped round's ``done`` carries ``stop_reason="tool_turn_cap"`` (#437). It is NOT ``tool_use``: the run stopped there, so
+    it ends the turn, and the shared rule must not treat it as one more tool round."""
+    capped = {"kind": "done", "payload": {"stop_reason": "tool_turn_cap", "raw_reason": "tool_use"}}
+    assert closes_turn(capped) is True
+    assert is_session_terminal(capped) is True
+    lines = [
+        json.dumps({"seq": 1, "kind": "user_input", "payload": {"text": "go"}}),
+        json.dumps({"seq": 2, "kind": "done", "payload": {"stop_reason": "tool_use"}}),
+        json.dumps({"seq": 3, **capped}),
+    ]
+    assert count_turn_state(lines, cursor=1).terminals == 1, "the tool round does not close the turn, the capped done does"
+    assert has_open_turn(lines, cursor=1) is False
+    assert has_open_turn(lines[:2], cursor=1) is True
 
 
 # ---------------------------------------------------------------------------
