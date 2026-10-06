@@ -25,8 +25,10 @@ the ``map`` + ``on_failure: collect`` combination. It guards four mechanics:
 The audit step is a ``tool_call`` map target (``misc__calculate``) so the whole
 audit leg is deterministic on any model: a valid expression yields
 ``{"expression", "result"}`` (conforms to the node's ``output_schema``); the
-unreachable service's ``1 / 0`` yields an error string that does NOT conform ->
-``tool_output_invalid`` -> the branch fails -> ``collect`` keeps the sweep going.
+unreachable service's ``1 / 0`` yields an ERROR RESULT -> ``tool_execution_failed``
+(a tool that returns an error fails its node, 01a10b50; before that rule the error
+string failed the node's ``output_schema`` as ``tool_output_invalid``) -> the branch
+fails -> ``collect`` keeps the sweep going.
 Only the scope-lister uses the LLM, and it is scripted with the deterministic
 mock so the map source list is fixed.
 
@@ -53,9 +55,9 @@ pytestmark = [pytest.mark.asyncio]
 
 
 # The watchlist. Each service carries the audit `expr` its check computes.
-# `payments-legacy` is the unreachable one: `1 / 0` errors, the tool's output
-# is the error string (not the {"expression","result"} object), the node's
-# output_schema rejects it -> tool_output_invalid -> the branch is collected.
+# `payments-legacy` is the unreachable one: `1 / 0` errors, the tool returns an
+# ERROR RESULT, and an error result fails its node (tool_execution_failed), so
+# the branch is collected.
 _SERVICES = [
     {"name": "billing-api", "expr": "90 + 5"},
     {"name": "auth-svc", "expr": "80 + 8"},
@@ -298,7 +300,7 @@ async def test_nightly_sweep_collects_failing_branch(
         # their score, and the collected branch renders a FAILED marker.
         report = _session_report(tmp_path, wid, sid)
         assert "COMPLIANCE POSTURE REPORT" in report, report
-        assert f"service #{_FAIL_INDEX}: FAILED (tool_output_invalid)" in report, (
+        assert f"service #{_FAIL_INDEX}: FAILED (tool_execution_failed)" in report, (
             f"the collected branch was not rendered as FAILED in the fan_in "
             f"report: {report!r}"
         )

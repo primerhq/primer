@@ -29,7 +29,7 @@ import pytest
 
 from primer.graph.executor import GraphExecutor
 from primer.graph.invoke_graph import GraphInvocationServices, run_invoke_graph
-from primer.model.chat import ToolCallResult
+from primer.model.chat import ToolCallResult, ToolResultPart
 from primer.model.graph import (
     BranchCondition,
     Graph,
@@ -141,7 +141,7 @@ async def _never_re_dispatched(node, arguments, bypass_approval=False):  # pragm
 
 
 async def _tool_runs(node, arguments, bypass_approval=False):
-    return ToolCallResult(output="the tool ran", is_error=False)
+    return ToolResultPart(id=_TCID, output="the tool ran", error=False)
 
 
 @pytest.mark.asyncio
@@ -188,7 +188,7 @@ async def test_a_tool_that_crashes_after_approval_is_an_error_result():
 @pytest.mark.asyncio
 async def test_a_routing_failure_after_approval_is_an_error_result():
     async def answers_without_a_match(node, arguments, bypass_approval=False):
-        return ToolCallResult(output=json.dumps({"go": "miss"}), is_error=False)
+        return ToolResultPart(id=_TCID, output=json.dumps({"go": "miss"}), error=False)
 
     part = await _resume_with({"decision": "approved"}, resumed=answers_without_a_match, graph=_routing_graph())
 

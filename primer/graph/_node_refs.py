@@ -231,6 +231,13 @@ def _map_toolcall_result(
     Spec B §2.3 step 4:
 
     * ``text = result.output`` always.
+    * An error RESULT (``result.error``) is a failed call, the same as a tool
+      that raised: ``error_code='tool_execution_failed'`` with the tool's own
+      output as ``error_message``. Decided before ``output_schema`` is looked
+      at (an error envelope is neither valid nor "invalid" output), and for
+      every path that maps a tool result (live dispatch, the approved
+      re-dispatch on resume, a value-yielding tool's resume hook), so they
+      cannot disagree (01a10b50).
     * When ``output_schema`` is set, parse ``text`` as JSON and validate
       against the schema; on parse / validation failure, return
       ``error_code='tool_output_invalid'``.
@@ -239,6 +246,10 @@ def _map_toolcall_result(
       schemas still succeeds (no ``error_code``).
     """
     text = result.output
+    if result.error:
+        return _ToolCallOutputResult(
+            text=text, parsed=None, error_code="tool_execution_failed", error_message=text,
+        )
     if output_schema is None:
         return _ToolCallOutputResult(text=text, parsed=None, error_code=None)
 
