@@ -617,7 +617,7 @@ async def _invoke_graph_handler(
         InvocationDepthExceeded,
         invocation_depth_guard,
     )
-    from primer.graph.invoke_graph import run_invoke_graph
+    from primer.graph.invoke_graph import ChildGraphFailed, run_invoke_graph
 
     try:
         args = _InvokeGraphArgs.model_validate(arguments)
@@ -646,6 +646,9 @@ async def _invoke_graph_handler(
         return _err(
             f"invocation depth exceeded: {exc}", error_type="bad-request"
         )
+    except ChildGraphFailed as failed:
+        # The child ended failed: an error result the model can act on, the same body a resumed child delivers.
+        return ToolCallResult(output=failed.result_json(), is_error=True)
     except (NotFoundError, ValueError) as exc:
         return _err(str(exc), error_type="bad-request")
     return _ok({"output": text})

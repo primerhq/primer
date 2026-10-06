@@ -34,7 +34,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from primer.graph.invoke_graph import resume_invoke_graph
+from primer.graph.invoke_graph import ChildGraphFailed, resume_invoke_graph
 from primer.model.chat import ToolCallPart, ToolResultPart, TurnStreamFailure
 from primer.model.principal import PrincipalRef
 from primer.model.yield_ import YieldToWorker
@@ -340,22 +340,26 @@ class GraphFrame:
         Returns a :class:`Reparked` if the child graph raised a fresh yield,
         else a :class:`Completed` carrying a :class:`ToolResultPart` (keyed by
         this frame's ``tool_call_id``) whose JSON ``output`` wraps the graph's
-        final text under an ``"output"`` key.
+        final text under an ``"output"`` key. A child that ends ``failed``
+        completes with an ERROR result instead (:meth:`_failed_result`).
         """
         graph = await services.resolve_graph(self.graph_id)
         child = await services.build_child_graph_executor(graph, self.gsid)
         agent_tool_result = await services.graph_agent_tool_result(
             self.checkpoint, self.node_tcid, payload
         )
-        out, repark = await resume_invoke_graph(
-            child=child,
-            checkpoint=self.checkpoint,
-            payload=payload,
-            resumed_tcid=self.node_tcid,
-            agent_tool_result=agent_tool_result,
-            resume_session_id=services.session_id,
-            resolve_provider=services.resolve_provider,
-        )
+        try:
+            out, repark = await resume_invoke_graph(
+                child=child,
+                checkpoint=self.checkpoint,
+                payload=payload,
+                resumed_tcid=self.node_tcid,
+                agent_tool_result=agent_tool_result,
+                resume_session_id=services.session_id,
+                resolve_provider=services.resolve_provider,
+            )
+        except ChildGraphFailed as failed:
+            return self._failed_result(failed)
         if repark is not None:
             return self._repark_with_advanced_frame(repark)
         return Completed(
@@ -364,6 +368,16 @@ class GraphFrame:
                 output=json.dumps({"output": out}),
                 error=False,
             )
+        )
+
+    def _failed_result(self, failed: ChildGraphFailed) -> "Completed":
+        """The child graph ended ``failed``: the agent's ``invoke_graph`` call gets an ERROR result.
+
+        Delivered as a finished result (the call is over), keyed by this frame's ``tool_call_id`` like a success, so
+        the model learns the call was refused or crashed instead of reading an empty output.
+        """
+        return Completed(
+            value=ToolResultPart(id=self.tool_call_id, output=failed.result_json(), error=True)
         )
 
     def _repark_with_advanced_frame(self, repark: Any) -> "Reparked":
@@ -417,13 +431,16 @@ class GraphFrame:
         # deeper frame under it would get here, and then it would deliver that
         # frame's finished result as ``agent_tool_result``: no value-yielding
         # tool_call hook runs, so there is no ResumeContext to fill.
-        out, repark = await resume_invoke_graph(
-            child=child,
-            checkpoint=self.checkpoint,
-            payload=None,
-            resumed_tcid=self.node_tcid,
-            agent_tool_result=agent_tool_result,
-        )
+        try:
+            out, repark = await resume_invoke_graph(
+                child=child,
+                checkpoint=self.checkpoint,
+                payload=None,
+                resumed_tcid=self.node_tcid,
+                agent_tool_result=agent_tool_result,
+            )
+        except ChildGraphFailed as failed:
+            return self._failed_result(failed)
         if repark is not None:
             return self._repark_with_advanced_frame(repark)
         return Completed(
