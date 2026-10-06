@@ -21,6 +21,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
+from primer.common.shielded import PENDING as _PENDING_CLEANUPS
+from primer.common.shielded import run_in_background as _run_in_background
 from primer.int.workspace import Workspace, WorkspaceBackend
 from primer.workspace.files import (
     FileResolvers,
@@ -229,31 +231,9 @@ _CLOSE_WAIT_S = 3.0
 #: was cancelled or timed out is waiting to hear about it.
 _ROLLBACK_WAIT_S = 10.0
 
-#: The closes and rollbacks in flight, held so one that outlives its caller (a second cancel, the bounds above) is not garbage
-#: collected before it has finished.
-_PENDING_CLOSES: "set[asyncio.Future]" = set()
-
-
-def _close_finished(task: "asyncio.Future", what: str, verb: str = "aclose") -> None:
-    _PENDING_CLOSES.discard(task)
-    if not task.cancelled() and task.exception() is not None:
-        logger.warning("%s: %s failed: %s", what, verb, task.exception())
-
-
-async def _run_in_background(work: "Awaitable[None]", *, what: str, verb: str, wait_s: float) -> None:
-    """Run ``work`` on its OWN task and wait for it for at most ``wait_s``; never raises what ``work`` raised (it is logged).
-
-    ``asyncio.wait`` does not cancel what it waits on, so a cancel of the caller (a second one, while it waits) leaves the work
-    running to its end instead of half done.
-    """
-    task = asyncio.ensure_future(work)
-    _PENDING_CLOSES.add(task)
-    task.add_done_callback(lambda finished: _close_finished(finished, what, verb))
-    done, _ = await asyncio.wait({task}, timeout=wait_s)
-    if not done:
-        logger.warning(
-            "%s: %s still running after %gs; carrying on without waiting for it", what, verb, wait_s,
-        )
+# The closes and rollbacks in flight (held so one that outlives its caller is not garbage collected) and the helper that runs one
+# on its own task live in ``primer.common.shielded``; ``_PENDING_CLOSES`` is that set.
+_PENDING_CLOSES = _PENDING_CLEANUPS
 
 
 async def close_shielded(closable: object, *, what: str) -> None:
