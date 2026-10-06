@@ -707,6 +707,20 @@ def test_the_scan_is_pure_ast_and_does_not_depend_on_the_cwd(
     assert default_root() == before == pathlib.Path(__file__).resolve().parents[2] / "primer"
 
 
+def test_main_prints_the_result_as_json(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture) -> None:
+    scan_sources(
+        tmp_path,
+        a="""
+        async def f(session_storage, s):
+            await session_storage.update(s)
+        """,
+    )
+    assert scanner.main([str(tmp_path / "primer")]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["writers"] == [["primer/a.py", 3, "f", "update"]]
+    assert set(printed) == {"writers", "deletes", "patches", "unresolved"}
+
+
 def test_a_syntax_error_in_a_scanned_file_is_loud(tmp_path: pathlib.Path) -> None:
     with pytest.raises(SyntaxError):
         scan_sources(tmp_path, a="def f(:\n")
