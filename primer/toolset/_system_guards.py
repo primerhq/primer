@@ -133,7 +133,16 @@ async def refuse_delete_if_referenced(
     return None
 
 
+# The managed-row declarations for the two entities whose generic create/update tools are exposed by MORE than one toolset: the system
+# toolset's table and the ``crud`` (builder) toolset's re-homed descriptors. One definition each, because the factory's default is
+# no guards, so every caller has to pass them (a structural test requires ``guards=`` on every call of ``_crud_tools_for``).
+AGENT_GUARDS = CrudGuards(kind="agent", managed_by_field="harness_id")
+GRAPH_GUARDS = CrudGuards(kind="graph", managed_by_field="harness_id")
+
+
 __all__ = [
+    "AGENT_GUARDS",
+    "GRAPH_GUARDS",
     "CrudGuards",
     "ToolReference",
     "refuse_create",
