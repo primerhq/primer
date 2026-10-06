@@ -21,6 +21,7 @@ so the stored value is authoritative.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -69,6 +70,19 @@ _FLUSH_BYTES = 16 * 1024
 
 # 100 ms flush age threshold (seconds)
 _FLUSH_AGE_S = 0.100
+
+# Strong references to the appends in flight (see ``WorkspaceMessageWriter._do_flush``): the loop keeps only weak ones to its
+# tasks, and an append whose flushing task was cancelled has nobody else holding it.
+_APPENDS: set[asyncio.Task[None]] = set()
+
+
+def _append_done(task: asyncio.Task[None]) -> None:
+    _APPENDS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()          # retrieved; the flushing task, if it is still waiting, gets the same exception
+    if exc is not None:
+        logger.warning("a batch of session message records could not be appended: %r", exc)
 
 
 class WorkspaceIO(Protocol):
@@ -124,6 +138,8 @@ class WorkspaceMessageWriter:
         self._buffer: list[bytes] = []
         self._buffer_size: int = 0
         self._oldest_at: float | None = None  # monotonic clock at first buffered record
+        # The append of the batch last taken out of the buffer, while it is still running (see ``_do_flush``).
+        self._write: asyncio.Task[None] | None = None
 
     @property
     def last_seq(self) -> int:
@@ -171,20 +187,17 @@ class WorkspaceMessageWriter:
         # layer (``primer/session/dispatch.py``) after each append; the
         # WorkspaceTapRouter consumes those ticks to drive the tap.
 
-        # Check if we should flush before buffering (age policy)
-        if self._oldest_at is not None:
-            age = time.monotonic() - self._oldest_at
-            if age >= _FLUSH_AGE_S:
-                await self._do_flush()
+        # Age policy: the oldest buffered record is too old (decided before this one is added).
+        age_due = self._oldest_at is not None and time.monotonic() - self._oldest_at >= _FLUSH_AGE_S
 
-        # Add to buffer
+        # Buffer the record BEFORE any flush. It already has its seq, so a cancel that lands in the flush below must not
+        # be able to drop it (it used to be flushed around, and a cancel there lost it with the seq already spent).
         self._buffer.append(line)
         self._buffer_size += len(line)
         if self._oldest_at is None:
             self._oldest_at = time.monotonic()
 
-        # Check size policy after buffering
-        if self._buffer_size >= _FLUSH_BYTES:
+        if age_due or self._buffer_size >= _FLUSH_BYTES:
             await self._do_flush()
 
         return assigned_seq
@@ -202,14 +215,30 @@ class WorkspaceMessageWriter:
     # ------------------------------------------------------------------
 
     async def _do_flush(self) -> None:
-        """Write the current buffer to workspace_io and reset it."""
+        """Write the current buffer to workspace_io and reset it.
+
+        A batch that has left the buffer IS written, even if the task flushing it is cancelled while it waits: the append
+        runs as its own task, and the flushing task awaits it behind a shield. A cancel (a Stop's cancel of a call, a hard
+        Cancel) used to land in that await after the buffer was emptied, so the batch was gone from the buffer and was
+        never written; the writer is shared (the delegation recorder writes a subagent's records through the parent's),
+        so one cancelled call could drop the parent turn's records too.
+
+        A later flush waits for an append that is still in flight before it takes its own batch, so the file stays in seq
+        order. An append that fails still raises in the task that is awaiting it, as before.
+        """
+        while self._write is not None and not self._write.done():
+            await asyncio.wait({self._write})        # waiting does not cancel it, and does not raise its error
         if not self._buffer:
             return
         combined = b"".join(self._buffer)
         self._buffer = []
         self._buffer_size = 0
         self._oldest_at = None
-        await self._io.append_message_line(self._session_id, combined)
+        write = asyncio.ensure_future(self._io.append_message_line(self._session_id, combined))
+        self._write = write
+        _APPENDS.add(write)
+        write.add_done_callback(_append_done)
+        await asyncio.shield(write)
 
 
 def _now_utc() -> datetime:
