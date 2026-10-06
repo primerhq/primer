@@ -160,6 +160,9 @@ class RuntimeClient:
         # :attr:`gone` to evict the dead client.
         self._gone = False
         self._connected = asyncio.Event()
+        # Set by ``aclose``: wakes the requests waiting for a connection that can no longer come back (``_connected`` stays
+        # "connected", so a closed client still reads as not connected).
+        self._closed_event = asyncio.Event()
         self._lock = asyncio.Lock()
 
         # The protocol version the server confirmed during the hello
@@ -191,6 +194,7 @@ class RuntimeClient:
     async def aclose(self) -> None:
         """Shut down the client and close all in-flight operations."""
         self._closed = True
+        self._closed_event.set()
         self._connected.clear()
 
         for task in (self._receive_task, self._heartbeat_task, self._reconnect_task):
@@ -594,10 +598,31 @@ class RuntimeClient:
             return await fut
         finally:
             self._pending.pop(req_id, None)
+            if fut.done() and not fut.cancelled():
+                # When the send itself failed, the future may already hold the error a lost connection or an ``aclose``
+                # gave every pending request; nobody awaits it any more, so mark it retrieved (no "never retrieved" log).
+                fut.exception()
+
+    async def _wait_until_connected(self) -> None:
+        """Wait for the connection, or fail if the client is closed (``aclose``, or ``gone``: the reconnect loop gave up
+        and closed it), which will never get one back. A client that is merely disconnected waits for its reconnect."""
+        if self._closed:
+            raise RuntimeError(ErrorCode.EPROTOCOL, "Client closed")
+        if self._connected.is_set():
+            return
+        connected = asyncio.ensure_future(self._connected.wait())
+        closed = asyncio.ensure_future(self._closed_event.wait())
+        try:
+            await asyncio.wait({connected, closed}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            connected.cancel()
+            closed.cancel()
+        if self._closed:
+            raise RuntimeError(ErrorCode.EPROTOCOL, "Client closed")
 
     async def _send_raw(self, msg: Request) -> None:
         """Serialize *msg* and send it over the active WebSocket."""
-        await self._connected.wait()
+        await self._wait_until_connected()
         ws = self._ws
         if ws is None or ws.closed:
             raise RuntimeError("EPROTOCOL", "Not connected")

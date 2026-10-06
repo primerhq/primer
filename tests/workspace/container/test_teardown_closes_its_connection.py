@@ -199,3 +199,23 @@ async def test_get_does_not_wait_out_the_session_ends_of_a_gone_handle(tmp_path,
     finally:
         commit_gate.set()
         await asyncio.sleep(0.05)
+
+
+async def test_the_bounded_close_of_an_evicted_gone_handle_finishes_and_leaves_nothing_pending(tmp_path, monkeypatch):
+    """Past its bound the close of an evicted handle carries on in the background (``_PENDING_CLOSES``). Over a REAL closed
+    ``RuntimeClient`` (what a gone client is) ending the handle's session fails at once, so that close finishes; it used to
+    wait for ever on a connection that could not come back, one leaked task per eviction holding the handle and its lock."""
+    from primer.workspace.runtime.runtime_client import RuntimeClient
+
+    monkeypatch.setattr(base_backend, "_CLOSE_WAIT_S", 0.05)
+    backend, adapter = await _backend(tmp_path)
+    ws = await backend.create(_template(), workspace_id=WORKSPACE_ID)
+    await ws.start_session(AgentBinding(agent_id="agent-foo", agent_name="Agent Foo"))
+    client = RuntimeClient(url="ws://127.0.0.1:1/", token="t")  # never connected
+    await client.aclose()  # a gone client closes itself
+    ws.sandbox.state_commit = client.state_commit
+    ws.sandbox.gone = True
+    already_pending = set(base_backend._PENDING_CLOSES)
+    fresh = await asyncio.wait_for(backend.get(WORKSPACE_ID, template=_template()), timeout=2)
+    assert fresh is not None and fresh is not ws and backend._workspaces == {WORKSPACE_ID: fresh}
+    await _until(lambda: set(base_backend._PENDING_CLOSES) <= already_pending, "the eviction's close finished")

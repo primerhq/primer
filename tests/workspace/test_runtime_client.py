@@ -766,6 +766,72 @@ async def test_aclose_idempotent(fake_runtime: tuple[_FakeRuntime, str]) -> None
 
 
 # ---------------------------------------------------------------------------
+# Test: a closed client fails a request at once instead of waiting for a connection it can never get
+# ---------------------------------------------------------------------------
+
+
+async def _state_commit(client: RuntimeClient) -> str:
+    return await client.state_commit(files={}, deletes=[], message="m")
+
+
+async def test_a_request_on_a_closed_client_fails_at_once(fake_runtime: tuple[_FakeRuntime, str]) -> None:
+    """``_send_raw`` waited for ``_connected`` without looking at ``_closed``: on a closed client that is a wait for ever,
+    and everything that ends sessions on a handle over it (the gone-eviction, the k8s destroy) never finished."""
+    _, url = fake_runtime
+    client = await _connected_client(url)
+    await client.aclose()
+    with pytest.raises(RuntimeError) as raised:
+        await asyncio.wait_for(_state_commit(client), timeout=2.0)
+    assert raised.value.code == ErrorCode.EPROTOCOL
+
+
+async def test_a_request_that_is_waiting_for_a_reconnect_fails_when_the_client_is_closed(
+    monkeypatch, fake_runtime: tuple[_FakeRuntime, str],
+) -> None:
+    """A request made while the client is only disconnected still waits for the reconnect (a closed client is the only
+    thing it gives up on), and is woken and failed by the ``aclose`` that ends the wait."""
+    monkeypatch.setattr(RuntimeClient, "_RECONNECT_DELAYS", (0.02,))
+    _, url = fake_runtime
+    client = await _connected_client(url)
+    client._url = "ws://127.0.0.1:1/"  # type: ignore[attr-defined]  # a dead port: the reconnect keeps failing, not gone
+    await client._ws.close()  # type: ignore[attr-defined]
+    client._connected.clear()  # type: ignore[attr-defined]
+    request = asyncio.create_task(_state_commit(client))
+    try:
+        await asyncio.sleep(0.2)
+        assert not request.done(), "a disconnected (not closed) client waits for its reconnect"
+        await client.aclose()
+        with pytest.raises(RuntimeError) as raised:
+            await asyncio.wait_for(request, timeout=2.0)
+        assert raised.value.code == ErrorCode.EPROTOCOL
+    finally:
+        request.cancel()
+        await client.aclose()
+
+
+async def test_a_gone_client_fails_a_request_at_once(monkeypatch, fake_runtime: tuple[_FakeRuntime, str]) -> None:
+    """The production path to a closed client: the reconnect loop meets a 404 handshake, marks the client gone and closes
+    it (``runtime-evict-gone``)."""
+    monkeypatch.setattr(RuntimeClient, "_RECONNECT_DELAYS", (0.01,))
+    _, url = fake_runtime
+    client = await _connected_client(url)
+    client._url = url.rstrip("/") + "/ws-deleted-workspace/"  # type: ignore[attr-defined]
+    await client._ws.close()  # type: ignore[attr-defined]
+    client._connected.clear()  # type: ignore[attr-defined]
+    try:
+        for _ in range(300):
+            if client.gone and client._closed:  # type: ignore[attr-defined]
+                break
+            await asyncio.sleep(0.01)
+        assert client.gone and client._closed  # type: ignore[attr-defined]
+        with pytest.raises(RuntimeError) as raised:
+            await asyncio.wait_for(_state_commit(client), timeout=2.0)
+        assert raised.value.code == ErrorCode.EPROTOCOL
+    finally:
+        await client.aclose()
+
+
+# ---------------------------------------------------------------------------
 # Test: connect rejects wrong token
 # ---------------------------------------------------------------------------
 
