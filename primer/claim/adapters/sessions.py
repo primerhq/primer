@@ -9,6 +9,7 @@ from pydantic_core import to_jsonable_python
 from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
 from primer.int.storage import Storage
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.storage import raw_generation
 
 if TYPE_CHECKING:
@@ -203,9 +204,20 @@ class SessionClaimAdapter(ClaimAdapter):
         from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
         from primer.session.persistence import WorkspaceMessageWriter
 
-        workspace_io = await self._workspace_registry.get_workspace(
-            session.workspace_id,
-        )
+        try:
+            workspace_io = await self._workspace_registry.get_workspace(
+                session.workspace_id,
+            )
+        except WorkspaceRefusedError:
+            # The deployment refuses this workspace (ticket 01a1072f), and the record would be written INTO it:
+            # there is nowhere durable to put it. Raising here fails the release transaction, so the lease would
+            # not drop and the session would be re-claimed at expiry. The turn paths that know a refusal
+            # (dispatch, the pool) hand the lease back without this release; this covers any other exit.
+            logger.warning(
+                "on_release: session %s: its workspace %s is refused by this deployment, so the failure record "
+                "(%s) was not written", session.id, session.workspace_id, outcome.last_error or "unknown",
+            )
+            return
         if workspace_io is None:
             return
 

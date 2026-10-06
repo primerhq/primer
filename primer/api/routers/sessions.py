@@ -270,7 +270,11 @@ async def resume_session(
                 raise ConflictError(
                     f"Session {session_id!r} cannot resume from status {s.status.value}"
                 )
-            patch: dict[str, Any] = {"status": SessionStatus.RUNNING, "pause_requested": False}
+            # workspace_refusal: a session paused because its workspace was refused (ticket 01a1072f) shows why
+            # until it is resumed; the retry is a fresh attempt, so the reason goes now and not at the next turn.
+            patch: dict[str, Any] = {
+                "status": SessionStatus.RUNNING, "pause_requested": False, "workspace_refusal": None,
+            }
             if s.started_at is None:
                 patch["started_at"] = datetime.now(timezone.utc)
             written = await sessions.patch_if(

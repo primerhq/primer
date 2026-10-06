@@ -34,6 +34,7 @@ from primer.int.scheduler import (
 )
 from primer.model.except_ import ListenConnectionLost
 from primer.model.scheduler import WorkerConfig
+from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.model.yield_ import CANCEL_REASON_PREEMPTED
 from primer.worker.turn import _CancelScope
@@ -46,6 +47,7 @@ import primer.observability.metrics as _metrics
 from primer.session.dispatch import (
     SessionDispatchDeps,
     clear_interrupt_for_resume,
+    pause_session_for_refused_workspace,
     run_one_session_turn,
 )
 
@@ -1020,6 +1022,13 @@ class WorkerPool:
                     # bypasses that function, so re-check here (e2e t0867).
                     outcome = await self._pause_session(session_row)
                 else:
+                    # A workspace this deployment refuses (ticket 01a1072f) is found HERE, before the Stop is
+                    # cleared, a handler is chosen or anything is reported: the handlers emit
+                    # ``session.resumed`` before they load the workspace, and the adapter's release would
+                    # clear the park the human just answered. The cancel and pause cases above never need
+                    # the workspace, so they were decided first.
+                    if self._workspace_registry is not None:
+                        await self._workspace_registry.check_workspace_allowed(session_row.workspace_id)
                     # A park is being resolved (an approval or an answer, a tool_wait batch, or
                     # either on a graph session; all of them pass through here). A Stop recorded
                     # before that must not outlive it: it would be honoured by the first poll of
@@ -1063,6 +1072,13 @@ class WorkerPool:
                     "preempt-cancel convergence for session %s failed", sid,
                 )
             raise
+        except WorkspaceRefusedError as refused:
+            # The deployment refuses this session's workspace: the turn fails and the session stays resumable,
+            # park kept, never ended and never workspace_lost (see pause_session_for_refused_workspace).
+            if self._storage is not None:
+                outcome = await pause_session_for_refused_workspace(
+                    self._storage.get_storage(WorkspaceSession), sid, refused,
+                )
         except Exception:
             logger.exception(
                 "run_one_session_turn for session %s raised unexpectedly",
