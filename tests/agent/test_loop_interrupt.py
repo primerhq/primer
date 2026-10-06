@@ -192,6 +192,9 @@ class _Manager:
     def is_interruptible(self, tool_name: str) -> bool:
         return tool_name not in self.uninterruptible
 
+    def is_interruptible_call(self, call) -> bool:
+        return self.is_interruptible(call.name)
+
     async def list_tools(self, *, principal=None):
         return [TOOL]
 

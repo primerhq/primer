@@ -96,6 +96,9 @@ class _Manager:
     def is_interruptible(self, tool_name: str) -> bool:
         return self.interruptible
 
+    def is_interruptible_call(self, call) -> bool:
+        return self.is_interruptible(call.name)
+
     async def list_tools(self, *, principal=None):
         return []
 

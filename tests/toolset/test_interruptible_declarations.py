@@ -24,8 +24,8 @@ The second review (task 01a10e2f; the lead decided the list) added:
   again.
 * ``workspaces`` create_workspace / delete_workspace: provisioning (or tearing down) a container/pod/volume and the row are
   two separate steps, a cancel between leaks the instance or leaves a ghost row. The tools ALSO carry the REST route's
-  ``except BaseException`` rollback (create) and run the teardown shielded (delete), because the flag alone does not survive
-  the 5 s grace and a hard Cancel.
+  ``except BaseException`` rollback (create) and run the teardown shielded (delete): the flag governs a Stop only (past the
+  5 s grace the call is abandoned and runs on), while a hard Cancel of the turn cancels every call whatever it declares.
 * ``workspaces`` create / cancel / steer / restart_workspace_session: several writes (state repo commit under the commit
   lock, session row, enqueue, claim lease) with no transaction; a cancel can leave a RUNNING session with no lease (the
   sweeper ends it only after 600 s), a ``last_seq`` behind the log, or a second divider with the same seq.
@@ -117,7 +117,7 @@ EXAMINED_AND_INTERRUPTIBLE = {
     (WORKSPACES_TOOLSET_ID, "create_workspace_template"),
     (WORKSPACES_TOOLSET_ID, "delete_workspace_provider"),
     (WORKSPACES_TOOLSET_ID, "pause_workspace_session"),
-    (HARNESS_TOOLSET_ID, "install"),
+    (HARNESS_TOOLSET_ID, "harness__install"),
 }
 
 
