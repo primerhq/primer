@@ -40,7 +40,10 @@ an invocation it never made.
 
 `primer/model/external_tool.py` holds the entities;
 `primer/agent/external_tools.py` owns the turn mechanics and the resume
-hook; `primer/api/routers/external_tools.py` is the read surface. The
+hook; `primer/session/external_tools.py` applies results and cancels
+calls for the invocation endpoints; `primer/session/external_calls.py`
+holds `resolve_external_row`, the one write of a row's status;
+`primer/api/routers/external_tools.py` is the read surface. The
 console banner is `ui/components/external-tools.jsx`.
 
 ## 5. Data model
@@ -71,7 +74,10 @@ its owning `session_id`, `node_id` for graph attribution when known,
 (`pending | completed | cancelled | timed_out`), `result` + `is_error`,
 and the three timestamps. The park slot remains the execution source of
 truth; these rows are the API-facing discovery and audit surface, kept in
-lockstep by the endpoints and the lifecycle sweeps.
+lockstep by the endpoints and the lifecycle sweeps. A row is created
+`pending` and leaves `pending` once: every status write is
+`resolve_external_row` (see section 9), so the first terminal status it
+reaches is the one it keeps.
 `ExternalToolResultIn` (`{tool_call_id, result, is_error}`) is the result
 wire shape.
 
@@ -131,8 +137,10 @@ WS frame carry the same field. Every invocation applies, in order:
 1. Validate `tool_results` against the pending calls. Any unknown or
    already-resolved id rejects the whole request (409) before any state
    changes.
-2. Apply matching results: rows flip to `completed` and each park wakes
-   durably through `durably_wake_session`.
+2. Apply matching results: each park wakes durably through
+   `durably_wake_session`, then its row flips to `completed` (a row that
+   left `pending` in between, because a cancel or the lazy timeout won,
+   keeps that status).
 3. Message content cancels every still-pending external call with the
    synthetic result `{"cancelled": true, "reason": "superseded by new
    user message"}` (the park wakes with the cancelled marker payload so
@@ -142,7 +150,13 @@ WS frame carry the same field. Every invocation applies, in order:
 
 The helpers live in `primer/session/external_tools.py`:
 `apply_tool_results` is 409-atomic and `cancel_pending_external` flips
-rows.
+rows. `cancel_pending_external` cancels every `pending` row of the owner,
+or only the rows named by `tool_call_ids`, or only the rows created
+strictly before `created_before` (an aware datetime compared in Python;
+a row with no `created_at` is then spared), and returns the
+`tool_call_id`s whose `cancelled` write landed. A row that was resolved
+meanwhile is not in that list. The steer wakes the parks with the
+cancelled marker only when that list is not empty.
 
 ### Read surface (`primer/api/routers/external_tools.py`)
 
@@ -155,7 +169,12 @@ orchestrators and the audit trail of resolved rows.
 Timeout is materialised lazily on read: worker resume hooks have no
 storage handle, so `sweep_expired` flips any pending row whose
 `timeout_at` passed to `timed_out` wherever rows are read, while the
-park itself resumes through the existing `parked_until` sweeper.
+park itself resumes through the existing `parked_until` sweeper. The
+flip is the guarded write, so a result that landed after the list was
+read keeps its `completed`; the sweep then refreshes the rows it read in
+place (from the written row, or from one fresh read when the write was
+rejected), so both lists report the row's real status rather than the
+`pending` they read.
 
 ### Graph sessions
 
@@ -174,9 +193,15 @@ across nodes, session-wide.
 
 ### Lifecycle notes
 
-Session cancel, force-delete and restart, the yield-cancel endpoint
-(`POST /v1/sessions/{sid}/yields/{tcid}/cancel`), and rewind all resolve
-open rows to `cancelled` so the audit surface never dangles.
+Session cancel, delete and restart, a Stop that ends or cancels an
+external call (`primer/session/dispatch.py`), and the yield-cancel
+endpoint (`POST /v1/sessions/{sid}/yields/{tcid}/cancel`) all resolve
+open rows to `cancelled` so the audit surface never dangles (rewind does
+not touch the rows). Each of them cancels only a row that is still
+`pending`; a row a result already completed stays `completed`. The
+yield-cancel endpoint's row write is best effort: a row that already
+left `pending` or no longer exists is skipped silently, any other
+storage error is logged, and the endpoint still answers 202.
 
 ### Shell surface
 
@@ -198,6 +223,19 @@ endpoint, which resolves the owning workspace itself.
   client that drops mid-call does not lose the question.
 - **A pending call whose deadline passed is `timed_out` wherever it is
   read.** There is no sweeper for it, and there does not need to be.
+- **A row's status is written by ONE guarded write, and the first
+  terminal status wins.** All four writers (`apply_tool_results`:
+  `completed`; `cancel_pending_external`: `cancelled`; `sweep_expired`:
+  `timed_out`; `flip_external_row`, used by the yield-cancel endpoint:
+  `cancelled`) call `resolve_external_row(storage, row_id, *, status,
+  result, is_error)`, one `patch_if` of `status`, `result`, `is_error`
+  and `resolved_at` guarded on `status == "pending"`. It returns the
+  written row, `None` when the guard rejected the write (the row already
+  left `pending`), and raises on a storage error (`NotFoundError` for a
+  missing row). Nothing writes the whole row from a snapshot, so a
+  writer that read the row `pending` and lost a race cannot overwrite
+  the winner. `flip_external_row` keeps its best-effort contract around
+  it. A new writer of a row's status must go through the helper.
 - **`node_id` is surfaced only when the row carries it.** Graph
   agent-node calls carry it via the checkpoint; the per-node resolver
   does not thread node ids, so the endpoints report what is there rather
@@ -208,8 +246,13 @@ endpoint, which resolves the owning workspace itself.
 `tests/model/test_external_tool.py` (validation matrix),
 `tests/agent/test_external_tools.py` (provider + manager + resume hook),
 `tests/api/test_external_tools_steer.py` (dispatch rule),
-`tests/api/test_external_tools_lifecycle.py` (read surface, lazy
-timeout and lifecycle),
+`tests/api/test_external_tools_lifecycle.py` (lifecycle),
+`tests/session/test_external_row_guarded_writes.py` (the guarded write,
+the cancel filters and their landed ids, and the result and cancel
+races) and `tests/api/test_external_tools_guarded_writes.py` (the lazy
+timeout, the yield-cancel and sweep races; both race files run on real
+SQLite and hold the losing writer AT its write with
+`tests/_support/held_write.py`),
 `tests/api/test_external_tools_graph.py` + 
 `tests/api/test_external_tools_graph_create.py` (graphs),
 `tests/ui/test_external_tools_ui.py`,
