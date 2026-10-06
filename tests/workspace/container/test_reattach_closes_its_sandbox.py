@@ -212,6 +212,10 @@ async def test_the_losers_close_runs_outside_the_cache_lock(tmp_path, monkeypatc
             await asyncio.sleep(0.01)
         assert adapter.handed_out[0].close_started == 1 and not task.done()
         assert not backend._lock.locked(), "the loser's close runs outside the cache lock"
+    except BaseException:
+        # A failed check must end the test here, in seconds: nothing is left waiting on the gate or for the task.
+        task.cancel()
+        raise
     finally:
         close_gate.set()
     assert await asyncio.wait_for(task, timeout=5) is winner
