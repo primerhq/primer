@@ -14,10 +14,39 @@ The set below is what was confirmed by reading, and why:
 * ``workspaces`` write_workspace_file / delete_workspace_file: ``LocalWorkspace`` writes in a thread under the scope lock
   (the same hazard as the ``write`` / ``edit`` tools).
 
+The second review (task 01a10e2f; the lead decided the list) added:
+
+* ``trigger`` create / update / delete / fire_now, and the ``crud`` copies create_trigger / update_trigger (the same Tool
+  objects): create and update write the trigger row and THEN upsert its claim lease on another connection; a cancel between
+  leaves a row that never fires, and nothing re-creates the lease. delete loops one delete per subscription and then deletes
+  the trigger: a cancel leaves a live trigger with some subscriptions gone. fire_now fans out (resume a parked session,
+  delete its subscription, per subscription) and then updates the trigger: a cancel delivers to some, and a retry delivers
+  again.
+* ``workspaces`` create_workspace / delete_workspace: provisioning (or tearing down) a container/pod/volume and the row are
+  two separate steps, a cancel between leaks the instance or leaves a ghost row. The tools ALSO carry the REST route's
+  ``except BaseException`` rollback (create) and run the teardown shielded (delete), because the flag alone does not survive
+  the 5 s grace and a hard Cancel.
+* ``workspaces`` create / cancel / steer / restart_workspace_session: several writes (state repo commit under the commit
+  lock, session row, enqueue, claim lease) with no transaction; a cancel can leave a RUNNING session with no lease (the
+  sweeper ends it only after 600 s), a ``last_seq`` behind the log, or a second divider with the same seq.
+* ``system`` update_ / delete_ of llm_provider, embedding_provider, cross_encoder_provider, toolset and
+  semantic_search_provider (the five entities that carry an invalidation hook): the row is written and THEN the registry
+  cache is evicted, with no transaction between; a cancel between leaves a deleted provider still serving, or a rotated key
+  not picked up, until a restart. (A cache eviction is not a durable write; this is the "when unsure" side of the rule.)
+
+``call_tool`` is not in the list on purpose: it is a pass-through, and the loop decides interruptibility for the tool it
+WRAPS (``ToolExecutionManager.is_interruptible_call``), so ``call_tool`` of a tool above is not cancelled either.
+
 Examined and left interruptible (one atomic write, or none): ``system__move_document`` and the document delete behind
 ``DocumentService`` (one transaction), ``refresh_collection`` (a not-implemented stub), and ``create_python_toolset`` /
-``update_python_toolset_source`` (one storage write each; built outside this registry, so not enumerated here). Not yet
-examined: see the follow-up ticket.
+``update_python_toolset_source`` (one storage write each; built outside this registry, so not enumerated here); every
+other single-row create / update / delete (the other ten system entities, agent, graph, subscriptions, workspace providers
+and templates, the harness tools: one row write in one transaction); ``invoke_agent`` (a cancel unwinds the subagent, and a
+subagent that swallows it is stopped by the Stop event it is given; the record flush a cancel could interrupt was made
+cancel-safe in the message writer, task D4); ``invoke_graph`` (a cancel DOES propagate to the in-process child graph, whose
+node tasks are cancelled and awaited; flagging it non-interruptible would instead abandon the call after the grace and
+leave the child running ownerless, because the graph executor reads no Stop event); ``workspace_tap`` (its cursor is held
+by the client, so a cancel loses no events).
 
 The registry fixture is the one ``tests/mcp/test_required_role_completeness.py`` builds (every reserved built-in toolset,
 wired as ``primer/api/_app_lifespan.py`` does), so a new reserved toolset cannot fall outside this test.
@@ -31,6 +60,10 @@ from primer.api.registries import ProviderRegistry
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.toolset._system_common import SYSTEM_TOOLSET_ID
 from primer.toolset.collections import COLLECTIONS_TOOLSET_ID
+from primer.toolset.crud import CRUD_TOOLSET_ID
+from primer.toolset.harness import HARNESS_TOOLSET_ID
+from primer.toolset.trigger import TRIGGER_TOOLSET_ID
+from primer.toolset.workspace_ext import WORKSPACE_EXT_TOOLSET_ID
 from primer.toolset.workspaces import WORKSPACES_TOOLSET_ID
 from tests.mcp.test_required_role_completeness import reserved_provider_registry  # noqa: F401  (the fixture)
 
@@ -42,6 +75,28 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     (SYSTEM_TOOLSET_ID, "put_document"),
     (WORKSPACES_TOOLSET_ID, "write_workspace_file"),
     (WORKSPACES_TOOLSET_ID, "delete_workspace_file"),
+    # task 01a10e2f: triggers (row then lease, per-subscription loops, fan-out)
+    (TRIGGER_TOOLSET_ID, "create"),
+    (TRIGGER_TOOLSET_ID, "update"),
+    (TRIGGER_TOOLSET_ID, "delete"),
+    (TRIGGER_TOOLSET_ID, "fire_now"),
+    (CRUD_TOOLSET_ID, "create_trigger"),
+    (CRUD_TOOLSET_ID, "update_trigger"),
+    # task 01a10e2f: workspace and session lifecycle (a resource and a row, or several writes)
+    (WORKSPACES_TOOLSET_ID, "create_workspace"),
+    (WORKSPACES_TOOLSET_ID, "delete_workspace"),
+    (WORKSPACES_TOOLSET_ID, "create_workspace_session"),
+    (WORKSPACES_TOOLSET_ID, "cancel_workspace_session"),
+    (WORKSPACES_TOOLSET_ID, "steer_workspace_session"),
+    (WORKSPACES_TOOLSET_ID, "restart_workspace_session"),
+    # task 01a10e2f: a row write THEN a registry cache eviction (the five entities that carry an invalidation hook)
+    *{
+        (SYSTEM_TOOLSET_ID, f"{verb}_{entity}")
+        for verb in ("update", "delete")
+        for entity in (
+            "llm_provider", "embedding_provider", "cross_encoder_provider", "toolset", "semantic_search_provider",
+        )
+    },
 }
 
 EXAMINED_AND_INTERRUPTIBLE = {
@@ -49,6 +104,20 @@ EXAMINED_AND_INTERRUPTIBLE = {
     (SYSTEM_TOOLSET_ID, "refresh_collection"),
     (COLLECTIONS_TOOLSET_ID, "read_document"),
     (WORKSPACES_TOOLSET_ID, "read_workspace_file"),
+    # task 01a10e2f: decided to stay interruptible, with the reason in the docstring above
+    (SYSTEM_TOOLSET_ID, "invoke_agent"),
+    (WORKSPACE_EXT_TOOLSET_ID, "invoke_graph"),
+    (WORKSPACES_TOOLSET_ID, "workspace_tap"),
+    (SYSTEM_TOOLSET_ID, "create_agent"),
+    (SYSTEM_TOOLSET_ID, "update_model_profile"),
+    (SYSTEM_TOOLSET_ID, "delete_channel"),
+    (TRIGGER_TOOLSET_ID, "create_subscription"),
+    (TRIGGER_TOOLSET_ID, "delete_subscription"),
+    (CRUD_TOOLSET_ID, "create_agent"),
+    (WORKSPACES_TOOLSET_ID, "create_workspace_template"),
+    (WORKSPACES_TOOLSET_ID, "delete_workspace_provider"),
+    (WORKSPACES_TOOLSET_ID, "pause_workspace_session"),
+    (HARNESS_TOOLSET_ID, "install"),
 }
 
 
