@@ -92,13 +92,13 @@ async def test_the_yields_cancel_route_racing_a_steer_result_leaves_completed(
     held = hold_write(monkeypatch, calls, row_id=ROW_ID, status="cancelled")
     key = "external_tool:sess-1:tc-1"
 
-    r_c = asyncio.create_task(
+    cancel_request = asyncio.create_task(
         client.post("/v1/sessions/sess-1/yields/tc-1/cancel", json={"reason": "operator"}),
     )
     await held.wait_arrived()
     r_s = await _steer_result(client, wid)
     await held.release()
-    r_c = await r_c
+    r_c = await cancel_request
 
     row = await calls.get(ROW_ID)
     assert row.status == "completed"
