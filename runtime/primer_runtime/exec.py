@@ -267,6 +267,15 @@ class ExecRegistry:
         if self._tasks.get(req_id) is task:
             del self._tasks[req_id]
 
+    def in_flight(self, req_id: int) -> bool:
+        """Whether an exec requested under *req_id* is registered and not done (one that is being stopped still is).
+
+        The registry holds ONE task per req_id, so the server refuses an ``exec`` under a req_id for which this is true:
+        registering a second would drop the first from the registry, out of reach of ``cancel`` and of ``cancel_all``.
+        """
+        task = self._tasks.get(req_id)
+        return task is not None and not task.done()
+
     def cancel(self, req_id: int) -> bool:
         """Cancel the in-flight exec requested under *req_id*; ``False`` if none is running (never started, or finished).
 
@@ -286,6 +295,30 @@ class ExecRegistry:
         for task in list(self._tasks.values()):
             task.cancel()
         self._tasks.clear()
+
+
+# Strong references to the lifecycle broadcasts in flight (see ``_announce``): the loop keeps only weak ones to its tasks.
+_BROADCASTS: set[asyncio.Task[None]] = set()
+
+
+def _broadcast_done(task: asyncio.Task[None]) -> None:
+    _BROADCASTS.discard(task)
+    if not task.cancelled():
+        task.exception()                # retrieved: nobody awaits it any more once the exec task was cancelled
+
+
+async def _announce(broadcaster: Any, kind: str, data: dict[str, Any]) -> None:
+    """Broadcast a lifecycle event so that a cancel of the exec task cannot cut it off.
+
+    The broadcast awaits each subscriber's socket, and an ``exec_cancel`` can land in that window: a client that left
+    the wait just as the command ended. Awaited directly, the cancel would abandon the ``exec_exited`` fan-out half done.
+    Here the broadcast runs as its own task and the exec task only waits for it behind a shield: a cancel ends the exec
+    task and leaves the broadcast to finish.
+    """
+    task = asyncio.ensure_future(broadcaster.broadcast(kind, data))
+    _BROADCASTS.add(task)
+    task.add_done_callback(_broadcast_done)
+    await asyncio.shield(task)
 
 
 async def _run_exec_stream(
@@ -345,7 +378,7 @@ async def _run_exec_stream(
         # subprocess terminate/reap) still runs.
         await agen.aclose()
         if broadcaster is not None:
-            await broadcaster.broadcast("exec_exited", {
+            await _announce(broadcaster, "exec_exited", {
                 "cmd": cmd,
                 "exit_code": exit_code,
                 "duration_ms": max(0, int((_time.monotonic() - t0) * 1000)),

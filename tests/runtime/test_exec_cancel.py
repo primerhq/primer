@@ -153,29 +153,87 @@ async def test_cancelling_an_exec_that_is_still_queued_on_the_lock_means_it_neve
         _kill(first, second)
 
 
-async def test_an_older_exec_finishing_does_not_deregister_a_newer_one_under_the_same_req_id(tmp_path: Path) -> None:
-    """``RuntimeClient`` never reuses a req_id, but a frame is client input: when one is reused, the older exec's
-    done-callback must not drop the registration of the newer one (it could then no longer be cancelled)."""
-    locks, registry = WorkspaceLockTable(), ExecRegistry()
-    older_dir, newer_dir = tmp_path / "older", tmp_path / "newer"
-    older_dir.mkdir()
-    newer_dir.mkdir()
-    child = None
-    older = _start(older_dir, "sleep 0.5", 7, locks, registry)
-    newer = _start(newer_dir, f"sleep 60 & echo $! > {newer_dir}/child; wait", 7, locks, registry)
-    try:
-        child = await _pid(newer_dir / "child")
-        await asyncio.wait_for(older, timeout=10.0)
-        await asyncio.sleep(0)                               # the older exec's done-callback runs
+async def test_a_finished_exec_that_is_not_yet_deregistered_cannot_be_cancelled(tmp_path: Path) -> None:
+    """The task is done but its done-callback has not run yet (it runs a loop iteration later): ``cancel`` must say there is
+    nothing running, not cancel a finished task and answer that it did."""
+    registry = ExecRegistry()
+    finished = asyncio.create_task(asyncio.sleep(0))
+    registry.add(7, finished)
+    await finished
 
-        assert registry.cancel(7) is True, "the finished older exec took the newer one's registration with it"
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(newer, timeout=10.0)
-        assert await _gone(child)
+    assert registry.cancel(7) is False
+
+
+async def test_in_flight_is_true_only_from_the_start_until_the_exec_is_done(tmp_path: Path) -> None:
+    locks, registry = WorkspaceLockTable(), ExecRegistry()
+    task = _start(tmp_path, "sleep 0.3", 7, locks, registry)
+    try:
+        assert registry.in_flight(7) is True
+        assert registry.in_flight(99) is False
+        await asyncio.wait_for(task, timeout=10.0)
+        await asyncio.sleep(0)                               # the done-callback runs
+        assert registry.in_flight(7) is False
     finally:
         registry.cancel_all()
-        await asyncio.gather(older, newer, return_exceptions=True)
-        _kill(child)
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_a_late_done_callback_of_a_finished_exec_does_not_deregister_a_newer_one_under_its_req_id() -> None:
+    """A finished exec whose done-callback has not run yet is not in flight, so the server accepts a new exec under its req_id
+    and the registry holds the new task; the old callback then runs and must leave the new registration alone."""
+    registry = ExecRegistry()
+    older = asyncio.create_task(asyncio.sleep(0))
+    newer = asyncio.create_task(asyncio.sleep(30))
+    try:
+        registry.add(7, older)
+        await older
+        assert registry.in_flight(7) is False
+        registry.add(7, newer)
+
+        registry.discard(7, older)                           # the older exec's done-callback, late
+
+        assert registry.in_flight(7) is True, "the finished older exec took the newer one's registration with it"
+    finally:
+        newer.cancel()
+        await asyncio.gather(newer, return_exceptions=True)
+
+
+async def test_an_exec_cancel_that_lands_while_the_exit_is_being_announced_does_not_cut_the_announcement_off(
+    tmp_path: Path,
+) -> None:
+    """After the command has finished the exec task still has the ``exec_exited`` lifecycle broadcast to make, and that awaits
+    each subscriber's socket. An ``exec_cancel`` that arrives in that window (a client that left the wait just as the command
+    ended) cancels the task there: without a guard the subscribers never learn that the exec exited."""
+    gate, announcing, seen = asyncio.Event(), asyncio.Event(), []
+
+    class Broadcaster:
+        async def broadcast(self, kind: str, data: dict) -> None:
+            if kind == "exec_exited":
+                announcing.set()
+                await gate.wait()                            # a subscriber whose socket is slow to take the frame
+            seen.append(kind)
+
+    registry = ExecRegistry()
+
+    async def send(frame: str) -> None:
+        pass
+
+    task = start_exec(7, _args(tmp_path, "true"), str(tmp_path), WorkspaceLockTable(), send, registry, broadcaster=Broadcaster())
+    try:
+        await asyncio.wait_for(announcing.wait(), timeout=10.0)  # the command has finished; the task is announcing it
+
+        assert registry.cancel(7) is True
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+        gate.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+        assert seen == ["exec_started", "exec_exited"], f"the exit announcement was cut off by the cancel: {seen}"
+    finally:
+        gate.set()
+        registry.cancel_all()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_a_repeated_exec_cancel_does_not_cut_the_commands_grace_short(tmp_path: Path, monkeypatch) -> None:
@@ -299,6 +357,74 @@ async def test_exec_cancel_over_the_wire_stops_the_command_and_answers_ok(server
         finally:
             await ws.close()
             _kill(child)
+
+
+async def test_the_ok_is_sent_only_after_the_exec_has_been_cancelled(server, monkeypatch) -> None:
+    """``ok`` means "the exec was cancelled", so it must not go out before the cancel is made. Both collaborators are
+    wrapped, not replaced (the real registry cancels and the real frame is sent); the order they are used in is recorded."""
+    import primer_runtime.server as server_module
+    from primer_runtime.protocol import Response
+
+    order: list[str] = []
+    real_cancel, real_serialize = ExecRegistry.cancel, server_module.serialize
+
+    def recording_cancel(self, req_id):
+        found = real_cancel(self, req_id)
+        order.append("cancel")
+        return found
+
+    def recording_serialize(message):
+        if isinstance(message, Response) and message.req_id == 6 and message.ok:
+            order.append("ok")
+        return real_serialize(message)
+
+    monkeypatch.setattr(ExecRegistry, "cancel", recording_cancel)
+    monkeypatch.setattr(server_module, "serialize", recording_serialize)
+    test_server, root = server
+    child = None
+    async with aiohttp.ClientSession() as session:
+        ws = await _connect(test_server, session)
+        try:
+            await ws.send_str(json.dumps({
+                "req_id": 5, "op": "exec",
+                "args": {"cmd": ["/bin/sh", "-c", f"sleep 60 & echo $! > {root}/child; wait"], "workdir": str(root)},
+            }))
+            child = await _pid(root / "child")
+            await ws.send_str(json.dumps({"req_id": 6, "op": "exec_cancel", "args": {"target_req_id": 5}}))
+            answer = await _response_for(ws, 6)
+        finally:
+            await ws.close()
+            _kill(child)
+
+    assert answer["ok"] is True
+    assert order == ["cancel", "ok"], f"the exec was answered before it was cancelled: {order}"
+
+
+async def test_an_exec_under_a_req_id_that_is_still_in_flight_is_refused_and_the_first_is_not_orphaned(server) -> None:
+    """The registry holds ONE task per req_id: accepting a second exec under the same id would drop the first from it, so
+    neither ``exec_cancel`` nor the connection's teardown could reach it again (it would run on, holding its write lock,
+    after the socket closed). The request is refused with EPROTOCOL, and the first exec is untouched."""
+    test_server, root = server
+    child = None
+    async with aiohttp.ClientSession() as session:
+        ws = await _connect(test_server, session)
+        try:
+            await ws.send_str(json.dumps({
+                "req_id": 5, "op": "exec",
+                "args": {"cmd": ["/bin/sh", "-c", f"sleep 60 & echo $! > {root}/child; wait"], "workdir": str(root)},
+            }))
+            child = await _pid(root / "child")
+
+            await ws.send_str(json.dumps({"req_id": 5, "op": "exec", "args": {"cmd": ["/bin/sh", "-c", "echo second"]}}))
+            answer = await _response_for(ws, 5, within=5.0)
+            still_running = _running(child)
+        finally:
+            await ws.close()
+
+        assert answer["ok"] is False and answer["error"]["code"] == "EPROTOCOL"
+        assert still_running, "refusing the duplicate disturbed the exec that was already running"
+        assert await _gone(child), "closing the connection left the first exec running: it had been dropped from the registry"
+    _kill(child)
 
 
 async def test_exec_cancel_for_an_exec_that_is_not_running_answers_enoent(server) -> None:

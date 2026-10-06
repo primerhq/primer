@@ -300,6 +300,16 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
             # (stdout/stderr/exit events + error Response) and per-req_id output
             # ordering; cancel_all() on WS close tears it down.
             if op_name == OpName.EXEC:
+                # The registry holds ONE task per req_id: a second exec under a req_id that is still in flight would
+                # drop the first from it, out of reach of exec_cancel and of the teardown below, so it would run on
+                # holding its write lock after this socket closed. Refused before anything is spawned. (The refusal
+                # carries the refused request's req_id, which is the in-flight exec's too; RuntimeClient never reuses one.)
+                if exec_registry.in_flight(frame_req_id):
+                    await ws.send_str(serialize(Response(
+                        req_id=frame_req_id, ok=False,
+                        error={"code": ErrorCode.EPROTOCOL, "message": f"exec: req_id {frame_req_id} is already in flight"},
+                    )))
+                    continue
                 start_exec(
                     req_id=frame_req_id,
                     args=args,
