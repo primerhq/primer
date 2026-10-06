@@ -135,6 +135,38 @@ def test_parked_status_line_names_the_ask_gate() -> None:
     ) == "waiting on your answer — ask_user (parked, worker released)"
 
 
+def test_parked_status_line_says_why_a_refused_session_is_paused() -> None:
+    """Ticket 01a1072f: a session whose workspace the deployment refuses is PAUSED with the reason on its row (the
+    transcript lives in the refused workspace, so nothing else can say it). The composer strip carries it, and it
+    outranks the park wording: a refused RESUME leaves parked_status set."""
+    ctx = _ctx()
+    line = ctx.eval(
+        'SH_parkedStatusLine({parked_status: "resumable", status: "paused", '
+        'workspace_refusal: "provider local is refused here"}, '
+        '[{kind: "question", gatedTool: "ask_user"}])'
+    )
+    assert line.startswith("workspace unavailable")
+    assert "provider local is refused here" in line
+    assert "resume" in line
+    assert "parked" not in line, "the park wording must not hide the refusal"
+
+
+def test_parked_status_line_says_why_with_no_park_at_all() -> None:
+    """A refused NORMAL turn pauses a session that was never parked."""
+    ctx = _ctx()
+    line = ctx.eval(
+        'SH_parkedStatusLine({parked_status: null, status: "paused", workspace_refusal: "refused here"}, [])'
+    )
+    assert line is not None and "refused here" in line
+
+
+def test_parked_status_line_ignores_a_refusal_on_an_ended_session() -> None:
+    ctx = _ctx()
+    assert ctx.eval(
+        'SH_parkedStatusLine({status: "ended", workspace_refusal: "refused here"}, [])'
+    ) is None
+
+
 def test_parked_status_line_falls_back_with_no_gate_item() -> None:
     """A wake/timer park (sleep, watch_files, ...) carries no decision
     gate - keep the existing wording for that case rather than inventing

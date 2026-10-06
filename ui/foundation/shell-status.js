@@ -66,6 +66,13 @@ function SH_waitLine(item) {
 // "parked — waiting on " + (session.waiting_reason || "a wake")
 // expression, not new data collection.
 function SH_parkedStatusLine(session, gateItems) {
+  // Ticket 01a1072f: the deployment refuses this session's workspace, so its turn failed and the session is paused
+  // (resumable, never lost). The reason lives on the row because the transcript is IN the refused workspace; it wins
+  // over the park wording, since a refused resume leaves parked_status set, and applies to a never-parked session.
+  if (session && session.workspace_refusal && session.status !== "ended") {
+    return "workspace unavailable: " + session.workspace_refusal +
+      " (session paused; resume it once the workspace is moved)";
+  }
   if (!session || !session.parked_status) return null;
   // Live finding 01a064d3: a park can outlive its session (a sweep/
   // timeout continuation that then fails ends the session without
