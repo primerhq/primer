@@ -118,6 +118,19 @@ async def test_an_exec_that_could_not_get_a_connection_sends_no_cancel() -> None
     assert _cancels(ws) == [] and not client._background_tasks
 
 
+async def test_an_exec_on_a_closed_client_fails_at_once_instead_of_waiting_for_a_connection_it_can_never_get() -> None:
+    """A closed client never reconnects: every request waits for the connection through ``_wait_until_connected``, which
+    fails when the client is closed. ``exec`` records its connection before it sends, and that wait must be the same one."""
+    client = RuntimeClient(url="ws://x/", token="t")
+    client._negotiated_version = "1.4"
+    await client.aclose()
+
+    with pytest.raises(RuntimeOpError):
+        await asyncio.wait_for(client.exec("true"), timeout=2.0)
+
+    assert not client._background_tasks and not client._streams
+
+
 @pytest.mark.parametrize("version", ["1.3", "1.0", "0.0", "", "garbage"])
 async def test_it_is_not_sent_to_a_runtime_that_did_not_report_1_4(version: str) -> None:
     """Gated on what the SERVER reported in the handshake: an older runtime would answer EUNSUPPORTED, and "0.0" is a client
