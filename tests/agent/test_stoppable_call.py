@@ -51,10 +51,11 @@ async def _forever() -> None:
 async def _no_leftovers():
     yield
     # every abandoned task is let go and awaited, and no helper task may outlive the test. The wait is BOUNDED, so a test
-    # that fails reports its own failure here instead of hanging the teardown. A call that ignores a cancel only ends when
-    # its test releases it, so EVERY such test releases it in a ``finally``; if one is somehow still stubborn here it is
-    # dropped from the set and skipped by the checks below, but it is NOT stopped (the loop's shutdown cancelling cannot
-    # end a task that swallows cancels, so it outlives the test: that is a bug in the test, which the finally prevents).
+    # that fails reports its own failure here instead of leaving a task that would hang loop teardown. A call that
+    # ignores a cancel only ends when its test releases it, so EVERY such test releases it in a ``finally``; if one is
+    # somehow still stubborn here it is dropped from the set and skipped by the checks below, but it is NOT stopped (the
+    # loop's shutdown cancelling cannot end a task that swallows cancels, so it outlives the test: that is a bug in the
+    # test, which the finally prevents).
     abandoned = list(sc._ABANDONED)
     for task in abandoned:
         task.cancel()
