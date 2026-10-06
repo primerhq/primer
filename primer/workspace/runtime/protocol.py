@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-PROTOCOL_VERSION: str = "1.3"
+PROTOCOL_VERSION: str = "1.4"
 
 
 class OpName(StrEnum):
@@ -27,6 +27,10 @@ class OpName(StrEnum):
     DELETE = "delete"
     ARCHIVE = "archive"
     EXEC = "exec"
+    # Single-shot control request (protocol 1.4) carrying ``target_req_id``, as WATCH_CANCEL and PTY_CLOSE do: cancels the
+    # in-flight EXEC with that req_id (an exec still queued on the workspace write lock never starts). A client sends it
+    # only to a runtime whose hello reported protocol >= 1.4; an older runtime answers it EUNSUPPORTED.
+    EXEC_CANCEL = "exec_cancel"
     WATCH_START = "watch_start"
     WATCH_CANCEL = "watch_cancel"
     EVENTS_SUBSCRIBE = "events_subscribe"

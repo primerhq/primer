@@ -246,27 +246,44 @@ async def run_exec(
 
 
 class ExecRegistry:
-    """Per-connection set of in-flight exec stream tasks.
+    """Per-connection map of in-flight exec stream tasks, by the req_id they were requested under.
 
     Mirrors :class:`~primer_runtime.pty_op.PtyRegistry` for the exec op: the
     server spawns each ``exec`` as a tracked task so a long-running exec never
     blocks the single runtime message loop (which also services
-    ``pty_stdin``/``pty_resize`` and file ops).  ``cancel_all`` is invoked on
+    ``pty_stdin``/``pty_resize`` and file ops).  ``cancel`` serves the
+    ``exec_cancel`` op (one exec, by req_id) and ``cancel_all`` is invoked on
     WS close to tear down any exec still streaming.
     """
 
     def __init__(self) -> None:
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._tasks: dict[int, asyncio.Task[None]] = {}
 
-    def add(self, task: asyncio.Task[None]) -> None:
-        self._tasks.add(task)
+    def add(self, req_id: int, task: asyncio.Task[None]) -> None:
+        self._tasks[req_id] = task
 
-    def discard(self, task: asyncio.Task[None]) -> None:
-        self._tasks.discard(task)
+    def discard(self, req_id: int, task: asyncio.Task[None]) -> None:
+        """Forget *task*; a no-op if *req_id* now belongs to another task (a client that reuses a req_id)."""
+        if self._tasks.get(req_id) is task:
+            del self._tasks[req_id]
+
+    def cancel(self, req_id: int) -> bool:
+        """Cancel the in-flight exec requested under *req_id*; ``False`` if none is running (never started, or finished).
+
+        Idempotent: an exec that is already being stopped is not cancelled again, since a second cancel of the task is what
+        cuts the command's SIGTERM grace short (see ``run_exec``), and a client that repeats ``exec_cancel`` must not be
+        able to do that. It still answers ``True``: the exec is in flight until its stop is done.
+        """
+        task = self._tasks.get(req_id)
+        if task is None or task.done():
+            return False
+        if not task.cancelling():
+            task.cancel()
+        return True
 
     def cancel_all(self) -> None:
         """Cancel every in-flight exec task (called on WS close)."""
-        for task in list(self._tasks):
+        for task in list(self._tasks.values()):
             task.cancel()
         self._tasks.clear()
 
@@ -346,8 +363,9 @@ def start_exec(
 ) -> asyncio.Task[None]:
     """Spawn a tracked exec stream task; returns it (tests await it).
 
-    The task is registered in *registry* so ``cancel_all`` can reach it on WS
-    close, and a done-callback deregisters it on normal completion.
+    The task is registered in *registry* under *req_id* so ``cancel`` (the
+    ``exec_cancel`` op) and ``cancel_all`` (WS close) can reach it, and a
+    done-callback deregisters it on completion.
     """
     task = asyncio.create_task(
         _run_exec_stream(
@@ -356,6 +374,6 @@ def start_exec(
         ),
         name=f"exec:{req_id}",
     )
-    registry.add(task)
-    task.add_done_callback(registry.discard)
+    registry.add(req_id, task)
+    task.add_done_callback(lambda done: registry.discard(req_id, done))
     return task

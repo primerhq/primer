@@ -351,22 +351,25 @@ session is outside the group, so it is not killed.
 - **`watch_files` is invisible from MCP.** It's a yielding tool;
   the MCP exposability gate drops it. External agents wanting
   change-detection should poll `read_workspace_file` instead.
-- **On a container or k8s workspace a timed-out `exec` kills everything
-  it started, but a Stop or Cancel does not yet reach the command.** The
+- **On a container or k8s workspace a timed-out, stopped or cancelled
+  `exec` kills everything it started (with a current runtime image).** The
   command runs in its own process group. When its timeout (`timeout_ms`)
   expires, or the connection to the runtime closes, the runtime signals
   the whole group: SIGTERM first, so a command that traps it can clean
   up, then SIGKILL after 5 seconds. A background job the command left
   behind (`server &`, `nohup server &`) is part of that group and is
   killed with it; a command that FINISHES leaves its background jobs
-  alone. A Stop or a Cancel of the call is different: the call is
-  cancelled and the session moves on, but the command keeps running in
-  the container until its own timeout or until the runtime connection
-  closes, whichever comes first. That changes when the runtime protocol
-  gains an exec-cancel operation (not shipped yet, and the runtime image
-  has to be rebuilt for it too). To leave a daemon running past a call
-  that may time out, both detach and redirect: `setsid cmd >log 2>&1 &`.
-  (`nohup` alone does not detach.)
+  alone. A Stop or a Cancel of the call stops the command the same way:
+  the call is cancelled, the runtime is told to stop the command
+  (`exec_cancel`, runtime protocol 1.4), and the workspace's write lock is
+  free again once it has. That needs a runtime image built with 1.4, so
+  after upgrading primer rebuild the runtime image (Docker tag, k8s
+  image). A workspace whose container still runs an older image keeps the
+  old behaviour: the call is cancelled and the session moves on, but the
+  command keeps running in the container until its own timeout or until
+  the runtime connection closes, whichever comes first. To leave a daemon
+  running past a call that may time out, both detach and redirect:
+  `setsid cmd >log 2>&1 &`. (`nohup` alone does not detach.)
 - **A Stop waits for a file write and cancels a command.** Pressing Stop
   while a session runs a tool cancels it, except the tools that must not be
   cancelled mid-way: `write`, `edit` and the workspace file mutators
