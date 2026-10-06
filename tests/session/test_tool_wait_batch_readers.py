@@ -13,9 +13,23 @@ What counts as a read (``blob_key_reads``): the key spelled as a string literal 
 attributes of typed in-memory objects that never come from a blob (the ``ToolWaitPark`` exception, the graph
 executor's ``_PendingToolWait``), and counting them would flag ``graph/base.py``, ``graph/_node_dispatch.py`` and
 ``model/yield_.py``, none of which sees a park blob. Writes (a subscript store, a dict-literal key, a constructor
-keyword) are not reads either: producers build the blob, the rule is about who interprets it. Known blind spots, by
-design of a literal scan: a key held in a variable, and an attribute read on a ``ToolWaitParkedState`` rebuilt from a
-blob by ``from_jsonable``.
+keyword) are not reads either: producers build the blob, the rule is about who interprets it.
+
+Known blind spots of this literal scan, each accepted on purpose:
+
+* ``notifying_results``, a graph entry's notifying key, is not scanned (``test_these_are_not_reads`` pins it): the
+  ruling names three keys, and every module that reads it today is already on the list for the other two; a reader
+  reaches an entry through ``pending_tool_waits`` or is handed the entries by a module that does.
+* a key held in a variable, or spelled inside a collection literal used as a key set (``yield_runtime``'s
+  ``{...} - set(data)`` required-keys check);
+* an attribute read on a ``ToolWaitParkedState`` rebuilt from a blob by ``from_jsonable``;
+* a key inside a SQL or JSON-path string (``"data->'graph_checkpoint'->'pending_tool_waits'"``);
+* a storage path tuple naming it, such as ``("parked_state", "graph_checkpoint", "pending_tool_waits")`` handed to
+  ``patch_if(set_paths=...)`` or a ``find`` filter;
+* ``operator.itemgetter("pending_tool_waits")`` and similar indirection.
+
+The scan walks the files under ``primer/`` on disk, not the files git tracks, so an untracked stray ``.py`` there that
+reads a key fails it locally (and nowhere else).
 """
 
 from __future__ import annotations
@@ -31,8 +45,8 @@ BLOB_KEYS = frozenset({"pending_tool_waits", "outstanding_task_ids", "notifying_
 HELPER = "primer/session/tool_wait_batches.py"
 _GET_METHODS = frozenset({"get", "pop", "setdefault"})
 
-# FROZEN at origin/main 06f24258. Remove an entry when its module stops reading the keys (moved onto the helper);
-# never add one: a new reader calls batches_referenced_by_park instead.
+# FROZEN at the commit that introduced this test. Remove an entry when its module stops reading the keys (moved onto
+# the helper); never add one: a new reader calls batches_referenced_by_park instead.
 ALLOWLIST: dict[str, str] = {
     "primer/graph/_checkpoint.py": (
         "restore_state rebuilds the executor's own pending tool_wait entries from its snapshot"
