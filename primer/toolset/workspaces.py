@@ -72,6 +72,15 @@ from primer.tap.reader import read_batch
 from primer.tap.selector import TapSelector
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
+from primer.toolset._system_guards import (
+    CrudGuards,
+    ToolReference,
+    refuse_create,
+    refuse_delete,
+    refuse_delete_id,
+    refuse_delete_if_referenced,
+    refuse_update,
+)
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -370,13 +379,19 @@ def _make_create_handler(
     storage_factory: Callable[[], Any],
     cls_name: str,
     on_create: _OnMutate = None,
+    guards: CrudGuards | None = None,
 ) -> ToolHandler:
+    guards = guards or CrudGuards(kind=cls_name)
+
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
         try:
             args = args_cls.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         entity = args.entity  # type: ignore[attr-defined]
+        refusal = refuse_create(guards, entity)
+        if refusal is not None:
+            return refusal
         storage = storage_factory()
         if await storage.get(entity.id) is not None:
             return _err(
@@ -399,7 +414,10 @@ def _make_update_handler(
     storage_factory: Callable[[], Any],
     cls_name: str,
     on_update: _OnMutate = None,
+    guards: CrudGuards | None = None,
 ) -> ToolHandler:
+    guards = guards or CrudGuards(kind=cls_name)
+
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
         try:
             args = args_cls.model_validate(arguments)
@@ -412,10 +430,14 @@ def _make_update_handler(
                 error_type="conflict",
             )
         storage = storage_factory()
-        if await storage.get(args.id) is None:  # type: ignore[attr-defined]
+        existing = await storage.get(args.id)  # type: ignore[attr-defined]
+        if existing is None:
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"  # type: ignore[attr-defined]
             )
+        refusal = refuse_update(guards, entity, existing)
+        if refusal is not None:
+            return refusal
         try:
             updated = await storage.update(entity)
         except PrimerError as exc:
@@ -430,18 +452,33 @@ def _make_update_handler(
 def _make_delete_handler(
     storage_factory: Callable[[], Any],
     cls_name: str,
+    *,
+    storage_provider: "StorageProvider",
     on_delete: _OnMutate = None,
+    guards: CrudGuards | None = None,
 ) -> ToolHandler:
+    guards = guards or CrudGuards(kind=cls_name)
+
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # A reserved id is protected whether or not a row exists, so this runs before the lookup (REST's on_pre_delete_id).
+        refusal = refuse_delete_id(guards, args.id)
+        if refusal is not None:
+            return refusal
         storage = storage_factory()
-        if await storage.get(args.id) is None:
+        existing = await storage.get(args.id)
+        if existing is None:
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
+        refusal = refuse_delete(guards, existing)
+        if refusal is None:
+            refusal = await refuse_delete_if_referenced(guards, existing, storage_provider)
+        if refusal is not None:
+            return refusal
         try:
             await storage.delete(args.id)
         except PrimerError as exc:
@@ -790,6 +827,31 @@ def build_workspaces_toolset(
     async def _inv_provider(eid: str) -> None:
         await workspace_registry.invalidate(eid)
 
+    # What the REST workspace routers guard (task 01a111d1, D5 phase 1): the reserved bootstrap rows, and a provider a template
+    # or a workspace still references. Templates are deliberately NOT reference-guarded (a snapshot consumed at materialisation,
+    # so deleting one must not strand the live workspaces made from it; REST has no guard either, pinned by e2e T0223).
+    # Imported here: the registry and the bootstrap defaults import toolsets, so module-level imports would be cycles.
+    from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
+    from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
+
+    _reserved_templates = frozenset(RESERVED_WORKSPACE_TEMPLATES)
+    provider_guards = CrudGuards(
+        kind="workspace_provider",
+        reserved_create_ids=RESERVED_WORKSPACE_PROVIDER_IDS,
+        reserved_update_ids=RESERVED_WORKSPACE_PROVIDER_IDS,
+        reserved_delete_ids=RESERVED_WORKSPACE_PROVIDER_IDS,
+        references=(
+            ToolReference("workspace_template", WorkspaceTemplate, "provider_id"),
+            ToolReference("workspace", WorkspaceRow, "provider_id"),
+        ),
+    )
+    template_guards = CrudGuards(
+        kind="workspace_template",
+        reserved_create_ids=_reserved_templates,
+        reserved_update_ids=_reserved_templates,
+        reserved_delete_ids=_reserved_templates,
+    )
+
     # ------------------- Provider CRUD (no update) ---------------------
     name, entry = _tool(
         "list_workspace_providers",
@@ -846,7 +908,7 @@ def build_workspaces_toolset(
         ),
         _CreateProviderArgs,
         _make_create_handler(
-            _CreateProviderArgs, _provider_storage, "WorkspaceProvider"
+            _CreateProviderArgs, _provider_storage, "WorkspaceProvider", guards=provider_guards,
         ),
         examples=[
             ToolExample(
@@ -875,7 +937,8 @@ def build_workspaces_toolset(
         ),
         _IdArgs,
         _make_delete_handler(
-            _provider_storage, "WorkspaceProvider", on_delete=_inv_provider
+            _provider_storage, "WorkspaceProvider",
+            storage_provider=storage_provider, on_delete=_inv_provider, guards=provider_guards,
         ),
         examples=[
             ToolExample(args={"id": "local-1"}, returns="{deleted: true, id: ...}"),
@@ -932,7 +995,7 @@ def build_workspaces_toolset(
         ),
         _CreateTemplateArgs,
         _make_create_handler(
-            _CreateTemplateArgs, _template_storage, "WorkspaceTemplate"
+            _CreateTemplateArgs, _template_storage, "WorkspaceTemplate", guards=template_guards,
         ),
         examples=[
             ToolExample(
@@ -963,7 +1026,7 @@ def build_workspaces_toolset(
         ),
         _UpdateTemplateArgs,
         _make_update_handler(
-            _UpdateTemplateArgs, _template_storage, "WorkspaceTemplate"
+            _UpdateTemplateArgs, _template_storage, "WorkspaceTemplate", guards=template_guards,
         ),
         examples=[
             ToolExample(
@@ -994,7 +1057,9 @@ def build_workspaces_toolset(
             "materialised workspace (use ``delete_workspace``)."
         ),
         _IdArgs,
-        _make_delete_handler(_template_storage, "WorkspaceTemplate"),
+        _make_delete_handler(
+            _template_storage, "WorkspaceTemplate", storage_provider=storage_provider, guards=template_guards,
+        ),
         examples=[
             ToolExample(args={"id": "py-base"}, returns="{deleted: true, id: ...}"),
         ],

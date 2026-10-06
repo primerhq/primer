@@ -11,6 +11,7 @@ check                       REST                             tool ``error_type``
 ==========================  ===============================  =====================
 create sets the managed id  422 ``managed_field_set``        ``bad-request``
 create a reserved id        409 ``reserved_id``              ``conflict``
+update a reserved id        403 ``reserved_id_protected``    ``forbidden``
 update / delete managed     409 ``managed_entity``           ``conflict``
 delete a reserved id        403 ``reserved_id_protected``    ``forbidden``
 delete a referenced row     409 ``in_use_by``                ``conflict``
@@ -56,6 +57,7 @@ class CrudGuards:
     kind: str = "entity"
     managed_by_field: str | None = None
     reserved_create_ids: frozenset[str] = frozenset()
+    reserved_update_ids: frozenset[str] = frozenset()
     reserved_delete_ids: frozenset[str] = frozenset()
     references: tuple[ToolReference, ...] = field(default_factory=tuple)
 
@@ -75,6 +77,10 @@ def refuse_create(guards: CrudGuards, entity: Any) -> ToolCallResult | None:
 
 
 def refuse_update(guards: CrudGuards, entity: Any, existing: Any) -> ToolCallResult | None:
+    # Reserved rows are re-created from config on boot, so changing one desyncs the runtime from the bootstrap defaults (REST
+    # 403 for workspace providers and templates; the provider routers allow updating a reserved row, so they declare none).
+    if existing.id in guards.reserved_update_ids:
+        return _err(f"id {existing.id!r} is a reserved {guards.kind} and cannot be updated", error_type="forbidden")
     managed = guards.managed_by_field
     if managed is None:
         return None
