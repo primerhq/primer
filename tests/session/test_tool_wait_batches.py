@@ -1,7 +1,7 @@
 """The park-batch membership helper over the three real ``parked_state`` shapes (plan 3.3, the lead's ruling C1).
 
 ``batches_referenced_by_park(blob) -> dict[str, BatchRef]`` names every BATCH a park references, keyed on the batch's
-first stored id (``outstanding[0]``, else ``notifying[0]``) exactly as stored, i.e. session-qualified. A batch is one
+first stored id (``outstanding[0]``, else ``notifying[0]``) exactly as stored (session-qualified since S1b, bare in a park written before that). A batch is one
 ``graph_checkpoint['pending_tool_waits']`` entry for a graph park (the classic ``ParkedState`` blob's mixed park, which
 has no top-level ``kind``, and the pure tool_wait blob's own checkpoint), or the single top-level batch of a tool_wait
 blob with NO ``graph_checkpoint`` (the agent surface). A pure graph tool_wait blob also carries top-level lists

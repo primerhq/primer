@@ -79,6 +79,10 @@ class SessionStatus(str, Enum):
 def NON_ENDED_STATUSES() -> list[str]:
     """Every :class:`SessionStatus` value but ``ended``, for a ``patch_if`` ``where`` status term.
 
+    A FUNCTION despite its constant-style name: call it (``NON_ENDED_STATUSES()``); the bare name is the function
+    object, which a ``where`` would reject. The name is kept so the call sites read like the status sets they stand
+    for; a later change may rename both.
+
     Computed from the enum on each call, never hand-written, so a status added later is included: a write guarded on
     a typed list would silently refuse a row in the new status, where today's ``update_unless(status != ENDED)``
     accepts it. Returns a fresh list each call.
@@ -88,6 +92,9 @@ def NON_ENDED_STATUSES() -> list[str]:
 
 def NON_ENDED_STATUSES_NOT_PAUSED() -> list[str]:
     """Every :class:`SessionStatus` value but ``ended`` and ``paused``, computed from the enum on each call.
+
+    A FUNCTION despite its constant-style name: call it (``NON_ENDED_STATUSES_NOT_PAUSED()``), see
+    :func:`NON_ENDED_STATUSES`.
 
     For a write that must also refuse a row that became ``paused`` after it was read (a ``/pause`` writes PAUSED
     directly on a WAITING or CREATED row, and a claim would resume a row it armed). Returns a fresh list each call.
@@ -586,19 +593,19 @@ class WorkspaceSession(Identifiable):
     parked_tool_batches: Literal[True] | None = Field(
         default=None,
         description=(
-            "Park-batch marker: true while parked_state references at least "
-            "one tool_wait batch (tool calls parked as claimable tasks), NULL "
-            "otherwise. Cleared by writing NULL, never false. A selector "
-            "only: readiness is always recomputed from the task rows, never "
-            "trusted from this flag. Additive/optional, no migration."
+            "Park-batch marker: will be set to true when parked_state "
+            "references at least one tool_wait batch (tool calls parked as "
+            "claimable tasks) and left NULL otherwise. Cleared by writing "
+            "NULL, never false. A selector only: readiness is always "
+            "recomputed from the task rows, never trusted from this flag."
         ),
     )
     resumable_at: datetime | None = Field(
         default=None,
         description=(
-            "When the park was last flipped to resumable: the anchor for a "
-            "grace period measured from the wake (parked_at is the park "
-            "time, the wrong anchor). Additive/optional, no migration."
+            "When the park was last flipped to resumable (stamped by the "
+            "wake): the anchor for a grace period measured from the wake "
+            "(parked_at is the park time, the wrong anchor)."
         ),
     )
     external_tools: list[dict[str, Any]] | None = Field(
