@@ -58,6 +58,7 @@ from primer.model.chat import (
     Message,
     StreamEvent,
     ToolResultPart,
+    ToolTurnCapReached,
     TurnStreamFailure,
     _GraphNodeEvent,
 )
@@ -920,7 +921,7 @@ class _BaseGraphExecutor(
                     # raise this exception.
                     detail = (
                         exc.ended_detail_code
-                        if isinstance(exc, TurnStreamFailure)
+                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached))
                         else "tool_execution_failed"
                     )
                     fail_out = NodeOutput(
@@ -1072,7 +1073,7 @@ class _BaseGraphExecutor(
                     # a tool_wait batch's resolution path either.
                     detail = (
                         exc.ended_detail_code
-                        if isinstance(exc, TurnStreamFailure)
+                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached))
                         else "tool_execution_failed"
                     )
                     fail_out = NodeOutput(

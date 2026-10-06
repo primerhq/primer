@@ -38,7 +38,7 @@ from primer.graph._node_refs import (
     await_tool_dispatch_barrier,
 )
 from primer.graph.template import render_input_template
-from primer.model.chat import Message, StreamEvent, TextPart
+from primer.model.chat import Message, StreamEvent, TextPart, ToolTurnCapReached
 from primer.model.graph import GraphContext, NodeOutput, _AgentNodeRef
 from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolWaitPark, YieldToWorker
@@ -253,6 +253,7 @@ class _AgentNodeMixin:
         # if the LLM emits ToolCallParts) happens transparently here --
         # graph nodes get the same behaviour as standalone agents.
         produced_messages: list[Message] = []
+        capped: list[bool] = []
         try:
             async for event in run_agent_turn(
                 agent=agent,
@@ -263,6 +264,7 @@ class _AgentNodeMixin:
                 response_format=node.response_format,
                 principal=self._principal,
                 messages_out=produced_messages,
+                capped_out=capped,
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
                 # 01a0518b boundary (d): the graph-side ToolWaitPark
@@ -320,6 +322,15 @@ class _AgentNodeMixin:
         # (assistant + any tool result messages from the loop).
         all_new = [new_user_msg] + produced_messages
         await self._persist_node_turn(history_node_id, context.iteration, all_new)
+
+        if capped:
+            # The turn stopped at the agent's max_tool_turns: every call of the capped round was answered with an
+            # error result (and persisted above, so the node's history stays valid) but the node did not finish. A
+            # node that did not finish is not a success (the same rule as a failed tool or child graph).
+            raise ToolTurnCapReached.after(
+                agent_id=agent.id, max_tool_turns=agent.max_tool_turns, produced=produced_messages,
+                subject=f"agent node {node.id!r}",
+            )
 
         return self._agent_node_output(
             produced_messages, node.response_format,
@@ -436,6 +447,7 @@ class _AgentNodeMixin:
             )
 
         produced_messages: list[Message] = []
+        capped: list[bool] = []
         try:
             async for event in run_agent_turn(
                 agent=agent,
@@ -446,6 +458,7 @@ class _AgentNodeMixin:
                 response_format=node.response_format,
                 principal=self._principal,
                 messages_out=produced_messages,
+                capped_out=capped,
                 artifact_storage=self._artifact_storage,
                 turn_no=self._turn_no,
                 # 01a0518b boundary (d): the graph-side ToolWaitPark
@@ -504,6 +517,13 @@ class _AgentNodeMixin:
 
         all_new = [new_user_msg, *rehydrated_assistant, tool_result_msg, *produced_messages]
         await self._persist_node_turn(pending.node_id, pending.iteration, all_new)
+
+        if capped:
+            # Same rule as the live path: the resumed turn stopped at the agent's max_tool_turns, so the node failed.
+            raise ToolTurnCapReached.after(
+                agent_id=agent.id, max_tool_turns=agent.max_tool_turns, produced=produced_messages,
+                subject=f"agent node {pending.node_id!r}",
+            )
 
         out_holder["output"] = self._agent_node_output(
             produced_messages, node.response_format,

@@ -12,7 +12,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.call_scope import current_interrupt
-from primer.model.chat import Message, TextPart
+from primer.model.chat import Message, TextPart, ToolTurnCapReached
 
 
 if TYPE_CHECKING:
@@ -302,6 +302,7 @@ async def run_subagent(
     # next model call and its tools after the Stop. None outside a stoppable call: nothing changes there.
     stop = current_interrupt()
     interrupted: list[bool] = []
+    capped: list[bool] = []
     run_token = _RUN_ID.set(run_id)
     try:
         from primer.session.delegation import current_delegation_sink
@@ -314,7 +315,7 @@ async def run_subagent(
         async for _ev in run_agent_turn(
             agent=agent, llm=llm, llm_model=llm_model, tool_manager=tool_manager,
             prompt=prompt_msgs, principal=principal, messages_out=produced,
-            turn_no=turn_no, interrupt=stop, interrupted_out=interrupted,
+            turn_no=turn_no, interrupt=stop, interrupted_out=interrupted, capped_out=capped,
         ):
             if _sink is not None:
                 await _sink.on_event(
@@ -341,6 +342,14 @@ async def run_subagent(
         # finishes after the Stop with a value is used as it is). Re-deliver the cancel that may have been swallowed on
         # the way: the call task then ends cancelled, which ``run_stoppable`` answers as ``interrupted: stopped by user``.
         raise asyncio.CancelledError("subagent stopped by user")
+
+    if capped:
+        # The turn stopped at the subagent's max_tool_turns: every call of its last round was answered with an error
+        # result, but it did not finish. Returning its last text would hand the caller a half-done answer as the
+        # call's real result; the caller turns this into an error result that carries the text (a Stop beats it above).
+        raise ToolTurnCapReached.after(
+            agent_id=agent_id, max_tool_turns=agent.max_tool_turns, produced=produced, subject=f"subagent {agent_id!r}",
+        )
 
     return _final_assistant_text(produced)
 
@@ -443,6 +452,7 @@ async def resume_subagent(
     resume_prompt = rehydrated + [Message(role="tool", parts=[child_result])]
 
     produced: list[Message] = []
+    capped: list[bool] = []
     # The continuation is the SAME run as the one that parked: its records carry the run id it started with (a frame parked before
     # run ids existed has none, and gets a fresh one so its records are still told apart from every other run's).
     run_id = getattr(context, "delegate_run_id", None) or uuid.uuid4().hex
@@ -458,7 +468,7 @@ async def resume_subagent(
             async for _ev in run_agent_turn(
                 agent=agent, llm=llm, llm_model=llm_model,
                 tool_manager=tool_manager, prompt=resume_prompt,
-                principal=context.principal, messages_out=produced,
+                principal=context.principal, messages_out=produced, capped_out=capped,
                 turn_no=getattr(context, "turn_no", None),
             ):
                 if _sink is not None:
@@ -483,5 +493,10 @@ async def resume_subagent(
         raise
     finally:
         _RUN_ID.reset(run_token)
+
+    if capped:
+        raise ToolTurnCapReached.after(
+            agent_id=agent_id, max_tool_turns=agent.max_tool_turns, produced=produced, subject=f"subagent {agent_id!r}",
+        )
 
     return _final_assistant_text(produced)

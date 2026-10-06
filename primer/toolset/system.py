@@ -65,6 +65,7 @@ ask_user). Everything historically imported as
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -77,7 +78,7 @@ from primer.agent.invoke import (
 )
 from primer.model.agent import Agent
 from primer.model.model_profile import ModelProfile
-from primer.model.chat import Tool, ToolCallResult, ToolExample, TurnStreamFailure
+from primer.model.chat import Tool, ToolCallResult, ToolExample, ToolTurnCapReached, TurnStreamFailure
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.collection import Collection, Document
@@ -788,6 +789,10 @@ def build_system_toolset(
             )
         except ValueError as exc:
             return _err(str(exc), error_type="bad-request")
+        except ToolTurnCapReached as exc:
+            # 01a1095e: the subagent stopped at its own max_tool_turns. Its last text is not a result: the call is an
+            # error, and the text it had so far travels in the body for the parent model to use or discard.
+            return ToolCallResult(output=json.dumps(exc.result_body()), is_error=True)
         except TurnStreamFailure as exc:
             # 01a070d6: without this, a subagent whose LLM connection
             # failed returned "" as if it had legitimately said nothing -

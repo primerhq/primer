@@ -336,8 +336,13 @@ Read the description + system_prompt to confirm fit.
   saying it stopped at its tool-turn cap, with what it had so far), in all
   three cases, and the turn is counted as `tool_turn_cap` in the turn metrics,
   not as `completed`.
-  A graph node or a subagent that hits its own cap does not report it as
-  a session end (not yet surfaced).
+  A graph agent node that hits its own cap FAILS with `ended_detail`
+  `tool_turn_cap` (the run ends `failed`; its history stays
+  valid: every call of the capped round is answered), and a subagent that
+  hits its cap answers `invoke_agent` with an ERROR result
+  (`{"type": "tool-turn-cap", "message", "partial_output"}`) instead of its
+  last text as a success: `partial_output` is what it had said so far, for
+  the calling agent to use or discard.
 - **Tool calls can yield.** A tool returning `Yielded(...)` parks
   the agent. See [yielding](yielding.md) for what happens then.
   Outside primer (over MCP) yielding tools are invisible.

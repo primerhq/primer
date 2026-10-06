@@ -57,7 +57,7 @@ from primer.graph._node_refs import (
     _resolve_toolcall_arguments,
 )
 from primer.graph.template import render_input_template
-from primer.model.chat import Message, StreamEvent, TextPart, TurnStreamFailure
+from primer.model.chat import Message, StreamEvent, TextPart, ToolTurnCapReached, TurnStreamFailure
 from primer.model.except_ import ConfigError
 from primer.model.graph import (
     FanOutSpec,
@@ -518,7 +518,7 @@ class _NodeDispatchMixin:
                     error=exc,
                     ended_detail=(
                         exc.ended_detail_code
-                        if isinstance(exc, TurnStreamFailure) else None
+                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached)) else None
                     ),
                 )
             )

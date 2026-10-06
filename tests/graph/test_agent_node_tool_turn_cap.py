@@ -41,12 +41,6 @@ from tests.graph.test_workspace_executor import _make_state_repo
 
 CAP = 2
 
-xfail_not_yet = pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="01a1095e PR-C: a graph agent node does not pass capped_out, so a node that stopped at its tool-turn cap "
-    "ends COMPLETED",
-)
-
 
 class _AlwaysCallsATool:
     """Every call answers with a line of text and a tool call, and never stops on its own."""
@@ -151,7 +145,6 @@ async def test_scenario_the_agent_node_really_stopped_at_its_cap(tmp_path: Path)
     )
 
 
-@xfail_not_yet
 async def test_a_node_that_stops_at_its_tool_turn_cap_fails(tmp_path: Path) -> None:
     executor = await _build(tmp_path, _AlwaysCallsATool(), "gs-live")
 
@@ -196,7 +189,6 @@ async def test_scenario_the_resumed_node_really_stopped_at_its_cap(tmp_path: Pat
     assert llm.calls == CAP, "the resumed turn did not run to the cap: the harness did not create the situation"
 
 
-@xfail_not_yet
 async def test_a_resumed_node_that_stops_at_its_tool_turn_cap_fails(tmp_path: Path) -> None:
     resumed, _ = await _parked_then_resumed(tmp_path, "gs-resume")
 
