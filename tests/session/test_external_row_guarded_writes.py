@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from pydantic_core import PydanticSerializationError
 
 from primer.model.except_ import NotFoundError, ServerError
 from primer.model.external_tool import ExternalToolCall, ExternalToolResultIn
@@ -137,18 +138,56 @@ async def test_resolve_external_row_raises_on_a_storage_error(provider, monkeypa
         await resolve_external_row(calls, "etool-1", status="completed", result=RESULT, is_error=False)
 
 
-async def test_resolve_external_row_raises_on_a_result_that_cannot_be_stored_and_writes_nothing(provider) -> None:
+@pytest.mark.parametrize(
+    ("result", "error"),
+    [
+        (object(), PydanticSerializationError),
+        (b"\xff\xfe", UnicodeDecodeError),
+        ("\ud800", PatchValueError),
+    ],
+    ids=["an-arbitrary-object", "bytes-that-are-not-utf8", "a-lone-surrogate"],
+)
+async def test_resolve_external_row_raises_on_a_result_that_cannot_be_stored_and_writes_nothing(
+    provider, result, error,
+) -> None:
+    """A value no JSON document can hold raises before the row is written: the encoding refuses the first two, the
+    storage's value check refuses the third (a string that is not valid Unicode)."""
+    from primer.session.external_calls import resolve_external_row
+
+    calls = provider.get_storage(ExternalToolCall)
+    await calls.create(_call("etool-1", "tc-1"))
+    before = await calls.get("etool-1")
+
+    with pytest.raises(error):
+        await resolve_external_row(calls, "etool-1", status="completed", result={"v": result}, is_error=False)
+
+    assert await calls.get("etool-1") == before
+
+
+@pytest.mark.parametrize(
+    ("result", "stored"),
+    [
+        (float("nan"), None),
+        (float("inf"), None),
+        (float("-inf"), None),
+        ({"score": float("nan"), "xs": [1.5, float("inf"), -float("inf")]}, {"score": None, "xs": [1.5, None, None]}),
+    ],
+    ids=["nan", "infinity", "minus-infinity", "nested"],
+)
+async def test_resolve_external_row_stores_a_non_finite_number_as_null(provider, result, stored) -> None:
+    """NaN and the infinities are not JSON, and a whole-row write stores them as null (``dump_for_storage``), which
+    is also what the park receives for the same result. The guarded write stores the same null instead of refusing
+    the row, so a result carrying one still completes its call."""
     from primer.session.external_calls import resolve_external_row
 
     calls = provider.get_storage(ExternalToolCall)
     await calls.create(_call("etool-1", "tc-1"))
 
-    with pytest.raises(PatchValueError):
-        await resolve_external_row(
-            calls, "etool-1", status="completed", result={"score": float("nan")}, is_error=False,
-        )
+    out = await resolve_external_row(calls, "etool-1", status="completed", result=result, is_error=False)
 
-    assert (await calls.get("etool-1")).status == "pending"
+    assert out is not None and out.result == stored
+    row = await calls.get("etool-1")
+    assert (row.status, row.result, row.is_error) == ("completed", stored, False)
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +263,18 @@ async def test_cancel_pending_external_created_before_spares_later_rows_and_rows
     # not earlier than t1, or no created_at at all: spared
     for row_id in ("etool-same", "etool-new", "etool-none"):
         assert (await calls.get(row_id)).status == "pending"
+
+
+async def test_cancel_pending_external_refuses_a_naive_created_before_before_any_write(provider) -> None:
+    calls = provider.get_storage(ExternalToolCall)
+    await calls.create(_call("etool-a", "tc-a", created_at=datetime.now(UTC) - timedelta(seconds=30)))
+
+    with pytest.raises(ValueError, match="timezone"):
+        await cancel_pending_external(
+            call_storage=calls, session_id="sess-1", created_before=datetime.now(UTC).replace(tzinfo=None),
+        )
+
+    assert (await calls.get("etool-a")).status == "pending"
 
 
 async def test_cancel_pending_external_applies_both_filters_together(provider) -> None:
@@ -308,6 +359,28 @@ async def test_apply_tool_results_held_at_its_row_write_does_not_overwrite_a_row
     assert cancelled == ["tc-1"]
     park = (await sessions.get("sess-1")).parked_state
     assert park["resume_event_payload"] == {"result": RESULT, "is_error": False}
+
+
+async def test_apply_tool_results_records_an_error_result_as_completed_with_is_error(provider) -> None:
+    """An invoker's error result (``is_error: true``) completes the call like any result: the row is ``completed``
+    and carries ``is_error`` True, and the park receives the same flag."""
+    sessions = provider.get_storage(WorkspaceSession)
+    calls = provider.get_storage(ExternalToolCall)
+    await _parked_session(provider)
+    await calls.create(_call("etool-fixed-1", "tc-1"))
+    error = {"error": "customer lookup failed"}
+
+    applied = await apply_tool_results(
+        await sessions.get("sess-1"),
+        [ExternalToolResultIn(tool_call_id="tc-1", result=error, is_error=True)],
+        call_storage=calls, session_storage=sessions, engine=None, event_bus=None,
+    )
+
+    assert applied == 1
+    row = await calls.get("etool-fixed-1")
+    assert (row.status, row.result, row.is_error) == ("completed", error, True)
+    park = (await sessions.get("sess-1")).parked_state
+    assert park["resume_event_payload"] == {"result": error, "is_error": True}
 
 
 # ---------------------------------------------------------------------------

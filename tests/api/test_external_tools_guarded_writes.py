@@ -147,7 +147,9 @@ async def test_a_sweep_racing_a_steer_result_leaves_completed(
     assert listed.status_code == 200, listed.text
     items = listed.json()["items"]
     if listing == "global":
-        assert [(i["id"], i["status"], i["result"]) for i in items] == [(ROW_ID, "completed", RESULT)]
+        # the whole stored row, resolved_at included (the sweep refreshes every field of the row it read)
+        assert items == [row.model_dump(mode="json")]
+        assert items[0]["status"] == "completed" and items[0]["resolved_at"] is not None
     else:
         assert items == []
 
@@ -168,17 +170,115 @@ async def test_a_sweep_times_out_a_pending_row_past_its_deadline(app, client, ws
         arguments={}, created_at=now, timeout_at=now + timedelta(minutes=10),
     ))
 
+    listed = await client.get("/v1/external_tool_calls?session_id=sess-1")
+    assert listed.status_code == 200, listed.text
+    row = await calls.get(ROW_ID)
+    assert (row.status, row.result, row.is_error) == ("timed_out", {"timed_out": True}, True)
+    assert row.resolved_at is not None
+    by_id = {i["id"]: i for i in listed.json()["items"]}
+    # the list that swept the row reports it as stored, resolved_at included
+    assert by_id[ROW_ID] == row.model_dump(mode="json")
+    assert by_id["etool-live"]["status"] == "pending"
+
     pending = await client.get("/v1/sessions/sess-1/external_tools/pending")
     assert pending.status_code == 200, pending.text
     assert [i["tool_call_id"] for i in pending.json()["items"]] == ["tc-live"]
 
-    listed = await client.get("/v1/external_tool_calls?session_id=sess-1")
-    assert listed.status_code == 200, listed.text
-    by_id = {i["id"]: i for i in listed.json()["items"]}
-    assert by_id[ROW_ID]["status"] == "timed_out"
-    assert by_id[ROW_ID]["result"] == {"timed_out": True}
-    assert by_id[ROW_ID]["is_error"] is True
-    assert by_id["etool-live"]["status"] == "pending"
+
+async def test_the_sweep_moves_on_past_a_rejected_row_that_is_gone_before_its_re_read(sp, monkeypatch) -> None:
+    """Two expired rows read ``pending``. The first one's guarded write is rejected (it had already left
+    ``pending``) and the row is deleted before the sweep's re-read: the sweep has nothing to refresh it from and
+    goes on to the second row, which it times out."""
+    from primer.api.routers.external_tools import sweep_expired
+
+    calls = sp.get_storage(ExternalToolCall)
+    now = datetime.now(UTC)
+    expired = {"tool_name": "lookup_customer", "created_at": now - timedelta(minutes=2),
+               "timeout_at": now - timedelta(seconds=1), "session_id": "sess-1"}
+    gone = ExternalToolCall(id="etool-gone", tool_call_id="tc-gone", **expired)
+    live = ExternalToolCall(id="etool-live", tool_call_id="tc-live", **expired)
+    await calls.create(gone.model_copy(update={"status": "completed", "result": RESULT}))
+    await calls.create(live)
+    real_patch_if = calls.patch_if
+
+    async def patch_if(row_id, patch=None, **kwargs):
+        out = await real_patch_if(row_id, patch, **kwargs)
+        if row_id == "etool-gone":
+            assert out is None  # the guard rejected it: the row had already left pending
+            await calls.delete("etool-gone")
+        return out
+
+    monkeypatch.setattr(calls, "patch_if", patch_if)
+
+    await sweep_expired(calls, [gone, live])
+
+    stored = await calls.get("etool-live")
+    assert (stored.status, stored.result, stored.is_error) == ("timed_out", {"timed_out": True}, True)
+    assert live == stored
+
+
+async def test_an_instruction_steer_whose_cancel_lost_its_race_does_not_wake_the_park(
+    app, client, wsr, sp, monkeypatch,
+) -> None:
+    """The steer's supersede wake runs only when one of its cancels LANDED. The instruction steer (R_i) reads the
+    session while it is parked; its cancel of ``tc-1`` is held at its write while the steer carrying the result (R_s)
+    completes the call; released, that cancel is rejected, so R_i cancelled nothing and must wake nothing. A wake
+    from R_i's pre-R_s snapshot would replace R_s's result in the park with the cancelled marker (the durable flip
+    refuses only an ENDED row). PR-6c reorders this loop wake-first; its d6 race replaces this test."""
+    bus = _RecordingBus()
+    app.state.event_bus = bus
+    wid = await _parked_external_session(client, wsr, sp)
+    await _seed_call(sp, "sess-1")
+    calls = sp.get_storage(ExternalToolCall)
+    held = hold_write(monkeypatch, calls, row_id=ROW_ID, status="cancelled")
+    key = "external_tool:sess-1:tc-1"
+
+    instruction = asyncio.create_task(client.post(
+        f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "actually, do something else"},
+    ))
+    await held.wait_arrived()
+    r_s = await _steer_result(client, wid)
+    await held.release()
+    r_i = await instruction
+
+    assert 200 <= r_s.status_code < 300, r_s.text
+    assert r_i.status_code == 200, r_i.text
     row = await calls.get(ROW_ID)
-    assert (row.status, row.result, row.is_error) == ("timed_out", {"timed_out": True}, True)
-    assert row.resolved_at is not None
+    assert (row.status, row.result, row.is_error) == ("completed", RESULT, False)
+    session = await sp.get_storage(WorkspaceSession).get("sess-1")
+    assert session.parked_status == "resumable"
+    assert session.parked_state["resume_event_payload"] == {"result": RESULT, "is_error": False}
+    assert not [p for k, p in bus.published if k == key and p.get("__yield_cancelled__")]
+
+
+@pytest.mark.parametrize(
+    ("raw", "stored"),
+    [
+        ("NaN", None),
+        ("Infinity", None),
+        ("-Infinity", None),
+        ('{"score": NaN, "xs": [1.5, Infinity, -Infinity]}', {"score": None, "xs": [1.5, None, None]}),
+    ],
+    ids=["nan", "infinity", "minus-infinity", "nested"],
+)
+async def test_a_steer_result_with_a_non_finite_number_completes_the_call_as_null(
+    app, client, wsr, sp, raw: str, stored,
+) -> None:
+    """Python's json module writes NaN and the infinities by default, and the steer parses them. Such a result
+    completes the call: the park receives null in their place (the session row is written whole), and the call's
+    row stores the same null, so the two agree and the steer answers 200."""
+    app.state.event_bus = _RecordingBus()
+    wid = await _parked_external_session(client, wsr, sp)
+    await _seed_call(sp, "sess-1")
+
+    r = await client.post(
+        f"/v1/workspaces/{wid}/sessions/sess-1/steer",
+        content='{"tool_results": [{"tool_call_id": "tc-1", "result": ' + raw + "}]}",
+        headers={"content-type": "application/json"},
+    )
+
+    assert r.status_code == 200, r.text
+    row = await sp.get_storage(ExternalToolCall).get(ROW_ID)
+    assert (row.status, row.result, row.is_error) == ("completed", stored, False)
+    session = await sp.get_storage(WorkspaceSession).get("sess-1")
+    assert session.parked_state["resume_event_payload"] == {"result": stored, "is_error": False}
