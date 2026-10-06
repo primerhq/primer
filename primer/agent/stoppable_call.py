@@ -18,9 +18,9 @@ The rules, in the order they apply:
   file write: cancelling it would release the scope lock while its thread still writes) is not cancelled, only waited
   for, up to :data:`NON_INTERRUPTIBLE_GRACE_S`.
 * A call that will not go is ABANDONED: its :class:`~primer.agent.call_scope.CallScope` is flipped first (the delegation
-  recorder then drops whatever the call, and every subagent it started, still emits), then ``on_abandon`` runs, the task
-  is kept in a strong set (asyncio holds tasks only weakly, so an unreferenced one can be collected mid-flight) and a
-  done-callback retrieves and logs its exception.
+  recorder then drops whatever the call, and every subagent it started, still emits), the task is kept in a strong set
+  (asyncio holds tasks only weakly, so an unreferenced one can be collected mid-flight) and a done-callback retrieves and
+  logs its exception.
 * A hard Cancel of the turn cancels the call, waits for it (shielded, bounded) so its cleanup has run when the turn task
   ends, and re-raises: a ``CancelledError`` is never swallowed. A call that still has not gone is abandoned the same way.
 
@@ -63,15 +63,14 @@ async def run_stoppable(
     *,
     interrupt: asyncio.Event,
     interruptible: Callable[[], bool],
-    on_abandon: Callable[[], None] | None = None,
     name: str = "tool call",
 ) -> T | None:
     """Run ``call()`` as its own task; return its result, or None when the Stop fired and there is no usable result.
 
-    ``interruptible`` is asked only once the Stop has fired, so a turn that is never stopped pays nothing for it.
-    ``on_abandon`` runs just before a call is abandoned (on the Stop path AND on the hard-Cancel path), BEFORE the caller
-    records its own answer. None means "the Stop fired and the call did not produce a result": the caller records the
-    synthetic one.
+    ``interruptible`` is asked only once the Stop has fired, so a turn that is never stopped pays nothing for it. None
+    means "the Stop fired and the call did not produce a result": the caller records the synthetic one. A call that is
+    abandoned (on the Stop path AND on the hard-Cancel path) has its scope flipped BEFORE this returns or the
+    ``CancelledError`` leaves, so before the caller records anything.
 
     The call runs inside its own :class:`~primer.agent.call_scope.CallScope`, bound in the call task's context and so
     inherited by everything the call starts; abandoning the call flips it, and the delegation recorder drops what any of
@@ -102,13 +101,13 @@ async def run_stoppable(
             else:
                 await asyncio.wait({task}, timeout=NON_INTERRUPTIBLE_GRACE_S)
     except asyncio.CancelledError:
-        await _unwind_after_a_hard_cancel(task, name, scope, on_abandon)
+        await _unwind_after_a_hard_cancel(task, name, scope)
         raise
     finally:
         waiter.cancel()
 
     if not task.done():
-        _abandon(task, name, scope, on_abandon)
+        _abandon(task, name, scope)
         return None
     return _outcome(task, interrupt, stopped_first=stopped_first, name=name)
 
@@ -130,13 +129,11 @@ def _outcome(task: asyncio.Task, interrupt: asyncio.Event, *, stopped_first: boo
     raise exc
 
 
-async def _unwind_after_a_hard_cancel(
-    task: asyncio.Task, name: str, scope: CallScope, on_abandon: Callable[[], None] | None,
-) -> None:
+async def _unwind_after_a_hard_cancel(task: asyncio.Task, name: str, scope: CallScope) -> None:
     """The turn task itself is being cancelled: cancel the call and give it a short, SHIELDED wait so its cleanup has run
     (an exec's process-group kill) before the cancellation leaves. A second cancel during the wait is not held up. A call
-    that still has not gone is abandoned like on the Stop path (the same scope and hook), so a subagent that carries on
-    cannot write to the log after the cancelled turn's terminal record."""
+    that still has not gone is abandoned like on the Stop path (the same scope), so a subagent that carries on cannot
+    write to the log after the cancelled turn's terminal record."""
     if not task.done():
         task.cancel()
     try:
@@ -145,16 +142,11 @@ async def _unwind_after_a_hard_cancel(
         if task.done():
             _retrieve(task, name)
         else:
-            _abandon(task, name, scope, on_abandon)
+            _abandon(task, name, scope)
 
 
-def _abandon(task: asyncio.Task, name: str, scope: CallScope, on_abandon: Callable[[], None] | None) -> None:
+def _abandon(task: asyncio.Task, name: str, scope: CallScope) -> None:
     scope.abandon()                   # first: from here on what the call and everything it started emits is dropped
-    if on_abandon is not None:
-        try:
-            on_abandon()
-        except Exception:  # noqa: BLE001 - the hook must never keep the Stop from being answered
-            logger.warning("the abandon hook of tool call %s failed", name, exc_info=True)
     logger.warning("tool call %s did not finish after the Stop: abandoned", name)
     _ABANDONED.add(task)
     task.add_done_callback(_retire)
