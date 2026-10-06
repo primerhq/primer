@@ -517,8 +517,8 @@ async def test_destroy_httproute_best_effort_tolerates_404():
 
 @pytest.mark.asyncio
 async def test_create_rolls_back_on_httproute_failure(monkeypatch):
-    """create(): if the HTTPRoute POST fails, destroy() is called to roll back
-    and the original error propagates."""
+    """create(): if the HTTPRoute POST fails, the Secret, Service and StatefulSet (and its PVC) it just made are deleted,
+    the refused route is not, and the original error propagates."""
     from unittest.mock import AsyncMock
     from primer.model.workspace import (
         KubernetesWorkspaceConfig, K8sConnectionInCluster,
@@ -553,10 +553,16 @@ async def test_create_rolls_back_on_httproute_failure(monkeypatch):
     backend._custom_objects.create_namespaced_custom_object = AsyncMock(
         side_effect=Exception("admission webhook denied the route"),
     )
-    backend.destroy = AsyncMock()
 
     import pytest as _pytest
     with _pytest.raises(Exception, match="admission webhook"):
-        await backend.create(template)
+        await backend.create(template, workspace_id="ws1")
 
-    backend.destroy.assert_awaited_once()
+    from primer.workspace.k8s.naming import k8s_object_name
+    obj = k8s_object_name("ws1")
+    ns = "primer-workspaces"
+    backend._apps_v1.delete_namespaced_stateful_set.assert_awaited_once_with(name=obj, namespace=ns)
+    backend._core_v1.delete_namespaced_service.assert_awaited_once_with(name=obj, namespace=ns)
+    backend._core_v1.delete_namespaced_secret.assert_awaited_once_with(name=obj, namespace=ns)
+    backend._core_v1.delete_namespaced_persistent_volume_claim.assert_awaited_once()
+    backend._custom_objects.delete_namespaced_custom_object.assert_not_awaited()  # the route was refused: nothing to delete

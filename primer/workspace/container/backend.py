@@ -33,6 +33,7 @@ import os
 import secrets
 import uuid
 
+from primer.int.sandbox import Sandbox
 from primer.int.workspace import Workspace
 from primer.model.except_ import ConfigError, NotFoundError
 from pydantic import SecretStr
@@ -46,7 +47,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded
+from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded, roll_back_shielded
 from primer.workspace.files import FileResolvers
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.runtime.url import build_runtime_url
@@ -185,6 +186,7 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
             token=token,
         )
 
+        cached = False
         try:
             # For host_port mode, the adapter discovered the mapped host
             # port after start and stashed it on the sandbox; pick it up
@@ -252,25 +254,38 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
                 runtime_meta=runtime_meta,
                 workspace_root=spec.workdir,
             )
-        except Exception:
-            # Close the inner RuntimeClient (WS + aiohttp session) FIRST:
-            # remove() only deletes the daemon-side container + volume and
-            # would otherwise leak the in-process connection on rollback.
-            # Bounded: a silent peer must not hold up the removal below.
-            await close_shielded(sandbox, what="rollback sandbox")
-            try:
-                await sandbox.remove()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("rollback remove failed: %s", exc)
-            try:
-                await self._adapter.remove_volume(volume)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("rollback volume remove failed: %s", exc)
+            async with self._lock:
+                self._workspaces[workspace_id] = ws
+                cached = True
+            return ws
+        except BaseException:
+            # BaseException, not Exception: a cancel or a caller's ``asyncio.timeout`` that ends the build (in the file writes,
+            # an init command, ``materialise`` or the wait for the cache lock) left the container and its volume running with
+            # nothing pointing at them, and nothing else reclaims them (no orphan sweep; a caller that did not pin the id never
+            # learns the generated one). The rollback runs on its own task and the wait for it is bounded: see
+            # ``roll_back_shielded``. Once the workspace is cached it is the caller's, not ours.
+            if not cached:
+                await roll_back_shielded(
+                    self._roll_back_create(sandbox, volume), what=f"container create rollback of {name}",
+                )
             raise
 
-        async with self._lock:
-            self._workspaces[workspace_id] = ws
-        return ws
+    async def _roll_back_create(self, sandbox: Sandbox, volume: str) -> None:
+        """Undo a ``create`` that did not finish: release the connection, then remove the container and its volume.
+
+        Each step on its own, so one that fails (logged) does not skip the next; never raises.
+        """
+        # Close the inner RuntimeClient (WS + aiohttp session) FIRST: remove() only deletes the daemon-side container + volume
+        # and would otherwise leak the in-process connection. Bounded: a silent peer must not hold up the removal below.
+        await close_shielded(sandbox, what="rollback sandbox")
+        try:
+            await sandbox.remove()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("rollback remove failed: %s", exc)
+        try:
+            await self._adapter.remove_volume(volume)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("rollback volume remove failed: %s", exc)
 
     async def _reattach(
         self,

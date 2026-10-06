@@ -224,15 +224,36 @@ class BaseWorkspaceBackend(WorkspaceBackend):
 #: own timeouts, and the caller is often under a bound of its own (the relay's read: 5 seconds).
 _CLOSE_WAIT_S = 3.0
 
-#: The closes in flight, held so a close that outlives its caller (a second cancel, the bound above) is not garbage collected
-#: before it has finished.
+#: The same for the rollback of a ``create`` that did not finish (removing a container and its volume, deleting the cluster
+#: objects it made): several API calls rather than one close, so a longer wait, but still a bound, because the caller that
+#: was cancelled or timed out is waiting to hear about it.
+_ROLLBACK_WAIT_S = 10.0
+
+#: The closes and rollbacks in flight, held so one that outlives its caller (a second cancel, the bounds above) is not garbage
+#: collected before it has finished.
 _PENDING_CLOSES: "set[asyncio.Future]" = set()
 
 
-def _close_finished(task: "asyncio.Future", what: str) -> None:
+def _close_finished(task: "asyncio.Future", what: str, verb: str = "aclose") -> None:
     _PENDING_CLOSES.discard(task)
     if not task.cancelled() and task.exception() is not None:
-        logger.warning("%s: aclose failed: %s", what, task.exception())
+        logger.warning("%s: %s failed: %s", what, verb, task.exception())
+
+
+async def _run_in_background(work: "Awaitable[None]", *, what: str, verb: str, wait_s: float) -> None:
+    """Run ``work`` on its OWN task and wait for it for at most ``wait_s``; never raises what ``work`` raised (it is logged).
+
+    ``asyncio.wait`` does not cancel what it waits on, so a cancel of the caller (a second one, while it waits) leaves the work
+    running to its end instead of half done.
+    """
+    task = asyncio.ensure_future(work)
+    _PENDING_CLOSES.add(task)
+    task.add_done_callback(lambda finished: _close_finished(finished, what, verb))
+    done, _ = await asyncio.wait({task}, timeout=wait_s)
+    if not done:
+        logger.warning(
+            "%s: %s still running after %gs; carrying on without waiting for it", what, verb, wait_s,
+        )
 
 
 async def close_shielded(closable: object, *, what: str) -> None:
@@ -248,15 +269,20 @@ async def close_shielded(closable: object, *, what: str) -> None:
     aclose = getattr(closable, "aclose", None)
     if aclose is None:
         return
-    closing = asyncio.ensure_future(aclose())
-    _PENDING_CLOSES.add(closing)
-    closing.add_done_callback(lambda task: _close_finished(task, what))
-    # ``asyncio.wait`` does not cancel what it waits on, so a cancel of the caller leaves the close running.
-    done, _ = await asyncio.wait({closing}, timeout=_CLOSE_WAIT_S)
-    if not done:
-        logger.warning(
-            "%s: aclose still running after %gs; carrying on without waiting for it", what, _CLOSE_WAIT_S,
-        )
+    await _run_in_background(aclose(), what=what, verb="aclose", wait_s=_CLOSE_WAIT_S)
 
 
-__all__ = ["BaseWorkspaceBackend", "MergedTemplate", "close_shielded"]
+async def roll_back_shielded(rollback: "Awaitable[None]", *, what: str) -> None:
+    """Undo what a ``create`` that did not finish left behind (a container and its volume, the cluster objects it made).
+
+    Run from the ``except BaseException`` of a backend's ``create``: a cancel, a caller's ``asyncio.timeout`` or a plain
+    failure ended the build, and nothing else will reclaim what it made (there is no orphan sweep, and a caller that did not
+    pin the workspace id never learns the generated one). Same contract as :func:`close_shielded`: the rollback runs on its
+    OWN task, so a second cancel cannot leave it half done, the caller waits for it at most ``_ROLLBACK_WAIT_S`` and then
+    carries on with the error that ended the build while the rollback finishes, and a rollback that fails is logged and
+    never replaces that error. ``rollback`` should not raise; whatever it raises is only logged.
+    """
+    await _run_in_background(rollback, what=what, verb="rollback", wait_s=_ROLLBACK_WAIT_S)
+
+
+__all__ = ["BaseWorkspaceBackend", "MergedTemplate", "close_shielded", "roll_back_shielded"]

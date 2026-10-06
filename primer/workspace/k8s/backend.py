@@ -12,6 +12,7 @@ import copy
 import logging
 import secrets
 import uuid
+from collections.abc import Awaitable
 from typing import Any
 
 from primer.int.workspace import Workspace
@@ -29,7 +30,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
     KubernetesTemplateConfig,
 )
-from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded
+from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded, roll_back_shielded
 from primer.workspace.files import FileResolvers
 from primer.workspace.k8s.httproute import build_httproute_manifest
 from primer.workspace.k8s.naming import k8s_object_name
@@ -360,13 +361,62 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             workspace_id = _generate_workspace_id()
         obj_name = k8s_object_name(workspace_id)
 
+        # What THIS create has made in the cluster, so a rollback deletes only that (never the objects of a live workspace that
+        # already holds the name: its Secret create answers 409 and nothing is recorded).
+        created: list[str] = []
+        try:
+            return await self._build(
+                template, overrides=overrides, workspace_id=workspace_id, obj_name=obj_name, resolvers=resolvers,
+                created=created,
+            )
+        except BaseException:
+            # BaseException, not Exception: a cancel or a caller's ``asyncio.timeout`` (the pod wait is up to 2 minutes) left
+            # the Secret, Service, StatefulSet and its PVC behind with nothing pointing at them, and so did a plain failure
+            # after the first object (a StatefulSet the API refused, a pod that never ran, an init command that failed).
+            # Nothing else reclaims them: no orphan sweep, and a caller that did not pin the id never learns the generated
+            # one. The rollback runs on its own task and the wait for it is bounded: see ``roll_back_shielded``.
+            if created:
+                await roll_back_shielded(
+                    self._roll_back_create(obj_name, created), what=f"k8s create rollback of {workspace_id}",
+                )
+            raise
+
+    @staticmethod
+    async def _tracked(created: list[str], kind: str, call: Awaitable[Any]) -> Any:
+        """Await ``call`` (the create of one cluster object) and record ``kind`` in ``created``.
+
+        Recorded BEFORE the request is awaited: a cancel or a timeout that lands while it is in flight may have created the
+        object server side. An API error (an ``Exception``: a 409 because a live workspace already holds the name, a 403, a
+        422) means the object was refused, so the kind is withdrawn again.
+        """
+        created.append(kind)
+        try:
+            return await call
+        except Exception:
+            created.remove(kind)
+            raise
+
+    async def _build(
+        self,
+        template: WorkspaceTemplate,
+        *,
+        overrides: WorkspaceTemplateOverrides | None,
+        workspace_id: str,
+        obj_name: str,
+        resolvers: FileResolvers | None,
+        created: list[str],
+    ) -> Workspace:
+        """The body of :meth:`create`: the cluster objects, the pod wait, the runtime connection. ``created`` is filled in as
+        the objects are made, for the rollback."""
+        assert self._core_v1 is not None and self._apps_v1 is not None
+
         # 1. Per-workspace Secret with RUNTIME_TOKEN -- the STS will envFrom
         #    this Secret so the runtime container inherits the bearer token
         #    on start-up.
-        token = await self._create_secret(workspace_id, obj_name)
+        token = await self._tracked(created, "secret", self._create_secret(workspace_id, obj_name))
         # 2. Headless Service -- gives the Pod stable DNS
         #    (<obj_name>-0.<obj_name>.<ns>.svc.cluster.local).
-        await self._create_service(workspace_id, obj_name)
+        await self._tracked(created, "service", self._create_service(workspace_id, obj_name))
         # 3. StatefulSet bound to the Service (serviceName=obj_name) with
         #    envFrom the Secret and workspace-id label on the pod template
         #    so the Service selector matches.
@@ -378,28 +428,18 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             provider_cfg=self._config,
             obj_name=obj_name,
         )
-        await self._apps_v1.create_namespaced_stateful_set(
+        await self._tracked(created, "statefulset", self._apps_v1.create_namespaced_stateful_set(
             namespace=self._config.namespace,
             body=manifest,
-        )
+        ))
 
         # 3b. For gateway_httproute reachability, create the per-workspace
         #     HTTPRoute so the platform can dial the pod through the Gateway.
-        #     Done before the pod-wait so a route failure surfaces fast. On
-        #     failure, roll back the Secret/Service/StatefulSet just created so
-        #     a bad route does not orphan workspace objects.
+        #     Done before the pod-wait so a route failure surfaces fast. A
+        #     failure rolls back the Secret/Service/StatefulSet just created
+        #     (in ``create``) so a bad route does not orphan workspace objects.
         if isinstance(self._config.reachability, K8sReachabilityGateway):
-            try:
-                await self._create_httproute(workspace_id, obj_name)
-            except Exception:
-                try:
-                    await self.destroy(workspace_id)
-                except Exception as cleanup_exc:  # noqa: BLE001
-                    logger.warning(
-                        "rollback after httproute create failure also failed "
-                        "for %r: %s", workspace_id, cleanup_exc,
-                    )
-                raise
+            await self._tracked(created, "httproute", self._create_httproute(workspace_id, obj_name))
 
         # 4. Wait for the Pod to be Running (pod name is <sts>-0).
         pod_name = f"{obj_name}-0"
@@ -474,6 +514,43 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             if not cached:
                 await close_shielded(client, what="rollback runtime client")
             raise
+
+    async def _delete_best_effort(
+        self, delete_call: Any, name: str, kind: str, *, during: str,
+    ) -> None:
+        """Delete one namespaced object; a 404 is fine and any other failure is logged, never raised."""
+        try:
+            await delete_call(name=name, namespace=self._config.namespace)
+        except Exception as exc:  # noqa: BLE001
+            if "404" not in str(exc):
+                logger.warning("%s: %s delete for %r failed: %s", during, kind, name, exc)
+
+    async def _roll_back_create(self, obj_name: str, created: list[str]) -> None:
+        """Delete the cluster objects a ``create`` that did not finish made (``created``), newest first.
+
+        Each on its own, so one that fails (logged) does not skip the next, and a 404 is fine; never raises. The PVC is made by
+        the StatefulSet's volume claim template, so it goes with the StatefulSet.
+        """
+        assert self._core_v1 is not None and self._apps_v1 is not None
+        made = set(created)
+        if "httproute" in made:
+            await self._destroy_httproute(obj_name)
+        if "statefulset" in made:
+            await self._delete_best_effort(
+                self._apps_v1.delete_namespaced_stateful_set, obj_name, "statefulset", during="create rollback",
+            )
+            await self._delete_best_effort(
+                self._core_v1.delete_namespaced_persistent_volume_claim, _pvc_name_for(obj_name), "pvc",
+                during="create rollback",
+            )
+        if "service" in made:
+            await self._delete_best_effort(
+                self._core_v1.delete_namespaced_service, obj_name, "service", during="create rollback",
+            )
+        if "secret" in made:
+            await self._delete_best_effort(
+                self._core_v1.delete_namespaced_secret, obj_name, "secret", during="create rollback",
+            )
 
     async def _create_secret(
         self, workspace_id: str, obj_name: str,
@@ -842,14 +919,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                 _pvc_name_for(obj_name), "pvc",
             ),
         ):
-            try:
-                await delete_call(name=name, namespace=ns)
-            except Exception as exc:  # noqa: BLE001
-                if "404" not in str(exc):
-                    logger.warning(
-                        "destroy: %s delete for %r failed: %s",
-                        kind, name, exc,
-                    )
+            await self._delete_best_effort(delete_call, name, kind, during="destroy")
 
         # Best-effort cleanup of the per-workspace HTTPRoute (gateway mode).
         if isinstance(self._config.reachability, K8sReachabilityGateway):
