@@ -83,6 +83,13 @@ class AgentResumeContext:
         it started with, not a freshly-minted one - a nested call belongs
         to the OUTER turn. ``None`` on frames parked before this field
         existed, or when the enclosing dispatch never resolved one.
+    delegate_run_id
+        The id minted when this delegated run started (``run_subagent``), so the records a resumed run writes carry the
+        SAME ``payload["delegate_run_id"]`` as the ones it wrote before it parked. ``None`` on frames parked before this
+        field existed: the resume mints a fresh one.
+    delegate_parent_run_id
+        The run id of the run whose tool call delegated to this one (``None`` when the parent turn itself did), the
+        timeline's nesting anchor.
     """
 
     session_id: str
@@ -92,6 +99,8 @@ class AgentResumeContext:
     tools: list[str]
     initiated_by: "PrincipalRef | None" = None
     turn_no: int | None = None
+    delegate_run_id: str | None = None
+    delegate_parent_run_id: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Render to a JSON-safe dict."""
@@ -107,6 +116,8 @@ class AgentResumeContext:
                 else None
             ),
             "turn_no": self.turn_no,
+            "delegate_run_id": self.delegate_run_id,
+            "delegate_parent_run_id": self.delegate_parent_run_id,
         }
 
     @classmethod
@@ -124,6 +135,8 @@ class AgentResumeContext:
                 else None
             ),
             turn_no=data.get("turn_no"),
+            delegate_run_id=data.get("delegate_run_id"),
+            delegate_parent_run_id=data.get("delegate_parent_run_id"),
         )
 
 

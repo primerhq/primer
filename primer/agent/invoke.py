@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import contextvars
 import os
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.call_scope import current_interrupt
@@ -22,6 +23,13 @@ MAX_INVOCATION_DEPTH = int(os.environ.get("PRIMER_MAX_INVOCATION_DEPTH", "8"))
 
 _DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
     "primer_invocation_depth", default=0,
+)
+
+
+#: The id of the delegated run this task is running inside (``None`` in the parent turn itself): the next ``run_subagent`` reads
+#: it as its parent's run id. Inherited by the tool tasks the run starts, which is where a nested delegation is made.
+_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "primer_delegated_run_id", default=None,
 )
 
 
@@ -237,6 +245,10 @@ async def run_subagent(
     # context carries the inherited ids: build_subagent_toolmanager derives
     # the shim (or the chat binding) from it. Shared with resume_subagent and
     # frames.apply_leaf so the manager wiring lives in exactly one place.
+    # One id per delegated run, minted here and carried in the resume context so a resumed run keeps it (the raw call id is NOT
+    # a run's identity: it is reused across streams and levels). The parent's is whatever run this call is made inside.
+    run_id = uuid.uuid4().hex
+    parent_run_id = _RUN_ID.get()
     context = AgentResumeContext(
         session_id=session_id,
         workspace_id=workspace_id,
@@ -247,6 +259,8 @@ async def run_subagent(
         # authorised as the same identity (and survives a park/resume).
         initiated_by=identity,
         turn_no=turn_no,
+        delegate_run_id=run_id,
+        delegate_parent_run_id=parent_run_id,
     )
     tool_manager = await build_subagent_toolmanager(
         context,
@@ -288,6 +302,7 @@ async def run_subagent(
     # next model call and its tools after the Stop. None outside a stoppable call: nothing changes there.
     stop = current_interrupt()
     interrupted: list[bool] = []
+    run_token = _RUN_ID.set(run_id)
     try:
         from primer.session.delegation import current_delegation_sink
 
@@ -304,6 +319,8 @@ async def run_subagent(
             if _sink is not None:
                 await _sink.on_event(
                     _ev, delegate_tool_call_id=invoke_tool_call_id,
+                    delegate_run_id=run_id, delegate_parent_run_id=parent_run_id,
+                    delegate_depth=_DEPTH.get(),
                 )
     except YieldToWorker as yld:
         _push_agent_frame_on_yield(
@@ -315,6 +332,8 @@ async def run_subagent(
             context=context,
         )
         raise
+    finally:
+        _RUN_ID.reset(run_token)
 
     if interrupted:
         # The subagent's turn ended because the Stop was set, not because it had an answer. What it produced so far is not
@@ -424,6 +443,11 @@ async def resume_subagent(
     resume_prompt = rehydrated + [Message(role="tool", parts=[child_result])]
 
     produced: list[Message] = []
+    # The continuation is the SAME run as the one that parked: its records carry the run id it started with (a frame parked before
+    # run ids existed has none, and gets a fresh one so its records are still told apart from every other run's).
+    run_id = getattr(context, "delegate_run_id", None) or uuid.uuid4().hex
+    parent_run_id = getattr(context, "delegate_parent_run_id", None)
+    run_token = _RUN_ID.set(run_id)
     try:
         with _depth_set(depth):
             from primer.session.delegation import current_delegation_sink
@@ -438,11 +462,14 @@ async def resume_subagent(
                 turn_no=getattr(context, "turn_no", None),
             ):
                 if _sink is not None:
+                    # The delegating call's id is ``invoke_tool_call_id`` (the frame's ``tool_call_id``): this used to read
+                    # ``context.tool_call_id``, which an ``AgentResumeContext`` does not have, so every record of a RESUMED
+                    # run was stamped ``delegate_tool_call_id: None`` and nested under nothing.
                     await _sink.on_event(
                         _ev,
-                        delegate_tool_call_id=getattr(
-                            context, "tool_call_id", None,
-                        ),
+                        delegate_tool_call_id=invoke_tool_call_id,
+                        delegate_run_id=run_id, delegate_parent_run_id=parent_run_id,
+                        delegate_depth=depth,
                     )
     except YieldToWorker as yld:
         _push_agent_frame_on_yield(
@@ -454,5 +481,7 @@ async def resume_subagent(
             context=context,
         )
         raise
+    finally:
+        _RUN_ID.reset(run_token)
 
     return _final_assistant_text(produced)
