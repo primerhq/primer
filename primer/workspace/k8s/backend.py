@@ -203,6 +203,11 @@ def _build_statefulset_manifest(
 
     base_pod: dict[str, Any] = {
         "containers": [container],
+        # The container always gets a ``command`` above, and a Kubernetes ``command`` replaces the image's ENTRYPOINT,
+        # so the init baked into the runtime image (tini) never runs in a workspace pod. With a shared process
+        # namespace the pod's pause container is PID 1 and reaps the processes an exec leaves orphaned (without an init
+        # they stay zombies for the life of the pod). A template can turn it off through ``pod_overrides``.
+        "shareProcessNamespace": True,
         "volumes": [v.model_dump(exclude_none=True) if hasattr(v, "model_dump") else dict(v) for v in tcfg.extra_volumes],
     }
     if provider_cfg.image_pull_secrets:
