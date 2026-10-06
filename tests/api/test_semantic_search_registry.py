@@ -97,6 +97,54 @@ async def test_registry_invalidate_closes_instance():
     assert len(instances) == 2
 
 
+class _FailingCloseProvider(_StubProvider):
+    async def aclose(self):
+        self.closed = True
+        raise RuntimeError("the pool is already gone")
+
+
+@pytest.mark.asyncio
+async def test_registry_invalidate_survives_an_instance_whose_close_fails():
+    """``invalidate`` runs AFTER the provider row was updated or deleted (the REST hook and the system tool both call it
+    post-commit), so an ``aclose`` error must not surface as a failure of a write that already happened: the caller
+    would be told the update failed when it landed. Every other close in this registry already swallows and logs."""
+    storage = _StubStorage({"ssp-a": _make_row("ssp-a")})
+    instances = []
+
+    def factory(r):
+        inst = _FailingCloseProvider(r)
+        instances.append(inst)
+        return inst
+
+    reg = SemanticSearchRegistry(storage=storage, factory=factory)
+    await reg.get_provider("ssp-a")
+
+    await reg.invalidate("ssp-a")  # must not raise
+
+    assert instances[0].closed is True, "the close was never attempted"
+    await reg.get_provider("ssp-a")
+    assert len(instances) == 2, "the stale instance stayed cached after a failed close"
+
+
+@pytest.mark.asyncio
+async def test_registry_invalidate_logs_a_failed_close(caplog):
+    storage = _StubStorage({"ssp-a": _make_row("ssp-a")})
+    reg = SemanticSearchRegistry(storage=storage, factory=lambda r: _FailingCloseProvider(r))
+    await reg.get_provider("ssp-a")
+
+    with caplog.at_level("WARNING", logger="primer.api.registries.semantic_search_registry"):
+        await reg.invalidate("ssp-a")
+
+    assert any("ssp-a" in r.getMessage() and "the pool is already gone" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_registry_invalidate_of_an_unknown_id_is_a_no_op():
+    reg = SemanticSearchRegistry(storage=_StubStorage({}), factory=lambda r: _StubProvider(r))
+
+    await reg.invalidate("never-built")  # nothing cached, nothing to close
+
+
 @pytest.mark.asyncio
 async def test_registry_get_missing_row_raises_not_found():
     storage = _StubStorage({})
