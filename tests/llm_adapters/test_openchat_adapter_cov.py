@@ -244,6 +244,29 @@ class TestStream:
         ]
         assert kinds == ["StreamStart", "TextDelta", "Usage", "Done"]
 
+    async def test_a_tool_round_the_server_ends_with_stop_is_done_tool_use(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Through the whole adapter (LM Studio, vLLM and llama.cpp end a tool round with ``"stop"``)."""
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        seq = [
+            NS(id="c1", model="m", usage=None, choices=[NS(index=0, finish_reason=None, delta=NS(role="assistant", content=None, tool_calls=None))]),
+            NS(id="c1", model="m", usage=None, choices=[NS(index=0, finish_reason=None, delta=NS(
+                role=None, content=None,
+                tool_calls=[NS(index=0, id="call_a", function=NS(name="lookup", arguments='{"q": "v"}'))],
+            ))]),
+            NS(id="c1", model="m", usage=NS(prompt_tokens=4, completion_tokens=2),
+               choices=[NS(index=0, finish_reason="stop", delta=NS(role=None, content=None, tool_calls=None))]),
+        ]
+        client.chat.completions.create.return_value = _aiter(seq)
+        events = [
+            e async for e in llm.stream(
+                model="gpt-4o-mini", messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            )
+        ]
+        done = [e for e in events if type(e).__name__ == "Done"]
+        assert [type(e).__name__ for e in events][-2:] == ["Usage", "Done"]
+        assert len(done) == 1 and done[0].stop_reason == "tool_use" and done[0].raw_reason == "stop"
+
     async def test_request_payload_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = OpenChatLLM(_make_provider())
         client = _patched_client(monkeypatch)

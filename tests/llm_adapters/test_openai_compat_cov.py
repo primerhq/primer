@@ -405,6 +405,51 @@ class TestFinishReason:
         assert _map_finish_reason(raw) == mapped
 
 
+class TestFinishReasonSeesTheToolCalls:
+    """A server that is not OpenAI can end a tool round with ``"stop"``: the ``done`` record must still say ``tool_use``."""
+
+    @pytest.mark.parametrize(
+        "raw, saw_calls, mapped",
+        [
+            ("stop", True, "tool_use"),
+            ("stop", False, "stop"),
+            ("tool_calls", True, "tool_use"),
+            ("tool_calls", False, "tool_use"),   # the server says so: believed
+            ("function_call", False, "tool_use"),  # the legacy spelling of "tool_calls"
+            ("length", True, "max_tokens"),        # a truncated call is not a clean tool round
+            ("length", False, "max_tokens"),
+            ("content_filter", True, "content_filter"),
+            ("eos", True, "other"),                # an unknown reason is kept as it is (raw_reason carries it)
+            (None, True, "other"),
+        ],
+    )
+    def test_map(self, raw: str | None, saw_calls: bool, mapped: str) -> None:
+        assert _map_finish_reason(raw, saw_function_call=saw_calls) == mapped
+
+    def _round(self, finish_reason: str, *, tool_call: bool) -> list:
+        state = _StreamState()
+        out = list(_translate_chunk(_delta_chunk(role="assistant"), state))
+        if tool_call:
+            out += _translate_chunk(
+                _delta_chunk(tool_calls=[NS(index=0, id="call_a", function=NS(name="lookup", arguments='{"q":"v"}'))]),
+                state,
+            )
+        return out + _translate_chunk(_delta_chunk(finish_reason=finish_reason), state)
+
+    def test_a_tool_round_that_the_server_ends_with_stop_is_done_tool_use(self) -> None:
+        out = self._round("stop", tool_call=True)
+        assert [type(e).__name__ for e in out] == ["StreamStart", "ToolCallStart", "ToolCallDelta", "ToolCallEnd", "Done"]
+        assert out[-1].stop_reason == "tool_use" and out[-1].raw_reason == "stop"
+
+    def test_a_plain_answer_ended_with_stop_stays_stop(self) -> None:
+        out = self._round("stop", tool_call=False)
+        assert out[-1].stop_reason == "stop"
+
+    def test_a_truncated_tool_round_stays_max_tokens(self) -> None:
+        out = self._round("length", tool_call=True)
+        assert out[-1].stop_reason == "max_tokens" and out[-1].raw_reason == "length"
+
+
 class TestBuildUsage:
     def test_none(self) -> None:
         assert _build_usage(None) is None
