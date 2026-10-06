@@ -264,22 +264,15 @@ async def delete_trigger(*, trigger_id: str, deps: ServiceDeps) -> None:
     trigger = await storage.get(trigger_id)
     if trigger is None:
         raise TriggerNotFound(trigger_id)
-    # Cascade-delete all subscriptions bound to this trigger.
-    q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger_id)
-    offset = 0
-    while offset < 10_000:
-        page = await subs_storage.find(
-            q.build(), OffsetPage(offset=offset, length=200),
-        )
-        for sub in page.items:
-            try:
-                await subs_storage.delete(sub.id)
-            except Exception:
-                # Already-gone is fine; keep cascading.
-                pass
-        if len(page.items) < 200:
-            break
-        offset += 200
+    # Cascade-delete all subscriptions bound to this trigger. All of them are read BEFORE any is deleted: deleting
+    # while paging by offset shifts the remaining rows down, so every page after the first skipped as many rows as
+    # the page before it had deleted (a trigger with more than 200 subscriptions left orphans behind).
+    for sub in await list_subscriptions(trigger_id=trigger_id, deps=deps):
+        try:
+            await subs_storage.delete(sub.id)
+        except Exception:
+            # Already-gone is fine; keep cascading.
+            pass
     await storage.delete(trigger_id)
 
 
