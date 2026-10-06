@@ -235,7 +235,28 @@ endpoint, which resolves the owning workspace itself.
   missing row). Nothing writes the whole row from a snapshot, so a
   writer that read the row `pending` and lost a race cannot overwrite
   the winner. `flip_external_row` keeps its best-effort contract around
-  it. A new writer of a row's status must go through the helper.
+  it. A new writer of a row's status must go through the helper. The
+  patch is encoded with `to_jsonable_python(..., inf_nan_mode="null")`,
+  the way a whole-row write dumps the model, so a NaN or infinity in a
+  result is stored as `null`, exactly what the park receives; a value no
+  JSON holds (an arbitrary object, bytes that are not UTF-8, a lone
+  surrogate) raises before the row is written.
+- **Any of the row's writers can win, and the row can disagree with the
+  park.** The writers that can reach a `pending` row first are the lazy
+  timeout (`sweep_expired`, on every GET list), the yield-cancel endpoint
+  (`flip_external_row`), `cancel_pending_external` from the steer's
+  instruction, session cancel, delete and restart and the Stop cleanup,
+  and the result path (`apply_tool_results`). The result path wakes the
+  park BEFORE it writes the row, so a cancel or a timeout that lands
+  between the two leaves the row `cancelled` or `timed_out` while the
+  park (and so the model) took the result and the steer answered 2xx.
+  The park is the execution truth; the row is the audit record and is
+  not reconciled with it yet. (Before the guarded write, the result's
+  whole-row write turned such a row `completed`, and in the opposite
+  order a late cancel or timeout overwrote a `completed` row.)
+- **`created_before` must be timezone-aware.** `cancel_pending_external`
+  compares it with each row's aware `created_at` in Python; a naive value
+  raises `ValueError` before anything is read.
 - **`node_id` is surfaced only when the row carries it.** Graph
   agent-node calls carry it via the checkpoint; the per-node resolver
   does not thread node ids, so the endpoints report what is there rather

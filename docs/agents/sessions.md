@@ -371,7 +371,15 @@ yourself (`external_tool`) the cancel also marks the call's record
 `cancelled` (`GET /v1/external_tool_calls`), unless the call already
 ended: a call record keeps the FIRST status it ends in (`completed`,
 `cancelled` or `timed_out`), so a cancel, a session cancel or a timeout
-that comes after your result never overwrites `completed`. The same
+that comes after your result never overwrites `completed`. The record is
+an audit trail, not what the session executed: a result you sent can be
+accepted (the steer answers 2xx and the agent receives it) while its
+record still ends `cancelled` or `timed_out`, when a cancel, a session
+cancel, delete or restart, a Stop or the record's timeout reached the
+record between the session taking your result and the record being
+written. The session's transcript is what the agent actually got. A
+result holding NaN or Infinity (Python's `json` module writes them by
+default) is delivered to the agent and recorded as `null`. The same
 endpoints answer a graph session parked mid-run on an `ask_user` node (see
 [graphs](graphs.md)). Tool-approval parks have their own pair
 (`tool_approval/pending` + `tool_approval/respond`); see
