@@ -215,9 +215,9 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
         #
         # S2a: ONE reply per event_key. A park written by an older build
         # holds a leaf under the RAW dispatch key; once the durable flip
-        # writes leaves under their encoded key (leaf_key_for), a resend or
-        # an echo of the same reply lands a second entry under the encoded
-        # spelling. Keep the entry whose dict key IS the raw spelling (only
+        # writes leaves under an encoded key (leaf_key_for, a later S2a
+        # change), a resend or an echo of the same reply lands a second
+        # entry under the encoded spelling. Keep the entry whose dict key IS the raw spelling (only
         # older code writes it, so it is the older entry). jsonb does not
         # keep key insertion order, so the order of .values() says nothing
         # about which entry is older.
@@ -238,8 +238,8 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
         # becomes YieldTimeout / YieldCancelled (elapsed from the park's
         # parked_at), a real reply loses the internal control keys.
         # ask_user's and the external tool's resume hooks recognise a marker
-        # only by isinstance, so a raw marker dict reached them as an
-        # operator reply.
+        # only by isinstance: a raw marker dict would reach them as an
+        # operator reply with no response.
         replies = [
             (
                 event_key.rsplit(":", 1)[-1] or None,
