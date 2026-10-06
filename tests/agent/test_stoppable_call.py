@@ -50,12 +50,12 @@ async def _forever() -> None:
 @pytest.fixture(autouse=True)
 async def _no_leftovers():
     yield
-    # every abandoned task is let go and awaited, and no helper task may outlive the test. The wait is BOUNDED, so a test
-    # that fails reports its own failure here instead of leaving a task that would hang loop teardown. A call that
-    # ignores a cancel only ends when its test releases it, so EVERY such test releases it in a ``finally``; if one is
-    # somehow still stubborn here it is dropped from the set and skipped by the checks below, but it is NOT stopped (the
-    # loop's shutdown cancelling cannot end a task that swallows cancels, so it outlives the test: that is a bug in the
-    # test, which the finally prevents).
+    # every abandoned task is let go and awaited, and no helper task may outlive the test. The wait is BOUNDED, so this
+    # fixture cannot hang on a stubborn call and the test's own failure is reported. That is all it does: a call that
+    # swallows every cancel only ends when its test releases it, and one still running when the test ends would then hang
+    # the Runner's close (it cancels and gathers every task), which is why EVERY such test releases it in a ``finally``.
+    # If one is somehow still stubborn here it is dropped from the set and skipped by the checks below, but it is NOT
+    # stopped: that is a bug in the test, which the finally prevents.
     abandoned = list(sc._ABANDONED)
     for task in abandoned:
         task.cancel()
