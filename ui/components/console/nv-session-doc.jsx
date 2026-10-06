@@ -1,5 +1,5 @@
 /* global React, SH_api, NV_useConsole, NV_identity, SH_statusFromTap,
-   SH_statusLine, SH_collapseTurns, SH_nestSubagentRows, SH_toolChipLabel,
+   SH_statusLine, SH_collapseTurns, SH_nestSubagentRows, SH_toolChipLabel, SH_turnOfSeq,
    SH_scrollDecision, SH_shortTime, SH_traceHeaderLabel, SH_thoughtLabel,
    SH_diffLineTone, SH_looksLikeDiff, SH_routingLine, SH_askOptionsOf */
 // The session tab (wiring plan P2 T7). DATA layer inherited from the
@@ -2271,15 +2271,8 @@ function NV_SessionDoc(props) {
     // The old hardcoded fallback of 1 asked for the SECOND turn's trace
     // from every row of a first-turn session, which is why the split
     // came up empty (BDD/live finding 2026-08-25).
-    var turnOfSeq = {};
-    (function () {
-      var ordinal = 0;
-      for (var ti = 0; ti < flat.length; ti++) {
-        turnOfSeq[flat[ti].seq] = ordinal;
-        if (flat[ti].kind === "done" || flat[ti].kind === "cancelled"
-            || flat[ti].kind === "error") ordinal += 1;
-      }
-    })();
+    // SH_turnOfSeq (shell-turns.js) is the one copy of the rule; a delegated run's own done does not end the session's turn.
+    var turnOfSeq = SH_turnOfSeq(flat);
     return {
       flat: flat, rows: rows,
       resultsByCallId: resultsByCallId, turnOfSeq: turnOfSeq,
