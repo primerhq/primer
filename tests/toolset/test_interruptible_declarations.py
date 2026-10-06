@@ -16,8 +16,8 @@ The set below is what was confirmed by reading, and why:
 
 The second review (task 01a10e2f; the lead decided the list) added:
 
-* ``trigger`` create / update / delete / fire_now, and the ``crud`` copies create_trigger / update_trigger (the same Tool
-  objects): create and update write the trigger row and THEN upsert its claim lease on another connection; a cancel between
+* ``trigger`` create / update / delete / fire_now, and the ``crud`` copies create_trigger / update_trigger (``model_copy``
+  copies of the same Tool objects, which keep the flag): create and update write the trigger row and THEN upsert its claim lease on another connection; a cancel between
   leaves a row that never fires, and nothing re-creates the lease. delete loops one delete per subscription and then deletes
   the trigger: a cancel leaves a live trigger with some subscriptions gone. fire_now fans out (resume a parked session,
   delete its subscription, per subscription) and then updates the trigger: a cancel delivers to some, and a retry delivers
@@ -34,6 +34,14 @@ The second review (task 01a10e2f; the lead decided the list) added:
   cache is evicted, with no transaction between; a cancel between leaves a deleted provider still serving, or a rotated key
   not picked up, until a restart. (A cache eviction is not a durable write; this is the "when unsure" side of the rule.)
 
+The third review (task 01a111d1, D1) added:
+
+* ``harness`` fetch / install / sync / uninstall: write ``pending_operation`` on the harness row and THEN upsert its claim
+  lease (``announce_enqueued``), two writes with no transaction; a cancel between leaves an operation pending that nothing
+  will claim, which blocks every later operation on that harness with a conflict (the defect that task fixed, now
+  not re-created by a cancel). The first review examined ``harness__install`` as one row write and left it interruptible;
+  that was true only while the toolset did not upsert the lease.
+
 ``call_tool`` is not in the list on purpose: it is a pass-through, and the loop decides interruptibility for the tool it
 WRAPS (``ToolExecutionManager.is_interruptible_call``), so ``call_tool`` of a tool above is not cancelled either.
 
@@ -41,7 +49,7 @@ Examined and left interruptible (one atomic write, or none): ``system__move_docu
 ``DocumentService`` (one transaction), ``refresh_collection`` (a not-implemented stub), and ``create_python_toolset`` /
 ``update_python_toolset_source`` (one storage write each; built outside this registry, so not enumerated here); every
 other single-row create / update / delete (the other ten system entities, agent, graph, subscriptions, workspace providers
-and templates, the harness tools: one row write in one transaction); ``invoke_agent`` (a cancel unwinds the subagent, and a
+and templates, the harness register / update / update_overrides tools: one row write in one transaction); ``invoke_agent`` (a cancel unwinds the subagent, and a
 subagent that swallows it is stopped by the Stop event it is given; the record flush a cancel could interrupt was made
 cancel-safe in the message writer, task D4); ``invoke_graph`` (a cancel DOES propagate to the in-process child graph, whose
 node tasks are cancelled and awaited; flagging it non-interruptible would instead abandon the call after the grace and
@@ -97,6 +105,11 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
             "llm_provider", "embedding_provider", "cross_encoder_provider", "toolset", "semantic_search_provider",
         )
     },
+    # task 01a111d1 (D1): the row, then the claim lease (a separate write on another connection)
+    (HARNESS_TOOLSET_ID, "harness__fetch"),
+    (HARNESS_TOOLSET_ID, "harness__install"),
+    (HARNESS_TOOLSET_ID, "harness__sync"),
+    (HARNESS_TOOLSET_ID, "harness__uninstall"),
 }
 
 EXAMINED_AND_INTERRUPTIBLE = {
@@ -117,7 +130,6 @@ EXAMINED_AND_INTERRUPTIBLE = {
     (WORKSPACES_TOOLSET_ID, "create_workspace_template"),
     (WORKSPACES_TOOLSET_ID, "delete_workspace_provider"),
     (WORKSPACES_TOOLSET_ID, "pause_workspace_session"),
-    (HARNESS_TOOLSET_ID, "harness__install"),
 }
 
 
