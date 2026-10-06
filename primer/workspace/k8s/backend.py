@@ -810,13 +810,14 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             ws = self._workspaces.pop(workspace_id, None)
         if ws is not None:
             # Close the runtime WS first so reconnect attempts don't fire
-            # while we tear the Pod down underneath them.
-            try:
-                await ws.aclose()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "workspace aclose during destroy failed: %s", exc,
-                )
+            # while we tear the Pod down underneath them. The workspace's own
+            # ``aclose`` only ends its sessions (over that connection); the
+            # connection itself is its sandbox's client, which nothing else
+            # closes, and one left open keeps reconnecting to a pod that no
+            # longer exists (only a 404 handshake makes it give up). Both
+            # closes are bounded: a silent peer must not hold up the teardown.
+            await close_shielded(ws, what=f"workspace {workspace_id} during destroy")
+            await close_shielded(ws.sandbox, what=f"workspace {workspace_id} runtime client during destroy")
 
         obj_name = k8s_object_name(workspace_id)
         ns = self._config.namespace
