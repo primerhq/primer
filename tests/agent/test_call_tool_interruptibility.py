@@ -18,7 +18,7 @@ import pytest
 
 # Importing primer.workspace makes ToolCallContext.model_rebuild() run (the forward reference to AgentSession).
 import primer.workspace  # noqa: F401
-from primer.agent.tool_manager import ToolExecutionManager
+from primer.agent.tool_manager import _CALL_TOOL_LOOKTHROUGH_DEPTH, ToolExecutionManager
 from primer.model.chat import Tool, ToolCallPart, ToolCallResult
 from primer.model.principal import PrincipalRef
 from tests.agent.test_loop_interrupt import _AFTER, _drive, _Manager, _ScriptedLLM, _tool_results, _tool_round
@@ -103,6 +103,28 @@ async def test_call_tool_wrapping_call_tool_wrapping_a_protected_tool_is_still_p
     inner = {"toolset_id": "collections", "tool_name": "create_document", "arguments": {}}
 
     assert manager.is_interruptible_call(_wrapping("system", "call_tool", inner)) is False
+
+
+def _call_tools_deep(wrappers: int) -> ToolCallPart:
+    """``system__call_tool`` wrapping ``wrappers - 1`` more ``call_tool`` calls, around ``collections__read_document``
+    (an interruptible tool): the look-through needs ``wrappers`` steps to reach it."""
+    arguments: dict = {"toolset_id": "collections", "tool_name": "read_document", "arguments": {}}
+    for _ in range(wrappers - 1):
+        arguments = {"toolset_id": "system", "tool_name": "call_tool", "arguments": arguments}
+    return ToolCallPart(id="c1", name="system__call_tool", arguments=arguments)
+
+
+async def test_a_chain_of_call_tools_the_look_through_can_follow_is_judged_by_the_tool_at_its_end() -> None:
+    manager = await _manager()
+
+    assert manager.is_interruptible_call(_call_tools_deep(_CALL_TOOL_LOOKTHROUGH_DEPTH)) is True
+
+
+async def test_a_chain_of_call_tools_longer_than_the_look_through_follows_is_treated_as_protected() -> None:
+    """Not followed without bound; and when the end of the chain was not reached, wait (the rule when unsure)."""
+    manager = await _manager()
+
+    assert manager.is_interruptible_call(_call_tools_deep(_CALL_TOOL_LOOKTHROUGH_DEPTH + 1)) is False
 
 
 async def test_call_tool_of_a_protected_tool_the_agent_allowlist_hides_is_still_protected() -> None:
