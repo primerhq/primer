@@ -256,12 +256,8 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
             # Close the inner RuntimeClient (WS + aiohttp session) FIRST:
             # remove() only deletes the daemon-side container + volume and
             # would otherwise leak the in-process connection on rollback.
-            aclose = getattr(sandbox, "aclose", None)
-            if aclose is not None:
-                try:
-                    await aclose()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("rollback sandbox aclose failed: %s", exc)
+            # Bounded: a silent peer must not hold up the removal below.
+            await close_shielded(sandbox, what="rollback sandbox")
             try:
                 await sandbox.remove()
             except Exception as exc:  # noqa: BLE001
@@ -374,9 +370,16 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
             sandbox = await self._adapter.get_sandbox(name)
         if sandbox is None:
             raise NotFoundError(f"workspace {workspace_id!r} not found")
-        await sandbox.stop()
-        await sandbox.remove()
-        await self._adapter.remove_volume(volume)
+        # Either way the connection is this destroy's to close, whatever the teardown does: the cached workspace has just
+        # left the cache, and ``get_sandbox`` hands out a new sandbox with a connection of its own on every call. ``stop()``
+        # and ``remove()`` only reach the container daemon; left open, the client keeps reconnecting to a container that no
+        # longer exists (only a 404 handshake makes it give up).
+        try:
+            await sandbox.stop()
+            await sandbox.remove()
+            await self._adapter.remove_volume(volume)
+        finally:
+            await close_shielded(sandbox, what="destroyed sandbox")
 
 
 __all__ = ["ContainerWorkspaceBackend"]
