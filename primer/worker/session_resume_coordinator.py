@@ -111,6 +111,35 @@ async def write_approval_record_for_session(
     )
 
 
+def _leaf_is_an_approval_gate(pool: "WorkerPool", parked: "ParkedState") -> bool:
+    """Whether the park's leaf is a real approval gate, so that answering it writes a ``ToolApprovalRecord``.
+
+    ``_approval`` is the label EVERY graph park carries (``primer/graph/_checkpoint.py``), whatever its leaf is: an
+    agent session parked on a child graph's ``ask_user`` node has ``parked.yielded.tool_name == "_approval"`` and its
+    reply is an operator's answer, not an approve/reject decision (``classify_approval_payload`` would call it
+    rejected and an audit record of a REJECTED approval would be written for it). When the INNERMOST frame is a
+    ``GraphFrame`` the child checkpoint's entry for the node that yielded (``node_tcid``) says what the leaf is: a
+    value-yielding ``tool_call`` node or a parked agent node whose own ``tool_name`` is not ``_approval`` is not an
+    approval gate. Everything else keeps the label's meaning: a flat session park, a gate inside a nested agent chain,
+    a child graph's real approval gate, and a frame whose node has no matching entry (nothing to tell it apart by).
+    """
+    if parked.yielded.tool_name != "_approval":
+        return False
+    from primer.worker.frames import GraphFrame
+
+    inner = parked.frames[-1] if parked.frames else None
+    if isinstance(inner, GraphFrame) and inner.node_tcid is not None:
+        from primer.worker.graph_resume_coordinator import graph_value_yield_toolcall
+
+        checkpoint = inner.checkpoint or {}
+        if graph_value_yield_toolcall(pool, checkpoint, inner.node_tcid):
+            return False
+        for entry in checkpoint.get("pending_agent_yields") or []:
+            if entry.get("tool_call_id") == inner.node_tcid and entry.get("tool_name") not in (None, "_approval"):
+                return False
+    return True
+
+
 async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
     """Drive a resumable park to its conclusion on the engine path.
 
@@ -236,7 +265,7 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
         # Before this fix, taking this branch skipped the write entirely:
         # real decisions AND terminal synthesis for a nested approval
         # gate left no audit record at all, silently.
-        if parked.yielded.tool_name == "_approval":
+        if _leaf_is_an_approval_gate(pool, parked):
             await pool._write_approval_record_for_session(
                 session=session, blob=blob, payload=resume_payload.payload,
             )
