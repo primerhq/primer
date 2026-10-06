@@ -110,7 +110,10 @@ The `_external` resume hook (registered at import; the worker's
 that never injected external tools can still resume one) translates the
 wake payload into the tool result: `{"result", "is_error"}` verbatim
 from the invoker, `{"timed_out": true}` for a `YieldTimeout`, and
-`{"cancelled": true, "reason": ...}` for a `YieldCancelled`.
+`{"cancelled": true, "reason": ...}` for a `YieldCancelled`. A graph
+agent node gets the same: the multi-event graph drain classifies a
+timeout or cancel marker before any hook sees it (see
+[graphs](graphs.md), the multi-event drain).
 
 ## 7. Persistence
 
