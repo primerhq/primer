@@ -114,6 +114,34 @@ async def test_one_response_with_three_calls_becomes_three_indexed_start_end_pai
 
 
 @pytest.mark.asyncio
+async def test_a_gateway_that_numbers_every_call_with_index_zero_still_yields_three_calls(monkeypatch):
+    """Through the real ``OpenChatLLM`` (real SSE parsing): the three calls are streamed one after the other, all with index 0 and
+    their own ids, the argument text split in two with the second half carrying no id. The adapter keyed in-progress calls on the
+    index alone, so one call survived with ``{}`` arguments."""
+    registry = ScriptRegistry()
+    registry.register("scripted:batch", parallel_tool_batch(BATCH, chunking="same_index"))
+    llm = _llm_over(registry, monkeypatch)
+    try:
+        events = await _events(llm, _user())
+    finally:
+        await llm.aclose()
+
+    starts = [e for e in events if isinstance(e, ToolCallStart)]
+    ends = [e for e in events if isinstance(e, ToolCallEnd)]
+    assert [(e.id, e.name) for e in starts] == [("call_0", "lookup"), ("call_1", "fetch"), ("call_custom", "write")]
+    assert [(e.id, e.arguments) for e in ends] == [
+        ("call_0", {"q": "alpha", "limit": 3}),
+        ("call_1", {}),
+        ("call_custom", {"path": "docs/été.md", "body": {"nested": [1, 2, {"deep": True}]}}),
+    ]
+    done = next(e for e in events if isinstance(e, Done))
+    assert done.stop_reason == "tool_use"
+    position = {id(e): i for i, e in enumerate(events)}
+    for start, end in zip(starts, ends):
+        assert position[id(start)] < position[id(end)] < position[id(done)]
+
+
+@pytest.mark.asyncio
 async def test_fragmented_calls_stream_their_arguments_interleaved_across_indexes(monkeypatch):
     """The shape that breaks an adapter keying state on 'the current call': every header first, then the
     argument text of all three calls in two interleaved passes."""
