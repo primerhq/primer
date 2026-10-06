@@ -1322,8 +1322,10 @@ class WorkerPool:
         """Write a PAUSED status to a resumable session and return a
         park-preserving outcome. Mirrors _end_session, but keeps the park:
         preserve_park=True tells on_release to leave parked_status (still
-        'resumable'), parked_state, and turn_no untouched, so a later /resume
-        re-arms the lease and replays the hook."""
+        'resumable') and parked_state untouched, so a later /resume re-arms
+        the lease and replays the hook. It does not leave turn_no alone: on
+        a successful release the adapter's preserve-park branch still bumps
+        turn_no and stamps last_turn_at (SessionClaimAdapter.on_release)."""
         from primer.int.claim import ReleaseOutcome
 
         storage = self._storage.get_storage(WorkspaceSession)
