@@ -363,8 +363,13 @@ optional `response_schema` (404 when the session is not parked on an
 `ask_user`); `ask_user/respond` validates the `response` against that
 schema and resumes the session; `yields/{tool_call_id}/cancel` skips one
 in-flight yield without ending the session (the tool sees a cancelled
-result and the agent's turn continues). The same endpoints answer a
-graph session parked mid-run on an `ask_user` node (see
+result and the agent's turn continues). On a call to a tool you supplied
+yourself (`external_tool`) the cancel also marks the call's record
+`cancelled` (`GET /v1/external_tool_calls`), unless the call already
+ended: a call record keeps the FIRST status it ends in (`completed`,
+`cancelled` or `timed_out`), so a cancel, a session cancel or a timeout
+that comes after your result never overwrites `completed`. The same
+endpoints answer a graph session parked mid-run on an `ask_user` node (see
 [graphs](graphs.md)). Tool-approval parks have their own pair
 (`tool_approval/pending` + `tool_approval/respond`); see
 [tool-approval](tool-approval.md).
