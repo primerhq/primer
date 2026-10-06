@@ -139,9 +139,14 @@ So the practical state in this release:
   read/write/list/move (`get_document_content`, `put_document`,
   `list_documents`, `move_document`); per-collection semantic search
   (`search_collection`) over the indexed bodies.
-- **Raw row CRUD.** The generic `*_document` CRUD tools still exist
-  for row-level access to the document entity, but they do not touch
-  the content store - prefer the path-addressed tools for content.
+- **Document write tools keep a document whole.**
+  `system::create_document` makes an empty, readable, indexed node (the
+  service assigns the id, so any `id` you send is ignored: read it from
+  the result); `system::update_document` changes only `title` and `meta`
+  (relocate with `move_document`, write the body with `put_document`);
+  `system::delete_document` removes the entity, the body and the search
+  index entries, and refuses a document that has children. All three
+  refuse system-owned collections and harness-managed documents.
 
 ## MCP tools
 
@@ -276,11 +281,15 @@ searchable via `system::search_collection`.
 - **The body lives in the content store, not in `meta`.** Don't write
   content into `meta` and don't expect `get_document_content` to read
   it from there; it reads the content store at `(collection_id, path)`.
-- **`put_document` re-indexes; raw CRUD does not.** The path-addressed
-  `put_document` keeps the body, the row, and the vector index
-  consistent. The generic `create_document` / `update_document` CRUD
-  tools operate on the entity row only and do not write the content
-  store or index; prefer the path-addressed tools for content.
+- **`create_document` makes an empty document; the body goes in through
+  `put_document`.** `put_document` keeps the body, the row, and the vector
+  index consistent in one call. `create_document` / `update_document` /
+  `delete_document` delegate to the same document service as the
+  collections tools, so what they create is readable, listed and indexed
+  (empty until a body is put) and what they delete leaves no body or
+  search entry behind. `create_document` ignores a caller-supplied `id`;
+  `update_document` refuses a changed `path`, `slug`, `parent_id` or
+  `collection_id`.
 - **Embedder and search_provider are immutable on a Collection.**
   Changing them would invalidate every existing vector record's
   dimensionality. To "switch embedder", create a new Collection and
