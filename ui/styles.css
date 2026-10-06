@@ -4153,6 +4153,10 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-subagent-head { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
 .nv-subagent-name { font-weight: 600; color: var(--violet); }
+/* A tool call and the subagent rows nested under it (NV_toolCallWithRows): the call's block, then its rows, indented one step so a nested
+   run reads as inside the call, each row in the .nv-subagent box above. A nested call draws ITS rows the same way, so the indent stacks. */
+.nv-call-with-subagents { display: block; }
+.nv-subagent-rows { display: block; margin: 2px 0 6px 10px; }
 .nv-steer-chip-wrap { display: flex; justify-content: flex-end; }
 .nv-steer-chip {
   display: inline-flex; align-items: center; gap: 8px;
