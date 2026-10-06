@@ -15,7 +15,8 @@ writes that spelling, so it is the older entry), so the tool call is not deliver
 Driven through the REAL ``resume_graph_engine``, the real continuation walk (``resume_graph_continuation``), the
 real re-park builder, the real agent-node hook seam and the real ``ask_user`` resume hook, over a real graph executor
 and checkpoint. The session row is written by the real claim adapter and flipped by the real durable flip. Faked:
-the agent turns (``run_agent_turn``), the subagent's tool manager and the subagent turn's resume.
+the agent turns (``run_agent_turn``), a tool_call node's dispatcher, the subagent's tool manager and the subagent
+turn's resume.
 """
 
 from __future__ import annotations
@@ -41,7 +42,14 @@ from primer.worker.continuation import InvocationServices
 from primer.worker.frames import AgentFrame, AgentResumeContext
 from primer.worker.yield_runtime import ParkedState, make_cancelled_payload, make_timeout_payload
 
-from tests._resume_hook_fakes import EngineFakePool, EngineStorageProvider, NullWorkspaceIO
+from tests._resume_hook_fakes import (
+    EngineFakePool,
+    EngineStorageProvider,
+    NullWorkspaceIO,
+    build_ask_user_graph,
+    drain_until_yield,
+    make_toolcall_executor,
+)
 from tests.graph.test_tool_wait_graph_park import _UnusedLLM, _model, _parallel_graph, _patch_run_agent_turn
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
 
@@ -193,11 +201,13 @@ class _Pool(EngineFakePool):
     _provider_registry = None
     _approval_resolver = None
 
-    def __init__(self, *, storage, graph: Graph, subagent: _Subagent) -> None:
+    def __init__(self, *, storage, graph: Graph, subagent: _Subagent, executor_factory=None) -> None:
         async def factory():
             return await _executor(graph)
 
-        super().__init__(storage=storage, workspace_io=NullWorkspaceIO(), executor_factory=factory)
+        super().__init__(
+            storage=storage, workspace_io=NullWorkspaceIO(), executor_factory=executor_factory or factory,
+        )
         self._subagent = subagent
         self.agent_node_payloads: list[tuple[str | None, object]] = []
 
@@ -394,6 +404,58 @@ async def test_a_plain_agent_node_cancel_beside_a_nested_reply_is_typed(monkeypa
     assert tcid == "tc-b"
     assert not isinstance(payload, dict), f"B received the raw cancel marker dict: {payload!r}"
     assert (payload.reason, 900 <= payload.elapsed_seconds < 960) == ("not needed", True), payload
+    assert outcome == "ENDED:completed"
+
+
+# ===========================================================================
+# a value-yielding tool_call node takes the same multi-event path
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        pytest.param(make_timeout_payload(), {"timed_out": True}, id="timeout"),
+        pytest.param(
+            make_cancelled_payload(reason="skipped"), {"cancelled": True, "reason": "skipped"}, id="cancel",
+        ),
+    ],
+)
+async def test_a_value_yield_tool_call_node_gets_the_typed_marker(marker, expected):
+    """A ``tool_call`` node running ``system__ask_user``: the hook's result becomes the node's text."""
+    graph = build_ask_user_graph()
+
+    async def first_dispatcher(node, arguments):
+        raise YieldToWorker(
+            Yielded(tool_name="ask_user", event_key=f"ask_user:{_SID}:tc-ask", resume_metadata={"prompt": "?"}),
+            tool_call_id="tc-ask",
+        )
+
+    async def resume_dispatcher(node, arguments, bypass_approval=False):  # pragma: no cover - must not run
+        raise AssertionError("a value-yielding tool_call is answered by its hook, not re-dispatched")
+
+    threads: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
+    messages: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=threads)  # type: ignore[arg-type]
+    _events, raised = await drain_until_yield(
+        make_toolcall_executor(graph, thread, threads, messages, first_dispatcher).invoke([]),
+    )
+    assert raised is not None
+    resumer = make_toolcall_executor(graph, thread, threads, messages, resume_dispatcher)
+
+    async def factory():
+        return resumer
+
+    storage = EngineStorageProvider()
+    pool = _Pool(storage=storage, graph=graph, subagent=_Subagent(), executor_factory=factory)
+    await _parked_session(storage, raised, parked_at=_now())
+
+    await _bus_delivery(storage, f"ask_user:{_SID}:tc-ask", marker)
+    outcome = await _resume(pool, storage)
+
+    answer = json.loads(resumer._context.nodes["ask"].text)
+    assert {k: answer.get(k) for k in expected} == expected, f"the node was answered as an empty reply: {answer!r}"
     assert outcome == "ENDED:completed"
 
 
