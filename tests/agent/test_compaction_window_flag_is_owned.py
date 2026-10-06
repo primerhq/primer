@@ -4,9 +4,10 @@
 grace chains the close of its window to the commit's completion (``_close_the_window_when_done``); if the commit then lands
 after a LATER turn on the same session has opened its own window (the later turn queued for the messages lock first), the
 stale close cleared the later turn's flag. A steer sent while that later turn compacts was then committed at once instead of
-deferred behind its marker, which is the loss the deferral exists to prevent (the folded steer is in no summary). The flag is
-now owned by a token: a close that is not the open window's is a no-op, and it does not drain the steers deferred inside the
-window that is still open either.
+deferred behind its marker. What the flag protects is the deferral invariant: a steer sent while a window is open is applied AFTER
+that window's marker, FIFO among the steers deferred, and not committed ahead of it (the marker's kept-tail carry of lines
+written after its snapshot is a backstop, not a guarantee). The flag is now owned by a token: a close that is not the open
+window's is a no-op, and it leaves the steers deferred under the window that is still open alone (the next close applies them).
 """
 
 from __future__ import annotations
@@ -16,10 +17,12 @@ import asyncio
 import pytest
 
 import primer.agent.base as base
+from primer.model.chat import Message, TextPart
 from tests._support.off_golden import FnLLM, make_executor, open_session, run_turn, text_events
 from tests.agent.test_overflow_replay_characterisation import POSIX, _markers, _reactive, _reload, _seed, _tool_ids
 
 STEER = "a steer that arrives while the later turn compacts"
+EARLY = "a steer deferred under the earlier turn's window, before the later turn opened its own"
 
 
 async def _jsonl(session) -> str:
@@ -55,6 +58,11 @@ async def test_a_stale_deferred_close_does_not_clear_the_window_of_a_later_turn(
         # Turn A: an overflow, a forced compaction whose marker commit hangs, a hard cancel, the grace runs out.
         task_a = asyncio.create_task(run_turn(session, FnLLM(_reactive())))
         await asyncio.wait_for(a_entered.wait(), timeout=30)
+        # A steer deferred under A's window. ``append_instruction`` would block on the lock A's hung commit holds, so it is
+        # queued the way ``append_instruction`` queues one while the flag is set (under the lock, which this test cannot take).
+        session._state.add_pending_steer(  # noqa: SLF001
+            session.session_id, Message(role="user", parts=[TextPart(text=EARLY)]),
+        )
         task_a.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task_a, timeout=10)
@@ -83,13 +91,24 @@ async def test_a_stale_deferred_close_does_not_clear_the_window_of_a_later_turn(
 
         assert session._state.is_compacting(session.session_id), "A's stale close cleared B's window"  # noqa: SLF001
         await session.append_instruction(STEER)
-        assert len(session._state.peek_pending_steers(session.session_id)) == 1, "the steer is deferred"  # noqa: SLF001
-        assert STEER not in await _jsonl(session), "and not committed ahead of B's window"
+        pending = [
+            "".join(p.text for p in m.parts if isinstance(p, TextPart))
+            for m in session._state.peek_pending_steers(session.session_id)  # noqa: SLF001
+        ]
+        assert pending == [EARLY, STEER], "A's refused close left EARLY alone, and STEER is queued behind it (FIFO)"
+        written = await _jsonl(session)
+        assert EARLY not in written and STEER not in written, "neither is committed ahead of the window that is open"
 
         b_release.set()
         await asyncio.wait_for(task_b, timeout=30)
-        assert (await _jsonl(session)).count(STEER) == 1, "B's own close applied it, once"
+        lines = (await _jsonl(session)).splitlines()
+        assert sum(EARLY in line for line in lines) == 1 and sum(STEER in line for line in lines) == 1, "each applied once"
+        marker = max(i for i, line in enumerate(lines) if '"compaction_marker"' in line)
+        early = next(i for i, line in enumerate(lines) if EARLY in line)
+        steer = next(i for i, line in enumerate(lines) if STEER in line)
+        assert marker < early < steer, "applied after the last marker, in the order they were deferred"
         assert not session._state.is_compacting(session.session_id)  # noqa: SLF001
+        assert not session._state.peek_pending_steers(session.session_id)  # noqa: SLF001
         assert len(_markers(workspace, session)) == 1 and _tool_ids(await _reload(session))[0].count("call_a") == 1
     finally:
         a_gate.set()
