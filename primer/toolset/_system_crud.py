@@ -451,6 +451,10 @@ def _crud_tools_for(
                 )
             ],
             required_role=required_role,
+            # An entity with an ``on_update`` hook is a row write and then the hook that drops the cached adapter: a
+            # Stop that cancelled in between would leave the adapter built from the old row. A Stop waits for the
+            # call. Without a hook it is one statement in one transaction.
+            interruptible=on_update is None,
         ),
         _update_handler,
     )
@@ -494,6 +498,7 @@ def _crud_tools_for(
                 ToolExample(args={"id": hint.sample_id}, returns="deletion ack")
             ],
             required_role=required_role,
+            interruptible=on_delete is None,                  # as update_: the row delete, then the hook
         ),
         _delete_handler,
     )
