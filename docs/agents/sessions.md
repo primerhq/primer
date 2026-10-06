@@ -219,7 +219,8 @@ intact, so the next message continues it:
   already sent, so it would only throw away the real result), and the
   document tools (`create_document`, `update_document`,
   `move_document`, `delete_document` in the collections toolset, and
-  `put_document`) commit a database transaction and then update the search
+  `put_document`, `create_document` and `delete_document` in the system
+  toolset) commit a database transaction and then update the search
   index, so cancelling between the two would leave the index stale. So are
   the tools that change more than one thing, each with no transaction around
   the steps: creating, updating, deleting or firing a trigger (the row, then
