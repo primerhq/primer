@@ -188,8 +188,10 @@ Agents are managed via standard CRUD plus the semantic search tool.
   `max_tool_turns` (default 50). Omit `id` and the server assigns
   `agent-<hex>` (e.g. `agent-3f9a1c8d`); supply one to use it
   verbatim. The id is immutable after creation.
-- `system::update_agent` - partial update. Editing a harness-
-  managed agent (`harness_id` set) returns 409.
+- `system::update_agent` - partial update. Editing or deleting a
+  harness-managed agent (`harness_id` set) returns a `conflict`
+  error, and `create_agent` refuses a body that sets `harness_id`
+  (`bad-request`); the same rule as the REST routes.
 - `system::delete_agent` - cascade-blocked if any session is bound to
   the agent.
 - `system::find_agents` - predicate query.
