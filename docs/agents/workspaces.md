@@ -339,6 +339,27 @@ session is outside the group, so it is not killed.
   agents from clobbering files they haven't seen. External MCP
   writes via `workspaces::write_workspace_file` always force-
   write (no session-read tracking outside a session).
+- **A local-provider workspace can be refused (HTTP 409
+  `/errors/workspace-refused`).** A local workspace's write lock exists
+  only inside one process, so a deployment whose API and worker are
+  separate processes (`runtime_mode` is not `api+worker`), or whose
+  scheduler is Postgres, refuses to hand one out once
+  `local_workspaces.refuse_when_distributed` is on (it is off by
+  default). `create_workspace` (REST and the MCP tool) then fails with
+  the refusal and creates nothing. A workspace that already exists on a
+  local provider becomes unusable the same way, but it is NOT lost: its
+  sessions are PAUSED, not ended, with the reason in the session row's
+  `workspace_refusal` field (the transcript lives inside the refused
+  workspace, so it cannot hold it), and `/resume` re-arms them once the
+  workspace has moved to a docker or kubernetes provider. The way out
+  is a template on a docker or kubernetes provider (for example
+  `k3s-default`), or, when exactly one process runs the API and the
+  worker together, `local_workspaces.single_process: true`. `DELETE`
+  on a refused workspace drops its row and ends its sessions
+  `workspace_lost`, and leaves the files on the provider's disk.
+  `/v1/health` reports the rule under `workspaces.local`
+  (`distributed`, `enforcing`, `refusing_local`, `local_workspaces`,
+  `unusable`), with the switch off too.
 - **Multi-session shared filesystem is collaborative, not
   isolated.** Two simultaneous sessions on the same workspace
   WILL race on file writes. Coordinate via `.state/shared/`.
