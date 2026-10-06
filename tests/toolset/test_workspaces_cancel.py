@@ -16,6 +16,7 @@ themselves:
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -176,6 +177,29 @@ class TestDeleteWorkspaceCarriesOnAfterACancel:
         release.set()
 
         await _until(lambda: "ws-x" not in store._data and "ws-x" not in backend._workspaces)  # type: ignore[attr-defined]
+
+    async def test_a_teardown_that_fails_after_its_caller_was_cancelled_is_logged(
+        self, sp, workspace_registry, toolset, caplog
+    ) -> None:
+        backend = await self._seeded(toolset, workspace_registry)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def destroy_that_fails_late(workspace_id: str) -> None:
+            entered.set()
+            await release.wait()
+            raise RuntimeError("docker is gone")
+
+        backend.destroy = destroy_that_fails_late  # type: ignore[method-assign]
+
+        call = asyncio.create_task(toolset.call(tool_name="delete_workspace", arguments={"id": "ws-x"}))
+        await entered.wait()
+        await _cancel(call)
+
+        with caplog.at_level(logging.ERROR, logger="primer.toolset.workspaces"):
+            release.set()
+            await _until(lambda: any("failed after its caller was cancelled" in r.getMessage() for r in caplog.records))
+
+        assert any("delete_workspace ws-x" in r.getMessage() for r in caplog.records), "the log line names the workspace"
 
     async def test_a_delete_that_is_not_cancelled_returns_its_result(self, sp, workspace_registry, toolset) -> None:
         await self._seeded(toolset, workspace_registry)
