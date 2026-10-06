@@ -172,9 +172,10 @@ class BaseWorkspaceBackend(WorkspaceBackend):
             "%s: cached workspace %s is gone; evicting and re-attaching",
             type(self).__name__, workspace_id,
         )
-        # ``aclose`` ends the handle's live sessions, each a state commit over the very connection that is gone, and a request
-        # on a disconnected ``RuntimeClient`` waits for a reconnect that never comes: no bound of its own, and ``get`` is on
-        # the caller's path. ``close_shielded`` bounds it and logs a failure.
+        # ``aclose`` ends the handle's live sessions, each a state commit over the very connection that is gone. A closed
+        # ``RuntimeClient`` (which a gone one is) refuses the request at once, but a client that is only disconnected, a slow
+        # peer or a silent one still waits with no bound of its own, and ``get`` is on the caller's path. ``close_shielded``
+        # bounds it and logs a failure.
         await close_shielded(
             cached, what=f"{type(self).__name__}: evicted gone workspace {workspace_id}",
         )
