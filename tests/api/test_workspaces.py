@@ -83,6 +83,22 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        """``Storage.patch_if`` over the stored model, by the pure-Python reference statement (the guarded
+        ``ExternalToolCall`` writers use it). The written row replaces the stored object, like a backend's."""
+        from primer.model.common import dump_for_storage
+        from tests.storage._patch_reference import patch_if_reference
+
+        current = self._data.get(id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {id!r}")
+        raw = {k: v for k, v in dump_for_storage(current).items() if k != "id"}
+        out = patch_if_reference(type(current), id, raw, patch, where=where, set_paths=set_paths)
+        if out is None:
+            return None
+        self._data[id] = out[1]
+        return out[1]
+
     async def delete(self, id):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")

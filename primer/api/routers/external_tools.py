@@ -10,7 +10,9 @@ send); this router only exposes discovery and audit:
 Timeout is materialised lazily here: worker resume hooks have no
 storage handle, so any read that touches a pending row whose
 ``timeout_at`` passed flips it to ``timed_out`` first (the park itself
-is resumed by the existing ``parked_until`` sweeper).
+is resumed by the existing ``parked_until`` sweeper). The flip is the
+guarded :func:`primer.session.external_calls.resolve_external_row`, so
+it never overwrites a row that a result or a cancel already resolved.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from primer.api.deps import get_external_tool_call_storage
 from primer.api.errors import common_responses
 from primer.model.external_tool import ExternalToolCall
 from primer.model.storage import OffsetPage
+from primer.session.external_calls import resolve_external_row
 from primer.storage.q import Q
 
 external_tools_router = APIRouter(tags=["external-tools"])
@@ -42,15 +45,28 @@ class PendingExternalCall(BaseModel):
 
 
 async def sweep_expired(storage, rows: list[ExternalToolCall]) -> None:
-    """Flip pending rows whose ``timeout_at`` has passed to timed_out."""
+    """Flip pending rows whose ``timeout_at`` has passed to timed_out.
+
+    Each flip is one guarded write (``resolve_external_row``), so a row
+    that left ``pending`` since it was read (a result or a cancel landed)
+    keeps its status. Every row it tried to flip is then refreshed IN
+    PLACE, from the written row or, when the write was rejected, from one
+    fresh read: the callers filter and report ``rows`` after the sweep,
+    and must see the row's real status, not the ``pending`` they read.
+    """
     now = datetime.now(UTC)
     for row in rows:
         if row.status == "pending" and row.timeout_at and row.timeout_at < now:
-            row.status = "timed_out"
-            row.result = {"timed_out": True}
-            row.is_error = True
-            row.resolved_at = now
-            await storage.update(row)
+            fresh = await resolve_external_row(
+                storage, row.id, status="timed_out",
+                result={"timed_out": True}, is_error=True,
+            )
+            if fresh is None:
+                fresh = await storage.get(row.id)
+            if fresh is None:
+                continue
+            for name in type(row).model_fields:
+                setattr(row, name, getattr(fresh, name))
 
 
 async def _pending_for(storage, *, field: str, value: str) -> dict:

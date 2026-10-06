@@ -9,12 +9,14 @@ API-facing record and are kept in lockstep by these helpers.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from collections.abc import Collection
+from datetime import datetime
 from typing import Any
 
 from primer.model.except_ import ConflictError
 from primer.model.external_tool import ExternalToolCall
 from primer.model.storage import OffsetPage
+from primer.session.external_calls import resolve_external_row
 from primer.session.yields import durably_wake_session
 from primer.storage.q import Q
 
@@ -122,6 +124,11 @@ async def apply_tool_results(
 
     Raises :class:`ConflictError` before any state change if ANY id is
     unknown or already resolved. Returns the number of applied results.
+
+    Each call's row is then marked ``completed`` through the guarded
+    :func:`resolve_external_row`: a row that left ``pending`` after the
+    validation (a cancel or the lazy timeout won the race) keeps the
+    status it reached and is not overwritten.
     """
     targets = _pending_targets(session)
     rows = await _rows_by_tcid(call_storage, session_id=session.id)
@@ -156,12 +163,16 @@ async def apply_tool_results(
                 await event_bus.publish(targets[r.tool_call_id], payload)
             except Exception:  # noqa: BLE001 - durable flip already landed
                 logger.exception("external tool result publish failed")
-        row = rows[r.tool_call_id]
-        row.status = "completed"
-        row.result = r.result
-        row.is_error = bool(r.is_error)
-        row.resolved_at = datetime.now(UTC)
-        await call_storage.update(row)
+        landed = await resolve_external_row(
+            call_storage, rows[r.tool_call_id].id,
+            status="completed", result=r.result, is_error=bool(r.is_error),
+        )
+        if landed is None:
+            logger.info(
+                "external tool call %r on session %s left pending before its "
+                "result was recorded; its row keeps the status it reached",
+                r.tool_call_id, session.id,
+            )
     return len(results)
 
 
@@ -171,8 +182,20 @@ async def cancel_pending_external(
     session_id: str | None = None,
     chat_id: str | None = None,
     reason: str = CANCEL_REASON_SUPERSEDED,
-) -> int:
-    """Flip every pending row for the owner to cancelled. Returns count.
+    tool_call_ids: Collection[str] | None = None,
+    created_before: datetime | None = None,
+) -> list[str]:
+    """Cancel the owner's pending rows; return the tool_call_ids cancelled.
+
+    Each row is cancelled by the guarded :func:`resolve_external_row`, so
+    a row that left ``pending`` in the meantime (its result landed, or
+    another cancel or the lazy timeout won) keeps its status and is not
+    in the returned list: the list holds exactly the ids whose
+    ``cancelled`` write landed.
+
+    ``tool_call_ids`` restricts the cancel to those calls. ``created_before``
+    (an aware datetime) restricts it to rows created strictly earlier,
+    compared in Python; a row with no ``created_at`` is then spared.
 
     Row-side only: waking the park with the synthetic cancelled payload
     (so the turn resumes and pairs the call) is the caller's job, via
@@ -181,13 +204,22 @@ async def cancel_pending_external(
     rows = await _rows_by_tcid(
         call_storage, session_id=session_id, chat_id=chat_id
     )
-    for row in rows.values():
-        row.status = "cancelled"
-        row.result = {"cancelled": True, "reason": reason}
-        row.is_error = True
-        row.resolved_at = datetime.now(UTC)
-        await call_storage.update(row)
-    return len(rows)
+    wanted = None if tool_call_ids is None else set(tool_call_ids)
+    landed: list[str] = []
+    for tool_call_id, row in rows.items():
+        if wanted is not None and tool_call_id not in wanted:
+            continue
+        if created_before is not None and (
+            row.created_at is None or row.created_at >= created_before
+        ):
+            continue
+        done = await resolve_external_row(
+            call_storage, row.id, status="cancelled",
+            result={"cancelled": True, "reason": reason}, is_error=True,
+        )
+        if done is not None:
+            landed.append(tool_call_id)
+    return landed
 
 
 __all__ = [
