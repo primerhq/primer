@@ -194,13 +194,19 @@ async def cancel_pending_external(
     ``cancelled`` write landed.
 
     ``tool_call_ids`` restricts the cancel to those calls. ``created_before``
-    (an aware datetime) restricts it to rows created strictly earlier,
-    compared in Python; a row with no ``created_at`` is then spared.
+    (an aware datetime; a naive one raises ``ValueError`` before anything
+    is read) restricts it to rows created strictly earlier, compared in
+    Python; a row with no ``created_at`` is then spared.
 
     Row-side only: waking the park with the synthetic cancelled payload
     (so the turn resumes and pairs the call) is the caller's job, via
     the same wake helpers the results path uses.
     """
+    if created_before is not None and created_before.utcoffset() is None:
+        raise ValueError(
+            "created_before must be a timezone-aware datetime: rows are "
+            "compared on their aware created_at"
+        )
     rows = await _rows_by_tcid(
         call_storage, session_id=session_id, chat_id=chat_id
     )

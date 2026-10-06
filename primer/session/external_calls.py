@@ -47,15 +47,23 @@ async def resolve_external_row(
     write: the row had already left ``pending``, its terminal status was
     written by whoever moved it, and it stands. Raises on a storage
     error, including ``NotFoundError`` for a row that does not exist.
-    The patch is encoded to JSON first (``to_jsonable_python``), so a
-    ``result`` that cannot be stored raises here and writes nothing.
+
+    The patch is encoded to JSON first (``to_jsonable_python``) the way a
+    whole-row write dumps the model: NaN and the infinities become
+    ``null`` (``inf_nan_mode="null"``, as ``dump_for_storage`` does), so
+    a result carrying one is stored exactly as the park receives it. A
+    ``result`` no JSON can hold (an arbitrary object, bytes that are not
+    UTF-8, a lone surrogate) raises here and writes nothing.
     """
-    patch = to_jsonable_python({
-        "status": status,
-        "result": result,
-        "is_error": is_error,
-        "resolved_at": datetime.now(UTC),
-    })
+    patch = to_jsonable_python(
+        {
+            "status": status,
+            "result": result,
+            "is_error": is_error,
+            "resolved_at": datetime.now(UTC),
+        },
+        inf_nan_mode="null",
+    )
     return await storage.patch_if(row_id, patch, where={"status": ["pending"]})
 
 
