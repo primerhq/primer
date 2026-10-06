@@ -7,12 +7,17 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from primer.common.shielded import run_in_background
 from primer.model.channel import (
     ChannelProvider, DiscordChannelProviderConfig,
 )
 
 
 logger = logging.getLogger(__name__)
+
+#: How long a caller waits for the cleanup of a gateway start that did not finish (stopping the connect task, closing the logged-in
+#: client: an HTTP session and a websocket) before it carries on and leaves the cleanup running.
+_START_CLEANUP_WAIT_S = 10.0
 
 
 def _build_client(cfg: DiscordChannelProviderConfig) -> Any:
@@ -39,16 +44,40 @@ async def _start_client_as_task(
     ``wait_until_ready`` on an unlogged-in client raises "Client has not been
     properly initialised", so ``client.start`` (login + connect) cannot be
     create_task'd and immediately waited on.
+
+    A start that does not finish (a failed login, the ready timeout, a cancel or a caller's ``asyncio.timeout``: the relay builds
+    an adapter inside its 15-second post bound, shorter than the 30-second ready wait) is undone: the connect task is stopped and
+    the logged-in client closed, on their own task and with a bounded wait (``run_in_background``), so nothing keeps a gateway
+    session open that no registry entry points at, and the next acquire does not open a second one.
     """
-    await client.login(token)
-    task = asyncio.create_task(client.connect())
-    # Wait for the gateway to reach READY (or timeout).
+    task: asyncio.Task | None = None
     try:
-        await asyncio.wait_for(client.wait_until_ready(), timeout=ready_wait)
-    except TimeoutError as exc:
+        await client.login(token)
+        task = asyncio.create_task(client.connect())
+        # Wait for the gateway to reach READY (or timeout).
+        try:
+            await asyncio.wait_for(client.wait_until_ready(), timeout=ready_wait)
+        except TimeoutError as exc:
+            raise RuntimeError("discord gateway ready timeout") from exc
+        return task
+    except BaseException:
+        await run_in_background(
+            _discard_client(client, task), what="discord gateway start", verb="cleanup", wait_s=_START_CLEANUP_WAIT_S,
+        )
+        raise
+
+
+async def _discard_client(client: Any, task: asyncio.Task | None) -> None:
+    """Undo a gateway start that did not finish: stop the connect task, wait for it, then close the client. Never raises."""
+    if task is not None:
         task.cancel()
-        raise RuntimeError("discord gateway ready timeout") from exc
-    return task
+        await asyncio.wait({task})
+        if not task.cancelled():
+            task.exception()  # retrieved: nothing else will read how the gateway loop ended
+    try:
+        await client.close()
+    except Exception:  # noqa: BLE001
+        logger.warning("discord: closing the client of a start that did not finish failed", exc_info=True)
 
 
 @dataclass
@@ -93,15 +122,19 @@ class _DiscordConnectionRegistry:
                 return
             entry.refcount -= 1
             if entry.refcount <= 0:
-                try:
-                    await entry.client.close()
-                except Exception:
-                    logger.exception(
-                        "discord: close failed for %s", provider.id,
-                    )
-                if entry.task is not None:
-                    entry.task.cancel()
+                # The entry goes FIRST: whatever the close does (it fails, or the releasing task is cancelled while it runs),
+                # a stale entry would hand the next acquire a closed client, and the gateway task is stopped either way.
                 del self._entries[provider.id]
+                try:
+                    # On its own task with a bounded wait: a cancel of the releasing task must not leave the HTTP session
+                    # and the websocket half closed.
+                    await run_in_background(
+                        entry.client.close(), what=f"discord client of {provider.id}", verb="close",
+                        wait_s=_START_CLEANUP_WAIT_S,
+                    )
+                finally:
+                    if entry.task is not None:
+                        entry.task.cancel()
 
     def entry(self, provider_id: str) -> _Entry | None:
         return self._entries.get(provider_id)
