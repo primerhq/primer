@@ -316,6 +316,36 @@ def test_records_without_run_ids_still_nest_by_raw_id() -> None:
     ]
 
 
+def _flatten(shape) -> list[int]:
+    return [seq for seq, kids in shape for seq in [seq, *_flatten(kids)]]
+
+
+def test_a_delegated_run_written_by_the_real_writers_nests_in_the_console_tree() -> None:
+    """The records come from ``translate_stream_event`` and the real ``DelegationRecorder`` (tests/ui_e2e/_delegation_seed.py, which the
+    Playwright journey seeds the same way), not from a dict written to fit the code: the first test of this nesting used a hand-built
+    ``tool_call_id`` shape that a real record does not have, which is how it never worked."""
+    from tests.ui_e2e import _delegation_seed as seed
+
+    seeded = seed.build()
+    ctx = _ctx()
+    tree = json.loads(ctx.eval(
+        "(function () {"
+        "  var rows = SH_nestSubagentRows(SA_toTranscript(" + json.dumps(seeded.records) + ", null));"
+        "  function shape(r) { return [r.seq, (r.children || []).map(shape)]; }"
+        "  return JSON.stringify(rows.map(shape));"
+        "})()"
+    ))
+    delegated = {r["seq"] for r in seeded.records if r["payload"].get("delegated")}
+    grandchild = {r["seq"] for r in seeded.records if r["payload"].get("delegate_run_id") == seed.RUN_GRANDCHILD}
+    by_seq = {seq: kids for seq, kids in tree}
+    assert not delegated & set(by_seq), "a delegated row is at the top level"
+    parent_kids = by_seq[seeded.parent_call_seq]
+    assert delegated <= set(_flatten(parent_kids)), "every delegated row nests under the parent's invoke_agent call"
+    child_call = next(kids for seq, kids in parent_kids if seq == seeded.child_call_seq)
+    assert grandchild and grandchild <= set(_flatten(child_call)), "the grandchild's rows nest under the CHILD's own call"
+    assert not grandchild & {seq for seq, _ in parent_kids}, "and not directly under the parent's call"
+
+
 def test_flat_interleaving_is_not_produced_when_attribution_is_absent() -> None:
     """A record with no delegate key is an ordinary row, not a lost child."""
     ctx = _ctx()
