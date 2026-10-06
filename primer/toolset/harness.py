@@ -72,8 +72,9 @@ def _harness_dict(harness: Harness) -> dict:
 def _refuse_if_outbound(harness: Harness, operation: str) -> ToolCallResult | None:
     """The REST routes' 409 ``direction_mismatch``: fetch, install and sync are inbound operations.
 
-    Checked right after the harness is found, before anything else, as the routes do. An operation the worker now claims
-    (the lease is upserted) is not harmless on a harness it was never meant for.
+    Checked right after the harness is found, before anything else, as the routes do. The worker has its own direction guard
+    (``run_one_harness_operation``), but it runs after the claim and releases the harness as ERROR: refusing here answers
+    the caller and leaves the harness as it was.
     """
     if harness.direction == HarnessDirection.OUTBOUND:
         return _err(
