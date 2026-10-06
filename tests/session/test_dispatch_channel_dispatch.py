@@ -307,3 +307,72 @@ async def test_a_cancellation_during_the_fan_out_still_propagates(monkeypatch) -
         await yield_runtime._dispatch_to_channels_multi(
             dispatcher=_RecordingDispatcher(), workspace_id="w1", session_id="s1", pending=pending, already_sent=set(),
         )
+
+
+@pytest.mark.asyncio
+async def test_a_multi_node_graph_park_with_one_unbuildable_envelope_still_lands_and_prompts_the_others(
+    monkeypatch, caplog,
+) -> None:
+    """Through the REAL park arm (``run_one_session_turn``), not a direct call: a graph park with two pending gates where
+    ONE gate's prompt envelope cannot be built. The park lands, the other gate is still prompted on the channels, and an
+    ERROR naming the session and the node is logged (the per-node guard of ``_dispatch_to_channels_multi``)."""
+    import logging
+
+    import primer.worker.yield_runtime as yield_runtime
+    from tests.session.test_tool_wait_park_invariant_fails_turn import _RecordingDispatcher as _Recorder
+    from tests.session.test_tool_wait_park_invariant_fails_turn import _setup
+
+    _storage, session_id, _io, _lines, deps, lease = await _setup("yield_mixed_multi")
+    deps.channel_dispatcher = _Recorder()
+    real = yield_runtime._build_prompt_envelope
+
+    def flaky(**kwargs):
+        if kwargs["fallback_tool_call_id"] == "gate-a":
+            raise ValueError("the first gate's metadata is malformed")
+        return real(**kwargs)
+
+    monkeypatch.setattr(yield_runtime, "_build_prompt_envelope", flaky)
+
+    with caplog.at_level(logging.ERROR):
+        outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.success is True and outcome.park is not None, "the park did not land"
+    assert [(e.tool_call_id, e.prompt) for e in deps.channel_dispatcher.prompts] == [("gate-b", "size?")]
+    assert any(
+        r.levelno >= logging.ERROR and session_id in r.getMessage() and "gate-a" in r.getMessage() for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+@pytest.mark.asyncio
+async def test_a_dispatcher_that_fails_for_one_node_does_not_drop_the_others_prompts(caplog) -> None:
+    """The multi fan-out's OTHER guard, around ``dispatcher.dispatch_prompt`` itself: one node's delivery failure is
+    logged with the session id, the other nodes are still prompted, and only the delivered ones are reported sent
+    (so a later re-park retries the failed one)."""
+    import logging
+
+    from primer.worker.yield_runtime import _dispatch_to_channels_multi
+
+    class _FlakyDispatcher:
+        def __init__(self) -> None:
+            self.delivered: list[str] = []
+
+        async def dispatch_prompt(self, *, envelope, session=None):
+            if envelope.tool_call_id == "tc-down":
+                raise ConnectionError("the channel is unreachable")
+            self.delivered.append(envelope.tool_call_id)
+            return [{"ok": True}]
+
+    dispatcher = _FlakyDispatcher()
+    pending = [
+        {"kind": "ask_user", "node_id": "n1", "tool_call_id": "tc-down", "resume_metadata": {"prompt": "a?"}},
+        {"kind": "ask_user", "node_id": "n2", "tool_call_id": "tc-up", "resume_metadata": {"prompt": "b?"}},
+    ]
+
+    with caplog.at_level(logging.ERROR):
+        sent = await _dispatch_to_channels_multi(
+            dispatcher=dispatcher, workspace_id="w1", session_id="s1", pending=pending, already_sent=set(),
+        )
+
+    assert dispatcher.delivered == ["tc-up"]
+    assert sent == {("n2", "tc-up")}, f"sent: {sent}"
+    assert any(r.levelno >= logging.ERROR and "s1" in r.getMessage() and "tc-down" in r.getMessage() for r in caplog.records)
