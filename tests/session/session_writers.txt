@@ -1,0 +1,31 @@
+# The pinned set of WHOLE-DOCUMENT writers of Storage[WorkspaceSession].
+#
+# A whole-document write (`update`, `update_unless`, ...) of a session row can erase a field another writer
+# committed between its `get` and its write (a park, a cancel flag). The set of such writers is pinned by
+# tests/session/test_session_writer_set.py, which scans primer/ with tests/_support/session_writer_scan.py
+# (it follows the handle TYPE, so a renamed variable cannot hide a writer) and compares in BOTH directions:
+#   - a writer in the code that is not listed here fails: classify it, add a line, read plan section 3.4(e);
+#   - a line here that the code no longer has fails: the writer was converted to a field-scoped `patch_if`
+#     (or removed), which is good news, delete the line. Whoever converts a writer edits this file.
+# Field-scoped `patch_if` / `patch_if_checked` sites are NOT writers of this set and are not listed.
+#
+# Line format, one line per (file, function, method), fields separated by ' | ':
+#     file | function | method | sites | disposition
+# `function` is the qualified name (Class.method, or outer.inner for a nested def). `sites` is how many
+# calls of that method the function makes (no line numbers, so unrelated edits do not churn this file); a
+# new site in an already-listed function fails like a new writer. The disposition is free text after the
+# fourth bar (it may contain bars) and must not be empty. The same key twice is an error.
+#
+# Sections:
+#   [writers]    whole-document update / update_unless / upsert / replace / put on a session handle.
+#   [deletes]    `delete` on a session handle: a regression pin only (plan ruling C11).
+#   [unresolved] `<receiver>.update(...)` / `.update_unless(...)` calls with a whole-document shape (a
+#                `.model_copy(...)` argument, or a name mentioning a session) on a receiver the scan could
+#                NOT type as any Storage[<model>]. Each is hand-classified as NOT a session write, with the
+#                reason; a new one fails until someone has looked. The method column is `<receiver>.<method>`.
+
+[writers]
+
+[deletes]
+
+[unresolved]
