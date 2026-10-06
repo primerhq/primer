@@ -42,7 +42,14 @@ Four rules make that safe:
   exits (executor failure, cancel/interrupt, clean completion), so a
   follow-up runs under the INCOMING binding. Every cancelled turn, a Stop,
   a Cancel, or a Cancel found after the stream's last event, takes the one
-  shared exit `_land_cancelled_turn`, so that exit drains once.
+  shared exit `_land_cancelled_turn`, so that exit drains once. The pool's
+  `_end_session` (every engine-path end: a failed resume, a cancelled park, a
+  finished graph resume) has no turn behind it and so no checkpoint, so it
+  applies a queued switch itself through `apply_queued_binding_switch`
+  (best effort; nothing queued writes nothing). Without that, a switch queued
+  on a parked session survived a failed resume on the ENDED row and, after a
+  reopen, the user's next message was answered by the OUTGOING binding. That
+  exit still does not realize queued steers (unchanged).
 - **Epochs fence stale writes.** A terminal status, a park and a resume
   each carry the epoch they began under; the row rejects a write from an
   epoch it has moved past, so a turn finishing under a replaced binding
