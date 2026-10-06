@@ -1295,6 +1295,17 @@ class WorkerPool:
                 "ended_at": datetime.now(timezone.utc),
             })
             await storage.update(ended)
+            # Every terminal exit of the turn applies a switch queued on the session (dispatch.py's drain
+            # checkpoint); this one has no turn behind it, so it applies the switch itself. Without it a
+            # switch queued on a parked session survives a failed resume on the ENDED row, and after a reopen
+            # the user's next message is answered by the OUTGOING binding. Best effort, like the checkpoint.
+            from primer.session.dispatch import apply_queued_binding_switch
+
+            io_shim = _WorkspaceIOShim(workspace_registry=self._workspace_registry)
+            io_shim.register_session(session.id, session.workspace_id)
+            await apply_queued_binding_switch(
+                storage_provider=self._storage, workspace_io=io_shim, session_id=session.id,
+            )
         else:
             # 01a08bf0: "vanished because something else already ended it"
             # and "vanished unexpectedly" are genuinely indistinguishable
