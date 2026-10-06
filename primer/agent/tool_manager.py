@@ -97,6 +97,25 @@ _GRANT_TOOLSET_IDS: frozenset[str] = frozenset(
 # rejects bare ids that contain this separator.
 _SCOPE_SEPARATOR = "__"
 
+# ``system__call_tool`` forwards a call to ANOTHER toolset's tool, so whether a Stop may cancel it is decided by the
+# tool it wraps (:meth:`ToolExecutionManager.is_interruptible_call`). Kept as a local constant, like the ids above.
+_CALL_TOOL_ID = f"system{_SCOPE_SEPARATOR}call_tool"
+
+# How many ``call_tool`` wrappers the look-through follows. A chain longer than this is not something a model writes on
+# purpose; it is treated as protected (when unsure, wait) rather than followed without bound.
+_CALL_TOOL_LOOKTHROUGH_DEPTH = 4
+
+
+def _wrapped_call(arguments: object) -> tuple[str, dict] | None:
+    """The (scoped tool id, arguments) a ``call_tool`` call wraps, or None when its arguments do not name a tool."""
+    if not isinstance(arguments, dict):
+        return None
+    toolset_id, tool_name = arguments.get("toolset_id"), arguments.get("tool_name")
+    if not (isinstance(toolset_id, str) and toolset_id and isinstance(tool_name, str) and tool_name):
+        return None
+    inner = arguments.get("arguments")
+    return f"{toolset_id}{_SCOPE_SEPARATOR}{tool_name}", inner if isinstance(inner, dict) else {}
+
 
 class ToolExecutionManager:
     """Registry that owns every tool the agent can invoke.
@@ -204,10 +223,11 @@ class ToolExecutionManager:
         # agent may not call; the agent loop reads it to pick the self-resume
         # branch.
         self._notifying: set[str] = set()
-        # Scoped ids of every visible tool a Stop must NOT cancel (``Tool.interruptible``
-        # False for a toolset tool, ``WorkspaceTool.interruptible`` False for a workspace
-        # tool). Filled beside the catalogue in ``list_tools``; the loop asks
-        # :meth:`is_interruptible` only once a Stop has fired.
+        # Scoped ids of every tool a Stop must NOT cancel (``Tool.interruptible`` False for a
+        # toolset tool, ``WorkspaceTool.interruptible`` False for a workspace tool), VISIBLE TO
+        # THIS AGENT OR NOT: ``system__call_tool`` reaches tools outside the agent's allowlist, and
+        # :meth:`is_interruptible_call` must still find their declaration. Filled in ``list_tools``;
+        # the loop asks only once a Stop has fired.
         self._uninterruptible: set[str] = set()
         # Scoped workspace-tool id (``workspace__bare_name``) -> bare_name.
         # Separate map so dispatch can look up the WorkspaceTool from
@@ -401,6 +421,10 @@ class ToolExecutionManager:
                     # allowlist hit still resolves; the visible
                     # catalogue is filtered below.
                     self._tool_to_toolset[scoped_id] = (toolset_id, t.id)
+                    # Recorded before the allowlist filter, like the routing table: a tool this agent
+                    # cannot call directly can still be reached through ``call_tool``.
+                    if not t.interruptible:
+                        self._uninterruptible.add(scoped_id)
                     # External tools bypass the agent allowlist: they are
                     # per-invocation grants carried by the triggering
                     # message, not entries in Agent.tools.
@@ -412,8 +436,6 @@ class ToolExecutionManager:
                         continue
                     if t.tool_class == "notifying":
                         self._notifying.add(scoped_id)
-                    if not t.interruptible:
-                        self._uninterruptible.add(scoped_id)
                     scoped_tool = t.model_copy(update={"id": scoped_id})
                     catalogue.append(scoped_tool)
             # Workspace tools (always under the WORKSPACE_TOOLSET_ID scope).
@@ -461,6 +483,26 @@ class ToolExecutionManager:
         it does not know is interruptible (cancelling is the default; ``execute`` refuses an unknown tool anyway).
         """
         return tool_name not in self._uninterruptible
+
+    def is_interruptible_call(self, call: ToolCallPart) -> bool:
+        """False iff a Stop must not cancel THIS call: :meth:`is_interruptible`, looking through ``call_tool``.
+
+        ``system__call_tool`` forwards inline to another toolset's tool, so cancelling it cancels that tool mid-write
+        however the wrapped tool was declared; asking about the outer name alone made every ``interruptible=False``
+        declaration bypassable through it. The wrapped (toolset_id, tool_name) is resolved against the same index (a
+        ``call_tool`` wrapped in a ``call_tool`` is followed, to a bound), and the wrapped tool does not have to be one
+        this agent may call directly. Arguments that do not name a tool fall back to the outer tool's own flag
+        (``execute`` rejects them anyway); an unknown wrapped tool is interruptible, as for :meth:`is_interruptible`.
+        """
+        name, arguments = call.name, call.arguments
+        for _ in range(_CALL_TOOL_LOOKTHROUGH_DEPTH):
+            if name != _CALL_TOOL_ID:
+                return self.is_interruptible(name)
+            wrapped = _wrapped_call(arguments)
+            if wrapped is None:
+                return self.is_interruptible(name)
+            name, arguments = wrapped
+        return name != _CALL_TOOL_ID and self.is_interruptible(name)
 
     async def execute(
         self,

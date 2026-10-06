@@ -905,7 +905,7 @@ async def _dispatch_tool_calls(
                 result = await run_stoppable(
                     lambda: tool_manager.execute(call, principal=principal),
                     interrupt=interrupt,
-                    interruptible=lambda: tool_manager.is_interruptible(call.name),
+                    interruptible=lambda: tool_manager.is_interruptible_call(call),
                     name=call.name,
                 )
                 if result is None:

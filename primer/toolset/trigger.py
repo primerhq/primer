@@ -222,6 +222,9 @@ TOOL_GET = make_tool(
 TOOL_CREATE = make_tool(
     id="create",
     toolset_id=TRIGGER_TOOLSET_ID,
+    # The trigger row, then its claim (a separate lease write): a Stop that cancelled in between would leave a trigger
+    # that never fires. A Stop waits for the call (same for update, delete and fire_now below).
+    interruptible=False,
     purpose="Create a new trigger and return the created Trigger.",
     when=(
         "Use when registering a new trigger. ``config`` is the "
@@ -248,6 +251,7 @@ TOOL_CREATE = make_tool(
 TOOL_UPDATE = make_tool(
     id="update",
     toolset_id=TRIGGER_TOOLSET_ID,
+    interruptible=False,
     purpose="Partially update a trigger and return the updated Trigger.",
     when=(
         "Use when changing a trigger's name / description / enabled / "
@@ -270,6 +274,7 @@ TOOL_UPDATE = make_tool(
 TOOL_DELETE = make_tool(
     id="delete",
     toolset_id=TRIGGER_TOOLSET_ID,
+    interruptible=False,
     purpose="Delete a trigger and cascade-delete its subscriptions.",
     when=(
         "Use when permanently removing a trigger; this cascade-deletes all "
@@ -287,6 +292,7 @@ TOOL_DELETE = make_tool(
 TOOL_FIRE_NOW = make_tool(
     id="fire_now",
     toolset_id=TRIGGER_TOOLSET_ID,
+    interruptible=False,
     purpose="Synchronously fire a trigger now (operator/testing aid).",
     when=(
         "Use when you need to fire a trigger immediately, bypassing the "

@@ -103,6 +103,36 @@ def _err_from_primer(exc: PrimerError, *, error_type: str) -> ToolCallResult:
     return _err(getattr(exc, "message", str(exc)), error_type=error_type)
 
 
+#: Work carried on after its caller was cancelled. A strong reference: asyncio keeps tasks weakly, so without this a
+#: teardown could be garbage-collected half done.
+_CARRIED_ON: set[asyncio.Task] = set()
+
+
+async def _carry_on(work: Awaitable[Any], *, what: str) -> Any:
+    """Await ``work`` as its own task that runs to its end even when the caller is cancelled.
+
+    A cancel of the caller is raised here at once, so the cancellation semantics are unchanged, but ``work`` is not
+    cancelled with it: a multi-step teardown (the instance, then its sessions, then the row) must not stop between two
+    steps and leave a row pointing at a dead instance. If ``work`` then fails, nobody is awaiting it, so the failure is
+    logged here rather than lost.
+    """
+    task = asyncio.ensure_future(work)
+    _CARRIED_ON.add(task)
+    task.add_done_callback(_CARRIED_ON.discard)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if not task.done():
+            task.add_done_callback(lambda t: _log_carried_on_outcome(t, what=what))
+        raise
+
+
+def _log_carried_on_outcome(task: asyncio.Task, *, what: str) -> None:
+    if task.cancelled() or task.exception() is None:
+        return
+    logger.error("%s: failed after its caller was cancelled", what, exc_info=task.exception())
+
+
 # ===========================================================================
 # Argument models
 # ===========================================================================
@@ -1032,16 +1062,32 @@ def build_workspaces_toolset(
             )
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
-        row_id = args.id if args.id is not None else live.id
-        row = WorkspaceRow(
-            id=row_id,
-            template_id=args.template_id,
-            provider_id=template.provider_id,
-            overrides=args.overrides,
-            created_at=datetime.now(timezone.utc),
-            runtime_meta=live.runtime_meta,
-        )
-        await _workspace_storage().create(row)
+        # materialise() created a live instance and the durable row is written LAST, so a failure or a cancel before
+        # the row exists would orphan the instance: the probe loop is row-driven and nothing sweeps orphans. Same
+        # rollback as the REST route (primer/api/routers/workspaces.py), and BaseException for the same reason: a
+        # cancel is the likeliest way in (a hard Cancel of the turn cancels every call whatever its flag).
+        try:
+            row_id = args.id if args.id is not None else live.id
+            row = WorkspaceRow(
+                id=row_id,
+                template_id=args.template_id,
+                provider_id=template.provider_id,
+                overrides=args.overrides,
+                created_at=datetime.now(timezone.utc),
+                runtime_meta=live.runtime_meta,
+            )
+            await _workspace_storage().create(row)
+        except BaseException:
+            # registry.destroy() is row-driven and the row does not exist, so tear the instance down on the backend
+            # directly. Best effort: a failed rollback never masks the original error or the cancel.
+            try:
+                backend = await workspace_registry.get_backend(template.provider_id)
+                await backend.destroy(live.id)
+            except Exception:
+                logger.exception(
+                    "create_workspace: failed to roll back orphaned live workspace %s", live.id,
+                )
+            raise
         return _ok(row)
 
     name, entry = _tool(
@@ -1075,6 +1121,9 @@ def build_workspaces_toolset(
             ),
         ],
         required_role="user",
+        # The live instance, then the row: two steps with no transaction. A Stop does not cancel the call; the handler
+        # also rolls the instance back if it is cancelled anyway (the flag governs a Stop only, not a hard Cancel).
+        interruptible=False,
     )
     registry[name] = entry
 
@@ -1084,7 +1133,8 @@ def build_workspaces_toolset(
         except ValidationError as exc:
             return _err_from_validation(exc)
         try:
-            await workspace_registry.destroy(args.id)
+            # Carried to its end if this call is cancelled: destroy() is the instance, its sessions, then the row.
+            await _carry_on(workspace_registry.destroy(args.id), what=f"delete_workspace {args.id}")
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except PrimerError as exc:
@@ -1108,6 +1158,9 @@ def build_workspaces_toolset(
             ToolExample(args={"id": "ws-1"}, returns="{deleted: true, id: ...}"),
         ],
         required_role="user",
+        # Tear the instance down, reconcile its sessions, delete the row: three steps with no transaction. A Stop does
+        # not cancel the call; the handler also carries the teardown to its end if it is cancelled anyway (a hard Cancel).
+        interruptible=False,
     )
     registry[name] = entry
 
@@ -1190,6 +1243,10 @@ def build_workspaces_toolset(
             ),
         ],
         required_role="user",
+        # Several writes with no common transaction (state repo commit, session row, enqueue, claim lease): a cancel
+        # between them can leave a RUNNING session with no lease. A Stop waits for the call (same for the cancel,
+        # steer and restart tools below).
+        interruptible=False,
     )
     registry[name] = entry
 
@@ -1250,6 +1307,7 @@ def build_workspaces_toolset(
             ),
         ],
         required_role="user",
+        interruptible=False,
     )
     registry[name] = entry
 
@@ -1473,6 +1531,7 @@ def build_workspaces_toolset(
             ),
         ],
         required_role="user",
+        interruptible=False,
     )
     registry[name] = entry
 
@@ -1540,6 +1599,7 @@ def build_workspaces_toolset(
             ),
         ],
         required_role="user",
+        interruptible=False,
     )
     registry[name] = entry
 
