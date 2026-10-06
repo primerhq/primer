@@ -6,10 +6,12 @@ write ``pending_operation``, publish, and then upsert the lease (``ClaimKind.HAR
 ``pending_operation`` and published, and never upserted the lease: an operation enqueued by an agent or over MCP stayed pending
 forever, and every later operation on that harness answered a conflict.
 
-Making the toolset's operations claimable also makes the other differences from the routes matter, because an operation that
-now RUNS is no longer harmless: the routes refuse fetch / install / sync on an outbound harness (409 ``direction_mismatch``) and
-the toolset did not, and the routes default ``uninstall_cascade`` by direction (an inbound harness removes the objects it
-installed) while the toolset left the model default (False: only the harness row and its rendering go).
+Making the toolset's operations claimable also makes two other differences from the routes matter. The routes refuse fetch /
+install / sync on an outbound harness (409 ``direction_mismatch``) and the toolset did not: with a lease the worker claims the
+operation, its own direction guard (``run_one_harness_operation``) fails, and it releases the harness as ERROR, so a
+wrong-direction call from an agent would flip the harness to ERROR instead of being answered with a refusal. And the routes
+default ``uninstall_cascade`` by direction (an inbound harness removes the objects it installed) while the toolset left the
+model default (False: only the harness row and its rendering go).
 """
 
 from __future__ import annotations
