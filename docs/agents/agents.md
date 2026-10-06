@@ -144,8 +144,11 @@ cap, so lower `max_output_tokens` (or use a model with a larger window). A
 provider that words the same situation as an output-cap error (vLLM's
 `'max_tokens' is too large: 32768 ... maximum context length is 32768`,
 Anthropic's `max_tokens: N > M`) is not an overflow at all: nothing is compacted
-either, but the turn ends with the provider's own `bad_request` error, not
-`context_overflow_unrecoverable`.
+either, but the turn ends with the provider's own error, not
+`context_overflow_unrecoverable`: a plain HTTP 400 `bad-request` problem with no
+`ended_detail` when the provider's adapter raised it (vLLM, Anthropic), or the
+stream error's own code as `ended_detail` (`bad_request`) when the adapter
+reported it as a stream error (Ollama, Gemini).
 
 Streaming: subscribers (workspace tap clients, internal taps) see token
 events in the order the LLM produces them. Persisted state is the
