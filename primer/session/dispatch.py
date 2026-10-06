@@ -27,6 +27,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 from collections.abc import Awaitable, Callable
 
+from pydantic_core import to_jsonable_python
+
 from primer.int.claim import (
     CLAIM_PRIORITY_RESUME, ClaimKind, Lease, ParkRequest, ReleaseOutcome,
 )
@@ -37,6 +39,7 @@ from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.except_ import NotFoundError
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
+    NON_ENDED_STATUSES_NOT_PAUSED,
     SessionMessageKind,
     SessionMessageRecord,
     SessionStatus,
@@ -309,28 +312,19 @@ async def run_one_session_turn(
     # no way to reconstruct a busy state after a refresh (live diagnosis,
     # task 01a04d64-b4ba). _clear_turn_running (below) is the matching
     # cleanup for every exit this turn can take.
-    seed_seq = session.last_seq
+    # The flip is ONE conditional, field-scoped write (patch_if of exactly the fields it owns, guarded on the row
+    # not being PAUSED or ENDED): the old whole-document update of a second read wrote the stale status back over a
+    # pause or an end that another process committed after the top read above (the exits decided from THAT read),
+    # reverted a last_seq a steer had just written, and ran the turn anyway. When it is refused the row is judged
+    # like the completed-turn guard judges it (gone: the vanished exit; ENDED: the ENDED exit; PAUSED: the pause
+    # exit, park kept). The turn's writer is seeded from the row the flip WROTE, so the seq it starts after is the
+    # one that was current at the write.
     _phase_stamp = _now()
     async with session_lifecycle_lock().acquire(session_id):
-        fresh_before_turn = await session_storage.get(session_id)
-        if fresh_before_turn is not None:
-            seed_seq = fresh_before_turn.last_seq
-            await session_storage.update(
-                fresh_before_turn.model_copy(update={
-                    "turn_status": "running",
-                    "turn_started_at": _phase_stamp,
-                    # agent_phase (01a04d91-a7a0, PHASE 1 of the
-                    # execution-lifecycle revamp): "thinking" the instant
-                    # the turn is claimed, mirroring turn_status="running"
-                    # in the same write. The streaming loop below advances
-                    # it on real transitions (see infer_agent_phase);
-                    # _clear_turn_running's callers reset it to None
-                    # alongside turn_status="idle" on every exit.
-                    "agent_phase": "thinking",
-                    "agent_phase_turn_no": session.turn_no,
-                    "agent_phase_stamped_at": _phase_stamp,
-                })
-            )
+        flipped, refusal = await _flip_to_running(session_storage, session, _phase_stamp)
+    if refusal is not None:
+        return refusal
+    seed_seq = flipped.last_seq
 
     # ------------------------------------------------------------------
     # 2. Build executor
@@ -2310,26 +2304,36 @@ async def _noop_if_turn_already_completed(
     return ReleaseOutcome(success=True, drop_lease=True)
 
 
-def _drop_vanished_row(session_id: str) -> ReleaseOutcome:
+def _drop_vanished_row(session_id: str, where: str = "under the completed-turn guard") -> ReleaseOutcome:
     """The outcome of a claim whose row was deleted: the vanished-before-dispatch exit of ``run_one_session_turn``."""
-    logger.warning("session %s vanished under the completed-turn guard; dropping the lease", session_id)
+    logger.warning("session %s vanished %s; dropping the lease", session_id, where)
     return ReleaseOutcome(success=False, drop_lease=True)
 
 
-async def _release_settled_row(session_storage, row: WorkspaceSession, where: str) -> ReleaseOutcome:
-    """The no-op release of a completed turn's claim on a row another process PAUSED or ENDED (under the lock).
+async def _settled_release(session_storage, row: WorkspaceSession) -> ReleaseOutcome:
+    """The release of a claim whose row another process PAUSED or ENDED (called under the lifecycle lock).
 
     ENDED returns the ENDED exit's outcome and PAUSED the pause exit's (``preserve_park=True``: the park is kept for
     a later /resume, and the adapter still applies the lost ``turn_no`` bump once on success). A stale
     ``turn_status == "running"`` is healed on both, a stale ``interrupt_requested`` cleared on PAUSED (the pause
     exit does both: it must not leak into the turn that eventually resumes the row and downgrade a later Cancel to a
-    Stop). The input is not answered and the drain checkpoint does not run. Counted as a no-op.
+    Stop).
     """
     if row.turn_status == "running":
         await _clear_turn_running(session_storage, row.id)
     paused = row.status == SessionStatus.PAUSED
     if paused:
         await _clear_interrupt_requested(session_storage, row.id)
+    # A PAUSED row gets the pause exit's release: its park is kept for /resume. preserve_park does not block the
+    # turn_no bump (the adapter bumps on success in that branch too), so the lost bump is still applied once.
+    return ReleaseOutcome(success=True, drop_lease=True, preserve_park=paused)
+
+
+async def _release_settled_row(session_storage, row: WorkspaceSession, where: str) -> ReleaseOutcome:
+    """The completed-turn guard's no-op release of a row another process PAUSED or ENDED: :func:`_settled_release`,
+    counted as a no-op and logged. The input is not answered and the drain checkpoint does not run."""
+    outcome = await _settled_release(session_storage, row)
+    paused = row.status == SessionStatus.PAUSED
     _metrics.session_completed_turn_noop_total.inc()
     logger.warning(
         "session %s: turn %d already completed but its release never committed; releasing it without calling "
@@ -2337,9 +2341,66 @@ async def _release_settled_row(session_storage, row: WorkspaceSession, where: st
         row.id, row.turn_no, "paused" if paused else "ended", where,
         "; its input is left for /resume" if paused else "",
     )
-    # A PAUSED row gets the pause exit's release: its park is kept for /resume. preserve_park does not block the
-    # turn_no bump (the adapter bumps on success in that branch too), so the lost bump is still applied once.
-    return ReleaseOutcome(success=True, drop_lease=True, preserve_park=paused)
+    return outcome
+
+
+# A refused running flip is tried again while the row reads live (a status that flipped paused and back between
+# the write and the re-read); this many refusals in a row give the claim back unrun.
+_RUNNING_FLIP_ATTEMPTS = 3
+
+
+async def _flip_to_running(
+    session_storage, session: WorkspaceSession, stamp: datetime,
+) -> tuple[WorkspaceSession | None, ReleaseOutcome | None]:
+    """Mark ``session`` running for the turn about to start (called under the lifecycle lock).
+
+    ONE ``patch_if`` of ``turn_status``, ``turn_started_at`` and the ``agent_phase`` stamps, guarded on the row not
+    being PAUSED or ENDED (``NON_ENDED_STATUSES_NOT_PAUSED``); nothing else is written, so a wake or a flag another
+    process committed since the top read survives. Returns ``(the row as written, None)`` when it landed. When it is
+    refused the row is read again and judged: gone -> the vanished-before-dispatch outcome; ENDED or PAUSED -> the
+    ENDED or pause exit's outcome (:func:`_settled_release`); live again -> tried again, and after
+    ``_RUNNING_FLIP_ATTEMPTS`` refusals the claim is requeued unrun. Returns ``(None, the outcome)`` for every case
+    that must not run the turn.
+    """
+    session_id = session.id
+    patch = to_jsonable_python({
+        "turn_status": "running",
+        "turn_started_at": stamp,
+        # agent_phase (01a04d91-a7a0, PHASE 1 of the execution-lifecycle revamp): "thinking" the instant the turn
+        # is claimed, mirroring turn_status="running" in the same write. The streaming loop advances it on real
+        # transitions (see infer_agent_phase); _clear_turn_running's callers reset it to None alongside
+        # turn_status="idle" on every exit.
+        "agent_phase": "thinking",
+        "agent_phase_turn_no": session.turn_no,
+        "agent_phase_stamped_at": stamp,
+    })
+    for _ in range(_RUNNING_FLIP_ATTEMPTS):
+        try:
+            written = await session_storage.patch_if(
+                session_id, patch, where={"status": NON_ENDED_STATUSES_NOT_PAUSED()},
+            )
+        except NotFoundError:
+            return None, _drop_vanished_row(session_id, "before the running flip")
+        if written is not None:
+            return written, None
+        now = await session_storage.get(session_id)
+        if now is None:
+            return None, _drop_vanished_row(session_id, "before the running flip")
+        if now.status in _SETTLED_STATUSES:
+            logger.warning(
+                "session %s: the row was %s after the turn read it; not running the turn",
+                session_id, "paused" if now.status == SessionStatus.PAUSED else "ended",
+            )
+            return None, await _settled_release(session_storage, now)
+    logger.error(
+        "session %s: the running flip was refused %d times while the row read live each time; giving the claim "
+        "back unrun",
+        session_id, _RUNNING_FLIP_ATTEMPTS,
+    )
+    return None, ReleaseOutcome(
+        success=False, requeue_after=timedelta(seconds=1),
+        last_error="the running flip was refused while the row read live",
+    )
 
 
 # The statuses another process can have settled under a completed turn's claim: the claim neither answers input on
