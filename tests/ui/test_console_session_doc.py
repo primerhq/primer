@@ -1843,7 +1843,7 @@ def test_a_failed_session_says_why_in_user_language_and_what_to_do_next():
 
 def test_the_end_divider_renders_the_why_and_the_next_step():
     assert "NV_endedLine(session)" in DOC
-    divider = DOC[DOC.index("session ended") - 600:DOC.index("session ended") + 900]
+    divider = DOC[DOC.index('className="nv-fold-line"') - 300:DOC.index('className="nv-fold-line"') + 900]
     assert 'data-testid="nv-ended-note"' in divider
 
 

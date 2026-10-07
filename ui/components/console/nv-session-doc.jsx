@@ -25,6 +25,69 @@ function NV_historyProblem(error) {
   };
 }
 
+// What the end divider says beyond "session ended . <reason>" (lead sweep A2): WHY, in user language, and what to do next. A
+// failed session used to read only "failed" while the row knew why (ended_detail "never_started"). A code this table does not
+// know is shown rather than hidden: the log is observability data, not a closed contract. Quiet endings (completed, cancelled,
+// deleted) need no explanation.
+function NV_endedLine(session) {
+  if (!session || session.status !== "ended") return null;
+  var reason = session.ended_reason || null;
+  var detail = session.ended_detail || null;
+  var codes = {
+    llm_stream_error: "the model call failed",
+    routing_failed: "a conditional edge matched no branch",
+    max_iterations_exceeded: "it hit the iteration cap",
+    node_failed: "a node failed",
+    fanin_upstream_failed: "an upstream branch failed before fan-in",
+    tool_execution_failed: "a tool call failed",
+    any_failed: "a required branch failed",
+    begin_input_invalid: "its begin input was invalid",
+    template_error: "the End output template failed to render",
+  };
+  var out = { label: reason, why: null, next: null };
+  if (reason === "failed") {
+    if (detail === "never_started") {
+      out.why = "It never started: the workspace or the agent could not be prepared.";
+      out.next = "Send a message to try again, or check the agent and the workspace.";
+    } else if (detail) {
+      out.why = "It failed: " + (codes[detail] || "the failure code is " + detail) + ".";
+      out.next = "Open the turn's trace for the cause, or send a message to try again.";
+    } else {
+      out.why = "The turn failed; the error is in the transcript above.";
+      out.next = "Send a message to try again.";
+    }
+  } else if (reason === "workspace_lost") {
+    out.why = "The workspace this session ran in is no longer reachable.";
+    out.next = "Start a new session in a workspace that is reachable.";
+  } else if (reason === "tool_turn_cap") {
+    out.why = "The agent used all the tool turns it is allowed before it finished.";
+    out.next = "Send a message to continue, or raise the agent's tool-turn limit.";
+  }
+  return out;
+}
+
+// What an error card says (lead sweep A3): the problem type in words, with the provider's own text kept as the detail below it. A
+// type this table does not know keeps the server's wording, and a bare terminal marker (nothing but {reason, terminal}) says the
+// turn failed.
+function NV_errorView(row) {
+  var p = (row && row.payload) || {};
+  var raw = (row && row.label) || p.message || p.code || null;
+  var byType = {
+    "/errors/network-error": "Could not reach the model provider (connection problem).",
+    "/errors/provider-server-error": "The model provider had a server error.",
+    "/errors/provider-error": "The model provider returned an error.",
+    "/errors/rate-limited": "The model provider is rate limiting requests. Try again in a moment.",
+    "/errors/authentication-failed": "The model provider rejected the credentials. Check the provider's API key.",
+    "/errors/model-not-found": "The model provider has no such model. Check the agent's model.",
+    "/errors/context-overflow-unrecoverable": "The conversation no longer fits the model's context window.",
+    "/errors/unsupported-content": "The model does not accept some of the content in this conversation.",
+    "/errors/service-unavailable": "A service this turn needs is unavailable.",
+  };
+  var friendly = p.code ? byType[p.code] : null;
+  if (friendly) return { text: friendly, detail: raw && raw !== friendly ? raw : null };
+  return { text: raw || "The turn failed.", detail: null };
+}
+
 // How long the polled row must keep contradicting a live tap status before the status is dropped (C-008/C-011): the detail
 // resource polls every 2 s, so this is at least two polls that agree, and a turn that is just starting (the tap echoes the
 // user's message before the row flips to claimable) never loses its strip to one stale read.
@@ -497,15 +560,18 @@ function NV_SessionHeader(props) {
           {(session && session.name) || sid}
         </div>
       )}
-      <div className="nv-usage" title="context used"
-        data-testid="nv-usage" data-pct={pct}>
-        <div className="nv-usage-bar">
-          <div className="nv-usage-fill" style={{ width: pct + "%" }} />
+      {usage.label ? (
+        <div className="nv-usage" title="context used" role="img"
+          aria-label={"Context used: " + usage.label}
+          data-testid="nv-usage" data-pct={pct}>
+          <div className="nv-usage-bar">
+            <div className="nv-usage-fill" style={{ width: pct + "%" }} />
+          </div>
+          <span className="nv-usage-label" data-testid="nv-usage-label">
+            {usage.label}
+          </span>
         </div>
-        <span className="nv-usage-label" data-testid="nv-usage-label">
-          {usage.label || ""}
-        </span>
-      </div>
+      ) : null}
       {isGraph ? (
         <button type="button" className="nv-graphview-btn"
           data-testid="nv-graph-view"
@@ -2313,6 +2379,7 @@ function NV_SessionDoc(props) {
   // Below `degraded` on purpose: test_console_session_doc.py slices the statements between `rowBusy` and `degraded` out and
   // evaluates them on their own.
   var historyProblem = NV_historyProblem(history.error);
+  var endedLine = NV_endedLine(session);
   // Stop is acknowledged: this click's own pending state, or the served flag (the worker
   // clears interrupt_requested when the Stop lands, which ends the state and brings the
   // button back). Kept below `degraded` on purpose: test_console_session_doc.py slices the
@@ -2739,14 +2806,17 @@ function NV_SessionDoc(props) {
       );
     }
     if (row.kind === "error") {
-      var msg = row.label
-        || (row.payload && (row.payload.message || row.payload.code))
-        || "turn failed";
+      var errorView = NV_errorView(row);
       return (
         <div key={row.seq} className="nv-turn-error"
           role={NV_arrivedLive(historyFirstLoad, row.seq) ? "alert" : undefined}
           data-testid={"nv-turn:" + row.seq}>
-          <span>{msg}</span>
+          <span className="nv-turn-error-body">
+            <span>{errorView.text}</span>
+            {errorView.detail ? (
+              <span className="nv-turn-error-detail">{errorView.detail}</span>
+            ) : null}
+          </span>
           <span style={{ flex: 1 }} />
           <button type="button" className="nv-trace-toggle"
             title="View trace"
@@ -2960,13 +3030,23 @@ function NV_SessionDoc(props) {
                   onResolved={refetchAll} />
               );
             })}
-            {NV_sessionIsOver(session) ? (
-              <div className="nv-fold-line">
-                <span /><span className="nv-fold-label">
-                  session ended{session.ended_reason
-                    ? " · " + session.ended_reason : ""}
-                </span><span />
-              </div>
+            {endedLine ? (
+              <React.Fragment>
+                <div className="nv-fold-line">
+                  <span /><span className="nv-fold-label">
+                    session ended{endedLine.label
+                      ? " · " + endedLine.label : ""}
+                  </span><span />
+                </div>
+                {endedLine.why ? (
+                  <div className="nv-fold-note" data-testid="nv-ended-note">
+                    <div>{endedLine.why}</div>
+                    {endedLine.next ? (
+                      <div className="nv-fold-next">{endedLine.next}</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </React.Fragment>
             ) : null}
           </div>
           {decision.showJump ? (

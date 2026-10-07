@@ -4145,6 +4145,13 @@ input, textarea, select { font: inherit; color: inherit; }
   border: 1px solid var(--danger, #e06c5f); color: var(--danger, #e06c5f);
   font-size: 12.5px;
 }
+.nv-turn-error-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.nv-turn-error-detail { font-size: 11px; opacity: 0.75; overflow-wrap: anywhere; }
+/* The end divider's explanation: why a session ended and what to do next (a failed one used to say only "failed"). */
+.nv-fold-note { text-align: center; font-size: 12px; color: var(--text-2); padding: 2px 16px 10px; }
+.nv-fold-next { color: var(--text-3); margin-top: 2px; }
+/* The mobile screen's top bar already names the session; the header's title repeated it, truncated to nothing by the chips. */
+.nv-mobile-chat .nv-session-head .nv-title { display: none; }
 .nv-trace-toggle {
   display: inline-flex; align-items: center; justify-content: center;
   border: none; background: transparent; color: var(--text-4);
