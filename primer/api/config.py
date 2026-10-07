@@ -216,7 +216,7 @@ class AppConfig(BaseSettings):
         default_factory=list,
         description=(
             "Internal targets the agent web tools (http_request, web_fetch's "
-            "local adapter, download) and url file mounts may reach. Every "
+            "local adapter, download) may reach. Every "
             "other loopback, private (RFC1918), link-local (incl. cloud "
             "metadata 169.254.169.254), CGNAT, ULA, multicast or reserved "
             "address is refused, on every redirect hop. Each entry is a CIDR "

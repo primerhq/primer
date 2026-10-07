@@ -262,8 +262,10 @@ cannot swap in an internal one (DNS rebinding); the Host header and the TLS
 SNI and certificate check keep the original name. The refusal is
 `EgressRefused` (an `httpx.RequestError`), and the tool returns
 `refused: <host> resolves to a private address (<ip>); an operator can allow it
-with PRIMER_EGRESS_ALLOW` as an `is_error` result. The same rule guards the
-workspace `url` file mounts (see workspaces.md). Operators opt internal
+with PRIMER_EGRESS_ALLOW` as an `is_error` result. The module also carries an
+aiohttp `GuardedResolver` and `vet_ip_literal` for the workspace `url` file
+mounts, which are not switched over yet (they are guarded separately for now).
+Operators opt internal
 targets in with `AppConfig.egress_allow` (`PRIMER_EGRESS_ALLOW`, a JSON list of
 CIDRs, IPs or exact host names, validated at boot, empty by default); the
 lifespan installs it process-wide with `configure_egress_allow`, because the
@@ -353,7 +355,7 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
 - **Tool-level failures returned `ToolCallResult(is_error=True)` while argument-validation failures raised `BadRequestError`.** Why: transient upstream errors should let the LLM react on the next turn rather than crash the executor, while programmer-visible misuse should bubble up through the registry. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
 - **The `http_request` response body was hard-capped at a default 1 MB with a boolean `truncated` field rather than an inline marker.** Why: tools driven by LLMs can be coaxed into pulling arbitrarily large bodies, so a fixed byte cap was the cheapest memory-safety defence. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
 - **No SSRF / private-IP guard was added for v1 (superseded, see the next entry).** Why: the framework targets trusted-agent contexts, so ringfencing was documented as deliberately out of scope for a follow-up. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
-- **An SSRF guard replaced the v1 "no guard" decision (security sweep 2026-10-08, SSRF-03/SSRF-04).** Why: the web tools are `required_role="user"` and agent-callable, so a prompt-injected agent could read cloud metadata, the Kubernetes API, the Postgres host or localhost admin ports from the platform process. The guard checks at connect time in the network backend rather than with a pre-flight lookup, so redirects and DNS rebinding are covered by the same check; internal targets are an explicit operator opt-in (`egress_allow`).
+- **An SSRF guard replaced the v1 "no guard" decision (security sweep 2026-10-08, SSRF-03).** Why: the web tools are `required_role="user"` and agent-callable, so a prompt-injected agent could read cloud metadata, the Kubernetes API, the Postgres host or localhost admin ports from the platform process. The guard checks at connect time in the network backend rather than with a pre-flight lookup, so redirects and DNS rebinding are covered by the same check; internal targets are an explicit operator opt-in (`egress_allow`).
 - **The hard-coded DuckDuckGo backend was promoted into a `WebSearchAdapter` ABC with a per-row `WebSearchRegistry`, making web search a first-class peer of the LLM and embedder provider subsystems.** Why: the registry pattern composes uniformly across provider types, so the same per-row cache / invalidate / aclose discipline applies. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **Aggregated mode used failure-only fallback with explicit priority ordering rather than quota counters or load-balancing.** Why: the simplest correct model of "primary plus fallbacks" is to try the next provider when one errors, and explicit ordering is clearer for operators. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **The reserved DuckDuckGo provider row and the active-config singleton were auto-bootstrapped at lifespan in that order (DDG first, then the singleton referencing it).** Why: the singleton's reference validation runs at write time, and seeding both makes web search work zero-config and idempotent across restarts. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.

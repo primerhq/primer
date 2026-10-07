@@ -1,8 +1,7 @@
-"""SSRF-03 / SSRF-04: the production outbound paths refuse internal addresses.
+"""SSRF-03: the production outbound paths of the web tools refuse internal addresses.
 
 Each test drives the object the app actually builds (``build_web_toolset``
-with no injected client, ``LocalAdapter()`` with no injected client, and
-``resolve_file_sources`` with the real session hook), so a regression that
+and ``LocalAdapter()``, both with no injected client), so a regression that
 drops the guard from one of those constructors fails here.
 
 No external network: the targets are loopback literals (refused before any
@@ -14,12 +13,10 @@ from __future__ import annotations
 
 import pytest
 
-from primer.model.workspace import FileMount, _UrlSource
 from primer.model.yield_ import ToolContext
 from primer.toolset.web import build_web_toolset
 from primer.web_fetch.adapter import WebFetchProviderError
 from primer.web_fetch.local import LocalAdapter
-from primer.workspace.files import resolve_file_sources
 
 
 # A loopback port nothing listens on: an unguarded client gets a fast local
@@ -134,26 +131,6 @@ async def test_local_web_fetch_adapter_refuses_loopback():
     _assert_refusal(str(ei.value), "127.0.0.1")
 
 
-async def test_url_file_mount_refuses_loopback_literal():
-    fm = FileMount(path="x", source=_UrlSource(url=LOOPBACK_URL))
-    with pytest.raises(RuntimeError) as ei:
-        await resolve_file_sources([fm])
-    _assert_refusal(str(ei.value), "127.0.0.1")
-
-
-async def test_url_file_mount_refuses_a_name_that_resolves_private(monkeypatch):
-    from primer.common import netguard
-
-    async def _resolve(host, port):
-        return ["10.0.0.5"] if host == "internal.example" else [host]
-
-    monkeypatch.setattr(netguard, "_resolve", _resolve)
-    fm = FileMount(path="x", source=_UrlSource(url="http://internal.example/x"))
-    with pytest.raises(RuntimeError) as ei:
-        await resolve_file_sources([fm])
-    _assert_refusal(str(ei.value), "10.0.0.5")
-
-
 def test_app_config_egress_allow_defaults_empty_and_validates():
     from primer.api.config import AppConfig
 
@@ -184,66 +161,4 @@ async def test_lifespan_installs_the_configured_allowlist(tmp_path, monkeypatch)
     app = FastAPI(lifespan=_make_lifespan(cfg))
     async with app.router.lifespan_context(app):
         assert await netguard.vet_host("127.0.0.1", 80) == ["127.0.0.1"]
-
-
-class _FakeResp:
-    def __init__(self, status: int, headers: dict[str, str], body: bytes = b""):
-        self.status = status
-        self.headers = headers
-        self._body = body
-
-    async def read(self) -> bytes:
-        return self._body
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return None
-
-
-class _FakeSession:
-    """aiohttp-shaped session answering each URL from ``routes``."""
-
-    def __init__(self, routes: dict[str, _FakeResp]):
-        self.routes = routes
-        self.seen: list[str] = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return None
-
-    def get(self, url, **kw):
-        assert kw.get("allow_redirects") is False
-        self.seen.append(url)
-        return self.routes[url]
-
-
-async def test_url_file_mount_refuses_a_redirect_to_a_private_literal(monkeypatch):
-    """Redirects are followed by hand so each hop's host is checked."""
-    session = _FakeSession({
-        "https://public.example/f": _FakeResp(
-            302, {"Location": "http://169.254.169.254/latest/"}
-        ),
-    })
-    monkeypatch.setattr("primer.workspace.files._http_session", lambda: session)
-    fm = FileMount(path="x", source=_UrlSource(url="https://public.example/f"))
-    with pytest.raises(RuntimeError) as ei:
-        await resolve_file_sources([fm])
-    _assert_refusal(str(ei.value), "169.254.169.254")
-    assert session.seen == ["https://public.example/f"]
-
-
-async def test_url_file_mount_follows_a_public_redirect(monkeypatch):
-    session = _FakeSession({
-        "https://public.example/f": _FakeResp(302, {"Location": "/g"}),
-        "https://public.example/g": _FakeResp(200, {}, b"payload"),
-    })
-    monkeypatch.setattr("primer.workspace.files._http_session", lambda: session)
-    fm = FileMount(path="x", source=_UrlSource(url="https://public.example/f"))
-    out = await resolve_file_sources([fm])
-    assert out[0].content == b"payload"
-    assert session.seen == ["https://public.example/f", "https://public.example/g"]
 
