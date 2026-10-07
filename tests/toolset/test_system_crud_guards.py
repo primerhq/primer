@@ -40,6 +40,7 @@ from primer.model.provider import (
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.system import build_system_toolset
+from tests._support.caller import ADMIN_CALLER
 from tests.api.test_semantic_search_registry import _make_row as _ssp_row
 from tests.toolset.test_system import _agent, _ce, _collection, _emb, _llm, _required_policy, _toolset_body
 
@@ -71,7 +72,9 @@ async def world(tmp_path: Path):
 
 
 async def _call(toolset, name: str, **args):
-    result = await toolset.call(tool_name=name, arguments=args)
+    # As an admin: the guards under test are what stands between an ALLOWED writer and a row, and a stdio toolset body (the
+    # fixture for ``toolset``) is refused to every other caller before any guard runs (tests/toolset/test_system_toolset_stdio_admin.py).
+    result = await toolset.call(tool_name=name, arguments=args, ctx=ADMIN_CALLER)
     try:
         body = json.loads(result.output)
     except ValueError:

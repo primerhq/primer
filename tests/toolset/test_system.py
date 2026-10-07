@@ -39,6 +39,7 @@ from primer.model.storage import (
     OffsetPageResponse,
 )
 from primer.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
+from tests._support.caller import ADMIN_CALLER
 
 
 # ===========================================================================
@@ -950,11 +951,12 @@ async def test_crud_smoke_per_entity(
 ) -> None:
     body = body_factory()
     eid = body["id"]
+    # An admin writes the rows: a stdio MCP toolset (``_toolset_body``) is refused to anyone else, and to a call with no identity.
     create = await system_toolset.call(
-        tool_name=create_tool, arguments={"entity": body}
+        tool_name=create_tool, arguments={"entity": body}, ctx=ADMIN_CALLER
     )
     assert not create.is_error, create.output
-    delete = await system_toolset.call(tool_name=delete_tool, arguments={"id": eid})
+    delete = await system_toolset.call(tool_name=delete_tool, arguments={"id": eid}, ctx=ADMIN_CALLER)
     assert not delete.is_error, delete.output
 
 

@@ -24,6 +24,7 @@ from primer.agent.approval import (
     ApprovalResolver,
     evaluate_approval_gate,
 )
+from primer.authz import _role_allows
 from primer.common.entity_checks import EntityCheckError
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
@@ -265,6 +266,18 @@ _PreCreate = Callable[[Any], Awaitable[None]] | None
 _PreUpdate = Callable[[Any, Any], Awaitable[None]] | None
 
 
+def _refuse_unless_admin(ctx: ToolContext | None, note: str) -> ToolCallResult | None:
+    """``None`` when the caller may proceed, else a ``forbidden`` tool error carrying ``note``.
+
+    The caller is the run's ``initiated_by`` under the floor's own predicate (:func:`primer.authz._role_allows`: an admin, or the
+    internal ``system`` / ``trigger`` actors). A call that carries no ``ToolContext`` has no known role (the MCP endpoint
+    dispatches handlers without one), so it is refused: this fails closed, never open.
+    """
+    if ctx is not None and _role_allows(ctx.initiated_by, "admin"):
+        return None
+    return _err(note, error_type="forbidden")
+
+
 def _crud_tools_for(
     *,
     entity_label: str,
@@ -279,6 +292,8 @@ def _crud_tools_for(
     pre_create: _PreCreate = None,
     pre_update: _PreUpdate = None,
     cache_note: str | None = None,
+    admin_when: Callable[[Any, Any | None], bool] | None = None,
+    admin_note: str | None = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
 
@@ -292,6 +307,11 @@ def _crud_tools_for(
     ``cache_note`` is appended to the update and delete descriptors of an entity whose warm adapter a tool edit does NOT refresh
     (the REST router does): the registries that cache it invalidate only their own process, so a local-only mirror of the router's hook
     would look like parity and do nothing where it matters. It tells the agent when the change takes effect and why.
+
+    ``admin_when(entity, existing)`` marks the writes that only an admin CALLER may make although the tool's static ``required_role``
+    is lower (``existing`` is ``None`` on a create): the handler checks the run's identity itself, because the tool manager's floor
+    compares only the static role. A refusal is ``type=forbidden`` with ``admin_note`` and nothing is stored; the note is also
+    appended to the create and update descriptors so the agent knows the rule before it tries. Both must be given together.
 
     Create/update use a self-contained wrapper-model schema (built via
     ``_create_schema`` / ``_update_schema``) so the embedded ``$defs``
@@ -374,7 +394,7 @@ def _crud_tools_for(
     )
 
     # ---- create -------------------------------------------------------
-    async def _create_handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _create_handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         body = arguments.get("entity")
         if body is None:
             return _err(
@@ -384,6 +404,10 @@ def _crud_tools_for(
             entity = model_cls.model_validate(body)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        if admin_when is not None and admin_when(entity, None):
+            denied = _refuse_unless_admin(ctx, admin_note or "this write requires the admin role")
+            if denied is not None:
+                return denied
         refusal = refuse_create(guards, entity)
         if refusal is not None:
             return refusal
@@ -417,6 +441,9 @@ def _crud_tools_for(
             "``type=validation-error`` naming the field, and nothing is stored."
         )
 
+    if admin_when is not None and admin_note:
+        create_when += f" {admin_note}"
+
     tools[f"create_{entity_label}"] = (
         make_tool(
             id=f"create_{entity_label}",
@@ -439,7 +466,7 @@ def _crud_tools_for(
     )
 
     # ---- update -------------------------------------------------------
-    async def _update_handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _update_handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         entity_id = arguments.get("id")
         body = arguments.get("entity")
         if not entity_id:
@@ -464,6 +491,10 @@ def _crud_tools_for(
             return _err(
                 f"{cls_name} {entity_id!r} does not exist", error_type="not-found"
             )
+        if admin_when is not None and admin_when(entity, existing):
+            denied = _refuse_unless_admin(ctx, admin_note or "this write requires the admin role")
+            if denied is not None:
+                return denied
         refusal = refuse_update(guards, entity, existing)
         if refusal is not None:
             return refusal
@@ -502,6 +533,8 @@ def _crud_tools_for(
         )
     if cache_note is not None:
         update_when += " " + cache_note
+    if admin_when is not None and admin_note:
+        update_when += f" {admin_note}"
 
     tools[f"update_{entity_label}"] = (
         make_tool(

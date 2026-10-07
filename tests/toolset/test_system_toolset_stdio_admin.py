@@ -15,20 +15,15 @@ import json
 import pytest
 
 from primer.api.registries import ProviderRegistry
-from primer.model.principal import PrincipalRef
 from primer.model.provider import Toolset
 from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
+from tests._support.caller import caller as _ctx
 from tests.conftest import _FakeStorageProvider
 
 STDIO = {"id": "ts-stdio", "provider": "mcp", "config": {"transport": "stdio", "config": {"command": ["/bin/echo", "hi"]}}}
 STDIO_OTHER = {**STDIO, "config": {"transport": "stdio", "config": {"command": ["/bin/sh", "-c", "id"]}}}
 HTTP = {"id": "ts-http", "provider": "mcp", "config": {"transport": "http", "config": {"url": "http://127.0.0.1:9/mcp"}}}
-
-
-def _ctx(role: str | None, *, kind: str = "user") -> ToolContext:
-    who = PrincipalRef(type=kind, id=f"{kind}-1", display=kind, role=role, source="local")  # type: ignore[arg-type]
-    return ToolContext(tool_call_id="tc", session_id="s", workspace_id="w", initiated_by=who)
 
 
 @pytest.fixture

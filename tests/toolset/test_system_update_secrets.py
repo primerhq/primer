@@ -16,6 +16,7 @@ import json
 import pytest
 
 from primer.model.provider import EmbeddingProvider, LLMProvider, Toolset
+from tests._support.caller import ADMIN_CALLER
 from tests.toolset.test_system import _emb, _llm, _toolset_body, pr, sp, system_toolset  # noqa: F401  (fixtures)
 
 LLM_KEY = "sk-live-0123456789"
@@ -48,7 +49,7 @@ async def _served(toolset, kind: str, entity_id: str) -> dict:
 
 
 async def _create(toolset, kind: str, body: dict) -> None:
-    result = await toolset.call(tool_name=f"create_{kind}", arguments={"entity": body})
+    result = await toolset.call(tool_name=f"create_{kind}", arguments={"entity": body}, ctx=ADMIN_CALLER)
     assert not result.is_error, result.output
 
 
@@ -105,7 +106,9 @@ class TestReadThenWriteKeepsTheStoredSecret:
         served = await _served(system_toolset, "toolset", "ts-1")
         assert served["config"]["config"]["env"]["API_TOKEN"] != ENV_TOKEN, "precondition: the env secret is served masked"
 
-        result = await system_toolset.call(tool_name="update_toolset", arguments={"id": "ts-1", "entity": served})
+        result = await system_toolset.call(
+            tool_name="update_toolset", arguments={"id": "ts-1", "entity": served}, ctx=ADMIN_CALLER,
+        )
 
         assert not result.is_error, result.output
         assert _stored_env_token(sp) == ENV_TOKEN
@@ -210,7 +213,9 @@ class TestARealChangeIsStillStored:
         served = await _served(system_toolset, "toolset", "ts-1")
         served["config"]["config"]["env"]["API_TOKEN"] = "tok-rotated-zzzzzz"
 
-        result = await system_toolset.call(tool_name="update_toolset", arguments={"id": "ts-1", "entity": served})
+        result = await system_toolset.call(
+            tool_name="update_toolset", arguments={"id": "ts-1", "entity": served}, ctx=ADMIN_CALLER,
+        )
 
         assert not result.is_error, result.output
         env = sp.get_storage(Toolset)._data["ts-1"].config.config.env

@@ -122,7 +122,7 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
 from primer.channel.checks import check_channel_on_create, check_channel_on_update
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
-from primer.toolset.toolset_checks import check_toolset_on_create, check_toolset_on_update
+from primer.toolset.toolset_checks import check_toolset_on_create, check_toolset_on_update, toolset_needs_admin
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 # Re-exported helpers / argument models / parsers (shared surface).
@@ -175,6 +175,17 @@ from primer.toolset._system_tools import (
     ask_user_resume,
     make_read_doc_content_handler,
 )
+
+
+# Told to the agent in the create / update descriptors of the entities in ``admin_writes_by_label`` (and used as the refusal message).
+_ADMIN_WRITE_NOTES: dict[str, str] = {
+    "toolset": (
+        "Creating or changing an MCP toolset on the ``stdio`` transport requires the admin role (it launches a command on the "
+        "server host), whatever this tool's own role: when the run was not started by an admin, or carries no identity (a call "
+        "through the MCP endpoint), it returns ``type=forbidden`` and nothing is stored. http, sse and python toolsets are "
+        "unaffected."
+    ),
+}
 
 
 if TYPE_CHECKING:
@@ -370,6 +381,10 @@ def build_system_toolset(
             "route, which flushes and re-warms it."
         ),
     }
+    # The writes that need an admin CALLER although the tool's static required_role is lower (architecture review A-02): a stdio MCP
+    # toolset launches a command on the server host. The tool manager's floor compares only the static role, so the handler checks
+    # the run's identity; a call with no identity (the MCP endpoint) is refused. The rule is the one the REST router applies.
+    admin_writes_by_label: dict[str, Any] = {"toolset": toolset_needs_admin}
     for label, plural, cls, on_c, on_u, on_d, role in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
         registry.update(
@@ -386,6 +401,8 @@ def build_system_toolset(
                 pre_create=pre_create,
                 pre_update=pre_update,
                 cache_note=cache_notes_by_label.get(label),
+                admin_when=admin_writes_by_label.get(label),
+                admin_note=_ADMIN_WRITE_NOTES.get(label),
             )
         )
 
