@@ -103,7 +103,7 @@ Versions, their manifests and their function specs are storage rows;
 bundle files are `Artifact` rows keyed by content. Retention keeps the
 newest 20 versions plus the active one, whatever its age, so a rollback
 target is never pruned out from under an operator. Nothing service-side
-is cached durably: the name resolver's cache is a 5s per-process TTL and
+is cached durably: the name resolver's cache is a bounded 5s per-process TTL and
 the blob LRU is in memory, both rebuilt from storage on restart.
 
 ## 8. Public surfaces
@@ -114,16 +114,47 @@ Mounted WITHOUT the `/v1` prefix. `GET /svc/{name}/{path}`:
 
 - name resolution through a 5s-TTL per-process cache
   (`primer/service/serve.py::ServiceResolver`); publish/activate
-  invalidate in-process, other replicas converge via the TTL;
+  invalidate in-process, other replicas converge via the TTL. Unknown
+  names are cached too, so the cache is bounded
+  (`RESOLVE_CACHE_MAX_ENTRIES`, 1024, oldest evicted first) and expired
+  entries are dropped on every store: anyone can mint unknown names;
 - `viewer_auth=console` applies `require_user` per request (the auth
   middleware only populates identity); `none` serves anonymously;
 - path pick: exact file, else extension-less misses fall back to the
   manifest entry (SPA client routing), misses with an extension 404;
-- blobs stream through a 64 MiB LRU with `ETag` = artifact id and
-  `Cache-Control: immutable` (bundle files are content-addressed);
-  If-None-Match returns 304;
+- blobs stream through a 64 MiB LRU with `ETag` = artifact id and an
+  immutable `Cache-Control` (bundle files are content-addressed):
+  `private, max-age=31536000, immutable` for `viewer_auth=console`, so a
+  shared cache never stores a gated bundle and replays it to anonymous
+  clients, and `public, ...` only for `viewer_auth=none`. If-None-Match
+  returns 304 with the same headers;
 - 404s are a friendly HTML page for browsers and
-  `application/problem+json` otherwise.
+  `application/problem+json` otherwise. The page shows the service name
+  and asset path from the URL, so every value is HTML-escaped, and it
+  carries `Content-Security-Policy: default-src 'none'; style-src
+  'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors
+  'none'` (no script at all). It is served on the console origin, so an
+  unescaped value would be reflected XSS against the console session;
+- every `/svc` response the router builds sets
+  `X-Content-Type-Options: nosniff` itself (the app-wide security-headers
+  middleware also sets it, but a serve-only or test app must not depend
+  on middleware order).
+
+**Same-origin risk (open).** Published bundles are served on the console
+origin, so a bundle's own script runs first-party: it rides the console
+session cookie and can call `/v1/*` as the viewing operator, which the
+gateway tool allowlist does not contain. Only an agent or operator who
+can publish can plant such a bundle, so this is a hardening gap, not an
+anonymous exploit. The recommended direction is to serve `/svc` from a
+separate origin (for example `svc.<host>`) whose cookies are not the
+console session, with the gateway authenticated by a scoped,
+service-bound token; a sandboxed-iframe host is the alternative.
+`Content-Security-Policy: sandbox allow-scripts` (no `allow-same-origin`)
+on bundle HTML was evaluated and NOT applied: the opaque origin it gives
+the page means the `SameSite=Lax` console cookie no longer rides the
+page's own asset requests or the `Primer.fn` gateway `fetch`, and the
+gateway POST becomes a CORS request the router does not answer, so every
+`viewer_auth=console` service and every gateway call would break.
 
 `PRIMER_SERVE_ONLY=1` turns a process into a dedicated serving replica:
 only `/svc` plus the always-on observability surface is mounted and no
@@ -169,6 +200,7 @@ deliberately not a console affordance: agents use the phase-4
 ## 10. Testing patterns
 
 `tests/model/test_service.py`, `tests/service/test_bundle.py`,
+`tests/service/test_serve_resolver.py`,
 `tests/toolset/test_python_registration_relaxed.py`,
 `tests/api/test_services_crud.py`, `tests/api/test_services_publish.py`,
 `tests/api/test_svc_serve.py`, `tests/api/test_svc_gateway.py`,
