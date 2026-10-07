@@ -204,6 +204,14 @@ server side.
   mutation is not.** `GET /v1/workers` stays reachable without auth so
   liveness/readiness probes work pre-login; `POST /v1/workers/{id}/drain`
   requires auth (401 without it).
+- **Password sign-in is throttled; bearer tokens are not.** After five
+  attempts in a row for one username from one client address,
+  `POST /v1/auth/login` answers `429` (`extensions.error` is
+  `too_many_attempts`) with a `Retry-After` header, and keeps doing so
+  for 2, 4, 8, ... seconds (at most 15 minutes) even if the password is
+  right. Wait the `Retry-After` seconds; hammering does not lengthen the
+  wait but gets nowhere. An automation that signs in with a cookie
+  should use an API token instead. The counters live in one API process.
 - **Approval-required tools are not callable over MCP.** Even with the
   `mcp` scope and the tool allowlisted, a tool whose effective approval
   policy is `required` is refused at `tools/call` - MCP has no surface
