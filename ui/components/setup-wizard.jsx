@@ -30,6 +30,40 @@ function _setupDraftConfig(type, url, apiKey) {
   return config;
 }
 
+// Step 1 as a function of apiFetch (so it can be executed in a test): a successful
+// draft probe IS the proof that the provider works, so the provider row is only
+// persisted once the probe returns models. Returns {id, models}; `id` is null (and
+// nothing is written) when the probe answered with no models.
+async function SW_connectProvider(apiFetch, { type, url, apiKey }) {
+  const config = _setupDraftConfig(type, url, apiKey);
+  const probe = await apiFetch(
+    "POST", "/llm_providers/_discover_models",
+    { provider: type, config }, {},
+  );
+  const models = (probe && probe.models) || [];
+  if (!models.length) return { id: null, models };
+  const id = "llm-" + type;
+  await apiFetch(
+    "POST", "/llm_providers",
+    { id, provider: type, config, limits: { max_concurrency: 4 } }, {},
+  );
+  return { id, models };
+}
+
+// Step 2 as a function of apiFetch: register the chosen model as the default profile.
+async function SW_registerProfile(apiFetch, { providerId, model }) {
+  await apiFetch(
+    "POST", "/model_profiles",
+    {
+      id: providerId + "--" + model.name,
+      description: "Default profile created by first-run setup.",
+      provider_id: providerId,
+      model_name: model.name,
+      context_length: model.context_length || 32000,
+    }, {},
+  );
+}
+
 function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
   // initialStep exists for the docs harness, which captures each step as
   // its own image and cannot click through a wizard to reach the second
@@ -52,28 +86,19 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
 
   const spec = SETUP_PROVIDER_TYPES.find((t) => t.id === type);
 
-  // Step 1: a successful draft probe IS the proof that the provider works,
-  // so the provider row is only persisted once the probe returns models.
+  // Step 1: see SW_connectProvider.
   const submitProvider = async (e) => {
     e.preventDefault();
     setErr(null);
     setBusy(true);
     try {
-      const config = _setupDraftConfig(type, url, apiKey);
-      const probe = await window.primerApi.apiFetch(
-        "POST", "/llm_providers/_discover_models",
-        { provider: type, config }, {},
+      const { id, models } = await SW_connectProvider(
+        window.primerApi.apiFetch, { type, url, apiKey },
       );
-      const models = (probe && probe.models) || [];
       if (!models.length) {
         setErr({ title: "No models returned", detail: "The provider answered but listed no models." });
         return;
       }
-      const id = "llm-" + type;
-      await window.primerApi.apiFetch(
-        "POST", "/llm_providers",
-        { id, provider: type, config, limits: { max_concurrency: 4 } }, {},
-      );
       setProviderId(id);
       setDiscovered(models);
       setPicked(models[0].name);
@@ -92,16 +117,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
     setBusy(true);
     try {
       const model = discovered.find((m) => m.name === picked) || { name: picked };
-      await window.primerApi.apiFetch(
-        "POST", "/model_profiles",
-        {
-          id: providerId + "--" + model.name,
-          description: "Default profile created by first-run setup.",
-          provider_id: providerId,
-          model_name: model.name,
-          context_length: model.context_length || 32000,
-        }, {},
-      );
+      await SW_registerProfile(window.primerApi.apiFetch, { providerId, model });
       await onComplete();
     } catch (e2) {
       setErr({ title: "Could not register that model", detail: e2 && (e2.detail || e2.message) });
@@ -503,6 +519,8 @@ function SetupWaitingScreen({ username }) {
   );
 }
 
+window.SW_connectProvider = SW_connectProvider;
+window.SW_registerProfile = SW_registerProfile;
 window.SetupWizardSteps = SetupWizardSteps;
 window.SetupWizardGate = SetupWizardGate;
 window.SetupWaitingScreen = SetupWaitingScreen;
