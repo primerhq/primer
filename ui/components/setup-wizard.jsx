@@ -43,28 +43,58 @@ async function SW_connectProvider(apiFetch, { type, url, apiKey }) {
   const models = (probe && probe.models) || [];
   if (!models.length) return { id: null, models };
   const id = "llm-" + type;
-  await apiFetch(
-    "POST", "/llm_providers",
-    { id, provider: type, config, limits: { max_concurrency: 4 } }, {},
-  );
+  const body = { id, provider: type, config, limits: { max_concurrency: 4 } };
+  try {
+    await apiFetch("POST", "/llm_providers", body, {});
+  } catch (e) {
+    // The id is fixed (llm-<type>), so a wizard that was done once (a reload, an abandoned
+    // step 2) meets its own row. The probe above just proved what the user typed, so that
+    // row takes it, and the wizard goes on. Any other error is still an error.
+    if (!e || e.status !== 409) throw e;
+    await apiFetch("PUT", "/llm_providers/" + encodeURIComponent(id), body, {});
+  }
   return { id, models };
 }
 
 // Step 2 as a function of apiFetch: register the chosen model as the default profile.
 async function SW_registerProfile(apiFetch, { providerId, model }) {
-  await apiFetch(
-    "POST", "/model_profiles",
-    {
-      id: providerId + "--" + model.name,
-      description: "Default profile created by first-run setup.",
-      provider_id: providerId,
-      model_name: model.name,
-      context_length: model.context_length || 32000,
-    }, {},
-  );
+  try {
+    await apiFetch(
+      "POST", "/model_profiles",
+      {
+        id: providerId + "--" + model.name,
+        description: "Default profile created by first-run setup.",
+        provider_id: providerId,
+        model_name: model.name,
+        context_length: model.context_length || 32000,
+      }, {},
+    );
+  } catch (e) {
+    // The id is derived from provider and model, so an existing row is this same profile.
+    if (!e || e.status !== 409) throw e;
+  }
 }
 
-function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
+// The gate's way back into a wizard that was left between the two steps: the provider row
+// exists, only the profile is missing. Returns {providerId, models} to open at step 2, or
+// null when there is nothing usable to resume from (the gate then starts at step 1, which
+// is idempotent).
+async function SW_resumeFromProvider(apiFetch) {
+  try {
+    const list = await apiFetch("GET", "/llm_providers?limit=50", null, {});
+    const first = list && list.items && list.items[0];
+    if (!first) return null;
+    const probe = await apiFetch(
+      "GET", "/llm_providers/" + encodeURIComponent(first.id) + "/discovered_models", null, {},
+    );
+    const models = (probe && probe.models) || [];
+    return models.length ? { providerId: first.id, models } : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function SetupWizardSteps({ onComplete, initialStep, initialModels, initialProviderId }) {
   // initialStep exists for the docs harness, which captures each step as
   // its own image and cannot click through a wizard to reach the second
   // one. Nothing in the console passes it, so the wizard still opens
@@ -73,7 +103,9 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
   const [type, setType] = React.useState("openchat");
   const [url, setUrl] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
-  const [providerId, setProviderId] = React.useState("");
+  // initialProviderId goes with initialStep 2 when the gate resumes a wizard that was left
+  // between the two steps (SW_resumeFromProvider): the provider row already exists.
+  const [providerId, setProviderId] = React.useState(initialProviderId || "");
   // initialModels goes with initialStep: step 2's list is what step 1's
   // probe returned, so a capture that starts at step 2 has an empty
   // dropdown and documents nothing. Console callers pass neither.
@@ -408,6 +440,10 @@ function SetupWizardGate({ onDone }) {
   // (e.g. a prior ensure pass failed on the workspace backend) lands
   // straight on the checklist instead of redoing provider setup.
   const [configuring, setConfiguring] = React.useState(null);
+  // undefined = not decided yet; null = start at step 1; {providerId, models} = open at
+  // step 2 (the provider row exists and only the model profile is missing, so the wizard
+  // was left between its two steps).
+  const [resume, setResume] = React.useState(undefined);
 
   const load = React.useCallback(() => {
     setError(null);
@@ -423,6 +459,14 @@ function SetupWizardGate({ onDone }) {
     );
     setConfiguring(providerMissing);
   }, [state, configuring]);
+  React.useEffect(() => {
+    if (!configuring || resume !== undefined || !state) return;
+    const ok = (key) => state.predicates.some((p) => p.key === key && p.ok);
+    if (!(ok("llm_provider") && !ok("model_profile"))) { setResume(null); return; }
+    let live = true;
+    SW_resumeFromProvider(window.primerApi.apiFetch).then((r) => { if (live) setResume(r); });
+    return () => { live = false; };
+  }, [configuring, resume, state]);
 
   const rerunSeed = () => {
     setBusy("seed");
@@ -433,6 +477,7 @@ function SetupWizardGate({ onDone }) {
 
   const afterProviderStep = () => {
     setConfiguring(false);
+    setResume(undefined); // decided afresh the next time the wizard is opened
     // Seeding needs the profile step 2 just created (amendment C3).
     rerunSeed();
   };
@@ -449,7 +494,16 @@ function SetupWizardGate({ onDone }) {
                 ask the operator for once you are inside.
               </div>
             </div>
-            <SetupWizardSteps onComplete={afterProviderStep} />
+            {resume === undefined
+              ? <div className="muted" style={{ padding: 20 }}>Loading…</div>
+              : (
+                <SetupWizardSteps
+                  onComplete={afterProviderStep}
+                  initialStep={resume ? 2 : undefined}
+                  initialModels={resume ? resume.models : undefined}
+                  initialProviderId={resume ? resume.providerId : undefined}
+                />
+              )}
           </div>
         </div>
       </div>
@@ -480,7 +534,7 @@ function SetupWizardGate({ onDone }) {
               state={state}
               busy={busy}
               testidPrefix="setup-gate-predicate"
-              onConfigureProvider={() => setConfiguring(true)}
+              onConfigureProvider={() => { setResume(undefined); setConfiguring(true); }}
               onRerunSeed={rerunSeed}
             />
           )}
@@ -521,6 +575,7 @@ function SetupWaitingScreen({ username }) {
 
 window.SW_connectProvider = SW_connectProvider;
 window.SW_registerProfile = SW_registerProfile;
+window.SW_resumeFromProvider = SW_resumeFromProvider;
 window.SetupWizardSteps = SetupWizardSteps;
 window.SetupWizardGate = SetupWizardGate;
 window.SetupWaitingScreen = SetupWaitingScreen;
