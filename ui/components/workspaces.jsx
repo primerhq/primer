@@ -1814,8 +1814,18 @@ function WS_TerminalAccessToggle({ wid, ws }) {
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState(null);
   const enabled = !!data.terminal_user_access;
+  // Only an admin may grant or revoke it (security review 2026-10-08, INJ-01: the server answers anyone else 403
+  // forbidden_role). Same cache key as the shell's own auth-status probe, so this costs no extra fetch.
+  const status = window.primerApi.useResource(
+    "auth-status",
+    (signal) => apiFetch("GET", "/auth/status", null, { signal }),
+    { pollMs: 0 },
+  );
+  const isAdmin = !!(status.data && status.data.role === "admin");
+  const locked = busy || !isAdmin;
 
   const toggle = async () => {
+    if (!isAdmin) return;
     setBusy(true);
     setErr(null);
     try {
@@ -1834,19 +1844,19 @@ function WS_TerminalAccessToggle({ wid, ws }) {
   return (
     <div className="mt-4">
       <div className="field-label" style={{ marginBottom: 6 }}>Terminal — user access</div>
-      <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: locked ? "default" : "pointer", opacity: locked ? 0.6 : 1 }}>
         <button
           type="button"
           role="switch"
           aria-checked={enabled}
-          disabled={busy}
+          disabled={locked}
           data-testid="workspace-terminal-access-toggle"
           onClick={toggle}
           style={{
             flex: "0 0 auto", width: 34, height: 20, borderRadius: 999,
             border: "1px solid var(--border)", padding: 0, marginTop: 1,
             background: enabled ? "var(--accent)" : "var(--bg-2)",
-            position: "relative", cursor: busy ? "default" : "pointer",
+            position: "relative", cursor: locked ? "default" : "pointer",
             transition: "background 0.12s ease",
           }}
         >
@@ -1864,6 +1874,11 @@ function WS_TerminalAccessToggle({ wid, ws }) {
           <span className="muted"> Restricted accounts never get a shell regardless of this toggle.</span>
         </span>
       </label>
+      {!isAdmin && status.data && (
+        <div className="field-help" data-testid="workspace-terminal-access-admin-only">
+          Only an admin can change terminal access.
+        </div>
+      )}
       {err && <div className="field-help" style={{ color: "var(--red)" }} data-testid="workspace-terminal-access-error">{err}</div>}
     </div>
   );

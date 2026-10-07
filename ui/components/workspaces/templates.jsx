@@ -2,6 +2,11 @@
 
 const WT_LIST_KEY = "ws:templates";
 
+// Security review 2026-10-08: host mounts, Kubernetes overlays and secret file sources reach the host, the cluster or
+// operator secrets, so only an admin may set or change them; the server answers a non-admin with 403 forbidden_role.
+const WT_ADMIN_ONLY_NOTE =
+  "Admin only: only an admin can set or change these fields. Kubernetes overlays must also stay on the server's allowlist.";
+
 // ---- ContainerMountEditor: list of {host, container, readonly} rows.
 // Matches the ContainerMount pydantic model used by ContainerTemplateConfig
 // (host path → container mount point, optional read-only flag).
@@ -495,7 +500,11 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
             <input className="input mono" type="number" step="1" min="0" value={form.c_memory_bytes} onChange={(e) => update("c_memory_bytes", e.target.value)} placeholder="2147483648" style={{ width: "100%" }} />
           </WS_FieldRow>
         </div>
-        <WS_FieldRow label="extra_mounts" hint="host → container mounts">
+        <div className="field-help" data-testid="ws-template-admin-only-note">
+          <Icon name="lock" size={11} style={{ verticalAlign: -1, marginRight: 3 }} />
+          {WT_ADMIN_ONLY_NOTE}
+        </div>
+        <WS_FieldRow label="extra_mounts" hint="host → container mounts · admin only">
           <ContainerMountEditor value={form.c_extra_mounts} onChange={(v) => update("c_extra_mounts", v)} />
         </WS_FieldRow>
         <WS_FieldRow label="network.egress" hint="null = runtime default · deny_all = --internal network">
@@ -554,23 +563,27 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
           </button>
         </div>
         {advancedOpen && (<>
-          <WS_FieldRow label="extra_volumes" hint="JSON array of Volume objects (passthrough)">
+          <div className="field-help" data-testid="ws-template-admin-only-note">
+            <Icon name="lock" size={11} style={{ verticalAlign: -1, marginRight: 3 }} />
+            {WT_ADMIN_ONLY_NOTE}
+          </div>
+          <WS_FieldRow label="extra_volumes" hint="JSON array · emptyDir or configMap volumes only · admin only">
             <window.WorkspaceJsonTextareaField value={form.k_extra_volumes} onChange={(v) => update("k_extra_volumes", v)} placeholder='[{"name": "cache", "emptyDir": {}}]' rows={4} />
           </WS_FieldRow>
-          <WS_FieldRow label="extra_volume_mounts" hint="JSON array of VolumeMount objects (passthrough)">
+          <WS_FieldRow label="extra_volume_mounts" hint="JSON array · name, mountPath, readOnly, subPath · admin only">
             <window.WorkspaceJsonTextareaField value={form.k_extra_volume_mounts} onChange={(v) => update("k_extra_volume_mounts", v)} placeholder='[{"name": "cache", "mountPath": "/cache"}]' rows={4} />
           </WS_FieldRow>
-          <WS_FieldRow label="pod_overrides" hint="JSON object · deep-merged into PodSpec">
+          <WS_FieldRow label="pod_overrides" hint="JSON object · only shareProcessNamespace, dnsPolicy, restartPolicy, terminationGracePeriodSeconds · admin only">
             <window.WorkspaceJsonTextareaField value={form.k_pod_overrides} onChange={(v) => update("k_pod_overrides", v)} placeholder='{"restartPolicy": "Always"}' rows={4} />
           </WS_FieldRow>
-          <WS_FieldRow label="container_security_context_overrides" hint="JSON object · merged into Container.securityContext">
-            <window.WorkspaceJsonTextareaField value={form.k_container_security_context_overrides} onChange={(v) => update("k_container_security_context_overrides", v)} placeholder='{"runAsNonRoot": true}' rows={4} />
+          <WS_FieldRow label="container_security_context_overrides" hint="not applied by the backend · any non-empty value is refused">
+            <window.WorkspaceJsonTextareaField value={form.k_container_security_context_overrides} onChange={(v) => update("k_container_security_context_overrides", v)} placeholder="{}" rows={4} />
           </WS_FieldRow>
         </>)}
       </>)}
 
       <WS_Section label="Recipe" sub="files, env, init commands — shared across backends" />
-      <WS_FieldRow label="files" hint="inline-text only · git/http sources via API">
+      <WS_FieldRow label="files" hint="inline-text only · url sources via API · secret sources are admin only">
         <window.WorkspaceFileRowEditor value={form.files} onChange={(v) => update("files", v)} />
       </WS_FieldRow>
       <WS_FieldRow label="env" hint="key/value pairs · values stored encrypted as SecretStr">

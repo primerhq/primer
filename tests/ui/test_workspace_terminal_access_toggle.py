@@ -50,6 +50,26 @@ def test_toggle_is_not_a_static_stub() -> None:
     assert 'data-testid="workspace-terminal-access-toggle"' in body
 
 
+def _toggle_body() -> str:
+    src = _src()
+    start = src.index("function WS_TerminalAccessToggle(")
+    end = src.index("\nfunction WS_ConfigTab(")
+    return src[start:end]
+
+
+def test_the_toggle_is_admin_only() -> None:
+    """Security review 2026-10-08 (INJ-01): the server refuses a non-admin grant with 403 forbidden_role, so the
+    console reads the caller's role and locks the switch for anyone else, with a line saying why."""
+    body = _toggle_body()
+    assert '"/auth/status"' in body
+    assert 'status.data.role === "admin"' in body
+    assert "const locked = busy || !isAdmin;" in body
+    assert "disabled={locked}" in body
+    assert "if (!isAdmin) return;" in body
+    assert 'data-testid="workspace-terminal-access-admin-only"' in body
+    assert "Only an admin can change terminal access." in body
+
+
 def test_wired_into_the_config_tab() -> None:
     src = _src()
     assert "<WS_TerminalAccessToggle wid={wid} ws={ws} />" in src
