@@ -141,3 +141,16 @@ def test_after_a_compaction_turns_counts_the_turns_in_view():
     ])
 
     assert (u.turns, u.model_calls) == (1, 2), "the two folded turns are not in view"
+
+
+def test_a_done_without_a_usage_envelope_is_still_a_model_call_and_adds_no_tokens():
+    """``model_calls`` is every visible done, so it is one population with ``total_*`` only in the sense that a call that
+    reported nothing still happened: it counts, and it adds nothing to the sums or to ``last_*``."""
+    u = session_usage([
+        _rec(1, "user_input", text="go"),
+        _rec(2, "done", stop_reason="tool_use", usage=_usage(10, 1)),
+        _rec(3, "done", stop_reason="stop"),
+    ])
+
+    assert (u.turns, u.model_calls) == (1, 2)
+    assert (u.total_input_tokens, u.last_input_tokens) == (10, 10), "the call with no envelope adds and replaces nothing"
