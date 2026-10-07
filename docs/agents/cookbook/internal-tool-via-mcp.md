@@ -40,7 +40,7 @@ Response:
 This registers an MCP-connector toolset whose tools come from the upstream `internal-kb` server. Registering the toolset does not publish it; its tools are not yet in any external client's palette.
 
 ```callout:info
-This example registers an `http` connector, which any non-restricted user may do. A toolset on the `stdio` transport launches a command on the Primer host, so creating or changing one requires the admin role: `system::create_toolset` and `system::update_toolset` answer `type=forbidden` for a stdio toolset unless the run was started by an admin, and always do so over `/v1/mcp`, where the caller's role is not known to the tool. An admin registers a stdio toolset over REST (`POST /v1/toolsets`) or in the console.
+This example registers an `http` connector, which any non-restricted user may do. A toolset on the `stdio` transport launches a command on the Primer host, so creating or changing one requires the admin role: `system::create_toolset` and `system::update_toolset` answer `type=forbidden` for a stdio toolset unless the run was started by an admin, and always do so over `/v1/mcp`, where the caller's role is not known to the tool. An admin registers a stdio toolset over REST (`POST /v1/toolsets`) or in the console. The same holds for a python toolset, whose source runs on the Primer host. Changing an existing toolset's `url` or OAuth endpoints while sending a header or the OAuth client secret back as the masked value `get_toolset` served is admin-only too, because the stored secret would go to the new endpoint: re-enter the secrets in the same update instead.
 ```
 
 ### 2. Operator: confirm the toolset and its tools
