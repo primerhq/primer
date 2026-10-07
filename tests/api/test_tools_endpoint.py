@@ -76,6 +76,57 @@ async def test_list_tools_ids_are_unique(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_flat_catalogue_lists_every_tool_the_grouped_catalogue_lists(client) -> None:
+    """Two routes enumerate the same built-in toolsets (GET /tools, grouped, feeds the pickers and the toolset cards;
+    GET /tools/catalogue, flat, feeds the Tools page and the graph editor). Each kept its own copy of the built-in
+    id list, and the flat copy lacked ``trigger``: the Tools page showed 160 tools where every picker showed 171."""
+    grouped = (await client.get("/v1/tools")).json()["items"]
+    flat = {item["id"] for item in (await client.get("/v1/tools/catalogue")).json()["items"]}
+
+    grouped_ids = {f"{ts['id']}__{tool['id']}" for ts in grouped for tool in (ts.get("tools") or [])}
+    assert grouped_ids, "the grouped catalogue listed no tools at all, so this comparison would prove nothing"
+    missing = sorted(grouped_ids - flat)
+    assert not missing, f"tools in GET /tools but not in GET /tools/catalogue: {missing}"
+
+
+@pytest.mark.asyncio
+async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(client, monkeypatch) -> None:
+    """The fake test app's registry has no ``trigger`` / ``harness`` / ``search`` provider, so the route cannot be seen listing
+    their tools there. A spy registry answers every toolset with one tool and records what was asked."""
+    from types import SimpleNamespace
+
+    from primer.api.registries.provider_registry import ProviderRegistry
+    from primer.api.routers import providers
+
+    asked: list[str] = []
+
+    class _OneTool:
+        async def list_tools(self, *, principal=None):
+            yield SimpleNamespace(id="probe", description="", args_schema={})
+
+    async def _spy(self, toolset_id, *args, **kwargs):
+        asked.append(toolset_id)
+        return _OneTool()
+
+    monkeypatch.setattr(ProviderRegistry, "get_toolset", _spy)
+
+    resp = await client.get("/v1/tools/catalogue")
+
+    assert resp.status_code == 200, resp.text
+    ids = {item["id"] for item in resp.json()["items"]}
+    for spec in providers._BUILTIN_TOOLSETS:
+        assert spec["id"] in asked, f"the built-in toolset {spec['id']!r} was never enumerated"
+        assert f"{spec['id']}__probe" in ids, f"the built-in toolset {spec['id']!r} contributed nothing to the catalogue"
+
+
+def test_the_flat_catalogue_takes_its_built_in_ids_from_the_one_list() -> None:
+    """One list of built-in toolset ids (providers._BUILTIN_TOOLSETS); the catalogue route must not carry a copy."""
+    from primer.api.routers import providers, tools
+
+    assert tools._BUILTIN_TOOLSET_IDS == tuple(spec["id"] for spec in providers._BUILTIN_TOOLSETS)
+
+
+@pytest.mark.asyncio
 async def test_list_tools_requires_auth(raw_client) -> None:
     """Without the auth cookie, /v1/tools/catalogue rejects."""
     resp = await raw_client.get("/v1/tools/catalogue")
