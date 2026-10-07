@@ -10,6 +10,7 @@ by plan task 8.
 
 from __future__ import annotations
 
+import html
 import mimetypes
 
 from fastapi import APIRouter, Request
@@ -29,27 +30,52 @@ from primer.service.serve import get_artifact_lru, get_resolver, pick_path
 
 svc_serve_router = APIRouter(tags=["svc"])
 
-_IMMUTABLE = "public, max-age=31536000, immutable"
+_IMMUTABLE_PUBLIC = "public, max-age=31536000, immutable"
+# A CONSOLE-gated bundle must never land in a shared cache (CDN, caching
+# reverse proxy): "public" would let one store it and replay it by URL
+# to anonymous clients.
+_IMMUTABLE_PRIVATE = "private, max-age=31536000, immutable"
+
+_NOSNIFF = {"X-Content-Type-Options": "nosniff"}
+
+# The server-generated error pages run no script, load nothing and may
+# not be framed. The only allowance is their inline style attributes.
+_ERROR_PAGE_CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
 
 
 def _wants_html(request: Request) -> bool:
     return "text/html" in (request.headers.get("accept") or "")
 
 
-def _not_found(request: Request, title: str, body_html: str) -> Response:
+def _not_found(
+    request: Request, title: str, heading: str, message: str
+) -> Response:
+    """404 as a small HTML page for browsers, problem+json otherwise.
+
+    ``heading`` and ``message`` carry values from the URL (the service
+    name, the asset path), and this page is served on the console
+    origin, so every interpolated value is HTML-escaped.
+    """
     if _wants_html(request):
         return HTMLResponse(
             "<!doctype html><meta charset='utf-8'>"
-            f"<title>{title}</title>"
+            f"<title>{html.escape(title)}</title>"
             "<body style='font-family:system-ui;display:grid;"
             "place-items:center;min-height:90vh'>"
-            f"<div style='text-align:center'>{body_html}</div>",
+            "<div style='text-align:center'>"
+            f"<h1>{html.escape(heading)}</h1><p>{html.escape(message)}</p>"
+            "</div>",
             status_code=404,
+            headers={**_NOSNIFF, "Content-Security-Policy": _ERROR_PAGE_CSP},
         )
     return JSONResponse(
         status_code=404,
         content={"type": "/errors/not-found", "title": title, "status": 404},
         media_type="application/problem+json",
+        headers=_NOSNIFF,
     )
 
 
@@ -61,7 +87,7 @@ async def svc_client_js() -> Response:
     return Response(
         content=PRIMER_JS,
         media_type="application/javascript",
-        headers={"Cache-Control": "public, max-age=300"},
+        headers={"Cache-Control": "public, max-age=300", **_NOSNIFF},
     )
 
 
@@ -185,34 +211,39 @@ async def svc_serve(name: str, path: str, request: Request) -> Response:
     resolved = await get_resolver(request).resolve(name)
     if resolved is None:
         return _not_found(
-            request, "no such service",
-            f"<h1>{name}</h1><p>No service is registered under this name.</p>",
+            request, "no such service", name,
+            "No service is registered under this name.",
         )
     service, version = resolved
     if service.viewer_auth is ServiceViewerAuth.CONSOLE:
         require_user(request)
     if version is None:
         return _not_found(
-            request, "not published",
-            f"<h1>{service.name}</h1><p>This service is not published yet.</p>",
+            request, "not published", service.name,
+            "This service is not published yet.",
         )
     target = pick_path(version, path)
     if target is None:
         return _not_found(
-            request, "asset not found",
-            f"<h1>{service.name}</h1><p>{path} does not exist in this version.</p>",
+            request, "asset not found", service.name,
+            f"{path} does not exist in this version.",
         )
     artifact_id = version.files[target]
     etag = f'"{artifact_id}"'
-    base_headers = {"ETag": etag, "Cache-Control": _IMMUTABLE}
+    cache_control = (
+        _IMMUTABLE_PRIVATE
+        if service.viewer_auth is ServiceViewerAuth.CONSOLE
+        else _IMMUTABLE_PUBLIC
+    )
+    base_headers = {"ETag": etag, "Cache-Control": cache_control, **_NOSNIFF}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=base_headers)
     artifacts = await get_artifact_storage_registry(request).get_default()
     blob = await get_artifact_lru(request).get(artifacts, artifact_id)
     if blob is None:
         return _not_found(
-            request, "asset not found",
-            f"<h1>{service.name}</h1><p>{path} is missing its stored bytes.</p>",
+            request, "asset not found", service.name,
+            f"{path} is missing its stored bytes.",
         )
     if target == version.manifest.entry:
         media = "text/html"
