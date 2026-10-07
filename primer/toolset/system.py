@@ -343,6 +343,30 @@ def build_system_toolset(
         ("channel_provider", "channel_providers", ChannelProvider, None, None, None, "admin"),
         ("channel", "channels", Channel, None, None, None, "user"),
     ]
+    # The entities whose warm adapter an edit through the REST route refreshes but an edit through a TOOL does not (task 01a111d1, D5
+    # phase 2c, the lead's ruling: document it, do not mirror the hook). ArtifactStorageRegistry and ChannelRegistry invalidate only the
+    # cache of their own process, the warm inbound adapters live in the API process, and a tool runs in whichever process executes the
+    # session (a worker in the k3s split), so a local-only mirror would look like parity and do nothing where it matters. Binding the
+    # registries to the invalidation bus is the design ticket 01a11358. The note reaches the agent through the update / delete descriptors.
+    cache_notes_by_label: dict[str, str] = {
+        "artifact_storage_provider": (
+            "Unlike the other provider rows, this tool does NOT drop the cached artifact-storage instance: the registry's cache is "
+            "local to one process, and a tool may run in a different process than the one that serves the API. The change takes "
+            "effect after the next restart, or after the row is edited through the REST route (which refreshes the API process)."
+        ),
+        "channel_provider": (
+            "Unlike the other provider rows, this tool does NOT flush the warm channel adapters (the Telegram / Slack / Discord "
+            "gateways live in the API process, and the registry's invalidation is local to one process, while a tool may run in "
+            "another). The change takes effect after the next restart, or after the row is edited through the REST route, which "
+            "flushes them."
+        ),
+        "channel": (
+            "This tool does NOT flush or re-warm the channel's adapter (its inbound gateway lives in the API process, and the "
+            "registry's invalidation is local to one process, while a tool may run in another), so a new config, or "
+            "``config.chats.enabled`` turned on, takes effect after the next restart or after the row is edited through the REST "
+            "route, which flushes and re-warms it."
+        ),
+    }
     for label, plural, cls, on_c, on_u, on_d, role in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
         registry.update(
@@ -358,6 +382,7 @@ def build_system_toolset(
                 guards=guards_by_label.get(label),
                 pre_create=pre_create,
                 pre_update=pre_update,
+                cache_note=cache_notes_by_label.get(label),
             )
         )
 
