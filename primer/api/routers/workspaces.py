@@ -98,6 +98,7 @@ from primer.workspace.diagnostic import (
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.pending_gates import enumerate_pending_gates
+from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
 from primer.storage import raw_generation
 
 
@@ -1145,10 +1146,15 @@ async def list_sessions(
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    session_storage=Depends(get_session_storage),
 ) -> dict:
+    """List the sessions of a workspace. Each item is the runtime slot with its lifecycle fields (status, ended_reason,
+    ended_detail, ended_at) taken from the durable row, the one truth about how a session ended (``primer.session.slot_view``)."""
     ws = await registry.get_workspace(workspace_id)
     sessions = await ws.list_sessions()
-    sliced = sessions[offset : offset + limit]
+    sliced = await overlay_rows_on_infos(
+        sessions[offset : offset + limit], session_storage, workspace_id=workspace_id,
+    )
     return {
         "items": [s.model_dump(mode="json") for s in sliced],
         "offset": offset,
@@ -1166,7 +1172,14 @@ async def get_session(
     workspace_id: str = Path(..., description="Workspace id"),
     session_id: str = Path(..., description="Session id"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    session_storage=Depends(get_session_storage),
 ) -> dict:
+    """Get the runtime view of a session: ``{info, status}``.
+
+    ``info`` is the on-disk slot (``session.json``) with its lifecycle fields (status, ended_reason, ended_detail, ended_at) taken
+    from the durable ``WorkspaceSession`` row, the same one ``GET /v1/sessions/{id}`` serves, so the two routes cannot disagree about
+    how a session ended (``primer.session.slot_view``). A slot with no row is served as it is.
+    """
     ws = await registry.get_workspace(workspace_id)
     session = await ws.get_session(session_id)
     if session is None:
@@ -1174,11 +1187,10 @@ async def get_session(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
-    info = await session.info()
-    status = await session.status()
+    info = await overlay_row_on_slot_info(await session.info(), session_storage, workspace_id=workspace_id)
     return {
         "info": info.model_dump(mode="json"),
-        "status": status.value if hasattr(status, "value") else str(status),
+        "status": info.status.value if hasattr(info.status, "value") else str(info.status),
     }
 
 
