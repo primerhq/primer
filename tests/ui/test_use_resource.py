@@ -85,3 +85,78 @@ def test_missing_fields_default_to_loading_not_a_crash() -> None:
     # A hand-built snapshot (e.g. a test double) that omits `degraded`
     # entirely must not throw - it reads as loading, the safe default.
     assert _state({"data": None}) == "loading"
+
+
+# ---------------------------------------------------------------------------
+# A null / undefined cache key means "disabled" (ADM-10, ADM-17 of the 2026-10-08 admin review).
+#
+# useResource(cond ? "key" : null, fetcher) is how two screens (the model-profile form's discovered-models probe
+# and the graph builder's run-state poll) say "nothing to fetch yet". The hook used to treat null as just another
+# key: it created a cache entry under the key ``null``, ran the fetcher (GET /llm_providers//discovered_models,
+# GET /graphs/<id>/runs/undefined/node_states, both doomed 404s), and left the entry in the cache for good. The
+# next useMutation with ``invalidates`` then threw ``null.startsWith`` inside findKeys, AFTER the server write had
+# succeeded and BEFORE onSuccess ran: the write landed, the toast / refetch / close never happened, and the promise
+# rejected unhandled.
+#
+# These tests RUN the hook (MiniRacer with a React stub whose effects execute immediately), unlike the
+# resourceState tests above which only call the pure function.
+# ---------------------------------------------------------------------------
+
+
+def _hook_ctx():
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = globalThis;")
+    ctx.eval(
+        """
+        var document = { addEventListener: function () {}, hidden: false };
+        var setTimeout = function () { return 1; };
+        var clearTimeout = function () {};
+        function AbortController() { this.signal = {}; this.abort = function () {}; }
+        window.React = {
+          useState: function (init) {
+            var v = typeof init === 'function' ? init() : init;
+            return [v, function (n) { v = n; }];
+          },
+          useRef: function (v) { return { current: v }; },
+          useCallback: function (f) { return f; },
+          useEffect: function (f) { f(); },
+        };
+        var __calls = 0;
+        function __fetcher() { __calls += 1; return new Promise(function () {}); }
+        """
+    )
+    ctx.eval(MODULE.read_text(encoding="utf-8"))
+    return ctx
+
+
+def test_a_live_key_fetches_once_so_the_null_key_tests_are_not_vacuous() -> None:
+    ctx = _hook_ctx()
+    ctx.eval("window.primerApi.useResource('live:key', __fetcher, { pollMs: 0 });")
+    assert ctx.eval("__calls") == 1
+
+
+def test_a_null_key_never_calls_the_fetcher_and_reports_idle() -> None:
+    ctx = _hook_ctx()
+    result = json.loads(ctx.eval(
+        "JSON.stringify(window.primerApi.useResource(null, __fetcher, { pollMs: 0 }))"
+    ))
+    assert ctx.eval("__calls") == 0, "a null key must not run the fetcher (it fetched with an undefined id)"
+    assert result.get("data") is None
+    assert result.get("loading") is False, "disabled is not loading: the consumer must not show a spinner"
+
+
+def test_an_undefined_key_is_disabled_too() -> None:
+    ctx = _hook_ctx()
+    ctx.eval("window.primerApi.useResource(undefined, __fetcher, { pollMs: 0 });")
+    assert ctx.eval("__calls") == 0
+
+
+def test_a_null_key_does_not_poison_findkeys_for_a_later_mutation() -> None:
+    ctx = _hook_ctx()
+    ctx.eval("window.primerApi.useResource(null, __fetcher, { pollMs: 0 });")
+    ctx.eval("window.primerApi.useResource('workers:list', __fetcher, { pollMs: 0 });")
+    # useMutation calls this after every successful write with a non-empty `invalidates`.
+    keys = json.loads(ctx.eval("JSON.stringify(window.primerApi._resource.findKeys('workers:list'))"))
+    assert keys == ["workers:list"]
