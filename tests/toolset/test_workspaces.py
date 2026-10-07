@@ -120,6 +120,8 @@ class _LiveSession:
 
         self.session_id = session_id
         self._status = SessionStatus.RUNNING
+        self._ended_reason = None  # what the slot says when a test makes it ENDED
+        self._ended_at = None
 
     async def info(self):
         from datetime import datetime, timezone
@@ -131,6 +133,8 @@ class _LiveSession:
             workspace_id="ws-stub",
             parent_session_id=None,
             status=self._status,
+            ended_reason=self._ended_reason,
+            ended_at=self._ended_at,
             started_at=datetime.now(timezone.utc),
             last_activity_at=datetime.now(timezone.utc),
         )
@@ -1260,6 +1264,8 @@ def _seed_session(
     sid="sess-c1",
     workspace_id="ws-stub",
     ended_reason=None,
+    ended_detail=None,
+    ended_at=None,
 ):
     from datetime import datetime, timezone
 
@@ -1275,6 +1281,8 @@ def _seed_session(
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=status,
         ended_reason=ended_reason,
+        ended_detail=ended_detail,
+        ended_at=ended_at,
         created_at=datetime.now(timezone.utc),
     )
 
@@ -1579,6 +1587,78 @@ class TestReconcileSessionInfo:
         body = json.loads(result.output)
         assert body["status"] == "ended"
         assert body["info"]["ended_reason"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_slot_that_already_says_ended_does_not_outvote_the_rows_reason(
+        self, toolset, seeded, sp, workspace_registry,
+    ) -> None:
+        """Architecture review A1. The overlay used to return early for a slot that was already ENDED, so the slot's
+        ``completed`` (written by a closed workspace handle, or by the dispatch mirror for a reason it does not know) was
+        believed over the row's ``failed`` / ``never_started``, and the row's detail was never carried at all."""
+        from datetime import datetime, timezone
+
+        from primer.model.workspace_session import SessionStatus
+
+        ws = await workspace_registry.get_workspace(seeded)
+        live = await ws.get_session("sess-1")
+        live._status, live._ended_reason = SessionStatus.ENDED, "completed"
+        live._ended_at = datetime(2026, 10, 8, 9, 0, tzinfo=timezone.utc)
+        row_ended_at = datetime(2026, 10, 8, 10, 0, tzinfo=timezone.utc)
+        _seed_session(
+            sp, status=SessionStatus.ENDED, sid="sess-1", workspace_id=seeded,
+            ended_reason="failed", ended_detail="never_started", ended_at=row_ended_at,
+        )
+
+        got = await toolset.call(
+            tool_name="get_workspace_session", arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        listed = await toolset.call(tool_name="list_workspace_sessions", arguments={"workspace_id": seeded})
+
+        assert not got.is_error and not listed.is_error, (got.output, listed.output)
+        for info in (json.loads(got.output)["info"], json.loads(listed.output)["items"][0]):
+            assert (info["status"], info["ended_reason"], info["ended_detail"]) == ("ended", "failed", "never_started")
+            assert datetime.fromisoformat(info["ended_at"]) == row_ended_at
+        assert json.loads(got.output)["status"] == "ended"
+
+    @pytest.mark.asyncio
+    async def test_a_live_row_is_not_ended_by_a_slot_that_says_ended(
+        self, toolset, seeded, sp, workspace_registry,
+    ) -> None:
+        """Closing a workspace handle ends every cached slot as ``completed`` while the row of a parked session is waiting."""
+        from datetime import datetime, timezone
+
+        from primer.model.workspace_session import SessionStatus
+
+        ws = await workspace_registry.get_workspace(seeded)
+        live = await ws.get_session("sess-1")
+        live._status, live._ended_reason = SessionStatus.ENDED, "completed"
+        live._ended_at = datetime(2026, 10, 8, 9, 0, tzinfo=timezone.utc)
+        _seed_session(sp, status=SessionStatus.WAITING, sid="sess-1", workspace_id=seeded)
+
+        got = await toolset.call(
+            tool_name="get_workspace_session", arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+
+        body = json.loads(got.output)
+        assert body["status"] == "waiting"
+        assert (body["info"]["status"], body["info"]["ended_reason"], body["info"]["ended_at"]) == ("waiting", None, None)
+
+    @pytest.mark.asyncio
+    async def test_the_rows_detail_reaches_the_tool_when_the_slot_lags(self, toolset, seeded, sp) -> None:
+        """The slot is still RUNNING (the stuck-session sweeper never touches it); the row says why it ended."""
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(
+            sp, status=SessionStatus.ENDED, sid="sess-1", workspace_id=seeded,
+            ended_reason="failed", ended_detail="never_started",
+        )
+
+        got = await toolset.call(
+            tool_name="get_workspace_session", arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+
+        info = json.loads(got.output)["info"]
+        assert (info["ended_reason"], info["ended_detail"]) == ("failed", "never_started")
 
     @pytest.mark.asyncio
     async def test_a_session_ended_at_the_tool_turn_cap_reads_tool_turn_cap(
