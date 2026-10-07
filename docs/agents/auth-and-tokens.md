@@ -200,10 +200,11 @@ server side.
   4401. Distinguish this in client code from the other documented WS
   close codes (4403 forbidden role, 4404 workspace not found). The
   session stream is SSE and answers an HTTP 401 instead.
-- **Most of `/v1/workers` is a public probe surface, but the drain
-  mutation is not.** `GET /v1/workers` stays reachable without auth so
-  liveness/readiness probes work pre-login; `POST /v1/workers/{id}/drain`
-  requires auth (401 without it).
+- **Most of `/v1/workers` is a public probe surface, but the mutations
+  are not.** `GET /v1/workers` stays reachable without auth so
+  liveness/readiness probes work pre-login; `POST /v1/workers/{id}/drain`,
+  `POST /v1/workers/purge_dead` and `DELETE /v1/workers/{id}` require the
+  admin role (401 without auth, 403 below admin).
 - **Password sign-in is throttled; bearer tokens are not.** After five
   attempts in a row for one username from one client address,
   `POST /v1/auth/login` answers `429` (`extensions.error` is
