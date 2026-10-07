@@ -145,15 +145,18 @@ def toolset_guards() -> CrudGuards:
     """The Toolset declaration, shared by the system toolset's table and the python-toolset tools (``create_python_toolset``,
     ``update_python_toolset_source``), which write Toolset rows directly.
 
-    A function, not a constant: the reserved scope ids live in ``provider_registry``, whose module imports toolsets, so importing it
+    A function, not a constant: the reserved ids live in ``provider_registry``, whose module imports toolsets, so importing it
     at module level here would be a cycle (the same reason ``system.py`` imports its constants inside the builder).
+
+    The reserved set is every id a stored row may not take (the registry's built-in providers and the tool-manager scopes): the
+    same set the toolset REST create hook refuses, so the tool and the route cannot drift.
     """
-    from primer.api.registries.provider_registry import RESERVED_TOOLSET_SCOPE_IDS
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_ROW_IDS
 
     return CrudGuards(
         kind="toolset",
         managed_by_field="harness_id",
-        reserved_create_ids=RESERVED_TOOLSET_SCOPE_IDS,
+        reserved_create_ids=RESERVED_TOOLSET_ROW_IDS,
         references=(ToolReference("tool_approval_policy", ToolApprovalPolicy, "toolset_id"),),
     )
 
