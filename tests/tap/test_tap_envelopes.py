@@ -75,6 +75,21 @@ class TestDerivedFrames:
         assert frame["total_input_tokens"] == 100
         assert frame["last_output_tokens"] == 10
 
+    def test_usage_frame_separates_turns_from_model_calls(self):
+        """01a1138d: ``turns`` is the shared turn rule, ``model_calls`` every done (tool rounds included)."""
+        from primer.api.routers.tap import build_usage_frame
+
+        def rec(seq, kind, **payload):
+            return json.dumps({"seq": seq, "kind": kind, "payload": payload,
+                               "created_at": "2026-10-07T00:00:00+00:00"})
+
+        frame = build_usage_frame([
+            rec(1, "user_input", text="hi"),
+            rec(2, "done", stop_reason="tool_use", usage={"input_tokens": 100, "output_tokens": 10}),
+            rec(3, "done", stop_reason="stop", usage={"input_tokens": 200, "output_tokens": 20}),
+        ])
+        assert (frame["turns"], frame["model_calls"]) == (1, 2)
+
     def test_usage_frame_is_idempotent(self):
         """Same input, same frame: a client may render it twice."""
         from primer.api.routers.tap import build_usage_frame
