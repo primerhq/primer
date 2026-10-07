@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from primer.api.deps import get_storage_provider
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.api.routers._references import ReferenceCheck
-from primer.channel.checks import check_channel_on_create
+from primer.channel.checks import check_channel_on_create, check_channel_on_update
 from primer.common.entity_checks import EntityCheckError
 from primer.model.channel import (
     Channel,
@@ -156,13 +156,30 @@ async def _channel_on_pre_create(entity: Channel, request: Request) -> None:
     row when the caller omitted it.
     """
     # The check is shared with the system tools (primer/channel/checks.py); this re-raises exactly what it always raised: a 422 whose
-    # detail is a plain string for a missing provider, a ConflictError for a duplicate.
+    # detail is a plain string for a refused body, a ConflictError for a duplicate.
     try:
         await check_channel_on_create(entity, storage_provider=get_storage_provider(request))
     except EntityCheckError as exc:
-        if exc.kind == "conflict":
-            raise ConflictError(exc.message) from exc
-        raise HTTPException(status_code=422, detail=exc.message) from exc
+        raise _as_rest_error(exc) from exc
+
+
+async def _channel_on_pre_update(entity: Channel, existing: Channel, request: Request) -> None:
+    """A replace must name an existing ChannelProvider and that provider's platform (ticket 01a1139e).
+
+    The router had no pre-update hook, so a PUT could move a channel to another platform or onto a provider that does not exist.
+    """
+    del existing  # the new pair is what counts: the row is rewritten whole
+    try:
+        await check_channel_on_update(entity, storage_provider=get_storage_provider(request))
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
+
+
+def _as_rest_error(exc: EntityCheckError) -> Exception:
+    """A ``ConflictError`` for a clash, else a 422 whose detail is the plain message (the shape this router has always used)."""
+    if exc.kind == "conflict":
+        return ConflictError(exc.message)
+    return HTTPException(status_code=422, detail=exc.message)
 
 
 def make_channel_router() -> APIRouter:
@@ -172,6 +189,7 @@ def make_channel_router() -> APIRouter:
         plural="channels",
         tag="channels",
         on_pre_create=_channel_on_pre_create,
+        on_pre_update=_channel_on_pre_update,
         on_update=_invalidate_and_rewarm_channel,
         on_delete=_invalidate_channel,
     )
