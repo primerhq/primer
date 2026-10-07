@@ -9,7 +9,8 @@ or equivalent).
 Sources:
 
 * ``inline``   -- content used as-is (UTF-8 encoded).
-* ``url``      -- ``aiohttp`` GET; non-2xx raises.
+* ``url``      -- ``aiohttp`` GET; non-2xx raises. A private, loopback, link-local or metadata destination is
+  refused, on the first request and on every redirect hop (:mod:`primer.common.ssrf`).
 * ``document`` -- delegated to ``document_resolver`` (storage-backed).
 * ``secret``   -- delegated to ``secret_resolver``.
 
@@ -26,6 +27,9 @@ from typing import TYPE_CHECKING
 from collections.abc import Awaitable, Callable
 
 import aiohttp
+from yarl import URL
+
+from primer.common.ssrf import BlockedDestinationError, PublicOnlyResolver, refuse_private_literal
 
 if TYPE_CHECKING:
     from primer.model.workspace import FileMount
@@ -48,8 +52,38 @@ class ResolvedFile:
 
 
 def _http_session() -> aiohttp.ClientSession:
-    """Hook for tests to patch out the aiohttp session."""
-    return aiohttp.ClientSession()
+    """Hook for tests to patch out the aiohttp session.
+
+    The connector resolves through :class:`PublicOnlyResolver`, so a host name that resolves to a blocked address is
+    refused at connect time. ``trust_env`` stays off: no proxy from the environment sits between the check and the fetch.
+    """
+    return aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=PublicOnlyResolver()))
+
+
+_MAX_REDIRECTS = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+async def _fetch_url(url: str) -> bytes:
+    """GET ``url``, following redirects by hand so every hop's IP literal is checked (aiohttp skips the resolver for one)."""
+    try:
+        refuse_private_literal(url)
+        async with _http_session() as session:
+            for _ in range(_MAX_REDIRECTS + 1):
+                async with session.get(url, allow_redirects=False) as resp:
+                    if resp.status in _REDIRECT_STATUSES:
+                        location = resp.headers.get("Location")
+                        if not location:
+                            raise RuntimeError(f"FileSource url={url!r} returned {resp.status} without a Location")
+                        url = str(URL(url).join(URL(location)))
+                        refuse_private_literal(url)
+                        continue
+                    if resp.status >= 300:
+                        raise RuntimeError(f"FileSource url={url!r} returned {resp.status}")
+                    return await resp.read()
+    except BlockedDestinationError as exc:
+        raise RuntimeError(f"FileSource url={url!r} refused: {exc}") from exc
+    raise RuntimeError(f"FileSource url={url!r}: more than {_MAX_REDIRECTS} redirects")
 
 
 _DocumentResolver = Callable[["FileMount"], Awaitable[bytes]]
@@ -90,13 +124,7 @@ async def resolve_file_sources(
             content = src.content.encode("utf-8")
         elif kind == "url":
             url = str(src.url)
-            async with _http_session() as session:
-                async with session.get(url) as resp:
-                    if resp.status >= 300:
-                        raise RuntimeError(
-                            f"FileSource url={url!r} returned {resp.status}"
-                        )
-                    content = await resp.read()
+            content = await _fetch_url(url)
             if src.sha256 is not None:
                 expected = src.sha256.lower()
                 actual = hashlib.sha256(content).hexdigest()

@@ -55,6 +55,7 @@ from primer.authz import _role_allows
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import (
     BadRequestError,
+    ConfigError,
     ConflictError,
     PrimerError,
     NotFoundError,
@@ -86,6 +87,11 @@ from primer.toolset._system_guards import (
 )
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.template_privilege import (
+    admin_only_override_fields,
+    admin_only_template_changes,
+    refusal_message,
+)
 
 
 if TYPE_CHECKING:
@@ -138,6 +144,41 @@ def _refuse_reserved_read(
         "only an admin may read it",
         error_type="forbidden",
     )
+
+
+def _tool_caller_is_admin(ctx: ToolContext | None) -> bool:
+    """Whether the caller of this tool call is an admin (the same rule as the tool role floor, ``_role_allows``).
+
+    An agent run carries its invoker on the tool context; an MCP call carries it on the request's actor. With neither
+    the caller is unknown and the answer is no (fail closed).
+    """
+    actor: Any = ctx.initiated_by if ctx is not None else None
+    if actor is None:
+        from primer.mcp.server import current_actor
+        actor = current_actor.get()
+    return _role_allows(actor, "admin")
+
+
+def _refuse_non_admin(fields: list[str], ctx: ToolContext | None) -> ToolCallResult | None:
+    """The REST rule on admin-only template fields (security review 2026-10-08): refuse a non-admin that writes them."""
+    if fields and not _tool_caller_is_admin(ctx):
+        return _err(refusal_message(fields), error_type="forbidden")
+    return None
+
+
+def _template_refusal(
+    entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
+) -> ToolCallResult | None:
+    """Admin-only template fields first, then the Kubernetes overlay allowlist, which binds admins too."""
+    refusal = _refuse_non_admin(admin_only_template_changes(entity, existing), ctx)
+    if refusal is not None:
+        return refusal
+    from primer.workspace.k8s.backend import _validate_template_overrides
+    try:
+        _validate_template_overrides(entity)
+    except ConfigError as exc:
+        return _err(str(exc), error_type="validation-error")
+    return None
 
 
 #: Work carried on after its caller was cancelled. A strong reference: asyncio keeps tasks weakly, so without this a
@@ -383,6 +424,8 @@ def _parse_order_by(spec: list[str] | None) -> list[OrderBy] | None:
 
 
 _OnMutate = Callable[[str], Awaitable[None]] | None
+#: ``(entity, existing or None, ctx) -> refusal or None``: a write rule that depends on who the caller is.
+_PrivilegeCheck = Callable[[Any, Any, "ToolContext | None"], ToolCallResult | None] | None
 
 
 def _make_list_handler(storage_factory: Callable[[], Any]) -> ToolHandler:
@@ -424,16 +467,19 @@ def _make_create_handler(
     cls_name: str,
     on_create: _OnMutate = None,
     guards: CrudGuards | None = None,
+    privilege_check: _PrivilegeCheck = None,
 ) -> ToolHandler:
     guards = guards or CrudGuards(kind=cls_name)
 
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = args_cls.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         entity = args.entity  # type: ignore[attr-defined]
         refusal = refuse_create(guards, entity)
+        if refusal is None and privilege_check is not None:
+            refusal = privilege_check(entity, None, ctx)
         if refusal is not None:
             return refusal
         storage = storage_factory()
@@ -459,10 +505,11 @@ def _make_update_handler(
     cls_name: str,
     on_update: _OnMutate = None,
     guards: CrudGuards | None = None,
+    privilege_check: _PrivilegeCheck = None,
 ) -> ToolHandler:
     guards = guards or CrudGuards(kind=cls_name)
 
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = args_cls.model_validate(arguments)
         except ValidationError as exc:
@@ -480,6 +527,8 @@ def _make_update_handler(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"  # type: ignore[attr-defined]
             )
         refusal = refuse_update(guards, entity, existing)
+        if refusal is None and privilege_check is not None:
+            refusal = privilege_check(entity, existing, ctx)
         if refusal is not None:
             return refusal
         try:
@@ -998,6 +1047,7 @@ def build_workspaces_toolset(
         _CreateTemplateArgs,
         _make_create_handler(
             _CreateTemplateArgs, _template_storage, "WorkspaceTemplate", guards=template_guards,
+            privilege_check=_template_refusal,
         ),
         examples=[
             ToolExample(
@@ -1029,6 +1079,7 @@ def build_workspaces_toolset(
         _UpdateTemplateArgs,
         _make_update_handler(
             _UpdateTemplateArgs, _template_storage, "WorkspaceTemplate", guards=template_guards,
+            privilege_check=_template_refusal,
         ),
         examples=[
             ToolExample(
@@ -1103,11 +1154,15 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _create_workspace(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _create_workspace(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _CreateWorkspaceArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # A secret file source in the overrides reads an operator secret by name: admin only, as on REST.
+        refusal = _refuse_non_admin(admin_only_override_fields(args.overrides), ctx)
+        if refusal is not None:
+            return refusal
         template = await _template_storage().get(args.template_id)
         if template is None:
             return _err(

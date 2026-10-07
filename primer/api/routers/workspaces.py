@@ -55,6 +55,7 @@ from primer.api.deps import (
     get_workspace_storage,
     get_workspace_template_storage,
     require_user,
+    require_admin,
 )
 import primer.observability.metrics as _metrics
 from primer.api.errors import PROBLEM_JSON_MEDIA_TYPE, common_responses
@@ -101,7 +102,13 @@ from primer.workspace.diagnostic import (
     DiagnosticCommandError,
     parse_diagnostic_command,
 )
+from primer.model.user import User
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.workspace.template_privilege import (
+    admin_only_override_fields,
+    admin_only_template_changes,
+    refusal_message,
+)
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.pending_gates import enumerate_pending_gates
 from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
@@ -564,13 +571,48 @@ async def _reject_reserved_workspace_template_update(
         )
 
 
+def _caller_is_admin(request: Request) -> bool:
+    """True when the request runs as an admin (auth disabled runs as the synthetic admin; see AuthMiddleware)."""
+    user = getattr(request.state, "user", None)
+    return isinstance(user, User) and user.role == "admin"
+
+
+def _refuse_non_admin(request: Request, fields: list[str]) -> None:
+    """403 ``forbidden_role`` naming ``fields`` when a non-admin tries to write them (security review 2026-10-08)."""
+    if fields and not _caller_is_admin(request):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "forbidden_role", "fields": fields, "message": refusal_message(fields)},
+        )
+
+
+def _check_template_privilege(entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, request: Request) -> None:
+    """Admin-only fields first (403), then the Kubernetes overlay allowlist, which binds admins too (422)."""
+    _refuse_non_admin(request, admin_only_template_changes(entity, existing))
+    from primer.workspace.k8s.backend import _validate_template_overrides
+    try:
+        _validate_template_overrides(entity)
+    except ConfigError as exc:
+        raise SemanticValidationError(str(exc)) from exc
+
+
+async def _workspace_template_pre_create(entity, request: Request) -> None:
+    await _reject_reserved_workspace_template_create(entity, request)
+    _check_template_privilege(entity, None, request)
+
+
+async def _workspace_template_pre_update(entity, existing, request: Request) -> None:
+    await _reject_reserved_workspace_template_update(entity, existing, request)
+    _check_template_privilege(entity, existing, request)
+
+
 template_router = make_crud_router(
     model_cls=WorkspaceTemplate,
     storage_dep=get_workspace_template_storage,
     plural="workspace_templates",
     tag="workspace-templates",
-    on_pre_create=_reject_reserved_workspace_template_create,
-    on_pre_update=_reject_reserved_workspace_template_update,
+    on_pre_create=_workspace_template_pre_create,
+    on_pre_update=_workspace_template_pre_update,
     on_pre_delete_id=_reject_reserved_workspace_template_delete,
     # Deliberately NO reference guard here: a template is a snapshot
     # consumed at materialization (spec section 12, pinned by e2e
@@ -721,13 +763,16 @@ class WorkspaceEventsBody(BaseModel):
     response_model=WorkspaceRow,
     summary="Grant or revoke non-admin access to the workspace's integrated terminal",
     responses=common_responses(404, 500),
+    # The terminal is admin-only unless this flag is on, so only an admin may flip it (INJ-01): the router is on
+    # the user tier, and without this a role=user caller granted themselves a shell.
+    dependencies=[Depends(require_admin)],
 )
 async def set_workspace_terminal_access(
     body: "WorkspaceTerminalAccessBody",
     workspace_id: str = Path(..., description="Workspace id"),
     storage=Depends(get_workspace_storage),
 ) -> WorkspaceRow:
-    """Toggle the per-workspace ``terminal_user_access`` flag.
+    """Toggle the per-workspace ``terminal_user_access`` flag. Admin only (403 ``forbidden_role`` otherwise).
 
     The integrated terminal (``WS /workspaces/{id}/terminal``) is
     admin-only by default; setting ``enabled: true`` here admits callers
@@ -766,6 +811,8 @@ async def create_workspace(
     provider_storage=Depends(get_workspace_provider_storage),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> WorkspaceRow:
+    # A secret file source in the overrides reads an operator secret by name: admin only (AUTHZ-05 / SSRF-06).
+    _refuse_non_admin(request, admin_only_override_fields(body.overrides))
     template = await template_storage.get(body.template_id)
     if template is None:
         raise NotFoundError(
