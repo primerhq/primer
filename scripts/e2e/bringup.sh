@@ -257,8 +257,12 @@ fi
 
 echo "[bringup] launching primer on port $PORT..." >&2
 : > "$STDOUT_FILE"
+# PRIMER_HARNESS_ALLOW_FILE_URLS=1: the harness suites register file:// bare
+# repos under tmp_path, and the server refuses any git_url but https:// unless
+# the operator opts in (primer/model/harness.py, security review 2026-10-08).
+# Test lane only; production never sets it.
 (
-    uv run primer api --config "$CONFIG" \
+    PRIMER_HARNESS_ALLOW_FILE_URLS=1 uv run primer api --config "$CONFIG" \
         > "$STDOUT_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     disown

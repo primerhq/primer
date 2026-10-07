@@ -426,6 +426,53 @@ _UNINSTALL_ORDER: list[str] = list(reversed(_INSTALL_ORDER))
 
 
 # ---------------------------------------------------------------------------
+# Toolset checks (security review 2026-10-08, AUTHZ-03 / FS-01)
+# ---------------------------------------------------------------------------
+
+
+async def _refuse_toolsets(
+    *,
+    storage_provider: Any,
+    harness: Harness,
+    entries: list[RenderedEntry],
+) -> str | None:
+    """Run the shared toolset checks on every Toolset ``entries`` would write; a JSON error refusing the whole bundle, or None.
+
+    The REST toolset routes and the system CRUD tools refuse a reserved toolset id, and a stdio MCP toolset (created, or an
+    existing one changed) to anyone below admin (:func:`primer.toolset.toolset_checks.toolset_needs_admin`). An install writes
+    rows straight to storage, so it applies the same rules here, against whoever enqueued it
+    (``harness.operation_requested_by``, under the tool floor's own predicate: an admin, or the internal system / trigger actors;
+    unknown fails closed). The harness routes and tools are admin-only, so this is belt and braces.
+    """
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_SCOPE_IDS  # noqa: PLC0415 - import cycle
+    from primer.authz import _role_allows  # noqa: PLC0415
+    from primer.toolset.toolset_checks import toolset_needs_admin  # noqa: PLC0415
+
+    storage = _storage_for_kind(storage_provider, "toolset")
+    for entry in entries:
+        if entry.kind != "toolset":
+            continue
+        if entry.resolved_id in RESERVED_TOOLSET_SCOPE_IDS:
+            return json.dumps({
+                "code": "reserved_id",
+                "message": f"toolset id {entry.resolved_id!r} is reserved and cannot be installed",
+                "template_name": entry.template_name,
+            })
+        entity = _entity_from_entry(entry, harness_id=harness.id)
+        existing = await storage.get(entry.resolved_id)
+        if toolset_needs_admin(entity, existing) and not _role_allows(harness.operation_requested_by, "admin"):
+            return json.dumps({
+                "code": "toolset_needs_admin",
+                "message": (
+                    f"template {entry.template_name!r} would create or change an MCP toolset on the stdio transport, which "
+                    "launches a command on the server host: only an admin may install or sync it"
+                ),
+                "template_name": entry.template_name,
+            })
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Document indexing (best-effort)
 # ---------------------------------------------------------------------------
 
@@ -557,6 +604,11 @@ async def apply_install(
     install). When the registries are omitted (pure-storage callers)
     indexing is skipped.
     """
+    # The shared toolset checks, before anything is written: a refusal refuses the whole bundle.
+    refusal = await _refuse_toolsets(storage_provider=storage_provider, harness=harness, entries=entries)
+    if refusal is not None:
+        return refusal
+
     # Group entries by kind for ordered application
     by_kind: dict[str, list[RenderedEntry]] = {k: [] for k in _INSTALL_ORDER}
     for entry in entries:
@@ -721,6 +773,16 @@ async def apply_sync(
 
     old_entries: list[RenderedEntry] = old_rendering.entries if old_rendering else []
     diff = diff_renderings(old_entries, new_entries)
+
+    # The shared toolset checks on every toolset this sync would create or change, before anything (deletes included) is
+    # applied: a refusal refuses the whole sync and leaves the installed state as it was.
+    refusal = await _refuse_toolsets(
+        storage_provider=storage_provider,
+        harness=harness,
+        entries=[*diff.creates, *(new for _old, new in diff.updates)],
+    )
+    if refusal is not None:
+        return refusal
 
     apply_errors: list[dict[str, Any]] = []
     indexed_documents: list[Any] = []  # entities to index after a clean apply

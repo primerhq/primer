@@ -15,6 +15,10 @@ without going through HTTP:
 
 Every handler mirrors the logic in
 :mod:`primer.api.routers.harness` without the HTTP layer.
+
+The tools that write or act require the admin role, like the REST routes: an install writes agents, graphs, collections,
+documents and toolsets (a stdio MCP toolset included), and a fetch runs git with the harness's token (security review
+2026-10-08, AUTHZ-03 / FS-01). ``harness__list`` and ``harness__get`` stay user-tier.
 """
 
 from __future__ import annotations
@@ -36,7 +40,11 @@ from primer.model.harness import (
     HarnessOperation,
     HarnessRendering,
     HarnessStatus,
+    apply_git_token_update,
+    validate_git_ref,
+    validate_git_url,
 )
+from primer.model.yield_ import ToolContext
 from primer.model.storage import (
     FieldRef,
     OffsetPage,
@@ -160,8 +168,12 @@ TOOL_REGISTER = make_tool(
                 "pattern": "^[a-z][a-z0-9-]{1,63}$",
                 "description": "Unique kebab-case identifier.",
             },
-            "git_url": {"type": "string", "minLength": 1},
-            "ref": {"type": "string", "minLength": 1, "description": "Git ref. Defaults to 'main'."},
+            "git_url": {"type": "string", "minLength": 1, "description": "An https:// URL with a host."},
+            "ref": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Branch, tag or commit; may not start with '-'. Defaults to 'main'.",
+            },
             "subpath": {"type": "string", "description": "Subdirectory within the repo."},
             "git_token": {"type": "string", "description": "Personal access token (stored encrypted)."},
             "description": {"type": "string", "maxLength": 2000},
@@ -174,7 +186,7 @@ TOOL_REGISTER = make_tool(
             note="call harness__fetch next",
         ),
     ],
-    required_role="user",
+    required_role="admin",
 )
 
 TOOL_UPDATE = make_tool(
@@ -193,15 +205,15 @@ TOOL_UPDATE = make_tool(
             "id": {"type": "string"},
             "name": {"type": "string", "minLength": 1, "maxLength": 200},
             "description": {"type": "string", "maxLength": 2000},
-            "ref": {"type": "string", "minLength": 1},
+            "ref": {"type": "string", "minLength": 1, "description": "Branch, tag or commit; may not start with '-'."},
             "subpath": {"type": "string"},
-            "git_token": {"type": "string"},
+            "git_token": {"type": "string", "description": "New token; '' clears it, the served mask keeps it."},
         },
     },
     examples=[
         ToolExample(args={"id": "hns-1", "description": "new text"}, returns="updated row"),
     ],
-    required_role="user",
+    required_role="admin",
 )
 
 TOOL_UPDATE_OVERRIDES = make_tool(
@@ -229,7 +241,7 @@ TOOL_UPDATE_OVERRIDES = make_tool(
             note="validated against cached schema",
         ),
     ],
-    required_role="user",
+    required_role="admin",
 )
 
 TOOL_FETCH = make_tool(
@@ -255,7 +267,7 @@ TOOL_FETCH = make_tool(
     examples=[
         ToolExample(args={"id": "hns-1"}, returns="enqueued FETCH"),
     ],
-    required_role="user",
+    required_role="admin",
 )
 
 TOOL_INSTALL = make_tool(
@@ -283,7 +295,7 @@ TOOL_INSTALL = make_tool(
             note="requires status draft/ready/outdated + overrides cached",
         ),
     ],
-    required_role="user",
+    required_role="admin",
 )
 
 TOOL_SYNC = make_tool(
@@ -311,7 +323,7 @@ TOOL_SYNC = make_tool(
             note="requires status installed/outdated",
         ),
     ],
-    required_role="user",
+    required_role="admin",
 )
 
 TOOL_UNINSTALL = make_tool(
@@ -334,7 +346,7 @@ TOOL_UNINSTALL = make_tool(
     examples=[
         ToolExample(args={"id": "hns-1"}, returns="enqueued UNINSTALL"),
     ],
-    required_role="user",
+    required_role="admin",
 )
 
 
@@ -404,6 +416,13 @@ def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
         git_token_raw: str | None = arguments.get("git_token")
         description: str | None = arguments.get("description")
 
+        # The REST body's rules: https only, no value git could read as an option (AUTHZ-04).
+        try:
+            validate_git_url(git_url)
+            validate_git_ref(ref)
+        except ValueError as exc:
+            return _err(str(exc), error_type="validation-error")
+
         # Enforce slug uniqueness
         slug_pred = Predicate(
             left=FieldRef(name="slug"),
@@ -453,6 +472,14 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
         subpath: str | None = arguments.get("subpath")
         git_token_raw: str | None = arguments.get("git_token")
 
+        if ref is not None:
+            try:
+                validate_git_ref(ref)
+            except ValueError as exc:
+                return _err(str(exc), error_type="validation-error")
+        # This tool cannot move git_url, so only the token half of the REST rule applies: the served mask means "unchanged".
+        apply_git_token_update(harness, git_url_set=False, git_url=None, git_token=git_token_raw)
+
         if name is not None:
             harness.name = name
         if description is not None:
@@ -463,8 +490,6 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
         if subpath is not None and subpath != harness.subpath:
             harness.subpath = subpath
             overrides_dirty = True
-        if git_token_raw is not None:
-            harness.git_token = SecretStr(git_token_raw)
 
         harness.overrides_dirty = overrides_dirty
         updated = await storage.update(harness)
@@ -570,7 +595,7 @@ def _make_install_handler(
 ) -> ToolHandler:
     _INSTALL_ALLOWED = {HarnessStatus.DRAFT, HarnessStatus.READY, HarnessStatus.OUTDATED}
 
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         harness_id: str = arguments["id"]
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
@@ -622,6 +647,9 @@ def _make_install_handler(
             )
 
         harness.pending_operation = HarnessOperation.INSTALL
+        # Who asked, for the worker's toolset admin rule. No ToolContext (the MCP endpoint dispatches without one) records
+        # nobody, which fails closed for a bundle that would write a stdio toolset.
+        harness.operation_requested_by = ctx.initiated_by if ctx is not None else None
         updated = await storage.update(harness)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
@@ -634,7 +662,7 @@ def _make_sync_handler(
 ) -> ToolHandler:
     _SYNC_ALLOWED = {HarnessStatus.INSTALLED, HarnessStatus.OUTDATED}
 
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         harness_id: str = arguments["id"]
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
@@ -666,6 +694,9 @@ def _make_sync_handler(
             )
 
         harness.pending_operation = HarnessOperation.SYNC
+        # Who asked, for the worker's toolset admin rule. No ToolContext (the MCP endpoint dispatches without one) records
+        # nobody, which fails closed for a bundle that would write a stdio toolset.
+        harness.operation_requested_by = ctx.initiated_by if ctx is not None else None
         updated = await storage.update(harness)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))

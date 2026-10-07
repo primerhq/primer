@@ -75,28 +75,27 @@ async def test_register_and_update_refuse_an_unsafe_ref():
     assert (await sp.get_storage(Harness).get("hns_1")).ref == "main"
 
 
-async def test_update_cannot_repoint_git_url_and_keep_the_token():
+async def test_update_cannot_repoint_git_url_and_the_masked_token_keeps_the_real_one():
+    # harness__update has no git_url argument, so the token can never follow a new remote through it (SEC-03); a token
+    # sent back as the served mask keeps the stored one rather than storing the mask.
     sp = _SP()
     await sp.get_storage(Harness).create(
         Harness(id="hns_1", slug="ok-harness", name="x", git_url="https://h.example/r",
                 git_token=SecretStr("secret"), created_at=datetime.now(timezone.utc)),
     )
     provider = _provider(sp)
+    from primer.toolset.harness import TOOL_UPDATE
 
-    refused = await provider.call(
-        tool_name="harness__update", arguments={"id": "hns_1", "git_url": "https://evil.example/r"},
+    assert "git_url" not in TOOL_UPDATE.args_schema["properties"]
+
+    result = await provider.call(
+        tool_name="harness__update",
+        arguments={"id": "hns_1", "git_url": "https://evil.example/r", "git_token": "**********"},
     )
-    assert refused.is_error, refused.output
+    assert not result.is_error, result.output
     stored = await sp.get_storage(Harness).get("hns_1")
     assert stored.git_url == "https://h.example/r"
-
-    ok = await provider.call(
-        tool_name="harness__update",
-        arguments={"id": "hns_1", "git_url": "https://other.example/r", "git_token": "fresh"},
-    )
-    assert not ok.is_error, ok.output
-    stored = await sp.get_storage(Harness).get("hns_1")
-    assert (stored.git_url, stored.git_token.get_secret_value()) == ("https://other.example/r", "fresh")
+    assert stored.git_token.get_secret_value() == "secret"
 
 
 async def test_install_records_who_asked():
