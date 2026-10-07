@@ -169,7 +169,8 @@ def _assert_safe_error_page(r) -> None:
 async def test_unknown_name_error_page_escapes_the_name(client):
     r = await client.get(f"/svc/{_XSS}/x", headers={"accept": "text/html"})
     _assert_safe_error_page(r)
-    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in r.text
+    # {name} stops at the first "/", so the name is "<script>alert(1)<".
+    assert "<h1>&lt;script&gt;alert(1)&lt;</h1>" in r.text
 
 
 @pytest.mark.asyncio

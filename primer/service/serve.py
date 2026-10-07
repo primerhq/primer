@@ -24,6 +24,10 @@ from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 RESOLVE_TTL_SECONDS = 5.0
 """How long a name->(service, version) resolution is trusted."""
 
+RESOLVE_CACHE_MAX_ENTRIES = 1024
+"""Cap on cached resolutions, negative ones included: anyone can mint
+unknown names under /svc, so the cache must not grow with them."""
+
 LRU_MAX_BYTES = 64 * 1024 * 1024
 """Total artifact bytes kept hot in memory per process."""
 
@@ -34,7 +38,9 @@ class ServiceResolver:
     ``resolve`` returns ``None`` for an unknown name, ``(service, None)``
     for a service with no active version (created but unpublished), and
     ``(service, version)`` when serving. Negative results are cached too:
-    a scanner hammering unknown names must not hammer storage.
+    a scanner hammering unknown names must not hammer storage. The cache
+    is bounded (``max_entries``, oldest evicted first) and expired entries
+    are dropped on every store, so those names cannot grow it either.
     """
 
     def __init__(
@@ -42,20 +48,27 @@ class ServiceResolver:
         sp: StorageProvider,
         *,
         ttl_seconds: float = RESOLVE_TTL_SECONDS,
+        max_entries: int = RESOLVE_CACHE_MAX_ENTRIES,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._sp = sp
         self._ttl = ttl_seconds
+        self._max_entries = max_entries
         self._clock = clock
-        self._cache: dict[
+        # Insertion order == expiry order (every entry gets the same TTL
+        # and an entry is re-inserted at the end when refreshed), so the
+        # expired entries are always a prefix and the oldest entry is the
+        # first one to evict when the cache is full.
+        self._cache: OrderedDict[
             str, tuple[float, tuple[Service, ServiceVersion | None] | None]
-        ] = {}
+        ] = OrderedDict()
 
     async def resolve(
         self, name: str
     ) -> tuple[Service, ServiceVersion | None] | None:
+        now = self._clock()
         cached = self._cache.get(name)
-        if cached is not None and cached[0] > self._clock():
+        if cached is not None and cached[0] > now:
             return cached[1]
         result: tuple[Service, ServiceVersion | None] | None = None
         page = await self._sp.get_storage(Service).find(
@@ -70,8 +83,20 @@ class ServiceResolver:
                     service.active_version_id
                 )
             result = (service, version)
-        self._cache[name] = (self._clock() + self._ttl, result)
+        self._store(name, result)
         return result
+
+    def _store(
+        self, name: str, result: tuple[Service, ServiceVersion | None] | None
+    ) -> None:
+        now = self._clock()
+        self._cache.pop(name, None)
+        while self._cache:
+            oldest = next(iter(self._cache.values()))
+            if oldest[0] > now and len(self._cache) < self._max_entries:
+                break
+            self._cache.popitem(last=False)
+        self._cache[name] = (now + self._ttl, result)
 
     def invalidate(self, name: str) -> None:
         self._cache.pop(name, None)
@@ -152,6 +177,7 @@ def invalidate_service_cache(request: Request, name: str) -> None:
 
 __all__ = [
     "LRU_MAX_BYTES",
+    "RESOLVE_CACHE_MAX_ENTRIES",
     "RESOLVE_TTL_SECONDS",
     "ArtifactLRU",
     "ServiceResolver",
