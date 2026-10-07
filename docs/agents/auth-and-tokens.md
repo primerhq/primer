@@ -212,6 +212,11 @@ server side.
   right. Wait the `Retry-After` seconds; hammering does not lengthen the
   wait but gets nowhere. An automation that signs in with a cookie
   should use an API token instead. The counters live in one API process.
+  The client address is the peer address the server sees: a deployment
+  behind a reverse proxy must set `FORWARDED_ALLOW_IPS` to the proxy
+  (uvicorn then reads the real client from the forwarded header), or every
+  client shares the proxy's address and the throttle key degrades to the
+  username alone.
 - **Approval-required tools are not callable over MCP.** Even with the
   `mcp` scope and the tool allowlisted, a tool whose effective approval
   policy is `required` is refused at `tools/call` - MCP has no surface
