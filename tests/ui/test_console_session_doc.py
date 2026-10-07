@@ -1730,3 +1730,48 @@ def test_the_session_doc_expires_a_status_its_polled_row_keeps_contradicting():
     )
     expiry = DOC[DOC.index("NV_rowContradictsStatus(session, statusSnap)"):]
     assert "history.refetch()" in expiry[:900], "expiring a status re-reads the durable tail, the catch-up that already exists"
+
+
+def test_a_session_that_merely_rests_is_not_labelled_parked():
+    """C-009 (console review 2026-10-08): the served ``session_state`` is coarse on purpose, "parked" for any WAITING or PAUSED row
+    that has completed a turn, so the header chip read amber "Parked" on every session that had simply answered. "Parked" elsewhere
+    means waiting on an approval, an answer or a timer. The chip keeps ``data-state`` as served and tells the cases apart by what the
+    row stores: a ``parked_status`` is a real park, ``paused`` is the operator's pause, anything else that rests is Ready."""
+    import json
+
+    from py_mini_racer import MiniRacer
+
+    start = DOC.index("function NV_sessionStateChipView")
+    end = DOC.index("\n}\n", start) + len("\n}\n")
+    ctx = MiniRacer()
+    ctx.eval(DOC[start:end])
+
+    def view(session):
+        return json.loads(ctx.eval("JSON.stringify(NV_sessionStateChipView(" + json.dumps(session) + "))"))
+
+    assert view({"session_state": "parked", "status": "waiting", "parked_status": None, "turn_no": 3}) == {
+        "state": "parked", "label": "Ready", "resting": True,
+    }
+    assert view({"session_state": "parked", "status": "running", "parked_status": "parked", "turn_no": 3}) == {
+        "state": "parked", "label": "Parked", "resting": False,
+    }, "waiting on an approval, an answer or a timer is still Parked"
+    assert view({"session_state": "parked", "status": "running", "parked_status": "resumable", "turn_no": 3})["label"] == "Parked"
+    assert view({"session_state": "parked", "status": "paused", "parked_status": None, "turn_no": 3}) == {
+        "state": "parked", "label": "Paused", "resting": False,
+    }, "an operator pause needs the operator, so it is not Ready"
+    assert view({"session_state": "waiting", "status": "created", "turn_no": 0}) == {
+        "state": "waiting", "label": "Waiting", "resting": False,
+    }
+    assert view({"session_state": "running", "status": "running", "turn_no": 1})["label"] == "Running"
+    assert view({"session_state": "ended", "status": "ended", "turn_no": 2})["label"] == "Ended"
+    assert view(None) == {"state": "waiting", "label": "Waiting", "resting": False}, "nothing polled yet"
+    assert view({"session_state": "weird"}) == {"state": "weird", "label": "weird", "resting": False}, "an unknown state shows as itself"
+
+
+def test_the_resting_chip_is_neutral_and_the_served_state_attribute_is_unchanged():
+    chip = DOC[DOC.index("function NV_SessionStateChip"):DOC.index("function NV_SessionHeader")]
+    assert "data-state={view.state}" in chip, "data-state stays the served state (the e2e journeys and tools read it)"
+    assert 'data-resting={view.resting ? "true" : "false"}' in chip
+    assert '.nv-session-state-chip[data-resting="true"]' in STYLES
+    rule = STYLES[STYLES.index('.nv-session-state-chip[data-resting="true"]'):][:200]
+    assert "var(--warn" not in rule, "a resting session must not read as a warning"
