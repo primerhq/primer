@@ -68,6 +68,26 @@ class TestPutPair:
         assert r.json()["label"] == "renamed"
 
     @pytest.mark.asyncio
+    async def test_a_row_already_sharing_a_pair_cannot_hide_the_other_holder_behind_itself(self, client, app) -> None:
+        # A duplicate that predates the check (written straight to storage, as the old PUT could): saving either row is refused
+        # until the clash is resolved. The row being saved is found first on the pair, so a check that looked at ONE row would see
+        # only itself and let it through.
+        from primer.model.channel import Channel
+
+        await _provider(client, "cp-s")
+        await _create(client, _channel("ch-1", "cp-s", "C1"))
+        await _create(client, _channel("ch-2", "cp-s", "C2"))
+        store = app.state.storage_provider.get_storage(Channel)
+        clash = await store.get("ch-2")
+        clash.external_id = "C1"
+        await store.update(clash)
+
+        r = await client.put("/v1/channels/ch-1", json=_channel("ch-1", "cp-s", "C1", label="renamed"))
+
+        assert r.status_code == 409, r.text
+        assert "ch-2" in r.json()["detail"], "the refusal names the OTHER holder, not the row itself"
+
+    @pytest.mark.asyncio
     async def test_the_same_external_id_under_another_provider_is_allowed_on_a_put(self, client) -> None:
         await _provider(client, "cp-s")
         await _provider(client, "cp-t")

@@ -499,6 +499,21 @@ class TestChannel:
         assert (await sp.get_storage(Channel).get("chan-1")).label == "renamed"
 
     @pytest.mark.asyncio
+    async def test_a_row_already_sharing_a_pair_cannot_hide_the_other_holder_behind_itself(self, world) -> None:
+        # A duplicate that predates the check (written straight to storage): saving either row is refused until the clash is
+        # resolved. The row being saved is found first on the pair, so a check that looked at ONE row would see only itself.
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1", external_id="C1")))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-2", external_id="C1")))
+        body = _channel("chan-1", external_id="C1")
+        body["label"] = "renamed"
+
+        is_error, answer = await _call(toolset, "update_channel", id="chan-1", entity=body)
+
+        assert is_error and answer["type"] == "conflict" and "chan-2" in answer["message"]
+
+    @pytest.mark.asyncio
     async def test_an_update_to_the_same_external_id_under_another_provider_is_allowed(self, world) -> None:
         sp, toolset, _ = world
         await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
