@@ -157,3 +157,21 @@ async def test_an_admin_may_repoint_a_toolset_and_keep_its_masked_secrets(raw_cl
     assert (stored.config.config.url, stored.config.config.headers["Authorization"].get_secret_value()) == (
         "http://other.example/mcp", SECRET,
     )
+
+
+# ---- an admin converting an MCP toolset into a python one ----------------------------------------------------------------------
+
+
+async def test_an_admin_can_convert_an_mcp_toolset_into_a_python_one_and_it_starts_at_the_first_version(raw_client, app):
+    """It answered 500: the server-owned versioning read ``source_version`` off the stored McpConfig. There is no prior python
+    version to bump, so the converted toolset starts at 1 whatever the client sends, as the server owns the version on an update."""
+    await _admin_creates(raw_client, app, {**HTTP_PLAIN, "id": "ts-x"}, **NO_PROBE)
+    await _login(raw_client, "admin")
+
+    resp = await raw_client.put(
+        "/v1/toolsets/ts-x", json={**PYTHON, "id": "ts-x", "config": {"source": PY_SOURCE, "source_version": 7}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    stored = (await raw_client.get("/v1/toolsets/ts-x")).json()
+    assert (stored["provider"], stored["config"]["source_version"]) == ("python", 1)
