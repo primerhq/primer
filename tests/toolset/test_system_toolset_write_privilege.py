@@ -3,7 +3,7 @@ toolset at a new endpoint while its stored secrets ride along (security sweep AU
 ``tests/api/test_toolset_write_privilege.py``).
 
 A python toolset's source runs on the server host (LocalHardenedRunner), so creating or changing one is the same class of power as a
-stdio MCP toolset: either side of an update counts, as for stdio (``toolset_needs_admin``). A secret the caller sends back masked is
+stdio MCP toolset: either side of an update counts, as for stdio (``toolset_admin_reason``). A secret the caller sends back masked is
 restored from the stored row (``preserve_masked_secrets``); when the same update changes the URL or the OAuth endpoints, that would
 hand the stored headers / client secret to a server of the caller's choosing, so a caller below admin must re-enter the secrets.
 """

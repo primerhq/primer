@@ -70,7 +70,7 @@ from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.common.entity_checks import EntityCheckError
 from primer.model.common import preserve_masked_secrets
-from primer.toolset.toolset_checks import check_python_toolset, own_python_source_version, toolset_needs_admin
+from primer.toolset.toolset_checks import check_python_toolset, own_python_source_version, toolset_admin_reason
 from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderProvider,
@@ -1289,8 +1289,9 @@ async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
         return
 
 
-def _require_admin_for_stdio(request: Request) -> None:
-    """``require_admin`` with a message that says why: the bare 403 would reach the console as just ``forbidden_role``.
+def _require_admin_for_toolset(request: Request, reason: str) -> None:
+    """``require_admin`` with a message that says why (``reason``, from ``toolset_admin_reason``): the bare 403 would reach the
+    console as just ``forbidden_role``.
 
     The code stays ``forbidden_role`` (what every admin-only route answers); a 401 passes through unchanged.
     """
@@ -1299,16 +1300,7 @@ def _require_admin_for_stdio(request: Request) -> None:
     except HTTPException as exc:
         if exc.status_code != 403:
             raise
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "forbidden_role",
-                "message": (
-                    "Creating or changing an MCP toolset on the stdio transport requires the admin role: it launches a "
-                    "command on the server host. Use an http or sse MCP toolset, or ask an admin."
-                ),
-            },
-        ) from exc
+        raise HTTPException(status_code=403, detail={"error": "forbidden_role", "message": reason}) from exc
 
 
 async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
@@ -1328,12 +1320,13 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     under one of those ids is a ghost nothing ever runs. Checked before
     the probe bypass on purpose.
 
-    A stdio MCP toolset launches a command on the server host, so creating one is admin-only (403 ``forbidden_role``) even though
-    the router sits on the user tier; checked first, so a caller below admin learns nothing else about the body (architecture
-    review A-02, ``toolset_needs_admin``).
+    A stdio MCP toolset launches a command on the server host and a python toolset runs its source there, so creating one is
+    admin-only (403 ``forbidden_role``) even though the router sits on the user tier; checked first, so a caller below admin learns
+    nothing else about the body (architecture review A-02, security sweep AUTHZ-01, ``toolset_admin_reason``).
     """
-    if toolset_needs_admin(entity):
-        _require_admin_for_stdio(request)
+    reason = toolset_admin_reason(entity)
+    if reason is not None:
+        _require_admin_for_toolset(request, reason)
     if entity.id in RESERVED_TOOLSET_ROW_IDS:
         raise HTTPException(
             status_code=409,
@@ -1402,11 +1395,14 @@ async def _toolset_on_pre_update(
     code it was about to run. The server bumps instead, so the number always
     moves when the source does.
 
-    Admin-only when either the stored row or the new body is a stdio MCP toolset (the command it launches is what changes hands);
-    see :func:`primer.toolset.toolset_checks.toolset_needs_admin`. Checked before anything else touches the body.
+    Admin-only when either the stored row or the new body is a stdio MCP or python toolset (the code it runs on the server host is
+    what changes hands), and when the URL or OAuth endpoints change while a secret is sent back masked (the stored secret would go
+    to the new endpoint); see :func:`primer.toolset.toolset_checks.toolset_admin_reason`. Checked before anything else touches the
+    body, in particular before the masked secrets are restored.
     """
-    if toolset_needs_admin(entity, existing):
-        _require_admin_for_stdio(request)
+    reason = toolset_admin_reason(entity, existing)
+    if reason is not None:
+        _require_admin_for_toolset(request, reason)
     preserve_masked_secrets(entity, existing)
     if entity.provider != ToolsetProviderType.PYTHON:
         return

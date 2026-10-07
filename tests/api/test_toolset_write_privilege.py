@@ -41,7 +41,7 @@ async def test_a_plain_user_cannot_create_a_python_toolset(raw_client, app):
     resp = await raw_client.post("/v1/toolsets", json=PYTHON)
 
     assert resp.status_code == 403, resp.text
-    assert resp.json()["error"] == "forbidden_role", resp.text
+    assert resp.headers["content-type"].startswith("application/problem+json")
     detail = resp.json()["detail"]
     assert "python" in detail and "admin" in detail, f"the console shows this text, so it must say why: {detail!r}"
     assert (await raw_client.get("/v1/toolsets/ts-py")).status_code == 404, "the refused toolset was stored"

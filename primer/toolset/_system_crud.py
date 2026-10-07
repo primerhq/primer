@@ -294,7 +294,7 @@ def _crud_tools_for(
     pre_create: _PreCreate = None,
     pre_update: _PreUpdate = None,
     cache_note: str | None = None,
-    admin_when: Callable[[Any, Any | None], bool] | None = None,
+    admin_when: Callable[[Any, Any | None], bool | str | None] | None = None,
     admin_note: str | None = None,
     delete_note: str | None = None,
     write_note: str | None = None,
@@ -315,8 +315,9 @@ def _crud_tools_for(
 
     ``admin_when(entity, existing)`` marks the writes that only an admin CALLER may make although the tool's static ``required_role``
     is lower (``existing`` is ``None`` on a create): the handler checks the run's identity itself, because the tool manager's floor
-    compares only the static role. A refusal is ``type=forbidden`` with ``admin_note`` and nothing is stored; the note is also
-    appended to the create and update descriptors so the agent knows the rule before it tries. Both must be given together.
+    compares only the static role. It may answer the reason as a string (which then becomes the refusal message) instead of
+    ``True``. A refusal is ``type=forbidden`` with that reason, or ``admin_note``, and nothing is stored; the note is also appended
+    to the create and update descriptors so the agent knows the rule before it tries. Both must be given together.
 
     ``pre_delete(existing)`` is the entity's REST ``on_pre_delete`` work (a collection deletes its documents and vectors first): it runs
     after the guards and the reference check and BEFORE the row is deleted, so the row is the last thing to go. It may return a ready
@@ -422,8 +423,9 @@ def _crud_tools_for(
             entity = model_cls.model_validate(body)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if admin_when is not None and admin_when(entity, None):
-            denied = _refuse_unless_admin(ctx, admin_note or "this write requires the admin role")
+        reason = admin_when(entity, None) if admin_when is not None else None
+        if reason:
+            denied = _refuse_unless_admin(ctx, reason if isinstance(reason, str) else admin_note or "this write requires the admin role")
             if denied is not None:
                 return denied
         refusal = refuse_create(guards, entity)
@@ -511,8 +513,9 @@ def _crud_tools_for(
             return _err(
                 f"{cls_name} {entity_id!r} does not exist", error_type="not-found"
             )
-        if admin_when is not None and admin_when(entity, existing):
-            denied = _refuse_unless_admin(ctx, admin_note or "this write requires the admin role")
+        reason = admin_when(entity, existing) if admin_when is not None else None
+        if reason:
+            denied = _refuse_unless_admin(ctx, reason if isinstance(reason, str) else admin_note or "this write requires the admin role")
             if denied is not None:
                 return denied
         refusal = refuse_update(guards, entity, existing)
