@@ -66,7 +66,7 @@ def test_session_state_chip_always_visible_in_the_header():
         "the chip must sit right beside the binding chip, unconditionally "
         "rendered - not gated behind a truthy check"
     )
-    chip = DOC[DOC.index("NV_SESSION_STATE_LABEL"):
+    chip = DOC[DOC.index("function NV_sessionStateChipView"):
                DOC.index("function NV_SessionHeader")]
     assert 'data-testid="nv-session-state-chip"' in chip
     for state in ("waiting", "running", "parked", "ended"):

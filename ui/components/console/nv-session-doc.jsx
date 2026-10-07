@@ -337,16 +337,34 @@ function NV_BindingChip(props) {
 // involvement at all, so it renders identically before the tap connects,
 // mid-turn, and after a hard refresh - the acceptance invariant, for
 // free, because it never depended on a live frame to begin with.
-var NV_SESSION_STATE_LABEL = {
-  waiting: "Waiting", running: "Running", parked: "Parked", ended: "Ended",
-};
+// The served session_state is coarse on purpose: "parked" is every WAITING or PAUSED row that has completed a turn (see
+// WorkspaceSession.session_state), so labelling it by that word alone told the operator that every session that had simply
+// answered was blocked (C-009). The chip keeps data-state as served and tells the cases apart by what the row stores: a
+// parked_status is a real park (an approval, an answer or a timer, "Parked"), status paused is the operator's pause ("Paused"),
+// and any other row that rests is waiting for the next message ("Ready", drawn neutral).
+function NV_sessionStateChipView(session) {
+  var labels = { waiting: "Waiting", running: "Running", parked: "Parked", ended: "Ended" };
+  var state = (session && session.session_state) || "waiting";
+  var label = labels[state] || state;
+  var resting = false;
+  if (state === "parked" && session && !session.parked_status) {
+    if (session.status === "paused") {
+      label = "Paused";
+    } else {
+      label = "Ready";
+      resting = true;
+    }
+  }
+  return { state: state, label: label, resting: resting };
+}
 function NV_SessionStateChip(props) {
-  var state = (props.session && props.session.session_state) || "waiting";
+  var view = NV_sessionStateChipView(props.session);
   return (
-    <span className="nv-session-state-chip" data-state={state}
+    <span className="nv-session-state-chip" data-state={view.state}
+      data-resting={view.resting ? "true" : "false"}
       data-testid="nv-session-state-chip">
       <span className="nv-session-state-dot" />
-      {NV_SESSION_STATE_LABEL[state] || state}
+      {view.label}
     </span>
   );
 }
