@@ -64,7 +64,7 @@ from primer.api.registries.provider_registry import (
     RESERVED_CROSS_ENCODER_IDS,
     RESERVED_EMBEDDER_IDS,
     RESERVED_LLM_IDS,
-    RESERVED_TOOLSET_SCOPE_IDS,
+    RESERVED_TOOLSET_ROW_IDS,
 )
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
@@ -98,12 +98,6 @@ logger = logging.getLogger(__name__)
 
 # ---- Reserved-id protection helpers ---------------------------------------
 
-
-# Toolset ids claimed by the runtime's pseudo-toolsets. ``external`` is
-# the invoker-supplied per-invocation tool scope; ``workspace`` /
-# ``workspace_ext`` are the workspace-tool scopes composed by the tool
-# manager. None of them may exist as stored Toolset rows.
-RESERVED_TOOLSET_IDS = RESERVED_TOOLSET_SCOPE_IDS
 
 
 def _make_reserved_create_guard(reserved_ids: frozenset[str], kind: str):
@@ -1326,10 +1320,13 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     non-MCP toolsets, and stdio MCP (no remote endpoint -- probing it would
     launch a subprocess) all skip the probe.
 
-    Also rejects the reserved ``external`` toolset id (409): that scope
-    is claimed by invoker-supplied per-invocation tools
-    (primer.agent.external_tools), so a stored toolset must never
-    collide with it. Checked before the probe bypass on purpose.
+    Also rejects every reserved toolset id (409): the built-in providers
+    the registry answers before it reads storage (system, workspaces, misc,
+    web, harness, trigger, collections, crud, workspace_ext) and the
+    tool-manager scopes (``external`` is claimed by invoker-supplied
+    per-invocation tools, primer.agent.external_tools). A stored toolset
+    under one of those ids is a ghost nothing ever runs. Checked before
+    the probe bypass on purpose.
 
     A stdio MCP toolset launches a command on the server host, so creating one is admin-only (403 ``forbidden_role``) even though
     the router sits on the user tier; checked first, so a caller below admin learns nothing else about the body (architecture
@@ -1337,13 +1334,13 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     """
     if toolset_needs_admin(entity):
         _require_admin_for_stdio(request)
-    if entity.id in RESERVED_TOOLSET_IDS:
+    if entity.id in RESERVED_TOOLSET_ROW_IDS:
         raise HTTPException(
             status_code=409,
             detail={
                 "error": "reserved_id",
                 "kind": "toolset",
-                "reserved": sorted(RESERVED_TOOLSET_IDS),
+                "reserved": sorted(RESERVED_TOOLSET_ROW_IDS),
                 "message": (
                     f"id {entity.id!r} is reserved and cannot be "
                     "created via the API"
