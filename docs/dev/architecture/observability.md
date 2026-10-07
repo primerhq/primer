@@ -404,7 +404,7 @@ sequenceDiagram
         Boot->>Metrics: make_asgi_app(registry)
         Boot->>Boot: app.mount("/metrics", metrics_app)
     end
-    Boot->>Boot: start claim queue-depth sampler (Postgres engine only)
+    Boot->>Boot: start claim gauges sampler (queue depth and active, Postgres engine only)
 ```
 
 Specifics:
@@ -421,11 +421,18 @@ Specifics:
   before the error handlers are registered, so `/metrics` does not pass through
   FastAPI's exception machinery, and it carries no auth (operators firewall it).
   When metrics are disabled the mount is skipped and `GET /metrics` returns 404.
-- A background task in the lifespan samples `claim_queue_depth{kind}` every 10
-  seconds when the claim engine is a `PostgresClaimEngine` and metrics are enabled,
-  running `SELECT kind, COUNT(*) ... WHERE claimed_by IS NULL GROUP BY kind` against
-  the storage pool. In-memory engines skip the sampler because the gauge would always
-  be zero outside tests.
+- A background task in the lifespan (`sample_claim_gauges`,
+  `primer/api/_app_lifespan_phases.py`) samples `claim_queue_depth{kind}` and
+  `claim_active_count{kind}` every 10 seconds when the claim engine is a
+  `PostgresClaimEngine` and metrics are enabled. One query per pass
+  (`COUNT(*) FILTER ... GROUP BY kind`) against the storage pool counts the unclaimed
+  leases (queued) and the leases a live worker holds (`claimed_by IS NOT NULL AND
+  expires_at > now()`, the line `has_live_lease` draws). Every `ClaimKind` is set on
+  every pass, so a kind with nothing queued or held reads 0 instead of keeping its last
+  value, and a claim whose lease expired (a reclaimable orphan) counts as neither.
+  `claim_active_count` is a database snapshot, not an inc/dec in the engines, because an
+  expired lease that another worker re-claims never gets a dec. In-memory engines skip
+  the sampler because the gauges would always be zero outside tests.
 
 The turn-log writers reach their data sinks through their own wiring.
 `WorkerPool._run_engine_session` (`primer/worker/pool.py`) builds a
@@ -483,7 +490,7 @@ samplers and tick routers ride on is shared.
 - **Each auto-instrumentor (FastAPI, asyncpg, httpx) is installed in its own `try/except`.** Why: optional OTEL contrib packages can fail to load in trimmed deployments, and isolating them prevents one missing instrumentor from taking out tracing as a whole. Spec: docs/superpowers/specs/2026-05-27-observability-design.md.
 - **`tracing.setup` is a no-op when `enabled` or `traces_enabled` is `False`, and the metrics mount is skipped when disabled.** Why: the spec required zero overhead in the disabled path, so the provider is never set (`get_tracer` falls back to the OTEL no-op proxy) and `GET /metrics` returns 404 rather than an empty body. Spec: docs/superpowers/specs/2026-05-27-observability-design.md.
 - **The serialiser for `trace_llm_io` lives in a shared helper and reduces non-text Message parts to their type name.** Why: the same serialisation was needed by every LLM adapter and was previously duplicated across five modules, and reducing binary parts to a type name keeps large payloads out of spans. Spec: docs/superpowers/specs/2026-05-27-observability-design.md.
-- **The claim queue-depth sampler is gated on `isinstance(claim_engine, PostgresClaimEngine)` and runs from inside the FastAPI lifespan.** Why: the in-memory engine's gauge would always read zero outside tests, so sampling it would only add noise; the Postgres engine's unclaimed-lease count is the operator-meaningful signal. Spec: docs/superpowers/specs/2026-05-27-observability-design.md.
+- **The claim gauges sampler (queue depth and active leases) is gated on `isinstance(claim_engine, PostgresClaimEngine)` and runs from inside the FastAPI lifespan.** Why: the in-memory engine's gauges would always read zero outside tests, so sampling them would only add noise; the Postgres engine's unclaimed-lease and live-lease counts are the operator-meaningful signals. Spec: docs/superpowers/specs/2026-05-27-observability-design.md.
 - **The OTEL tracing plus dedicated Prometheus registry shipped as a first-class observability surface answering the audit's "observability story missing" finding.** Why: tracing covers FastAPI / asyncpg / httpx auto-instrumentation with an optional OTLP exporter, and the separate registry keeps `GET /metrics` returning only Primer counters rather than the prometheus_client default process metrics. Spec: docs/superpowers/specs/2026-05-27-backend-architecture-audit.md.
 - **The `TurnLogWriter` family was placed under `primer/observability/` rather than `primer/session/`.** Why: the writer is shared by agent sessions and both graph executors, so keeping it under `primer/session/` would have made graph code import from the session subsystem; the observability module is the cross-cutting home neither subsystem owns. Spec: docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md.
 - **`WorkspaceTurnLogWriter` takes injected `append_line` / `read_existing` callables instead of a `WorkspaceIO` plus `relative_path` pair.** Why: it decouples the writer from the workspace runtime so test fakes do not spin up a `WorkspaceIO`, and it lets `WorkspaceGraphExecutor` bypass the git-backed commit path without leaking that decision into the writer. Spec: docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md.
