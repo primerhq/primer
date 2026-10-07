@@ -22,6 +22,7 @@ Workspace (CRUD minus update):
 
 Sessions:
     create_workspace_session, cancel_workspace_session,
+    interrupt_workspace_session,
     list_workspace_sessions, get_workspace_session,
     pause_workspace_session, resume_workspace_session,
     steer_workspace_session, restart_workspace_session
@@ -1373,6 +1374,74 @@ def build_workspaces_toolset(
         ],
         required_role="user",
         interruptible=False,
+    )
+    registry[name] = entry
+
+    async def _interrupt_workspace_session(
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        # No scheduler / claim engine check (unlike the tools above): a Stop touches neither, only the session row and the bus.
+        try:
+            args = _WorkspaceSessionArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        from primer.workspace.session_factory import (
+            SessionInterruptDeps,
+            interrupt_session,
+        )
+
+        deps = SessionInterruptDeps(
+            storage_provider=storage_provider, event_bus=event_bus,
+        )
+        try:
+            session = await interrupt_session(
+                workspace_id=args.workspace_id,
+                session_id=args.session_id,
+                deps=deps,
+            )
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except ConflictError as exc:
+            return _err_from_primer(exc, error_type="conflict")
+        return _ok(session)
+
+    name, entry = _tool(
+        "interrupt_workspace_session",
+        (
+            "Stop (interrupt) the turn a session is running without ending "
+            "the session: it lands in waiting with its history intact, and "
+            "the next message continues it."
+        ),
+        (
+            "Use when a running turn should stop but the session should stay "
+            "alive; not for ending a session (use "
+            "``cancel_workspace_session``: a parent waiting for a stopped "
+            "child to END waits on, because the child is still alive). The "
+            "answer is the session row, and a success answer alone is NOT a "
+            "Stop: ``interrupt_requested: true`` means a Stop was recorded, "
+            "``interrupt_requested: false`` means nothing was running and "
+            "nothing was recorded (the session was idle, paused or not "
+            "started). ``type=conflict`` when the session has ended or is "
+            "parked waiting on an approval, an answer or a timer (cancel it "
+            "instead). A session may stop itself; an autonomous session that "
+            "does waits until something wakes it, and a graph session stops "
+            "between graph events, not at the next model call."
+        ),
+        _WorkspaceSessionArgs,
+        _interrupt_workspace_session,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1", "session_id": "ses-1"},
+                returns=(
+                    "the session, with {interrupt_requested: true} when a "
+                    "turn was running and the Stop is recorded"
+                ),
+            ),
+        ],
+        required_role="user",
+        # interruptible stays True on purpose (see tests/toolset/test_interruptible_declarations.py): one guarded row write
+        # (the flag) then a best-effort publish. The flag is durable and the worker polls it, so a cancel between the two
+        # loses only the fast path, never the Stop.
     )
     registry[name] = entry
 

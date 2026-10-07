@@ -432,9 +432,11 @@ class TestCatalog:
         names = [t.id async for t in toolset.list_tools()]
         # 28 minus watch_files + invoke_graph (both moved to the
         # ``workspace_ext`` toolset) = 26, plus workspace_tap = 27, plus
-        # restart_workspace_session (Task 8) = 28.
-        assert len(names) == 28
+        # restart_workspace_session (Task 8) = 28, plus interrupt_workspace_session
+        # (task 01a10871, Stop as a system tool) = 29.
+        assert len(names) == 29
         assert "create_workspace_session" in names
+        assert "interrupt_workspace_session" in names
         assert "cancel_workspace_session" in names
         assert "workspace_tap" in names
         assert "restart_workspace_session" in names
@@ -533,13 +535,14 @@ class TestBootstrapIngestsWorkspacesTools:
         }
         # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
         # plus workspace_tap = 27, plus restart_workspace_session (Task 8)
-        # = 28.
-        assert len(ws_ingested) == 28
+        # = 28, plus interrupt_workspace_session (task 01a10871) = 29.
+        assert len(ws_ingested) == 29
         for expected in (
             "workspaces::list_workspace_providers",
             "workspaces::create_workspace_template",
             "workspaces::list_workspace_files",
             "workspaces::pause_workspace_session",
+            "workspaces::interrupt_workspace_session",
             "workspaces::get_workspace_log",
             "workspaces::workspace_tap",
         ):
