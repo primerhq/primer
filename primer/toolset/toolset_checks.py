@@ -6,8 +6,8 @@ fail; calling time is too late, an agent mid-turn should never be the thing that
 ``source_version`` is SERVER-owned. The router's hooks re-raise the exact ``HTTPException`` they always raised; the system
 ``create_`` / ``update_toolset`` tools answer ``validation-error``.
 
-Also here: :func:`toolset_needs_admin`, the one rule for which toolsets only an admin may create or change (architecture review
-A-02). Both writers apply it: the router's pre-write hooks (``require_admin``) and the system CRUD tools (the caller's
+Also here: :func:`toolset_admin_reason`, the one rule for which toolset writes only an admin may make (architecture review A-02;
+security sweep AUTHZ-01, SSRF-02, SEC-02). Both writers apply it: the router's pre-write hooks (``require_admin``) and the system CRUD tools (the caller's
 ``ToolContext``), so the two surfaces cannot disagree about it.
 
 Deliberately NOT here: the router's reachability probe for http / sse MCP toolsets (an 8 s outbound call, bypassed by
@@ -18,7 +18,8 @@ the tool descriptions, and pinned by a test.
 from __future__ import annotations
 
 from primer.common.entity_checks import EntityCheckError
-from primer.model.provider import Toolset, ToolsetProviderType, TransportType
+from primer.model.common import preserve_masked_secrets
+from primer.model.provider import HttpConfig, Toolset, ToolsetProviderType, TransportType
 
 
 def check_python_toolset(entity: Toolset) -> None:
@@ -57,15 +58,65 @@ def launches_a_command(entity: Toolset) -> bool:
     return entity.provider == ToolsetProviderType.MCP and getattr(config, "transport", None) == TransportType.STDIO
 
 
-def toolset_needs_admin(entity: Toolset, existing: Toolset | None = None) -> bool:
-    """Whether writing ``entity`` (over ``existing``, on an update) is reserved to an admin.
+def runs_python(entity: Toolset) -> bool:
+    """True for a python toolset: its source runs on the server host (the local runner is a child of the API / worker process)."""
+    return entity.provider == ToolsetProviderType.PYTHON
 
-    A stdio toolset runs a command of the caller's choosing on the server host the first time it is probed or called, which is
-    system configuration, not authoring (provider rows are admin-only for the same reason). Either side counts: a user may not
-    turn an http toolset into a stdio one, nor edit a stdio toolset they did not create (even to point it at http). Every other
-    toolset stays user-tier, and a delete launches nothing, so it is not gated.
+
+def _endpoint(entity: Toolset) -> tuple[str, str | None, str | None] | None:
+    """Where an http / sse MCP toolset sends its stored secrets: the URL and the OAuth endpoints. ``None`` for any other toolset."""
+    config = getattr(entity.config, "config", None)
+    if entity.provider != ToolsetProviderType.MCP or not isinstance(config, HttpConfig):
+        return None
+    oauth = config.oauth
+    if oauth is None:
+        return (config.url, None, None)
+    return (config.url, str(oauth.redirect_uri), oauth.resource_uri)
+
+
+def repoints_stored_secrets(entity: Toolset, existing: Toolset) -> bool:
+    """True when an update changes a toolset's endpoint while a secret it sends back masked would be restored from ``existing``.
+
+    :func:`~primer.model.common.preserve_masked_secrets` swaps a served mask back for the stored value, so without this check a
+    caller who never saw the headers / OAuth client secret could move them to a server of its choosing by editing only the URL.
     """
-    return launches_a_command(entity) or (existing is not None and launches_a_command(existing))
+    if _endpoint(entity) == _endpoint(existing):
+        return False
+    restored = entity.model_copy(deep=True)
+    preserve_masked_secrets(restored, existing)
+    return restored != entity
+
+
+_STDIO_REASON = (
+    "Creating or changing an MCP toolset on the stdio transport requires the admin role: it launches a command on the server host. "
+    "Use an http or sse MCP toolset, or ask an admin."
+)
+_PYTHON_REASON = (
+    "Creating or changing a python toolset requires the admin role: its source runs on the server host. Ask an admin."
+)
+_REPOINT_REASON = (
+    "Changing a toolset's URL or OAuth endpoints while keeping its stored secrets requires the admin role: re-enter the secrets "
+    "(headers, OAuth client secret) when changing the URL, or ask an admin."
+)
+
+
+def toolset_admin_reason(entity: Toolset, existing: Toolset | None = None) -> str | None:
+    """Why writing ``entity`` (over ``existing``, on an update) is reserved to an admin, or ``None`` when any caller may write it.
+
+    A stdio toolset runs a command of the caller's choosing on the server host the first time it is probed or called, and a python
+    toolset runs its source there; both are system configuration, not authoring (provider rows are admin-only for the same reason).
+    Either side counts: a user may not turn an http toolset into a stdio or python one, nor edit one they did not create (even to
+    point it at http). An update that changes the URL or the OAuth endpoints while a secret is sent back masked would carry the
+    stored secret to the new endpoint, so it is admin-only too; re-entering the secrets lifts it. Every other write stays
+    user-tier, and a delete launches nothing, so it is not gated.
+    """
+    if launches_a_command(entity) or (existing is not None and launches_a_command(existing)):
+        return _STDIO_REASON
+    if runs_python(entity) or (existing is not None and runs_python(existing)):
+        return _PYTHON_REASON
+    if existing is not None and repoints_stored_secrets(entity, existing):
+        return _REPOINT_REASON
+    return None
 
 
 def check_toolset_on_create(entity: Toolset) -> None:
@@ -88,5 +139,7 @@ __all__ = [
     "check_toolset_on_update",
     "launches_a_command",
     "own_python_source_version",
-    "toolset_needs_admin",
+    "repoints_stored_secrets",
+    "runs_python",
+    "toolset_admin_reason",
 ]

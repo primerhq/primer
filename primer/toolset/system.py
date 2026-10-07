@@ -125,7 +125,7 @@ from primer.channel.checks import check_channel_on_create, check_channel_on_upda
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import check_collection_system_flag
 from primer.knowledge.lifecycle import purge_collection
-from primer.toolset.toolset_checks import check_toolset_on_create, check_toolset_on_update, toolset_needs_admin
+from primer.toolset.toolset_checks import check_toolset_on_create, check_toolset_on_update, toolset_admin_reason
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 # Re-exported helpers / argument models / parsers (shared surface).
@@ -183,10 +183,11 @@ from primer.toolset._system_tools import (
 # Told to the agent in the create / update descriptors of the entities in ``admin_writes_by_label`` (and used as the refusal message).
 _ADMIN_WRITE_NOTES: dict[str, str] = {
     "toolset": (
-        "Creating or changing an MCP toolset on the ``stdio`` transport requires the admin role (it launches a command on the "
-        "server host), whatever this tool's own role: when the run was not started by an admin, or carries no identity (a call "
-        "through the MCP endpoint), it returns ``type=forbidden`` and nothing is stored. http, sse and python toolsets are "
-        "unaffected."
+        "Creating or changing an MCP toolset on the ``stdio`` transport (it launches a command on the server host) or a python "
+        "toolset (its source runs on the server host) requires the admin role, whatever this tool's own role; so does changing a "
+        "toolset's URL or OAuth endpoints while sending a secret back masked (re-enter the secrets instead). When the run was not "
+        "started by an admin, or carries no identity (a call through the MCP endpoint), it returns ``type=forbidden`` and nothing "
+        "is stored. Other http and sse toolset writes are unaffected."
     ),
 }
 
@@ -413,10 +414,11 @@ def build_system_toolset(
             "definition, not your edits. The delete itself is allowed."
         ),
     }
-    # The writes that need an admin CALLER although the tool's static required_role is lower (architecture review A-02): a stdio MCP
-    # toolset launches a command on the server host. The tool manager's floor compares only the static role, so the handler checks
+    # The writes that need an admin CALLER although the tool's static required_role is lower (architecture review A-02, security
+    # sweep AUTHZ-01 / SEC-02): a stdio MCP toolset launches a command on the server host, a python toolset runs its source there,
+    # and repointing a toolset while its secrets are sent back masked would carry them to the new endpoint. The tool manager's floor compares only the static role, so the handler checks
     # the run's identity; a call with no identity (the MCP endpoint) is refused. The rule is the one the REST router applies.
-    admin_writes_by_label: dict[str, Any] = {"toolset": toolset_needs_admin}
+    admin_writes_by_label: dict[str, Any] = {"toolset": toolset_admin_reason}
 
     # What REST does in the collection router's on_pre_delete (ticket 01a1131f "F"): the documents, their content rows and the vector
     # namespace go before the row, through the same function. With no semantic-search registry in this toolset (search off) there is no
