@@ -50,6 +50,20 @@ async def _ws(client, suffix, tmp_path):
 
 
 @smk("SMK-WSP-01", "SMK-WSP-02")
+async def _exec_inside_the_workspace(client, wid: str, marker_file: str = "marker.txt") -> None:
+    """Run the diagnostic's three checks as three plain programs (A-06: the route runs one program and no shell, so the old
+    ``echo EXEC-OK; pwd; cat marker.txt`` chain is refused). The file the test wrote through the files API must be visible
+    to exec (``ls``); its CONTENT is asserted through the files API by the caller."""
+    for command, expected in (("echo EXEC-OK", "EXEC-OK"), ("pwd", "/workspace"), (f"ls {marker_file}", marker_file)):
+        diag = await client.post(
+            f"/v1/workspaces/{wid}/diagnostic", json={"command": command, "timeout_seconds": 30},
+        )
+        assert diag.status_code in (200, 201), (command, diag.text)
+        body = diag.json()
+        assert body["exit_code"] == 0, (command, body)
+        assert expected in body["stdout"], (command, body)
+
+
 async def test_provider_template_workspace_crud(authed_client, unique_suffix, tmp_path):
     wid = await _ws(authed_client, unique_suffix, tmp_path)
     got = await authed_client.get(f"/v1/workspaces/{wid}")
@@ -309,16 +323,7 @@ async def test_container_backend(authed_client, unique_suffix):
         #    has no passwd entry), so use echo/pwd which exit 0. The file we
         #    wrote above must also be visible to the shell, proving the file
         #    API and exec share the same container filesystem.
-        diag = await authed_client.post(
-            f"/v1/workspaces/{wid}/diagnostic",
-            json={"command": "echo EXEC-OK; pwd; cat marker.txt", "timeout_seconds": 30},
-        )
-        assert diag.status_code in (200, 201), diag.text
-        body = diag.json()
-        assert body["exit_code"] == 0, body
-        assert "EXEC-OK" in body["stdout"], body
-        assert "/workspace" in body["stdout"], body
-        assert marker in body["stdout"], body
+        await _exec_inside_the_workspace(authed_client, wid)
     finally:
         # 3) Teardown: DELETE removes the container + volume. Assert the API
         #    contract (204 + GET 404) and, as a bonus, that docker shows no
@@ -653,16 +658,7 @@ async def test_kubernetes_backend(authed_client, unique_suffix):
         # 2) Exec inside the pod. echo/pwd exit 0; the file written above must
         #    be visible to the shell, proving file API and exec share the pod
         #    filesystem.
-        diag = await authed_client.post(
-            f"/v1/workspaces/{wid}/diagnostic",
-            json={"command": "echo EXEC-OK; pwd; cat marker.txt", "timeout_seconds": 30},
-        )
-        assert diag.status_code in (200, 201), diag.text
-        db = diag.json()
-        assert db["exit_code"] == 0, db
-        assert "EXEC-OK" in db["stdout"], db
-        assert "/workspace" in db["stdout"], db
-        assert marker in db["stdout"], db
+        await _exec_inside_the_workspace(authed_client, wid)
     finally:
         # 3) Teardown: DELETE removes the StatefulSet + Service + Secret + PVC.
         #    Assert the API contract (204 + GET 404) and that kubectl shows no
@@ -927,16 +923,7 @@ async def test_kubernetes_backend_gateway(authed_client, unique_suffix):
         assert rd.status_code == 200, rd.text
         assert rd.json()["content"] == marker
 
-        diag = await authed_client.post(
-            f"/v1/workspaces/{wid}/diagnostic",
-            json={"command": "echo EXEC-OK; pwd; cat marker.txt", "timeout_seconds": 30},
-        )
-        assert diag.status_code in (200, 201), diag.text
-        db = diag.json()
-        assert db["exit_code"] == 0, db
-        assert "EXEC-OK" in db["stdout"], db
-        assert "/workspace" in db["stdout"], db
-        assert marker in db["stdout"], db
+        await _exec_inside_the_workspace(authed_client, wid)
     finally:
         if wid is not None:
             d = await authed_client.delete(f"/v1/workspaces/{wid}")

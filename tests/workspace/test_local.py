@@ -1261,6 +1261,28 @@ class TestDiagnosticExec:
         assert "PRIMER_DIAGNOSTIC_PROBE_SECRET" not in result.stdout
         assert "PATH=" in result.stdout
 
+    async def test_the_workspaces_own_env_reaches_the_program(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """The other half of the minimal-env rule: the template env is still there (the env-injection e2e reads it back
+        with ``printenv NAME``)."""
+        ws = await provider.create(_template(env={"PRIMER_DIAGNOSTIC_TEMPLATE_VAR": "from-the-template"}))
+        assert isinstance(ws, LocalWorkspace)
+
+        result = await ws.diagnostic_exec("printenv PRIMER_DIAGNOSTIC_TEMPLATE_VAR")
+
+        assert (result.exit_code, result.stdout) == (0, "from-the-template\n")
+
+    async def test_a_program_that_does_not_exist_reports_127_like_a_shell_would(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+
+        result = await ws.diagnostic_exec("definitely-not-a-program-xyz")
+
+        assert result.exit_code == 127 and "command not found" in result.stderr
+
     async def test_timeout_kills_process(
         self, provider: LocalWorkspaceBackend
     ) -> None:

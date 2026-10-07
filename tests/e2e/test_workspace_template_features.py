@@ -694,12 +694,10 @@ async def test_env_injection(
 
     Env values are ``SecretStr`` in the model, but the API accepts a plain
     string in the JSON body, so we pass the marker as a plain string. We read
-    the value back via a diagnostic exec. The diagnostic command head is
-    whitelisted (only ``echo``/``ls``/``pwd``/``uname``/``whoami`` are allowed),
-    so we use ``echo $PRIMER_SMK_VAR`` and rely on the shell to expand it; if the
-    diagnostic does not run via a shell the expansion will not happen and stdout
-    will contain the literal ``$PRIMER_SMK_VAR`` instead of the marker - that is
-    a finding, surfaced via the assertion message.
+    the value back via a diagnostic exec. The diagnostic runs one program with
+    no shell (A-06), so ``echo $PRIMER_SMK_VAR`` can no longer expand it; the
+    allowlist has ``printenv NAME`` (exactly one variable name, never bare) for
+    this: it prints the variable as the workspace's process sees it.
     """
     client, target = platform_client
     suffix = uuid.uuid4().hex[:12]
@@ -716,19 +714,14 @@ async def test_env_injection(
 
         diag = await client.post(
             f"/v1/workspaces/{wid}/diagnostic",
-            json={"command": "echo $PRIMER_SMK_VAR", "timeout_seconds": 30},
+            json={"command": "printenv PRIMER_SMK_VAR", "timeout_seconds": 30},
         )
         assert diag.status_code in (200, 201), diag.text
         body = diag.json()
         assert body["exit_code"] == 0, body
         stdout = body["stdout"]
-        if "$PRIMER_SMK_VAR" in stdout and marker not in stdout:
-            pytest.fail(
-                f"diagnostic did not expand $PRIMER_SMK_VAR on target "
-                f"{target.name!r} (no shell?): stdout={stdout!r}"
-            )
         assert marker in stdout, (
-            f"expected env marker {marker!r} in echo stdout for target "
+            f"expected env marker {marker!r} in printenv stdout for target "
             f"{target.name!r}, got stdout={stdout!r} "
             f"stderr={body.get('stderr')!r}"
         )

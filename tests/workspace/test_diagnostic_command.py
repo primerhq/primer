@@ -81,5 +81,19 @@ def test_shell_syntax_is_refused_before_the_allowlist_is_consulted() -> None:
     assert refused.value.code == "command_rejected"
 
 
-def test_the_allowlist_is_the_five_read_only_programs() -> None:
-    assert DIAGNOSTIC_COMMANDS == frozenset({"echo", "pwd", "whoami", "uname", "ls"})
+def test_the_allowlist_is_the_read_only_programs() -> None:
+    assert DIAGNOSTIC_COMMANDS == frozenset({"echo", "pwd", "whoami", "uname", "ls", "printenv"})
+
+
+def test_printenv_reads_one_named_variable() -> None:
+    assert parse_diagnostic_command("printenv PRIMER_SMK_VAR", allowed=DIAGNOSTIC_COMMANDS) == ["printenv", "PRIMER_SMK_VAR"]
+
+
+@pytest.mark.parametrize("command", ["printenv", "printenv A B", "printenv -0", "printenv 1BAD", "printenv A-B", "printenv A=b"])
+def test_printenv_never_dumps_the_environment_or_takes_options(command: str) -> None:
+    with pytest.raises(DiagnosticCommandError):
+        parse_diagnostic_command(command, allowed=DIAGNOSTIC_COMMANDS)
+
+
+def test_the_printenv_rule_is_route_policy_the_backends_do_not_apply() -> None:
+    assert parse_diagnostic_command("printenv", allowed=None) == ["printenv"]

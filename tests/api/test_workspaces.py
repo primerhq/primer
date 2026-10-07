@@ -1653,7 +1653,7 @@ class TestDiagnosticEndpoint:
         ext = resp.json()["extensions"]
         assert ext["error"] == "command_not_whitelisted"
         assert ext["head"] == "rm"
-        assert set(ext["allowed"]) == {"echo", "pwd", "whoami", "uname", "ls"}
+        assert set(ext["allowed"]) == {"echo", "pwd", "whoami", "uname", "ls", "printenv"}
         # Backend was NOT called — whitelist short-circuits before
         # diagnostic_exec dispatch.
         assert ws.diagnostic_calls == []
