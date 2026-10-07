@@ -15,6 +15,8 @@ import uuid
 from collections.abc import Awaitable
 from typing import Any
 
+import aiohttp
+
 from primer.int.workspace import Workspace
 from primer.model.except_ import ConfigError, NotFoundError
 from pydantic import SecretStr
@@ -48,6 +50,23 @@ logger = logging.getLogger(__name__)
 _RUNTIME_READY_TIMEOUT_S = 60.0
 _RUNTIME_READY_POLL_S = 0.25        # the first pause between attempts; it doubles up to the cap below
 _RUNTIME_READY_MAX_POLL_S = 2.0
+
+# What a gateway answers while it has not programmed or reached a freshly created backend.
+_GATEWAY_NOT_READY_STATUSES = frozenset({404, 502, 503, 504})
+
+
+def _runtime_not_serving_yet(exc: BaseException) -> bool:
+    """True when a failed connect means "the runtime is not serving yet", so the same connect may succeed a moment later.
+
+    A refused or dropped connection, a hello that timed out, and a gateway that answers 404/502/503/504 for a backend it has not
+    reached yet. NOT a 401/403 (the token is wrong: waiting cannot fix it), a TLS failure, a protocol error (``RuntimeError`` from
+    the hello) or anything else: those fail at once with their own error.
+    """
+    if isinstance(exc, aiohttp.WSServerHandshakeError):
+        return exc.status in _GATEWAY_NOT_READY_STATUSES
+    if isinstance(exc, aiohttp.ClientSSLError):
+        return False
+    return isinstance(exc, (aiohttp.ClientConnectionError, ConnectionError, TimeoutError))
 
 
 def _generate_workspace_id() -> str:
@@ -467,10 +486,9 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             workspace_id=workspace_id,
             k8s_object_name=obj_name,
         )
-        client = RuntimeClient(url=url, token=token)
+        client = await self._connect_runtime(url, token, workspace_id=workspace_id)
         cached = False
         try:
-            await client.connect()
             sandbox = WSSandbox(
                 runtime_client=client,
                 container_id=obj_name,
@@ -687,6 +705,50 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                     "destroy: httproute delete for %r failed: %s", obj_name, exc,
                 )
 
+    async def _connect_runtime(self, url: str, token: str, *, workspace_id: str) -> RuntimeClient:
+        """A connected :class:`RuntimeClient`, waiting for the runtime in a Running pod to start listening (ticket 01a11543).
+
+        ``_wait_for_pod_running`` returns when the container has STARTED, before the runtime process serves, so the first connect
+        can be refused (the first real ``materialise`` on k3s died with ``connect refused :5959``). The connect is retried while the
+        failure means "not serving yet" (:func:`_runtime_not_serving_yet`), with a growing pause, until
+        ``_RUNTIME_READY_TIMEOUT_S`` has passed; then a :class:`ConfigError` names the workspace and the last error, like the pod wait
+        does. Anything else fails at once with its own error.
+
+        Each attempt uses a FRESH client: a failed ``connect`` leaves its aiohttp session behind (and, after a hello timeout, maybe a
+        half-open socket), and reusing the client would leak or reuse that. A failed attempt's client is closed before the next, and on a
+        cancel; the one returned is the caller's to close (both callers do, on every path that does not cache it).
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _RUNTIME_READY_TIMEOUT_S
+        pause = _RUNTIME_READY_POLL_S
+        attempt = 0
+        while True:
+            attempt += 1
+            client = RuntimeClient(url=url, token=token)
+            try:
+                await client.connect()
+                if attempt > 1:
+                    logger.info("workspace %s: the runtime accepted a connection on attempt %d", workspace_id, attempt)
+                return client
+            except BaseException as exc:
+                await close_shielded(client, what=f"runtime client of workspace {workspace_id} (attempt {attempt})")
+                if not isinstance(exc, Exception) or not _runtime_not_serving_yet(exc):
+                    raise
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise ConfigError(
+                        f"the runtime of workspace {workspace_id!r} did not accept a connection within "
+                        f"{_RUNTIME_READY_TIMEOUT_S:g}s after its pod was Running ({attempt} attempts; last error: "
+                        f"{type(exc).__name__}: {exc}); the runtime may be crash-looping or the gateway route may be missing, "
+                        "check the pod's logs and the HTTPRoute"
+                    ) from exc
+                logger.info(
+                    "workspace %s: the runtime is not serving yet (attempt %d: %s: %s); retrying in %.2fs",
+                    workspace_id, attempt, type(exc).__name__, exc, min(pause, remaining),
+                )
+            await asyncio.sleep(min(pause, remaining))
+            pause = min(pause * 2, _RUNTIME_READY_MAX_POLL_S)
+
     async def _wait_for_pod_running(
         self, pod_name: str, *, timeout_seconds: float = 120.0,
     ) -> None:
@@ -771,10 +833,9 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             workspace_id=workspace_id,
             k8s_object_name=obj_name,
         )
-        client = RuntimeClient(url=url, token=token)
+        client = await self._connect_runtime(url, token, workspace_id=workspace_id)
         released = False            # the client is no longer this function's to close: cached, or already being closed
         try:
-            await client.connect()
             sandbox = WSSandbox(
                 runtime_client=client,
                 container_id=obj_name,
