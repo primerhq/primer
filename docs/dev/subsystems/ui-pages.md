@@ -93,6 +93,8 @@ All page components live under `ui/components/` as self-invoking `<script type="
 
 Three provider files are MOUNTED, not routed. `provider-form.jsx` is the one parameterized provider form: it renders whatever the class's own `_types` endpoint describes, so no field table lives in the console. `provider-aggregated-editor.jsx` is mounted by that form for the aggregated LLM variant, whose ordered member picker a flat field list cannot express. `model-profiles.jsx` now ships only `MP_ProfileModal`, which the catalog's profiles panel opens; its standalone page folded into the catalog.
 
+**Files > History reads `commits`.** `GET /v1/workspaces/{wid}/log` answers `{"commits": [...]}`, not the `{"items": [...]}` list envelope the other routes use. Both Files sidebars (`nv-files-sidebar.jsx` and the mobile Files tab in `nv-mobile-shell.jsx`) take their rows through `SH_api.commitRows(body)` (`ui/components/shell/sh-api.jsx`), so the key is named in one place; reading `items` made History say "No turn commits yet." for every workspace. `tests/ui/test_files_history_reads_the_log_shape.py` feeds the real response shape through the real module, and an items-shaped body is deliberately not a commit log.
+
 Page-by-page index follows. The first column is the overlay target that reaches each surface, in the `<name>[:<section>[:<id>]]` form the URL takes.
 
 | Overlay target | Page component | Source file | Primary REST dependency |
