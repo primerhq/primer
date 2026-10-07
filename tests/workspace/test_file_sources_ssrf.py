@@ -107,3 +107,57 @@ async def test_the_resolver_passes_a_public_address() -> None:
     out = await PublicOnlyResolver(inner=_Inner()).resolve("example.com", 443)
 
     assert [r["host"] for r in out] == ["93.184.216.34"]
+
+
+@pytest.mark.parametrize("address", [
+    "64:ff9b::7f00:1",        # NAT64 of 127.0.0.1
+    "64:ff9b::a9fe:a9fe",     # NAT64 of 169.254.169.254
+    "64:ff9b::a00:5",         # NAT64 of 10.0.0.5
+    "::7f00:1",               # IPv4-compatible 127.0.0.1
+    "::a9fe:a9fe",            # IPv4-compatible 169.254.169.254
+    "::c0a8:101",             # IPv4-compatible 192.168.1.1
+])
+def test_an_embedded_private_ipv4_is_refused(address) -> None:
+    from primer.common.ssrf import blocked_reason
+
+    assert blocked_reason(address) is not None
+
+
+@pytest.mark.parametrize("address", ["64:ff9b::808:808", "::808:808"])
+def test_an_embedded_public_ipv4_is_judged_as_that_ipv4(address) -> None:
+    from primer.common.ssrf import blocked_reason
+
+    assert blocked_reason(address) is None
+
+
+async def test_the_real_session_resolves_through_the_public_only_resolver() -> None:
+    """Pins the wiring: a bare ``aiohttp.ClientSession()`` here would resolve with aiohttp's own resolver."""
+    from primer.common.ssrf import PublicOnlyResolver
+    from primer.workspace.files import _http_session
+
+    session = _http_session()
+    try:
+        assert isinstance(session.connector._resolver, PublicOnlyResolver)  # noqa: SLF001
+        assert session.trust_env is False
+    finally:
+        await session.close()
+
+
+async def test_a_name_resolving_private_is_refused_through_the_real_session(monkeypatch) -> None:
+    """Drives the real ``_http_session`` and ``_fetch_url``: the refusal the resolver raises during connect surfaces
+    as the RuntimeError "refused". No DNS and no socket: aiohttp's default resolver is replaced by one that answers a
+    private address."""
+    import aiohttp.resolver
+
+    class _PrivateResolver:
+        async def resolve(self, host, port=0, family=socket.AF_INET):
+            return [{"hostname": host, "host": "10.9.8.7", "port": port, "family": family, "proto": 0, "flags": 0}]
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(aiohttp.resolver, "DefaultResolver", _PrivateResolver)
+
+    with pytest.raises(RuntimeError, match="refused") as ei:
+        await resolve_file_sources([_url_mount("http://internal.example/x")])
+    assert "10.9.8.7" in str(ei.value)
