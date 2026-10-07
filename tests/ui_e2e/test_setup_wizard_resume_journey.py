@@ -16,7 +16,8 @@ import json
 import re
 from urllib.parse import urlparse
 
-import pytest
+
+from tests.ui_e2e._shell_helpers import open_setup_wizard
 
 _PROVIDER_ID = "llm-openchat"
 _MODELS = [{"name": "model-one", "context_length": 8000}, {"name": "model-two", "context_length": 16000}]
@@ -110,8 +111,7 @@ class _FakeSetupApi:
 
 def _open_wizard(page, console_url: str, api: _FakeSetupApi) -> None:
     page.route("**/v1/**", api.handle)
-    page.goto(console_url, wait_until="domcontentloaded")
-    page.get_by_text("Configure this install").wait_for(state="visible", timeout=15_000)
+    open_setup_wizard(page, console_url)
 
 
 def _step_text(page) -> str:
@@ -136,7 +136,7 @@ def test_a_reload_at_step_two_resumes_at_step_two_and_finishes(page, console_url
     # The operator's tab restores, the laptop sleeps, the page is refreshed: the server already holds the provider.
     page.reload(wait_until="domcontentloaded")
     page.get_by_text("Configure this install").wait_for(state="visible", timeout=15_000)
-    page.locator("#setup-model").wait_for(state="visible", timeout=10_000)
+    page.locator("#setup-model").wait_for(state="visible", timeout=10_000)   # step 2's field is only there once the saved state is read
     assert "step 2 of 2" in _step_text(page).lower(), "a reload past step 1 must not send the operator back to step 1"
     options = page.locator("#setup-model option").all_inner_texts()
     assert options == [m["name"] for m in _MODELS], "step 2 lists the saved provider's own models"

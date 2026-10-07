@@ -17,6 +17,8 @@ Selectors mirror ui/components/console/*.jsx exactly:
 
 from __future__ import annotations
 
+import re
+
 from playwright.sync_api import Page, expect
 
 SHELL_CONSOLE_IGNORES = [
@@ -136,6 +138,18 @@ def open_root(page: Page, console_url: str) -> None:
         page.evaluate("(h) => { window.location.hash = h; }", fragment)
     else:
         page.goto(f"{console_url}{fragment}")
+
+
+def open_setup_wizard(page: Page, console_url: str, *, timeout: int = 15_000) -> None:
+    """Load the console root while the first-boot gate is showing and wait for the wizard card.
+
+    The gate renders INSTEAD of the shell (no ``nv-root``), so ``open_root`` cannot be used. The caller has already made the setup API
+    answer "not set up" (see ``test_setup_wizard_resume_journey``).
+    """
+    page.goto(console_url, wait_until="domcontentloaded")
+    expect(page.get_by_text("Configure this install")).to_be_visible(timeout=timeout)
+    # The card shows "Checking this install..." while the wizard reads what is already saved; wait for the step label itself.
+    expect(page.locator(".setup-progress")).to_contain_text(re.compile(r"of 2", re.I), timeout=timeout)
 
 
 def open_palette(page: Page) -> None:

@@ -295,6 +295,32 @@ def test_a_saved_provider_that_does_not_answer_falls_back_to_step_one_with_a_not
     assert "llm-openchat" in plan["notice"] and "connection refused" in plan["notice"]
 
 
+def test_a_provider_with_a_profile_that_stopped_answering_says_why() -> None:
+    """The gate also re-enters the wizard for a provider that has its profile but no longer answers: the operator is told which one and why."""
+    ctx = _helpers()
+    ctx.eval(
+        "function api(method, path) {"
+        f" if (path.indexOf('/llm_providers?') === 0) return Promise.resolve({{items: [{_PROVIDER}]}});"
+        " if (path.indexOf('/model_profiles?') === 0) return Promise.resolve({items: [{id: 'llm-openchat--m', provider_id: 'llm-openchat', model_name: 'm'}]});"
+        " return Promise.reject({status: 502, detail: 'connection refused'}); }"
+    )
+    plan = _run(ctx, "SW_loadResume(api)")["ok"]
+    assert plan["step"] == 1 and plan["prefill"]["providerId"] == "llm-openchat"
+    assert "llm-openchat" in plan["notice"] and "connection refused" in plan["notice"]
+
+
+def test_a_provider_that_answers_again_needs_no_notice() -> None:
+    ctx = _helpers()
+    ctx.eval(
+        "function api(method, path) {"
+        f" if (path.indexOf('/llm_providers?') === 0) return Promise.resolve({{items: [{_PROVIDER}]}});"
+        " if (path.indexOf('/model_profiles?') === 0) return Promise.resolve({items: [{id: 'llm-openchat--m', provider_id: 'llm-openchat', model_name: 'm'}]});"
+        " return Promise.resolve({models: [{name: 'm'}]}); }"
+    )
+    plan = _run(ctx, "SW_loadResume(api)")["ok"]
+    assert plan["step"] == 1 and "notice" not in plan
+
+
 def test_a_failed_read_of_the_saved_state_never_blocks_the_wizard() -> None:
     ctx = _helpers()
     ctx.eval("function api() { return Promise.reject({status: 0, detail: 'offline'}); }")
