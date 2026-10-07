@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
+import respx
 
 # Convention: shared API test fixtures (see test_rbac_router_wiring.py /
 # test_admin_users.py for the same import pattern).
@@ -31,6 +33,22 @@ _BODY = {
     "scopes": ["openid", "email", "profile"],
     "enabled": True,
 }
+
+
+@pytest.fixture(autouse=True)
+def _okta_discovery_answers():
+    """Enabling a provider fetches its discovery document (ADM-24), so the fixture IdP has to answer; these tests are about
+    secret masking and the forbidden-role check, not about discovery (tests/api/test_oidc_provider_discovery_check.py is)."""
+    host = _BODY["discovery_url"].split("/")[2]
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_BODY["discovery_url"]).mock(return_value=httpx.Response(200, json={
+            "issuer": f"https://{host}/",
+            "authorization_endpoint": f"https://{host}/authorize",
+            "token_endpoint": f"https://{host}/token",
+            "jwks_uri": f"https://{host}/jwks.json",
+            "id_token_signing_alg_values_supported": ["RS256"],
+        }))
+        yield router
 
 
 @pytest.mark.asyncio
