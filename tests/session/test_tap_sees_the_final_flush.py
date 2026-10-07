@@ -129,11 +129,13 @@ def _durable_seqs(workspace, session_id: str) -> list[int]:
 
 
 async def _run_turn_with_a_live_tap(
-    tmp_path, executor, *, while_running=None,
+    tmp_path, executor, *, while_running=None, expect_cancelled_turn=False,
 ) -> tuple[list[int], list[int], list[str]]:
     """Run one turn while a tap stream (woken only by ticks) follows the workspace.
 
-    ``while_running(sessions, bus, session_id)``, when given, runs concurrently with the turn (a Cancel landing mid-turn).
+    ``while_running(sessions, bus, session_id, turn)``, when given, runs concurrently with the turn task (a Cancel landing mid-turn).
+    ``expect_cancelled_turn`` lets the turn task end in ``CancelledError`` (a hard preempt the turn does not absorb) so the
+    assertions on what the tap heard still run.
 
     Returns ``(durable_seqs, announced_seqs, announced_classes)``: what the log holds once the turn is over, and what the tap
     delivered to its client after being given up to ``_SETTLE_S`` seconds to catch up.
@@ -170,13 +172,17 @@ async def _run_turn_with_a_live_tap(
         async def build(_session):
             return executor
 
-        turn = run_one_session_turn(_lease(session.session_id), SessionDispatchDeps(
+        turn = asyncio.ensure_future(run_one_session_turn(_lease(session.session_id), SessionDispatchDeps(
             storage_provider=sp, workspace_io=shim, event_bus=bus, build_executor=build,
-        ))
+        )))
         if while_running is None:
             await asyncio.wait_for(turn, timeout=15)
         else:
-            await asyncio.wait_for(asyncio.gather(turn, while_running(sessions, bus, session.session_id)), timeout=15)
+            await asyncio.wait_for(
+                asyncio.gather(
+                    turn, while_running(sessions, bus, session.session_id, turn), return_exceptions=expect_cancelled_turn,
+                ), timeout=15,
+            )
 
         durable = _durable_seqs(workspace, session.session_id)
         try:
@@ -199,7 +205,7 @@ async def _run_turn_with_a_live_tap(
 
 def _land_a_hard_cancel(executor: _CancelledMidTurn):
     """What ``cancel_session`` does to a running turn: set the flag on the row, publish the cancel signal."""
-    async def land(sessions, bus, session_id: str) -> None:
+    async def land(sessions, bus, session_id: str, _turn) -> None:
         await asyncio.sleep(0.3)                       # the executor has streamed its text and is waiting
         row = await sessions.get(session_id)
         row.cancel_requested = True
@@ -207,6 +213,19 @@ def _land_a_hard_cancel(executor: _CancelledMidTurn):
         await bus.publish(f"session:{session_id}:cancel", {})
         await asyncio.sleep(0.1)
         executor.resume.set()
+
+    return land
+
+
+def _land_a_hard_preempt(executor: _CancelledMidTurn):
+    """What the pool does to a turn blocked in a long model call: the row is flagged by the Cancel route, then the pool's
+    ``cancel_once`` cancels the TASK (there is no bus key in this shape, the NOTIFY is what reaches the pool)."""
+    async def land(sessions, bus, session_id: str, turn) -> None:
+        await asyncio.sleep(0.3)                       # the executor has streamed its text and is waiting
+        row = await sessions.get(session_id)
+        row.cancel_requested = True
+        await sessions.update(row)
+        turn.cancel()
 
     return land
 
@@ -233,6 +252,16 @@ class TestTheTapAnnouncesWhatTheFinalFlushMadeDurable:
         )
         assert set(announced) == set(durable), f"log {durable}, announced {sorted(announced)}"
         assert "cancelled" in classes
+
+    async def test_a_hard_preempted_cancel_announces_its_cancelled_record(self, tmp_path) -> None:
+        """C-011: End on a turn blocked in a model call is a hard cancel of the task; the CANCELLED record must still be
+        written and announced, or no client ever hears the turn ended."""
+        executor = _CancelledMidTurn()
+        durable, announced, classes = await _run_turn_with_a_live_tap(
+            tmp_path, executor, while_running=_land_a_hard_preempt(executor), expect_cancelled_turn=True,
+        )
+        assert "cancelled" in classes, f"the log holds seqs {durable}; the tap announced {sorted(announced)}"
+        assert set(announced) == set(durable)
 
     async def test_a_parked_turn_announces_its_yielded_record(self, tmp_path) -> None:
         durable, announced, classes = await _run_turn_with_a_live_tap(tmp_path, _ParksAfterText())
