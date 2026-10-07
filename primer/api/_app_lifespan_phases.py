@@ -657,8 +657,14 @@ async def warm_chat_channels(channel_registry) -> None:
 
 
 async def sample_claim_gauges_once(claim_engine) -> None:
-    """One sampling pass over the leases table: set ``claim_queue_depth`` per kind."""
+    """One sampling pass over the leases table: set ``claim_queue_depth`` for every kind.
+
+    Every ``ClaimKind`` is set on every pass, and so is any other kind still present in the table.
+    A kind with no unclaimed lease has no row in the result and reads 0; setting only the kinds
+    that came back left a drained queue reporting its last non-zero depth forever.
+    """
     import primer.observability.metrics as _m
+    from primer.int.claim import ClaimKind
     _table = claim_engine._table  # noqa: SLF001
     _pool = claim_engine._storage.pool  # noqa: SLF001
     async with _pool.acquire() as _conn:
@@ -668,10 +674,9 @@ async def sample_claim_gauges_once(claim_engine) -> None:
             f" WHERE claimed_by IS NULL"
             f" GROUP BY kind"
         )
-    for _row in _rows:
-        _m.claim_queue_depth.labels(_row["kind"]).set(
-            _row["cnt"]
-        )
+    _queued = {_row["kind"]: _row["cnt"] for _row in _rows}
+    for _kind in sorted(_queued.keys() | {_k.value for _k in ClaimKind}):
+        _m.claim_queue_depth.labels(_kind).set(_queued.get(_kind, 0))
 
 
 async def sample_claim_queue_depth(claim_engine) -> None:
