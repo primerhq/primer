@@ -106,7 +106,9 @@ from primer.model.user import User
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
+    admin_only_settings_held,
     admin_only_template_changes,
+    held_refusal_message,
     refusal_message,
 )
 from primer.session.mutation_lock import session_lifecycle_lock
@@ -587,7 +589,17 @@ def _refuse_non_admin(request: Request, fields: list[str]) -> None:
 
 
 def _check_template_privilege(entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, request: Request) -> None:
-    """Admin-only fields first (403), then the Kubernetes overlay allowlist, which binds admins too (422)."""
+    """Admin-only fields first (403), then the Kubernetes overlay allowlist, which binds admins too (422).
+
+    A stored template that HOLDS an admin-only value is not user-editable at all (lead review of #473): keeping the
+    admin's mount or secret while swapping the image, entrypoint, user or init_commands runs the user's code with it.
+    """
+    held = admin_only_settings_held(existing)
+    if held and not _caller_is_admin(request):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "forbidden_role", "fields": held, "message": held_refusal_message(held)},
+        )
     _refuse_non_admin(request, admin_only_template_changes(entity, existing))
     from primer.workspace.k8s.backend import _validate_template_overrides
     try:
@@ -613,6 +625,9 @@ template_router = make_crud_router(
     tag="workspace-templates",
     on_pre_create=_workspace_template_pre_create,
     on_pre_update=_workspace_template_pre_update,
+    # 403: a non-admin writing admin-only fields, or updating a template that holds them.
+    extra_create_responses=common_responses(403),
+    extra_update_responses=common_responses(403),
     on_pre_delete_id=_reject_reserved_workspace_template_delete,
     # Deliberately NO reference guard here: a template is a snapshot
     # consumed at materialization (spec section 12, pinned by e2e
@@ -762,7 +777,7 @@ class WorkspaceEventsBody(BaseModel):
     "/workspaces/{workspace_id}/terminal_access",
     response_model=WorkspaceRow,
     summary="Grant or revoke non-admin access to the workspace's integrated terminal",
-    responses=common_responses(404, 500),
+    responses=common_responses(403, 404, 500),
     # The terminal is admin-only unless this flag is on, so only an admin may flip it (INJ-01): the router is on
     # the user tier, and without this a role=user caller granted themselves a shell.
     dependencies=[Depends(require_admin)],
@@ -798,7 +813,7 @@ class WorkspaceTerminalAccessBody(BaseModel):
     response_model=WorkspaceRow,
     status_code=201,
     summary="Create Workspace from template",
-    responses=common_responses(404, 409, 422, 500),
+    responses=common_responses(403, 404, 409, 422, 500),
 )
 async def create_workspace(
     body: WorkspaceCreateBody,
