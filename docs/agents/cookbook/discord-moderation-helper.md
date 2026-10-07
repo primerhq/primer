@@ -46,6 +46,7 @@ Do not include the `Bot ` prefix in `bot_token`. Set `enable_dms: false` for a g
   "entity": {
     "id": "general-mod",
     "provider_id": "discord-mod",
+    "provider": "discord",
     "external_id": "112233445566778899",
     "label": "#general"
   }

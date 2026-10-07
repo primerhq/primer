@@ -66,6 +66,7 @@ Enable the system toolset tools that cover knowledge search so the agent can que
   "entity": {
     "id": "ops-incidents",
     "provider_id": "slack-1",
+    "provider": "slack",
     "external_id": "C12345"
   }
 }
