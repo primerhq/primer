@@ -450,6 +450,46 @@ class TestFileTree:
         assert "mtime_iso" in item
 
 
+class TestTheRuntimesReadyMarkerIsNotAUserFile:
+    """L1 (lead sweep 2026-10-08): the runtime writes ``/workspace/.runtime.ready`` so the backend can tell it is serving, and it
+    showed in the FILES sidebar of every k8s workspace. Internal plumbing is invisible, the way ``.state`` is. Only the marker at
+    the workspace root is plumbing: a file of that name anywhere else is the user's."""
+
+    @pytest.mark.asyncio
+    async def test_the_tree_hides_it_by_default_and_shows_it_when_hidden_entries_are_asked_for(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._files[".runtime.ready"] = b"ready"
+        ws._files["a.txt"] = b"hello"
+
+        names = [i["name"] for i in (await client.get(f"/v1/workspaces/{wid}/files/tree")).json()["items"]]
+        assert ".runtime.ready" not in names and "a.txt" in names
+
+        shown = await client.get(f"/v1/workspaces/{wid}/files/tree", params={"hidden": "true"})
+        assert ".runtime.ready" in [i["name"] for i in shown.json()["items"]]
+
+    @pytest.mark.asyncio
+    async def test_the_flat_listing_hides_it_too(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._files[".runtime.ready"] = b"ready"
+        ws._files["a.txt"] = b"hello"
+
+        resp = await client.get(f"/v1/workspaces/{wid}/files", params={"path": "."})
+        assert resp.status_code == 200, resp.text
+        paths = [i["path"] for i in resp.json()["items"]]
+        assert ".runtime.ready" not in paths and "a.txt" in paths
+
+    @pytest.mark.asyncio
+    async def test_a_file_of_that_name_below_the_root_is_the_users(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._dirs.add("sub")
+        ws._files["sub/.runtime.ready"] = b"mine"
+
+        tree = await client.get(f"/v1/workspaces/{wid}/files/tree", params={"path": "sub"})
+        assert ".runtime.ready" in [i["name"] for i in tree.json()["items"]]
+        flat = await client.get(f"/v1/workspaces/{wid}/files", params={"path": "sub"})
+        assert "sub/.runtime.ready" in [i["path"] for i in flat.json()["items"]]
+
+
 # ===========================================================================
 # Feature 2: mtime/etag enrichment on read_file
 # ===========================================================================
