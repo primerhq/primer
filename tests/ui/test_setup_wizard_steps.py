@@ -204,3 +204,56 @@ def test_resume_is_null_when_there_is_no_provider_or_it_cannot_list_models() -> 
         "});"
     )
     assert _run(ctx, "window.SW_resumeFromProvider(__empty)") == {"ok": None}
+
+
+def test_resume_is_null_when_the_provider_list_request_itself_fails() -> None:
+    ctx = _ctx()
+    ctx.eval("var __listdown = __api(function () { return __http(500, 'list down'); });")
+    assert _run(ctx, "window.SW_resumeFromProvider(__listdown)") == {"ok": None}
+
+
+# ---------------------------------------------------------------------------
+# The gate's decision to open at step 2 is a pure function of the setup predicates (GET /setup/state), so it is tested here and not only seen in a
+# browser. Review of the first version found a mutant that never resumes (an unconditional "start at step 1") left every test green: the wiring in the
+# gate's effect was React code the harness does not render.
+# ---------------------------------------------------------------------------
+
+
+def _should_resume(ctx, predicates) -> bool:
+    return bool(ctx.eval(f"window.SW_shouldResume({json.dumps(predicates)})"))
+
+
+def test_resume_at_step_two_when_the_provider_is_ok_and_the_profile_is_missing() -> None:
+    ctx = _ctx()
+    predicates = [{"key": "llm_provider", "ok": True}, {"key": "model_profile", "ok": False}, {"key": "builder_agent", "ok": False}]
+    assert _should_resume(ctx, predicates) is True
+
+
+def test_no_resume_when_both_the_provider_and_the_profile_exist() -> None:
+    ctx = _ctx()
+    assert _should_resume(ctx, [{"key": "llm_provider", "ok": True}, {"key": "model_profile", "ok": True}]) is False
+
+
+def test_no_resume_when_neither_exists_so_the_wizard_starts_at_step_one() -> None:
+    ctx = _ctx()
+    assert _should_resume(ctx, [{"key": "llm_provider", "ok": False}, {"key": "model_profile", "ok": False}]) is False
+
+
+def test_no_resume_when_only_the_profile_exists() -> None:
+    ctx = _ctx()
+    assert _should_resume(ctx, [{"key": "llm_provider", "ok": False}, {"key": "model_profile", "ok": True}]) is False
+
+
+def test_no_resume_for_missing_or_empty_predicates() -> None:
+    ctx = _ctx()
+    assert _should_resume(ctx, []) is False
+    assert _should_resume(ctx, None) is False
+    assert _should_resume(ctx, [{"key": "builder_agent", "ok": True}]) is False
+
+
+def test_the_gate_effect_asks_the_decision_function() -> None:
+    """A source check, not an execution: the effect itself is React the harness does not render, so this only pins that
+    the decision is taken by SW_shouldResume and not re-written inline (which is how a mutant slipped past the first version)."""
+    src = SRC.read_text(encoding="utf-8")
+    gate = src[src.index("function SetupWizardGate("):src.index("function SetupWaitingScreen(")]
+    assert "SW_shouldResume(state.predicates)" in gate
