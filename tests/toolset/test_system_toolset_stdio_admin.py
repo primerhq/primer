@@ -4,7 +4,7 @@
 The tools are declared ``required_role="user"`` (so an agent can author http / python toolsets), and the tool manager's floor only
 compares that static role. A stdio toolset launches a command on the server host, so the handler checks the caller itself: the
 run's ``initiated_by`` (``ToolContext``) must satisfy ``admin`` under the same predicate the floor uses (``primer.authz._role_allows``:
-an admin, or the ``system`` / ``trigger`` internal actors). A call that carries no identity (the MCP endpoint hands handlers none)
+an admin, or the ``system`` internal actor; a ``trigger``-typed run is ranked by its role, security review A-20). A call that carries no identity (the MCP endpoint hands handlers none)
 fails closed for stdio and is unchanged for everything else.
 """
 
@@ -94,7 +94,7 @@ async def test_a_user_run_cannot_repoint_a_stdio_toolset_at_http(toolset_and_sto
     assert (await storage.get("ts-stdio")).config.transport.value == "stdio"
 
 
-@pytest.mark.parametrize("ctx", [_ctx("admin"), _ctx(None, kind="system"), _ctx(None, kind="trigger")], ids=["admin", "system", "trigger"])
+@pytest.mark.parametrize("ctx", [_ctx("admin"), _ctx(None, kind="system")], ids=["admin", "system"])
 async def test_an_admin_or_an_internal_actor_can_create_and_change_a_stdio_toolset(toolset_and_storage, ctx):
     toolset, storage = toolset_and_storage
 
@@ -103,6 +103,16 @@ async def test_an_admin_or_an_internal_actor_can_create_and_change_a_stdio_tools
 
     assert not created.is_error and not changed.is_error, (created.output, changed.output)
     assert (await storage.get("ts-stdio")).config.config.command == ["/bin/sh", "-c", "id"]
+
+
+async def test_a_trigger_typed_run_without_an_admin_role_cannot_create_a_stdio_toolset(toolset_and_storage):
+    """A trigger-typed identity (a legacy ownerless trigger's run) is no longer an internal actor (security review A-20)."""
+    toolset, storage = toolset_and_storage
+
+    result = await _call(toolset, "create_toolset", {"entity": STDIO}, _ctx("user", kind="trigger"))
+
+    assert result.is_error and _error_type(result) == "forbidden", result.output
+    assert await storage.get("ts-stdio") is None
 
 
 @pytest.mark.parametrize("ctx", [_ctx("user"), None], ids=["user", "no-identity"])

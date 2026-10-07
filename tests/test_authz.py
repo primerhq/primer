@@ -8,8 +8,8 @@ It is duck-typed on ``.type`` / ``.role`` so it accepts either a live
 :class:`Principal` or its persisted :class:`PrincipalRef` projection.
 
 Mirrors the style of ``tests/mcp/test_dispatch_rbac.py`` -- a role matrix
-plus the always-allow / fail-closed edge cases -- and adds the new
-``trigger`` branch the helper grew when it was promoted here.
+plus the always-allow / fail-closed edge cases. Only ``system`` is
+always allowed; a ``trigger`` actor is ranked by its role (A-20).
 """
 
 from __future__ import annotations
@@ -60,20 +60,32 @@ def test_system_actor_always_allowed() -> None:
     assert _role_allows(actor, "admin") is True
 
 
-def test_trigger_actor_always_allowed() -> None:
-    """A trigger is internal automation: allowed through the floor exactly
-    like the system principal, even for an ``admin`` tool and despite
-    carrying no ``role``. This is the branch the helper grew on promotion."""
+@pytest.mark.parametrize(
+    ("role", "need", "allowed"),
+    [
+        (None, "admin", False),
+        (None, "restricted", False),
+        ("user", "admin", False),
+        ("user", "user", True),
+        ("admin", "admin", True),
+    ],
+)
+def test_trigger_actor_is_ranked_by_its_role(role, need, allowed) -> None:
+    """A ``trigger``-typed actor is NOT internal automation that clears every
+    floor (security review A-20): a fired run runs as the people who set the
+    trigger up, so a trigger-typed ref (a legacy ownerless row) is ranked by
+    the role it carries like any other actor, and a role-less one fails
+    closed."""
     actor = PrincipalRef(
         type="trigger", id="trg-1", display="trg-1",
-        role=None, source="internal",
+        role=role, source="internal",
     )
-    assert _role_allows(actor, "admin") is True
+    assert _role_allows(actor, need) is allowed
 
 
 def test_api_token_internal_actor_still_ranked_by_role() -> None:
     """An ``api_token`` actor is ``source == "internal"`` too, but must be
-    ranked by the owner's real role -- NOT waved through like a trigger.
+    ranked by the owner's real role -- NOT waved through like ``system``.
     Keying the always-allow branch on ``type`` (not ``source``) is what
     preserves this distinction."""
     token = PrincipalRef(

@@ -124,3 +124,25 @@ async def test_the_seeded_session_is_deletable_like_any_other(
         rows[0].id
     )
     assert await _sessions_for(app, "ws-del") == []
+
+
+@pytest.mark.asyncio
+async def test_the_seeded_session_is_attributed_to_the_caller(
+    client, app, tmp_path,
+):
+    """The seeded session runs as whoever created the workspace. With no
+    attribution the worker used to rank it as the system principal, which
+    clears every role floor, so a ``role=user`` account's new workspace
+    came with a session that could call admin-only tools (security review
+    A-20)."""
+    from primer.model.user import User
+
+    await _seed_default_agent(app)
+    r = await _create_workspace(client, "ws-attr", str(tmp_path))
+    assert r.status_code < 400, r.text
+
+    users = app.state.storage_provider.get_storage(User)
+    me = next(u for u in users._data.values() if u.username == "testuser")  # noqa: SLF001
+    (main,) = await _sessions_for(app, "ws-attr")
+    assert main.initiated_by is not None
+    assert (main.initiated_by.type, main.initiated_by.id) == ("user", me.id)

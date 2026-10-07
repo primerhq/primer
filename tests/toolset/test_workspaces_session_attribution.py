@@ -3,10 +3,12 @@
 The ``create_workspace_session`` tool is a ctx-taking handler:
 ``InternalToolsetProvider`` injects the enclosing ``ToolContext`` when the
 handler declares it, and the handler stamps
-``ctx.initiated_by or PrincipalRef.system()`` onto the created session so
-a sub-session an agent spawns inherits the enclosing run's attribution,
-while a caller with no threaded identity falls back to the system
-principal rather than fabricating a ``user`` attribution.
+``ctx.initiated_by`` onto the created session so a sub-session an agent
+spawns inherits the enclosing run's attribution. A caller with no threaded
+identity (the MCP endpoint hands handlers no ``ToolContext``) gets the
+fail-closed ``PrincipalRef.unattributed()`` (an ordinary ``user`` rank),
+never the system principal, which clears every role floor (security
+review A-20).
 """
 
 from __future__ import annotations
@@ -272,11 +274,11 @@ async def test_create_session_stamps_ctx_initiated_by(
 
 
 @pytest.mark.asyncio
-async def test_create_session_falls_back_to_system_with_no_manager_identity(
+async def test_create_session_with_no_manager_identity_fails_closed_to_an_ordinary_user(
     session_toolset,
     seeded,
 ) -> None:
-    """No ctx at all (or a ctx with no initiated_by) -> system fallback."""
+    """No ctx at all (the MCP endpoint) -> an ordinary-user rank, never system."""
     result = await session_toolset.call(
         tool_name="create_workspace_session",
         arguments={
@@ -286,4 +288,5 @@ async def test_create_session_falls_back_to_system_with_no_manager_identity(
     )
     assert not result.is_error, result.output
     body = json.loads(result.output)
-    assert body["initiated_by"]["type"] == "system"
+    assert body["initiated_by"]["type"] != "system"
+    assert body["initiated_by"]["role"] == "user"
