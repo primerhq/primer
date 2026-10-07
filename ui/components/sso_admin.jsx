@@ -349,7 +349,7 @@ function SSO_ProviderFields({
       <div className="field">
         <label className="row" style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
           <input type="checkbox" checked={enabled} onChange={(e) => onEnabled(e.target.checked)} />
-          <span>Enabled <span className="muted text-sm">— shows on the login screen's "Sign in with…" list.</span></span>
+          <span>Enabled <span className="muted text-sm">(shows on the login screen's "Sign in with…" list). Turning it on checks that the discovery URL answers; untick it to save a provider whose IdP is not reachable yet.</span></span>
         </label>
       </div>
     </>
