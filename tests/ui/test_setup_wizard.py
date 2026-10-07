@@ -247,7 +247,10 @@ def test_saving_a_provider_that_already_exists_updates_it_instead_of_failing() -
     )
     out = _run(ctx, 'SW_saveProvider(api, {id: "llm-openchat", provider: "openchat", config: {url: "http://x"}})')
     assert "ok" in out, out
-    assert json.loads(ctx.eval("JSON.stringify(calls)")) == ["POST /llm_providers", "PUT /llm_providers/llm-openchat"]
+    # The stored row is read before the update (see the key-preservation tests below): a PUT is a full replace.
+    assert json.loads(ctx.eval("JSON.stringify(calls)")) == [
+        "POST /llm_providers", "GET /llm_providers/llm-openchat", "PUT /llm_providers/llm-openchat",
+    ]
 
 
 def test_saving_a_provider_does_not_hide_a_real_failure() -> None:
@@ -347,3 +350,52 @@ def test_the_error_titles_name_the_phase_that_failed() -> None:
     src = _src()
     assert "Could not save the provider" in src
     assert "Could not reach that provider" in src
+
+
+# --- the stored API key survives a re-entered step 1 (console review 2026-10-08, ticket 01a1187f) ---------------------------------
+# PUT is a full replace and a deliberately blanked optional secret CLEARS the stored credential (01a05198, pinned server-side), so
+# only a mask-shaped echo is kept. The wizard omits ``api_key`` when its field is blank (the form never shows a stored key), which
+# made correcting only the URL of a keyed provider silently wipe the key.
+
+
+def _save_with_a_stored_row(draft_config: str, stored: str, *, get_fails: bool = False):
+    ctx = _helpers()
+    ctx.eval(
+        "var calls = []; var put = null;"
+        " function api(method, path, body) { calls.push(method + ' ' + path);"
+        " if (method === 'POST') return Promise.reject({status: 409, detail: 'already exists'});"
+        f" if (method === 'GET') return {'Promise.reject({status: 500, detail: \'boom\'})' if get_fails else f'Promise.resolve({stored})'};"
+        " put = body; return Promise.resolve(body); }"
+    )
+    out = _run(ctx, 'SW_saveProvider(api, {id: "llm-openchat", provider: "openchat", config: ' + draft_config + "})")
+    return ctx, out
+
+
+def test_a_blank_key_on_the_update_carries_the_stored_keys_mask_so_the_server_keeps_it() -> None:
+    stored = '{id: "llm-openchat", provider: "openchat", config: {url: "http://wrong", api_key: "**********1234"}}'
+    ctx, out = _save_with_a_stored_row('{url: "http://right"}', stored)
+    assert "ok" in out, out
+    put = json.loads(ctx.eval("JSON.stringify(put)"))
+    assert put["config"]["url"] == "http://right", "the corrected details are what is saved"
+    assert put["config"]["api_key"] == "**********1234", "the stored key's served mask is echoed so the server restores the real key"
+
+
+def test_a_key_the_operator_typed_wins_and_the_stored_row_is_not_even_read() -> None:
+    stored = '{id: "llm-openchat", provider: "openchat", config: {url: "http://wrong", api_key: "**********1234"}}'
+    ctx, out = _save_with_a_stored_row('{url: "http://right", api_key: "sk-new-key"}', stored)
+    assert "ok" in out, out
+    assert ctx.eval("put.config.api_key") == "sk-new-key"
+    assert json.loads(ctx.eval("JSON.stringify(calls)")) == ["POST /llm_providers", "PUT /llm_providers/llm-openchat"]
+
+
+def test_a_provider_stored_without_a_key_stays_without_one() -> None:
+    stored = '{id: "llm-openchat", provider: "openchat", config: {url: "http://wrong", api_key: null}}'
+    ctx, out = _save_with_a_stored_row('{url: "http://right"}', stored)
+    assert "ok" in out, out
+    assert ctx.eval("'api_key' in put.config") is False, "nothing stored, nothing to carry"
+
+
+def test_an_unreadable_stored_row_stops_the_update_instead_of_risking_the_key() -> None:
+    ctx, out = _save_with_a_stored_row('{url: "http://right"}', "null", get_fails=True)
+    assert out["rejected"]["status"] == 500, out
+    assert ctx.eval("put") is None, "a PUT without knowing what is stored could erase the key"
