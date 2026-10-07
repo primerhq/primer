@@ -28,25 +28,20 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.registries import ProviderRegistry
+from primer.api.routers.providers import _BUILTIN_TOOLSETS
 from primer.model.chat import tool_catalogue_flags
 from primer.model.storage import OffsetPage
 
 logger = logging.getLogger(__name__)
 
 
-# Mirrors the built-in toolset ids declared in
-# :mod:`primer.api.routers.providers` (kept in step with
-# ``providers._BUILTIN_TOOLSETS``). The harness toolset is appended
-# too since it's also reserved and resolved by the registry without a
-# storage row.
-_BUILTIN_TOOLSET_IDS: tuple[str, ...] = (
-    "system",
-    "workspaces",
-    "search",
-    "misc",
-    "web",
-    "harness",
-)
+# The built-in toolset ids, taken from the ONE list in
+# :mod:`primer.api.routers.providers` (``_BUILTIN_TOOLSETS``, which also feeds
+# ``GET /v1/tools`` and the built-in toolset cards). This module used to keep a
+# hand-copied tuple "in step" with it, and the copy lacked ``trigger``: the flat
+# catalogue (and the Tools page built on it) omitted that toolset's tools while
+# every picker listed them.
+_BUILTIN_TOOLSET_IDS: tuple[str, ...] = tuple(spec["id"] for spec in _BUILTIN_TOOLSETS)
 
 
 tools_router = APIRouter(tags=["tools"])
