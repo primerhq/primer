@@ -158,6 +158,24 @@ it's called from a context with no implicit session.
   `workspaces::update_workspace_template` /
   `workspaces::delete_workspace_template` - reusable workspace
   configs.
+- Some template fields are admin-only: container `extra_mounts`,
+  Kubernetes `extra_volumes`, `extra_volume_mounts`, `pod_overrides`
+  and `container_security_context_overrides`, and any file whose
+  `source.kind` is `secret`. A call that sets one of them, or changes
+  it from the stored value, answers `type=forbidden` unless the run
+  was started by an admin (over MCP: unless the caller is an admin).
+  Keep an admin-set value unchanged and the rest of the template is
+  yours to edit. `create_workspace` refuses a `secret` file in
+  `overrides.files` the same way.
+- Kubernetes overlays must stay on an allowlist, whoever calls:
+  volumes are `emptyDir` or `configMap` only, mounts carry `name`,
+  `mountPath`, `readOnly`, `subPath`, and `pod_overrides` may set only
+  `shareProcessNamespace`, `dnsPolicy`, `restartPolicy` and
+  `terminationGracePeriodSeconds`. Anything else answers
+  `type=validation-error` naming the key.
+- A `url` file source is fetched by the platform and must not point
+  at a private, loopback, link-local or metadata address (checked on
+  every redirect too); such a workspace fails to materialise.
 
 ### Files and logs
 
