@@ -30,6 +30,85 @@ function _setupDraftConfig(type, url, apiKey) {
   return config;
 }
 
+// ---- resume helpers: which step is a fact about the SERVER, not about React state ------------------------------------------------
+//
+// Step 1 saves the provider row (id "llm-<type>") before step 2 exists, and the setup gate sends the operator back into this wizard
+// for as long as the model profile is missing. So a reload, a second tab or an abandoned run all arrive with the provider already
+// saved. The helpers below (JSX-free, run for real in tests/ui/test_setup_wizard.py) decide where the wizard starts from what is
+// saved, and make both saves idempotent, so the wizard has no state it cannot re-enter (console review 2026-10-08, C-001).
+
+function SW_providerId(type) {
+  return "llm-" + type;
+}
+
+// What the wizard should show on entry, from the saved providers and model profiles.
+//   no provider                          -> step 1
+//   a provider with no profile           -> step 2 for that provider (the profile is what is left to do)
+//   every provider already has a profile -> step 1 prefilled with the first one: the gate re-entered because it no longer
+//                                           answers, and the operator must be able to correct it, not be told it exists
+function SW_resumePlan(providers, profiles) {
+  var provs = providers || [];
+  if (!provs.length) return { step: 1 };
+  var covered = {};
+  (profiles || []).forEach(function (pr) { covered[pr.provider_id] = true; });
+  var pending = provs.filter(function (pv) { return !covered[pv.id]; });
+  if (pending.length) return { step: 2, providerId: pending[0].id };
+  var first = provs[0];
+  return { step: 1, prefill: { type: first.provider, url: (first.config && first.config.url) || "", providerId: first.id } };
+}
+
+// Create the provider, or update it when the id is already there (a 409 is the row from an earlier run or an earlier step 1).
+function SW_saveProvider(apiFetch, body) {
+  return apiFetch("POST", "/llm_providers", body, {}).catch(function (err) {
+    if (err && err.status === 409) {
+      return apiFetch("PUT", "/llm_providers/" + encodeURIComponent(body.id), body, {});
+    }
+    throw err;
+  });
+}
+
+// Create the profile; one that already exists is the retry of a request whose answer was lost, which is success.
+function SW_saveProfile(apiFetch, body) {
+  return apiFetch("POST", "/model_profiles", body, {}).catch(function (err) {
+    if (err && err.status === 409) return { exists: true };
+    throw err;
+  });
+}
+
+// The plan with what step 2 needs. The model list comes from a live probe of the SAVED provider: its secret is redacted on the wire,
+// so replaying the stored row to the draft probe could not authenticate. A saved provider that does not answer sends the operator
+// to step 1, prefilled, with a notice that says which one and why. The same probe tells the operator why the gate sent them here
+// when every provider already has its profile. Never blocks the wizard: any failure reading the state is "start at step 1".
+function SW_loadResume(apiFetch) {
+  return Promise.all([
+    apiFetch("GET", "/llm_providers?limit=200", null, {}),
+    apiFetch("GET", "/model_profiles?limit=200", null, {}),
+  ]).then(function (res) {
+    var providers = (res[0] && res[0].items) || [];
+    var plan = SW_resumePlan(providers, (res[1] && res[1].items) || []);
+    if (!plan.providerId && !plan.prefill) return plan;
+    var id = plan.providerId || plan.prefill.providerId;
+    var row = providers.filter(function (pv) { return pv.id === id; })[0];
+    var prefill = plan.prefill || { type: row.provider, url: (row.config && row.config.url) || "", providerId: row.id };
+    var edit = " Check its details and connect again to update it.";
+    return apiFetch("GET", "/llm_providers/" + encodeURIComponent(id) + "/discovered_models", null, {}).then(
+      function (probe) {
+        var models = (probe && probe.models) || [];
+        if (plan.step === 2) {
+          if (models.length) return { step: 2, providerId: id, models: models };
+          return { step: 1, prefill: prefill, notice: "The saved provider " + id + " answered but listed no models." + edit };
+        }
+        return plan;
+      },
+      function (err) {
+        var why = (err && (err.detail || err.message)) || "no reason given";
+        return { step: 1, prefill: prefill, notice: "The saved provider " + id + " did not answer: " + why + "." + edit };
+      }
+    );
+  }).catch(function () { return { step: 1 }; });
+}
+// ---- end of the resume helpers
+
 function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
   // initialStep exists for the docs harness, which captures each step as
   // its own image and cannot click through a wizard to reach the second
@@ -49,37 +128,70 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
   );
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState(null);
+  // The docs harness starts a capture at a given step and never reads the server; the console reads what is already saved first.
+  const [ready, setReady] = React.useState(!!initialStep);
+  const [resumed, setResumed] = React.useState(false);
+
+  React.useEffect(() => {
+    if (initialStep) return undefined;
+    let cancelled = false;
+    SW_loadResume(window.primerApi.apiFetch).then((plan) => {
+      if (cancelled) return;
+      if (plan.step === 2) {
+        setProviderId(plan.providerId);
+        setDiscovered(plan.models);
+        setPicked(plan.models[0].name);
+        setStep(2);
+        setResumed(true);
+      } else if (plan.prefill) {
+        if (SETUP_PROVIDER_TYPES.some((t) => t.id === plan.prefill.type)) setType(plan.prefill.type);
+        setUrl(plan.prefill.url || "");
+      }
+      if (plan.notice) setErr({ title: "The saved provider did not answer", detail: plan.notice });
+      setReady(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const spec = SETUP_PROVIDER_TYPES.find((t) => t.id === type);
 
-  // Step 1: a successful draft probe IS the proof that the provider works,
-  // so the provider row is only persisted once the probe returns models.
+  // Step 1: a successful draft probe IS the proof that the provider works, so the provider row is only persisted once the probe
+  // returns models. The save is idempotent (an existing row is updated), and each phase reports under its own title.
   const submitProvider = async (e) => {
     e.preventDefault();
     setErr(null);
     setBusy(true);
     try {
       const config = _setupDraftConfig(type, url, apiKey);
-      const probe = await window.primerApi.apiFetch(
-        "POST", "/llm_providers/_discover_models",
-        { provider: type, config }, {},
-      );
-      const models = (probe && probe.models) || [];
+      let models;
+      try {
+        const probe = await window.primerApi.apiFetch(
+          "POST", "/llm_providers/_discover_models",
+          { provider: type, config }, {},
+        );
+        models = (probe && probe.models) || [];
+      } catch (e2) {
+        setErr({ title: "Could not reach that provider", detail: e2 && (e2.detail || e2.message) });
+        return;
+      }
       if (!models.length) {
         setErr({ title: "No models returned", detail: "The provider answered but listed no models." });
         return;
       }
-      const id = "llm-" + type;
-      await window.primerApi.apiFetch(
-        "POST", "/llm_providers",
-        { id, provider: type, config, limits: { max_concurrency: 4 } }, {},
-      );
+      const id = SW_providerId(type);
+      try {
+        await SW_saveProvider(
+          window.primerApi.apiFetch,
+          { id, provider: type, config, limits: { max_concurrency: 4 } },
+        );
+      } catch (e3) {
+        setErr({ title: "Could not save the provider", detail: e3 && (e3.detail || e3.message) });
+        return;
+      }
       setProviderId(id);
       setDiscovered(models);
       setPicked(models[0].name);
       setStep(2);
-    } catch (e2) {
-      setErr({ title: "Could not reach that provider", detail: e2 && (e2.detail || e2.message) });
     } finally {
       setBusy(false);
     }
@@ -92,16 +204,13 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
     setBusy(true);
     try {
       const model = discovered.find((m) => m.name === picked) || { name: picked };
-      await window.primerApi.apiFetch(
-        "POST", "/model_profiles",
-        {
-          id: providerId + "--" + model.name,
-          description: "Default profile created by first-run setup.",
-          provider_id: providerId,
-          model_name: model.name,
-          context_length: model.context_length || 32000,
-        }, {},
-      );
+      await SW_saveProfile(window.primerApi.apiFetch, {
+        id: providerId + "--" + model.name,
+        description: "Default profile created by first-run setup.",
+        provider_id: providerId,
+        model_name: model.name,
+        context_length: model.context_length || 32000,
+      });
       await onComplete();
     } catch (e2) {
       setErr({ title: "Could not register that model", detail: e2 && (e2.detail || e2.message) });
@@ -110,9 +219,19 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
     }
   };
 
+  if (!ready) {
+    return (
+      <div className="setup-steps">
+        <div className="setup-progress mono">Checking this install…</div>
+      </div>
+    );
+  }
+
   return (
     <div className="setup-steps">
-      <div className="setup-progress mono">Step {step} of 2</div>
+      <div className="setup-progress mono">
+        Step {step} of 2{resumed ? " · continuing with the provider you saved (" + providerId + ")" : ""}
+      </div>
       {err && (
         <div className="auth-banner">
           <div style={{ flex: 1 }}>
