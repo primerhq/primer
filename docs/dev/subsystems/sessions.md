@@ -320,9 +320,32 @@ S1 adds, on the workspace-scoped sessions router:
 `GET /v1/sessions/{sid}` returns the row plus its unrealized
 `pending_messages`, flat rather than wrapped, so existing readers of
 `WorkspaceSession` are unaffected. `GET /v1/sessions/{sid}/messages`
-takes `visible=true` to fold the log through the replay walk, and the
-tap carries derived usage, compaction and queued-steer envelopes that
-never advance its cursor.
+takes `visible=true` to fold the log through the replay walk. The tap
+carries RECORDS (and their deltas); it does not emit usage, compaction or
+queued-steer envelopes. Usage is served by the detail endpoint above, in
+its `usage` object (`primer/session/usage.py`, built by `build_usage_frame`
+in `primer/api/routers/tap.py`), folded at read time from the VISIBLE
+records so rewinds and compactions are right for free:
+
+- `turns`: the turns in view. A turn ends at a session `done` that is not a
+  tool round, an `error`, or a `cancelled` (the shared rule
+  `primer/session/terminals.py::closes_turn`, so it equals the trace's turn
+  ordinals); a subagent's own terminals do not count. A `done` followed by the
+  `cancelled` of a Stop that landed after the model finished counts as TWO,
+  as the trace splits it into two windows. After a compaction or a rewind it is
+  the turns still in view, not the lifetime count, which is the row's
+  `turn_no`.
+- `model_calls`: every visible `done`, tool rounds and delegated (subagent)
+  runs included, with or without a usage envelope. It is the population the
+  token totals are summed over.
+- `last_input_tokens` / `last_output_tokens`: the newest `done` that carried a
+  usage envelope; `total_*`: the sums over every `done` that did, delegated
+  runs included (they cost the session).
+
+**`turns` changed meaning with 01a1138d.** It used to count every visible
+`done`, so a one-tool-round turn read `turns: 2`; that number is now
+`model_calls`. A client that read `usage.turns` for the old number must read
+`model_calls`.
 
 The `switch_binding` tool gives an agent the same hand-off, and never
 yields: it records the request and the checkpoint applies it.

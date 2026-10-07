@@ -871,10 +871,16 @@ class SessionDetail(WorkspaceSession):
     usage: dict[str, int] | None = Field(
         default=None,
         description=(
-            "Token totals folded from the visible DONE records (see "
-            "primer.session.usage.session_usage) - turns, "
-            "total_input_tokens, total_output_tokens, etc. Null when the "
-            "log could not be read."
+            "Usage folded from the VISIBLE records (see "
+            "primer.session.usage.session_usage). `turns`: the turns in "
+            "view, by the same rule as the trace's turn ordinals (a "
+            "compaction folds earlier turns away and a rewind drops "
+            "rewound ones, so it is not the lifetime count: that is "
+            "`turn_no`). `model_calls`: every visible model call "
+            "(tool rounds and subagent runs included; before 01a1138d "
+            "this number was reported as `turns`). `total_input_tokens`, "
+            "`total_output_tokens`, etc. are summed over those model "
+            "calls. Null when the log could not be read."
         ),
     )
     context_length: int | None = Field(
