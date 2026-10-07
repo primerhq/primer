@@ -235,10 +235,11 @@ The declared metric families (`primer/observability/metrics.py`) are LLM
 (`llm_tokens_total`, `llm_duration_seconds`, `llm_failure_total`,
 `llm_retry_total`), tools (`tool_calls_total`, `tool_duration_seconds`), claims
 (`claim_enqueue_latency_seconds`, `claim_queue_depth`, `claim_active_count`), and
-the worker / turn / session families. Every declared family has a writer except
-`claim_active_count` (see below); `tests/observability/test_metric_families_are_written.py`
-fails when a family is declared that no other `primer/` module mentions, so removing a
-route cannot leave its families behind:
+the worker / turn / session families. Every declared family has a writer:
+`tests/observability/test_metric_families_are_written.py` fails when a family is declared
+that no other `primer/` module mentions (its `KNOWN_UNWRITTEN` exception list is empty,
+and a second test fails when a listed family gains a writer), so removing a route cannot
+leave its families behind:
 
 - `tool_wait_malformed_scoped_id_total{site}` counts tool-call task ids that did not parse as a scoped id (`parse_scoped_task_id`, `primer/model/tool_call_task.py`) where a tool_wait wake key was needed, through `tool_wait_event_key_or_none` (`primer/session/yields.py`, which also logs ERROR naming the id). `site` is a closed four-value enum, so it is on the label allowlist: `adapter` (the last-sibling release in `primer/claim/adapters/tool_calls.py` committed but woke nothing), `materializer` (`materialize_pending_tool_wait_rows` left that batch's key out of the park), `repark` (`_repark_graph_tool_wait_outcome` left that batch's key out of the park) and `dispatch` (the agent tool_wait park arm: no batch's id parsed, so the park is not written and the turn ends failed). A pure tool_wait graph park or re-park (no human gate) whose batches ALL fail to parse is not written either and ends the turn failed the same way, but it is counted under `materializer` (a pure graph park arm) or `repark` (a re-park), not `dispatch`, which only the agent arm counts. Only an id the code minted itself can be counted, so any non-zero value is a bug in the id mint.
   The counter is a rate signal, not an exact count. A graph resume computes keys in two places: `materialize_pending_tool_wait_rows`, which `resume_graph_from_checkpoint` (`primer/worker/graph_resume.py`) calls over EVERY entry of the checkpoint's `pending_tool_waits`, carried-over entries included (it discards the keys it computes there), and, when the resume re-parks on tool_wait batches only, `_repark_graph_tool_wait_outcome`, which computes every entry's key again. So ONE malformed batch is counted under `materializer` and again under `repark` by the same resume, and once more by each later resume that carries it over.
@@ -340,12 +341,7 @@ rests on, applies rules 1 and 2 to the material groups only, and uses the group'
 ratio as kappa in rule 3, which leans towards Phase 1b compared with the per-session EMA
 Phase 1a would use.
 
-One declared metric is not written by any call site, so a scrape carries its HELP and
-TYPE lines and never a sample (a labelled family exports nothing until `.labels(...)`
-is called): `claim_active_count` (no writer; it is the single entry of
-`KNOWN_UNWRITTEN` in `tests/observability/test_metric_families_are_written.py`, and that
-test fails when it gains a writer so the entry is dropped). In addition, the Postgres
-`claim_enqueue_latency_seconds` is always observed as `0.0` because the returned
+The Postgres `claim_enqueue_latency_seconds` is always observed as `0.0` because the returned
 `Lease` shape lacks a `next_attempt_at` / `created_at` field for the wait
 computation; an inline comment in `primer/claim/postgres.py` marks this. Dashboard
 builders must not read the Postgres latency series as "every lease is instant".
@@ -429,7 +425,9 @@ Specifics:
   leases (queued) and the leases a live worker holds (`claimed_by IS NOT NULL AND
   expires_at > now()`, the line `has_live_lease` draws). Every `ClaimKind` is set on
   every pass, so a kind with nothing queued or held reads 0 instead of keeping its last
-  value, and a claim whose lease expired (a reclaimable orphan) counts as neither.
+  value. A lease whose claim has expired (its worker died) is a reclaimable orphan until a
+  live worker's `claim_due` picks it up; it shows in neither gauge, so a stuck lease is
+  invisible to both.
   `claim_active_count` is a database snapshot, not an inc/dec in the engines, because an
   expired lease that another worker re-claims never gets a dec. In-memory engines skip
   the sampler because the gauges would always be zero outside tests.

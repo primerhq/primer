@@ -5,9 +5,9 @@ listed their HELP and TYPE lines and never a sample, for as long as nobody looke
 family counts as written when its module-level variable name appears in any other ``primer/`` source file (an import, a ``.labels(...)``
 call); it is a text search, so it is deliberately simple, and a family wired only through ``getattr`` would need an entry below.
 
-``KNOWN_UNWRITTEN`` is the honest exception list. ``claim_active_count`` is documented in docs/dev/architecture/observability.md as
-having no writer. The second test fails when a listed family acquires one, so the list shrinks as soon as the gap is closed instead of
-rotting.
+``KNOWN_UNWRITTEN`` is the honest exception list, and it is empty: ``claim_active_count``, its last entry, is written by the claim gauges
+sampler (``sample_claim_gauges_once``). Add a family only with a line in docs/dev/architecture/observability.md saying why it has no
+writer. The second test fails when a listed family acquires one, so the list shrinks as soon as the gap is closed instead of rotting.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ PRIMER = METRICS.parents[1]
 KIND_NAMES = {"Counter", "Gauge", "Histogram", "Summary", "Info"}
 
 # Declared, exported and unit-tested, with no call site (observability.md says so). Closing the gap removes the entry.
-KNOWN_UNWRITTEN = {"claim_active_count"}
+KNOWN_UNWRITTEN: set[str] = set()
 
 
 def _declared_families() -> list[str]:
