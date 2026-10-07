@@ -1192,7 +1192,12 @@ async def run_one_session_turn(
         if not is_user_cancel:
             raise preempt
         # Make the streamed-but-unrecorded output durable in the cleanup below, then take the one exit after it. The
-        # cancellation is consumed down to what the task carried on entry (the exit absorbs any later preempt itself).
+        # cancellation is consumed DELIBERATELY, down to what the task carried on entry: left counted, every
+        # ``asyncio.timeout()`` in the landing (the bounded CANCELLED write, the best-effort I/O) would find the task still
+        # "cancelling" and raise ``CancelledError`` instead of ``TimeoutError``. A later preempt (the reconciler, the lost-lease
+        # verdict) is then absorbed by ``_finish_despite_cancel`` around the exit, which runs it as its own task. The exit's
+        # outcome is returned rather than the cancellation re-raised, as for every other cancelled exit: a re-raise would drop
+        # it, the pool's convergence skips a row that is already ENDED, and ``on_release`` would write a terminal ERROR record.
         cancel_requested = True
         if _task_now is not None:
             while _task_now.cancelling() > _entered_cancelling:
