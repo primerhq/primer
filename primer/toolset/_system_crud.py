@@ -278,6 +278,7 @@ def _crud_tools_for(
     guards: CrudGuards | None = None,
     pre_create: _PreCreate = None,
     pre_update: _PreUpdate = None,
+    cache_note: str | None = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
 
@@ -287,6 +288,10 @@ def _crud_tools_for(
     ``pre_create`` / ``pre_update`` are the entity's REST pre-write validators (the shared functions the router hooks also call):
     they run after the guards, before the write, as the router orders them. A refusal (:class:`EntityCheckError`) is answered as a
     typed error (``conflict`` or ``validation-error`` naming the field) and nothing is stored; ``None`` runs none.
+
+    ``cache_note`` is appended to the update and delete descriptors of an entity whose warm adapter a tool edit does NOT refresh
+    (the REST router does): the registries that cache it invalidate only their own process, so a local-only mirror of the router's hook
+    would look like parity and do nothing where it matters. It tells the agent when the change takes effect and why.
 
     Create/update use a self-contained wrapper-model schema (built via
     ``_create_schema`` / ``_update_schema``) so the embedded ``$defs``
@@ -495,6 +500,8 @@ def _crud_tools_for(
             " The same semantic checks as the REST route run before the write: a body the route would refuse returns "
             "``type=conflict`` or ``type=validation-error`` naming the field, and the stored row is unchanged."
         )
+    if cache_note is not None:
+        update_when += " " + cache_note
 
     tools[f"update_{entity_label}"] = (
         make_tool(
@@ -557,6 +564,8 @@ def _crud_tools_for(
             " Deleting provider/toolset/vector-store rows invalidates the "
             "matching cached adapter immediately."
         )
+    if cache_note is not None:
+        delete_when += " " + cache_note
 
     tools[f"delete_{entity_label}"] = (
         make_tool(
