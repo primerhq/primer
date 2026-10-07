@@ -469,3 +469,46 @@ class TestChannel:
 
         assert is_error and answer["type"] == "validation-error" and "cp-ghost" in answer["message"]
         assert (await sp.get_storage(Channel).get("chan-1")).provider_id == "cp-1"
+
+    @pytest.mark.asyncio
+    async def test_an_update_onto_another_channels_pair_is_refused_and_the_row_unchanged(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1", external_id="C1")))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-2", external_id="C2")))
+
+        is_error, answer = await _call(
+            toolset, "update_channel", id="chan-2", entity=_channel("chan-2", external_id="C1"),
+        )
+
+        assert is_error and answer["type"] == "conflict"
+        assert "already exists" in answer["message"] and "chan-1" in answer["message"]
+        assert (await sp.get_storage(Channel).get("chan-2")).external_id == "C2", "the refused update changed the row"
+
+    @pytest.mark.asyncio
+    async def test_an_update_that_keeps_its_own_pair_does_not_conflict_with_itself(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1", external_id="C1")))
+        body = _channel("chan-1", external_id="C1")
+        body["label"] = "renamed"
+
+        is_error, _ = await _call(toolset, "update_channel", id="chan-1", entity=body)
+
+        assert not is_error
+        assert (await sp.get_storage(Channel).get("chan-1")).label == "renamed"
+
+    @pytest.mark.asyncio
+    async def test_an_update_to_the_same_external_id_under_another_provider_is_allowed(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-2"))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1", provider_id="cp-1", external_id="C1")))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-2", provider_id="cp-1", external_id="C2")))
+
+        is_error, _ = await _call(
+            toolset, "update_channel", id="chan-2", entity=_channel("chan-2", provider_id="cp-2", external_id="C1"),
+        )
+
+        assert not is_error
+        assert (await sp.get_storage(Channel).get("chan-2")).provider_id == "cp-2"
