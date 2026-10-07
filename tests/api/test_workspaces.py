@@ -1673,6 +1673,33 @@ class TestDiagnosticEndpoint:
         )
         assert resp.status_code == 422
 
+    # A-06 (architecture review 2026-10-08): the whitelist used to look at the FIRST token only while the whole string
+    # ran through a shell, so any whitelisted head could carry a second command. Every payload below chains, expands,
+    # redirects, pipes or breaks the line after a whitelisted head; none may reach the backend.
+    SHELL_PAYLOADS = [
+        "ls ; echo INJECTED",
+        "ls\necho INJECTED2",
+        "ls\r\nid",
+        "echo $(id -u)",
+        "echo `id`",
+        "echo $HOME",
+        "ls | cat /etc/passwd",
+        "ls > /tmp/diag-out",
+        "ls && id",
+        "echo hi & id",
+        "echo 'unterminated",
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", SHELL_PAYLOADS)
+    async def test_shell_syntax_after_a_whitelisted_head_is_rejected(self, client, wsr, payload) -> None:
+        wid, ws = await self._setup(client, wsr)
+
+        resp = await client.post(f"/v1/workspaces/{wid}/diagnostic", json={"command": payload})
+
+        assert resp.status_code == 400, (payload, resp.text)
+        assert ws.diagnostic_calls == [], "a command with shell syntax reached the backend"
+
     @pytest.mark.asyncio
     async def test_workspace_not_found_returns_404(self, client, wsr) -> None:
         # No workspace created => registry.get_workspace raises.

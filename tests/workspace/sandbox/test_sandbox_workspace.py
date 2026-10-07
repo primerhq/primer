@@ -657,6 +657,48 @@ async def test_remove_session_reaps_persisted_slot(tmp_path: Path) -> None:
     assert await ws_fresh.get_session("sess-reap-1") is None
 
 
+async def _diagnostic_ws(tmp_path: Path, captured: dict):
+    """A SandboxWorkspace over a FakeSandbox whose ``exec`` records what it is handed."""
+    from primer.int.sandbox import ExecResult
+
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-diag-inject", template=_template(),
+        sandbox=sb, backend_kind="container", runtime_meta=_runtime_meta(),
+    )
+
+    async def _recording_exec(command, *, workdir="/workspace", env=None, timeout_seconds=None, stdin=None, abort=None):
+        captured.setdefault("calls", []).append(command)
+        return ExecResult(exit_code=0, stdout="", stderr="", duration_seconds=0.01)
+
+    sb.exec = _recording_exec  # type: ignore[assignment]
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_exec_hands_the_sandbox_an_argv_list_never_a_shell_string(tmp_path: Path) -> None:
+    """A-06: a string command is wrapped in ``/bin/sh -c`` by the runtime client (``runtime_client.py``), so the
+    diagnostic must send the sandbox an argv LIST, which the runtime executes directly."""
+    captured: dict = {}
+    ws = await _diagnostic_ws(tmp_path, captured)
+
+    await ws.diagnostic_exec("echo hello world")
+
+    assert captured["calls"] == [["echo", "hello", "world"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", ["echo hi ; id", "ls\nid", "echo $(id)", "ls | cat", "echo hi > out"])
+async def test_diagnostic_exec_refuses_shell_syntax_before_the_sandbox_sees_it(tmp_path: Path, payload: str) -> None:
+    captured: dict = {}
+    ws = await _diagnostic_ws(tmp_path, captured)
+
+    with pytest.raises(ValueError):
+        await ws.diagnostic_exec(payload)
+
+    assert captured.get("calls", []) == []
+
+
 @pytest.mark.asyncio
 async def test_diagnostic_exec_timeout_returns_minus_one(
     tmp_path: Path,
