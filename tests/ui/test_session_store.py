@@ -584,8 +584,8 @@ def _send_that_fails(ctx, wid: str, sid: str, *, before=None, during=None) -> di
         """
     )
     ctx.eval(
-        "globalThis.s = SS_getStore(%s, %s); var pre = %s; for (var i = 0; i < pre.length; i++) SS_apply(s, pre[i]);"
-        % (json.dumps(wid), json.dumps(sid), json.dumps(before or []))
+        "globalThis.s = SS_getStore(" + json.dumps(wid) + ", " + json.dumps(sid) + "); "
+        "var pre = " + json.dumps(before or []) + "; for (var i = 0; i < pre.length; i++) SS_apply(s, pre[i]);"
     )
     ctx.eval(
         "globalThis.statusBefore = s.status; globalThis.sendResult = 'pending';"
@@ -595,7 +595,7 @@ def _send_that_fails(ctx, wid: str, sid: str, *, before=None, during=None) -> di
         "JSON.stringify({status: s.status && s.status.verb, pending: s.optimisticSendPending, "
         "optimistic: Object.keys(s.optimistic).length})"
     ))
-    ctx.eval("var mid = %s; for (var j = 0; j < mid.length; j++) SS_apply(s, mid[j]);" % json.dumps(during or []))
+    ctx.eval("var mid = " + json.dumps(during or []) + "; for (var j = 0; j < mid.length; j++) SS_apply(s, mid[j]);")
     ctx.eval("rejectSend();")
     after = json.loads(ctx.eval(
         "JSON.stringify({status: s.status && s.status.verb, statusSnap: (function () { var x = SS_getSnapshot(s, 'status'); "

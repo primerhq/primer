@@ -1703,7 +1703,9 @@ def test_a_polled_idle_row_outlives_no_stale_tap_status():
     ctx.eval(DOC[start:end])
 
     def contradicts(session, status):
-        return json.loads(ctx.eval("JSON.stringify(NV_rowContradictsStatus(%s, %s))" % (json.dumps(session), json.dumps(status))))
+        return json.loads(ctx.eval(
+            "JSON.stringify(NV_rowContradictsStatus(" + json.dumps(session) + ", " + json.dumps(status) + "))"
+        ))
 
     thinking = {"verb": "thinking", "object": "", "startedMs": 1}
     assert contradicts({"status": "waiting", "turn_status": "idle"}, thinking) is True, "a resting row has no turn to be thinking"
