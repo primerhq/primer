@@ -90,6 +90,11 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.workspace.diagnostic import (
+    DIAGNOSTIC_COMMANDS,
+    DiagnosticCommandError,
+    parse_diagnostic_command,
+)
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.pending_gates import enumerate_pending_gates
@@ -199,9 +204,7 @@ class DiagnosticExecBody(BaseModel):
     )
 
 
-_DIAGNOSTIC_COMMAND_WHITELIST: frozenset[str] = frozenset(
-    {"echo", "pwd", "whoami", "uname", "ls"}
-)
+_DIAGNOSTIC_COMMAND_WHITELIST: frozenset[str] = DIAGNOSTIC_COMMANDS
 
 
 def _reject_path_escape(value: str) -> str:
@@ -1087,32 +1090,28 @@ async def diagnostic_workspace(
     workspace_id: str = Path(..., description="Workspace id"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> WorkspaceDiagnosticResult:
-    """Run a whitelisted shell command against the workspace and return
+    """Run a whitelisted program against the workspace and return
     stdout/stderr/exit_code. Used by the UI for a hello-world reachability
-    smoke. Rejects any command whose head token is not on the whitelist.
+    smoke. The command is parsed into an argv list and run WITHOUT a shell:
+    the program must be on the allowlist and no argument may carry shell
+    syntax (400 otherwise). Before 01a117fd (A-06) only the first token was
+    checked and the whole string then ran through a shell.
     """
-    # Whitelist check lives in the route (not in diagnostic_exec) so the
-    # backend method stays a thin shell-pass-through; the SAFETY layer
-    # is owned by the public surface.
-    head = body.command.strip().split(None, 1)[0] if body.command.strip() else ""
-    if head not in _DIAGNOSTIC_COMMAND_WHITELIST:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "command_not_whitelisted",
-                "head": head,
-                "allowed": sorted(_DIAGNOSTIC_COMMAND_WHITELIST),
-                "message": (
-                    f"diagnostic command head {head!r} is not on the "
-                    "whitelist; allowed commands are: "
-                    f"{sorted(_DIAGNOSTIC_COMMAND_WHITELIST)}"
-                ),
-            },
-        )
+    # The policy (which program) lives in the route; the mechanism (no shell,
+    # minimal env, refusing shell syntax) is repeated in every backend through
+    # the same parser, so a backend reached by another caller is safe too.
+    try:
+        argv = parse_diagnostic_command(body.command, allowed=_DIAGNOSTIC_COMMAND_WHITELIST)
+    except DiagnosticCommandError as exc:
+        detail: dict = {"error": exc.code, "message": str(exc)}
+        if exc.code == "command_not_whitelisted":
+            detail["head"] = exc.head
+            detail["allowed"] = sorted(_DIAGNOSTIC_COMMAND_WHITELIST)
+        raise HTTPException(status_code=400, detail=detail) from exc
     ws = await registry.get_workspace(workspace_id)
     timeout = body.timeout_seconds if body.timeout_seconds is not None else 5.0
     try:
-        return await ws.diagnostic_exec(body.command, timeout_seconds=timeout)
+        return await ws.diagnostic_exec(argv, timeout_seconds=timeout)
     except NotImplementedError as exc:
         # Sandbox/K8s backends that don't yet wire diagnostic_exec
         # through their runtime surface this as 501 so the UI can show

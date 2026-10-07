@@ -28,7 +28,7 @@ full design.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, TYPE_CHECKING
 
 from primer.model.workspace_session import AgentBinding, SessionInfo, SessionStatus
@@ -380,7 +380,7 @@ class Workspace(ABC):
 
     async def diagnostic_exec(
         self,
-        command: str,
+        command: str | Sequence[str],
         *,
         timeout_seconds: float = 5.0,
     ) -> WorkspaceDiagnosticResult:
@@ -388,10 +388,13 @@ class Workspace(ABC):
 
         Used by the diagnostic endpoint
         (``POST /v1/workspaces/{id}/diagnostic``) to confirm a workspace
-        is reachable end-to-end. The route is responsible for restricting
-        ``command`` to a small whitelist — the backend method itself runs
-        whatever it's told, so this is NOT a safe surface to expose
-        directly to untrusted callers.
+        is reachable end-to-end. The route restricts WHICH program may run
+        (a small allowlist). A backend MUST execute the command as a plain
+        program with arguments, never through a shell, and MUST refuse shell
+        syntax with a ``ValueError`` (``primer.workspace.diagnostic.
+        parse_diagnostic_command`` is the shared rule): a string is split
+        into an argv list first. It must not hand the program the primer
+        process's environment.
 
         Returns a :class:`WorkspaceDiagnosticResult` with stdout / stderr
         / exit_code / duration_seconds. Backends MUST enforce the

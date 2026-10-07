@@ -1614,12 +1614,13 @@ class TestDiagnosticEndpoint:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["stdout"] == "ok:echo hello\n"
+        assert body["stdout"] == "ok:['echo', 'hello']\n"
         assert body["stderr"] == ""
         assert body["exit_code"] == 0
         assert "duration_seconds" in body
         # Default timeout (5.0) wired through.
-        assert ws.diagnostic_calls == [("echo hello", 5.0)]
+        # The route parses the command and hands the backend the argv LIST (A-06), never the raw string.
+        assert ws.diagnostic_calls == [(["echo", "hello"], 5.0)]
 
     @pytest.mark.asyncio
     async def test_custom_timeout_forwarded(self, client, wsr) -> None:
@@ -1629,7 +1630,7 @@ class TestDiagnosticEndpoint:
             json={"command": "pwd", "timeout_seconds": 2.5},
         )
         assert resp.status_code == 200, resp.text
-        assert ws.diagnostic_calls == [("pwd", 2.5)]
+        assert ws.diagnostic_calls == [(["pwd"], 2.5)]
 
     @pytest.mark.asyncio
     async def test_each_whitelisted_command_allowed(self, client, wsr) -> None:
@@ -1658,13 +1659,9 @@ class TestDiagnosticEndpoint:
         assert ws.diagnostic_calls == []
 
     @pytest.mark.asyncio
-    async def test_command_with_pipe_blocked(self, client, wsr) -> None:
-        # Even though the head token is whitelisted, downstream operators
-        # are irrelevant — the whitelist guards the head only, so a shell
-        # pipe targeting another binary is still subject to the head
-        # check. We at least confirm the head-token logic rejects pure
-        # non-whitelisted heads (already covered) and accepts a
-        # whitelisted head with args.
+    async def test_empty_command_is_422(self, client, wsr) -> None:
+        # (This test was named ``test_command_with_pipe_blocked`` but only ever checked the empty command; pipes and the
+        # other shell syntax are covered by ``test_shell_syntax_after_a_whitelisted_head_is_rejected`` below.)
         wid, ws = await self._setup(client, wsr)
         # Empty command is min_length=1 -> 422.
         resp = await client.post(

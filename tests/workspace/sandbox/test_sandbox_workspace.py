@@ -475,7 +475,8 @@ async def test_diagnostic_exec_delegates_to_sandbox(tmp_path: Path) -> None:
     assert result.stdout == "hello\n"
     assert result.exit_code == 0
     assert result.duration_seconds == 0.02
-    assert captured["command"] == "echo hello"
+    # An argv list (A-06): a string would be wrapped in ``/bin/sh -c`` by the runtime client.
+    assert captured["command"] == ["echo", "hello"]
     assert captured["timeout_seconds"] == 3.0
     # workdir should be the workspace root inside the sandbox
     # (default "/workspace").
