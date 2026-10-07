@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
+from primer.common.netguard import EgressRefused
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.model.yield_ import ToolContext
@@ -348,6 +349,8 @@ def make_http_request_handler(
                 content=args.body,
                 timeout=args.timeout_seconds,
             )
+        except EgressRefused as exc:
+            return ToolCallResult(output=f"http-request {exc}", is_error=True)
         except httpx.RequestError as exc:
             logger.warning(
                 "http-request transport failure",
@@ -523,6 +526,8 @@ def make_download_handler(
                 ),
                 is_error=True,
             )
+        except EgressRefused as exc:
+            return ToolCallResult(output=f"download {exc}", is_error=True)
         except httpx.RequestError as exc:
             return ToolCallResult(
                 output=f"download failed: {type(exc).__name__}: {exc}",
