@@ -457,6 +457,10 @@ async def run_one_session_turn(
     # (post_prompt) or a non-empty final result.
 
     cancel_requested = False
+    # The cancellations this task already carried when the turn began (an outer scope may have absorbed one without uncancel()):
+    # a hard Cancel absorbed below consumes only what arrived after.
+    _task_now = asyncio.current_task()
+    _entered_cancelling = _task_now.cancelling() if _task_now is not None else 0
 
     cancel_event = asyncio.Event()
     cancel_task = asyncio.create_task(
@@ -1169,6 +1173,31 @@ async def run_one_session_turn(
                 parked_at=parked_at,
             ),
         )
+
+    except asyncio.CancelledError as preempt:
+        # The pool hard-cancelled this task wherever it was awaiting. A user Cancel reaches a turn blocked in a long model call
+        # (one that never yields the event loop's cancel_event a look) this way, via ``_cancel_loop`` / the row reconciler's
+        # ``cancel_once``. It used to leave here without the cancelled exit: the pool's convergence ended the row, but no
+        # CANCELLED record, tick, terminal event, turn-log entry or metric was written and the turn's streamed text was lost, so no
+        # client ever heard the turn had ended (console review 2026-10-08, C-011). The ROW tells a user Cancel from the other
+        # causes, as the pool's convergence does; only a Cancel is this turn's to land.
+        try:
+            is_user_cancel = await _row_holds_a_cancel(session_storage, session_id)
+        except Exception:  # noqa: BLE001 - an unreadable row must not turn the cancellation into its own error
+            logger.warning(
+                "session %s: could not read the row to tell a Cancel from a lost lease; propagating the cancellation",
+                session_id, exc_info=True,
+            )
+            is_user_cancel = False
+        if not is_user_cancel:
+            raise preempt
+        # Make the streamed-but-unrecorded output durable in the cleanup below, then take the one exit after it. The
+        # cancellation is consumed down to what the task carried on entry (the exit absorbs any later preempt itself).
+        cancel_requested = True
+        if _task_now is not None:
+            while _task_now.cancelling() > _entered_cancelling:
+                _task_now.uncancel()
+        logger.info("session %s: a Cancel preempted the stream; landing the cancelled exit", session_id)
 
     except Exception as exc:
         return await _end_turn_failed(exc)
@@ -1921,6 +1950,16 @@ async def _best_effort_io(what: str, session_id: str, work: "Awaitable[Any]") ->
             "session %s: %s was not confirmed within %gs (the workspace is not accepting writes); "
             "carrying on without it", session_id, what, _BEST_EFFORT_IO_TIMEOUT_S,
         )
+
+
+async def _row_holds_a_cancel(session_storage: Any, session_id: str) -> bool:
+    """True when the row says a user Cancel is pending: ``cancel_requested`` set and the row not ended.
+
+    The same test as the pool's preempt convergence. A row that is already ENDED (a force-delete wrote ENDED/``force_deleted`` and
+    is removing it) or gone is not a Cancel to land: ``_land_cancelled_turn`` would leave it alone, and the pool's convergence
+    skips it."""
+    row = await session_storage.get(session_id)
+    return row is not None and bool(row.cancel_requested) and row.status != SessionStatus.ENDED
 
 
 async def _flush_and_tick(
