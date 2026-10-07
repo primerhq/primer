@@ -3865,6 +3865,9 @@ input, textarea, select { font: inherit; color: inherit; }
 .nv-session-state-chip[data-state="parked"] { color: var(--warn, #d9a441); border-color: var(--warn, #d9a441); }
 .nv-session-state-chip[data-state="parked"] .nv-session-state-dot { background: var(--warn, #d9a441); }
 .nv-session-state-chip[data-state="ended"] { color: var(--text-3); }
+/* A session that merely rests after a turn is waiting for the next message, not blocked: no warning colour (C-009). */
+.nv-session-state-chip[data-resting="true"] { color: var(--text-2); border-color: var(--border); }
+.nv-session-state-chip[data-resting="true"] .nv-session-state-dot { background: var(--text-3); }
 .nv-bind-menu {
   position: absolute;
   top: 34px;
