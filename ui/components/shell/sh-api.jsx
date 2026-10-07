@@ -242,6 +242,12 @@ var SH_api = {
       null, { signal: signal });
   },
 
+  // The commits of a `commitLog` response. The log route answers {"commits": [...]}, not the {"items": [...]} list envelope the
+  // other routes use, and reading the wrong key made every History panel say "No turn commits yet." (C-026).
+  commitRows: function (body) {
+    return (body && body.commits) || [];
+  },
+
   commit: function (wid, sha, signal) {
     return window.primerApi.apiFetch(
       "GET", "/workspaces/" + encodeURIComponent(wid) + "/commit/"

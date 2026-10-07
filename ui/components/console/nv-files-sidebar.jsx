@@ -213,7 +213,7 @@ function NV_FilesSidebar() {
   }
 
   var items = (tree.data && tree.data.items) || [];
-  var commitRows = (commits.data && commits.data.items) || [];
+  var commitRows = SH_api.commitRows(commits.data);
   var ws = (con.workspaces || []).find(function (w) { return w.id === con.wid; });
 
   return (
