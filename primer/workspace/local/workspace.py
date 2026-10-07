@@ -19,7 +19,7 @@ import shutil
 import tarfile
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -573,42 +573,51 @@ class LocalWorkspace(Workspace):
 
     async def diagnostic_exec(
         self,
-        command: str,
+        command: str | Sequence[str],
         *,
         timeout_seconds: float = 5.0,
     ) -> WorkspaceDiagnosticResult:
-        """Run ``command`` via ``asyncio.create_subprocess_shell`` rooted
-        at the workspace path.
+        """Run ``command`` as a plain program (``asyncio.create_subprocess_exec``, NO shell) rooted at the workspace path.
 
-        The command runs through the host shell (``/bin/sh -c`` on POSIX)
-        with the workspace root as cwd. The route layer is responsible
-        for restricting ``command`` to a whitelist — this method runs
-        whatever it's told. On timeout the process is killed and the
-        result is returned with ``exit_code=-1``.
+        A string is split with ``shlex`` into an argv list; anything a shell would act on (``; & | < > ` $ ( ) \\``, a
+        line break) is refused with a ``ValueError`` (:class:`primer.workspace.diagnostic.DiagnosticCommandError`) instead
+        of being passed on. The program sees PATH and the workspace's own env only, never the primer process's
+        environment. The route restricts WHICH program may run; this method refuses shell syntax whatever the caller
+        allows. On timeout the process is killed and the result is returned with ``exit_code=-1``.
         """
         import os
         import signal
 
+        from primer.workspace.diagnostic import parse_diagnostic_command
+
+        argv = parse_diagnostic_command(command)
         start = time.perf_counter()
-        # Place the shell + its descendants in a new process group so we
-        # can kill the whole tree on timeout (otherwise `sh -c 'sleep'`
-        # leaves the `sleep` child holding the pipes open).
+        # Place the process and its descendants in a new process group so we
+        # can kill the whole tree on timeout.
         kwargs: dict = {}
         if os.name == "posix":
             kwargs["start_new_session"] = True
-        # Mirror the exec tool: the diagnostic shell must see the
-        # workspace's template env. ``self._env`` is already
-        # secret-resolved (plain ``dict[str, str]``); merge it over the
-        # parent environment so PATH and friends survive.
-        proc_env = {**os.environ, **self._env}
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            cwd=str(self._root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=proc_env,
-            **kwargs,
-        )
+        # The workspace's template env (``self._env`` is already secret-resolved, a plain ``dict[str, str]``) over a
+        # minimal base: PATH only. Merging ``os.environ`` here let a diagnostic command read the primer process's secrets.
+        proc_env = {"PATH": os.environ.get("PATH") or os.defpath, **self._env}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(self._root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=proc_env,
+                **kwargs,
+            )
+        except (FileNotFoundError, PermissionError, NotADirectoryError) as exc:
+            # What a shell reports for a program it cannot run (127: not found, 126: not executable).
+            missing = isinstance(exc, FileNotFoundError)
+            return WorkspaceDiagnosticResult(
+                stdout="",
+                stderr=f"{argv[0]}: {'command not found' if missing else 'cannot execute'}\n",
+                exit_code=127 if missing else 126,
+                duration_seconds=time.perf_counter() - start,
+            )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout_seconds,

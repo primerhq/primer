@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from primer.int.sandbox import FileStat, Sandbox
@@ -538,25 +538,32 @@ class SandboxWorkspace(Workspace):
 
     async def diagnostic_exec(
         self,
-        command: str,
+        command: str | Sequence[str],
         *,
         timeout_seconds: float = 5.0,
     ) -> WorkspaceDiagnosticResult:
-        """Delegate to the underlying :meth:`Sandbox.exec`.
+        """Delegate to the underlying :meth:`Sandbox.exec` with an argv LIST.
 
         The Sandbox ABC already exposes a generic ``exec`` primitive
-        with ``timeout_seconds``; we forward verbatim and re-wrap the
+        with ``timeout_seconds``; we re-wrap the
         :class:`primer.int.sandbox.ExecResult` into a
         :class:`WorkspaceDiagnosticResult` (same shape, different package
         — the model lives next to the other workspace models so the API
         surface doesn't import the sandbox ABC). A timeout from
         :meth:`Sandbox.exec` (which raises :class:`TimeoutError`) is
         caught and returned as ``exit_code=-1``.
+
+        A string would be wrapped in ``/bin/sh -c`` by the runtime client, so the command is split into an argv list
+        first (``shlex``) and shell syntax is refused with a ``ValueError``
+        (:class:`primer.workspace.diagnostic.DiagnosticCommandError`); the runtime executes a list directly.
         """
+        from primer.workspace.diagnostic import parse_diagnostic_command
+
+        argv = parse_diagnostic_command(command)
         start = asyncio.get_event_loop().time()
         try:
             result = await self._sandbox.exec(
-                command,
+                argv,
                 workdir=self._workspace_root,
                 timeout_seconds=timeout_seconds,
             )
