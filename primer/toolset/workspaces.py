@@ -71,6 +71,7 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.tap.cursor import TapCursor
 from primer.tap.reader import read_batch
 from primer.tap.selector import TapSelector
+from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset._system_guards import (
@@ -762,69 +763,6 @@ def build_workspaces_toolset(
 
         return storage_provider.get_storage(WorkspaceSession)
 
-    async def _reconcile_session_info(info):
-        """Overlay the durable session row's status onto a slot view.
-
-        ``get_workspace_session`` / ``list_workspace_sessions`` read the
-        workspace's on-disk slot (``session.json``), but a session ended by
-        the worker/dispatch (clean completion, cancel, fail-closed) updates
-        the scheduler-visible ``WorkspaceSession`` row FIRST -- and on a
-        different process / workspace-cache instance the slot can lag. The
-        durable row is the same one ``GET /v1/sessions/{id}`` serves, so
-        these MCP session tools stay faithful thin wrappers by preferring
-        the row's status/ended_reason when the row is terminal but the slot
-        view is not. Returns the (possibly updated) SessionInfo; never
-        raises -- a storage miss degrades to the slot view unchanged.
-
-        Clean-rest overlay (01a0529c): a clean agent turn now rests the row
-        WAITING instead of ending it (``_CLEAN_TURN_RESTS_PARKED``,
-        ``primer.session.dispatch._transition_session_status``), but that
-        decision is DB-row-only -- unlike the ENDED case there is no
-        ``AgentSession.set_status`` mirror for it, because ``set_status``
-        hard-requires a ``waiting_state`` from the 2-kind discriminated
-        union (user_input / tool_approval) and "just resting" isn't
-        honestly either one. So the on-disk slot is left at RUNNING
-        forever after a clean rest, and this closure is the fix: overlay
-        row.status=WAITING onto a slot still reading RUNNING, the same
-        shape as the ENDED branch above. The guard is unambiguous -
-        info.status==RUNNING with row.status==WAITING can ONLY happen via
-        the clean-rest path; the OTHER way a row reaches WAITING (the
-        executor's own heuristic wait, e.g. "assistant asked a question")
-        calls ``set_status(WAITING, ...)`` on the slot itself, so by
-        construction info.status already reads WAITING there too and this
-        branch is a no-op for it.
-
-        Known limitation, deliberately not solved here: this overlay only
-        fixes the SERVED value at this toolset layer -- the underlying
-        ``session.json`` file itself is never rewritten and stays stale
-        forever. That is fine today because this closure (reached via
-        ``list_workspace_sessions`` / ``get_workspace_session``) is the
-        ONLY direct reader of the on-disk slot's status found in a repo
-        sweep for this task; ``GET /v1/sessions/{id}`` already reads the
-        durable row directly and was never affected. Any FUTURE direct
-        slot reader outside this toolset would need the same overlay (or
-        a real write-side fix) to see clean rests promptly.
-        """
-        from primer.model.workspace_session import SessionStatus
-
-        if info.status == SessionStatus.ENDED:
-            return info
-        try:
-            row = await _session_row_storage().get(info.session_id)
-        except Exception:  # noqa: BLE001 -- advisory reconciliation
-            return info
-        if row is None:
-            return info
-        if row.status == SessionStatus.ENDED:
-            return info.model_copy(update={
-                "status": SessionStatus.ENDED,
-                "ended_reason": row.ended_reason,
-                "ended_at": row.ended_at,
-            })
-        if info.status == SessionStatus.RUNNING and row.status == SessionStatus.WAITING:
-            return info.model_copy(update={"status": SessionStatus.WAITING})
-        return info
-
     async def _inv_provider(eid: str) -> None:
         await workspace_registry.invalidate(eid)
 
@@ -1456,7 +1394,8 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         sessions = await ws.list_sessions()
         sliced = sessions[args.offset : args.offset + args.limit]
-        reconciled = [await _reconcile_session_info(s) for s in sliced]
+        # The lifecycle fields come from the durable row, the one truth (primer.session.slot_view), not from the slot.
+        reconciled = await overlay_rows_on_infos(sliced, _session_row_storage(), workspace_id=args.workspace_id)
         return _ok(
             {
                 "items": [s.model_dump(mode="json") for s in reconciled],
@@ -1470,7 +1409,8 @@ def build_workspaces_toolset(
         "list_workspace_sessions",
         (
             "List sessions on a workspace, paginated. ``items`` is a "
-            "list of SessionInfo objects; ``total`` is the full count."
+            "list of SessionInfo objects (their lifecycle fields come from "
+            "the durable session row); ``total`` is the full count."
         ),
         (
             "Use when enumerating the agent sessions on a workspace; "
@@ -1506,7 +1446,9 @@ def build_workspaces_toolset(
                 f"workspace {args.workspace_id!r}",
                 error_type="not-found",
             )
-        info = await _reconcile_session_info(await session.info())
+        info = await overlay_row_on_slot_info(
+            await session.info(), _session_row_storage(), workspace_id=args.workspace_id,
+        )
         status = info.status
         return _ok(
             {
@@ -1520,7 +1462,10 @@ def build_workspaces_toolset(
         (
             "Get session state, returning ``{info, status}`` where "
             "``info`` is the SessionInfo and ``status`` is the current "
-            "lifecycle state (running / waiting / paused / ended)."
+            "lifecycle state (running / waiting / paused / ended). The "
+            "lifecycle fields (``status``, ``ended_reason``, "
+            "``ended_detail``, ``ended_at``) are the durable session row's, "
+            "the same answer as ``GET /v1/sessions/{id}``."
         ),
         (
             "Use when inspecting one session on a workspace; not for "
