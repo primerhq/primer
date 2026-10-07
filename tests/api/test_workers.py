@@ -171,3 +171,52 @@ async def test_purge_dead_requires_auth(raw_client, app):
     assert resp.status_code == 401
     workers = await app.state.scheduler.list_workers()
     assert len(workers) == 1
+
+
+# ---- A-01 (architecture review 2026-10-08): the three mutating routes are ADMIN-only --------------------------------
+#
+# drain / purge_dead / delete were gated by ``require_auth`` alone, so any logged-in role, a ``restricted`` user
+# included, could drain a worker or empty the registry (observed: 204 / 200 / handler reached). The router stays public
+# for its two reads (liveness probes); every mutation requires ``role == "admin"``, like the other system routers.
+
+from tests.api.test_require_user_admin import _login, _seed  # noqa: E402
+
+
+async def _register(app, *worker_ids):
+    for wid in worker_ids:
+        await app.state.scheduler.register_worker(worker_id=wid, host="h", pid=1, capacity=4)
+
+
+@pytest.mark.parametrize("role", ["user", "restricted"])
+async def test_worker_mutations_are_forbidden_below_admin(raw_client, app, role):
+    await _register(app, "w1")
+    await _seed(app, uid=f"u-{role}", username=role, role=role)
+    await _login(raw_client, role)
+
+    drain = await raw_client.post("/v1/workers/w1/drain")
+    purge = await raw_client.post("/v1/workers/purge_dead")
+    delete = await raw_client.delete("/v1/workers/w1")
+
+    assert (drain.status_code, purge.status_code, delete.status_code) == (403, 403, 403)
+    assert drain.headers["content-type"].startswith("application/problem+json")
+    workers = await app.state.scheduler.list_workers()
+    assert [(w.id, w.status) for w in workers] == [("w1", "active")], "a forbidden call changed the registry"
+
+
+async def test_worker_mutations_work_for_an_admin(raw_client, app):
+    await _register(app, "w1")
+    await _seed(app, uid="u-admin", username="admin1", role="admin")
+    await _login(raw_client, "admin1")
+
+    assert (await raw_client.post("/v1/workers/w1/drain")).status_code == 204
+    assert (await raw_client.post("/v1/workers/purge_dead")).status_code == 200
+    assert (await raw_client.delete("/v1/workers/no-such-worker")).status_code == 404
+
+
+@pytest.mark.parametrize("role", ["user", "restricted"])
+async def test_the_worker_reads_stay_public_for_every_role(raw_client, app, role):
+    await _seed(app, uid=f"u-{role}", username=role, role=role)
+    await _login(raw_client, role)
+
+    assert (await raw_client.get("/v1/workers")).status_code == 200
+    assert (await raw_client.get("/v1/workers/stats")).status_code == 200
