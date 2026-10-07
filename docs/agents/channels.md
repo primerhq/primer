@@ -190,6 +190,13 @@ system toolset for completeness but agents rarely need to touch them.
 - `system::update_channel_provider`
 - `system::delete_channel_provider` - cascade-blocked if any Channel
   references it.
+- `update_channel_provider` and `delete_channel_provider` do NOT flush
+  the warm channel adapters. The Telegram / Slack / Discord gateways
+  live in the API process and the invalidation is local to one process,
+  while a tool may run in another, so a rotated token or a deleted
+  provider takes effect after the next restart or after the row is
+  saved through the console / REST route (which flushes them). The
+  tool descriptors say the same.
 
 ### Channel CRUD
 
@@ -209,6 +216,12 @@ system toolset for completeness but agents rarely need to touch them.
   `config.chats.enabled=true` to allow incoming messages to start
   sessions on it; the agent they run under comes from the channel
   trigger's binding.
+- `update_channel` and `delete_channel` do NOT flush or re-warm the
+  channel's adapter, for the same reason as above. Turning
+  `config.chats.enabled` on through the tool changes the row, but the
+  inbound gateway comes online only after the next restart or after the
+  row is saved through the console / REST route (which flushes the
+  adapter and re-warms it when `config.chats.enabled` is set).
 
 ### Workspace reply binding
 
