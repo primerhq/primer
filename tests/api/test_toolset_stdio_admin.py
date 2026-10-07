@@ -65,6 +65,17 @@ async def test_a_plain_user_cannot_turn_an_http_toolset_into_a_stdio_one(raw_cli
     assert (await raw_client.get("/v1/toolsets/ts-http")).json()["config"]["transport"] == "http"
 
 
+async def test_a_plain_user_cannot_repoint_a_stdio_toolset_at_http(raw_client, app):
+    """The stored row counts too: the incoming body here launches nothing, so only the ``existing`` side of the rule can refuse it."""
+    await _admin_creates(raw_client, app, STDIO)
+    await _as(raw_client, app, "user")
+
+    resp = await raw_client.put("/v1/toolsets/ts-stdio", json={**HTTP, "id": "ts-stdio"}, params=NO_PROBE)
+
+    assert resp.status_code == 403, resp.text
+    assert (await raw_client.get("/v1/toolsets/ts-stdio")).json()["config"]["transport"] == "stdio"
+
+
 async def test_an_admin_can_create_and_change_a_stdio_toolset(raw_client, app):
     await _as(raw_client, app, "admin")
 
