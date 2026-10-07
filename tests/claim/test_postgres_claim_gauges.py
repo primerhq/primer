@@ -1,7 +1,8 @@
 """The claim gauges sampler against the real leases table (live Postgres).
 
-``claim_queue_depth`` counts unclaimed leases. A claim whose lease expired because its worker died is a reclaimable orphan, not an
-unclaimed lease, so it is not counted either.
+``claim_queue_depth`` counts unclaimed leases and ``claim_active_count`` counts leases a live worker holds, the same line
+``PostgresClaimEngine.has_live_lease`` draws (``claimed_by IS NOT NULL AND expires_at > now()``). A claim whose lease
+expired because its worker died is a reclaimable orphan: it is neither queued nor active until another worker claims it.
 
 Skipped unless ``PRIMER_TEST_POSTGRES_URL`` is set (see ``tests/pg_gate.py``).
 """
@@ -14,8 +15,8 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 import pytest_asyncio
 
-import primer.api._app_lifespan_phases as phases
 import primer.observability.metrics as m
+import primer.api._app_lifespan_phases as phases
 from primer.claim.postgres import PostgresClaimEngine
 from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
 from primer.model.provider import PoolConfig, PostgresConfig
@@ -90,34 +91,39 @@ async def _armed_engine(pg_storage, seeder, ids: list[str]) -> PostgresClaimEngi
     return engine
 
 
-def _queued(kind: ClaimKind) -> float:
-    return m.claim_queue_depth.labels(kind.value)._value.get()
+def _gauges(kind: ClaimKind) -> tuple[float, float]:
+    return (
+        m.claim_queue_depth.labels(kind.value)._value.get(),
+        m.claim_active_count.labels(kind.value)._value.get(),
+    )
 
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_queue_depth_follows_the_claims_and_returns_to_zero_when_the_kind_drains(pg_storage, seeder):
+async def test_a_lease_moves_from_queued_to_active_and_the_gauges_return_to_zero(pg_storage, seeder):
     engine = await _armed_engine(pg_storage, seeder, ["g-1", "g-2", "g-3"])
 
     await phases.sample_claim_gauges_once(engine)
-    assert _queued(ClaimKind.HARNESS) == 3.0
+    assert _gauges(ClaimKind.HARNESS) == (3.0, 0.0)
 
     claimed = await engine.claim_due("worker-A", max_count=2)
     await phases.sample_claim_gauges_once(engine)
-    assert _queued(ClaimKind.HARNESS) == 1.0
+    assert _gauges(ClaimKind.HARNESS) == (1.0, 2.0)
 
     for lease in claimed:
         await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
+    await phases.sample_claim_gauges_once(engine)
+    assert _gauges(ClaimKind.HARNESS) == (1.0, 0.0)
+
     (last,) = await engine.claim_due("worker-A", max_count=1)
     await engine.release(last, outcome=ReleaseOutcome(success=True, drop_lease=True))
     await phases.sample_claim_gauges_once(engine)
-
-    assert _queued(ClaimKind.HARNESS) == 0.0, "the drained kind must read 0, not its last non-zero depth"
+    assert _gauges(ClaimKind.HARNESS) == (0.0, 0.0), "the drained kind must read 0, not its last non-zero depth"
 
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_a_claim_whose_lease_expired_is_not_queued(pg_storage, seeder):
+async def test_a_claim_whose_lease_expired_is_neither_queued_nor_active(pg_storage, seeder):
     engine = await _armed_engine(pg_storage, seeder, ["g-1"])
     await engine.claim_due("worker-A", max_count=1)
     async with pg_storage.pool.acquire() as conn:
@@ -128,16 +134,16 @@ async def test_a_claim_whose_lease_expired_is_not_queued(pg_storage, seeder):
     await phases.sample_claim_gauges_once(engine)
 
     assert await engine.has_live_lease(ClaimKind.HARNESS, "g-1") is False
-    assert _queued(ClaimKind.HARNESS) == 0.0
+    assert _gauges(ClaimKind.HARNESS) == (0.0, 0.0)
 
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_the_other_kinds_read_zero_and_the_depth_is_per_kind(pg_storage, seeder):
+async def test_the_other_kinds_read_zero_and_are_per_kind(pg_storage, seeder):
     engine = await _armed_engine(pg_storage, seeder, ["g-1", "g-2"])
 
     await phases.sample_claim_gauges_once(engine)
 
-    assert _queued(ClaimKind.HARNESS) == 2.0
+    assert _gauges(ClaimKind.HARNESS) == (2.0, 0.0)
     for other in (ClaimKind.SESSION, ClaimKind.TRIGGER, ClaimKind.TOOL_CALL):
-        assert _queued(other) == 0.0, other
+        assert _gauges(other) == (0.0, 0.0), other
