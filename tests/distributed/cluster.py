@@ -21,7 +21,6 @@ import signal
 import subprocess
 import sys
 import uuid
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable
@@ -421,33 +420,6 @@ class TestCluster:
             return (wp.get("metrics") or {}).get("primer_worker_id")
         except Exception:
             return None
-
-    @asynccontextmanager
-    async def ws(self, api_index: int, path: str):
-        """Open a WebSocket connection to API #{api_index} at *path*.
-
-        Yields the connected :class:`websockets.ClientConnection`.
-
-        Example::
-
-            async with cluster.ws(0, "/v1/workspaces/w1/sessions/s1/ws") as ws:
-                msg = await ws.recv()
-        """
-        import websockets  # type: ignore[import-untyped]  # noqa: PLC0415
-
-        handle = self._api_handles[api_index]
-        url = f"ws://127.0.0.1:{handle.port}{path}"
-        # Forward the session cookie on the handshake so auth-guarded WS
-        # routes accept the upgrade once authenticate() has run.
-        headers = {}
-        if self._auth_cookies:
-            headers["Cookie"] = "; ".join(
-                f"{k}={v}" for k, v in self._auth_cookies.items()
-            )
-        async with websockets.connect(
-            url, additional_headers=headers or None
-        ) as ws_conn:
-            yield ws_conn
 
     # ------------------------------------------------------------------
     # Polling utility

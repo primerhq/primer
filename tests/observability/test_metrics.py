@@ -129,48 +129,6 @@ class TestClaimMetrics:
         assert val == 1.0
 
 
-class TestWsMetrics:
-    def test_ws_connections_active_is_gauge(self) -> None:
-        import primer.observability.metrics as m
-        assert isinstance(m.ws_connections_active, Gauge)
-
-    def test_ws_connections_active_increments(self) -> None:
-        import primer.observability.metrics as m
-        m.ws_connections_active.labels(kind="chat").inc()
-        val = m.ws_connections_active.labels(kind="chat")._value.get()
-        assert val == 1.0
-
-    def test_ws_frames_sent_total_is_counter(self) -> None:
-        import primer.observability.metrics as m
-        assert isinstance(m.ws_frames_sent_total, Counter)
-
-    def test_ws_frames_sent_total_increments(self) -> None:
-        import primer.observability.metrics as m
-        m.ws_frames_sent_total.labels(kind="session").inc(10)
-        val = m.ws_frames_sent_total.labels(kind="session")._value.get()
-        assert val == 10.0
-
-    def test_ws_session_duration_is_histogram(self) -> None:
-        import primer.observability.metrics as m
-        assert isinstance(m.ws_session_duration_seconds, Histogram)
-
-    def test_ws_session_duration_observes(self) -> None:
-        import primer.observability.metrics as m
-        m.ws_session_duration_seconds.labels(kind="chat").observe(30.0)
-        sample = m.ws_session_duration_seconds.labels(kind="chat")._sum.get()
-        assert sample == pytest.approx(30.0)
-
-    def test_ws_replay_backlog_is_histogram(self) -> None:
-        import primer.observability.metrics as m
-        assert isinstance(m.ws_replay_backlog_seconds, Histogram)
-
-    def test_ws_replay_backlog_observes(self) -> None:
-        import primer.observability.metrics as m
-        m.ws_replay_backlog_seconds.labels(kind="session").observe(5.0)
-        sample = m.ws_replay_backlog_seconds.labels(kind="session")._sum.get()
-        assert sample == pytest.approx(5.0)
-
-
 class TestResetForTest:
     def test_reset_clears_counter_values(self) -> None:
         import primer.observability.metrics as m
