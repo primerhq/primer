@@ -7,7 +7,9 @@ re-``get``-fetched from storage rather than reusing the in-memory object
 the create call handed back. A trigger-fired (or created-without-invoke)
 session must stay attributed to the ORIGINATING principal -- never
 silently promoted to a live/stale identity -- and a historical row with no
-``initiated_by`` falls back to the reserved system principal (§13).
+``initiated_by`` fails closed to ``PrincipalRef.unattributed()`` (an
+ordinary ``user`` rank), never the system principal that clears every
+role floor (security review A-20).
 
 Mirrors the fixtures in
 ``tests/workspace/test_session_factory_initiated_by.py`` (persist via the
@@ -170,13 +172,14 @@ async def test_resume_reconstructs_trigger_identity_not_worker(
 
 
 @pytest.mark.asyncio
-async def test_resume_historical_row_without_initiated_by_falls_back_to_system(
+async def test_resume_historical_row_without_initiated_by_fails_closed_to_an_ordinary_user(
     fake_storage_provider: _FakeStorageProvider,
 ) -> None:
     """A historical row created before attribution landed (``initiated_by``
-    is ``None``) resolves to the reserved system principal on resume, per
-    §13 -- never left ``None`` and never silently promoted to a live
-    identity."""
+    is ``None``) resolves to an ordinary-user rank on resume -- never left
+    ``None``, never silently promoted to a live identity, and never the
+    system principal (a user-created workspace's seeded "main" session had
+    no attribution, security review A-20)."""
     session = await _persist_and_refetch(fake_storage_provider, initiated_by=None)
     assert session.initiated_by is None  # sanity: historical row shape
 
@@ -188,4 +191,6 @@ async def test_resume_historical_row_without_initiated_by_falls_back_to_system(
     driver = await pool._build_executor(session, workspace)
 
     identity = driver._executor._execution_context.identity
-    assert identity == PrincipalRef.system()
+    assert identity is not None
+    assert identity.type != "system"
+    assert identity.role == "user"

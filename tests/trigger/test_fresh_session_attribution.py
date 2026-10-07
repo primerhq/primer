@@ -1,10 +1,11 @@
 """Trigger fresh-session attribution — Layer 3 Task 2 (spec §8.1, §8.3).
 
 ``agent_fresh_session`` / ``graph_fresh_session`` subscriptions fire
-sessions on the trigger's own behalf; the created row's
-``initiated_by`` must reflect the trigger, not a human or the system
-fallback, so a resumed/audited run is traceable to the subscription
-that spawned it.
+sessions on behalf of the subscription's owner (security review A-20,
+see ``test_trigger_runs_as_owner.py``). A subscription saved before
+owners were recorded has none: its run stays attributed to the trigger,
+never to a human or the system fallback, and is ranked as an ordinary
+``user`` (fail closed) instead of clearing every role floor.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ def _graph_sub(workspace_id, graph_id) -> Subscription:
 
 
 @pytest.mark.asyncio
-async def test_agent_fresh_session_stamps_trigger_initiated_by(
+async def test_ownerless_agent_fresh_session_stamps_a_user_ranked_trigger_initiated_by(
     fake_storage_provider, fake_claim_engine, fake_scheduler,
     fake_workspace_registry, seeded_workspace, seeded_agent,
 ):
@@ -83,12 +84,12 @@ async def test_agent_fresh_session_stamps_trigger_initiated_by(
     assert sess.initiated_by.type == "trigger"
     assert sess.initiated_by.id == sub.trigger_id
     assert sess.initiated_by.display == sub.trigger_id
-    assert sess.initiated_by.role is None
+    assert sess.initiated_by.role == "user"
     assert sess.initiated_by.source == "internal"
 
 
 @pytest.mark.asyncio
-async def test_graph_fresh_session_stamps_trigger_initiated_by(
+async def test_ownerless_graph_fresh_session_stamps_a_user_ranked_trigger_initiated_by(
     fake_storage_provider, fake_claim_engine, fake_scheduler,
     fake_workspace_registry, seeded_workspace, seeded_graph,
 ):
@@ -115,5 +116,5 @@ async def test_graph_fresh_session_stamps_trigger_initiated_by(
     assert sess.initiated_by.type == "trigger"
     assert sess.initiated_by.id == sub.trigger_id
     assert sess.initiated_by.display == sub.trigger_id
-    assert sess.initiated_by.role is None
+    assert sess.initiated_by.role == "user"
     assert sess.initiated_by.source == "internal"

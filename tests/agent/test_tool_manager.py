@@ -542,10 +542,10 @@ class TestInvokerRoleFloor:
         assert provider.calls == [("create_llm_provider", {}, None)]
 
     @pytest.mark.asyncio
-    async def test_trigger_invoker_allowed_admin_tool(self) -> None:
-        """A trigger-type invoker is internal automation: allowed through
-        the floor like the system principal even for an admin tool and
-        despite carrying no ``role``."""
+    async def test_role_less_trigger_invoker_denied_admin_tool(self) -> None:
+        """A trigger-type invoker is NOT waved through the floor (security
+        review A-20): a fired run runs as its owner, and a trigger-typed ref
+        carrying no ``role`` fails closed even for an admin tool."""
         provider = self._provider()
         mgr = self._mgr(
             provider,
@@ -560,8 +560,8 @@ class TestInvokerRoleFloor:
                 id="c", name="system__create_llm_provider", arguments={},
             )
         )
-        assert result.error is False
-        assert provider.calls == [("create_llm_provider", {}, None)]
+        assert result.error is True
+        assert provider.calls == []  # handler never ran
 
     @pytest.mark.asyncio
     async def test_system_invoker_allowed_admin_tool(self) -> None:
