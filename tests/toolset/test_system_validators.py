@@ -370,8 +370,8 @@ def _slack_provider(provider_id: str) -> ChannelProvider:
     )
 
 
-def _channel(channel_id: str, provider_id: str = "cp-1", external_id: str = "C1") -> dict:
-    return Channel(id=channel_id, provider_id=provider_id, provider="slack", external_id=external_id).model_dump(mode="json")
+def _channel(channel_id: str, provider_id: str = "cp-1", external_id: str = "C1", platform: str = "slack") -> dict:
+    return Channel(id=channel_id, provider_id=provider_id, provider=platform, external_id=external_id).model_dump(mode="json")
 
 
 class TestChannel:
@@ -422,7 +422,7 @@ class TestChannel:
 
     @pytest.mark.asyncio
     async def test_a_channel_can_be_updated_as_before(self, world) -> None:
-        # The REST route has no pre-update channel check, so neither does the tool: an update is not re-validated.
+        # An update that keeps the provider and its platform is accepted (the served row round-trips).
         sp, toolset, _ = world
         await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
         await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1")))
@@ -431,3 +431,41 @@ class TestChannel:
         is_error, _ = await _call(toolset, "update_channel", id="chan-1", entity=served)
 
         assert not is_error
+
+    @pytest.mark.asyncio
+    async def test_a_channel_naming_another_platform_than_its_provider_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+
+        is_error, answer = await _call(toolset, "create_channel", entity=_channel("chan-x", platform="telegram"))
+
+        assert is_error and answer["type"] == "validation-error"
+        assert all(part in answer["message"] for part in ("telegram", "slack", "cp-1")), "the message names both platforms"
+        assert await sp.get_storage(Channel).get("chan-x") is None, "a mismatched channel was stored"
+
+    @pytest.mark.asyncio
+    async def test_an_update_to_another_platform_is_refused_and_the_row_unchanged(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1")))
+
+        is_error, answer = await _call(
+            toolset, "update_channel", id="chan-1", entity=_channel("chan-1", platform="discord"),
+        )
+
+        assert is_error and answer["type"] == "validation-error"
+        assert "discord" in answer["message"] and "slack" in answer["message"]
+        assert (await sp.get_storage(Channel).get("chan-1")).provider == ChannelProviderType.SLACK
+
+    @pytest.mark.asyncio
+    async def test_an_update_naming_a_missing_provider_is_refused_and_the_row_unchanged(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(ChannelProvider).create(_slack_provider("cp-1"))
+        await sp.get_storage(Channel).create(Channel.model_validate(_channel("chan-1")))
+
+        is_error, answer = await _call(
+            toolset, "update_channel", id="chan-1", entity=_channel("chan-1", provider_id="cp-ghost"),
+        )
+
+        assert is_error and answer["type"] == "validation-error" and "cp-ghost" in answer["message"]
+        assert (await sp.get_storage(Channel).get("chan-1")).provider_id == "cp-1"
