@@ -16,8 +16,10 @@ human must do to wire up deployment.
   `search-index.json`, `assets/docs.css` + `assets/docs.js`) and handles the
   docs directives (callouts, tabs, mermaid diagrams, ai-doc blocks).
 - The embed-capture tooling stays in this repo under `scripts/docs/`
-  (`capture_embeds.py`, `capture_fixtures.py`, `capture_openapi.py`,
-  `embed_harness/`) because it renders this repo's live UI components.
+  (`capture_embeds.py`, `capture_fixtures.py`, `embed_harness/`) because it
+  renders this repo's live UI components. There is no OpenAPI snapshot in this
+  repo: the app always serves its schema at `/v1/openapi.json`, and a docs site
+  that wants a copy captures one into its own fixtures directory.
   `capture_embeds.py` produces light/dark PNGs under `_embeds/` (it spins up
   its own throwaway HTTP server and a headless Chromium via Playwright). Its
   fixture/registry paths must be repointed at the `primerhq.github.io`
