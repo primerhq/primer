@@ -10,7 +10,11 @@ Endpoints (all under ``/v1/auth``):
                         already registered; 422 on weak password. Sets
                         session cookie on success.
 * ``POST /login``     — body ``{username, password}``. 401 on bad creds.
-                        Sets session cookie on success.
+                        Sets session cookie on success. After repeated
+                        failures for one username from one client address
+                        it answers 429 ``too_many_attempts`` with a
+                        ``Retry-After`` header (``primer.auth.throttle``;
+                        in-process state).
 * ``POST /logout``    — clears the session cookie. 204. Idempotent.
 
 The router is registered without an auth guard so unauthenticated users
@@ -30,7 +34,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from primer.api.deps import get_storage_provider, require_auth
+from primer.api.errors import common_responses
 from primer.auth.passwords import hash_password, verify_password
+from primer.auth.throttle import LoginThrottle
 from primer.auth.tokens import sign_session
 from primer.model.user import User
 from primer.storage._predicate import FieldRef, Op, Predicate, Value
@@ -152,6 +158,25 @@ async def _find_user_by_username(
     return page.items[0] if page.items else None
 
 
+def _login_throttle(request: Request) -> LoginThrottle:
+    """The app's sign-in throttle, created on first use (one per app object, so every test app starts clean).
+
+    In-process state: see :mod:`primer.auth.throttle` for what that means for a deployment with more than one API process.
+    """
+    state = request.app.state
+    throttle = getattr(state, "login_throttle", None)
+    if throttle is None:
+        throttle = state.login_throttle = LoginThrottle()
+    return throttle
+
+
+def _client_address(request: Request) -> str:
+    """The peer address the server sees. Deliberately NOT ``X-Forwarded-For``: a client writes that header, so keying on it
+    would let an attacker pick a fresh key per attempt. Behind a proxy this is the real client only when uvicorn trusts the
+    proxy (``FORWARDED_ALLOW_IPS``)."""
+    return request.client.host if request.client else "unknown"
+
+
 def _set_session_cookie(
     request: Request,
     response: Response,
@@ -244,12 +269,33 @@ async def register(
     return AuthOk(username=username)
 
 
-@auth_router.post("/login", response_model=AuthOk)
+@auth_router.post("/login", response_model=AuthOk, responses=common_responses(401, 429))
 async def login(
     body: LoginBody, request: Request, response: Response,
 ) -> AuthOk:
-    """Verify password, set session cookie."""
+    """Verify password, set session cookie.
+
+    Throttled per (username, client address) with an exponential backoff (``primer.auth.throttle``): an attempt made during the
+    backoff is refused with 429 and a ``Retry-After`` header before the account is looked up, so the refusal is the same for a
+    real and an invented username, and a correct password is refused too. The attempt is counted when it starts, because the
+    password check below is slow and awaited.
+    """
     username = _normalise_username(body.username)
+    client = _client_address(request)
+    throttle = _login_throttle(request)
+
+    wait = throttle.reserve(username, client)
+    if wait:
+        logger.info("auth.login throttled username=%s retry_after=%ss", username, wait)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "too_many_attempts",
+                "message": f"too many sign-in attempts for this username; try again in {wait} seconds",
+                "retry_after_seconds": wait,
+            },
+            headers={"Retry-After": str(wait)},
+        )
 
     user = await _find_user_by_username(request, username)
     if user is None:
@@ -289,6 +335,8 @@ async def login(
             status_code=401,
             detail={"error": "invalid_credentials"},
         )
+
+    throttle.succeeded(username, client)
 
     # Stamp last_login_at.
     user.last_login_at = datetime.now(timezone.utc)
