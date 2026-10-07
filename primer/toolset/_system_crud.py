@@ -294,6 +294,7 @@ def _crud_tools_for(
     cache_note: str | None = None,
     admin_when: Callable[[Any, Any | None], bool] | None = None,
     admin_note: str | None = None,
+    delete_note: str | None = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
 
@@ -312,6 +313,9 @@ def _crud_tools_for(
     is lower (``existing`` is ``None`` on a create): the handler checks the run's identity itself, because the tool manager's floor
     compares only the static role. A refusal is ``type=forbidden`` with ``admin_note`` and nothing is stored; the note is also
     appended to the create and update descriptors so the agent knows the rule before it tries. Both must be given together.
+
+    ``delete_note`` is appended to the delete descriptor only: a consequence of removing the row that the agent should read before it
+    acts, for a delete the tool still performs (it is not a refusal).
 
     Create/update use a self-contained wrapper-model schema (built via
     ``_create_schema`` / ``_update_schema``) so the embedded ``$defs``
@@ -599,6 +603,8 @@ def _crud_tools_for(
         )
     if cache_note is not None:
         delete_when += " " + cache_note
+    if delete_note is not None:
+        delete_when += " " + delete_note
 
     tools[f"delete_{entity_label}"] = (
         make_tool(
