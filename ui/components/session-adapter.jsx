@@ -312,12 +312,27 @@ function SA_visibleRecords(records) {
 // normalised from a live TapEvent by the tap hub (Phase 2).
 // session: the WorkspaceSession row (reserved for session-aware rendering
 // decisions a future task may need — not read here yet).
+// A failed stream writes the error WITH its cause and then a bare terminal marker ({reason, terminal}) for the same failure. The
+// marker has nothing to say; rendered as its own row it was a second red "turn failed" card under the real one.
+function SA_isBareTerminalError(rec) {
+  var p = rec.payload || {};
+  return rec.kind === "error" && p.terminal === true && !p.message && !p.code && !p.title;
+}
+
 function SA_toTranscript(records, session) {
   var visible = SA_visibleRecords(records);
   var out = [];
   for (var i = 0; i < visible.length; i++) {
     var rec = visible[i];
     if (SA_SKIP_IN_TRANSCRIPT[rec.kind]) continue;
+    // One failure is one card: a bare terminal marker directly after (or directly before) the error that carries the cause is
+    // that error's marker, not a second failure. A marker with no cause beside it is the only evidence and stays.
+    var bare = SA_isBareTerminalError(rec);
+    var previous = out.length ? out[out.length - 1] : null;
+    if (rec.kind === "error" && previous && previous.kind === "error") {
+      if (bare && !previous.bare) continue;
+      if (!bare && previous.bare) out.pop();
+    }
     // A DONE carrying stop_reason="tool_use" ends one MODEL CALL, not
     // the turn: the loop runs the tools and calls the model again
     // (primer/session/timeline.py closes_turn makes the same cut).
@@ -342,6 +357,7 @@ function SA_toTranscript(records, session) {
         : SA_rowText(rec),
       payload: rec.payload || {},
       createdAt: rec.created_at,
+      bare: bare,
     });
   }
   return out;
