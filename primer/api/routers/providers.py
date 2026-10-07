@@ -49,6 +49,7 @@ from primer.api.deps import (
     get_provider_registry,
     get_storage_provider,
     get_toolset_storage,
+    require_admin,
 )
 from primer.api.errors import common_responses
 from primer.model.chat import tool_catalogue_flags
@@ -69,7 +70,7 @@ from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.common.entity_checks import EntityCheckError
 from primer.model.common import preserve_masked_secrets
-from primer.toolset.toolset_checks import check_python_toolset, own_python_source_version
+from primer.toolset.toolset_checks import check_python_toolset, own_python_source_version, toolset_needs_admin
 from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderProvider,
@@ -1294,6 +1295,28 @@ async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
         return
 
 
+def _require_admin_for_stdio(request: Request) -> None:
+    """``require_admin`` with a message that says why: the bare 403 would reach the console as just ``forbidden_role``.
+
+    The code stays ``forbidden_role`` (what every admin-only route answers); a 401 passes through unchanged.
+    """
+    try:
+        require_admin(request)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "forbidden_role",
+                "message": (
+                    "Creating or changing an MCP toolset on the stdio transport requires the admin role: it launches a "
+                    "command on the server host. Use an http or sse MCP toolset, or ask an admin."
+                ),
+            },
+        ) from exc
+
+
 async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     """Reject creating a network MCP toolset whose endpoint is unreachable.
 
@@ -1307,7 +1330,13 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     is claimed by invoker-supplied per-invocation tools
     (primer.agent.external_tools), so a stored toolset must never
     collide with it. Checked before the probe bypass on purpose.
+
+    A stdio MCP toolset launches a command on the server host, so creating one is admin-only (403 ``forbidden_role``) even though
+    the router sits on the user tier; checked first, so a caller below admin learns nothing else about the body (architecture
+    review A-02, ``toolset_needs_admin``).
     """
+    if toolset_needs_admin(entity):
+        _require_admin_for_stdio(request)
     if entity.id in RESERVED_TOOLSET_IDS:
         raise HTTPException(
             status_code=409,
@@ -1375,7 +1404,12 @@ async def _toolset_on_pre_update(
     both send the version they read, and a parked resume could not tell which
     code it was about to run. The server bumps instead, so the number always
     moves when the source does.
+
+    Admin-only when either the stored row or the new body is a stdio MCP toolset (the command it launches is what changes hands);
+    see :func:`primer.toolset.toolset_checks.toolset_needs_admin`. Checked before anything else touches the body.
     """
+    if toolset_needs_admin(entity, existing):
+        _require_admin_for_stdio(request)
     preserve_masked_secrets(entity, existing)
     if entity.provider != ToolsetProviderType.PYTHON:
         return
