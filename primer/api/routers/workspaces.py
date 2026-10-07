@@ -26,6 +26,7 @@ import base64
 import email.utils
 import hashlib
 import logging
+import posixpath
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -2147,6 +2148,14 @@ async def dismiss_pending_message(
 
 files_router = APIRouter(tags=["workspace-files"])
 
+# The runtime writes this at the workspace root so the backend can tell it is serving (``_wait_for_ready``). It is plumbing, not
+# the user's file: hidden from the listings the way ``.state`` is. Only the root one: a file of that name below it is the user's.
+_RUNTIME_READY_MARKER = ".runtime.ready"
+
+
+def _is_runtime_marker(entry_path: str) -> bool:
+    return posixpath.normpath(entry_path) == _RUNTIME_READY_MARKER
+
 
 @files_router.get(
     "/workspaces/{workspace_id}/files/tree",
@@ -2167,7 +2176,9 @@ async def file_tree(
     items = []
     for entry in entries:
         name = entry.path.rsplit("/", 1)[-1] if "/" in entry.path else entry.path
-        if not hidden and (entry.path == ".state" or entry.path.endswith("/.state")):
+        if not hidden and (
+            entry.path == ".state" or entry.path.endswith("/.state") or _is_runtime_marker(entry.path)
+        ):
             continue
         items.append(
             {
@@ -2225,6 +2236,7 @@ async def list_files(
         min(offset + limit, _MAX_RECURSIVE_WALK_ENTRIES) if recursive else None
     )
     entries = await ws.list_files(path, recursive=recursive, max_entries=max_entries)
+    entries = [e for e in entries if not _is_runtime_marker(e.path)]
     sliced = entries[offset : offset + limit]
     return {
         "items": [e.model_dump(mode="json") for e in sliced],
