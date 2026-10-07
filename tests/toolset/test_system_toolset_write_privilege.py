@@ -191,3 +191,20 @@ async def test_an_admin_may_repoint_a_toolset_and_keep_its_masked_secrets(toolse
     assert not result.is_error, result.output
     stored = (await storage.get("ts-http")).config.config
     assert (stored.url, stored.headers["Authorization"].get_secret_value()) == ("http://other.example/mcp", SECRET)
+
+
+# ---- an admin converting an MCP toolset into a python one ----------------------------------------------------------------------
+
+
+async def test_an_admin_run_can_convert_an_mcp_toolset_into_a_python_one_and_it_starts_at_the_first_version(toolset_and_storage):
+    """The update raised (``'McpConfig' object has no attribute 'source_version'``): with no prior python version to bump, the
+    converted toolset starts at 1 whatever the caller sends."""
+    toolset, storage = toolset_and_storage
+    assert not (await _call(toolset, "create_toolset", {"entity": {**HTTP_PLAIN, "id": "ts-x"}}, _ctx("admin"))).is_error
+    body = {**PYTHON, "id": "ts-x", "config": {"source": PY_SOURCE, "source_version": 7}}
+
+    result = await _call(toolset, "update_toolset", {"id": "ts-x", "entity": body}, _ctx("admin"))
+
+    assert not result.is_error, result.output
+    stored = await storage.get("ts-x")
+    assert (stored.provider.value, stored.config.source_version) == ("python", 1)
