@@ -43,6 +43,7 @@ from primer.model.workspace import (
     ContainerTemplateConfig,
     ContainerWorkspaceConfig,
     ResourceLimits,
+    VolumeMount,
     WorkspaceRuntimeMeta,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
@@ -177,7 +178,12 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
             workdir=spec.workdir,
             volume_name=volume,
             volume_target=spec.workdir,
-            extra_mounts=spec.extra_mounts,
+            # The template's ContainerMount (host/container/readonly) is not the adapter's VolumeMount
+            # (source/target/read_only); passing it through crashed provisioning on any mount (INJ-05).
+            extra_mounts=[
+                VolumeMount(source=m.host, target=m.container, read_only=m.readonly)
+                for m in spec.extra_mounts
+            ],
             user=spec.user or _host_uid_gid(),
             resources=resources,
             network="full",

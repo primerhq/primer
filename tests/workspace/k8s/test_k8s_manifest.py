@@ -17,7 +17,7 @@ import pytest
 
 from primer.model.except_ import ConfigError
 from primer.workspace.k8s.backend import (
-    _assert_no_dangerous_keys,
+    _assert_allowlisted,
     _build_statefulset_manifest,
     _deep_merge,
     _pvc_name_for,
@@ -258,10 +258,11 @@ def test_overrides_accept_benign_keys() -> None:
     _validate_template_overrides(template)
 
 
-def test_assert_no_dangerous_keys_path_in_message() -> None:
+def test_assert_allowlisted_path_in_message() -> None:
     overlay = {"deeply": {"nested": {"hostPath": {"path": "/"}}}}
+    spec = {"deeply": {"nested": {"emptyDir": None}}}
     with pytest.raises(ConfigError, match=r"deeply\.nested\.hostPath"):
-        _assert_no_dangerous_keys(overlay, source="x")
+        _assert_allowlisted(overlay, spec, source="x")
 
 
 # ===========================================================================

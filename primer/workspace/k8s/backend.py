@@ -97,71 +97,84 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return out
 
 
-# Keys disallowed in any per-template ``container_overrides`` /
-# ``pod_overrides`` overlay because they would let a template author
-# escalate to host root or break out of the sandbox. Matched on any
-# nesting level via :func:`_assert_no_dangerous_keys`.
-_FORBIDDEN_OVERRIDE_KEYS = frozenset({
-    "securityContext",     # privileged: true, runAsUser: 0, capabilities, etc.
-    "hostPath",            # mount the host filesystem
-    "hostNetwork",         # share the host's network namespace
-    "hostPID",             # share the host's PID namespace
-    "hostIPC",             # share the host's IPC namespace
-    "hostUsers",
-    "privileged",
-    "allowPrivilegeEscalation",
-    "capabilities",
-    "procMount",
-    "runAsUser",
-    "runAsGroup",
-    "runAsNonRoot",
-})
+# What a template's Kubernetes overlays may set (security review 2026-10-08, INJ-02). An ALLOWLIST: the denylist it
+# replaced let Secret, PVC and projected volume sources, a service account, node pinning and extra containers through.
+# Each spec maps a key to ``None`` (a plain scalar value), a nested spec (a mapping checked the same way) or a one-item
+# list holding the spec every list element must match. It holds for every caller, admins included; there is no
+# per-template way around it.
+_SCALAR = None
+_VOLUME_ALLOWED: dict[str, Any] = {
+    "name": _SCALAR,
+    "emptyDir": {"medium": _SCALAR, "sizeLimit": _SCALAR},
+    "configMap": {
+        "name": _SCALAR, "defaultMode": _SCALAR, "optional": _SCALAR,
+        "items": [{"key": _SCALAR, "path": _SCALAR, "mode": _SCALAR}],
+    },
+}
+_VOLUME_MOUNT_ALLOWED: dict[str, Any] = {
+    "name": _SCALAR, "mountPath": _SCALAR, "readOnly": _SCALAR, "subPath": _SCALAR,
+}
+# Pod-level scalars only. ``shareProcessNamespace`` is here because the manifest sets it and a template may turn it off;
+# ``dnsPolicy`` / ``restartPolicy`` / ``terminationGracePeriodSeconds`` are pod behaviour with no host or cluster reach.
+_POD_OVERRIDES_ALLOWED: dict[str, Any] = {
+    "shareProcessNamespace": _SCALAR,
+    "dnsPolicy": _SCALAR,
+    "restartPolicy": _SCALAR,
+    "terminationGracePeriodSeconds": _SCALAR,
+}
+# The manifest never applied ``container_security_context_overrides``; nothing in it is allowed, so a non-empty value
+# is refused rather than silently ignored.
+_CONTAINER_SECURITY_CONTEXT_ALLOWED: dict[str, Any] = {}
 
 
-def _assert_no_dangerous_keys(
-    overlay: Any, *, source: str, path: str = "",
-) -> None:
-    """Refuse template overlays that try to set security-sensitive K8s
-    fields. The check walks dicts and lists recursively so nested
-    occurrences (``securityContext`` inside an ``initContainers`` entry,
-    ``hostPath`` inside an ``extra_volumes`` element, …) are caught.
+def _assert_allowlisted(value: Any, spec: Any, *, source: str, path: str = "") -> None:
+    """Refuse ``value`` unless every key in it is on ``spec`` (see :data:`_POD_OVERRIDES_ALLOWED`).
 
-    Raises :class:`ConfigError` with a message naming the offending key
-    and its dotted path.
+    Raises :class:`ConfigError` naming the offending key and its dotted path.
     """
-    if isinstance(overlay, dict):
-        for k, v in overlay.items():
-            if k in _FORBIDDEN_OVERRIDE_KEYS:
-                raise ConfigError(
-                    f"{source} sets disallowed K8s field {k!r} "
-                    f"(at {path or '<root>'}.{k}); refused for safety."
-                )
-            _assert_no_dangerous_keys(v, source=source, path=f"{path}.{k}")
-    elif isinstance(overlay, list):
-        for i, item in enumerate(overlay):
-            _assert_no_dangerous_keys(
-                item, source=source, path=f"{path}[{i}]",
+    where = path or "<root>"
+    if spec is _SCALAR:
+        if isinstance(value, (dict, list)):
+            raise ConfigError(
+                f"{source} sets {where} to a structured value; only a plain value is allowed there. Refused for safety."
             )
+        return
+    if isinstance(spec, list):
+        if not isinstance(value, list):
+            raise ConfigError(f"{source} sets {where} to a non-list value. Refused for safety.")
+        for i, item in enumerate(value):
+            _assert_allowlisted(item, spec[0], source=source, path=f"{path}[{i}]")
+        return
+    if not isinstance(value, dict):
+        raise ConfigError(f"{source} sets {where} to a non-object value. Refused for safety.")
+    for k, v in value.items():
+        if k not in spec:
+            allowed = ", ".join(sorted(spec)) or "nothing"
+            raise ConfigError(
+                f"{source} sets K8s field {k!r} (at {where}.{k}), which is not on the allowlist "
+                f"(allowed here: {allowed}). Refused for safety."
+            )
+        _assert_allowlisted(v, spec[k], source=source, path=f"{path}.{k}")
 
 
 def _validate_template_overrides(template: WorkspaceTemplate) -> None:
-    """Reject security-sensitive K8s fields in the template's overlay
-    dicts. Called before the manifest is built so a malicious template
-    fails loudly at create time rather than silently producing a
-    privileged Pod."""
+    """Refuse a template whose Kubernetes overlays leave the allowlist. Called before the manifest is built, and by the
+    template write paths, so a template that would produce a privileged or cluster-reaching Pod fails loudly."""
     if not isinstance(template.backend, KubernetesTemplateConfig):
         return
     tcfg = template.backend
-    _assert_no_dangerous_keys(
-        tcfg.pod_overrides or {}, source="pod_overrides",
-    )
-    _assert_no_dangerous_keys(
-        [vol.model_dump(exclude_none=True) if hasattr(vol, "model_dump") else vol for vol in tcfg.extra_volumes],
+    _assert_allowlisted(tcfg.pod_overrides or {}, _POD_OVERRIDES_ALLOWED, source="pod_overrides")
+    _assert_allowlisted(
+        [vol.model_dump(exclude_none=True) for vol in tcfg.extra_volumes], [_VOLUME_ALLOWED],
         source="extra_volumes",
     )
-    _assert_no_dangerous_keys(
-        [vm.model_dump(exclude_none=True) if hasattr(vm, "model_dump") else vm for vm in tcfg.extra_volume_mounts],
+    _assert_allowlisted(
+        [vm.model_dump(exclude_none=True) for vm in tcfg.extra_volume_mounts], [_VOLUME_MOUNT_ALLOWED],
         source="extra_volume_mounts",
+    )
+    _assert_allowlisted(
+        tcfg.container_security_context_overrides or {}, _CONTAINER_SECURITY_CONTEXT_ALLOWED,
+        source="container_security_context_overrides",
     )
 
 
@@ -381,8 +394,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                 f"KubernetesWorkspaceBackend requires template backend kind "
                 f"'kubernetes', got {template.backend.kind!r}"
             )
-        # Refuse templates that try to set security-sensitive K8s fields
-        # via the override passthrough dicts (privileged, hostPath, ...).
+        # Refuse templates whose override passthrough dicts leave the allowlist.
         _validate_template_overrides(template)
         if not self._initialised:
             await self.initialize()
