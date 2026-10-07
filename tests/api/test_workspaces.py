@@ -1854,6 +1854,7 @@ class TestWorkspacesToolsetRegistration:
             "create_workspace",
             "list_workspace_sessions",
             "steer_workspace_session",
+            "interrupt_workspace_session",
             "list_workspace_files",
             "write_workspace_file",
             "get_workspace_log",
@@ -1861,8 +1862,9 @@ class TestWorkspacesToolsetRegistration:
             assert name in names, f"missing {name}"
         # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
         # plus workspace_tap (the workspace tap MCP drain tool) = 27, plus
-        # restart_workspace_session (Task 8) = 28.
-        assert len(names) == 28
+        # restart_workspace_session (Task 8) = 28, plus interrupt_workspace_session
+        # (task 01a10871, Stop as a system tool) = 29.
+        assert len(names) == 29
         assert "create_workspace_session" in names
         assert "cancel_workspace_session" in names
         assert "workspace_tap" in names

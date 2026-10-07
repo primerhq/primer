@@ -1457,10 +1457,36 @@ async def test_session_tools_are_mcp_exposable(sp, workspace_registry):
         event_bus=object(),
     )
     tools = {t.id: t async for t in ts.list_tools()}
-    for tid in ("create_workspace_session", "cancel_workspace_session"):
+    for tid in ("create_workspace_session", "cancel_workspace_session", "interrupt_workspace_session"):
         assert tid in tools, f"{tid} not registered"
         ok, reason = is_exposable(tools[tid], provider=ts)
         assert ok, f"{tid} not MCP-exposable: {reason}"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_workspace_session_declarations(sp, workspace_registry):
+    """Stop as a tool (task 01a10871): the same floor as the console's Stop button and the cancel tool, MCP-exposable, interruptible
+    (one guarded row write, see tests/toolset/test_interruptible_declarations.py), and its description carries the two traps."""
+    from primer.mcp.safety import is_exposable
+
+    ts = build_workspaces_toolset(
+        storage_provider=sp, workspace_registry=workspace_registry, scheduler=None, claim_engine=None, event_bus=None,
+    )
+    tools = {t.id: t async for t in ts.list_tools()}
+    tool = tools["interrupt_workspace_session"]
+
+    assert ts.required_role("interrupt_workspace_session") == ts.required_role("cancel_workspace_session") == "user"
+    assert tool.toolset_id == WORKSPACES_TOOLSET_ID
+    assert tool.interruptible is True
+    assert not ts.is_yielding("interrupt_workspace_session") and tool.requires_workspace is False
+    assert is_exposable(tool, provider=ts) == (True, None)
+    assert set(tool.args_schema["properties"]) == {"workspace_id", "session_id"}
+    assert set(tool.args_schema["required"]) == {"workspace_id", "session_id"}
+    description = tool.description
+    # A 200 is not a Stop: the answer is the session row and says in the flag whether anything was recorded.
+    assert "interrupt_requested" in description and "nothing was running" in description, description
+    # Stop leaves the session alive and idle; ending is Cancel, and a parent waiting for a child's END would wait on.
+    assert "cancel_workspace_session" in description and "alive" in description, description
 
 
 # ===========================================================================
