@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -210,6 +210,29 @@ class AppConfig(BaseSettings):
             "check."
         ),
     )
+
+    # --- Outbound request guard (SSRF) -----------------------------------
+    egress_allow: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Internal targets the agent web tools (http_request, web_fetch's "
+            "local adapter, download) and url file mounts may reach. Every "
+            "other loopback, private (RFC1918), link-local (incl. cloud "
+            "metadata 169.254.169.254), CGNAT, ULA, multicast or reserved "
+            "address is refused, on every redirect hop. Each entry is a CIDR "
+            "('10.20.0.0/16'), a single IP, or an exact host name "
+            "('registry.internal'). Empty by default. Env: "
+            "PRIMER_EGRESS_ALLOW as a JSON list."
+        ),
+    )
+
+    @field_validator("egress_allow")
+    @classmethod
+    def _validate_egress_allow(cls, v: list[str]) -> list[str]:
+        from primer.common.netguard import parse_egress_allow
+
+        parse_egress_allow(v)
+        return v
 
     # --- Workspace probe -------------------------------------------------
     workspace_probe_interval_seconds: float = Field(

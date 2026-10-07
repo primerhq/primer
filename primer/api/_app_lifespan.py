@@ -65,6 +65,11 @@ def _make_lifespan(config: AppConfig):
         from primer.observability import tracing as _tracing
         _tracing.setup(config.observability)
 
+        # Outbound request guard: the operator's internal-target allowlist
+        # (empty by default) for the web tools and url file mounts.
+        from primer.common.netguard import configure_egress_allow
+        configure_egress_allow(config.egress_allow)
+
         if config.observability.enabled:
             from primer.observability import logging_integration as _log_integration
             _log_integration.install_log_correlation()

@@ -1,6 +1,7 @@
 """LocalAdapter: in-process fetch + main-content extraction.
 
-httpx GET (following redirects) -> content-type routing:
+httpx GET (following redirects; every hop passes the egress guard in
+primer.common.netguard) -> content-type routing:
   text/html  -> trafilatura markdown (sets is_thin when extraction is short)
   application/pdf -> unsupported (binary conversion removed in v2)
   application/json -> pretty-printed + fenced
@@ -14,6 +15,8 @@ import json
 import logging
 
 import httpx
+
+from primer.common.netguard import EgressRefused, guarded_async_client
 
 from primer.web_fetch.adapter import (
     THIN_CONTENT_THRESHOLD,
@@ -59,7 +62,7 @@ class LocalAdapter(WebFetchAdapter):
         timeout: float = 30.0,
         user_agent: str = DEFAULT_USER_AGENT,
     ) -> None:
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        self._client = client or guarded_async_client(timeout=timeout)
         self._owns_client = client is None
         self._raw_byte_cap = raw_byte_cap
         self._timeout = timeout
@@ -73,6 +76,10 @@ class LocalAdapter(WebFetchAdapter):
                 timeout=self._timeout,
                 headers={"User-Agent": self._user_agent},
             )
+        except EgressRefused as exc:
+            # Not transient: the target is internal. A remote provider in
+            # an aggregated chain may still fetch it from its own network.
+            raise WebFetchProviderError(str(exc)) from exc
         except httpx.HTTPError as exc:
             raise WebFetchUnavailable(
                 f"local transport: {type(exc).__name__}: {exc}"

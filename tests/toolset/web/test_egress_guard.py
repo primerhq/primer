@@ -163,3 +163,87 @@ def test_app_config_egress_allow_defaults_empty_and_validates():
     with pytest.raises(ValueError):
         AppConfig(egress_allow=["not a host!"])
 
+
+async def test_lifespan_installs_the_configured_allowlist(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+
+    from primer.api.app import _make_lifespan
+    from primer.api.config import AppConfig
+    from primer.common import netguard
+    from primer.common.netguard import EgressRefused
+    from primer.model.scheduler import RuntimeMode
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with pytest.raises(EgressRefused):
+        await netguard.vet_host("127.0.0.1", 80)
+    cfg = AppConfig(
+        runtime_mode=RuntimeMode.API,
+        auto_bootstrap=False,
+        egress_allow=["127.0.0.1/32"],
+    )
+    app = FastAPI(lifespan=_make_lifespan(cfg))
+    async with app.router.lifespan_context(app):
+        assert await netguard.vet_host("127.0.0.1", 80) == ["127.0.0.1"]
+
+
+class _FakeResp:
+    def __init__(self, status: int, headers: dict[str, str], body: bytes = b""):
+        self.status = status
+        self.headers = headers
+        self._body = body
+
+    async def read(self) -> bytes:
+        return self._body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+
+class _FakeSession:
+    """aiohttp-shaped session answering each URL from ``routes``."""
+
+    def __init__(self, routes: dict[str, _FakeResp]):
+        self.routes = routes
+        self.seen: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+    def get(self, url, **kw):
+        assert kw.get("allow_redirects") is False
+        self.seen.append(url)
+        return self.routes[url]
+
+
+async def test_url_file_mount_refuses_a_redirect_to_a_private_literal(monkeypatch):
+    """Redirects are followed by hand so each hop's host is checked."""
+    session = _FakeSession({
+        "https://public.example/f": _FakeResp(
+            302, {"Location": "http://169.254.169.254/latest/"}
+        ),
+    })
+    monkeypatch.setattr("primer.workspace.files._http_session", lambda: session)
+    fm = FileMount(path="x", source=_UrlSource(url="https://public.example/f"))
+    with pytest.raises(RuntimeError) as ei:
+        await resolve_file_sources([fm])
+    _assert_refusal(str(ei.value), "169.254.169.254")
+    assert session.seen == ["https://public.example/f"]
+
+
+async def test_url_file_mount_follows_a_public_redirect(monkeypatch):
+    session = _FakeSession({
+        "https://public.example/f": _FakeResp(302, {"Location": "/g"}),
+        "https://public.example/g": _FakeResp(200, {}, b"payload"),
+    })
+    monkeypatch.setattr("primer.workspace.files._http_session", lambda: session)
+    fm = FileMount(path="x", source=_UrlSource(url="https://public.example/f"))
+    out = await resolve_file_sources([fm])
+    assert out[0].content == b"payload"
+    assert session.seen == ["https://public.example/f", "https://public.example/g"]
+

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from primer.common.netguard import guarded_async_client
 from primer.toolset.internal import InternalToolsetProvider
 from primer.toolset.web.tools import (
     DownloadArgs,
@@ -90,8 +91,9 @@ def build_web_toolset(
         Defaults to ``"web"``.
     http_client
         Optional :class:`httpx.AsyncClient` used by the ``http_request``
-        tool. When ``None``, the factory constructs a default async
-        client. Callers running long-lived applications should pass a
+        tool. When ``None``, the factory constructs a guarded async
+        client (:func:`~primer.common.netguard.guarded_async_client`) that
+        refuses internal addresses on every connection. Callers running long-lived applications should pass a
         shared client and manage its lifecycle (``await client.aclose()``).
     response_body_byte_cap
         Maximum bytes returned in ``http_request`` response bodies;
@@ -117,7 +119,7 @@ def build_web_toolset(
         ``workspace_registry`` is supplied).
     """
     chosen_client: httpx.AsyncClient = (
-        http_client if http_client is not None else httpx.AsyncClient(timeout=30.0)
+        http_client if http_client is not None else guarded_async_client(timeout=30.0)
     )
 
     registry: dict[str, tuple] = {
