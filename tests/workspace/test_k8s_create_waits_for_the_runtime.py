@@ -14,6 +14,7 @@ error) fails at once, on the first attempt, with its own error.
 from __future__ import annotations
 
 import asyncio
+import ssl
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -28,7 +29,28 @@ from tests.workspace.test_k8s_client_is_closed_when_the_build_does_not_finish im
 
 BUILDS = pytest.mark.parametrize("build", [_reattach, _create], ids=["reattach", "create"])
 
+# A build that waits for a runtime must never be able to loop forever in a test: without a deadline in the code under test, a
+# test that waits for it would HANG the lane (pytest's per-test timeout does not interrupt an event loop that keeps sleeping).
+# Every direct build goes through this bound, so a missing deadline FAILS (a TimeoutError, not the ConfigError the test expects).
+HARD_BOUND_S = 5.0
+
+
+async def _bounded(build, backend):
+    async with asyncio.timeout(HARD_BOUND_S):
+        return await build(backend)
+
 REFUSED = ConnectionRefusedError(111, "Connect call failed ('10.42.0.7', 5959)")
+
+
+_KEY = aiohttp.client_reqrep.ConnectionKey("10.42.0.7", 5959, True, None, None, None, None)
+
+
+def _tls_error() -> aiohttp.ClientSSLError:
+    return aiohttp.ClientSSLError(_KEY, ssl.SSLError("handshake failure"))
+
+
+def _certificate_error() -> aiohttp.ClientConnectorCertificateError:
+    return aiohttp.ClientConnectorCertificateError(_KEY, ssl.SSLCertVerificationError("certificate verify failed"))
 
 
 def _handshake(status: int) -> aiohttp.WSServerHandshakeError:
@@ -94,7 +116,7 @@ async def test_a_refused_connect_is_retried_until_the_runtime_listens(monkeypatc
     script = _use(monkeypatch, _Script(REFUSED, REFUSED, None))
     backend = _backend()
 
-    ws = await build(backend)
+    ws = await _bounded(build, backend)
 
     assert ws.id == "ws-1" and backend._workspaces == {"ws-1": ws}
     assert len(script.made) == 3
@@ -106,14 +128,14 @@ async def test_a_refused_connect_is_retried_until_the_runtime_listens(monkeypatc
 @pytest.mark.parametrize("status", [404, 502, 503, 504])
 async def test_a_handshake_the_gateway_has_not_routed_yet_is_retried(monkeypatch, build, status) -> None:
     script = _use(monkeypatch, _Script(_handshake(status), None))
-    ws = await build(_backend())
+    ws = await _bounded(build, _backend())
     assert ws.id == "ws-1" and len(script.made) == 2 and script.made[0].closed == 1
 
 
 @BUILDS
 async def test_a_hello_that_times_out_is_retried(monkeypatch, build) -> None:
     script = _use(monkeypatch, _Script(TimeoutError(), None))
-    await build(_backend())
+    await _bounded(build, _backend())
     assert len(script.made) == 2 and script.made[0].closed == 1
 
 
@@ -122,7 +144,7 @@ async def test_a_real_aiohttp_connector_error_is_retried(monkeypatch, build) -> 
     """The exception the live run actually raised is an ``aiohttp.ClientConnectorError``, not a bare ``ConnectionRefusedError``."""
     key = aiohttp.client_reqrep.ConnectionKey("10.42.0.7", 5959, False, None, None, None, None)
     script = _use(monkeypatch, _Script(aiohttp.ClientConnectorError(key, REFUSED), None))
-    await build(_backend())
+    await _bounded(build, _backend())
     assert len(script.made) == 2
 
 
@@ -130,7 +152,7 @@ async def test_a_real_aiohttp_connector_error_is_retried(monkeypatch, build) -> 
 async def test_a_runtime_that_is_already_up_is_connected_once_without_waiting(monkeypatch, build) -> None:
     script = _use(monkeypatch, _Script(None))
     started = time.monotonic()
-    await build(_backend())
+    await _bounded(build, _backend())
     assert len(script.made) == 1 and time.monotonic() - started < 0.5
 
 
@@ -140,15 +162,22 @@ async def test_a_runtime_that_is_already_up_is_connected_once_without_waiting(mo
 @BUILDS
 @pytest.mark.parametrize(
     "error",
-    [_handshake(401), _handshake(403), RuntimeError("EPROTOCOL", "hello failed"), ValueError("not a connection problem")],
-    ids=["401", "403", "protocol", "other"],
+    [
+        _handshake(401), _handshake(403), RuntimeError("EPROTOCOL", "hello failed"), ValueError("not a connection problem"),
+        _tls_error(), _certificate_error(),
+    ],
+    ids=["401", "403", "protocol", "other", "tls", "tls-certificate"],
 )
 async def test_an_error_that_is_not_the_runtime_starting_fails_at_once(monkeypatch, build, error) -> None:
+    """The TLS cases matter most here: ``ClientSSLError`` and ``ClientConnectorCertificateError`` ARE ``ClientConnectionError``s,
+    so only the classifier's explicit exclusion keeps a bad certificate from being retried for the whole 60 s. The script has a
+    working second client on purpose: a classifier that retried would CONNECT on attempt 2 and the ``raises`` below would fail
+    fast, not wait out the deadline."""
     script = _use(monkeypatch, _Script(error, None))
     backend = _backend()
 
     with pytest.raises(type(error)) as raised:
-        await build(backend)
+        await _bounded(build, backend)
 
     assert raised.value is error
     assert len(script.made) == 1 and script.made[0].closed == 1, "one attempt, and its client is closed"
@@ -166,7 +195,7 @@ async def test_a_runtime_that_never_listens_fails_within_the_deadline_and_says_w
     started = time.monotonic()
 
     with pytest.raises(ConfigError) as raised:
-        await build(backend)
+        await _bounded(build, backend)
 
     elapsed = time.monotonic() - started
     assert elapsed < 2.0, f"the wait is not bounded: {elapsed:.1f}s"
@@ -189,7 +218,7 @@ async def test_a_create_that_gives_up_rolls_back_the_cluster_objects_it_made(mon
     backend._core_v1.delete_namespaced_persistent_volume_claim = AsyncMock()
 
     with pytest.raises(ConfigError, match="did not accept a connection"):
-        await _create(backend)
+        await _bounded(_create, backend)
 
     backend._apps_v1.delete_namespaced_stateful_set.assert_awaited()
     backend._core_v1.delete_namespaced_secret.assert_awaited()
