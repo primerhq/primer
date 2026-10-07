@@ -105,7 +105,7 @@ claim_queue_depth = Gauge(
 
 claim_active_count = Gauge(
     "claim_active_count",
-    "Current number of active (claimed, not yet completed) leases, by kind.",
+    "Current number of leases held by a live worker (claimed, lease not yet expired), by kind.",
     ["kind"],
     registry=registry,
 )
@@ -436,7 +436,7 @@ def reset_for_test() -> None:
     )
     claim_active_count = Gauge(
         "claim_active_count",
-        "Current number of active (claimed, not yet completed) leases, by kind.",
+        "Current number of leases held by a live worker (claimed, lease not yet expired), by kind.",
         ["kind"],
         registry=registry,
     )

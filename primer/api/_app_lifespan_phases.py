@@ -657,11 +657,14 @@ async def warm_chat_channels(channel_registry) -> None:
 
 
 async def sample_claim_gauges_once(claim_engine) -> None:
-    """One sampling pass over the leases table: set ``claim_queue_depth`` for every kind.
+    """One sampling pass: set ``claim_queue_depth`` and ``claim_active_count`` for every kind.
 
-    Every ``ClaimKind`` is set on every pass, and so is any other kind still present in the table.
-    A kind with no unclaimed lease has no row in the result and reads 0; setting only the kinds
-    that came back left a drained queue reporting its last non-zero depth forever.
+    ``queued`` is the unclaimed leases; ``active`` is the leases a live worker holds, the line
+    ``PostgresClaimEngine.has_live_lease`` draws (claimed and not yet expired). A claim whose lease
+    expired is a reclaimable orphan and counts as neither. Every ``ClaimKind`` is set on every pass,
+    and so is any other kind still present in the table: a kind with no row (nothing queued, nothing
+    held) reads 0, where setting only the kinds that came back left a drained queue reporting its
+    last non-zero depth forever.
     """
     import primer.observability.metrics as _m
     from primer.int.claim import ClaimKind
@@ -669,21 +672,24 @@ async def sample_claim_gauges_once(claim_engine) -> None:
     _pool = claim_engine._storage.pool  # noqa: SLF001
     async with _pool.acquire() as _conn:
         _rows = await _conn.fetch(
-            f"SELECT kind, COUNT(*) AS cnt"
+            f"SELECT kind,"
+            f" COUNT(*) FILTER (WHERE claimed_by IS NULL) AS queued,"
+            f" COUNT(*) FILTER (WHERE claimed_by IS NOT NULL AND expires_at > now()) AS active"
             f" FROM {_table}"
-            f" WHERE claimed_by IS NULL"
             f" GROUP BY kind"
         )
-    _queued = {_row["kind"]: _row["cnt"] for _row in _rows}
-    for _kind in sorted(_queued.keys() | {_k.value for _k in ClaimKind}):
-        _m.claim_queue_depth.labels(_kind).set(_queued.get(_kind, 0))
+    _by_kind = {_row["kind"]: _row for _row in _rows}
+    for _kind in sorted(_by_kind.keys() | {_k.value for _k in ClaimKind}):
+        _row = _by_kind.get(_kind)
+        _m.claim_queue_depth.labels(_kind).set(_row["queued"] if _row else 0)
+        _m.claim_active_count.labels(_kind).set(_row["active"] if _row else 0)
 
 
-async def sample_claim_queue_depth(claim_engine) -> None:
-    """Observability loop: sample the claim queue depth every 10s.
+async def sample_claim_gauges(claim_engine) -> None:
+    """Observability loop: sample the claim gauges every 10s.
 
     Only meaningful for a Postgres-backed claim engine (the in-memory engine's
-    depth would always be 0 outside tests); the caller gates on that before
+    gauges would always be 0 outside tests); the caller gates on that before
     scheduling this loop.
     """
     while True:
@@ -694,5 +700,5 @@ async def sample_claim_queue_depth(claim_engine) -> None:
             break
         except Exception:
             logger.debug(
-                "claim queue-depth sample failed", exc_info=True
+                "claim gauge sample failed", exc_info=True
             )

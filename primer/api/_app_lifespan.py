@@ -27,7 +27,7 @@ from primer.api._app_lifespan_phases import (
     recover_sessions,
     recover_webhook_deliveries,
     run_first_boot_bootstrap,
-    sample_claim_queue_depth,
+    sample_claim_gauges,
     seed_default_artifact_provider,
     warm_chat_channels,
 )
@@ -758,10 +758,10 @@ def _make_lifespan(config: AppConfig):
         )
         app.state.webhook_recovery_recheck_task = _webhook_recheck_task
 
-        # --- Observability: claim queue-depth sampler ----------------------
+        # --- Observability: claim gauges sampler (queue depth + active) ----
         # Runs every 10s when the claim engine is Postgres-backed and
         # metrics are enabled.  In-memory engine doesn't need it (the
-        # metric would always be 0 outside tests).
+        # metrics would always be 0 outside tests).
         _claim_depth_task: asyncio.Task | None = None
         if (
             config.observability.enabled
@@ -771,9 +771,9 @@ def _make_lifespan(config: AppConfig):
             from primer.claim.postgres import PostgresClaimEngine as _PGClaimEngine
             if isinstance(claim_engine, _PGClaimEngine):
                 _claim_depth_task = asyncio.ensure_future(
-                    sample_claim_queue_depth(claim_engine)
+                    sample_claim_gauges(claim_engine)
                 )
-                logger.info("lifespan: claim queue-depth sampler started")
+                logger.info("lifespan: claim gauges sampler started")
 
         # Build the always-on ``harness`` toolset. Needs event_bus so it
         # is constructed after the bus is wired (event_bus may be None
