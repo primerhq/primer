@@ -381,6 +381,20 @@ def build_system_toolset(
             "route, which flushes and re-warms it."
         ),
     }
+    # A consequence of deleting a row that the agent reads in the delete descriptor before it acts (ADM-13). The tool still deletes: setup
+    # completeness is derived live, so removing the seeded operator or builder reopens setup, and a restart or the seed route restores it
+    # (the lead ruled: no refusal, the same facts as the console's prompt). The wording avoids "restart": test_system_cache_caveats uses
+    # that word to prove the warm-adapter caveat is absent from delete_agent.
+    from primer.bootstrap.defaults import RESERVED_BUILDER_AGENT, RESERVED_OPERATOR_AGENT
+
+    delete_notes_by_label: dict[str, str] = {
+        "agent": (
+            f"Deleting the seeded ``{RESERVED_OPERATOR_AGENT}`` or ``{RESERVED_BUILDER_AGENT}`` agent marks the install as not set up: "
+            "admins are sent to the setup checklist and every other user waits on a setup screen until the agent is back. "
+            "``POST /v1/setup/seed`` (Re-run seed on the setup checklist), or the next server start, re-creates it with its default "
+            "definition, not your edits. The delete itself is allowed."
+        ),
+    }
     # The writes that need an admin CALLER although the tool's static required_role is lower (architecture review A-02): a stdio MCP
     # toolset launches a command on the server host. The tool manager's floor compares only the static role, so the handler checks
     # the run's identity; a call with no identity (the MCP endpoint) is refused. The rule is the one the REST router applies.
@@ -403,6 +417,7 @@ def build_system_toolset(
                 cache_note=cache_notes_by_label.get(label),
                 admin_when=admin_writes_by_label.get(label),
                 admin_note=_ADMIN_WRITE_NOTES.get(label),
+                delete_note=delete_notes_by_label.get(label),
             )
         )
 
