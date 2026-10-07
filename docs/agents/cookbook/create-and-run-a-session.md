@@ -9,6 +9,7 @@ mcp_tools:
   - workspaces::get_workspace_session
   - workspaces::read_workspace_file
   - workspaces::cancel_workspace_session
+  - workspaces::interrupt_workspace_session
   - workspaces::delete_workspace
 ---
 
@@ -85,7 +86,8 @@ Read whatever file the agent was told to write.
 
 ## Gotchas
 - If `status` stays `running` past your timeout the agent may be parked on a yielding tool; the surface shows `status: "waiting"`. See `cookbook/monitor-and-resume-a-parked-session`.
-- To stop a run early, call `workspaces::cancel_workspace_session`; it ends with `ended_reason: "cancelled"`.
+- To end a run early, call `workspaces::cancel_workspace_session`; it ends with `ended_reason: "cancelled"`.
+- To stop only the turn it is running and keep the session (you can steer it afterwards), call `workspaces::interrupt_workspace_session`. A success answer alone is not a Stop: check `interrupt_requested` in it (`false` means nothing was running).
 - Clean up the sandbox when finished with `workspaces::delete_workspace` `{ "id": "ws-1" }`.
 
 ## Related

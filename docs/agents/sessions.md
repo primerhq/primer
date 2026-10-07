@@ -10,6 +10,7 @@ mcp_tools:
   - workspaces::pause_workspace_session
   - workspaces::resume_workspace_session
   - workspaces::steer_workspace_session
+  - workspaces::interrupt_workspace_session
   - workspaces::cancel_workspace_session
 ---
 
@@ -136,6 +137,11 @@ The transitions are driven via REST routes and the matching
 
 The worker pool reads these flags between turns and acts on them.
 
+Stop is a separate control that none of the flags above is: it stops the
+turn a session is running and leaves the session alive in `WAITING`
+(`POST .../sessions/{session_id}/interrupt` and
+`workspaces::interrupt_workspace_session`; see "MCP tools" below).
+
 ## Where your session actually runs
 
 A session is not pinned to the process that created it. Under the
@@ -181,6 +187,18 @@ can run an agent or graph headlessly end to end.
   `workspaces::resume_workspace_session` /
   `workspaces::steer_workspace_session` - control a running session
   (pause at the next turn boundary, resume, or inject steering input).
+- `workspaces::interrupt_workspace_session` - Stop the turn a session is
+  running without ending the session. Args: `workspace_id`, `session_id`.
+  Returns the session row, and **a success answer alone is not a Stop**:
+  `interrupt_requested: true` means a Stop was recorded;
+  `interrupt_requested: false` means nothing was running (the session was
+  idle, paused or not started), nothing was recorded and nothing will
+  stop. `type=conflict` when the session has ended or is parked waiting on
+  an approval, an answer or a timer (cancel it instead);
+  `type=not-found` for an unknown session. It is the same operation as the
+  console's Stop button, one implementation behind both. It does not end
+  the session, so a parent waiting for a stopped child to END waits on:
+  use `workspaces::cancel_workspace_session` to end one.
 - `workspaces::cancel_workspace_session` - hard-cancel a session.
   Args: `workspace_id`, `session_id`. Returns the session
   `{status:"ended", ended_reason:"cancelled"}` (or still running with
@@ -192,9 +210,10 @@ can run an agent or graph headlessly end to end.
   no delete.
 
 Stopping a turn without ending the session is the console's Stop button
-(`POST /v1/workspaces/{workspace_id}/sessions/{session_id}/interrupt`);
-there is no tool for it. The session lands in `waiting` with its history
-intact, so the next message continues it:
+(`POST /v1/workspaces/{workspace_id}/sessions/{session_id}/interrupt`) and
+`workspaces::interrupt_workspace_session`, one implementation behind both.
+The session lands in `waiting` with its history intact, so the next
+message continues it:
 
 - It takes effect at the next wait for the model: before the first token
   as well as between chunks. If the model had just asked for tool calls
@@ -290,6 +309,19 @@ intact, so the next message continues it:
   earlier Stop: approving or answering a park, or sending a message to a
   session that is not running a turn, clears a Stop that was pressed
   before.
+- A session may stop itself with the tool, and so may a subagent running
+  inside it (a subagent shares the outer session's id and is given the
+  same Stop). The call is part of the turn it stops: it usually keeps its
+  real result (a Stop never throws a real result away; if the Stop wins
+  the race the call is answered "interrupted: stopped by user"), the calls
+  after it in the same round do not run (each is answered "not run:
+  stopped by user"), a subagent ends at its next check and the call to it
+  is answered "interrupted", and the turn stops before the next model
+  call. Know three things before an agent does this: an autonomous session
+  lands in `waiting` and stays there until a message wakes it; a graph
+  session stops only between graph events, not at the next model call; and
+  a parent waiting for a stopped child to end waits on, because the child
+  is alive (cancel ends it).
 
 For starting a fresh session of a known agent in a known workspace,
 the right tool is `workspaces::create_workspace_session`. For
@@ -422,6 +454,11 @@ endpoints answer a graph session parked mid-run on an `ask_user` node (see
   finishes the current turn, then stops. Mid-tool-call: the tool
   completes; mid-stream tokens: the stream completes to the next
   stop boundary.
+- **A successful `interrupt_workspace_session` call is not a Stop.** It
+  answers with the session row even when nothing was running (an idle,
+  paused or not-started session). Read `interrupt_requested` in the
+  answer: `true` means a Stop is recorded, `false` means nothing was
+  recorded. Stop leaves the session alive; to end it, cancel.
 - **Ended is terminal.** A session that ended (clean, error, or
   operator-cancel) is not resumable. Create a fresh session if
   you want to continue from there.
