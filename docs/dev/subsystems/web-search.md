@@ -248,6 +248,33 @@ Agent-facing tools: the `web` internal toolset (`build_web_toolset`,
 that returns `{status, headers, body, truncated}` with the body capped at 1 MB by
 default).
 
+**Outbound request guard (SSRF).** `http_request`, the workspace-only
+`download`, and the `local` web-fetch adapter build their default
+`httpx.AsyncClient` with `guarded_async_client` from
+`primer/common/netguard.py`. Its httpcore network backend vets every new
+connection, so every redirect hop: it resolves the host to all its A/AAAA
+records and refuses the request when ANY of them is not a public unicast
+address (loopback, RFC1918, link-local including the cloud metadata address
+169.254.169.254, CGNAT 100.64/10, ULA fc00::/7, fe80::/10, multicast,
+unspecified, reserved, and the IPv4-mapped, NAT64 and 6to4 forms of those). It
+then opens the socket to the vetted address itself, so a second DNS answer
+cannot swap in an internal one (DNS rebinding); the Host header and the TLS
+SNI and certificate check keep the original name. The refusal is
+`EgressRefused` (an `httpx.RequestError`), and the tool returns
+`refused: <host> resolves to a private address (<ip>); an operator can allow it
+with PRIMER_EGRESS_ALLOW` as an `is_error` result. The same rule guards the
+workspace `url` file mounts (see workspaces.md). Operators opt internal
+targets in with `AppConfig.egress_allow` (`PRIMER_EGRESS_ALLOW`, a JSON list of
+CIDRs, IPs or exact host names, validated at boot, empty by default); the
+lifespan installs it process-wide with `configure_egress_allow`, because the
+guarded clients are built inside factories that never see the config. Because
+the client has an explicit transport, httpx no longer reads `HTTP(S)_PROXY`
+for these tools. The remote web-search and web-fetch providers (Jina,
+Firecrawl, Exa, Tavily, DuckDuckGo) call fixed vendor endpoints configured by
+an admin and fetch the user's URL from the vendor's network, so they are not
+guarded. A client passed in explicitly (`build_web_toolset(http_client=...)`,
+`LocalAdapter(client=...)`) is used as is; only tests do that.
+
 Console: the `web_search` class on the unified provider catalog
 (`ui/components/provider-catalog.jsx`, reached at
 `#/providers?class=web_search`) renders the active-config panel plus the
@@ -325,7 +352,8 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
 - **The internal toolset was built by a factory rather than a config row, and `InternalToolsetProvider` took a defensive copy of its registry at construction.** Why: it removed the failure mode where deleting a config row would un-register the tools, making the `web` toolset immutable from the caller's perspective. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
 - **Tool-level failures returned `ToolCallResult(is_error=True)` while argument-validation failures raised `BadRequestError`.** Why: transient upstream errors should let the LLM react on the next turn rather than crash the executor, while programmer-visible misuse should bubble up through the registry. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
 - **The `http_request` response body was hard-capped at a default 1 MB with a boolean `truncated` field rather than an inline marker.** Why: tools driven by LLMs can be coaxed into pulling arbitrarily large bodies, so a fixed byte cap was the cheapest memory-safety defence. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
-- **No SSRF / private-IP guard was added for v1.** Why: the framework targets trusted-agent contexts, so ringfencing was documented as deliberately out of scope for a follow-up. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
+- **No SSRF / private-IP guard was added for v1 (superseded, see the next entry).** Why: the framework targets trusted-agent contexts, so ringfencing was documented as deliberately out of scope for a follow-up. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
+- **An SSRF guard replaced the v1 "no guard" decision (security sweep 2026-10-08, SSRF-03/SSRF-04).** Why: the web tools are `required_role="user"` and agent-callable, so a prompt-injected agent could read cloud metadata, the Kubernetes API, the Postgres host or localhost admin ports from the platform process. The guard checks at connect time in the network backend rather than with a pre-flight lookup, so redirects and DNS rebinding are covered by the same check; internal targets are an explicit operator opt-in (`egress_allow`).
 - **The hard-coded DuckDuckGo backend was promoted into a `WebSearchAdapter` ABC with a per-row `WebSearchRegistry`, making web search a first-class peer of the LLM and embedder provider subsystems.** Why: the registry pattern composes uniformly across provider types, so the same per-row cache / invalidate / aclose discipline applies. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **Aggregated mode used failure-only fallback with explicit priority ordering rather than quota counters or load-balancing.** Why: the simplest correct model of "primary plus fallbacks" is to try the next provider when one errors, and explicit ordering is clearer for operators. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **The reserved DuckDuckGo provider row and the active-config singleton were auto-bootstrapped at lifespan in that order (DDG first, then the singleton referencing it).** Why: the singleton's reference validation runs at write time, and seeding both makes web search work zero-config and idempotent across restarts. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.

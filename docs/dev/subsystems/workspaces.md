@@ -49,7 +49,7 @@ erDiagram
 | `primer/workspace/container/backend.py`, `primer/workspace/k8s/backend.py` | The container and Kubernetes `WorkspaceBackend` implementations. |
 | `primer/workspace/runtime/` | The `ContainerRuntimeAdapter` ABC; `docker.py` (real), `podman.py` + `containerd/adapter.py` (stubs that raise `ConfigError`); `WSSandbox`, `RuntimeClient`, `protocol.py`, `url.py`. |
 | `primer/workspace/k8s/naming.py` | `k8s_object_name()` hashes long workspace ids to DNS-1123-safe object names. |
-| `primer/workspace/files.py` | `resolve_file_sources()` resolves every `FileSource` variant in the platform process before the backend writes the bytes. |
+| `primer/workspace/files.py` | `resolve_file_sources()` resolves every `FileSource` variant in the platform process before the backend writes the bytes. A `url` source is fetched through the egress guard (`primer/common/netguard.py`: an aiohttp `GuardedResolver` that refuses internal addresses and pins the vetted IP, plus `vet_ip_literal` on each hop because aiohttp skips its resolver for IP literals); redirects are followed by hand (at most 5) so every hop is checked. An internal target fails the create with `refused: <host> resolves to a private address (<ip>)` unless the operator lists it in `egress_allow` (`PRIMER_EGRESS_ALLOW`). |
 | `primer/workspace/probe.py` | `WorkspaceProbeTask`, the phase-driving health probe. |
 | `primer/workspace/factory.py` | `WorkspaceBackendFactory`, provider row to backend dispatch. |
 | `primer/workspace/config_compat.py` | Documented legacy-config translation hooks (no-op today). |
