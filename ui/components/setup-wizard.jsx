@@ -57,13 +57,30 @@ function SW_resumePlan(providers, profiles) {
   return { step: 1, prefill: { type: first.provider, url: (first.config && first.config.url) || "", providerId: first.id } };
 }
 
+// The update body for a provider whose row already exists. PUT is a full replace and a deliberately blanked optional secret CLEARS
+// the stored credential (only a mask-shaped echo is kept), but this form never shows a stored key, so a blank field means "I did
+// not touch it", not "remove it": carry the served mask of the stored key and the server restores the real one. A key the operator
+// typed wins; a row with no key stays without one.
+function SW_keepStoredKey(body, stored) {
+  var draft = body && body.config ? body.config.api_key : undefined;
+  var served = stored && stored.config ? stored.config.api_key : null;
+  if (typeof draft === "string" && draft.trim() !== "") return body;
+  if (!served) return body;
+  return Object.assign({}, body, { config: Object.assign({}, body.config, { api_key: served }) });
+}
+
 // Create the provider, or update it when the id is already there (a 409 is the row from an earlier run or an earlier step 1).
 function SW_saveProvider(apiFetch, body) {
   return apiFetch("POST", "/llm_providers", body, {}).catch(function (err) {
-    if (err && err.status === 409) {
-      return apiFetch("PUT", "/llm_providers/" + encodeURIComponent(body.id), body, {});
-    }
-    throw err;
+    if (!(err && err.status === 409)) throw err;
+    var path = "/llm_providers/" + encodeURIComponent(body.id);
+    var typedAKey = !!(body && body.config && typeof body.config.api_key === "string" && body.config.api_key.trim() !== "");
+    // Read the stored row only when a key could be lost: without knowing what is stored, a blind PUT might erase it, so a
+    // failed read stops the update.
+    var stored = typedAKey ? Promise.resolve(null) : apiFetch("GET", path, null, {});
+    return stored.then(function (row) {
+      return apiFetch("PUT", path, SW_keepStoredKey(body, row), {});
+    });
   });
 }
 
