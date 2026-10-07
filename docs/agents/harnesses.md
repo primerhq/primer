@@ -123,6 +123,16 @@ The `harness` reserved toolset exposes a tighter, harness-aware
 surface than the generic system CRUD. Use the `harness::*` tools for
 both the verb-style operations and plain listing/fetching.
 
+Every tool that writes or acts (`register`, `update`,
+`update_overrides`, `fetch`, `install`, `sync`, `uninstall`) requires
+the admin role: an install writes agents, graphs, collections,
+documents and toolsets, and a fetch runs git with the harness's
+token. A run started by a lower role is refused; only `list` and
+`get` are open to every user. An install or sync whose bundle would
+create or change an MCP toolset on the stdio transport also needs the
+run itself to come from an admin: called over MCP (no run identity)
+it fails with `toolset_needs_admin` in `last_operation_error`.
+
 ### Discovery and inspection
 
 - `harness::harness__list` - paginated listing of harness rows.
@@ -134,8 +144,15 @@ both the verb-style operations and plain listing/fetching.
 - `harness::harness__register` - create a draft row. Body: `id`, `slug`,
   `git_url`, `ref`, optional `git_token`, optional `overrides`.
   Does NOT fetch - explicit `harness::harness__fetch` next.
-- `harness::harness__update` - partial update. Editing `git_url` / `ref`
-  while installed marks the row outdated; sync to apply.
+  `git_url` must be `https://` with a host; `ref` is a branch, tag
+  or commit name (letters, digits, `.`, `_`, `/`, `-`) and may not
+  start with `-`. Anything else is a `validation-error`.
+- `harness::harness__update` - partial update of `name`,
+  `description`, `ref`, `subpath` and `git_token`. Editing `ref` while
+  installed marks the row outdated; sync to apply. It cannot change
+  `git_url` (the REST `PUT` can, and then needs the token re-entered).
+  Sending `git_token` as the masked `**********` keeps the stored
+  token; `""` clears it.
 - `harness::harness__update_overrides` - partial update of the overrides
   dict only. Editing overrides while installed marks outdated;
   sync to apply.
@@ -287,7 +304,10 @@ set). Status returns to `installed`. If something went wrong,
   is wasted work. Treat non-deterministic templates as bugs.
 - **`git_token` is write-only.** GET/list responses mask it. Re-
   fetching a Harness row and re-POSTing it would zero the token;
-  use partial updates.
+  use partial updates. The stored token never follows `git_url` to a
+  new remote: a REST update that moves `git_url` must carry the
+  token for the new remote (or `""`), else it is refused with 422
+  `git_token_required`.
 - **Reinstalling at a different ref skips the explicit uninstall
   step.** The new install diff treats removed entities as
   delete-required, so the workflow `update(ref=...) → sync` is
