@@ -45,8 +45,7 @@ provider passes an egress guard:
   one for the connection;
 - the check runs again on every redirect hop.
 
-Only `http` and `https` URLs are accepted. Workspace `url` file mounts
-are fetched through the same guard.
+Only `http` and `https` URLs are accepted.
 
 An operator can allow specific internal targets with the
 `PRIMER_EGRESS_ALLOW` setting (a list of CIDRs, IPs or exact host
@@ -101,12 +100,12 @@ network).
   (for example a shell command in the workspace), not the web tools: the
   web tools run on the platform, not in the workspace.
 - `http_request` does not follow redirects; it returns the 3xx response.
-  `web_fetch` and url file mounts follow them, checking every hop.
+  `web_fetch` follows them, checking every hop.
 
 ## Related
 
 - [workspaces](workspaces.md) - workspace sessions, where `download`
-  writes and where url file mounts land.
+  writes.
 - [tool-approval](tool-approval.md) - gate `http_request` behind an
   approval policy as well.
 - [mcp-exposure](mcp-exposure.md) - exposing web tools to external MCP

@@ -66,7 +66,7 @@ def _make_lifespan(config: AppConfig):
         _tracing.setup(config.observability)
 
         # Outbound request guard: the operator's internal-target allowlist
-        # (empty by default) for the web tools and url file mounts.
+        # (empty by default) for the web tools.
         from primer.common.netguard import configure_egress_allow
         configure_egress_allow(config.egress_allow)
 

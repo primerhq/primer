@@ -1,8 +1,7 @@
-"""Outbound-request guard: refuse internal addresses (SSRF-03, SSRF-04).
+"""Outbound-request guard: refuse internal addresses (SSRF-03).
 
 Agent tools (``http_request``, ``web_fetch``'s local adapter, ``download``)
-and the url file mounts fetch URLs chosen by a user or by an agent that may
-be prompt-injected. Without a guard those requests reach whatever the
+fetch URLs chosen by a user or by an agent that may be prompt-injected. Without a guard those requests reach whatever the
 platform process can reach: cloud metadata (169.254.169.254), the
 Kubernetes API, the Postgres host, localhost admin ports.
 
@@ -28,7 +27,8 @@ Public surface:
 * :func:`vet_host` - resolve and check, return the addresses to connect to.
 * :func:`guarded_async_client` - an :class:`httpx.AsyncClient` whose every
   connection goes through :func:`vet_host`.
-* :class:`GuardedResolver` - the same rule as an aiohttp resolver.
+* :class:`GuardedResolver` - the same rule as an aiohttp resolver (for the
+  workspace url file mounts, which still use aiohttp; not wired yet).
 * :func:`vet_ip_literal` - the literal-address check aiohttp needs (it
   bypasses its resolver for IP literals).
 """
