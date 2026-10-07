@@ -168,6 +168,17 @@ function SS_updateStatus(store, frame) {
   return false;
 }
 
+// Drop a live status the caller has found stale: the tap derives it from frames and only a terminal frame clears it, so a lost
+// frame leaves "running: thinking" for good. The caller decides from the polled session row (the truth about whether a turn is
+// executing) and names the status it SAW; a status that has moved on since, or the "sending" leg of a send in flight, is newer
+// than that decision and stays. Returns whether it cleared anything.
+function SS_expireStatus(store, seen) {
+  if (!seen || store.status !== seen || store.optimisticSendPending != null) return false;
+  store.status = null;
+  SS_markDirty(store, "status");
+  return true;
+}
+
 function SS_ms(frame) {
   var raw = frame && frame.ts;
   if (raw) {
@@ -573,8 +584,10 @@ function SS_sendUserMessage(store, text, clientId, attachments) {
     state: "pending",
   };
   store.optimisticSendPending = clientId;
-  // The "sending" status leg (C4) shows immediately.
-  store.status = { verb: "sending", object: "", startedMs: Date.now() };
+  // The "sending" status leg (C4) shows immediately. What it replaces is kept, so a send that fails can give it back.
+  var priorStatus = store.status;
+  var sendingStatus = { verb: "sending", object: "", startedMs: Date.now() };
+  store.status = sendingStatus;
   SS_markDirty(store, "transcript");
   SS_markDirty(store, "status");
 
@@ -604,7 +617,10 @@ function SS_sendUserMessage(store, text, clientId, attachments) {
     // text and shows an inline error row carrying err.requestId.
     delete store.optimistic[clientId];
     store.optimisticSendPending = null;
-    SS_updateStatus(store, { "class": "user_input" });
+    // Roll back to what was shown before the send. It used to apply a synthetic user_input frame, and that kind SETS
+    // "thinking": a send that never reached the server left a running strip on a session that ran nothing (C-021). A
+    // live frame that replaced the "sending" leg meanwhile is newer than the rollback and stays.
+    if (store.status === sendingStatus) store.status = priorStatus;
     SS_markDirty(store, "transcript");
     SS_markDirty(store, "status");
     throw err;
@@ -718,6 +734,7 @@ window.SS_apply = SS_apply;
 window.SS_getSnapshot = SS_getSnapshot;
 window.SS_subscribe = SS_subscribe;
 window.SS_sendUserMessage = SS_sendUserMessage;
+window.SS_expireStatus = SS_expireStatus;
 window.SS_retain = SS_retain;
 window.SS_dispose = SS_dispose;
 window.SS_setConnState = SS_setConnState;
