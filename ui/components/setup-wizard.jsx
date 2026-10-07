@@ -75,6 +75,15 @@ async function SW_registerProfile(apiFetch, { providerId, model }) {
   }
 }
 
+// Should the gate open the wizard at step 2? Yes when the provider is healthy and only the
+// model profile is missing, which is exactly where a wizard that was left between its two
+// steps stands. A pure function of GET /setup/state's predicate list, so it is tested; every
+// other combination (neither exists, both exist, only the profile exists) starts at step 1.
+function SW_shouldResume(predicates) {
+  const ok = (key) => (predicates || []).some((p) => p.key === key && p.ok);
+  return ok("llm_provider") && !ok("model_profile");
+}
+
 // The gate's way back into a wizard that was left between the two steps: the provider row
 // exists, only the profile is missing. Returns {providerId, models} to open at step 2, or
 // null when there is nothing usable to resume from (the gate then starts at step 1, which
@@ -461,8 +470,7 @@ function SetupWizardGate({ onDone }) {
   }, [state, configuring]);
   React.useEffect(() => {
     if (!configuring || resume !== undefined || !state) return;
-    const ok = (key) => state.predicates.some((p) => p.key === key && p.ok);
-    if (!(ok("llm_provider") && !ok("model_profile"))) { setResume(null); return; }
+    if (!SW_shouldResume(state.predicates)) { setResume(null); return; }
     let live = true;
     SW_resumeFromProvider(window.primerApi.apiFetch).then((r) => { if (live) setResume(r); });
     return () => { live = false; };
@@ -576,6 +584,7 @@ function SetupWaitingScreen({ username }) {
 window.SW_connectProvider = SW_connectProvider;
 window.SW_registerProfile = SW_registerProfile;
 window.SW_resumeFromProvider = SW_resumeFromProvider;
+window.SW_shouldResume = SW_shouldResume;
 window.SetupWizardSteps = SetupWizardSteps;
 window.SetupWizardGate = SetupWizardGate;
 window.SetupWaitingScreen = SetupWaitingScreen;
