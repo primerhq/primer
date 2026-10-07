@@ -653,6 +653,9 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
                 <div className="field-help warn">
                   Space-separated argv. First token must be in <span className="mono">AppConfig.mcp_stdio_allowed_commands</span> or the first session-open call will raise ConfigError.
                 </div>
+                <div className="field-help warn" data-testid="toolset-stdio-admin-only">
+                  Admin only: a stdio toolset launches this command on the Primer host, so creating or changing one needs the admin role. Any other role gets a 403 on save.
+                </div>
                 {fieldErrors["body.config.config.command"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config.config.command"]}</div>}
               </div>
               <TS_KvEditor
