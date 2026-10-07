@@ -712,7 +712,7 @@ function NV_MobileFiles() {
   var commits = window.primerApi.useResource(
     SH_api.keys.log(wid || "_"),
     function (signal) {
-      return wid ? SH_api.commitLog(wid, 50, signal) : Promise.resolve({ items: [] });
+      return wid ? SH_api.commitLog(wid, 50, signal) : Promise.resolve({ commits: [] });
     },
     { pollMs: 0, deps: [wid] }
   );
@@ -728,7 +728,7 @@ function NV_MobileFiles() {
   var setHistory = historyState[1];
 
   var items = (tree.data && tree.data.items) || [];
-  var commitRows = (commits.data && commits.data.items) || [];
+  var commitRows = SH_api.commitRows(commits.data);
 
   function pickWorkspace(newWid) {
     var verb = con.registry.get("workspace.switch");
