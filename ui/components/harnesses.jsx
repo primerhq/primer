@@ -1241,6 +1241,9 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
               style={{ width: "100%" }}
             />
           </div>
+          <div className="field-help warn" data-testid="harness-admin-only">
+            Admin only: a harness install writes agents, graphs, collections, documents and toolsets, so registering, fetching, installing, syncing or deleting one needs the admin role. Any other role gets a 403.
+          </div>
           {fetchError && (
             <Banner kind="error" title="Fetch failed" detail={fetchError} />
           )}
