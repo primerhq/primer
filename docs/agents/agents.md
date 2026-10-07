@@ -204,7 +204,11 @@ Agents are managed via standard CRUD plus the semantic search tool.
   error, and `create_agent` refuses a body that sets `harness_id`
   (`bad-request`); the same rule as the REST routes.
 - `system::delete_agent` - cascade-blocked if any session is bound to
-  the agent.
+  the agent. Deleting the seeded `operator` or `builder` agent is
+  allowed but marks the install as not set up (admins are sent to the
+  setup checklist, every other user waits on a setup screen) until
+  `POST /v1/setup/seed` or the next server start re-creates it with its
+  default definition, not your edits.
 - `system::find_agents` - predicate query.
 
 ### Discovery (search toolset)
