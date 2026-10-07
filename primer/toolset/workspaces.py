@@ -89,7 +89,9 @@ from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
+    admin_only_settings_held,
     admin_only_template_changes,
+    held_refusal_message,
     refusal_message,
 )
 
@@ -169,7 +171,13 @@ def _refuse_non_admin(fields: list[str], ctx: ToolContext | None) -> ToolCallRes
 def _template_refusal(
     entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
 ) -> ToolCallResult | None:
-    """Admin-only template fields first, then the Kubernetes overlay allowlist, which binds admins too."""
+    """Admin-only template fields first, then the Kubernetes overlay allowlist, which binds admins too.
+
+    A stored template that HOLDS an admin-only value is not user-editable at all, as on REST.
+    """
+    held = admin_only_settings_held(existing)
+    if held and not _tool_caller_is_admin(ctx):
+        return _err(held_refusal_message(held), error_type="forbidden")
     refusal = _refuse_non_admin(admin_only_template_changes(entity, existing), ctx)
     if refusal is not None:
         return refusal

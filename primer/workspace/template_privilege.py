@@ -9,8 +9,9 @@ Templates are user-tier, but a few fields reach the host or the cluster, or read
   overrides.
 
 A non-admin write that sets one of them to a non-empty value, or changes it from the stored value, is refused. The REST
-routes answer 403 ``forbidden_role``; the ``workspaces`` tools answer ``type=forbidden``. Everything else on a template
-stays user-tier. ``init_commands`` are NOT gated: on the local backend they run in a host shell, but a role=user caller
+routes answer 403 ``forbidden_role``; the ``workspaces`` tools answer ``type=forbidden``. A template that HOLDS any of
+them is not user-editable at all (keeping the admin's mount but swapping the image would run user code with it); an
+admin-free template stays fully user-editable. ``init_commands`` are NOT gated: on the local backend they run in a host shell, but a role=user caller
 already runs any command in that same shell through a workspace session's exec tool, so gating them closes nothing.
 
 The Kubernetes overlays are also checked against an allowlist for every caller (``primer.workspace.k8s.backend``).
@@ -63,6 +64,18 @@ def admin_only_template_changes(new: WorkspaceTemplate, existing: WorkspaceTempl
     return [field for field, value in after.items() if value != before[field]]
 
 
+def admin_only_settings_held(template: WorkspaceTemplate | None) -> list[str]:
+    """The admin-only fields ``template`` holds (non-empty). A non-admin may not update such a template at all: keeping
+    the admin's mount or secret but swapping the image, entrypoint, user or init_commands runs the user's code with it."""
+    return [field for field, value in _gated_values(template).items() if value is not None]
+
+
+def held_refusal_message(fields: list[str]) -> str:
+    return (
+        f"this template holds admin-only settings ({', '.join(fields)}); only an admin may update it"
+    )
+
+
 def admin_only_override_fields(overrides: WorkspaceTemplateOverrides | None) -> list[str]:
     """The admin-only fields a per-workspace override sets (today: a secret file source)."""
     if overrides is not None and _secret_sources(overrides.files):
@@ -77,4 +90,10 @@ def refusal_message(fields: list[str]) -> str:
     )
 
 
-__all__ = ["admin_only_override_fields", "admin_only_template_changes", "refusal_message"]
+__all__ = [
+    "admin_only_override_fields",
+    "admin_only_settings_held",
+    "admin_only_template_changes",
+    "held_refusal_message",
+    "refusal_message",
+]

@@ -23,6 +23,10 @@ from aiohttp.abc import AbstractResolver, ResolveResult
 from yarl import URL
 
 
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
+
+
 class BlockedDestinationError(ValueError):
     """The destination is an address the platform must not fetch from."""
 
@@ -33,8 +37,14 @@ def blocked_reason(address: str) -> str | None:
         ip = ipaddress.ip_address(address.split("%", 1)[0])
     except ValueError:
         return "not an IP address"
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        # An IPv6 address that carries an IPv4 one is judged by that IPv4: IPv4-mapped (::ffff:a.b.c.d), the NAT64
+        # well-known prefix (64:ff9b::/96, which a NAT64 gateway translates to the embedded address) and the
+        # deprecated IPv4-compatible form (::a.b.c.d; :: and ::1 unwrap to 0.0.0.0 and 0.0.0.1, both refused).
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64_WELL_KNOWN or ip in _IPV4_COMPATIBLE:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     if ip.is_unspecified:
         return "unspecified"
     if ip.is_loopback:
