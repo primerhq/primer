@@ -120,7 +120,7 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
-from primer.channel.checks import check_channel_on_create
+from primer.channel.checks import check_channel_on_create, check_channel_on_update
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.toolset.toolset_checks import check_toolset_on_create, check_toolset_on_update
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
@@ -307,12 +307,15 @@ def build_system_toolset(
     async def _channel_pre_create(entity: Channel) -> None:
         await check_channel_on_create(entity, storage_provider=storage_provider)
 
-    # The channel router has no pre-update check, so the tool has none either (the second slot is None).
+    async def _channel_pre_update(entity: Channel, existing: Channel) -> None:
+        del existing  # the new pair is what counts: the row is rewritten whole
+        await check_channel_on_update(entity, storage_provider=storage_provider)
+
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "tool_approval_policy": (_policy_pre_create, _policy_pre_update),
         "toolset": (_toolset_pre_create, _toolset_pre_update),
         "model_profile": (_profile_pre_create, _profile_pre_update),
-        "channel": (_channel_pre_create, None),
+        "channel": (_channel_pre_create, _channel_pre_update),
     }
 
     # ---- CRUD sets ----------------------------------------------------
