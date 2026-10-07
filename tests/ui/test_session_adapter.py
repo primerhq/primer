@@ -473,3 +473,58 @@ def test_result_count_label_is_null_for_non_grep_metadata() -> None:
         "metadata: {additions: 2, deletions: 1}"
         "}})"
     ) is None
+
+
+# ---------------------------------------------------------------------------
+# A failed turn is ONE error card (lead sweep A3, 2026-10-08)
+# ---------------------------------------------------------------------------
+
+
+def _error_rows(records_js: str) -> list[dict]:
+    import json
+
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(ADAPTER.read_text(encoding="utf-8"))
+    ctx.eval("var records = " + records_js + "; var out = window.SA_toTranscript(records, {id: 's1'});")
+    return json.loads(ctx.eval("JSON.stringify(out.filter(function (r) { return r.kind === 'error'; }))"))
+
+
+_CAUSE = '{seq: 3, kind: "error", created_at: "t3", payload: {message: "OpenAI server error", code: "/errors/provider-server-error", title: "Provider Server Error", status: 502}}'
+_MARKER = '{seq: 4, kind: "error", created_at: "t4", payload: {reason: "unknown", terminal: true}}'
+_USER = '{seq: 1, kind: "user_input", created_at: "t1", payload: {text: "go"}}'
+
+
+def test_the_terminal_marker_after_the_cause_is_not_a_second_error_card() -> None:
+    """A failed stream writes the error with its cause and then a bare terminal marker ({reason, terminal}) for the same failure.
+    The marker has nothing to say, and rendered as its own red "turn failed" card under the real one."""
+    rows = _error_rows("[" + _USER + ", " + _CAUSE + ", " + _MARKER + "]")
+    assert [r["seq"] for r in rows] == [3], rows
+    assert rows[0]["payload"]["message"] == "OpenAI server error"
+
+
+def test_a_marker_that_comes_first_gives_way_to_the_cause_that_follows() -> None:
+    rows = _error_rows("[" + _USER + ", " + _MARKER.replace("seq: 4", "seq: 2") + ", " + _CAUSE + "]")
+    assert [r["seq"] for r in rows] == [3], rows
+
+
+def test_a_terminal_marker_with_no_cause_is_still_shown() -> None:
+    """Nothing else says the turn failed: the marker is the only evidence and stays."""
+    rows = _error_rows("[" + _USER + ", " + _MARKER + "]")
+    assert [r["seq"] for r in rows] == [4], rows
+
+
+def test_two_errors_that_say_different_things_are_both_kept() -> None:
+    other = _CAUSE.replace("seq: 3", "seq: 5").replace("OpenAI server error", "Tool failed: disk full")
+    rows = _error_rows("[" + _USER + ", " + _CAUSE + ", " + other + "]")
+    assert [r["seq"] for r in rows] == [3, 5], rows
+
+
+def test_errors_of_separate_turns_are_not_merged() -> None:
+    """A marker far from a cause (another turn between them) is not that cause's marker."""
+    later = _MARKER.replace("seq: 4", "seq: 9")
+    between = '{seq: 5, kind: "user_input", created_at: "t5", payload: {text: "again"}}'
+    rows = _error_rows("[" + _USER + ", " + _CAUSE + ", " + between + ", " + later + "]")
+    assert [r["seq"] for r in rows] == [3, 9], rows

@@ -1786,3 +1786,108 @@ def test_the_resting_chip_is_neutral_and_the_served_state_attribute_is_unchanged
     assert resting.count("[") > parked.count("["), "the resting rule has strictly more attribute selectors than the parked rule"
     assert "var(--warn" not in STYLES[STYLES.index(resting):][:200], "a resting session must not read as a warning"
     assert resting + " .nv-session-state-dot" in STYLES, "the dot is overridden at the same specificity"
+
+
+# ---------------------------------------------------------------------------
+# Lead sweep 2026-10-08: A2 (a failed session says why), A3 (error wording), A4 (no empty meter), A5 (mobile title once)
+# ---------------------------------------------------------------------------
+
+
+def _function_ctx(*names: str):
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    for name in names:
+        start = DOC.index("function " + name)
+        end = DOC.index("\n}\n", start) + len("\n}\n")
+        ctx.eval(DOC[start:end])
+    return ctx
+
+
+def _call(ctx, expression: str):
+    import json
+
+    return json.loads(ctx.eval("JSON.stringify(" + expression + ")"))
+
+
+def test_a_failed_session_says_why_in_user_language_and_what_to_do_next():
+    """A2: the end divider read "session ended . failed" and nothing else, while the row knew why (ended_detail never_started)."""
+    import json
+
+    ctx = _function_ctx("NV_endedLine")
+
+    def line(session):
+        return _call(ctx, "NV_endedLine(" + json.dumps(session) + ")")
+
+    never = line({"status": "ended", "ended_reason": "failed", "ended_detail": "never_started"})
+    assert never["label"] == "failed"
+    assert "never started" in never["why"].lower() and "workspace" in never["why"].lower()
+    assert never["next"], "a failure says what to do next"
+    for raw in ("never_started", "llm_stream_error"):
+        assert raw not in never["why"] + never["next"], "the raw code is not user language"
+
+    unknown = line({"status": "ended", "ended_reason": "failed", "ended_detail": "weird_code_42"})
+    assert unknown["why"] and "weird_code_42" in unknown["why"], "an unknown code is shown rather than hidden"
+
+    bare = line({"status": "ended", "ended_reason": "failed"})
+    assert bare["why"] and bare["next"]
+
+    assert line({"status": "ended", "ended_reason": "workspace_lost"})["why"].lower().startswith("the workspace")
+    assert "tool" in line({"status": "ended", "ended_reason": "tool_turn_cap"})["why"].lower()
+    for quiet in ("completed", "cancelled", "force_deleted"):
+        got = line({"status": "ended", "ended_reason": quiet})
+        assert got["label"] == quiet and got["why"] is None and got["next"] is None, quiet
+    assert line({"status": "waiting"}) is None, "a live session has no end line"
+    assert line(None) is None
+
+
+def test_the_end_divider_renders_the_why_and_the_next_step():
+    assert "NV_endedLine(session)" in DOC
+    divider = DOC[DOC.index("session ended") - 600:DOC.index("session ended") + 900]
+    assert 'data-testid="nv-ended-note"' in divider
+
+
+def test_an_error_card_speaks_user_language_and_keeps_the_technical_detail_below_it():
+    """A3: "OpenAI network failure: APIConnectionError" is a class name. The card says it in words and keeps the provider's own text as detail."""
+    import json
+
+    ctx = _function_ctx("NV_errorView")
+
+    def view(payload, label=""):
+        return _call(ctx, "NV_errorView(" + json.dumps({"label": label, "payload": payload}) + ")")
+
+    network = view({"message": "OpenAI network failure: APIConnectionError", "code": "/errors/network-error"})
+    assert network["text"].startswith("Could not reach the model provider")
+    assert "APIConnectionError" not in network["text"] and network["detail"] == "OpenAI network failure: APIConnectionError"
+    assert "rate limiting" in view({"message": "OpenAI rate limit exceeded", "code": "/errors/rate-limited"})["text"]
+    assert "server error" in view({"message": "OpenAI server error", "code": "/errors/provider-server-error"})["text"]
+    assert "context window" in view({"message": "x", "code": "/errors/context-overflow-unrecoverable"})["text"]
+    assert "credentials" in view({"message": "bad key", "code": "/errors/authentication-failed"})["text"]
+    # An unknown problem type keeps the server's own words and has no separate detail to repeat.
+    assert view({"message": "Tool failed: disk full", "code": "/errors/something-new"}) == {
+        "text": "Tool failed: disk full", "detail": None,
+    }
+    assert view({"reason": "unknown", "terminal": True}) == {"text": "The turn failed.", "detail": None}
+    assert view({}, label="from the label")["text"] == "from the label"
+
+
+def test_the_error_card_renders_the_view_and_its_detail():
+    card = DOC[DOC.index('className="nv-turn-error"') - 400:DOC.index('className="nv-turn-error"') + 900]
+    assert "NV_errorView(row)" in card
+    assert 'className="nv-turn-error-detail"' in card
+
+
+def test_the_header_meter_exists_only_when_there_is_usage_to_show():
+    """A4: a session with no usage drew an unlabelled empty grey bar in its header, which reads as a stuck progress bar."""
+    header = DOC[DOC.index("function NV_SessionHeader"):DOC.index("function NV_Thought")]
+    block_start = header.index('<div className="nv-usage"')
+    gate = header[:block_start].rstrip()
+    assert gate.endswith("{usage.label ? ("), "the meter is gated on there being a usage label"
+    assert 'aria-label={"Context used: " + usage.label}' in header, "a meter that is shown is labelled"
+
+
+def test_the_mobile_session_header_does_not_repeat_the_title_the_top_bar_shows():
+    """A5: the mobile screen's top bar names the session and the header named it again, truncated to nothing by the chips."""
+    rule = ".nv-mobile-chat .nv-session-head .nv-title"
+    assert rule in STYLES
+    assert "display: none" in STYLES[STYLES.index(rule):][:160]
