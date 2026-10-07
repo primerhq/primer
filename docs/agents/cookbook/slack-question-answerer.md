@@ -46,6 +46,7 @@ Slack requires two distinct tokens. The App token starts with `xapp-` and the Bo
   "entity": {
     "id": "ops-help",
     "provider_id": "slack-ops",
+    "provider": "slack",
     "external_id": "C0123ABC456",
     "label": "#ops-help"
   }

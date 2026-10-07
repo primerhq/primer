@@ -45,6 +45,7 @@ Response:
   "entity": {
     "id": "personal-dm",
     "provider_id": "tg-personal",
+    "provider": "telegram",
     "external_id": "987654321",
     "label": "personal-dm"
   }

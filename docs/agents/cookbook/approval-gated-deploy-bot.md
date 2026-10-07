@@ -45,6 +45,7 @@ Response:
   "entity": {
     "id": "deploys",
     "provider_id": "slack-deploys",
+    "provider": "slack",
     "external_id": "C0999DEPLOY",
     "label": "#deploys"
   }

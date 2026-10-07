@@ -199,12 +199,19 @@ system toolset for completeness but agents rarely need to touch them.
 - `create_channel` body needs `provider_id`, `provider`,
   `external_id`, optional `label`, optional `id`, and optional
   `config`. Omit `id` and the server assigns `channel-<hex>`.
-  `provider` must match the referenced provider's platform. The pair
-  `(provider_id, external_id)` must be unique. Both are checked the
-  same way as on the REST route: a `provider_id` that names no stored
-  provider returns `type=validation-error`, and a second channel for
-  the same pair returns `type=conflict` naming the existing one;
-  nothing is stored in either case.
+  `provider` must match the referenced provider's platform: a
+  `provider` that names another platform than the provider row (a
+  `slack` channel under a `discord` provider) returns
+  `type=validation-error` naming both platforms, and so does a
+  `provider_id` that names no stored provider. The pair
+  `(provider_id, external_id)` must be unique: a second channel for
+  the same pair returns `type=conflict` naming the existing one. The
+  REST route answers the same refusals (422 and 409), and nothing is
+  stored in any case.
+- `update_channel` replaces the whole row and re-checks the provider
+  and its platform: it cannot move a channel to another platform than
+  its provider's, or onto a provider that does not exist
+  (`type=validation-error`, the stored row unchanged).
 - `config.chats` controls inbound enablement for the room. Set
   `config.chats.enabled=true` to allow incoming messages to start
   sessions on it; the agent they run under comes from the channel
