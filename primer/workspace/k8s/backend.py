@@ -42,6 +42,13 @@ from primer.workspace.sandbox.workspace import SandboxWorkspace
 
 logger = logging.getLogger(__name__)
 
+# How long a Running pod is given for its runtime to start listening (ticket 01a11543). A pod is Running once its container has
+# STARTED, which is before the runtime process serves; the Docker adapter allows 30 s for its ready marker, a pod on a loaded node
+# is slower to start a Python process, and the gateway route may need a moment too.
+_RUNTIME_READY_TIMEOUT_S = 60.0
+_RUNTIME_READY_POLL_S = 0.25        # the first pause between attempts; it doubles up to the cap below
+_RUNTIME_READY_MAX_POLL_S = 2.0
+
 
 def _generate_workspace_id() -> str:
     return f"ws-{uuid.uuid4().hex[:16]}"
