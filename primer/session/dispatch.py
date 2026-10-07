@@ -579,11 +579,8 @@ async def run_one_session_turn(
         # error is logged but execution falls through to the transition
         # below, which is what guarantees the lease is always released.
         try:
-            seq = await writer.append(error_rec)
-            await writer.flush()
-            await deps.event_bus.publish(
-                f"session:{session_id}:tick", {"seq": seq}
-            )
+            await writer.append(error_rec)
+            await _flush_and_tick(deps, writer, session_id)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "session %s failed to write error record after executor"
@@ -746,11 +743,8 @@ async def run_one_session_turn(
                 phase=_agent_phase,
             ))
         rec = _yielded_record(park)
-        seq = await writer.append(rec)
-        await writer.flush()
-        await deps.event_bus.publish(
-            f"session:{session_id}:tick", {"seq": seq}
-        )
+        await writer.append(rec)
+        await _flush_and_tick(deps, writer, session_id)
         await _event_recorder(deps).emit(
             "session.parked",
             workspace_id=session.workspace_id,
@@ -1008,11 +1002,8 @@ async def run_one_session_turn(
             ))
 
         rec = _tool_wait_yielded_record(tool_wait)
-        seq = await writer.append(rec)
-        await writer.flush()
-        await deps.event_bus.publish(
-            f"session:{session_id}:tick", {"seq": seq}
-        )
+        await writer.append(rec)
+        await _flush_and_tick(deps, writer, session_id)
         await _event_recorder(deps).emit(
             "session.parked",
             workspace_id=session.workspace_id,
@@ -1263,7 +1254,7 @@ async def run_one_session_turn(
     #    translate_stream_event), flush, final tick, then transition the
     #    scheduler-visible row based on what the executor did.
     # ------------------------------------------------------------------
-    await writer.flush()
+    await _flush_and_tick(deps, writer, session_id)
 
     last_done_reason = getattr(executor, "last_done_reason", None)
     agent_status = await _read_agent_session_status(executor)
@@ -1930,6 +1921,25 @@ async def _best_effort_io(what: str, session_id: str, work: "Awaitable[Any]") ->
             "session %s: %s was not confirmed within %gs (the workspace is not accepting writes); "
             "carrying on without it", session_id, what, _BEST_EFFORT_IO_TIMEOUT_S,
         )
+
+
+async def _flush_and_tick(
+    deps: "SessionDispatchDeps", writer: "WorkspaceMessageWriter", session_id: str,
+) -> int:
+    """Make everything the writer holds durable, THEN tell the tap how far the log now goes. Returns that seq.
+
+    The tap reads the durable log when a ``session:{sid}:tick`` wakes it and has no reason to look again before the next
+    one. The per-record tick right after ``append`` goes out while the record is still in the writer's buffer (100 ms or
+    16 KB, and the age is only checked on the next append), so for the last records of a turn that tick announces nothing the
+    tap can read. The tick that matters is the one after the flush, and it names ``writer.last_seq``: the flush took every
+    buffered record, not just the last one appended. Every exit that flushes a turn's tail goes through here (the clean
+    completion, a failed stream, both parks), so a record is never made durable without a tick that follows it; the
+    cancelled exit flushes in ``_write_cancelled_record`` and publishes its tick after the lifecycle lock is released.
+    """
+    await writer.flush()
+    seq = writer.last_seq
+    await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
+    return seq
 
 
 async def _write_cancelled_record(
