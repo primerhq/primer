@@ -111,38 +111,6 @@ claim_active_count = Gauge(
 )
 
 # ---------------------------------------------------------------------------
-# WebSocket connection metrics
-# ---------------------------------------------------------------------------
-
-ws_connections_active = Gauge(
-    "ws_connections_active",
-    "Current number of active WebSocket connections, by kind.",
-    ["kind"],
-    registry=registry,
-)
-
-ws_frames_sent_total = Counter(
-    "ws_frames_sent_total",
-    "Total WebSocket frames sent, by kind.",
-    ["kind"],
-    registry=registry,
-)
-
-ws_session_duration_seconds = Histogram(
-    "ws_session_duration_seconds",
-    "WebSocket session duration in seconds, by kind.",
-    ["kind"],
-    registry=registry,
-)
-
-ws_replay_backlog_seconds = Histogram(
-    "ws_replay_backlog_seconds",
-    "Age of the oldest replayed event at WS connect time, in seconds.",
-    ["kind"],
-    registry=registry,
-)
-
-# ---------------------------------------------------------------------------
 # Channel-event metrics
 # ---------------------------------------------------------------------------
 
@@ -401,8 +369,6 @@ def reset_for_test() -> None:
     global tool_calls_total, tool_duration_seconds  # noqa: PLW0603
     global claim_enqueue_latency_seconds, claim_queue_depth  # noqa: PLW0603
     global claim_active_count  # noqa: PLW0603
-    global ws_connections_active, ws_frames_sent_total  # noqa: PLW0603
-    global ws_session_duration_seconds, ws_replay_backlog_seconds  # noqa: PLW0603
     global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
     global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
     global worker_tasks_total, worker_task_duration_seconds  # noqa: PLW0603
@@ -471,30 +437,6 @@ def reset_for_test() -> None:
     claim_active_count = Gauge(
         "claim_active_count",
         "Current number of active (claimed, not yet completed) leases, by kind.",
-        ["kind"],
-        registry=registry,
-    )
-    ws_connections_active = Gauge(
-        "ws_connections_active",
-        "Current number of active WebSocket connections, by kind.",
-        ["kind"],
-        registry=registry,
-    )
-    ws_frames_sent_total = Counter(
-        "ws_frames_sent_total",
-        "Total WebSocket frames sent, by kind.",
-        ["kind"],
-        registry=registry,
-    )
-    ws_session_duration_seconds = Histogram(
-        "ws_session_duration_seconds",
-        "WebSocket session duration in seconds, by kind.",
-        ["kind"],
-        registry=registry,
-    )
-    ws_replay_backlog_seconds = Histogram(
-        "ws_replay_backlog_seconds",
-        "Age of the oldest replayed event at WS connect time, in seconds.",
         ["kind"],
         registry=registry,
     )
@@ -663,11 +605,6 @@ __all__ = [
     "claim_enqueue_latency_seconds",
     "claim_queue_depth",
     "claim_active_count",
-    # WebSockets
-    "ws_connections_active",
-    "ws_frames_sent_total",
-    "ws_session_duration_seconds",
-    "ws_replay_backlog_seconds",
     # Channel events
     "channel_events_normalized_total",
     "channel_events_matched_total",
