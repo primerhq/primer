@@ -233,6 +233,21 @@ class TestReservedIds:
         assert await sp.get_storage(Toolset).get(scope) is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "builtin",
+        ["system", "workspaces", "misc", "web", "harness", "trigger", "collections", "crud"],
+    )
+    async def test_a_toolset_cannot_take_a_built_in_toolset_id(self, world, builtin) -> None:
+        """The registry answers these ids from its own providers before it reads storage, so a stored row under one is a ghost
+        (ADM-08). The REST route and this tool refuse the same set."""
+        sp, toolset, _ = world
+
+        is_error, answer = await _call(toolset, "create_toolset", entity={**_toolset_body(), "id": builtin})
+
+        assert is_error and answer["type"] == "conflict" and "reserved" in answer["message"]
+        assert await sp.get_storage(Toolset).get(builtin) is None
+
+    @pytest.mark.asyncio
     async def test_the_default_artifact_provider_cannot_be_deleted_but_other_ids_can(self, world) -> None:
         from primer.api.registries.artifact_storage_registry import DEFAULT_ARTIFACT_PROVIDER_ID
         from primer.model.providers.artifact import ArtifactStorageProviderType, DbArtifactConfig
