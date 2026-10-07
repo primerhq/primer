@@ -1686,3 +1686,45 @@ def test_the_compaction_boundary_sentinel_is_gone():
     Real compaction_marker rows are in the transcript now, so the
     client no longer guesses where the boundary is."""
     assert "compactionBoundarySeq" not in DOC
+
+
+def test_a_polled_idle_row_outlives_no_stale_tap_status():
+    """C-008/C-011 (console review 2026-10-08): the store's live status comes only from tap frames and is cleared only by a
+    terminal frame, so one lost frame left 'running: thinking' (and a Queue button) on a session whose polled row said it was
+    idle or ended, for ever. The row is the truth about whether a turn is executing: it contradicts a live status, and the
+    contradiction, held for a few polls, expires the status."""
+    import json
+
+    from py_mini_racer import MiniRacer
+
+    start = DOC.index("function NV_rowContradictsStatus")
+    end = DOC.index("\n}\n", start) + len("\n}\n")
+    ctx = MiniRacer()
+    ctx.eval(DOC[start:end])
+
+    def contradicts(session, status):
+        return json.loads(ctx.eval("JSON.stringify(NV_rowContradictsStatus(%s, %s))" % (json.dumps(session), json.dumps(status))))
+
+    thinking = {"verb": "thinking", "object": "", "startedMs": 1}
+    assert contradicts({"status": "waiting", "turn_status": "idle"}, thinking) is True, "a resting row has no turn to be thinking"
+    assert contradicts({"status": "ended", "turn_status": "idle"}, thinking) is True
+    assert contradicts({"status": "ended"}, thinking) is True, "an ended row has no running turn, whatever turn_status says"
+    assert contradicts({"status": "running", "turn_status": "running"}, thinking) is False
+    assert contradicts({"status": "running", "turn_status": "claimable"}, thinking) is False, "a steer was just queued"
+    assert contradicts({"status": "waiting"}, thinking) is False, "no turn_status served: unknown, not idle"
+    assert contradicts(None, thinking) is False, "nothing polled yet"
+    assert contradicts({"status": "waiting", "turn_status": "idle"}, None) is False, "no status to contradict"
+    assert contradicts({"status": "ended"}, {"verb": "sending", "object": "", "startedMs": 1}) is False, (
+        "a send into an ended session reopens it: its 'sending' leg is not stale"
+    )
+
+
+def test_the_session_doc_expires_a_status_its_polled_row_keeps_contradicting():
+    assert "window.SS_expireStatus(store" in DOC
+    constant = re.search(r"var NV_STALE_STATUS_MS = (\d[\d_]*);", DOC)
+    assert constant, "the grace is a named constant"
+    assert int(constant.group(1).replace("_", "")) >= 4000, (
+        "at least two polls of the 2 s detail resource must agree before a live status is dropped"
+    )
+    expiry = DOC[DOC.index("NV_rowContradictsStatus(session, statusSnap)"):]
+    assert "history.refetch()" in expiry[:900], "expiring a status re-reads the durable tail, the catch-up that already exists"

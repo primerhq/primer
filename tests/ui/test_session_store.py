@@ -561,3 +561,121 @@ def test_status_updates_from_a_rest_shaped_record_too() -> None:
         """
     ))
     assert out["verb"] == "thinking"
+
+
+# ---------------------------------------------------------------------------
+# Console review 2026-10-08, C-021 (a failed send) and C-008/C-011 (a stale live status).
+# ---------------------------------------------------------------------------
+
+
+def _send_that_fails(ctx, wid: str, sid: str, *, before=None, during=None) -> dict:
+    """Run ``SS_sendUserMessage`` against an ``apiFetch`` that rejects once ``reject()`` is called, and return the store's
+    state afterwards. ``before`` is applied first (the status the send replaces); ``during`` is applied while the POST is in
+    flight (a live frame landing meanwhile)."""
+    ctx.eval(
+        """
+        (function () {
+          window.primerApi = { apiFetch: function () {
+            return new Promise(function (_resolve, reject) {
+              globalThis.rejectSend = function () { reject(new Error("Failed to fetch")); };
+            });
+          }};
+        })()
+        """
+    )
+    ctx.eval(
+        "globalThis.s = SS_getStore(%s, %s); var pre = %s; for (var i = 0; i < pre.length; i++) SS_apply(s, pre[i]);"
+        % (json.dumps(wid), json.dumps(sid), json.dumps(before or []))
+    )
+    ctx.eval(
+        "globalThis.statusBefore = s.status; globalThis.sendResult = 'pending';"
+        "SS_sendUserMessage(s, 'hello', 'c1').then(function () { sendResult = 'ok'; }, function () { sendResult = 'failed'; });"
+    )
+    mid = json.loads(ctx.eval(
+        "JSON.stringify({status: s.status && s.status.verb, pending: s.optimisticSendPending, "
+        "optimistic: Object.keys(s.optimistic).length})"
+    ))
+    ctx.eval("var mid = %s; for (var j = 0; j < mid.length; j++) SS_apply(s, mid[j]);" % json.dumps(during or []))
+    ctx.eval("rejectSend();")
+    after = json.loads(ctx.eval(
+        "JSON.stringify({status: s.status && s.status.verb, statusSnap: (function () { var x = SS_getSnapshot(s, 'status'); "
+        "return x && x.verb; })(), pending: s.optimisticSendPending, optimistic: Object.keys(s.optimistic).length, "
+        "sendResult: sendResult, before: statusBefore && statusBefore.verb})"
+    ))
+    after["during_send"] = mid
+    return after
+
+
+def test_a_failed_send_on_an_idle_session_leaves_no_running_status() -> None:
+    """The failure branch used to call SS_updateStatus({class: 'user_input'}), and that kind SETS ``thinking``: a send that
+    never reached the server left 'running: thinking' (and a Queue button) on a session that ran nothing (C-021)."""
+    out = _send_that_fails(_ctx(), "w6", "s6")
+    assert out["during_send"]["status"] == "sending" and out["during_send"]["optimistic"] == 1
+    assert out["sendResult"] == "failed"
+    assert out["status"] is None and out["statusSnap"] is None, out
+    assert out["pending"] is None and out["optimistic"] == 0
+
+
+def test_a_failed_send_into_a_running_turn_gives_back_the_status_it_replaced() -> None:
+    out = _send_that_fails(_ctx(), "w7", "s7", before=[
+        {"class": "tool_call", "session_id": "s7", "seq": 3, "payload": {"name": "grep_src", "id": "t1"}},
+    ])
+    assert out["before"] == "grep_src"
+    assert out["status"] == "grep_src" and out["statusSnap"] == "grep_src", out
+
+
+def test_a_failed_send_does_not_clobber_a_status_a_live_frame_set_meanwhile() -> None:
+    out = _send_that_fails(_ctx(), "w8", "s8", during=[
+        {"class": "tool_call", "session_id": "s8", "seq": 5, "payload": {"name": "read_file", "id": "t2"}},
+    ])
+    assert out["status"] == "read_file", "the failure only gives back the 'sending' leg it set itself"
+
+
+def test_expire_status_clears_the_status_it_was_asked_about() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var s = SS_getStore("w9", "s9");
+          SS_apply(s, {"class": "user_input", session_id: "s9", seq: 1, payload: {text: "hi"}});
+          var thinking = s.status;
+          var changed = SS_expireStatus(s, thinking);
+          return JSON.stringify({changed: changed, status: s.status, snap: SS_getSnapshot(s, "status")});
+        })()
+        """
+    ))
+    assert out == {"changed": True, "status": None, "snap": None}
+
+
+def test_expire_status_leaves_a_status_that_moved_on() -> None:
+    """The caller decided on the status it SAW; a frame that replaced it since is newer than that decision."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var s = SS_getStore("w10", "s10");
+          SS_apply(s, {"class": "user_input", session_id: "s10", seq: 1, payload: {text: "hi"}});
+          var seen = s.status;
+          SS_apply(s, {"class": "tool_call", session_id: "s10", seq: 2, payload: {name: "grep_src", id: "t"}});
+          var changed = SS_expireStatus(s, seen);
+          return JSON.stringify({changed: changed, verb: s.status && s.status.verb});
+        })()
+        """
+    ))
+    assert out == {"changed": False, "verb": "grep_src"}
+
+
+def test_expire_status_never_drops_the_sending_leg_of_a_send_in_flight() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          window.primerApi = { apiFetch: function () { return new Promise(function () {}); } };
+          var s = SS_getStore("w11", "s11");
+          SS_sendUserMessage(s, "hello", "c1");
+          var changed = SS_expireStatus(s, s.status);
+          return JSON.stringify({changed: changed, verb: s.status && s.status.verb});
+        })()
+        """
+    ))
+    assert out == {"changed": False, "verb": "sending"}
