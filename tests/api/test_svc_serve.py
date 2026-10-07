@@ -148,3 +148,82 @@ def test_serve_only_app_has_svc_but_not_entity_routes(
     assert not any(p.startswith("/v1/agents") for p in paths)
     assert not any(p.startswith("/v1/services") for p in paths)
     assert any(p.startswith("/v1/health") for p in paths)
+
+
+# --- security hardening (SEC-01 / UI-SEC-01 / FS-03, UI-SEC-04) -----------
+
+_XSS = "<script>alert(1)</script>"
+
+
+def _assert_safe_error_page(r) -> None:
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("text/html")
+    assert "<script" not in r.text.lower()
+    assert r.headers.get("x-content-type-options") == "nosniff"
+    csp = r.headers.get("content-security-policy", "")
+    assert "default-src 'none'" in csp
+    assert "script-src" not in csp
+
+
+@pytest.mark.asyncio
+async def test_unknown_name_error_page_escapes_the_name(client):
+    r = await client.get(f"/svc/{_XSS}/x", headers={"accept": "text/html"})
+    _assert_safe_error_page(r)
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in r.text
+
+
+@pytest.mark.asyncio
+async def test_missing_asset_error_page_escapes_the_path(client):
+    await _publish_app(client, "escaped")
+    path = "\"'><img src=x onerror=alert(1)>" + _XSS + ".png"
+    r = await client.get(f"/svc/escaped/{path}", headers={"accept": "text/html"})
+    _assert_safe_error_page(r)
+    assert "<img" not in r.text.lower()
+    assert "&quot;&#x27;&gt;&lt;img" in r.text
+
+
+@pytest.mark.asyncio
+async def test_svc_responses_carry_nosniff(client):
+    await _publish_app(client, "sniffless")
+    for url in ("/svc/sniffless/", "/svc/sniffless/app.js", "/svc/nope/"):
+        r = await client.get(url)
+        assert r.headers.get("x-content-type-options") == "nosniff", url
+    js = await client.get("/svc/nope/", headers={"accept": "application/json"})
+    assert js.headers.get("x-content-type-options") == "nosniff"
+
+
+@pytest.mark.asyncio
+async def test_console_auth_service_assets_are_private(client):
+    await _publish_app(client, "privy")
+    for url in ("/svc/privy/", "/svc/privy/app.js"):
+        r = await client.get(url)
+        assert r.status_code == 200
+        cc = r.headers["cache-control"]
+        assert cc.startswith("private"), (url, cc)
+        assert "public" not in cc
+    first = await client.get("/svc/privy/app.js")
+    again = await client.get(
+        "/svc/privy/app.js", headers={"if-none-match": first.headers["etag"]}
+    )
+    assert again.status_code == 304
+    assert again.headers["cache-control"].startswith("private")
+
+
+@pytest.mark.asyncio
+async def test_anonymous_service_assets_stay_public(client):
+    r = await client.post(
+        "/v1/services",
+        json={"name": "openly", "description": "public", "viewer_auth": "none"},
+    )
+    assert r.status_code == 201, r.text
+    s = r.json()
+    assert s["viewer_auth"] == "none"
+    r = await client.post(
+        f"/v1/services/{s['id']}/versions",
+        content=_tar({"index.html": b"<h1>hi</h1>", "app.js": b"1"}),
+        headers={"content-type": "application/gzip"},
+    )
+    assert r.status_code == 201, r.text
+    js = await client.get("/svc/openly/app.js")
+    assert js.status_code == 200
+    assert js.headers["cache-control"] == "public, max-age=31536000, immutable"
