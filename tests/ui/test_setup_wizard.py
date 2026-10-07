@@ -169,3 +169,155 @@ def test_gate_routes_returning_admins_past_a_finished_provider_step() -> None:
     body = src[start:end]
     assert "providerMissing" in body
     assert "llm_provider" in body and "model_profile" in body
+
+
+# ---------------------------------------------------------------------------
+# C-001 (console review 2026-10-08): the wizard must be resumable and idempotent.
+#
+# Step 1 persists the provider row (``llm-<type>``), but the step lived only in React state, and the gate sends the user back into
+# the wizard while the model profile is missing. A reload at step 2 therefore restarted at step 1 and every retry failed with a
+# 409 on the fixed id, reported as "Could not reach that provider": a dead end on the first run. The step is a fact about the
+# SERVER (what is already saved), so the decision is a set of pure helpers, run here for real in V8.
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+_HELPERS_END = "// ---- end of the resume helpers"
+
+
+def _helpers():
+    from py_mini_racer import MiniRacer
+
+    src = _src()
+    start = src.index("function SW_providerId(")
+    end = src.index(_HELPERS_END)
+    ctx = MiniRacer()
+    ctx.eval(src[start:end])
+    return ctx
+
+
+def _run(ctx, expression: str):
+    """Evaluate ``expression`` (a value or a promise) and hand back its JSON, or {"__rejected": ...}."""
+    ctx.eval(
+        "var __r = null; (async function () { try { __r = JSON.stringify({ok: await (" + expression + ")}); }"
+        " catch (e) { __r = JSON.stringify({rejected: {status: e && e.status, detail: e && e.detail, message: e && e.message}}); } })();"
+    )
+    return json.loads(ctx.eval("__r"))
+
+
+_FRESH = "[], []"
+_PROVIDER = '{id: "llm-openchat", provider: "openchat", config: {url: "http://llm.example/v1", api_key: "**********"}}'
+
+
+def test_a_fresh_install_starts_at_step_one() -> None:
+    assert _run(_helpers(), "SW_resumePlan([], [])") == {"ok": {"step": 1}}
+
+
+def test_a_saved_provider_without_a_profile_resumes_at_step_two() -> None:
+    """The reload-at-step-2 case: the row is there, the profile is not, so the user is at step 2 whatever React remembers."""
+    plan = _run(_helpers(), f"SW_resumePlan([{_PROVIDER}], [])")["ok"]
+    assert plan["step"] == 2 and plan["providerId"] == "llm-openchat"
+
+
+def test_the_provider_without_a_profile_is_the_one_resumed() -> None:
+    plan = _run(
+        _helpers(),
+        'SW_resumePlan([{id: "llm-a", provider: "ollama", config: {}}, {id: "llm-b", provider: "openchat", config: {}}], '
+        '[{id: "llm-a--m", provider_id: "llm-a", model_name: "m"}])',
+    )["ok"]
+    assert plan["step"] == 2 and plan["providerId"] == "llm-b"
+
+
+def test_a_provider_that_already_has_a_profile_is_edited_at_step_one_prefilled() -> None:
+    """The gate re-enters the wizard when the provider does not answer: the user must be able to correct it, not be told it exists."""
+    plan = _run(
+        _helpers(),
+        f'SW_resumePlan([{_PROVIDER}], [{{id: "llm-openchat--m", provider_id: "llm-openchat", model_name: "m"}}])',
+    )["ok"]
+    assert plan["step"] == 1
+    assert plan["prefill"] == {"type": "openchat", "url": "http://llm.example/v1", "providerId": "llm-openchat"}
+
+
+def test_saving_a_provider_that_already_exists_updates_it_instead_of_failing() -> None:
+    ctx = _helpers()
+    ctx.eval(
+        "var calls = []; function api(method, path, body) { calls.push(method + ' ' + path);"
+        " if (method === 'POST') return Promise.reject({status: 409, detail: 'already exists'});"
+        " return Promise.resolve({id: body.id}); }"
+    )
+    out = _run(ctx, 'SW_saveProvider(api, {id: "llm-openchat", provider: "openchat", config: {url: "http://x"}})')
+    assert "ok" in out, out
+    assert json.loads(ctx.eval("JSON.stringify(calls)")) == ["POST /llm_providers", "PUT /llm_providers/llm-openchat"]
+
+
+def test_saving_a_provider_does_not_hide_a_real_failure() -> None:
+    ctx = _helpers()
+    ctx.eval("var calls = []; function api(m, p) { calls.push(m); return Promise.reject({status: 500, detail: 'boom'}); }")
+    out = _run(ctx, 'SW_saveProvider(api, {id: "llm-openchat"})')
+    assert out["rejected"]["status"] == 500
+    assert json.loads(ctx.eval("JSON.stringify(calls)")) == ["POST"], "only a 409 may fall through to the update"
+
+
+def test_saving_a_profile_that_already_exists_counts_as_saved() -> None:
+    """A retried step 2 (the first request landed, the answer was lost) must not fail on its own earlier success."""
+    ctx = _helpers()
+    ctx.eval("function api(m, p) { return Promise.reject({status: 409}); }")
+    assert "ok" in _run(ctx, 'SW_saveProfile(api, {id: "llm-openchat--m"})')
+
+
+def test_the_resume_plan_comes_from_the_saved_provider_and_its_live_model_list() -> None:
+    ctx = _helpers()
+    ctx.eval(
+        "var calls = []; function api(method, path) { calls.push(method + ' ' + path);"
+        f" if (path.indexOf('/llm_providers?') === 0) return Promise.resolve({{items: [{_PROVIDER}]}});"
+        " if (path.indexOf('/model_profiles?') === 0) return Promise.resolve({items: []});"
+        " if (path === '/llm_providers/llm-openchat/discovered_models') return Promise.resolve({models: [{name: 'm1', context_length: 8000}]});"
+        " return Promise.reject({status: 404}); }"
+    )
+    plan = _run(ctx, "SW_loadResume(api)")["ok"]
+    assert plan["step"] == 2 and plan["providerId"] == "llm-openchat"
+    assert plan["models"] == [{"name": "m1", "context_length": 8000}]
+    # the saved row's secret is redacted on the wire, so the live probe must be the SAVED-provider route, not a replay of the row
+    assert not any("_discover_models" in c for c in json.loads(ctx.eval("JSON.stringify(calls)")))
+
+
+def test_a_saved_provider_that_does_not_answer_falls_back_to_step_one_with_a_notice() -> None:
+    ctx = _helpers()
+    ctx.eval(
+        "function api(method, path) {"
+        f" if (path.indexOf('/llm_providers?') === 0) return Promise.resolve({{items: [{_PROVIDER}]}});"
+        " if (path.indexOf('/model_profiles?') === 0) return Promise.resolve({items: []});"
+        " return Promise.reject({status: 502, detail: 'connection refused'}); }"
+    )
+    plan = _run(ctx, "SW_loadResume(api)")["ok"]
+    assert plan["step"] == 1
+    assert plan["prefill"]["url"] == "http://llm.example/v1"
+    assert "llm-openchat" in plan["notice"] and "connection refused" in plan["notice"]
+
+
+def test_a_failed_read_of_the_saved_state_never_blocks_the_wizard() -> None:
+    ctx = _helpers()
+    ctx.eval("function api() { return Promise.reject({status: 0, detail: 'offline'}); }")
+    assert _run(ctx, "SW_loadResume(api)")["ok"] == {"step": 1}
+
+
+def test_the_step_sequence_resumes_from_the_server_on_mount() -> None:
+    src = _src()
+    body = src[src.index("function SetupWizardSteps("):src.index("function SetupWizardGate(")]
+    assert "SW_loadResume(" in body, "the step must be derived from the server, not from React state alone"
+    assert "initialStep" in body, "the docs harness still starts a capture at a given step"
+    assert "SW_saveProvider(" in body and "SW_saveProfile(" in body, "both steps are idempotent"
+
+
+def test_system_setup_configure_provider_uses_the_same_resumable_steps() -> None:
+    """The System > Setup "Configure provider" route had the same dead end; it reuses SetupWizardSteps, so one fix covers both."""
+    src = _src()
+    page = src[src.index("function NV_SetupPage("):src.index("// ====", src.index("function NV_SetupPage("))]
+    assert "<SetupWizardSteps" in page
+
+
+def test_the_error_titles_name_the_phase_that_failed() -> None:
+    """"Could not reach that provider" was shown for a 409 on the save, which is not what happened."""
+    src = _src()
+    assert "Could not save the provider" in src
+    assert "Could not reach that provider" in src
