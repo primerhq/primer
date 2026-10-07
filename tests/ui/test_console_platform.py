@@ -56,8 +56,15 @@ def test_cards_open_shared_overlays():
 
 
 def test_delete_is_confirm_guarded():
-    m = re.search(r"function del\(row\)[\s\S]{0,700}", PLAT)
-    assert m and "confirmDialog" in m.group(0)
+    # The confirm-then-DELETE flow lives in NV_deleteRow (run for real by
+    # tests/ui/test_platform_delete_confirm.py); the card's del() hands it
+    # the console's dialog. The prompt must come before the DELETE.
+    m = re.search(r"function NV_deleteRow\([\s\S]{0,900}", PLAT)
+    assert m, "NV_deleteRow is gone"
+    flow = m.group(0)
+    assert "env.confirmDialog(" in flow
+    assert flow.index("env.confirmDialog(") < flow.index('env.apiFetch("DELETE"')
+    assert re.search(r"function del\(row\)[\s\S]{0,700}?NV_deleteRow\(", PLAT)
     assert "Referenced entities refuse deletion" in PLAT
 
 

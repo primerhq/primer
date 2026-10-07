@@ -162,7 +162,8 @@ def test_the_card_delete_goes_through_the_tested_flow() -> None:
     m = re.search(r"function del\(row\)\s*\{[\s\S]{0,1200}?\n  \}\n", PLAT)
     assert m, "the card's delete handler moved"
     assert "NV_deleteRow(" in m.group(0)
-    assert "confirmDialog" not in m.group(0), "the confirm is built inside NV_deleteRow, not duplicated here"
+    assert not re.search(r"confirmDialog\(", m.group(0)), "the prompt is built inside NV_deleteRow, not duplicated here"
+    assert "confirmDialog: confirmDialog" in m.group(0), "the console's own dialog is what NV_deleteRow is given"
 
 
 async def test_the_ids_the_console_warns_about_are_exactly_the_agents_whose_absence_reopens_setup(

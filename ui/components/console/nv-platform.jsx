@@ -63,6 +63,52 @@ function NV_countOf(v) {
   return typeof v === "number" ? v : null;
 }
 
+// The agents setup counts on: evaluate_setup_state (primer/bootstrap/
+// setup_state.py) reports the install as not set up when either row is
+// missing. tests/ui/test_platform_delete_confirm.py pins this list to
+// that predicate, so a renamed reserved id cannot drift unnoticed.
+var NV_SETUP_AGENT_IDS = ["operator", "builder"];
+
+// What one card's delete prompt says. Deleting a setup agent locks every
+// user out of the console, so that prompt names the consequence and the
+// way back; every other entity keeps the plain prompt.
+function NV_deleteConfirm(nav, row) {
+  var id = row.id || row.name;
+  var message = "Permanently delete " + id
+    + "? Referenced entities refuse deletion.";
+  if (nav === "agents" && NV_SETUP_AGENT_IDS.indexOf(row.id) !== -1) {
+    message = id + " is a built-in agent that setup checks for. "
+      + "Deleting it marks this install as not set up: admins are sent to "
+      + "the setup checklist and everyone else waits on a setup screen "
+      + "until the agent is back. A server restart, or Re-run seed on the "
+      + "setup checklist, re-creates it with its default definition, not "
+      + "your edits.";
+  }
+  return { title: "Delete " + (row.name || row.id), message: message };
+}
+
+// Confirm, then DELETE one card's entity. env carries the console's
+// dialog, fetch, toast and list refetch so the whole flow runs outside
+// React (tests/ui/test_platform_delete_confirm.py). Resolves true when
+// the row was deleted, false when the prompt was declined or refused.
+function NV_deleteRow(env, nav, row, path) {
+  var c = NV_deleteConfirm(nav, row);
+  return env.confirmDialog({
+    title: c.title, message: c.message, danger: true,
+  }).then(function (ok) {
+    if (!ok) return false;
+    return env.apiFetch("DELETE", path).then(function () {
+      env.toast("Deleted " + (row.id || row.name));
+      env.refetch();
+      return true;
+    }, function (e) {
+      env.toast("Delete refused: " + (e.detail || e.message),
+        { kind: "error", requestId: e.requestId });
+      return false;
+    });
+  });
+}
+
 // Per-entity page config. list() returns a promise of {items}; card()
 // maps a row to the prototype's card VM; open()/create() address the
 // shared overlays; delPath() names the DELETE route (null = no delete
@@ -1034,21 +1080,12 @@ function NV_PlatPage() {
   function del(row) {
     var path = page.delPath ? page.delPath(row) : null;
     if (!path) return;
-    confirmDialog({
-      title: "Delete " + (row.name || row.id),
-      message: "Permanently delete " + (row.id || row.name)
-        + "? Referenced entities refuse deletion.",
-      danger: true,
-    }).then(function (ok) {
-      if (!ok) return;
-      apiFetch("DELETE", path).then(function () {
-        con.toast("Deleted " + (row.id || row.name));
-        res.refetch();
-      }, function (e) {
-        con.toast("Delete refused: " + (e.detail || e.message),
-          { kind: "error", requestId: e.requestId });
-      });
-    });
+    NV_deleteRow({
+      confirmDialog: confirmDialog,
+      apiFetch: apiFetch,
+      toast: function (msg, extra) { con.toast(msg, extra); },
+      refetch: function () { res.refetch(); },
+    }, nav, row, path);
   }
 
   var title = page.title;
