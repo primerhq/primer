@@ -183,7 +183,7 @@ async def test_run_one_session_turn_writes_assistant_token_and_done(
     fake_storage_provider,
 ) -> None:
     """Happy-path: executor emits TextDeltas + Done → persists one
-    ASSISTANT_TOKEN + one DONE; publishes 2 ticks."""
+    ASSISTANT_TOKEN + one DONE; publishes a tick per record plus one after the final flush."""
     import json
 
     fake_executor = FakeExecutor([
@@ -242,8 +242,9 @@ async def test_run_one_session_turn_writes_assistant_token_and_done(
     assert r0["payload"]["text"] == "hi there"
     assert r1["kind"] == SessionMessageKind.DONE
 
-    # One tick per record
-    assert len(collected_ticks) == 2
+    # One tick per record, then one after the turn's final flush naming the last seq: the per-record ticks go out while the
+    # records are still in the writer's buffer, so only the last one tells the tap there is something durable to read.
+    assert [t["seq"] for t in collected_ticks] == [1, 2, 2]
 
 
 @pytest.mark.asyncio
@@ -523,7 +524,7 @@ async def test_each_record_gets_a_tick(
     fake_event_bus: InMemoryEventBus,
     fake_storage_provider,
 ) -> None:
-    """One tick published per persisted SessionMessageRecord."""
+    """One tick published per persisted SessionMessageRecord, and one more after the final flush (naming the last seq)."""
     ticks: list[dict[str, Any]] = []
 
     async def _collect() -> None:
@@ -567,8 +568,7 @@ async def test_each_record_gets_a_tick(
     lines = fake_workspace_io.read_lines(seeded_session.id)
     # DONE only (no coalesced text)
     assert len(lines) == 1
-    assert len(ticks) == 1
-    assert ticks[0]["seq"] == 1
+    assert [t["seq"] for t in ticks] == [1, 1]
 
 
 @pytest.mark.asyncio
