@@ -21,11 +21,11 @@ from datetime import datetime, timezone
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from primer.api.deps import get_claim_engine, get_event_bus, get_storage_provider
+from primer.api.deps import get_claim_engine, get_event_bus, get_storage_provider, require_admin
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
 from primer.harness.enqueue import announce_enqueued
@@ -41,9 +41,14 @@ from primer.model.harness import (
     HarnessDirection,
     HarnessOperation,
     HarnessRendering,
+    GitTokenRequired,
     HarnessStatus,
     TrackedEntity,
+    apply_git_token_update,
+    validate_git_ref,
+    validate_git_url,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.storage import (
     OffsetPage,
     PageRequest,
@@ -54,9 +59,46 @@ from primer.storage.q import Q
 harness_router = APIRouter(prefix="/v1/harnesses", tags=["harnesses"])
 
 
+def _require_admin_for_harness_write(request: Request) -> None:
+    """``require_admin`` for every harness write and action, with a message that says why.
+
+    Installing a harness writes arbitrary entities (agents, graphs, collections, documents and toolsets, a stdio MCP toolset
+    included) and runs git against the harness's remote with its stored token, so creating, changing, fetching, installing,
+    syncing, building, pushing or deleting a harness is an admin function (security review 2026-10-08, AUTHZ-03 / FS-01). The
+    router stays on the user tier so the reads (list, get, the bundle download) do too. The code stays ``forbidden_role``; a 401
+    passes through unchanged.
+    """
+    try:
+        require_admin(request)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "forbidden_role",
+                "message": (
+                    "Changing or running a harness requires the admin role: an install writes agents, graphs, collections, "
+                    "documents and toolsets, and fetching runs git with the harness's token. Ask an admin."
+                ),
+            },
+        ) from exc
+
+
+_admin_write = [Depends(_require_admin_for_harness_write)]
+
+
 # ---------------------------------------------------------------------------
 # Body models
 # ---------------------------------------------------------------------------
+
+
+def _check_git_url(v: str | None) -> str | None:
+    return None if v is None else validate_git_url(v)
+
+
+def _check_ref(v: str | None) -> str | None:
+    return None if v is None else validate_git_ref(v)
 
 
 class HarnessCreateBody(BaseModel):
@@ -70,6 +112,9 @@ class HarnessCreateBody(BaseModel):
     direction: HarnessDirection = HarnessDirection.INBOUND
     tracked_entities: list[TrackedEntity] = Field(default_factory=list)
 
+    _git_url = field_validator("git_url")(_check_git_url)
+    _ref = field_validator("ref")(_check_ref)
+
 
 class HarnessUpdateBody(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
@@ -78,6 +123,9 @@ class HarnessUpdateBody(BaseModel):
     subpath: str | None = None
     git_url: str | None = Field(default=None, min_length=1)
     git_token: str | None = None
+
+    _git_url = field_validator("git_url")(_check_git_url)
+    _ref = field_validator("ref")(_check_ref)
 
 
 class TrackedEntitiesBody(BaseModel):
@@ -93,6 +141,12 @@ def _get_harness_storage(sp):
     return sp.get_storage(Harness)
 
 
+def _requested_by(request: Request) -> PrincipalRef | None:
+    """Who is enqueueing an INSTALL or SYNC, for the worker's toolset admin rule. ``None`` (no resolved actor) fails closed."""
+    actor = getattr(request.state, "actor", None)
+    return PrincipalRef.from_principal(actor) if actor is not None else None
+
+
 # ---------------------------------------------------------------------------
 # POST /v1/harnesses  — create DRAFT
 # ---------------------------------------------------------------------------
@@ -103,6 +157,7 @@ def _get_harness_storage(sp):
     status_code=201,
     summary="Create a new harness (DRAFT)",
     responses=common_responses(409, 422, 500),
+    dependencies=_admin_write,
 )
 async def create_harness(
     body: HarnessCreateBody,
@@ -261,6 +316,7 @@ async def get_harness(
     response_model=Harness,
     summary="Update harness fields",
     responses=common_responses(404, 422, 500),
+    dependencies=_admin_write,
 )
 async def update_harness(
     body: HarnessUpdateBody,
@@ -272,7 +328,16 @@ async def update_harness(
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
 
-    from pydantic import SecretStr
+    # The stored token never follows git_url to a new remote (SEC-03); the served mask sent back means "unchanged".
+    try:
+        apply_git_token_update(
+            harness,
+            git_url_set="git_url" in body.model_fields_set,
+            git_url=body.git_url,
+            git_token=body.git_token,
+        )
+    except GitTokenRequired as exc:
+        return JSONResponse(status_code=422, content={"code": "git_token_required", "detail": str(exc)})
 
     overrides_dirty = harness.overrides_dirty
 
@@ -286,8 +351,6 @@ async def update_harness(
     if body.subpath is not None and body.subpath != harness.subpath:
         harness.subpath = body.subpath
         overrides_dirty = True
-    if body.git_token is not None:
-        harness.git_token = SecretStr(body.git_token)
     if "git_url" in body.model_fields_set:
         # Explicitly provided (possibly null). Outbound harnesses may clear
         # their remote (git is optional); inbound must always keep one to
@@ -329,6 +392,7 @@ async def update_harness(
     "/{harness_id}",
     summary="Enqueue UNINSTALL for a harness (202)",
     responses=common_responses(404, 409, 500),
+    dependencies=_admin_write,
 )
 async def delete_harness(
     harness_id: str = Path(...),
@@ -384,6 +448,7 @@ async def delete_harness(
     response_model=Harness,
     summary="Set harness overrides (validates against cached schema)",
     responses=common_responses(404, 422, 500),
+    dependencies=_admin_write,
 )
 async def put_harness_overrides(
     request: Request,
@@ -441,6 +506,7 @@ async def put_harness_overrides(
     "/{harness_id}/fetch",
     summary="Enqueue FETCH for a harness (202)",
     responses=common_responses(404, 409, 500),
+    dependencies=_admin_write,
 )
 async def fetch_harness(
     harness_id: str = Path(...),
@@ -489,8 +555,10 @@ async def fetch_harness(
     "/{harness_id}/install",
     summary="Enqueue INSTALL for a harness (202)",
     responses=common_responses(404, 409, 422, 500),
+    dependencies=_admin_write,
 )
 async def install_harness(
+    request: Request,
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
@@ -555,6 +623,7 @@ async def install_harness(
         )
 
     harness.pending_operation = HarnessOperation.INSTALL
+    harness.operation_requested_by = _requested_by(request)
     updated = await storage.update(harness)
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
@@ -572,8 +641,10 @@ async def install_harness(
     "/{harness_id}/sync",
     summary="Enqueue SYNC for a harness (202)",
     responses=common_responses(404, 409, 422, 500),
+    dependencies=_admin_write,
 )
 async def sync_harness(
+    request: Request,
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
@@ -619,6 +690,7 @@ async def sync_harness(
         )
 
     harness.pending_operation = HarnessOperation.SYNC
+    harness.operation_requested_by = _requested_by(request)
     updated = await storage.update(harness)
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
@@ -636,6 +708,7 @@ async def sync_harness(
     "/{harness_id}/tracked_entities",
     summary="Replace tracked_entities on an outbound harness",
     responses=common_responses(404, 409, 422, 500),
+    dependencies=_admin_write,
 )
 async def put_tracked_entities(
     body: TrackedEntitiesBody,
@@ -696,6 +769,7 @@ async def put_tracked_entities(
     "/{harness_id}/build",
     summary="Enqueue BUILD for an outbound harness (202)",
     responses=common_responses(404, 409, 422, 500),
+    dependencies=_admin_write,
 )
 async def build_harness(
     harness_id: str = Path(...),
@@ -809,6 +883,7 @@ async def download_harness_bundle(
     "/{harness_id}/push",
     summary="Enqueue PUSH for an outbound harness (202)",
     responses=common_responses(404, 409, 422, 500),
+    dependencies=_admin_write,
 )
 async def push_harness(
     harness_id: str = Path(...),

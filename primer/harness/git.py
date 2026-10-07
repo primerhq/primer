@@ -2,6 +2,12 @@
 
 We shell out to `git` because pure-Python git libs add a heavy dep and
 shelling is universal. Token redaction is done before any error surface.
+
+Every url and ref is checked before git starts (:func:`validate_git_url`, :func:`validate_git_ref`), sits after a ``--`` in the
+argv so git can never read it as an option, and every git runs with ``-c protocol.allow=never`` plus an explicit allow for
+https (and file, under the operator opt-in) and ``GIT_PROTOCOL_FROM_USER=0``, so no other transport (``ext::``, ``ssh``,
+``git://``, a local path) is reachable even through a value that slipped past the checks (security review 2026-10-08,
+AUTHZ-04 / INJ-03 / FS-02).
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from urllib.parse import urlparse, urlunparse
 import yaml
 
 from primer.harness.hashes import hash_bundle
+from primer.model.harness import file_git_urls_allowed, validate_git_ref, validate_git_url
 
 
 class HarnessGitError(Exception):
@@ -31,6 +38,31 @@ class HarnessGitError(Exception):
 
 
 _GIT_TIMEOUT_SECONDS: Final = 300.0
+
+
+def _check_target(url: str, ref: str) -> None:
+    """Refuse a url or ref git must never see, before any process starts."""
+    try:
+        validate_git_url(url)
+    except ValueError as exc:
+        raise HarnessGitError("invalid_git_url", str(exc)) from exc
+    try:
+        validate_git_ref(ref)
+    except ValueError as exc:
+        raise HarnessGitError("invalid_git_ref", str(exc)) from exc
+
+
+def _git(*args: str) -> list[str]:
+    """The argv for one git call: only the https transport (plus file under the operator opt-in) is allowed."""
+    protocols = ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always"]
+    if file_git_urls_allowed():
+        protocols += ["-c", "protocol.file.allow=always"]
+    return ["git", *protocols, *args]
+
+
+def _git_env() -> dict[str, str]:
+    """The environment for every git call: ``GIT_PROTOCOL_FROM_USER=0`` so a ``user``-policy transport is never allowed."""
+    return {**os.environ, "GIT_PROTOCOL_FROM_USER": "0"}
 
 
 def _inject_token(url: str, token: str | None) -> str:
@@ -78,6 +110,7 @@ async def _run(args: list[str], **kwargs) -> tuple[int, str, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env=_git_env(),
             **kwargs,
         )
         try:
@@ -104,11 +137,12 @@ async def ls_remote(url: str, *, token: str | None, ref: str) -> str:
     Accepts branches, tags, and full SHAs (the SHA case skips network
     and returns the input).
     """
+    _check_target(url, ref)
     if len(ref) == 40 and all(c in "0123456789abcdef" for c in ref):
         # full SHA — no need to ls-remote
         return ref
     effective = _inject_token(url, token)
-    returncode, stdout, stderr = await _run(["git", "ls-remote", effective, ref])
+    returncode, stdout, stderr = await _run(_git("ls-remote", "--", effective, ref))
     if returncode != 0:
         raise HarnessGitError(
             "git_clone_failed" if "Authentication" in (stderr or "") else "ref_not_found",
@@ -137,18 +171,19 @@ async def clone_at_ref(
     Handles symbolic refs (branch/tag) via ``--branch=<ref>`` and
     SHA refs via ``init + fetch + checkout``.
     """
+    _check_target(url, ref)
     effective = _inject_token(url, token)
     is_sha = len(ref) == 40 and all(c in "0123456789abcdef" for c in ref)
     if is_sha:
         # SHA path: init empty, fetch the specific SHA, checkout.
-        returncode, _, stderr = await _run(["git", "init", "-q", dest])
+        returncode, _, stderr = await _run(_git("init", "-q", "--", dest))
         if returncode != 0:
             raise HarnessGitError(
                 "git_clone_failed",
                 _redact((stderr or "git init failed").strip(), token),
             )
         returncode, _, stderr = await _run(
-            ["git", "fetch", "--depth=1", effective, ref],
+            _git("fetch", "--depth=1", "--", effective, ref),
             cwd=dest,
         )
         if returncode != 0:
@@ -157,7 +192,7 @@ async def clone_at_ref(
                 "git_clone_failed",
                 _redact((stderr or "git fetch failed").strip(), token),
             )
-        returncode, _, stderr = await _run(["git", "checkout", "-q", "FETCH_HEAD"], cwd=dest)
+        returncode, _, stderr = await _run(_git("checkout", "-q", "FETCH_HEAD"), cwd=dest)
         if returncode != 0:
             shutil.rmtree(dest, ignore_errors=True)
             raise HarnessGitError(
@@ -167,7 +202,7 @@ async def clone_at_ref(
         return
     # Symbolic ref path.
     returncode, _, stderr = await _run(
-        ["git", "clone", "-q", "--depth=1", "--branch", ref, effective, dest],
+        _git("clone", "-q", "--depth=1", f"--branch={ref}", "--", effective, dest),
     )
     if returncode != 0:
         shutil.rmtree(dest, ignore_errors=True)
@@ -254,9 +289,10 @@ async def fetch_harness_metadata(
         # Resolve commit SHA from the working clone.
         try:
             proc = await asyncio.create_subprocess_exec(
-                "git", "-C", tmp_dir, "rev-parse", "HEAD",
+                *_git("-C", tmp_dir, "rev-parse", "HEAD"),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=_git_env(),
             )
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(), timeout=_GIT_TIMEOUT_SECONDS,
@@ -290,9 +326,10 @@ async def _get_head_sha(clone_dir: str) -> str:
     """Return ``git rev-parse HEAD`` for ``clone_dir`` or empty string on failure."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "git", "-C", clone_dir, "rev-parse", "HEAD",
+            *_git("-C", clone_dir, "rev-parse", "HEAD"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_git_env(),
         )
         stdout_b, _ = await asyncio.wait_for(
             proc.communicate(), timeout=_GIT_TIMEOUT_SECONDS,
@@ -339,6 +376,7 @@ async def push_bundle(
     non-fast-forward. Returns the current HEAD SHA without a new commit when
     the working tree is unchanged (no-op).
     """
+    _check_target(url, ref)
     auth_url = _inject_token(url, token)
     with tempfile.TemporaryDirectory() as td:
         clone_dir = os.path.join(td, "repo")
@@ -346,17 +384,17 @@ async def push_bundle(
         # remote is empty or the ref doesn't exist yet.
         try:
             await _run_checked(
-                ["git", "clone", "--depth=1", "--branch", ref, auth_url, clone_dir],
+                _git("clone", "--depth=1", f"--branch={ref}", "--", auth_url, clone_dir),
                 token=token, error_code="git_clone_failed",
             )
         except HarnessGitError:
             shutil.rmtree(clone_dir, ignore_errors=True)
             await _run_checked(
-                ["git", "init", "-b", ref, clone_dir],
+                _git("init", f"--initial-branch={ref}", "--", clone_dir),
                 token=token, error_code="git_clone_failed",
             )
             await _run_checked(
-                ["git", "-C", clone_dir, "remote", "add", "origin", auth_url],
+                _git("-C", clone_dir, "remote", "add", "--", "origin", auth_url),
                 token=token, error_code="git_clone_failed",
             )
 
@@ -398,16 +436,16 @@ async def push_bundle(
 
         # Stage all changes.
         await _run_checked(
-            ["git", "-C", clone_dir,
-             "-c", "user.email=primer@primer",
-             "-c", "user.name=primer",
-             "add", "-A"],
+            _git("-C", clone_dir,
+                 "-c", "user.email=primer@primer",
+                 "-c", "user.name=primer",
+                 "add", "-A"),
             token=token,
         )
 
         # No-op detection: if `git status --porcelain` is empty, skip commit.
         returncode, status_out, status_err = await _run(
-            ["git", "-C", clone_dir, "status", "--porcelain"],
+            _git("-C", clone_dir, "status", "--porcelain"),
         )
         if returncode != 0:
             raise HarnessGitError(
@@ -418,16 +456,16 @@ async def push_bundle(
             return await _get_head_sha(clone_dir)
 
         await _run_checked(
-            ["git", "-C", clone_dir,
-             "-c", "user.email=primer@primer",
-             "-c", "user.name=primer",
-             "commit", "-m", commit_message],
+            _git("-C", clone_dir,
+                 "-c", "user.email=primer@primer",
+                 "-c", "user.name=primer",
+                 "commit", "-m", commit_message),
             token=token,
         )
 
         try:
             await _run_checked(
-                ["git", "-C", clone_dir, "push", "origin", ref],
+                _git("-C", clone_dir, "push", "--", "origin", ref),
                 token=token,
             )
         except HarnessGitError as exc:

@@ -16,6 +16,7 @@ import pytest
 from pydantic import SecretStr
 
 from primer.model.harness import Harness, HarnessDirection, HarnessStatus
+from primer.model.storage import OffsetPage
 from tests.api.test_require_user_admin import _login, _seed
 
 pytestmark = pytest.mark.asyncio
@@ -74,7 +75,7 @@ async def test_a_user_is_refused_every_harness_write(raw_client, app, index):
     assert "forbidden_role" in resp.text
     after = await app.state.storage_provider.get_storage(Harness).get(before.id)
     assert after.model_dump() == before.model_dump(), "a refused call changed the harness"
-    rows = await app.state.storage_provider.get_storage(Harness).list()
+    rows = await app.state.storage_provider.get_storage(Harness).list(OffsetPage(offset=0, length=50))
     assert [h.id for h in rows.items] == [before.id], "a refused create wrote a row"
 
 

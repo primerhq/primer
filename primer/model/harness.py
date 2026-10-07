@@ -2,14 +2,85 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from primer.model.common import Identifiable
+from primer.model.principal import PrincipalRef
+
+
+# ---------------------------------------------------------------------------
+# git_url / ref rules (security review 2026-10-08, AUTHZ-04 / INJ-03 / FS-02)
+# ---------------------------------------------------------------------------
+
+#: Operator opt-in for ``file://`` remotes. Off in production; the test lanes set it because they clone local bare repos.
+FILE_GIT_URLS_ENV = "PRIMER_HARNESS_ALLOW_FILE_URLS"
+
+_REF_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]{0,254}$")
+
+
+def file_git_urls_allowed() -> bool:
+    """Whether ``file://`` remotes are accepted: only when the operator set ``PRIMER_HARNESS_ALLOW_FILE_URLS=1``.
+
+    Read on every call (not cached at import), so tests can flip it and a restart is what changes it in production.
+    """
+    return os.environ.get(FILE_GIT_URLS_ENV) == "1"
+
+
+def validate_git_url(url: str) -> str:
+    """Return ``url`` if git may be pointed at it, else raise ``ValueError``.
+
+    Only ``https://`` with a host is accepted (plus ``file://`` under the operator opt-in). A value git would read as an option
+    (a leading ``-``), a remote-helper transport (``ext::``), a local path, ``ssh``, ``git`` or plain ``http`` is refused, as is
+    any whitespace or control character.
+    """
+    if not isinstance(url, str) or not url:
+        raise ValueError("git_url must be a non-empty string")
+    if url.startswith("-"):
+        raise ValueError("git_url must not start with '-'")
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in url):
+        raise ValueError("git_url must not contain whitespace or control characters")
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        parsed.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError as exc:
+        raise ValueError(f"git_url is not a valid URL: {exc}") from exc
+    if parsed.scheme == "https":
+        if not host or host.startswith("-"):
+            raise ValueError("git_url must name a host (https://host/path)")
+        return url
+    if parsed.scheme == "file" and file_git_urls_allowed():
+        if not parsed.path.startswith("/"):
+            raise ValueError("a file:// git_url must be an absolute path")
+        return url
+    raise ValueError("git_url must be an https:// URL")
+
+
+def validate_git_ref(ref: str) -> str:
+    """Return ``ref`` if it is a plain branch, tag or commit name, else raise ``ValueError``.
+
+    Letters, digits, ``.``, ``_``, ``/`` and ``-``; it may not start with ``-`` (git would read it as an option) or ``.``, and the
+    git refname rules that matter here hold: no ``..``, no ``//``, no ``/.``, and no trailing ``/``, ``.`` or ``.lock``.
+    """
+    if (
+        not isinstance(ref, str)
+        or not _REF_RE.match(ref)
+        or ".." in ref
+        or "//" in ref
+        or "/." in ref
+        or ref.endswith(("/", ".", ".lock"))
+    ):
+        raise ValueError(
+            "ref must be a branch, tag or commit name: letters, digits, '.', '_', '/' and '-', not starting with '-'",
+        )
+    return ref
 
 
 class HarnessStatus(str, Enum):
@@ -96,6 +167,16 @@ class DependencyRef(BaseModel):
             )
         return v
 
+    @field_validator("git_url")
+    @classmethod
+    def _validate_git_url(cls, v: str) -> str:
+        return validate_git_url(v)
+
+    @field_validator("ref")
+    @classmethod
+    def _validate_ref(cls, v: str) -> str:
+        return validate_git_ref(v)
+
 
 class ResolvedDependency(BaseModel):
     """A dependency node resolved by the transitive walk."""
@@ -145,6 +226,14 @@ class Harness(Identifiable):
             "does not, keeping the user's own tracked objects)."
         ),
     )
+    operation_requested_by: PrincipalRef | None = Field(
+        default=None,
+        description=(
+            "Who enqueued the pending INSTALL or SYNC. The worker applies the toolset admin rule against it: a bundle that "
+            "would create or change a stdio MCP toolset is refused unless this requester may (an admin, or the internal "
+            "system / trigger actors). ``None`` (unknown) fails closed."
+        ),
+    )
     last_operation_at: datetime | None = None
     last_operation_error: str | None = None
     dependencies_resolved: list[ResolvedDependency] = Field(default_factory=list)
@@ -165,6 +254,36 @@ class Harness(Identifiable):
         if "__" in v:
             raise ValueError("slug may not contain '__'")
         return v
+
+
+#: What a read serves for a stored ``git_token`` (the plain ``SecretStr`` mask); sent back, it means "unchanged".
+_SERVED_TOKEN_MASK = "**********"
+
+
+class GitTokenRequired(ValueError):
+    """An update that moves ``git_url`` to a new remote while keeping the stored token."""
+
+
+def apply_git_token_update(
+    harness: Harness, *, git_url_set: bool, git_url: str | None, git_token: str | None,
+) -> None:
+    """Apply an update's ``git_token`` to ``harness`` (in place), refusing to carry the stored token to a new remote.
+
+    ``git_token`` absent (``None``) or the served mask keeps the stored token; ``""`` clears it; any other value replaces it.
+    Moving ``git_url`` to a different remote while a token is stored needs the token re-entered (or cleared) in the same update:
+    otherwise the next fetch would send the old remote's token to the new host (security review 2026-10-08, SEC-03). Clearing
+    the remote (``git_url=None``) sends nothing anywhere, so it needs no token. Raises :class:`GitTokenRequired`; check before
+    changing anything else on ``harness``.
+    """
+    supplied = git_token is not None and git_token != _SERVED_TOKEN_MASK
+    moves_remote = git_url_set and git_url is not None and git_url != harness.git_url
+    if moves_remote and harness.git_token is not None and not supplied:
+        raise GitTokenRequired(
+            "changing git_url needs git_token re-entered in the same update (send the token for the new remote, or \"\" to "
+            "clear it): the stored token is never sent to a different remote",
+        )
+    if supplied:
+        harness.git_token = SecretStr(git_token) if git_token else None
 
 
 class RenderedEntry(BaseModel):
@@ -189,6 +308,7 @@ class HarnessRendering(Identifiable):
 
 __all__ = [
     "DependencyRef",
+    "GitTokenRequired",
     "Harness",
     "HarnessDirection",
     "HarnessOperation",
@@ -198,4 +318,8 @@ __all__ = [
     "RenderedEntry",
     "ResolvedDependency",
     "TrackedEntity",
+    "apply_git_token_update",
+    "file_git_urls_allowed",
+    "validate_git_ref",
+    "validate_git_url",
 ]

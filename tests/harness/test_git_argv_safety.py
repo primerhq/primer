@@ -36,7 +36,11 @@ def calls(monkeypatch) -> list[dict[str, Any]]:
 
     async def fake_exec(*argv: str, **kwargs: Any) -> _FakeProc:
         recorded.append({"argv": list(argv), "env": kwargs.get("env")})
-        out = f"{_SHA}\trefs/heads/main\n".encode() if "ls-remote" in argv else b""
+        out = b""
+        if "ls-remote" in argv:
+            out = f"{_SHA}\trefs/heads/main\n".encode()
+        elif "status" in argv:
+            out = b" M a.txt\n"  # a change to commit, so push_bundle goes on to commit and push
         return _FakeProc(out)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)

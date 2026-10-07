@@ -429,6 +429,10 @@ def test_build_returns_entries_on_success():
 async def test_apply_install_orders_kinds(fake_storage_provider):
     """install creates entities in toolset → collection → document → agent → graph order."""
     harness = _make_harness("acme")
+    # The bundle carries a stdio toolset, which only an admin's install may write (AUTHZ-03).
+    from primer.model.principal import PrincipalRef
+
+    harness.operation_requested_by = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
 
     toolset_entry = RenderedEntry(
         kind="toolset", template_name="ts",
