@@ -27,9 +27,10 @@ class _FakeSetupApi:
     """The slice of the API the first-boot gate and wizard use, with the same conflict semantics as the real routes."""
 
     def __init__(self, *, providers: list[dict] | None = None, profiles: list[dict] | None = None,
-                 provider_answers: bool = True) -> None:
+                 provider_answers: bool = True, provider_keys: dict[str, str] | None = None) -> None:
         self.providers = list(providers or [])
         self.profiles = list(profiles or [])
+        self.real_keys: dict[str, str] = dict(provider_keys or {})   # the credentials the server holds; the wire only ever shows a mask
         self.provider_answers = provider_answers      # does the SAVED provider answer a live probe (the llm_provider predicate)
         self.seeded = False
         self.calls: list[str] = []
@@ -50,6 +51,23 @@ class _FakeSetupApi:
             {"key": "builder_agent", "label": "Builder agent seeded", "ok": self.seeded, "detail": None},
             {"key": "system_collection", "label": "System collection exists", "ok": True, "detail": None},
         ]
+
+    def _served(self, row: dict) -> dict:
+        """The row as GET serves it: the api_key is masked (the last four characters stay visible), never plaintext."""
+        key = self.real_keys.get(row["id"])
+        config = dict(row.get("config") or {})
+        config["api_key"] = None if not key else "**********" + key[-4:] if len(key) > 4 else "**********"
+        return {**row, "config": config}
+
+    def _store_key(self, provider_id: str, incoming) -> None:
+        """The server's rule for a full-replace write (01a05198): a mask-shaped echo keeps the stored key, a new value replaces
+        it, and a blank or missing key CLEARS it."""
+        if isinstance(incoming, str) and incoming.startswith("**********"):
+            return
+        if incoming:
+            self.real_keys[provider_id] = incoming
+        else:
+            self.real_keys.pop(provider_id, None)
 
     # -- the route handler ---------------------------------------------------------------------------------------------
     def handle(self, route) -> None:
@@ -78,19 +96,27 @@ class _FakeSetupApi:
             self.calls.append("POST /llm_providers/_discover_models")
             return reply(200, {"models": _MODELS})
         if path == "/v1/llm_providers" and method == "GET":
-            return reply(200, {"items": self.providers, "total": len(self.providers)})
+            return reply(200, {"items": [self._served(p) for p in self.providers], "total": len(self.providers)})
         if path == "/v1/llm_providers" and method == "POST":
             self.calls.append("POST /llm_providers")
             if any(p["id"] == body["id"] for p in self.providers):
                 return conflict(f"LLMProvider with id {body['id']!r}")
+            self._store_key(body["id"], (body.get("config") or {}).get("api_key"))
             self.providers.append(body)
-            return reply(201, body)
+            return reply(201, self._served(body))
         match = re.fullmatch(r"/v1/llm_providers/([^/]+)", path)
+        if match and method == "GET":
+            self.calls.append(f"GET /llm_providers/{match.group(1)}")
+            row = next((p for p in self.providers if p["id"] == match.group(1)), None)
+            if row is None:
+                return reply(404, {"type": "/errors/not-found", "title": "Not Found", "status": 404, "detail": "no such provider"})
+            return reply(200, self._served(row))
         if match and method == "PUT":
             self.calls.append(f"PUT /llm_providers/{match.group(1)}")
+            self._store_key(match.group(1), (body.get("config") or {}).get("api_key"))
             self.providers = [body if p["id"] == match.group(1) else p for p in self.providers]
             self.provider_answers = True              # the corrected details are what answers now
-            return reply(200, body)
+            return reply(200, self._served(body))
         match = re.fullmatch(r"/v1/llm_providers/([^/]+)/discovered_models", path)
         if match and method == "GET":
             self.calls.append(f"GET /llm_providers/{match.group(1)}/discovered_models")
@@ -168,3 +194,21 @@ def test_correcting_a_saved_provider_that_does_not_answer_updates_it_instead_of_
     assert f"PUT /llm_providers/{_PROVIDER_ID}" in api.calls, "an existing provider is updated"
     assert "Could not" not in page.locator(".setup-steps").inner_text(), "no error banner after a correct retry"
     assert api.providers[0]["config"]["url"] == "http://right.example/v1"
+
+
+def test_correcting_only_the_url_of_a_keyed_provider_keeps_its_key(page, console_url: str) -> None:
+    """The form never shows a stored key, so the operator leaves the key field blank while fixing the URL. PUT is a full replace
+    and a blank key clears the credential (01a05198), so the wizard has to echo the stored key's mask for the server to keep it."""
+    saved = {"id": _PROVIDER_ID, "provider": "openchat", "config": {"url": "http://wrong.example/v1"}, "limits": {"max_concurrency": 4}}
+    profile = {"id": f"{_PROVIDER_ID}--model-one", "provider_id": _PROVIDER_ID, "model_name": "model-one", "context_length": 8000}
+    api = _FakeSetupApi(providers=[saved], profiles=[profile], provider_answers=False, provider_keys={_PROVIDER_ID: "sk-secret-1234"})
+    api.seeded = True
+    _open_wizard(page, console_url, api)
+
+    assert page.locator("#setup-key").input_value() == "", "the form does not show (or know) the stored key"
+    _connect_step_one(page, "http://right.example/v1")
+    page.locator("#setup-model").wait_for(state="visible", timeout=10_000)
+
+    assert f"PUT /llm_providers/{_PROVIDER_ID}" in api.calls
+    assert api.providers[0]["config"]["url"] == "http://right.example/v1", "the corrected URL is saved"
+    assert api.real_keys.get(_PROVIDER_ID) == "sk-secret-1234", "the stored key survived the correction"
