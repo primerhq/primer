@@ -243,7 +243,7 @@ def test_saving_a_provider_that_already_exists_updates_it_instead_of_failing() -
     ctx.eval(
         "var calls = []; function api(method, path, body) { calls.push(method + ' ' + path);"
         " if (method === 'POST') return Promise.reject({status: 409, detail: 'already exists'});"
-        " return Promise.resolve({id: body.id}); }"
+        " return Promise.resolve({id: body ? body.id : 'llm-openchat'}); }"
     )
     out = _run(ctx, 'SW_saveProvider(api, {id: "llm-openchat", provider: "openchat", config: {url: "http://x"}})')
     assert "ok" in out, out
