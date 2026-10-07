@@ -20,7 +20,9 @@ from primer.worker.pool import WorkerPool
 
 
 @pytest_asyncio.fixture
-async def local_bare_repo(tmp_path):
+async def local_bare_repo(tmp_path, monkeypatch):
+    # A file:// remote is refused unless the operator opts in (security review 2026-10-08, AUTHZ-04).
+    monkeypatch.setenv("PRIMER_HARNESS_ALLOW_FILE_URLS", "1")
     work = tmp_path / "work"
     work.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=work, check=True)
