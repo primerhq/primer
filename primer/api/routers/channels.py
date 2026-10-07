@@ -164,9 +164,11 @@ async def _channel_on_pre_create(entity: Channel, request: Request) -> None:
 
 
 async def _channel_on_pre_update(entity: Channel, existing: Channel, request: Request) -> None:
-    """A replace must name an existing ChannelProvider and that provider's platform (ticket 01a1139e).
+    """A replace must name an existing ChannelProvider, that provider's platform, and a ``(provider_id, external_id)`` pair no OTHER
+    channel holds (tickets 01a1139e and 01a11598-e1d7-7060-8fe9-d483dec4cf09).
 
-    The router had no pre-update hook, so a PUT could move a channel to another platform or onto a provider that does not exist.
+    The router had no pre-update hook, so a PUT could move a channel to another platform, onto a provider that does not exist, or onto
+    another channel's pair (a 409 now, where create always refused it).
     """
     del existing  # the new pair is what counts: the row is rewritten whole
     try:
