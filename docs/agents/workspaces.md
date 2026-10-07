@@ -27,6 +27,7 @@ mcp_tools:
   - workspaces::get_workspace_session
   - workspaces::list_workspace_sessions
   - workspaces::cancel_workspace_session
+  - workspaces::interrupt_workspace_session
   - system::set_workspace_channel_association
   - system::clear_workspace_channel_association
 ---
@@ -196,8 +197,10 @@ how the routing works.
 Sessions on a workspace are run with
 `workspaces::create_workspace_session`, inspected with
 `workspaces::get_workspace_session` /
-`workspaces::list_workspace_sessions`, and stopped with
-`workspaces::cancel_workspace_session`. See
+`workspaces::list_workspace_sessions`, ended with
+`workspaces::cancel_workspace_session`, or have only the turn they are running
+stopped (the session stays alive) with
+`workspaces::interrupt_workspace_session`. See
 [sessions](sessions.md) for the full set.
 
 Note: `workspace_ext::watch_files` exists inside a session (it yields

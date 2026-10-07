@@ -7,6 +7,7 @@ mcp_tools:
   - workspaces::steer_workspace_session
   - workspaces::resume_workspace_session
   - workspaces::pause_workspace_session
+  - workspaces::interrupt_workspace_session
   - workspaces::cancel_workspace_session
 ---
 
@@ -78,6 +79,7 @@ After steering or resuming, re-poll `workspaces::get_workspace_session`; the ses
 ## Gotchas
 - `waiting` is not `paused`. `waiting` means the agent yielded inside its turn (see `yielding`); `paused` is an external halt you applied.
 - Pause vs cancel: pause is resumable, cancel is terminal (`ended_reason: "cancelled"`). Do not cancel a session you intend to continue.
+- A parked session has no turn to stop, so `workspaces::interrupt_workspace_session` is refused with `type=conflict` and records nothing. Resume or steer it, or cancel it.
 - Steering a session that has already `ended` has no effect; check `status` first.
 
 ## Related

@@ -237,7 +237,9 @@ Once you have picked an agent or graph (see the capability index and
    (`ended_reason: completed`). A `waiting` status means the agent parked on a
    yielding tool; see `cookbook/monitor-and-resume-a-parked-session`.
 4. Read results with `workspaces::read_workspace_file`.
-5. Stop a run with `workspaces::cancel_workspace_session`; clean up with `workspaces::delete_workspace`.
+5. End a run with `workspaces::cancel_workspace_session`; to stop only its current turn and keep the
+   session, use `workspaces::interrupt_workspace_session` (a success answer alone is not a Stop: check
+   `interrupt_requested` in it). Clean up with `workspaces::delete_workspace`.
 
 Full recipe: `cookbook/create-and-run-a-session`.
 
