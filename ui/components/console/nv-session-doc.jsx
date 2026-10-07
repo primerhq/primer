@@ -13,6 +13,20 @@ function NV_sessionIsOver(session) {
   return !!session && session.status === "ended";
 }
 
+// How long the polled row must keep contradicting a live tap status before the status is dropped (C-008/C-011): the detail
+// resource polls every 2 s, so this is at least two polls that agree, and a turn that is just starting (the tap echoes the
+// user's message before the row flips to claimable) never loses its strip to one stale read.
+var NV_STALE_STATUS_MS = 4000;
+
+// The session row is the truth about whether a turn is executing; the store's live status is only what the tap last said, and
+// only a terminal frame clears it. True when the row says no turn is running (it is ended, or served turn_status "idle")
+// while a live status is showing. The "sending" leg of a send in flight is never stale: a send into an ended session reopens
+// it, and the row catches up after the status does. A row that serves no turn_status says nothing about it.
+function NV_rowContradictsStatus(session, status) {
+  if (!session || !status || status.verb === "sending") return false;
+  return session.status === "ended" || session.turn_status === "idle";
+}
+
 // Refresh bug (2026-08-29): the store's live status channel
 // (session-store.js's SS_updateStatus) only ever knows the CURRENT verb
 // ("running: {tool}", "thinking") from a live tap frame - a fresh page
@@ -2097,6 +2111,18 @@ function NV_SessionDoc(props) {
       setOptimistic(null);
     }
   }, [detail.data]);
+  // A live status the polled row keeps contradicting is stale (a terminal frame was lost, or never written): drop it, and
+  // re-read the durable tail, the catch-up that already exists, so the transcript is complete too. Restarts whenever the
+  // status or the row's verdict changes, so a fresh frame or a flip back to running gives it a new grace.
+  var statusIsStale = NV_rowContradictsStatus(session, statusSnap) && !optimistic;
+  React.useEffect(function () {
+    if (!statusIsStale) return undefined;
+    var seen = statusSnap;
+    var t = setTimeout(function () {
+      if (window.SS_expireStatus(store, seen)) history.refetch();
+    }, NV_STALE_STATUS_MS);
+    return function () { clearTimeout(t); };
+  }, [statusIsStale, statusSnap]);
   // C4 three-source merge: the store's status channel already carries
   // the tap-derived live status and the optimistic "sending" leg; the
   // polled session row's turn_status is layered on below (rowBusy).
