@@ -223,3 +223,32 @@ async def test_context_length_prefers_known_model_fallback_over_a_stored_value(
     r = await client.get("/v1/sessions/s-7")
     assert r.status_code == 200, r.text
     assert r.json()["context_length"] == 128_000
+
+
+_TOOL_ROUND_LINES = (
+    '{"seq":1,"kind":"user_input","payload":{"text":"hi"}}\n'
+    '{"seq":2,"kind":"done","payload":{"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10}}}\n'
+    '{"seq":3,"kind":"done","payload":{"stop_reason":"stop","usage":{"input_tokens":200,"output_tokens":20}}}\n'
+)
+
+
+@pytest.mark.asyncio
+async def test_usage_turns_counts_turns_and_model_calls_counts_model_calls(
+    client: httpx.AsyncClient, app, fake_storage_provider,
+):
+    """01a1138d: one user turn with one tool round used to read ``turns: 2``."""
+    await _seed_session(fake_storage_provider, "s-3")
+    await _seed_agent_and_profile(fake_storage_provider)
+    ws = _FakeWorkspace()
+    ws.write(".state/sessions/s-3/messages.jsonl", _TOOL_ROUND_LINES)
+
+    async def _get(wid):
+        return ws if wid == "ws-1" else None
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+
+    r = await client.get("/v1/sessions/s-3")
+
+    assert r.status_code == 200, r.text
+    usage = r.json()["usage"]
+    assert (usage["turns"], usage["model_calls"]) == (1, 2)
+    assert usage["total_input_tokens"] == 300
