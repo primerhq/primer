@@ -1231,6 +1231,36 @@ class TestDiagnosticExec:
         assert result.exit_code != 0
         assert result.stderr != ""
 
+    @pytest.mark.parametrize(
+        "payload", ["echo hi ; echo INJECTED", "echo hi\necho INJECTED", "echo $(echo INJECTED)", "echo hi | cat", "echo hi > out.txt"],
+    )
+    async def test_shell_syntax_is_refused_not_executed(
+        self, provider: LocalWorkspaceBackend, payload: str
+    ) -> None:
+        """A-06: the command used to run through ``/bin/sh -c`` with the route's first-token whitelist as the only guard."""
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+
+        with pytest.raises(ValueError):
+            await ws.diagnostic_exec(payload)
+
+        assert not (ws.root / "out.txt").exists()
+
+    async def test_the_command_does_not_see_the_primer_processs_environment(
+        self, provider: LocalWorkspaceBackend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A-06: the diagnostic ran with ``{**os.environ, **workspace env}``, so a command in it could read whatever
+        secrets the primer process holds. It now sees PATH and the workspace's own env only."""
+        monkeypatch.setenv("PRIMER_DIAGNOSTIC_PROBE_SECRET", "topsecret")
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+
+        result = await ws.diagnostic_exec("env")
+
+        assert result.exit_code == 0
+        assert "PRIMER_DIAGNOSTIC_PROBE_SECRET" not in result.stdout
+        assert "PATH=" in result.stdout
+
     async def test_timeout_kills_process(
         self, provider: LocalWorkspaceBackend
     ) -> None:
