@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
+import shlex
 import shutil
 import sys
 import tarfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -98,6 +101,81 @@ async def _call_tool(session, tool_id: str, args: dict):
         session=session,
     )
     return await tool.execute(validated, ctx)
+
+
+# The lock-ordering tests below prove "A does not block B" by holding A open on a handshake and showing B completes meanwhile, NOT by
+# racing two wall-clock sleeps (the old shape: ``sleep 0.5`` exec vs a write after ``asyncio.sleep(0.15)`` and ``order ==
+# ["write", "exec"]``, which failed in CI when a loaded runner's fsync took more than the ~340 ms margin: ticket 01a11545). Every wait
+# in the handshake is bounded, so a broken lock FAILS within seconds and never hangs the lane.
+_STARTED_BOUND_S = 10.0       # the held exec must start (a shell spawn on a loaded runner can take a while)
+_WRITE_BOUND_S = 3.0          # a write that is NOT blocked takes milliseconds (measured: p95 under 60 ms, max about 230 ms under load)
+_EXEC_FINISH_BOUND_S = 10.0   # once released, the held exec must end
+
+
+@contextlib.asynccontextmanager
+async def _exec_held_open(session, root: Path, *, workdir: str, access: str):
+    """Run an exec that is PROVABLY in flight until the ``with`` block ends, and yield its task.
+
+    The command touches a ``started`` marker and then loops until a ``release`` marker exists, so inside the block the exec is running
+    (the marker proves it started, nothing but the release lets it end) and the test controls exactly when it ends: no timing assumption.
+    The markers live in ``root``, outside every workdir the tests lock.
+
+    On EVERY path out (the body passed, the body failed, the exec never started) ``release`` is created, so the shell loop always exits and
+    cannot be left spinning, the exec is awaited with a bound, and the markers are removed. A body that failed is never masked by how the
+    exec ended; a body that passed fails the test if the exec errors or does not finish once released.
+    """
+    token = uuid.uuid4().hex[:8]
+    started, release = root / f".held-started-{token}", root / f".held-release-{token}"
+    command = f"touch {shlex.quote(str(started))}; until [ -e {shlex.quote(str(release))} ]; do sleep 0.01; done"
+    task = asyncio.create_task(_call_tool(
+        session, "exec",
+        {"command": command, "workdir": workdir, "description": "held open by the test until released", "access": access},
+    ))
+    loop = asyncio.get_running_loop()
+
+    def _cleanup() -> None:
+        started.unlink(missing_ok=True)
+        release.unlink(missing_ok=True)
+
+    try:
+        deadline = loop.time() + _STARTED_BOUND_S
+        while not started.exists():
+            if task.done():
+                task.result()                      # the exec ended without starting: its own error says why
+                pytest.fail("the held exec ended before it started", pytrace=False)
+            if loop.time() > deadline:
+                pytest.fail(f"the held exec did not start within {_STARTED_BOUND_S:g}s", pytrace=False)
+            await asyncio.sleep(0.01)
+        yield task
+    except BaseException:
+        release.touch()                            # the loop must exit even though the test is failing
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(task, _EXEC_FINISH_BOUND_S)   # on a timeout wait_for cancels it, which kills its process group
+        _cleanup()
+        raise
+    release.touch()
+    try:
+        await asyncio.wait_for(task, _EXEC_FINISH_BOUND_S)
+    except TimeoutError:
+        pytest.fail(f"the exec did not finish within {_EXEC_FINISH_BOUND_S:g}s of being released", pytrace=False)
+    finally:
+        _cleanup()
+
+
+async def _write_completes_while_held(session, exec_task: asyncio.Task, args: dict) -> None:
+    """Run one write tool call and require it to complete while ``exec_task`` is still running.
+
+    A write that is blocked behind the held exec can only finish after the release, which the test gives only after this returns, so a
+    blocked write waits out ``_WRITE_BOUND_S`` and the test FAILS with a message that names the cause.
+    """
+    try:
+        await asyncio.wait_for(_call_tool(session, "write", args), _WRITE_BOUND_S)
+    except TimeoutError:
+        pytest.fail(
+            f"the write did not complete within {_WRITE_BOUND_S:g}s while the exec was still running: the exec is holding a lock "
+            "the write needs", pytrace=False,
+        )
+    assert not exec_task.done(), "the exec ended before the write did, so the write was not shown to run alongside it"
 
 
 @pytest.fixture
@@ -1432,36 +1510,26 @@ class TestLocalWriteLocking:
         self, tmp_path: Path
     ) -> None:
         """An ``access="read"`` exec takes NO lock, so a same-dir tool write
-        stays fully parallel with it (completes before the read exec's sleep
-        finishes) -- the read declaration is never worse than the baseline."""
+        stays fully parallel with it -- the read declaration is never worse than
+        the baseline.
+
+        Proved with a handshake, not a race: the read exec is held open in
+        ``sub/`` (it has started, and only the test can end it), and a write
+        into the SAME directory must complete while it is still running. If
+        the read exec ever took the same-dir scope lock, the write would wait
+        behind it, and since the test releases the exec only after the write,
+        it would never finish: the test fails after ``_WRITE_BOUND_S`` with a
+        message naming the lock, not by an order that a slow disk could flip.
+        """
         ws = await _materialise_local(tmp_path)
         sess = await ws.start_session(_binding())
         root = tmp_path_root(ws)
         (root / "sub").mkdir()
 
-        order: list[str] = []
+        async with _exec_held_open(sess, root, workdir="sub", access="read") as exec_task:
+            await _write_completes_while_held(sess, exec_task, {"path": "sub/w.txt", "content": "W"})
 
-        async def exec_reader() -> None:
-            await _call_tool(
-                sess,
-                "exec",
-                {
-                    "command": "sleep 0.5",
-                    "workdir": "sub",
-                    "description": "read-only, takes no lock",
-                    "access": "read",
-                },
-            )
-            order.append("exec")
-
-        async def writer() -> None:
-            await asyncio.sleep(0.15)
-            await _call_tool(sess, "write", {"path": "sub/w.txt", "content": "W"})
-            order.append("write")
-
-        await asyncio.gather(exec_reader(), writer())
-
-        assert order == ["write", "exec"]
+        assert (root / "sub" / "w.txt").read_text() == "W"
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="POSIX shell (sleep) required"
@@ -1521,10 +1589,13 @@ class TestLocalWriteLocking:
         """The negative twin of the strict test: with the DEFAULT
         (``strict_write_locking=False``) workdir-scoped mode, an exec holding
         ``a/`` and a write to ``b/y.txt`` hold DIFFERENT scope keys, so they
-        overlap and the fast write completes first -> order == [write, exec].
+        overlap: the write completes while the exec is still running.
 
         Together with the strict test this pins the exact behavior strict buys:
-        same inputs, opposite ordering, decided solely by the template flag.
+        same inputs, opposite outcome, decided solely by the template flag.
+        Proved with the same handshake as the read-access test (the WRITING
+        exec is held open in ``a/``, holding its scope lock; the write into
+        ``b/`` must complete meanwhile), so no wall-clock order is involved.
         """
         ws = await _materialise_local(tmp_path, strict=False)
         sess = await ws.start_session(_binding())
@@ -1532,29 +1603,70 @@ class TestLocalWriteLocking:
         (root / "a").mkdir()
         (root / "b").mkdir()
 
-        order: list[str] = []
+        async with _exec_held_open(sess, root, workdir="a", access="write") as exec_task:
+            await _write_completes_while_held(sess, exec_task, {"path": "b/y.txt", "content": "Y"})
 
-        async def exec_holder() -> None:
-            await _call_tool(
-                sess,
-                "exec",
-                {
-                    "command": "sleep 0.5",
-                    "workdir": "a",
-                    "description": "holds only the a/ scope lock",
-                    "access": "write",
-                },
-            )
-            order.append("exec")
+        assert (root / "b" / "y.txt").read_text() == "Y"
 
-        async def writer() -> None:
-            await asyncio.sleep(0.15)
-            await _call_tool(sess, "write", {"path": "b/y.txt", "content": "Y"})
-            order.append("write")
+    # ---- the handshake's own guarantees (it must never be the thing that hangs or leaks) -------------------------------------
 
-        await asyncio.gather(exec_holder(), writer())
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX shell (until/sleep) required"
+    )
+    async def test_a_write_blocked_behind_the_held_exec_fails_within_the_bound_and_leaves_nothing_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What the two tests above rely on: if the write cannot complete while the exec is running, the test FAILS (it does not wait
+        for the release it is the only one to give), says why, and the exec is still released and cleaned up. The test holds the
+        same-dir scope lock itself, standing in for a read exec that wrongly took it; no source is changed."""
+        ws = await _materialise_local(tmp_path)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+        (root / "sub").mkdir()
+        monkeypatch.setattr(sys.modules[__name__], "_WRITE_BOUND_S", 0.3)
 
-        assert order == ["write", "exec"]
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(pytest.fail.Exception, match="holding a lock the write needs"):
+            async with _exec_held_open(sess, root, workdir="sub", access="read") as exec_task:
+                async with ws._locks.hold_scope(str(root / "sub")):
+                    await _write_completes_while_held(sess, exec_task, {"path": "sub/w.txt", "content": "W"})
+
+        assert asyncio.get_running_loop().time() - started < 5.0, "the failure was not prompt"
+        assert exec_task.done(), "the held exec was left running"
+        assert not list(root.glob(".held-*")), "the handshake markers were left behind"
+        assert not (root / "sub" / "w.txt").exists(), "the cancelled write still landed"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX shell (until/sleep) required"
+    )
+    async def test_a_failing_body_still_releases_the_held_exec_and_removes_the_markers(self, tmp_path: Path) -> None:
+        ws = await _materialise_local(tmp_path)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+        (root / "sub").mkdir()
+
+        with pytest.raises(RuntimeError, match="the body failed"):
+            async with _exec_held_open(sess, root, workdir="sub", access="read") as exec_task:
+                raise RuntimeError("the body failed")
+
+        assert exec_task.done() and exec_task.exception() is None, "the exec must end cleanly, not be left spinning"
+        assert not list(root.glob(".held-*"))
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX shell (until/sleep) required"
+    )
+    async def test_an_exec_that_cannot_start_fails_with_its_own_error_and_leaves_nothing(self, tmp_path: Path) -> None:
+        ws = await _materialise_local(tmp_path)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+
+        with pytest.raises(NotFoundError, match="workdir"):
+            async with _exec_held_open(sess, root, workdir="no-such-dir", access="read"):
+                pytest.fail("the body must not run when the exec never started")
+
+        assert not list(root.glob(".held-*"))
+
+
 class TestMessagesLockIsPerSession:
     """The messages lock must not couple unrelated sessions.
 
