@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import primer.observability.metrics as _metrics
 from primer.int.claim import ClaimKind
 from primer.model.agent import Agent
 from primer.model.except_ import (
@@ -619,10 +620,98 @@ async def cancel_session(
         return s
 
 
+@dataclass
+class SessionInterruptDeps:
+    """Bundle of collaborators :func:`interrupt_session` needs.
+
+    ``event_bus`` is optional: when present, a Stop on a RUNNING session publishes ``session:{id}:cancel`` (the fast path). Without a
+    bus the Stop is still recorded on the session row, which the worker polls, so it is delayed, not lost. No scheduler and no
+    claim engine: a Stop touches neither, which is why the tool built on this works in a deployment that has not wired them.
+    """
+
+    storage_provider: Any
+    event_bus: Any | None = None
+
+
+async def interrupt_session(
+    *, workspace_id: str, session_id: str, deps: SessionInterruptDeps
+) -> WorkspaceSession:
+    """Stop (interrupt) the running turn without ending the session (shared by the REST route + the workspaces tool).
+
+    RUNNING: flag ``interrupt_requested`` on the session row, then publish
+    ``session:{sid}:cancel``. The worker running the turn stops it at its next wait for
+    the model and lands the session in WAITING (alive). The bus message is the fast path
+    (milliseconds); the flag is the durable one, which the worker re-reads every couple of
+    seconds while the turn runs (``primer.session.dispatch._INTERRUPT_POLL_S``). So a publish
+    that fails here is logged and counted but still answers 200: the Stop is delayed, not lost.
+    Non-running: 200 no-op. ENDED: 409 (studio-agents-interact §4.4). PARKED (waiting on an
+    approval, an answer or a timer): 409, and nothing is recorded, because no turn is running
+    and a flag left on the row would kill the continuation after a later decision. RESUMABLE
+    (the event fired and a worker is resuming the parked turn): 409 as well, with its own
+    text, because a graph or subagent resume runs model calls inline.
+
+    Raises NotFoundError (missing/mismatched) / ConflictError (ended, parked, resuming).
+
+    Extracted verbatim from ``POST .../sessions/{sid}/interrupt``
+    (:mod:`primer.api.routers.workspaces`) so the REST endpoint and the
+    ``interrupt_workspace_session`` MCP tool share one canonical path, as
+    :func:`cancel_session` does for Cancel.
+    """
+    sessions = deps.storage_provider.get_storage(WorkspaceSession)
+    event_bus = deps.event_bus
+
+    async with session_lifecycle_lock().acquire(session_id):
+        s = await sessions.get(session_id)
+        if s is None or s.workspace_id != workspace_id:
+            raise NotFoundError(
+                f"Session {session_id!r} does not exist on workspace "
+                f"{workspace_id!r}"
+            )
+        if s.status == SessionStatus.ENDED:
+            raise ConflictError(f"Session {session_id!r} has ended")
+        if s.status == SessionStatus.RUNNING and s.parked_status is not None:
+            # Parked (waiting on an approval, an answer or a timer): no turn is running, so there
+            # is nothing to stop. Recording the flag anyway would let it outlive the park and kill
+            # the continuation after a LATER human decision (approve hours later, the approved tool
+            # runs, then the continuation is killed before its first token). A later explicit human
+            # action wins over an earlier Stop, so the Stop is refused instead of parked on the row.
+            if s.parked_status == "resumable":
+                # The event already fired and a worker is resuming the parked turn. A graph or subagent
+                # resume runs model calls inline, so "no turn is running" would be untrue; the Stop is
+                # refused for the same reason as above (no flag may outlive the resume).
+                raise ConflictError(
+                    f"Session {session_id!r}: the session is resuming; Stop is not available "
+                    "during a resume. Use Cancel to end it."
+                )
+            raise ConflictError(
+                f"Session {session_id!r}: no turn is running; the session is waiting for you "
+                "(an approval, an answer or a timer). Use Cancel to end it."
+            )
+        if s.status == SessionStatus.RUNNING:
+            s.interrupt_requested = True
+            s.cancel_requested_at = datetime.now(timezone.utc)
+            await sessions.update(s)
+            if event_bus is not None:
+                try:
+                    await event_bus.publish(
+                        f"session:{session_id}:cancel", {}
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _metrics.session_interrupt_publish_failures_total.inc()
+                    logger.warning(
+                        "interrupt_session: bus publish failed for %s (%s: %s); the Stop is "
+                        "recorded on the session row and the worker will find it by polling",
+                        session_id, type(exc).__name__, exc,
+                    )
+        return s
+
+
 __all__ = [
     "SessionCancelDeps",
     "SessionFactoryDeps",
+    "SessionInterruptDeps",
     "cancel_session",
     "create_session",
+    "interrupt_session",
     "start_workspace_session",
 ]

@@ -1975,7 +1975,7 @@ async def restart_session_route(
 async def interrupt_session(
     workspace_id: str = Path(...),
     session_id: str = Path(...),
-    sessions=Depends(get_session_storage),
+    storage_provider=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
 ) -> WorkspaceSession:
     """Stop (interrupt) the running turn without ending the session.
@@ -1992,50 +1992,16 @@ async def interrupt_session(
     (the event fired and a worker is resuming the parked turn): 409 as well, with its own
     text, because a graph or subagent resume runs model calls inline.
     """
-    async with session_lifecycle_lock().acquire(session_id):
-        s = await sessions.get(session_id)
-        if s is None or s.workspace_id != workspace_id:
-            raise NotFoundError(
-                f"Session {session_id!r} does not exist on workspace "
-                f"{workspace_id!r}"
-            )
-        if s.status == SessionStatus.ENDED:
-            raise ConflictError(f"Session {session_id!r} has ended")
-        if s.status == SessionStatus.RUNNING and s.parked_status is not None:
-            # Parked (waiting on an approval, an answer or a timer): no turn is running, so there
-            # is nothing to stop. Recording the flag anyway would let it outlive the park and kill
-            # the continuation after a LATER human decision (approve hours later, the approved tool
-            # runs, then the continuation is killed before its first token). A later explicit human
-            # action wins over an earlier Stop, so the Stop is refused instead of parked on the row.
-            if s.parked_status == "resumable":
-                # The event already fired and a worker is resuming the parked turn. A graph or subagent
-                # resume runs model calls inline, so "no turn is running" would be untrue; the Stop is
-                # refused for the same reason as above (no flag may outlive the resume).
-                raise ConflictError(
-                    f"Session {session_id!r}: the session is resuming; Stop is not available "
-                    "during a resume. Use Cancel to end it."
-                )
-            raise ConflictError(
-                f"Session {session_id!r}: no turn is running; the session is waiting for you "
-                "(an approval, an answer or a timer). Use Cancel to end it."
-            )
-        if s.status == SessionStatus.RUNNING:
-            s.interrupt_requested = True
-            s.cancel_requested_at = datetime.now(timezone.utc)
-            await sessions.update(s)
-            if event_bus is not None:
-                try:
-                    await event_bus.publish(
-                        f"session:{session_id}:cancel", {}
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    _metrics.session_interrupt_publish_failures_total.inc()
-                    logger.warning(
-                        "interrupt_session: bus publish failed for %s (%s: %s); the Stop is "
-                        "recorded on the session row and the worker will find it by polling",
-                        session_id, type(exc).__name__, exc,
-                    )
-        return s
+    from primer.workspace.session_factory import (
+        SessionInterruptDeps,
+        interrupt_session as _interrupt_session_helper,
+    )
+
+    return await _interrupt_session_helper(
+        workspace_id=workspace_id,
+        session_id=session_id,
+        deps=SessionInterruptDeps(storage_provider=storage_provider, event_bus=event_bus),
+    )
 
 
 class SessionAttachBody(BaseModel):
