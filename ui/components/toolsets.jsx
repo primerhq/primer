@@ -606,6 +606,11 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
           Internal toolsets (<span className="mono">system</span>, <span className="mono">workspaces</span>, <span className="mono">misc</span>, <span className="mono">search</span>, <span className="mono">web</span>) are runtime built-ins — they cannot be created via this form.
         </div>
         {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
+        {provider === "python" && (
+          <div className="field-help warn" data-testid="toolset-python-admin-only">
+            Admin only: a python toolset runs its source on the Primer host, so creating or changing one needs the admin role. Any other role gets a 403 on save.
+          </div>
+        )}
       </div>
 
       {provider === "mcp" && (
@@ -678,6 +683,11 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
                   placeholder="https://mcp.example.com/sse"
                   style={{ width: "100%" }}
                 />
+                {isEdit && (
+                  <div className="field-help warn" data-testid="toolset-url-secrets-reenter">
+                    Changing the URL? Re-enter the header values below in the same save: the stored secrets are only kept for the URL they were set for. Without the admin role, a new URL with masked headers gets a 403.
+                  </div>
+                )}
                 {fieldErrors["body.config.config.url"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config.config.url"]}</div>}
               </div>
               <TS_KvEditor
