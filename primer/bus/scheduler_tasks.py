@@ -30,6 +30,8 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from pydantic_core import to_jsonable_python
+
 from primer.int.coordinator import (
     ROLE_HARNESS_SWEEPER,
     ROLE_STUCK_SESSION_SWEEPER,
@@ -41,6 +43,7 @@ from primer.int.event_bus import EventBus
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.workspace_session import SessionStatus
+from primer.storage import raw_generation
 from primer.worker.yield_runtime import make_timeout_payload
 
 if TYPE_CHECKING:
@@ -387,12 +390,29 @@ class StuckSessionSweeper(_BackgroundTask):
             # must be as close to the write as possible.
             if await self._has_lease(fresh.id):
                 continue
-            await self._storage.update(fresh.model_copy(update={
-                "status": SessionStatus.ENDED,
-                "ended_reason": "failed",
-                "ended_detail": "never_started",
-                "ended_at": datetime.now(timezone.utc),
-            }))
+            # ONE field-scoped write of the four fields this sweeper owns, fenced on what the decision above depended on: a
+            # park, a finished first turn or another ender that landed since the read (the lease lookup awaits) is not
+            # overwritten, and the first terminal reason wins. A whole-row update from the snapshot would have erased it.
+            written = await self._storage.patch_if(
+                fresh.id,
+                to_jsonable_python({
+                    "status": SessionStatus.ENDED,
+                    "ended_reason": "failed",
+                    "ended_detail": "never_started",
+                    "ended_at": datetime.now(timezone.utc),
+                }),
+                where={
+                    "status": [raw_generation(fresh, "status")],
+                    "turn_no": [raw_generation(fresh, "turn_no")],
+                    "parked_status": [raw_generation(fresh, "parked_status")],
+                },
+            )
+            if written is None:
+                logger.info(
+                    "stuck-session-sweeper: %s changed since it was read (a park, a finished first turn or another ender); "
+                    "left alone", fresh.id,
+                )
+                continue
             reaped += 1
             logger.warning(
                 "stuck-session-sweeper: ended %s - created %s, first turn never ran",
