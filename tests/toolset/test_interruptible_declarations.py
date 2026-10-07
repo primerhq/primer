@@ -50,6 +50,13 @@ The third review (task 01a111d1, D1) added:
   not re-created by a cancel). The first review examined ``harness__install`` as one row write and left it interruptible;
   that was true only while the toolset did not upsert the lease.
 
+Examined later and left interruptible (task 01a10871, Stop as a system tool): ``workspaces`` interrupt_workspace_session is ONE
+guarded row write (the Stop flag, ``interrupt_requested`` and ``cancel_requested_at``) followed by a best-effort bus publish. The flag
+is the durable record and the worker polls it, so a cancel between the write and the publish loses only the fast path, never the Stop;
+this is the shape of ``pause_workspace_session`` (one row write), not of the multi-step session tools above. It is also the one tool
+whose caller can BE the session it stops: a self-stop either keeps its real result (the call finishes in the same wake-up as the Stop,
+which is the usual case, the handler returns right after its publish) or is answered "interrupted: stopped by user", which is true.
+
 ``call_tool`` is not in the list on purpose: it is a pass-through, and the loop decides interruptibility for the tool it
 WRAPS (``ToolExecutionManager.is_interruptible_call``), so ``call_tool`` of a tool above is not cancelled either.
 
@@ -145,6 +152,8 @@ EXAMINED_AND_INTERRUPTIBLE = {
     (WORKSPACES_TOOLSET_ID, "create_workspace_template"),
     (WORKSPACES_TOOLSET_ID, "delete_workspace_provider"),
     (WORKSPACES_TOOLSET_ID, "pause_workspace_session"),
+    # task 01a10871: one guarded row write, then a best-effort publish (the flag is durable and polled)
+    (WORKSPACES_TOOLSET_ID, "interrupt_workspace_session"),
 }
 
 
