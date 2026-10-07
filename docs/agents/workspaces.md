@@ -363,12 +363,22 @@ session is outside the group, so it is not killed.
 - **Multi-session shared filesystem is collaborative, not
   isolated.** Two simultaneous sessions on the same workspace
   WILL race on file writes. Coordinate via `.state/shared/`.
-- **Workspace delete is async.** The 202 returns immediately;
-  the actual teardown can take seconds (local) to minutes
-  (k8s pod). Sessions on the workspace get cancelled in the
-  process.
-- **Provisioning errors leave `status=error`.** Don't try to use
-  an erroring workspace - recreate with a fresh id.
+- **Workspace delete is synchronous.** `DELETE /v1/workspaces/{id}`
+  (and `delete_workspace`) answers 204 only after the backend
+  teardown has been requested and the row is gone. On k8s that
+  means the StatefulSet, Service, Secret and PVC deletes were
+  issued, not that the pod has finished terminating. Open
+  sessions on the workspace are not cancelled: they end
+  `workspace_lost`, and with the workspace destroyed there is
+  nothing for them to come back to.
+- **A failed create leaves nothing behind.** The workspace row is
+  written last, with `phase="running"`, and a failure after the
+  live instance exists tears it down again, so there is no
+  half-created workspace to clean up and no `error` status to
+  read. A workspace that later stops answering its probe is
+  flipped to `phase="failed"` (with `failure_reason`) and its open
+  sessions end `workspace_lost`; create a fresh workspace rather
+  than reuse a failed one.
 - **`watch_files` is invisible from MCP.** It's a yielding tool;
   the MCP exposability gate drops it. External agents wanting
   change-detection should poll `read_workspace_file` instead.
