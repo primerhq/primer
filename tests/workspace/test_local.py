@@ -110,6 +110,7 @@ async def _call_tool(session, tool_id: str, args: dict):
 _STARTED_BOUND_S = 10.0       # the held exec must start (a shell spawn on a loaded runner can take a while)
 _WRITE_BOUND_S = 3.0          # a write that is NOT blocked takes milliseconds (measured: p95 under 60 ms, max about 230 ms under load)
 _EXEC_FINISH_BOUND_S = 10.0   # once released, the held exec must end
+_BODY_BOUND_S = 12.0          # EVERYTHING inside an `async with _exec_held_open(...)` block: no wait in a test body may outlive this
 
 
 @contextlib.asynccontextmanager
@@ -123,6 +124,10 @@ async def _exec_held_open(session, root: Path, *, workdir: str, access: str):
     On EVERY path out (the body passed, the body failed, the exec never started) ``release`` is created, so the shell loop always exits and
     cannot be left spinning, the exec is awaited with a bound, and the markers are removed. A body that failed is never masked by how the
     exec ended; a body that passed fails the test if the exec errors or does not finish once released.
+
+    The BODY is bounded too (``_BODY_BOUND_S``), so no wait inside the block, including one a test makes itself (taking a lock the exec
+    holds, say), can hang the lane: it ends as a failure that says so. The block's own contexts unwind before the cleanup below runs, so a
+    lock the test holds is released before the exec is awaited.
     """
     token = uuid.uuid4().hex[:8]
     started, release = root / f".held-started-{token}", root / f".held-release-{token}"
@@ -137,6 +142,7 @@ async def _exec_held_open(session, root: Path, *, workdir: str, access: str):
         started.unlink(missing_ok=True)
         release.unlink(missing_ok=True)
 
+    body_bound = asyncio.timeout(_BODY_BOUND_S)
     try:
         deadline = loop.time() + _STARTED_BOUND_S
         while not started.exists():
@@ -146,12 +152,18 @@ async def _exec_held_open(session, root: Path, *, workdir: str, access: str):
             if loop.time() > deadline:
                 pytest.fail(f"the held exec did not start within {_STARTED_BOUND_S:g}s", pytrace=False)
             await asyncio.sleep(0.01)
-        yield task
+        async with body_bound:
+            yield task
     except BaseException:
         release.touch()                            # the loop must exit even though the test is failing
         with contextlib.suppress(Exception):
             await asyncio.wait_for(task, _EXEC_FINISH_BOUND_S)   # on a timeout wait_for cancels it, which kills its process group
         _cleanup()
+        if body_bound.expired():
+            pytest.fail(
+                f"something inside the held-exec block did not finish within {_BODY_BOUND_S:g}s (a wait with no bound of its own)",
+                pytrace=False,
+            )
         raise
     release.touch()
     try:
@@ -1617,8 +1629,12 @@ class TestLocalWriteLocking:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """What the two tests above rely on: if the write cannot complete while the exec is running, the test FAILS (it does not wait
-        for the release it is the only one to give), says why, and the exec is still released and cleaned up. The test holds the
-        same-dir scope lock itself, standing in for a read exec that wrongly took it; no source is changed."""
+        for the release it is the only one to give), says why, and the exec is still released and cleaned up.
+
+        The write is blocked by the PATH lock of its own target, which the test holds itself: a lock the write takes and an exec never
+        does, whatever the exec's locking is. That is deliberate. This test is about the HELPER, so it must not depend on the code under
+        test: an earlier version took the same-dir SCOPE lock here, and when a read exec was made to take that lock (the very bug the two
+        tests above exist to catch) the exec held it, the test's own acquire waited for it for ever, and the lane hung."""
         ws = await _materialise_local(tmp_path)
         sess = await ws.start_session(_binding())
         root = tmp_path_root(ws)
@@ -1628,7 +1644,7 @@ class TestLocalWriteLocking:
         started = asyncio.get_running_loop().time()
         with pytest.raises(pytest.fail.Exception, match="holding a lock the write needs"):
             async with _exec_held_open(sess, root, workdir="sub", access="read") as exec_task:
-                async with ws._locks.hold_scope(str(root / "sub")):
+                async with ws._locks.hold_path(str((root / "sub" / "w.txt").resolve())):   # the key the write takes: it resolves the root
                     await _write_completes_while_held(sess, exec_task, {"path": "sub/w.txt", "content": "W"})
 
         assert asyncio.get_running_loop().time() - started < 5.0, "the failure was not prompt"
@@ -1650,6 +1666,30 @@ class TestLocalWriteLocking:
                 raise RuntimeError("the body failed")
 
         assert exec_task.done() and exec_task.exception() is None, "the exec must end cleanly, not be left spinning"
+        assert not list(root.glob(".held-*"))
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX shell (until/sleep) required"
+    )
+    async def test_a_wait_with_no_bound_inside_the_block_fails_within_the_body_bound_and_cleans_up(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rule the handshake keeps: nothing a test does inside the block may hang the lane. A body that waits for something that
+        never happens (here an event nobody sets, standing in for a lock the held exec never gives up) ends as a failure naming the
+        bound, and the exec is released and cleaned up."""
+        ws = await _materialise_local(tmp_path)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+        (root / "sub").mkdir()
+        monkeypatch.setattr(sys.modules[__name__], "_BODY_BOUND_S", 0.3)
+
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(pytest.fail.Exception, match="did not finish within 0.3s"):
+            async with _exec_held_open(sess, root, workdir="sub", access="read") as exec_task:
+                await asyncio.Event().wait()
+
+        assert asyncio.get_running_loop().time() - started < 5.0, "the failure was not prompt"
+        assert exec_task.done() and exec_task.exception() is None, "the held exec was left running or errored"
         assert not list(root.glob(".held-*"))
 
     @pytest.mark.skipif(
