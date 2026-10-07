@@ -311,12 +311,13 @@ async def _stream_tap(
 
 
 def build_usage_frame(raw_lines: list[str]) -> dict:
-    """Token totals for what the session currently shows."""
+    """Token totals, turns and model calls for what the session currently shows (see ``SessionUsage``)."""
     from primer.session.usage import session_usage
 
     usage = session_usage(raw_lines)
     return {
         "turns": usage.turns,
+        "model_calls": usage.model_calls,
         "last_input_tokens": usage.last_input_tokens,
         "last_output_tokens": usage.last_output_tokens,
         "total_input_tokens": usage.total_input_tokens,

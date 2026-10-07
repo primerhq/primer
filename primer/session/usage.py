@@ -16,15 +16,28 @@ from dataclasses import dataclass
 
 from primer.model.workspace_session import SessionMessageKind
 from primer.session.replay import visible_records
+from primer.session.terminals import closes_turn
 
 _DONE = SessionMessageKind.DONE.value
 
 
 @dataclass(frozen=True)
 class SessionUsage:
-    """Token totals for what is currently visible in a session."""
+    """Token totals, and the turn and model-call counts, for what is currently visible in a session.
+
+    ``turns`` is the number of turns IN VIEW: the visible records that end a turn by the shared rule
+    (:func:`primer.session.terminals.closes_turn`), so it equals the trace's turn ordinals. A compaction folds the turns it
+    replaced away and a rewind drops the rewound ones, so after either it is NOT the session's lifetime count (that is the
+    row's ``turn_no``). A ``done`` followed by the ``cancelled`` of a Stop that landed after the model finished counts as two,
+    exactly as the trace splits it into two windows.
+
+    ``model_calls`` is the number of visible ``done`` records: every model call, tool rounds and delegated (subagent) runs
+    included. It is the population ``total_*`` and ``last_*`` are folded over (a ``done`` with no usage envelope still counts).
+    Before 01a1138d this number was reported as ``turns``.
+    """
 
     turns: int = 0
+    model_calls: int = 0
     last_input_tokens: int = 0
     last_output_tokens: int = 0
     total_input_tokens: int = 0
@@ -34,14 +47,16 @@ class SessionUsage:
 
 
 def session_usage(raw_lines: list[str]) -> SessionUsage:
-    """Fold the visible DONE records into a usage summary."""
-    turns = 0
+    """Fold the visible records into a usage summary: tokens and model calls over the DONE records, turns over the turn ends."""
+    turns = model_calls = 0
     last_in = last_out = 0
     tot_in = tot_out = tot_cached = tot_reasoning = 0
     for rec in visible_records(raw_lines):
+        if closes_turn(rec):
+            turns += 1
         if rec.get("kind") != _DONE:
             continue
-        turns += 1
+        model_calls += 1
         usage = (rec.get("payload") or {}).get("usage")
         if not isinstance(usage, dict):
             continue  # a turn can terminate without a usage envelope
@@ -53,6 +68,7 @@ def session_usage(raw_lines: list[str]) -> SessionUsage:
         tot_reasoning += usage.get("reasoning_tokens", 0)
     return SessionUsage(
         turns=turns,
+        model_calls=model_calls,
         last_input_tokens=last_in,
         last_output_tokens=last_out,
         total_input_tokens=tot_in,
