@@ -333,3 +333,87 @@ async def test_reaps_a_first_turn_whose_claim_was_lost(fake_storage_provider):
 
     assert reaped == 1
     assert (await storage.get("se-lost")).ended_detail == "never_started"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The terminal write is field-scoped (the no-whole-document-session-writer rule)
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+class _EngineThatLetsAWriterIn(_FakeClaimEngine):
+    """The lease lookup is the last await between the sweeper's read of the row and its write: the moment a concurrent writer
+    (a worker parking the turn, a claim finishing it, a cancel ending it) gets in."""
+
+    def __init__(self, in_the_gap) -> None:
+        super().__init__(set())
+        self._in_the_gap = in_the_gap
+
+    async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+        await self._in_the_gap()
+        return await super().has_lease(kind, entity_id)
+
+
+async def _sweep_with_a_writer_in_the_gap(storage, sid: str, change: dict) -> int:
+    async def in_the_gap() -> None:
+        row = await storage.get(sid)
+        await storage.update(row.model_copy(update=change))
+
+    return await StuckSessionSweeper(session_storage=storage, claim_engine=_EngineThatLetsAWriterIn(in_the_gap))._tick()
+
+
+@pytest.mark.asyncio
+async def test_the_sweeper_ends_a_row_without_a_whole_document_update(fake_storage_provider):
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-stuck"))
+
+    async def whole_document_update(*args, **kwargs):
+        raise AssertionError("the sweeper wrote the whole session row; it owns only status and the ended_* fields")
+
+    storage.update = whole_document_update  # type: ignore[method-assign]
+
+    assert await _sweeper(storage)._tick() == 1
+    row = await storage.get("se-stuck")
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", "never_started")
+    assert row.ended_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_parks_while_the_sweeper_checks_its_lease_is_left_alone(fake_storage_provider):
+    """A park committed between the read and the write must not be erased and then ended over: the write is fenced on the
+    park columns the decision depended on."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-parks"))
+
+    reaped = await _sweep_with_a_writer_in_the_gap(storage, "se-parks", {"parked_status": "parked"})
+
+    row = await storage.get("se-parks")
+    assert reaped == 0, "a session that parked in the gap was ended anyway"
+    assert (row.status, row.parked_status, row.ended_reason) == (SessionStatus.RUNNING, "parked", None)
+
+
+@pytest.mark.asyncio
+async def test_a_session_whose_first_turn_completes_while_the_sweeper_checks_is_left_alone(fake_storage_provider):
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-ran"))
+
+    reaped = await _sweep_with_a_writer_in_the_gap(storage, "se-ran", {"turn_no": 1})
+
+    row = await storage.get("se-ran")
+    assert reaped == 0, "a session whose first turn just completed was ended as never started"
+    assert (row.status, row.turn_no, row.ended_reason) == (SessionStatus.RUNNING, 1, None)
+
+
+@pytest.mark.asyncio
+async def test_a_session_someone_else_ended_in_the_gap_keeps_their_reason(fake_storage_provider):
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-cancelled"))
+
+    reaped = await _sweep_with_a_writer_in_the_gap(
+        storage, "se-cancelled", {"status": SessionStatus.ENDED, "ended_reason": "cancelled"},
+    )
+
+    row = await storage.get("se-cancelled")
+    assert reaped == 0
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "cancelled", None), (
+        "the first terminal reason wins: the sweeper must not rewrite why a session ended"
+    )
