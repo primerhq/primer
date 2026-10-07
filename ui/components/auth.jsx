@@ -159,6 +159,14 @@ function _extractServerError(err) {
   if (status === 409) {
     return { title: "Account already exists", detail: err.detail || "Sign in instead.", requestId: err.requestId || null };
   }
+  if (status === 429) {
+    // Sign-in throttle (architecture review A-07): the server's message already says how long to wait.
+    return {
+      title: "Too many sign-in attempts",
+      detail: typeof err.detail === "string" && err.detail ? err.detail : "Wait a moment before trying again.",
+      requestId: err.requestId || null,
+    };
+  }
   const detail = typeof err.detail === "string" ? err.detail : (err.detail ? JSON.stringify(err.detail) : err.message);
   return {
     title: err.title || "Request failed",
