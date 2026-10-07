@@ -230,18 +230,15 @@ Tracing plus metrics are wired at these call sites:
   `claim_due` in `tracer.start_as_current_span("claim.due")`, set `claim.count`, add
   a `claim_assigned` span event per lease, and observe
   `claim_enqueue_latency_seconds{kind}`.
-- No call site writes the `ws_*` families any more: the session WebSocket router that wrapped its handler in a
-  `ws.session` span and drove `ws_connections_active{kind}`, `ws_session_duration_seconds{kind}` and
-  `ws_frames_sent_total{kind}` was removed with the route (the workspace tap is SSE, and the terminal WebSocket does not
-  use them). The families are still declared, and unit-tested in `tests/observability/test_metrics.py`.
 
 The declared metric families (`primer/observability/metrics.py`) are LLM
 (`llm_tokens_total`, `llm_duration_seconds`, `llm_failure_total`,
 `llm_retry_total`), tools (`tool_calls_total`, `tool_duration_seconds`), claims
-(`claim_enqueue_latency_seconds`, `claim_queue_depth`, `claim_active_count`),
-WebSockets (`ws_connections_active`, `ws_frames_sent_total`,
-`ws_session_duration_seconds`, `ws_replay_backlog_seconds`; declared, written by no call site, see below), and the worker / turn
-/ session families:
+(`claim_enqueue_latency_seconds`, `claim_queue_depth`, `claim_active_count`), and
+the worker / turn / session families. Every declared family has a writer except
+`claim_active_count` (see below); `tests/observability/test_metric_families_are_written.py`
+fails when a family is declared that no other `primer/` module mentions, so removing a
+route cannot leave its families behind:
 
 - `tool_wait_malformed_scoped_id_total{site}` counts tool-call task ids that did not parse as a scoped id (`parse_scoped_task_id`, `primer/model/tool_call_task.py`) where a tool_wait wake key was needed, through `tool_wait_event_key_or_none` (`primer/session/yields.py`, which also logs ERROR naming the id). `site` is a closed four-value enum, so it is on the label allowlist: `adapter` (the last-sibling release in `primer/claim/adapters/tool_calls.py` committed but woke nothing), `materializer` (`materialize_pending_tool_wait_rows` left that batch's key out of the park), `repark` (`_repark_graph_tool_wait_outcome` left that batch's key out of the park) and `dispatch` (the agent tool_wait park arm: no batch's id parsed, so the park is not written and the turn ends failed). A pure tool_wait graph park or re-park (no human gate) whose batches ALL fail to parse is not written either and ends the turn failed the same way, but it is counted under `materializer` (a pure graph park arm) or `repark` (a re-park), not `dispatch`, which only the agent arm counts. Only an id the code minted itself can be counted, so any non-zero value is a bug in the id mint.
   The counter is a rate signal, not an exact count. A graph resume computes keys in two places: `materialize_pending_tool_wait_rows`, which `resume_graph_from_checkpoint` (`primer/worker/graph_resume.py`) calls over EVERY entry of the checkpoint's `pending_tool_waits`, carried-over entries included (it discards the keys it computes there), and, when the resume re-parks on tool_wait batches only, `_repark_graph_tool_wait_outcome`, which computes every entry's key again. So ONE malformed batch is counted under `materializer` and again under `repark` by the same resume, and once more by each later resume that carries it over.
@@ -343,10 +340,11 @@ rests on, applies rules 1 and 2 to the material groups only, and uses the group'
 ratio as kappa in rule 3, which leans towards Phase 1b compared with the per-session EMA
 Phase 1a would use.
 
-Six declared metrics are not written by any call site and scrapers will see
-them as never-incremented zeros: `llm_retry_total` (no adapter increments it),
-`claim_active_count` (no writer), and the four `ws_*` families (the session WebSocket
-router that wrote them was removed). In addition, the Postgres
+One declared metric is not written by any call site, so a scrape carries its HELP and
+TYPE lines and never a sample (a labelled family exports nothing until `.labels(...)`
+is called): `claim_active_count` (no writer; it is the single entry of
+`KNOWN_UNWRITTEN` in `tests/observability/test_metric_families_are_written.py`, and that
+test fails when it gains a writer so the entry is dropped). In addition, the Postgres
 `claim_enqueue_latency_seconds` is always observed as `0.0` because the returned
 `Lease` shape lacks a `next_attempt_at` / `created_at` field for the wait
 computation; an inline comment in `primer/claim/postgres.py` marks this. Dashboard
@@ -460,8 +458,7 @@ metric with an unreviewed label fails the suite at declaration time.
 Observability tests live under `tests/observability/` plus an end-to-end suite at
 `tests/e2e/test_observability.py`: `test_config`, `test_tracing`, `test_metrics`,
 `test_logging_integration`, `test_lifespan_integration`, `test_llm_instrumentation`,
-`test_tool_instrumentation`, `test_claim_instrumentation`, `test_ws_instrumentation`,
-and `test_trace_llm_io`. The turn-log writer family is covered by
+`test_tool_instrumentation`, `test_claim_instrumentation`, and `test_trace_llm_io`. The turn-log writer family is covered by
 `tests/observability/test_turn_log_writer.py` (both writer variants including the
 seq-bootstrap-on-restart behaviour, `StorageTurnLogWriter` row creation,
 `NoopTurnLogWriter` counter advance, idempotent `aclose`), with dispatch and graph
