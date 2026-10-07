@@ -202,11 +202,22 @@
     return cacheKey + "::" + JSON.stringify(deps);
   }
 
+  // The snapshot a disabled resource reports: nothing fetched, nothing loading.
+  const IDLE_SNAPSHOT = { data: undefined, error: null, loading: false, degraded: false };
+
+  // A null / undefined cacheKey DISABLES the resource ("nothing to fetch yet",
+  // e.g. the id the request needs is not known): no cache entry, no
+  // subscription, no fetch, and an idle snapshot. It used to be treated as an
+  // ordinary key, which ran the fetcher with the missing id (a doomed 404)
+  // and left an entry under `null` that made findKeys throw inside every
+  // later useMutation success path.
   function useResource(cacheKey, fetcher, opts = {}) {
     const { pollMs = 0, pauseWhile, deps, ignoreIdle = false } = opts;
-    const effectiveKey = composeKey(cacheKey, deps);
+    const enabled = cacheKey != null;
+    const effectiveKey = enabled ? composeKey(cacheKey, deps) : null;
 
     const [snap, setSnap] = useState(() => {
+      if (!enabled) return IDLE_SNAPSHOT;
       const entry = cache.get(effectiveKey);
       return entry
         ? snapshotOf(entry)
@@ -221,6 +232,11 @@
     ignoreIdleRef.current = ignoreIdle;
 
     useEffect(() => {
+      if (!enabled) {
+        // The previous key's cleanup has already unsubscribed; drop its data.
+        setSnap(IDLE_SNAPSHOT);
+        return undefined;
+      }
       ensureVisibility();
       const entry = getOrCreate(effectiveKey);
       // Latest-wins: every render refreshes the entry's behaviour hooks
@@ -274,6 +290,7 @@
     // the new interval takes effect immediately rather than after the
     // next fetch settles.
     useEffect(() => {
+      if (!enabled) return;
       const entry = cache.get(effectiveKey);
       if (!entry) return;
       if (entry.pollMs === pollMs) return;
@@ -291,17 +308,21 @@
     }, [effectiveKey, pollMs]);
 
     const refetch = useCallback(() => {
+      if (!enabled) return;
       const entry = cache.get(effectiveKey);
       if (!entry) return;
       entry.errorCount = 0;
       runFetch(entry, effectiveKey);
     }, [effectiveKey]);
 
+    // A key that just turned null reads idle on this very render, before the
+    // effect above has dropped the old snapshot.
+    const view = enabled ? snap : IDLE_SNAPSHOT;
     return {
-      data: snap.data,
-      error: snap.error,
-      loading: snap.loading,
-      degraded: snap.degraded,
+      data: view.data,
+      error: view.error,
+      loading: view.loading,
+      degraded: view.degraded,
       refetch,
     };
   }
@@ -312,6 +333,7 @@
     const keys = [];
     const prefix = target + "::";
     for (const k of cache.keys()) {
+      if (typeof k !== "string") continue; // never match (or throw on) a non-string key
       if (k === target || k.startsWith(prefix)) keys.push(k);
     }
     return keys;
