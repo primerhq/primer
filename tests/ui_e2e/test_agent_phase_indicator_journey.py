@@ -214,8 +214,14 @@ def test_phase_indicator_and_state_chip_survive_refresh_at_every_phase(
         # _post_turn_status). ----
         _wait_for_phase(client, sid, session_state="parked", agent_phase=None)
         _expect_chip_state(page, "parked")
+        # ... but a session that merely rests after its answer is waiting for the next message, not blocked on anything: the
+        # chip says Ready and is drawn neutral (C-009). "Parked" is kept for a real park (an approval, an answer, a timer).
+        chip = page.get_by_test_id("nv-session-state-chip")
+        expect(chip).to_have_text("Ready", timeout=10_000)
+        expect(chip).to_have_attribute("data-resting", "true")
 
         page.reload()
         open_session_in_studio(page, console_url, wid, sid)
         _expect_chip_state(page, "parked")
+        expect(page.get_by_test_id("nv-session-state-chip")).to_have_text("Ready", timeout=10_000)
         expect(page.get_by_test_id("nv-phase-indicator")).not_to_be_visible()
