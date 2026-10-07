@@ -43,8 +43,12 @@ def own_python_source_version(entity: Toolset, existing: Toolset | None) -> None
 
     The client's version is advisory. If two operators edit concurrently they both send the version they read, and a parked resume
     could not tell which code it was about to run. The server bumps instead, so the number always moves when the source does, and
-    stays put when it does not.
+    stays put when it does not. An update that turns another toolset into a python one has no prior version to bump, so it starts
+    at the first version, whatever the client sends.
     """
+    if existing is not None and existing.provider != ToolsetProviderType.PYTHON:
+        entity.config.source_version = 1
+        return
     prior = existing.config if existing is not None else None
     if prior is not None and getattr(prior, "source", None) == entity.config.source:
         entity.config.source_version = prior.source_version
@@ -84,6 +88,7 @@ def repoints_stored_secrets(entity: Toolset, existing: Toolset) -> bool:
         return False
     restored = entity.model_copy(deep=True)
     preserve_masked_secrets(restored, existing)
+    # SecretStr.__eq__ compares the plaintext, so this sees a restored mask; model_dump() masks secrets and would not.
     return restored != entity
 
 
