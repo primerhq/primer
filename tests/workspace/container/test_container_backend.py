@@ -315,3 +315,29 @@ async def test_get_returns_none_when_gone_handle_cannot_reattach(
     # The dead handle was evicted from the cache.
     assert wid not in backend._workspaces
     await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_extra_mounts_reach_the_adapter_as_volume_mounts(tmp_path: Path) -> None:
+    """INJ-05: the template's ContainerMount (host/container/readonly) must reach the adapter as the VolumeMount
+    (source/target/read_only) it reads; passing the template objects through crashed provisioning on any mount."""
+    seen: list = []
+
+    class _RecordingAdapter(_FakeAdapter):
+        async def create_sandbox(self, **kwargs) -> Sandbox:
+            seen.extend(kwargs["extra_mounts"])
+            return await super().create_sandbox(**kwargs)
+
+    backend = ContainerWorkspaceBackend(_config(), adapter=_RecordingAdapter(tmp_path))
+    await backend.initialize()
+    template = WorkspaceTemplate(
+        id="t1", provider_id="c1", description="",
+        backend=ContainerTemplateConfig(
+            image="alpine:latest",
+            extra_mounts=[{"host": "/srv/data", "container": "/data", "readonly": True}],
+        ),
+    )
+    await backend.create(template)
+
+    assert seen == [VolumeMount(source="/srv/data", target="/data", read_only=True)]
+    await backend.aclose()
