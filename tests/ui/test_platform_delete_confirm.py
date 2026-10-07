@@ -43,9 +43,13 @@ def _helpers_src() -> str:
     return PLAT[start:end]
 
 
-def _ctx(*, confirm: bool = True, rejects: bool = False):
+_REFUSAL = '{ detail: "agent is referenced", requestId: "req-9" }'
+
+
+def _ctx(*, confirm: bool = True, rejects: bool = False, rejection: str = _REFUSAL):
     """``dialogs`` records every confirmDialog argument, ``calls`` every apiFetch (method, path), ``toasts``
-    every (message, extra) pair; ``refetched`` counts list refreshes."""
+    every (message, extra) pair; ``refetched`` counts list refreshes. ``rejection`` is the JS object a refused
+    DELETE rejects with."""
     from py_mini_racer import MiniRacer
 
     ctx = MiniRacer()
@@ -55,7 +59,7 @@ def _ctx(*, confirm: bool = True, rejects: bool = False):
         "var env = {"
         f"  confirmDialog: function (o) {{ dialogs.push(o); return Promise.resolve({str(confirm).lower()}); }},"
         "  apiFetch: function (method, path) { calls.push([method, path]); return "
-        + ('Promise.reject({ detail: "agent is referenced", requestId: "req-9" })' if rejects else "Promise.resolve(null)")
+        + (f"Promise.reject({rejection})" if rejects else "Promise.resolve(null)")
         + "; },"
         "  toast: function (msg, extra) { toasts.push([msg, extra || null]); },"
         "  refetch: function () { refetched++; },"
@@ -145,13 +149,23 @@ def test_a_refused_delete_toasts_the_refusal_as_an_error_with_its_request_id_and
     assert _js(ctx, "refetched") == 0
 
 
+def test_a_refusal_without_a_detail_falls_back_to_the_error_message() -> None:
+    ctx = _ctx(rejects=True, rejection='{ message: "network down" }')
+
+    assert _delete(ctx, "agents", {"id": "my-agent"}, "/agents/my-agent") is False
+    # requestId is undefined here, and JSON drops undefined keys.
+    assert _js(ctx, "toasts") == [["Delete refused: network down", {"kind": "error"}]]
+
+
 def test_the_dialog_title_prefers_the_name_and_the_message_the_id() -> None:
-    """The prompt the generic delete always showed: kept for every entity that has a name."""
+    """The prompt the generic delete always showed: kept for every entity that has a name, and it stays a
+    destructive (red) confirm."""
     ctx = _ctx()
     _delete(ctx, "graphs", {"id": "g-1", "name": "Nightly"}, "/graphs/g-1")
 
     assert _js(ctx, "dialogs[0].title") == "Delete Nightly"
     assert _js(ctx, "dialogs[0].message") == "Permanently delete g-1? Referenced entities refuse deletion."
+    assert _js(ctx, "dialogs[0].danger") is True
 
 
 # ---- wiring and drift --------------------------------------------------------------------------------
@@ -164,6 +178,10 @@ def test_the_card_delete_goes_through_the_tested_flow() -> None:
     assert "NV_deleteRow(" in m.group(0)
     assert not re.search(r"confirmDialog\(", m.group(0)), "the prompt is built inside NV_deleteRow, not duplicated here"
     assert "confirmDialog: confirmDialog" in m.group(0), "the console's own dialog is what NV_deleteRow is given"
+    # The page's nav id decides whether the setup warning applies, so it must be the page's own, not a constant.
+    assert re.search(r"\},\s*nav,\s*row,\s*path\)", m.group(0)), "del() must pass the page's nav, the row and its path"
+    # The toast must forward its second argument: that is the error styling and the request id of a refusal.
+    assert "con.toast(msg, extra)" in m.group(0)
 
 
 async def test_the_ids_the_console_warns_about_are_exactly_the_agents_whose_absence_reopens_setup(
