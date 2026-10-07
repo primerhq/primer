@@ -18,11 +18,14 @@ stays safe.
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Sequence
 
-# Programs the diagnostic route allows (the route owns this policy; backends do not enforce it).
-DIAGNOSTIC_COMMANDS: frozenset[str] = frozenset({"echo", "pwd", "whoami", "uname", "ls"})
+# Programs the diagnostic route allows (the route owns this policy; backends do not enforce it). ``printenv`` is allowed
+# for exactly ONE named variable (see ``_ENV_VARIABLE``), never bare, so it cannot dump the environment.
+DIAGNOSTIC_COMMANDS: frozenset[str] = frozenset({"echo", "pwd", "whoami", "uname", "ls", "printenv"})
+_ENV_VARIABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 # Characters a shell would act on, plus the escape character. Any argv element containing one is refused.
 _SHELL_METACHARACTERS = frozenset(";&|<>`$()\\")
@@ -79,6 +82,8 @@ def parse_diagnostic_command(
             f"diagnostic command {argv[0]!r} is not on the allowlist; allowed commands are: {sorted(allowed)}",
             code="command_not_whitelisted", head=argv[0],
         )
+    if allowed is not None and argv[0] == "printenv" and (len(argv) != 2 or not _ENV_VARIABLE.fullmatch(argv[1])):
+        raise DiagnosticCommandError("printenv takes exactly one variable name (it never dumps the whole environment)")
     return argv
 
 
