@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path
 
-from primer.api.deps import get_scheduler, require_auth
+from primer.api.deps import get_scheduler, require_admin
 from primer.api.errors import common_responses
 from primer.model.except_ import ConflictError, NotFoundError
 
@@ -86,11 +86,12 @@ async def worker_lane_stats() -> dict:
     status_code=204,
     summary="Mark a worker as draining (other workers take over its sessions)",
     responses=common_responses(401, 500),
-    # Mutating endpoint: requires auth even though the router as a whole
-    # is mounted public so liveness/readiness probes can read GET /workers
-    # pre-login. require_auth no-ops under auth-disabled (the middleware
-    # injects a synthetic system user), so dogfood is unaffected.
-    dependencies=[Depends(require_auth)],
+    # Mutating endpoint: ADMIN only (A-01: it used to be ``require_auth``, which let
+    # any logged-in role, a restricted user included, drain a worker), even though
+    # the router as a whole is mounted public so liveness/readiness probes can read
+    # GET /workers pre-login. ``require_admin`` accepts the synthetic admin user the
+    # middleware injects under auth-disabled, so dogfood is unaffected.
+    dependencies=[Depends(require_admin)],
 )
 async def drain_worker(
     worker_id: str = Path(...),
@@ -103,7 +104,7 @@ async def drain_worker(
     "/workers/purge_dead",
     summary="Remove every dead worker from the registry",
     responses=common_responses(401, 500),
-    dependencies=[Depends(require_auth)],
+    dependencies=[Depends(require_admin)],
 )
 async def purge_dead_workers(scheduler=Depends(get_scheduler)) -> dict:
     """Bulk-remove all workers currently in the ``dead`` state.
@@ -122,8 +123,8 @@ async def purge_dead_workers(scheduler=Depends(get_scheduler)) -> dict:
     status_code=204,
     summary="Remove a single dead worker from the registry",
     responses=common_responses(401, 404, 409, 500),
-    # Mutating endpoint: requires auth (see drain_worker note).
-    dependencies=[Depends(require_auth)],
+    # Mutating endpoint: admin only (see drain_worker note).
+    dependencies=[Depends(require_admin)],
 )
 async def delete_worker(
     worker_id: str = Path(...),
