@@ -656,6 +656,24 @@ async def warm_chat_channels(channel_registry) -> None:
         logger.exception("warm_chat_channels failed during startup")
 
 
+async def sample_claim_gauges_once(claim_engine) -> None:
+    """One sampling pass over the leases table: set ``claim_queue_depth`` per kind."""
+    import primer.observability.metrics as _m
+    _table = claim_engine._table  # noqa: SLF001
+    _pool = claim_engine._storage.pool  # noqa: SLF001
+    async with _pool.acquire() as _conn:
+        _rows = await _conn.fetch(
+            f"SELECT kind, COUNT(*) AS cnt"
+            f" FROM {_table}"
+            f" WHERE claimed_by IS NULL"
+            f" GROUP BY kind"
+        )
+    for _row in _rows:
+        _m.claim_queue_depth.labels(_row["kind"]).set(
+            _row["cnt"]
+        )
+
+
 async def sample_claim_queue_depth(claim_engine) -> None:
     """Observability loop: sample the claim queue depth every 10s.
 
@@ -663,23 +681,10 @@ async def sample_claim_queue_depth(claim_engine) -> None:
     depth would always be 0 outside tests); the caller gates on that before
     scheduling this loop.
     """
-    import primer.observability.metrics as _m
-    _table = claim_engine._table  # noqa: SLF001
-    _pool = claim_engine._storage.pool  # noqa: SLF001
     while True:
         try:
             await asyncio.sleep(10)
-            async with _pool.acquire() as _conn:
-                _rows = await _conn.fetch(
-                    f"SELECT kind, COUNT(*) AS cnt"
-                    f" FROM {_table}"
-                    f" WHERE claimed_by IS NULL"
-                    f" GROUP BY kind"
-                )
-            for _row in _rows:
-                _m.claim_queue_depth.labels(_row["kind"]).set(
-                    _row["cnt"]
-                )
+            await sample_claim_gauges_once(claim_engine)
         except asyncio.CancelledError:
             break
         except Exception:
