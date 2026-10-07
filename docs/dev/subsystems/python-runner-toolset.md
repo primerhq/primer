@@ -68,8 +68,8 @@ there is a test asserting that.
 
 `create_python_toolset` and `update_python_toolset_source` (`primer/toolset/_python_tools.py`, on the `crud` toolset, admin-gated)
 write the Toolset row directly, so they apply the same guards as `/v1/toolsets` themselves, through the shared
-`toolset_guards()` declaration the system toolset's table also uses: a reserved scope id (`external`, `workspace`,
-`workspace_ext`) cannot be created, and the source of a harness-managed toolset cannot be edited, both answered as typed
+`toolset_guards()` declaration the system toolset's table also uses: a reserved id (a built-in toolset such as `system` or
+`web`, or a scope id such as `external`, `workspace`, `workspace_ext`) cannot be created, and the source of a harness-managed toolset cannot be edited, both answered as typed
 `conflict` errors before any source is parsed. An update also evicts the registry's cached adapter
 (`ProviderRegistry.invalidate_toolset`, which publishes on the invalidation bus when one is bound), exactly as the router does:
 the registry caches the adapter by id and the python adapter registers its tools from `config.source` when it is built, so without
