@@ -83,6 +83,17 @@ async def test_a_user_run_cannot_turn_an_http_toolset_into_a_stdio_one(toolset_a
     assert (await storage.get("ts-http")).config.transport.value == "http"
 
 
+async def test_a_user_run_cannot_repoint_a_stdio_toolset_at_http(toolset_and_storage):
+    """The stored row counts too: the incoming body launches nothing, so only the ``existing`` side of the rule can refuse it."""
+    toolset, storage = toolset_and_storage
+    assert not (await _call(toolset, "create_toolset", {"entity": STDIO}, _ctx("admin"))).is_error
+
+    result = await _call(toolset, "update_toolset", {"id": "ts-stdio", "entity": {**HTTP, "id": "ts-stdio"}}, _ctx("user"))
+
+    assert result.is_error and _error_type(result) == "forbidden", result.output
+    assert (await storage.get("ts-stdio")).config.transport.value == "stdio"
+
+
 @pytest.mark.parametrize("ctx", [_ctx("admin"), _ctx(None, kind="system"), _ctx(None, kind="trigger")], ids=["admin", "system", "trigger"])
 async def test_an_admin_or_an_internal_actor_can_create_and_change_a_stdio_toolset(toolset_and_storage, ctx):
     toolset, storage = toolset_and_storage
