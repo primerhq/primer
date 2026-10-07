@@ -112,3 +112,95 @@ def test_step_two_posts_the_default_profile() -> None:
         "model_name": "gpt-x",
         "context_length": 32000,
     }
+
+
+# ---------------------------------------------------------------------------
+# ADM-01: the wizard must survive being done once. Step 1 creates the fixed id llm-<type>, and a reload (or an abandoned step 2) restarts at
+# step 1, so the second attempt used to meet "LLMProvider with id 'llm-openchat' already exists" (409) for ever, behind a full-screen gate.
+# ---------------------------------------------------------------------------
+
+
+def test_step_one_reuses_a_provider_row_that_already_exists() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        "var __api4 = __api(function (m, p) {"
+        "  if (p === '/llm_providers/_discover_models') return { models: [{ name: 'gpt-x' }] };"
+        "  if (m === 'POST' && p === '/llm_providers') return __http(409, \"LLMProvider with id 'llm-openchat' already exists\");"
+        "  return {};"
+        "});"
+    )
+    result = _run(ctx, "window.SW_connectProvider(__api4, { type: 'openchat', url: 'http://new:1/v1', apiKey: '' })")
+
+    assert result == {"ok": {"id": "llm-openchat", "models": [{"name": "gpt-x"}]}}
+    puts = [c for c in _calls(ctx) if c[0] == "PUT"]
+    assert [c[1] for c in puts] == ["/llm_providers/llm-openchat"]
+    assert puts[0][2] == {
+        "id": "llm-openchat", "provider": "openchat",
+        "config": {"url": "http://new:1/v1"}, "limits": {"max_concurrency": 4},
+    }, "the row takes what the user just typed and the probe just proved"
+
+
+def test_step_one_still_fails_on_any_error_that_is_not_a_conflict() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        "var __api5 = __api(function (m, p) {"
+        "  if (p === '/llm_providers/_discover_models') return { models: [{ name: 'gpt-x' }] };"
+        "  return __http(500, 'boom');"
+        "});"
+    )
+    result = _run(ctx, "window.SW_connectProvider(__api5, { type: 'openchat', url: 'http://h:1/v1', apiKey: '' })")
+
+    assert result == {"error": "boom"}
+    assert not [c for c in _calls(ctx) if c[0] == "PUT"], "only a 409 may turn into an update"
+
+
+def test_step_two_treats_a_profile_that_already_exists_as_done() -> None:
+    ctx = _ctx()
+    ctx.eval("var __api6 = __api(function () { return __http(409, 'ModelProfile already exists'); });")
+    result = _run(ctx, "window.SW_registerProfile(__api6, { providerId: 'llm-openchat', model: { name: 'gpt-x' } })")
+
+    assert result == {"ok": None}
+
+
+def test_step_two_still_fails_on_any_error_that_is_not_a_conflict() -> None:
+    ctx = _ctx()
+    ctx.eval("var __api7 = __api(function () { return __http(422, 'bad context'); });")
+    result = _run(ctx, "window.SW_registerProfile(__api7, { providerId: 'llm-openchat', model: { name: 'gpt-x' } })")
+
+    assert result == {"error": "bad context"}
+
+
+def test_resume_finds_the_existing_provider_and_its_models() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        "var __api8 = __api(function (m, p) {"
+        "  if (p.indexOf('/llm_providers?') === 0) return { items: [{ id: 'llm-openchat' }, { id: 'other' }] };"
+        "  if (p === '/llm_providers/llm-openchat/discovered_models') return { models: [{ name: 'gpt-x' }] };"
+        "  return __http(404, 'unexpected ' + p);"
+        "});"
+    )
+    result = _run(ctx, "window.SW_resumeFromProvider(__api8)")
+
+    assert result == {"ok": {"providerId": "llm-openchat", "models": [{"name": "gpt-x"}]}}
+
+
+def test_resume_is_null_when_there_is_no_provider_or_it_cannot_list_models() -> None:
+    ctx = _ctx()
+    ctx.eval("var __none = __api(function () { return { items: [] }; });")
+    assert _run(ctx, "window.SW_resumeFromProvider(__none)") == {"ok": None}
+
+    ctx.eval(
+        "var __down = __api(function (m, p) {"
+        "  if (p.indexOf('/llm_providers?') === 0) return { items: [{ id: 'llm-openchat' }] };"
+        "  return __http(400, 'probe failed');"
+        "});"
+    )
+    assert _run(ctx, "window.SW_resumeFromProvider(__down)") == {"ok": None}
+
+    ctx.eval(
+        "var __empty = __api(function (m, p) {"
+        "  if (p.indexOf('/llm_providers?') === 0) return { items: [{ id: 'llm-openchat' }] };"
+        "  return { models: [] };"
+        "});"
+    )
+    assert _run(ctx, "window.SW_resumeFromProvider(__empty)") == {"ok": None}
