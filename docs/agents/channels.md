@@ -218,7 +218,10 @@ system toolset for completeness but agents rarely need to touch them.
 - `update_channel` replaces the whole row and re-checks the provider
   and its platform: it cannot move a channel to another platform than
   its provider's, or onto a provider that does not exist
-  (`type=validation-error`, the stored row unchanged).
+  (`type=validation-error`, the stored row unchanged). It also cannot
+  take another channel's `(provider_id, external_id)` pair
+  (`type=conflict` naming the channel that holds it); a channel keeps
+  its own pair freely.
 - `config.chats` controls inbound enablement for the room. Set
   `config.chats.enabled=true` to allow incoming messages to start
   sessions on it; the agent they run under comes from the channel
