@@ -45,11 +45,17 @@ def test_a_blank_detail_does_not_hide_the_title(words) -> None:
     assert words({"title": "Forbidden", "detail": ""}, "Save failed") == "Forbidden"
 
 
+def _between(start: str, end: str) -> str:
+    """The source from ``start`` to the next ``end`` after it; both must exist, so a moved anchor fails loudly instead of slicing nothing."""
+    i = TRIGGERS.index(start)
+    return TRIGGERS[i:TRIGGERS.index(end, i)]
+
+
 def test_the_three_secret_writes_use_it() -> None:
-    clear = TRIGGERS[TRIGGERS.index('title: "Clear HMAC secret?"'):][:900]
+    clear = _between('title: "Clear HMAC secret?"', 'data-testid="clear-hmac-btn"')
     assert "catch (_e) { /* ignore */ }" not in clear, "the refusal must not be swallowed"
     assert "setHmacError(TR_writeErrorText(" in clear
-    rotate = TRIGGERS[TRIGGERS.index("const rotateToken = async"):][:900]
+    rotate = _between("const rotateToken = async", "if (detail.loading && !detail.data)")
     assert "TR_writeErrorText(" in rotate
-    dialog = TRIGGERS[TRIGGERS.index("function TR_HmacSecretDialog"):][:1500]
+    dialog = _between("function TR_HmacSecretDialog", "window.TR_HmacSecretDialog")
     assert "TR_writeErrorText(" in dialog
