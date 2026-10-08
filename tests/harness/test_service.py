@@ -1598,3 +1598,38 @@ async def test_apply_sync_failed_entity_retried_on_next_sync(fake_storage_provid
     stored = await agent_storage.get("acme__asst")
     assert stored is not None
     assert stored.harness_id == harness.id
+
+
+# ---------------------------------------------------------------------------
+# The agent id rule (ticket 01a11c1c) is a rule for REST and tool creates; a harness install is not subject to it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("template_name", ["asst", "Assistant One", "x___y"])
+async def test_a_harness_install_still_stores_agents_whose_ids_the_create_rule_refuses(fake_storage_provider, template_name):
+    """Harness ids are ``<slug>__<template>``: they carry the double underscore the create rule reserves for them, and a template name that itself breaks the
+    rule (a space, a capital) still installs. The install writes through the entity model and storage, not through the create check."""
+    from primer.agent.agent_checks import check_agent_fields
+    from primer.common.entity_checks import EntityCheckError
+    from primer.model.agent import Agent
+
+    harness = _make_harness("acme")
+    entry = RenderedEntry(
+        kind="agent", template_name=template_name,
+        resolved_id=resolved_id("acme", template_name),
+        template_source_hash="h", rendered_hash="h1",
+        rendered_payload={"description": "assistant", "model": {"profile_id": "p--m"}},
+    )
+
+    error = await apply_install(
+        storage_provider=fake_storage_provider, harness=harness, entries=[entry], rendered_files_by_name={},
+        bundle_hash="bh1", overrides_hash="oh1", schema_hash=None,
+    )
+
+    assert error is None
+    stored = await fake_storage_provider.get_storage(Agent).get(f"acme__{template_name}")
+    assert stored is not None and stored.harness_id == harness.id
+    with pytest.raises(EntityCheckError) as refused:
+        check_agent_fields(Agent(id=stored.id, description="d", model={"profile_id": "p--m"}))
+    assert refused.value.code == "agent_id_invalid", "a REST-created agent with this id would be refused, so it can never collide with the install"

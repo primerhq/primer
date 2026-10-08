@@ -18,7 +18,7 @@ from tests.toolset.test_system_crud_guards import world  # noqa: F401  (world is
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("surface", SURFACES)
-@pytest.mark.parametrize("agent_id", ["Bad Name!", "Refund Triage", "-lead", "a/b", "a" * 64])
+@pytest.mark.parametrize("agent_id", ["Bad Name!", "Refund Triage", "-lead", "a/b", "a" * 64, "acme__assistant"])
 async def test_a_new_agent_whose_id_is_not_a_name_is_refused_and_not_stored(world, surface: str, agent_id: str) -> None:
     sp, toolset, _ = world
     await _store(sp, profile_row("mp-1"))
@@ -117,3 +117,18 @@ async def test_the_write_descriptors_tell_the_agent_the_rule_before_it_writes(wo
 
     assert "lowercase letters, digits, hyphens and underscores" in described[tool], described[tool]
     assert "must not be blank" in described[tool], described[tool]
+    assert "reserved for the agents a harness installs" in described[tool], described[tool]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_stored_with_an_older_id_can_be_deleted_through_the_system_tool(world) -> None:
+    """Delete is not a create: ``Legacy_Name`` and a pre-reservation ``old__style`` go away like any other agent."""
+    sp, toolset, _ = world
+    await _store(sp, profile_row("mp-1"))
+    await _store(sp, Agent.model_validate(agent_body("Legacy_Name")))
+    await _store(sp, Agent.model_validate(agent_body("old__style")))
+
+    for agent_id in ("Legacy_Name", "old__style"):
+        is_error, answer = await _call_surface("system", sp, toolset, "delete_agent", id=agent_id)
+        assert not is_error, (agent_id, answer)
+        assert await sp.get_storage(Agent).get(agent_id) is None

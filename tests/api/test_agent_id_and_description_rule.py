@@ -14,7 +14,8 @@ tool and the builder's ``crud`` toolset. The rule is now one shared check (``pri
   ``validation-error`` with the field in front.
 
 The id appears in URLs (``/v1/agents/{id}``), in a graph agent node, a session binding and a trigger subscription. It is never part of a
-qualified ``<toolset>__<tool>`` name (that is a TOOLSET id), so ``__`` in an agent id is harmless.
+qualified ``<toolset>__<tool>`` name (that is a TOOLSET id), but two underscores in a row are RESERVED for the ids a harness install mints
+(``<slug>__<template>``, ``primer/harness/service.py``): a REST-created ``acme__assistant`` would collide with a later install of ``acme``.
 """
 
 from __future__ import annotations
@@ -24,18 +25,26 @@ from urllib.parse import quote
 
 import pytest
 
-from primer.bootstrap.defaults import RESERVED_BUILDER_AGENT, RESERVED_OPERATOR_AGENT
+from primer.bootstrap.defaults import (
+    RESERVED_BUILDER_AGENT,
+    RESERVED_EXPLORER_AGENT,
+    RESERVED_OPERATOR_AGENT,
+    RESERVED_PLANNER_AGENT,
+    RESERVED_TOOL_RUNNER_AGENT,
+)
 from primer.model.agent import Agent, AgentModel
 from tests._support.agent_check_rows import AGENT_DESCRIPTION_MESSAGE, agent_body, agent_id_message, profile_row
 from tests.api.conftest import app, client, fake_provider_registry  # noqa: F401
 
 # The rule, spelled out here on purpose: a test that imported it would pass whatever the pattern became.
-AGENT_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,62}$"
+AGENT_ID_PATTERN = r"^(?!.*__)[a-z0-9][a-z0-9_-]{0,62}$"
 BAD_IDS = [
     "Bad Name!", "RefundTriage", "refund triage", "-leading", "_leading", "refund/triage", "refund.triage", "refund%20triage",
     "naïve", " refund", "refund ", "refund\n", "a" * 64, "..", "a/../b",
+    # two underscores in a row are reserved for the ids a harness install mints (<slug>__<template>)
+    "a__b", "acme__assistant", "x___y", "ends__", "a_-__b",
 ]
-GOOD_IDS = ["refund-triage", "my_agent_1", "a", "0day", "agent-3f9a1c8d", "a__b", "a--b", "a" * 63]
+GOOD_IDS = ["refund-triage", "my_agent_1", "a", "0day", "agent-3f9a1c8d", "a_b_c", "a--b", "a-_-b", "a" * 63]
 BLANK_DESCRIPTIONS = ["", " ", "   ", "\n\t "]
 
 
@@ -95,7 +104,9 @@ def test_the_backend_constant_is_the_rule_the_console_form_and_these_tests_spell
 
 def test_the_seeded_agents_and_the_generated_prefix_satisfy_the_rule() -> None:
     """They are written straight to storage, so the rule never sees them; still, nothing the platform makes may break it."""
-    for seeded in (RESERVED_OPERATOR_AGENT, RESERVED_BUILDER_AGENT):
+    for seeded in (
+        RESERVED_OPERATOR_AGENT, RESERVED_BUILDER_AGENT, RESERVED_PLANNER_AGENT, RESERVED_EXPLORER_AGENT, RESERVED_TOOL_RUNNER_AGENT,
+    ):
         assert re.fullmatch(AGENT_ID_PATTERN, seeded), seeded
     generated = Agent(description="d", model=AgentModel(profile_id="mp-1")).id
     assert generated and re.fullmatch(AGENT_ID_PATTERN, generated), generated
@@ -207,3 +218,30 @@ async def test_the_whole_refusal_body_is_the_request_validation_envelope(client,
         + '"' + agent_id_message("Bad Name!").replace('"', '\\"') + '"'
         + '}],"request_id":"req-<id>"}}'
     )
+
+
+@pytest.mark.asyncio
+async def test_an_agent_stored_with_an_older_id_can_be_read_updated_and_deleted(client, app) -> None:
+    """The rule is for NEW agents. A stored ``Legacy_Name``, and one with a double underscore that predates the reservation, are neither hidden nor stuck."""
+    await _seed(app, profile_row("mp-1"))
+    await _seed(app, Agent.model_validate(agent_body("Legacy_Name")))
+    await _seed(app, Agent.model_validate(agent_body("old__style")))
+
+    got = await client.get("/v1/agents/old__style")
+    edited = await client.put("/v1/agents/old__style", json={**agent_body("old__style"), "description": "now described"})
+    deleted_a = await client.delete("/v1/agents/Legacy_Name")
+    deleted_b = await client.delete("/v1/agents/old__style")
+
+    assert got.status_code == 200 and edited.status_code == 200, (got.text, edited.text)
+    assert deleted_a.status_code in (200, 204) and deleted_b.status_code in (200, 204), (deleted_a.text, deleted_b.text)
+    storage = app.state.storage_provider.get_storage(Agent)
+    assert await storage.get("Legacy_Name") is None and await storage.get("old__style") is None
+
+
+def test_the_reservation_is_the_separator_the_harness_install_uses() -> None:
+    """Harness installs mint ``<slug>__<template>`` (primer/harness/service.py resolved_id). If that separator ever changes, the reservation must follow."""
+    from primer.harness.service import resolved_id
+
+    minted = resolved_id("acme", "assistant")
+
+    assert "__" in minted and re.fullmatch(AGENT_ID_PATTERN, minted) is None

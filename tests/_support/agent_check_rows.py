@@ -46,7 +46,8 @@ def agent_id_message(agent_id: str) -> str:
     shown = repr(agent_id) if len(agent_id) <= 40 else repr(agent_id[:40]) + "..."
     return (
         f"{shown} is not a valid agent id: it must start with a lowercase letter or a digit and use only lowercase letters, digits, "
-        "hyphens and underscores, at most 63 characters (for example refund-triage); leave the id out to have one generated"
+        "hyphens and single underscores (two in a row, __, are reserved for the agents a harness installs), at most 63 characters "
+        "(for example refund-triage); leave the id out to have one generated"
     )
 
 
