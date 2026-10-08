@@ -194,6 +194,26 @@ function ADM_AdminUsersPage() {
 // only way to set must_change_password without silently locking the
 // account out with an unrecoverable client-generated password).
 // Reset-with-a-typed-password stays in the Edit dialog, unchanged.
+// What "Disable" asks before it fires (admin review ADM-26): null for an
+// already-disabled account, because Enable only restores access. A disabled
+// account is treated as unauthenticated from its very next request on every
+// path (primer/api/middleware/auth.py: cookie, API key and MCP alike), so the
+// prompt says when it takes effect, that an API key of theirs stops working
+// too, and that nothing is deleted. It does not claim the session is
+// destroyed: the middleware refuses the requests, it does not end the session.
+// Pure: tests/ui/test_admin_users_disable_confirm.py runs it in MiniRacer.
+function ADM_toggleConfirm(user) {
+  if (user.disabled) return null;
+  return {
+    title: "Disable " + user.username + "?",
+    message: "Every request this account makes is refused from its very "
+      + "next request, including with an API key, until you enable it "
+      + "again. Nothing is deleted: Enable restores access.",
+    confirmLabel: "Disable",
+    danger: true,
+  };
+}
+
 function ADM_UserRow({ user, onEdit, onDelete, onKeys, onChanged }) {
   const { apiFetch } = window.primerApi;
   const [busy, setBusy] = React.useState(false);
@@ -201,6 +221,8 @@ function ADM_UserRow({ user, onEdit, onDelete, onKeys, onChanged }) {
   const [rotated, setRotated] = React.useState(null); // plaintext password | null
 
   const toggleDisabled = async () => {
+    const prompt = ADM_toggleConfirm(user);
+    if (prompt && !(await confirmDialog(prompt))) return;
     setBusy(true);
     setError(null);
     try {
