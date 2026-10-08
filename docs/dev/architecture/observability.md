@@ -128,6 +128,19 @@ The instrumentation plumbing lives in `primer/observability/`:
   `otelTraceID` / `otelSpanID` (hex strings) to every `LogRecord` produced inside a
   span. The existing `_JsonFormatter` (`primer/common/log.py`) emits any non-reserved
   record attribute as a top-level JSON field, so the IDs appear automatically.
+- URL-borne credentials never reach the log. `configure_logging` puts
+  `_UrlSecretFilter` on the root handler and on the `uvicorn.access` /
+  `uvicorn.error` loggers (uvicorn logs those through its own handlers with
+  `propagate=False`, so the root handler never sees them). It masks query
+  credentials (`key`, `api_key`, `apikey`, `token`, `access_token`, `refresh_token`,
+  `id_token`, `client_secret`, `secret`, `password` become `[REDACTED]`), Telegram
+  `/bot<id>:<secret>` segments (`/bot[REDACTED]`) and webhook capability tokens
+  (`/v1/webhooks/***<last4>`) in the message, each arg and the exception text. Args
+  are rewritten one by one, never collapsed into the message, because uvicorn's
+  `AccessFormatter` unpacks a 5-tuple. This covers the httpx `HTTP Request: ...` INFO
+  line (httpx stays at its INFO floor) and `httpx.HTTPStatusError` text, which both
+  embed the full URL. Call sites still keep credentials out of URLs where the
+  upstream allows it: Gemini model discovery sends the key in `x-goog-api-key`.
 
 The turn-log surface lives in `primer/observability/turn_log_writer.py`:
 
@@ -146,9 +159,14 @@ The turn-log surface lives in `primer/observability/turn_log_writer.py`:
 - `to_problem_details(exc)` translates a live exception into a `ProblemDetails`
   envelope using a copy of `_PRIMER_ERROR_MAP` (`NetworkError` -> 504,
   `AuthenticationError` -> 401, `ValidationError` -> 422, `ProviderError` -> 502,
-  unknown -> generic 500); the traceback is truncated to the last 4 KB in
-  `extensions`. The map is duplicated here so the module does not import upward into
-  the api layer.
+  unknown -> generic 500). `extensions` carries `exception_class` and a fresh
+  `error_id` (uuid4 hex), never the traceback: the envelope is served to every
+  reader of the session (the messages `ERROR` record, the turn log, the tap), and a
+  traceback exposes server file paths and internals. `to_problem_details` logs the
+  traceback once, at ERROR on `primer.observability.turn_log_writer`, as
+  `error_id=<id> <Class>: <message>`, so an operator finds it in the server log by
+  the id the console shows. The map is duplicated here so the module does not import
+  upward into the api layer.
 
 The event model is `TurnLogEvent` (`primer/model/turn_log.py`), a Pydantic
 discriminated union over eight subclasses discriminated on `kind`, with
