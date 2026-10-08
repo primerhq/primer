@@ -137,7 +137,16 @@ The instrumentation plumbing lives in `primer/observability/`:
   userinfo of a URL (`http://user:pw@host` becomes `http://[REDACTED]@host`: it runs
   to the last `@` before the first `/`, `?` or `#`, so a password with an apostrophe or
   a raw `@` is covered and an `@` in a path, query or fragment is left alone, ticket
-  01a11c0d-dd9a), Telegram
+  01a11c0d-dd9a). The pattern is linear (the scheme is `[a-z][a-z0-9]*`; a class with
+  `+ . -` rescans a run like `a.a.a.` from every letter and took 24 s on 100k characters of an
+  unauthenticated request path) and runs only when the text holds both `://` and `@`.
+  Its limits: it needs a scheme, so `user:pw@host/v1` and `//user:pw@host` are not masked; the
+  userinfo ends at the first `/`, `?` or `#`, so a hand-typed password holding a raw one of those
+  leaves the rest of it readable (httpx and pydantic percent-encode what they print, but a string an
+  application prints as typed is not), and whitespace ends it; the username is masked with the
+  password (it cannot be told apart from a token). Where a value can be typed by a person the
+  caller must not print it at all: the draft-validation detail of a provider probe omits pydantic's
+  `input_value` for that reason. The mask also covers Telegram
   `/bot<id>:<secret>` segments (`/bot[REDACTED]`) and webhook capability tokens
   (`/v1/webhooks/***<last4>`) in the message (a non-str message such as
   `logger.warning(exc)` too), each arg, every string extra (`extra={"path": ...}`,
