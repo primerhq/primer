@@ -397,33 +397,59 @@ async def test_a_storage_error_is_tolerated_a_few_times_then_fails_closed(probed
         storage.get = real_get
 
 
+async def _happens(event: asyncio.Event, what: str, seconds: float = WITHIN) -> None:
+    """Wait for ``event``; fail with ``what`` named when it does not happen within ``seconds`` (a generous bound, not a guess of the timing)."""
+    try:
+        await asyncio.wait_for(event.wait(), seconds)
+    except TimeoutError:
+        pytest.fail(f"{what} (did not happen within {seconds:g}s)")
+
+
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 async def test_cancelling_the_request_cancels_the_app_beneath_the_watcher(probed) -> None:
-    """The watcher runs the app in a task of its own; the server cancelling the request (a client that went away) must reach it."""
+    """The watcher runs the app in a task of its own; the server cancelling the request (a client that went away) must reach it.
+
+    Event-driven, not timed. The app is a handler parked on an event that is never set, so a cancellation reaches it at that one await and nowhere
+    else; the test cancels the request only after (1) the handler is running and (2) the watcher has re-read the account at least once, i.e. it is
+    past its first interval. The previous version cancelled after a fixed sleep and watched a STREAMING body for the ``CancelledError``: when the
+    cancellation landed while the stream's task was inside a ``send`` (not in the generator's ``sleep``), the app WAS cancelled but the generator
+    was merely abandoned at its ``yield`` and never saw a ``CancelledError``, so the test failed about once in sixty runs.
+    """
     _, other_cookie = await _cookies(probed)
-    seen = {"cancelled": False}
+    users = probed.state.storage_provider.get_storage(User)
+    real_get = users.get
+    checks = {"reads": 0}
+    entered, cancelled = asyncio.Event(), asyncio.Event()
 
-    async def stream():
-        async def gen():
-            try:
-                while True:
-                    yield b"x"
-                    await asyncio.sleep(0.02)
-            except asyncio.CancelledError:
-                seen["cancelled"] = True
-                raise
-        return StreamingResponse(gen(), media_type="text/event-stream")
+    async def counting_get(entity_id):
+        checks["reads"] += 1
+        return await real_get(entity_id)
 
-    probed.add_api_route("/v1/_probe/cancel_me", stream, methods=["GET"])
-    conn = _Http(probed, "/v1/_probe/cancel_me", _cookie_header(other_cookie))
-    await conn.__aenter__()
-    await asyncio.sleep(INTERVAL * 3)            # past the first interval, so the watcher is running
-    conn.task.cancel()
-    with contextlib.suppress(BaseException):
-        await conn.task
-    await asyncio.sleep(0.2)
-    assert seen["cancelled"], "the app beneath the watcher was left running"
+    async def park_until_cancelled():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    probed.add_api_route("/v1/_probe/cancel_me", park_until_cancelled, methods=["GET"])
+    users.get = counting_get
+    conn = _Http(probed, "/v1/_probe/cancel_me", _cookie_header(other_cookie), wait_for_start=False)
+    try:
+        await conn.__aenter__()
+        await _happens(entered, "the handler under the watcher never started")
+        reads_when_started = checks["reads"]
+        assert await _until(lambda: checks["reads"] > reads_when_started), "the watcher never re-read the account, so it is not running yet"
+
+        conn.task.cancel()
+        with contextlib.suppress(BaseException):
+            await conn.task
+        await _happens(cancelled, "the app beneath the watcher was left running after the request was cancelled")
+    finally:
+        users.get = real_get
+        await conn.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
