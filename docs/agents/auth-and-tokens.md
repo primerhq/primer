@@ -55,6 +55,17 @@ expiry, checks `revoked_at`, sets `scope.state.api_token` to the row,
 and proceeds. A `last_used_at` write is fire-and-forget - it doesn't
 block the request, and a failed write only logs.
 
+Session cookies can be revoked. Each user carries a session epoch
+(`User.session_epoch`), and every cookie is signed with the epoch it
+was minted under; the middleware rejects a cookie whose epoch is not
+the user's current one. A password change (`POST
+/v1/auth/change-password`, which hands the caller a fresh cookie), an
+admin password reset, and `POST /v1/auth/logout-all` ("Sign out
+everywhere" in the profile menu) bump the epoch, so every cookie of
+that account stops working on its next request. A plain `POST
+/v1/auth/logout` only clears the caller's own cookie. None of this
+touches bearer tokens: revoke those through the API-token routes.
+
 Route-level scope enforcement is via the `require_scope("mcp")`
 dependency. Cookie sessions bypass scope checks (they have implicit
 all-scopes); bearer tokens must have the named scope in their `scopes`
