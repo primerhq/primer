@@ -20,7 +20,7 @@
     const optsRef = useRef(options);
     optsRef.current = options;
 
-    const mutate = useCallback(async (body) => {
+    const run = useCallback(async (body) => {
       const opts = optsRef.current || {};
       const ns = window.primerApi || {};
       const resourceApi = ns._resource || null;
@@ -81,6 +81,17 @@
         throw err;
       }
     }, []);
+
+    // `run` rethrows after it has shown the error (the toast, or onError), because a caller that awaits the mutation must know it failed: a dialog
+    // must not close on a failed save. Most call sites do not await it (onClick={() => create.mutate(body)}), and for them the rethrown error was an
+    // unhandled promise rejection, so every 422 or 409 a form handles perfectly well also reached `unhandledrejection` (ADM-18). A rejection
+    // handler attached here marks THIS promise handled; a caller that awaits it still receives the rejection, because awaiting attaches its own
+    // handler and the rejection is delivered to every handler.
+    const mutate = useCallback((body) => {
+      const promise = run(body);
+      promise.catch(() => {});
+      return promise;
+    }, [run]);
 
     return {
       mutate,
