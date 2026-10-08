@@ -34,6 +34,22 @@ def _empty_discovery_cache(monkeypatch):
     monkeypatch.setattr(oidc, "_discovery_cache", {})
 
 
+# What the shape check refuses without any network call (422 discovery_url_invalid), enabled or not.
+MALFORMED_URLS = [
+    "not-a-url",
+    "ftp://idp.example.com/x",
+    "https://",
+    "  ",
+    "https://[idp.example.com/x",
+    "https://idp.example.com]/x",
+    "https://idp.example.com:abc/.well-known/openid-configuration",
+    "https://idp.example.com:99999/x",
+    "https://idp.example.com:80:90/x",
+    "https://exa mple.com/x",
+    "https://idp.example.com/\u0000x",
+]
+
+
 def _host() -> str:
     return f"idp-{uuid.uuid4().hex[:12]}.example.com"
 
@@ -70,11 +86,11 @@ async def _stored_ids(client) -> list[str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [True, False])
-@pytest.mark.parametrize(
-    "url", ["not-a-url", "ftp://idp.example.com/x", "https://", "  ", "https://[idp.example.com/x", "https://idp.example.com]/x"],
-)
+@pytest.mark.parametrize("url", MALFORMED_URLS)
 async def test_a_discovery_url_that_is_not_a_full_http_url_is_refused_whether_or_not_it_is_enabled(client, url, enabled) -> None:
-    """The bracketed hosts are the ones ``urlsplit`` itself raises ``ValueError`` on ("Invalid IPv6 URL"): a 500, not a 422, if uncaught."""
+    """Three kinds are not refused by ``urlsplit`` alone: a bracketed host (``urlsplit`` raises ``ValueError``, "Invalid IPv6 URL"), a
+    port that is not a number or is out of range (``urlsplit`` only fails when ``.port`` is READ; httpx then raises ``InvalidURL``,
+    which is not an ``HTTPError``), and a space or control character inside the URL. Each was a 500 or a ``discovery_failed``."""
     await _admin(client)
 
     with respx.mock(assert_all_called=False) as router:
@@ -125,6 +141,21 @@ async def test_an_enabled_provider_whose_discovery_document_is_missing_fields_is
     with respx.mock(assert_all_called=False) as router:
         router.get(_url(host)).mock(return_value=httpx.Response(200, json={"issuer": f"https://{host}/"}))
         resp = await client.post("/v1/admin/oidc-providers", json=_body(host))
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["extensions"]["error"] == "discovery_failed"
+    assert await _stored_ids(client) == []
+
+
+@pytest.mark.asyncio
+async def test_an_enabled_provider_whose_host_cannot_be_encoded_is_refused_not_a_500(client) -> None:
+    """``https://xn--/x`` has a scheme and a host, so the shape check lets it through; the IDNA codec then raises ``IDNAError`` while
+    httpx builds the request. That is not an ``HTTPError`` either, and it used to escape ``oidc.discover`` as a 500."""
+    await _admin(client)
+    host = _host()
+
+    with respx.mock(assert_all_called=False):
+        resp = await client.post("/v1/admin/oidc-providers", json=_body(host, discovery_url="https://xn--/x"))
 
     assert resp.status_code == 422, resp.text
     assert resp.json()["extensions"]["error"] == "discovery_failed"
@@ -240,7 +271,7 @@ async def test_enabling_a_provider_whose_document_was_fetched_within_the_hour_do
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [True, False])
-@pytest.mark.parametrize("url", ["not-a-url", "https://[idp.example.com/x"])
+@pytest.mark.parametrize("url", MALFORMED_URLS)
 async def test_updating_a_stored_provider_to_a_malformed_url_is_refused_by_shape(client, url, enabled) -> None:
     await _admin(client)
     host = _host()
