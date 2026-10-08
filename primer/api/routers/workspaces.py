@@ -2328,7 +2328,7 @@ async def file_tree(
     workspace_id: str = Path(...),
     path: str = Query(default=".", description="Workspace-relative path"),
     depth: int = Query(default=1, ge=1, description="Tree depth (only depth=1 is supported; deeper values are accepted but treated as 1)"),
-    hidden: bool = Query(default=False, description="Include hidden entries (e.g. .state; admins only)"),
+    hidden: bool = Query(default=False, description="Include hidden entries (the runtime's .state and .tmp trees; admins only)"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     user=Depends(require_user),
 ) -> dict:
@@ -2338,11 +2338,17 @@ async def file_tree(
     # is workspace-native and nothing is collection-backed.
     # hidden=true never reveals the reserved trees to a non-admin.
     entries = _visible_entries(ws, await ws.list_files(path, recursive=False), user)
+    # The runtime's own trees (.state, .tmp, or wherever the template moved them) and its ready marker are plumbing, not the user's files:
+    # out of the default listing for an admin too (who may still ask for them with hidden=true), so a new workspace's tree can be empty.
+    reserved = reserved_trees(ws)
     items = []
     for entry in entries:
         name = entry.path.rsplit("/", 1)[-1] if "/" in entry.path else entry.path
         if not hidden and (
-            entry.path == ".state" or entry.path.endswith("/.state") or _is_runtime_marker(entry.path)
+            entry.path == ".state"
+            or entry.path.endswith("/.state")
+            or reserved_tree(entry.path, reserved) is not None
+            or _is_runtime_marker(entry.path)
         ):
             continue
         items.append(
