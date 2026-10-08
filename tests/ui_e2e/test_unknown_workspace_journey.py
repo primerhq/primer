@@ -62,3 +62,27 @@ def test_a_real_workspace_does_not_show_the_card(page: Page, base_url: str, cons
     expect(page.get_by_test_id("nv-files-panel")).to_be_visible(timeout=20_000)
     page.wait_for_timeout(1_000)
     expect(page.get_by_test_id("nv-ws-gone")).to_have_count(0)
+
+
+@pytest.mark.ui_e2e
+def test_the_phone_files_tab_says_the_workspace_was_not_found_instead_of_no_files(page: Page, base_url: str, console_url: str) -> None:
+    real = _a_workspace_id(base_url)
+    requests: list[str] = []
+    page.on("request", lambda req: requests.append(req.url))
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(f"{console_url}#/w/{MISSING}")
+    page.get_by_role("tab", name="Files").click()
+
+    panel = page.get_by_test_id("nv-mobile-panel:files")
+    gone = panel.get_by_test_id("nv-ws-gone")
+    expect(gone).to_be_visible(timeout=20_000)
+    expect(gone).to_contain_text(f"'{MISSING}' was not found")
+    expect(panel.get_by_text("This workspace has no files yet")).to_have_count(0)
+
+    page.wait_for_timeout(500)
+    seen = len([u for u in requests if "/files/tree" in u and MISSING in u])
+    page.wait_for_timeout(7_000)
+    assert len([u for u in requests if "/files/tree" in u and MISSING in u]) == seen, "the missing workspace's file tree is still polled"
+
+    gone.get_by_test_id(f"nv-ws-gone-open:{real}").click()
+    expect(gone).to_have_count(0, timeout=10_000)
