@@ -11,8 +11,9 @@ known and are closed here, each with the false positives it must NOT create:
 
 Still NOT caught, on purpose: a secret with no recognisable shape and no telling name (``{"note": "correct horse battery staple"}``), and a
 40-character base64 secret that contains ``/`` and ``+`` and sits under a harmless name (adding ``/`` to the blob rule would redact long paths,
-which are what the approver needs to read). Widening further inverts the default (a per-tool allowlist of safe argument names), a choice for
-the lead, not a patch.
+which are what the approver needs to read). The structural answer is the per-tool allowlist (``tests/api/test_inbox_preview_allowlist.py``): a name the tool or
+the policy did not allow is never drawn, whatever its value looks like; the misses above stay open for a tool that declares nothing and for a free-text
+argument that is allowed on purpose.
 """
 
 from __future__ import annotations
