@@ -13,6 +13,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
+from tests.ui_e2e._shell_helpers import open_gate
 
 pytestmark = smk("SMK-UI-06", status="partial")
 
@@ -61,7 +62,7 @@ _MEASURE = """
 @pytest.mark.ui_e2e
 @pytest.mark.parametrize("theme", ["dark", "light"])
 def test_each_status_colour_clears_aa_on_the_page_background_in_both_themes(page: Page, console_url: str, theme: str) -> None:
-    page.goto(console_url, wait_until="domcontentloaded")
+    open_gate(page, console_url)
     expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=30_000)
 
     measured = page.evaluate(_MEASURE, theme)
