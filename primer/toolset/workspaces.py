@@ -85,7 +85,7 @@ from primer.toolset._system_guards import (
     refuse_update,
 )
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
-from primer.workspace.reserved import reserved_tree, reserved_trees
+from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
 
 
 if TYPE_CHECKING:
@@ -130,7 +130,7 @@ def _refuse_reserved_read(
     ``.state`` / ``.tmp`` trees (A-22), else ``None``."""
     if _caller_is_admin(ctx):
         return None
-    tree = reserved_tree(path, reserved_trees(ws))
+    tree = reserved_tree_for(ws, path)
     if tree is None:
         return None
     return _err(

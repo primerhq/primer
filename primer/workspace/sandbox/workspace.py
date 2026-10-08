@@ -354,13 +354,31 @@ class SandboxWorkspace(Workspace):
                 parts.append(part)
         return f"{self._workspace_root}/{'/'.join(parts)}" if parts else self._workspace_root
 
-    def _refuse_reserved(self, path: str) -> None:
+    def reserved_tree_of(self, path: str) -> str | None:
+        """The reserved tree (``state_path`` / ``tmp_path``) ``path`` lands in
+        when :meth:`_resolve_path` resolves it (``\\`` as a separator, ``.``,
+        ``..`` and a leading ``/`` anchored at the workspace root), else
+        ``None``. Raises ``BadRequestError`` on an escape, like the readers.
+        Used by the raw file routes and tools (A-22) and by the write guard."""
+        resolved = self._resolve_path(path)
+        prefix = self._workspace_root.rstrip("/") + "/"
+        rel = resolved[len(prefix):] if resolved.startswith(prefix) else ""
         for r in (self._template.state_path, self._template.tmp_path):
-            if path == r or path.startswith(f"{r}/"):
-                raise BadRequestError(
-                    f"refusing to mutate path inside reserved tree {r!r}: "
-                    f"{path!r}"
-                )
+            tree = r.replace("\\", "/").strip("/")
+            if rel == tree or rel.startswith(f"{tree}/"):
+                return r
+        return None
+
+    def _refuse_reserved(self, path: str) -> None:
+        # Classify the RESOLVED path: comparing the raw string let
+        # './.state/x', 'a/../.state/x' and '.state\\x' through, and the
+        # resolver then wrote into the state tree.
+        r = self.reserved_tree_of(path)
+        if r is not None:
+            raise BadRequestError(
+                f"refusing to mutate path inside reserved tree {r!r}: "
+                f"{path!r}"
+            )
 
     def _file_entry_from_stat(
         self, fs: FileStat, abs_path: str,

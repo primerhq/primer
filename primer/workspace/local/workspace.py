@@ -784,8 +784,7 @@ class LocalWorkspace(Workspace):
                     # already ended; fine
                     pass
 
-    def _refuse_reserved(self, resolved: Path, original: str) -> None:
-        """Block writes / deletes inside ``.state`` and ``.tmp``."""
+    def _reserved_tree_of_resolved(self, resolved: Path) -> str | None:
         root_resolved = self._root.resolve()
         for reserved_name in (self._template.state_path, self._template.tmp_path):
             reserved = (root_resolved / reserved_name).resolve()
@@ -793,6 +792,21 @@ class LocalWorkspace(Workspace):
                 resolved.relative_to(reserved)
             except ValueError:
                 continue
+            return reserved_name
+        return None
+
+    def reserved_tree_of(self, path: str) -> str | None:
+        """The reserved tree (``state_path`` / ``tmp_path``) ``path`` lands in
+        when :meth:`read_file` resolves it (absolute paths inside the root,
+        ``..`` and symlinks included), else ``None``. Raises
+        ``BadRequestError`` on an escape, like the readers. Used by the raw
+        file routes and tools to refuse non-admins (A-22)."""
+        return self._reserved_tree_of_resolved(self._resolve_path(path))
+
+    def _refuse_reserved(self, resolved: Path, original: str) -> None:
+        """Block writes / deletes inside ``.state`` and ``.tmp``."""
+        reserved_name = self._reserved_tree_of_resolved(resolved)
+        if reserved_name is not None:
             raise BadRequestError(
                 f"refusing to mutate path inside reserved tree {reserved_name!r}: "
                 f"{original!r}"
