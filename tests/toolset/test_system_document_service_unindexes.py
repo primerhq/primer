@@ -1,9 +1,9 @@
 """The system toolset's ``DocumentService`` un-indexes on delete and rewrites chunk paths on move (ticket 01a1131f).
 
 The tool half of ``tests/api/test_document_path_service_unindexes.py``. ``_document_service_factory`` built the service with an inline indexer and
-nothing else, so a path-addressed delete or move through it left the vector store as it was. Today the system tools reach it for ``put_document``
-and the content reads only (their delete goes through the tree service), so this pins the factory, not a tool: anything that later calls
-``delete`` / ``move`` on it must not reintroduce the hole.
+nothing else, so a path-addressed move through it left every chunk's ``meta.path`` at the old path: that is the ``system::move_document`` TOOL,
+which calls ``service_factory().move`` (its put, read and list tools use the same service). Its delete goes through the tree service today, so
+the factory's ``delete`` is pinned directly: anything that later calls it must not reintroduce the hole.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import pytest
 from primer.toolset._system_crud import _document_service_factory
 
 # Re-export so pytest can resolve the real-sqlite system toolset with a search-enabled collection ("kb-1") and a recording vector store.
-from tests.toolset.test_system_document_tools import _put, _SSR, world  # noqa: F401
+from tests.toolset.test_system_document_tools import _call, _put, _SSR, world  # noqa: F401
 
 
 def _service(sp, store):
@@ -47,3 +47,19 @@ async def test_moving_through_the_toolsets_document_service_rewrites_the_chunk_p
     await _service(sp, store).move(collection_id="kb-1", src="notes/a.md", dst="notes/b.md")
 
     assert {r.meta["path"] for r in _chunks_of(store, doc_id)} == {"notes/b.md"}
+
+
+@pytest.mark.asyncio
+async def test_the_move_document_tool_rewrites_the_chunk_paths(world) -> None:
+    """The user-visible half: an agent that moves a document with ``system::move_document`` must not leave search showing the old path."""
+    sp, toolset, store = world
+    doc_id = await _put(toolset, "notes/a.md")
+
+    async def get(collection_id, document_id):
+        return [r for k, r in store.records.items() if k[0] == collection_id and k[1] == document_id]
+
+    store.get = get  # the rewriter reads a document's chunks before putting them back with the new path
+    is_error, body = await _call(toolset, "move_document", collection_id="kb-1", **{"from": "notes/a.md", "to": "notes/b.md"})
+
+    assert not is_error, body
+    assert {r.meta["path"] for r in _chunks_of(store, doc_id)} == {"notes/b.md"}, "search still shows the old path after the tool moved it"
