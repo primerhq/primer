@@ -58,6 +58,12 @@ def test_park_and_end_are_in_the_overflow_and_the_palette_and_say_what_happened(
     expect(page.locator(".toast", has_text="paused")).to_be_visible(timeout=10_000)
     _wait_status(base_url, sid, "paused")
 
+    # A paused session has nothing left to park: the overflow stops offering it (it used to toast "paused" for a no-op).
+    page.get_by_test_id("nv-session-overflow").click()
+    expect(page.get_by_test_id("nv-session-end")).to_be_visible()
+    expect(page.get_by_test_id("nv-session-park")).to_have_count(0, timeout=10_000)
+    page.get_by_test_id("nv-session-overflow").click()
+
     # End is a palette verb too, and it asks first, naming the action on the button.
     run_verb(page, "End Session")
     confirm = page.get_by_test_id("dialog-confirm")
