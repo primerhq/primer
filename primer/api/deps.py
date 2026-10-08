@@ -277,12 +277,25 @@ def get_document_service(request: Request):
     Retained alongside :func:`get_document_tree_service` until S2 Task 21
     ports the console off the flat document surface; deleting the routes
     before their UI moves would break every knowledge page.
+
+    Wired like the tree service: the best-effort indexer, unindexer and chunk
+    path rewriter, so a delete or a move through this surface reaches the
+    vector store the way the tree routes' does (ticket 01a1131f).
     """
-    from primer.api.routers.knowledge import build_document_indexer
+    from primer.api.routers.knowledge import (
+        build_document_indexer,
+        build_document_path_rewriter,
+        build_document_unindexer,
+    )
     from primer.knowledge.document_service import DocumentService
 
     sp = get_storage_provider(request)
-    return DocumentService(sp, indexer=build_document_indexer(request))
+    return DocumentService(
+        sp,
+        indexer=build_document_indexer(request),
+        unindexer=build_document_unindexer(request),
+        path_rewriter=build_document_path_rewriter(request),
+    )
 
 
 def get_document_tree_service(request: Request):
