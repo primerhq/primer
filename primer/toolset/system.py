@@ -73,6 +73,7 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks
 from primer.agent.approval import ApprovalResolver
 from primer.agent.approval_checks import check_policy
+from primer.agent.tool_schemas import find_tool_schema
 from primer.agent.invoke import (
     InvocationDepthExceeded,
     invocation_depth_guard,
@@ -300,11 +301,14 @@ def build_system_toolset(
     # ---- Pre-write validators the REST routers run (task 01a111d1, D5 phase 2b) ----
     # The checks are shared functions over (entity, storage_provider); the router hooks call the same ones. They run after the guards
     # and before the write, and a refusal is a typed tool error.
+    async def _tool_schema_of(toolset_id: str, tool_name: str):
+        return await find_tool_schema(provider_registry, toolset_id, tool_name)
+
     async def _policy_pre_create(entity: ToolApprovalPolicy) -> None:
-        await check_policy(entity, storage_provider=storage_provider)
+        await check_policy(entity, storage_provider=storage_provider, tool_schema_of=_tool_schema_of)
 
     async def _policy_pre_update(entity: ToolApprovalPolicy, existing: ToolApprovalPolicy) -> None:
-        await check_policy(entity, storage_provider=storage_provider, skip_id=existing.id)
+        await check_policy(entity, storage_provider=storage_provider, skip_id=existing.id, tool_schema_of=_tool_schema_of)
 
     async def _toolset_pre_create(entity: Toolset) -> None:
         # Not the router's reachability probe (an 8 s outbound call for http / sse MCP toolsets): a tool runs inside an agent turn.
