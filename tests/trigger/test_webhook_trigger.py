@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import SecretStr
 
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     Trigger,
     TriggerKind,
@@ -222,7 +223,7 @@ async def test_rotate_webhook_token_changes_token(fake_storage_provider):
         deps=deps,
     )
     old_token = trigger.config.token
-    updated = await rotate_webhook_token(trigger_id=trigger.id, deps=deps)
+    updated = await rotate_webhook_token(trigger_id=trigger.id, owner=PrincipalRef.system(), deps=deps)
     assert updated.config.token != old_token
     assert len(updated.config.token) == 32
 
@@ -238,7 +239,7 @@ async def test_rotate_webhook_token_preserves_hmac_secret(fake_storage_provider)
         enabled=True,
         deps=deps,
     )
-    updated = await rotate_webhook_token(trigger_id=trigger.id, deps=deps)
+    updated = await rotate_webhook_token(trigger_id=trigger.id, owner=PrincipalRef.system(), deps=deps)
     assert updated.config.hmac_secret is not None
     assert updated.config.hmac_secret.get_secret_value() == "mysecret"
 
@@ -266,4 +267,4 @@ async def test_rotate_webhook_token_rejects_non_webhook(fake_storage_provider):
         deps=deps,
     )
     with pytest.raises(ValueError, match="kind='webhook'"):
-        await rotate_webhook_token(trigger_id=trigger.id, deps=deps)
+        await rotate_webhook_token(trigger_id=trigger.id, owner=PrincipalRef.system(), deps=deps)

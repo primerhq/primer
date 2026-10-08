@@ -26,6 +26,9 @@ mapping covers the cases the service layer reports:
   ``parked_session_only_from_yield``
 * :class:`~primer.trigger.service.TriggerSlugConflict` → 409
   ``trigger_slug_conflict``
+* :class:`~primer.trigger.service.TriggerForbidden` → 403 ``forbidden_role``
+  (a webhook trigger's PUT / rotate_token by someone other than its owner or
+  an admin; list / get show such callers the token masked)
 * :class:`~primer.trigger.cron.CronInvalid` → 422 ``cron_invalid``
 * :class:`~primer.trigger.cron.TimezoneInvalid` → 422 ``timezone_invalid``
 """
@@ -53,10 +56,12 @@ from primer.model.trigger import (
     TriggerConfig,
 )
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
+from primer.trigger.owner import redact_for
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ServiceDeps,
     SubscriptionNotFound,
+    TriggerForbidden,
     TriggerKindImmutable,
     TriggerNotFound,
     TriggerSlugConflict,
@@ -198,6 +203,7 @@ async def create_trigger_endpoint(
 
 @triggers_router.get("", summary="List triggers")
 async def list_triggers_endpoint(
+    request: Request,
     kind: Annotated[
         str | None,
         Query(description="Filter by trigger kind (delayed / scheduled)."),
@@ -211,6 +217,10 @@ async def list_triggers_endpoint(
 ) -> dict[str, Any]:
     deps = _deps(sp, claim_engine, event_bus)
     items = await list_triggers(kind=kind, enabled=enabled, deps=deps)
+    # A webhook token is served only to the trigger's owner or an admin:
+    # it is the credential that drives the trigger's runs (A-20 round 2).
+    caller = _owner(request)
+    items = [await redact_for(t, caller, sp) for t in items]
     return {
         "items": [t.model_dump(mode="json") for t in items],
         "total": len(items),
@@ -219,6 +229,7 @@ async def list_triggers_endpoint(
 
 @triggers_router.get("/{trigger_id}", summary="Get a trigger")
 async def get_trigger_endpoint(
+    request: Request,
     trigger_id: str = Path(...),
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
@@ -229,6 +240,7 @@ async def get_trigger_endpoint(
         trigger = await get_trigger(trigger_id=trigger_id, deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
+    trigger = await redact_for(trigger, _owner(request), sp)
     return JSONResponse(
         status_code=200,
         content=trigger.model_dump(mode="json"),
@@ -259,6 +271,8 @@ async def update_trigger_endpoint(
         _raise_code(404, "trigger_not_found", str(exc))
     except TriggerKindImmutable as exc:
         _raise_code(409, "trigger_kind_immutable", str(exc))
+    except TriggerForbidden as exc:
+        _raise_code(403, "forbidden_role", str(exc))
     except CronInvalid as exc:
         _raise_code(422, "cron_invalid", str(exc))
     except TimezoneInvalid as exc:
@@ -289,6 +303,7 @@ async def delete_trigger_endpoint(
     summary="Rotate the webhook token for a webhook trigger",
 )
 async def rotate_token_endpoint(
+    request: Request,
     trigger_id: str = Path(...),
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
@@ -296,9 +311,13 @@ async def rotate_token_endpoint(
 ) -> JSONResponse:
     deps = _deps(sp, claim_engine, event_bus)
     try:
-        trigger = await rotate_webhook_token(trigger_id=trigger_id, deps=deps)
+        trigger = await rotate_webhook_token(
+            trigger_id=trigger_id, owner=_owner(request), deps=deps,
+        )
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
+    except TriggerForbidden as exc:
+        _raise_code(403, "forbidden_role", str(exc))
     except ValueError as exc:
         _raise_code(422, "not_a_webhook_trigger", str(exc))
     return JSONResponse(
