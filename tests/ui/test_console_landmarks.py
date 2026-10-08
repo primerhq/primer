@@ -35,17 +35,38 @@ def test_the_view_is_the_main_landmark_and_names_itself_with_a_heading() -> None
     assert ".nv-sr-only" in STYLES
 
 
-def test_the_status_strip_and_the_reconnect_note_are_status_regions() -> None:
-    assert 'className="nv-status-strip" data-testid="nv-status-strip" role="status"' in DOC
+def test_the_status_strips_live_region_is_its_words_not_its_ticking_clock() -> None:
+    """The strip's text ends in an elapsed time that changes every second; a status region is atomic, so the role is on the words only."""
+    assert '<div className="nv-status-strip" data-testid="nv-status-strip">' in DOC, "the strip itself is not a live region"
+    assert '<span role="status" data-testid="nv-status-live">{words}</span>' in DOC
+    assert '<span data-testid="nv-status-clock">{clock}</span>' in DOC
+    assert 'className="nv-status-strip" data-testid="nv-status-strip" role="status"' not in DOC
+
+
+def test_the_reconnect_note_is_a_status_region() -> None:
     assert 'className="nv-status-strip" data-testid="nv-reconnect" role="status"' in DOC
 
 
-def test_a_pending_approval_and_a_failed_turn_interrupt() -> None:
+def test_a_pending_approval_and_a_failed_turn_interrupt_only_when_they_arrive_live() -> None:
+    """Behaviour is driven by ``tests/ui_e2e/test_live_regions_journey.py``; these pins are the wiring: the alert role is conditional,
+    the document tells history from news by the first load, and a card on a session that is over is never an alert."""
     assert 'data-kind="approval"' in DOC
-    card = DOC[DOC.index('<div className="nv-card nv-card-attention" data-kind="approval"'):][:260]
-    assert 'role="alert"' in card
-    failed = DOC[DOC.index('<div key={row.seq} className="nv-turn-error"'):][:260]
-    assert 'role="alert"' in failed
+    card = DOC[DOC.index('<div className="nv-card nv-card-attention" data-kind="approval"'):][:300]
+    assert 'role={props.live && !props.ended ? "alert" : undefined}' in card
+    failed = DOC[DOC.index('<div key={row.seq} className="nv-turn-error"'):][:300]
+    assert 'role={NV_arrivedLive(historyFirstLoad, row.seq) ? "alert" : undefined}' in failed
+    assert 'live={NV_arrivedLive(gatesFirstLoad, item.id)}' in DOC
+    assert "NV_useFirstLoadKeys(!!history.data" in DOC and "NV_useFirstLoadKeys(!!gates.data" in DOC
+
+
+def test_error_toasts_have_their_own_assertive_region_beside_the_polite_one() -> None:
+    start = SHELL.index("function NV_ToastHost")
+    assert "\nfunction NV_readUrl" in SHELL[start:], "the slice end moved: re-anchor this test"
+    host = SHELL[start:SHELL.index("\nfunction NV_readUrl", start)]
+    assert '<div className="toast-stack" data-testid="nv-toasts">' in host, "the stack itself is not a live region"
+    assert 'role="status" aria-live="polite" data-testid="nv-toasts-status"' in host
+    assert 'role="alert" data-testid="nv-toasts-alert"' in host
+    assert 'role={t.kind === "error" ? "alert" : undefined}' not in host, "an alert nested inside the status stack is announced twice"
 
 
 def test_the_composer_is_named_by_what_it_currently_does() -> None:
