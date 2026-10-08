@@ -253,9 +253,12 @@ function NV_Shell() {
     return sessionMetaById[sid] || stampedMetaById[sid];
   }, [sessionMetaById, stampedMetaById]);
 
-  // Default workspace: the URL's, else the first listed.
+  // Default workspace: the URL's, else the first listed. FUNCTIONAL on purpose: this effect runs after the render in which the list arrived and its closure holds
+  // that render's wid (null). A link followed in between has already queued setWid(<its workspace>) through the hashchange listener, and a plain
+  // setWid(first) from the stale closure queued after it won: the link's workspace was lost, its doc= kept, and the URL write effect then wrote the first
+  // workspace into the address bar (the unknown-workspace CI flake, ticket 01a11d41). The updater sees the latest value and only fills an empty one.
   React.useEffect(function () {
-    if (!wid && wsItems.length) setWid(wsItems[0].id);
+    if (wsItems.length) setWid(function (current) { return current || wsItems[0].id; });
   }, [wid, wsItems.length]);
 
   // --- URL sync: read on navigation events -------------------------------

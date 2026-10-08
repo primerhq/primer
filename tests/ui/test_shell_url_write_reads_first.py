@@ -22,3 +22,12 @@ def test_the_write_effect_reads_a_change_it_has_not_seen_instead_of_overwriting_
     assert guard in write
     assert write.index(guard) < write.index("window.history.replaceState"), "the guard comes before any write"
     assert "readUrlRef.current()" in write[write.index(guard):write.index("window.history.replaceState")]
+
+
+def test_the_default_workspace_pick_is_a_functional_update_so_it_cannot_override_a_navigation() -> None:
+    """Flake 01a11d41: the pick runs after the render in which the list arrived and its closure holds that render's wid (null). A link followed in between had already
+    queued setWid(<its workspace>); a plain setWid(first) from the stale closure queued after it won."""
+    effect = SHELL[SHELL.index("// Default workspace: the URL's, else the first listed."):]
+    effect = effect[:effect.index("}, [wid, wsItems.length]);")]
+    assert "setWid(function (current) { return current || wsItems[0].id; })" in effect
+    assert "if (!wid && wsItems.length)" not in effect, "the stale-closure test of wid is the bug"
