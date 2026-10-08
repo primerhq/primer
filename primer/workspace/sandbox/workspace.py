@@ -474,6 +474,10 @@ class SandboxWorkspace(Workspace):
     async def delete_file(self, path: str, *, recursive: bool = False) -> None:
         self._refuse_reserved(path)
         target = self._resolve_path(path)
+        if target == self._workspace_root:
+            # '.', '/', 'x/..' all normalise here; a recursive delete would take .state and .tmp
+            # with it. LocalWorkspace refuses the root the same way.
+            raise BadRequestError("refusing to delete workspace root")
         info = await self._sandbox.stat(target)
         if info is None:
             raise NotFoundError(f"{path!r} not found")

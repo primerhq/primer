@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import re
+import struct
 import zipfile
 from typing import BinaryIO, Literal
 
@@ -51,17 +52,71 @@ async def _ensure_dir(tree: DocumentTreeService, collection_id: str,
     return path
 
 
+_EOCD_SIG = b"PK\x05\x06"
+_ZIP64_LOCATOR_SIG = b"PK\x06\x07"
+_ZIP64_EOCD_SIG = b"PK\x06\x06"
+_EOCD_MIN = 22
+_EOCD_SEARCH = _EOCD_MIN + 0xFFFF  # the record plus the longest possible archive comment
+
+
+def _eocd_entry_count(source: BinaryIO) -> int | None:
+    """The total entry count from the end-of-central-directory record, or None when it cannot be read.
+
+    Read before ``zipfile.ZipFile`` parses the central directory, which builds one ZipInfo per entry:
+    an archive listing millions of tiny entries is refused from a few bytes at its end. A zip64
+    archive (classic count 0xFFFF) is followed to its zip64 end record. Anything malformed returns
+    None and is left to zipfile, after which the parsed count is checked again.
+    """
+    try:
+        source.seek(0, io.SEEK_END)
+        size = source.tell()
+        start = max(0, size - _EOCD_SEARCH)
+        source.seek(start)
+        tail = source.read(size - start)
+        pos = tail.rfind(_EOCD_SIG)
+        if pos < 0 or len(tail) - pos < _EOCD_MIN:
+            return None
+        (total,) = struct.unpack_from("<H", tail, pos + 10)
+        if total != 0xFFFF:
+            return total
+        loc = start + pos - 20
+        if loc < 0:
+            return None
+        source.seek(loc)
+        locator = source.read(20)
+        if len(locator) != 20 or locator[:4] != _ZIP64_LOCATOR_SIG:
+            return None
+        (rec_offset,) = struct.unpack_from("<Q", locator, 8)
+        source.seek(rec_offset)
+        record = source.read(56)
+        if len(record) != 56 or record[:4] != _ZIP64_EOCD_SIG:
+            return None
+        (total64,) = struct.unpack_from("<Q", record, 32)
+        return total64
+    except (OSError, struct.error, ValueError):
+        return None
+    finally:
+        try:
+            source.seek(0)
+        except (OSError, ValueError):
+            pass
+
+
+def _refuse_entry_count(count: int) -> None:
+    if count > MAX_ENTRIES:
+        raise PayloadTooLargeError(
+            f"archive lists {count} entries; the cap is {MAX_ENTRIES}",
+            limit_entries=MAX_ENTRIES,
+        )
+
+
 def _declared_size(info: zipfile.ZipInfo) -> int:
     return info.file_size
 
 
 def _check_archive(infos: list[zipfile.ZipInfo]) -> None:
     """Refuse an archive by what its directory declares, before anything is inflated or written."""
-    if len(infos) > MAX_ENTRIES:
-        raise PayloadTooLargeError(
-            f"archive lists {len(infos)} entries; the cap is {MAX_ENTRIES}",
-            limit_entries=MAX_ENTRIES,
-        )
+    _refuse_entry_count(len(infos))
     declared = sum(_declared_size(i) for i in infos)
     if declared > MAX_UNCOMPRESSED_BYTES:
         raise PayloadTooLargeError(
@@ -110,6 +165,9 @@ async def import_zip(
     bytes actually decompressed against the same cap.
     """
     source = io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data
+    eocd_count = _eocd_entry_count(source)
+    if eocd_count is not None:
+        _refuse_entry_count(eocd_count)
     try:
         zf = zipfile.ZipFile(source)
     except zipfile.BadZipFile as exc:
