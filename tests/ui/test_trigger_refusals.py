@@ -113,14 +113,26 @@ def test_a_message_that_already_ends_in_a_full_stop_does_not_get_a_second_one() 
 
 def test_a_missing_trigger_is_a_sentence_not_a_bare_id() -> None:
     """The server's message for it is just the id; the template makes it read as a sentence and says what to do."""
-    assert _text(NOT_FOUND) == "Trigger tr-1 was not found: it may have been deleted. Refresh the list."
-    assert _text(_envelope(404, "subscription_not_found", "sub-9")) == "Subscription sub-9 was not found: it may have been deleted. Refresh the list."
+    assert _text(NOT_FOUND) == "Trigger tr-1 was not found: it may have been deleted. Go back to the triggers list."
+    assert _text(_envelope(404, "subscription_not_found", "sub-9")) == (
+        "Subscription sub-9 was not found: it may have been deleted. Reload the trigger to see its current subscriptions."
+    )
 
 
 def test_the_code_is_never_part_of_the_text() -> None:
     forbidden = _envelope(403, "forbidden_role", "only the trigger's owner or an admin may rotate its webhook token")
     for err, code in ((SLUG, "trigger_slug_conflict"), (NOT_FOUND, "trigger_not_found"), (forbidden, "forbidden_role")):
         assert code not in _text(err), _text(err)
+
+
+def test_a_cron_the_server_refuses_is_told_to_check_each_fields_range_not_its_field_count() -> None:
+    """croniter accepts 5 to 7 fields and @aliases, so \"five fields\" would be wrong advice: what reaches the server is a bad VALUE."""
+    text = _text(_envelope(422, "cron_invalid", "invalid cron expression: '0 99 * * *'"))
+
+    assert text == (
+        "invalid cron expression: '0 99 * * *'. Check each field's range (minute 0-59, hour 0-23, day of month 1-31, month 1-12, weekday 0-6)."
+    )
+    assert "five fields" not in text
 
 
 def test_a_code_with_no_remedy_shows_the_servers_message_alone() -> None:
@@ -136,7 +148,7 @@ def test_a_failed_fire_shows_the_servers_explanation_not_just_the_http_title() -
     """The fire block read `err.title` and never `err.detail`, so the banner said "Not Found"."""
     text = _text(NOT_FOUND, "Fire failed")
 
-    assert "Trigger tr-1 was not found" in text and "Refresh the list." in text, text
+    assert "Trigger tr-1 was not found" in text and "Go back to the triggers list." in text, text
 
 
 # ---- the table cannot drift from the router -----------------------------------------------------------------------------------------------------------------------
@@ -190,8 +202,29 @@ def test_banner_titles_are_plain_and_never_compose_a_code() -> None:
 
 
 @pytest.mark.parametrize(
-    "state_setter,fallback",
-    [("setSubmitError", "Request failed"), ("setError", "Request failed"), ("setFireError", "Fire failed")],
+    "state_setter,fallback,sites",
+    [("setSubmitError", "Request failed", 2), ("setError", "Request failed", 1), ("setFireError", "Fire failed", 1)],
 )
-def test_each_failed_write_stores_the_text_from_the_one_function(state_setter: str, fallback: str) -> None:
-    assert f'{state_setter}({{ message: TR_refusalText(err, "{fallback}") }});' in SRC, f"{state_setter} must store TR_refusalText(err, {fallback!r})"
+def test_each_failed_write_stores_the_text_from_the_one_function(state_setter: str, fallback: str, sites: int) -> None:
+    """Counted, not just present: setSubmitError is the create wizard AND the subscription dialog."""
+    stored = f'{state_setter}({{ message: TR_refusalText(err, "{fallback}") }});'
+
+    assert SRC.count(stored) == sites, f"{state_setter} must store TR_refusalText(err, {fallback!r}) at {sites} site(s), found {SRC.count(stored)}"
+
+
+def test_the_writes_that_went_through_the_old_reader_now_go_through_the_one_function() -> None:
+    """Rotate token, Clear HMAC and the HMAC dialog call TR_writeErrorText; it must be a delegate of TR_refusalText, not a second reader."""
+    body = SRC[SRC.index("function TR_writeErrorText("):]
+    body = body[:body.index("\n}\n")]
+
+    assert "return TR_refusalText(err, fallback);" in body, body
+    assert "err.detail" not in body and "err.title" not in body, "TR_writeErrorText still reads the error itself"
+    for site in ('TR_writeErrorText(err, "Rotate failed")', 'TR_writeErrorText(err, "Could not clear the HMAC secret")', '{ message: TR_writeErrorText(err, "Save failed") }'):
+        assert SRC.count(site) == 1, f"{site} should still be written exactly once"
+
+
+def test_the_delete_modal_and_the_subscription_panel_show_the_refusal_text_not_the_http_title() -> None:
+    assert 'title={deleteError.title || "Delete failed"}' not in SRC
+    assert 'title="Delete failed"' in SRC and 'detail={TR_refusalText(deleteError, "The trigger could not be deleted.")}' in SRC
+    assert 'title={error.title || "Subscription update failed"}' not in SRC
+    assert 'title="Subscription update failed"' in SRC and 'detail={TR_refusalText(error, "The subscription could not be updated.")}' in SRC
