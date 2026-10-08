@@ -165,8 +165,14 @@ path-addressed document tools, and the per-collection extras.
 - `system::update_collection` - partial update. `embedder` and
   `search_provider_id` are not editable post-create - attempting
   triggers 422.
-- `system::delete_collection` - cascade-blocked if any document
-  references it. Reject reserved ids.
+- `system::delete_collection` - deletes the collection TOGETHER WITH its
+  documents, their content and its vector chunks (the vector namespace
+  first, then the documents, then the collection). If the vector store
+  cannot be reached it is refused (`type=provider-error`) and nothing
+  changes; disable the collection's search first
+  (`DELETE /v1/collections/{id}/search` always works) to delete it anyway.
+  A system collection is refused (`type=forbidden`), and so is a
+  harness-managed one (`type=conflict`).
 - `system::find_collections` - predicate-based query.
 
 ### Document tools (path-addressed)
