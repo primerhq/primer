@@ -73,3 +73,36 @@ async def test_a_call_tool_gate_without_approvers_is_decided_by_any_user(client,
     accepted = await client.post("/v1/sessions/ct-1/tool_approval/respond", json={"tool_call_id": "tc-ct", "decision": "rejected"})
 
     assert accepted.status_code == 202, accepted.text
+
+
+@pytest.mark.asyncio
+async def test_a_call_tool_park_from_before_the_stamp_is_decided_by_an_admin_only(client, app) -> None:
+    """A park written by the previous version has no `approvers` key; it must not be open to every user until it times out."""
+    await _register_admin(client)
+    sp = app.state.storage_provider
+    now = datetime.now(UTC)
+    event_key = "tool_approval:ct-old:tc-old"
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="ct-old", workspace_id="ws", binding=AgentSessionBinding(kind="agent", agent_id="agt"), status=SessionStatus.RUNNING,
+        created_at=now, parked_status="parked", parked_at=now, parked_event_key=event_key,
+        parked_state={
+            "tool_call_id": "tc-old",
+            "yielded": {
+                "tool_name": "_approval", "event_key": event_key,
+                "resume_metadata": {
+                    "policy_id": "tap-old", "approval_type": "required", "gate_reason": None,
+                    "via_call_tool": {"toolset_id": SYSTEM_TOOLSET_ID, "principal": None},
+                    "original_call": {"id": "tc-old", "name": "list_llm_providers", "arguments": {}},
+                },
+            },
+        },
+    ))
+
+    await _login_user(client, app, "bob")
+    refused = await client.post("/v1/sessions/ct-old/tool_approval/respond", json={"tool_call_id": "tc-old", "decision": "approved"})
+    assert refused.status_code == 403, f"bob approved a call_tool gate parked before the upgrade: {refused.text}"
+
+    admin = await client.post("/v1/auth/login", json={"username": "aradmin", "password": "aradminpass1"})
+    assert admin.status_code == 200, admin.text
+    accepted = await client.post("/v1/sessions/ct-old/tool_approval/respond", json={"tool_call_id": "tc-old", "decision": "approved"})
+    assert accepted.status_code == 202, accepted.text
