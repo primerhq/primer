@@ -67,6 +67,7 @@ from primer.knowledge.importer import import_zip
 from primer.knowledge.lifecycle import (
     disable_search,
     enable_search,
+    purge_collection,
     search_status,
 )
 from primer.search.run import run_collection_search
@@ -122,6 +123,22 @@ class _CollectionSearchBody(BaseModel):
 
 # ---- Collection router -----------------------------------------------------
 
+
+async def _collection_on_pre_delete(existing: Collection, request: Request) -> None:
+    """Delete what the collection owns BEFORE its row goes (ticket 01a1131f "F").
+
+    Runs after the managed-by guard, so a refused delete has emptied nothing. The documents, their content rows and the vector namespace
+    are removed first and the row last, so a failure part-way leaves a collection that deleting again finishes. An unreachable vector
+    store refuses the delete (502); see :func:`primer.knowledge.lifecycle.purge_collection`. The registry is read off ``app.state`` and
+    is only needed for a collection with search configured.
+    """
+    await purge_collection(
+        request.app.state.storage_provider,
+        getattr(request.app.state, "semantic_search_registry", None),
+        collection=existing,
+    )
+
+
 collection_router = make_crud_router(
     model_cls=Collection,
     storage_dep=get_collection_storage,
@@ -129,6 +146,7 @@ collection_router = make_crud_router(
     tag="collections",
     cdc_kind="collection",
     managed_by_field="harness_id",
+    on_pre_delete=_collection_on_pre_delete,
 )
 
 
