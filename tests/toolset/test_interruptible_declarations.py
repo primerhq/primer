@@ -11,6 +11,8 @@ The set below is what was confirmed by reading, and why:
   step on another store (the indexer, the chunk path rewriter, the un-indexer, each looped per descendant). A cancel in
   between leaves the index stale; for a delete, chunks search can still return for pages that no longer exist.
 * ``system__put_document``: ``DocumentService.upsert``, a transaction then the indexer.
+* ``system__delete_collection`` (ticket 01a1131f "F"): the vector namespace is dropped, then the collection's documents and content
+  rows are deleted in batches (one transaction each), then the collection row. Several durable steps on two stores.
 * ``system__create_document`` / ``system__delete_document`` (since task 01a111d1 D3 they delegate to ``DocumentTreeService``):
   a transaction over the entity and content rows, then the indexer (create) or the unindexer (delete) on another store, the
   same shape as the collections toolset's document tools. ``update_document`` stays interruptible: it changes title and meta
@@ -96,6 +98,9 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     (COLLECTIONS_TOOLSET_ID, "move_document"),
     (COLLECTIONS_TOOLSET_ID, "delete_document"),
     (SYSTEM_TOOLSET_ID, "put_document"),
+    # ticket 01a1131f "F": deleting a collection drops its vector namespace, then deletes its documents and content rows in batches, then
+    # the row; a cancel between leaves a half-deleted collection (a Stop must wait for it)
+    (SYSTEM_TOOLSET_ID, "delete_collection"),
     # task 01a111d1 (D3): delegate to DocumentTreeService: a transaction (entity + content), then the indexer / unindexer
     (SYSTEM_TOOLSET_ID, "create_document"),
     (SYSTEM_TOOLSET_ID, "delete_document"),

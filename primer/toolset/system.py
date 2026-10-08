@@ -122,6 +122,7 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
 from primer.channel.checks import check_channel_on_create, check_channel_on_update
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
+from primer.knowledge.lifecycle import purge_collection
 from primer.toolset.toolset_checks import check_toolset_on_create, check_toolset_on_update, toolset_needs_admin
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
@@ -388,6 +389,11 @@ def build_system_toolset(
     from primer.bootstrap.defaults import RESERVED_BUILDER_AGENT, RESERVED_OPERATOR_AGENT
 
     delete_notes_by_label: dict[str, str] = {
+        "collection": (
+            "Deleting a collection also deletes its documents, their content and its vector chunks (the vector namespace is dropped first, "
+            "then the documents, then the collection). If the vector store cannot be reached the delete is refused with ``type=provider-error`` "
+            "and nothing is changed; disable the collection's search first (DELETE /v1/collections/{id}/search always works) to delete it anyway."
+        ),
         "agent": (
             f"Deleting the seeded ``{RESERVED_OPERATOR_AGENT}`` or ``{RESERVED_BUILDER_AGENT}`` agent marks the install as not set up: "
             "admins are sent to the setup checklist and every other user waits on a setup screen until the agent is back. "
@@ -399,6 +405,14 @@ def build_system_toolset(
     # toolset launches a command on the server host. The tool manager's floor compares only the static role, so the handler checks
     # the run's identity; a call with no identity (the MCP endpoint) is refused. The rule is the one the REST router applies.
     admin_writes_by_label: dict[str, Any] = {"toolset": toolset_needs_admin}
+
+    # What REST does in the collection router's on_pre_delete (ticket 01a1131f "F"): the documents, their content rows and the vector
+    # namespace go before the row, through the same function. With no semantic-search registry in this toolset (search off) there is no
+    # vector side to drop.
+    async def _collection_pre_delete(existing: Collection) -> None:
+        await purge_collection(storage_provider, semantic_search_registry, collection=existing)
+
+    pre_deletes_by_label: dict[str, Any] = {"collection": _collection_pre_delete}
     for label, plural, cls, on_c, on_u, on_d, role in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
         registry.update(
@@ -418,6 +432,7 @@ def build_system_toolset(
                 admin_when=admin_writes_by_label.get(label),
                 admin_note=_ADMIN_WRITE_NOTES.get(label),
                 delete_note=delete_notes_by_label.get(label),
+                pre_delete=pre_deletes_by_label.get(label),
             )
         )
 

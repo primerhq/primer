@@ -36,6 +36,7 @@ from primer.model.except_ import (
     ConflictError,
     PrimerError,
     NotFoundError,
+    ProviderError,
 )
 from primer.model.storage import (
     Predicate,
@@ -264,6 +265,7 @@ _OnMutate = Callable[[str], Awaitable[None]] | None
 # gets the validated entity, an update hook the entity and the stored row.
 _PreCreate = Callable[[Any], Awaitable[None]] | None
 _PreUpdate = Callable[[Any, Any], Awaitable[None]] | None
+_PreDelete = Callable[[Any], Awaitable[None]] | None
 
 
 def _refuse_unless_admin(ctx: ToolContext | None, note: str) -> ToolCallResult | None:
@@ -295,6 +297,7 @@ def _crud_tools_for(
     admin_when: Callable[[Any, Any | None], bool] | None = None,
     admin_note: str | None = None,
     delete_note: str | None = None,
+    pre_delete: _PreDelete = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
 
@@ -313,6 +316,12 @@ def _crud_tools_for(
     is lower (``existing`` is ``None`` on a create): the handler checks the run's identity itself, because the tool manager's floor
     compares only the static role. A refusal is ``type=forbidden`` with ``admin_note`` and nothing is stored; the note is also
     appended to the create and update descriptors so the agent knows the rule before it tries. Both must be given together.
+
+    ``pre_delete(existing)`` is the entity's REST ``on_pre_delete`` work (a collection deletes its documents and vectors first): it runs
+    after the guards and the reference check and BEFORE the row is deleted, so the row is the last thing to go. A refusal
+    (:class:`EntityCheckError`) is a typed error; a :class:`ProviderError` (a vector store that cannot be reached) is
+    ``type=provider-error``; either way the row is left alone. A delete with a ``pre_delete`` is several durable steps, so it is declared
+    NOT interruptible (a Stop between them would leave a half-deleted entity).
 
     ``delete_note`` is appended to the delete descriptor only: a consequence of removing the row that the agent should read before it
     acts, for a delete the tool still performs (it is not a refusal).
@@ -585,6 +594,15 @@ def _crud_tools_for(
             refusal = await refuse_delete_if_referenced(guards, existing, storage_provider)
         if refusal is not None:
             return refusal
+        if pre_delete is not None:
+            try:
+                await pre_delete(existing)
+            except EntityCheckError as exc:
+                return _err(exc.tool_message(), error_type=exc.tool_error_type)
+            except ProviderError as exc:
+                return _err_from_primer(exc, error_type="provider-error")
+            except PrimerError as exc:
+                return _err_from_primer(exc, error_type="storage-error")
         try:
             await storage.delete(args.id)
         except PrimerError as exc:
@@ -617,7 +635,7 @@ def _crud_tools_for(
                 ToolExample(args={"id": hint.sample_id}, returns="deletion ack")
             ],
             required_role=required_role,
-            interruptible=on_delete is None,                  # as update_: the row delete, then the hook
+            interruptible=on_delete is None and pre_delete is None,   # as update_: the row delete, then the hook; a pre_delete is more steps
         ),
         _delete_handler,
     )
