@@ -34,6 +34,7 @@ from primer.storage import raw_generation
 from primer.model.except_ import (
     ConflictError,
     NotFoundError,
+    WorkspaceUnreachableError,
 )
 from primer.session.default_binding import resolve_initial_binding
 from primer.model.workspace_session import (
@@ -1032,7 +1033,7 @@ async def get_session_by_id(
 @top_session_router.get(
     "/sessions/{session_id}/turn_log",
     summary="Read the session's per-turn structured log",
-    responses=common_responses(404, 500),
+    responses=common_responses(404, 500, 503),
 )
 async def get_session_turn_log(
     session_id: str = Path(..., description="Session id"),
@@ -1065,6 +1066,8 @@ async def get_session_turn_log(
         limit=limit,
         offset=offset,
         since_seq=since_seq,
+        workspace_id=sess.workspace_id,
+        session_id=session_id,
     )
 
 
@@ -1175,6 +1178,35 @@ def _dedupe_legacy_user_input(
     return out
 
 
+async def _read_log_bytes(
+    workspace,
+    relative_path: str,
+    *,
+    workspace_id: str | None = None,
+    session_id: str | None = None,
+) -> bytes:
+    """Read one of a session's log files from its workspace.
+
+    A file that is not there is a log that was never written: empty bytes. Any OTHER failure means the workspace's runtime did not
+    answer, which is not the same thing and must not look like it (an empty list read as "the history is gone", and a retry loop could
+    not tell loss from outage): it is logged once with its traceback and raised as :class:`WorkspaceUnreachableError` (a typed 503).
+    """
+    try:
+        return await workspace.read_file(relative_path)
+    except NotFoundError:
+        return b""
+    except Exception as exc:  # noqa: BLE001 - whatever the runtime's transport raised
+        logger.warning(
+            "workspace %s could not be read for %s (%s): %s",
+            workspace_id or "?", relative_path, type(exc).__name__, exc, exc_info=True,
+        )
+        what = f"session {session_id!r}'s log" if session_id else "this log"
+        where = f"Workspace {workspace_id!r}" if workspace_id else "The workspace"
+        raise WorkspaceUnreachableError(
+            f"{where} could not be reached, so {what} cannot be read right now. Nothing is lost; try again once the workspace is back."
+        ) from exc
+
+
 async def _read_workspace_turn_log(
     *,
     workspace,
@@ -1186,11 +1218,14 @@ async def _read_workspace_turn_log(
     visible: bool = False,
     dedupe_legacy_user_input: bool = False,
     fallback_created_at: str | None = None,
+    workspace_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     """JSONL-parse the file at ``relative_path`` inside ``workspace``.
 
     Missing file is treated as an empty log (a fresh session that's
-    written nothing yet). Bogus lines are skipped silently - the turn
+    written nothing yet); a workspace that cannot be read at all raises
+    :class:`WorkspaceUnreachableError` (see :func:`_read_log_bytes`). Bogus lines are skipped silently - the turn
     log is observability data, not a contract.
 
     ``tail`` flips the window to the *end* of the log: the console loads a
@@ -1217,10 +1252,9 @@ async def _read_workspace_turn_log(
     reasoning as ``visible`` - offsets must describe the reconciled
     conversation, not the raw file underneath it.
     """
-    try:
-        raw = await workspace.read_file(relative_path)
-    except Exception:  # noqa: BLE001 - NotFoundError / IO / decode
-        raw = b""
+    raw = await _read_log_bytes(
+        workspace, relative_path, workspace_id=workspace_id, session_id=session_id,
+    )
     items: list[dict] = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
         line = line.strip()
@@ -1271,7 +1305,7 @@ async def _read_workspace_turn_log(
 @top_session_router.get(
     "/sessions/{session_id}/messages",
     summary="Read the session's recorded message log (paginated)",
-    responses=common_responses(404, 500),
+    responses=common_responses(404, 500, 503),
 )
 async def get_session_messages(
     session_id: str = Path(..., description="Session id"),
@@ -1326,13 +1360,15 @@ async def get_session_messages(
         fallback_created_at=(
             sess.created_at.isoformat() if sess.created_at else None
         ),
+        workspace_id=sess.workspace_id,
+        session_id=session_id,
     )
 
 
 @top_session_router.get(
     "/sessions/{session_id}/turns/{turn_no}/timeline",
     summary="Derive one turn's execution timeline",
-    responses=common_responses(404, 500),
+    responses=common_responses(404, 500, 503),
 )
 async def get_session_turn_timeline(
     session_id: str = Path(..., description="Session id"),
@@ -1364,12 +1400,10 @@ async def get_session_turn_timeline(
     state_path = getattr(workspace, "state_path", ".state")
 
     async def _lines(name: str) -> list[str]:
-        try:
-            raw = await workspace.read_file(
-                f"{state_path}/sessions/{session_id}/{name}"
-            )
-        except Exception:  # noqa: BLE001 - NotFoundError / IO / decode
-            return []
+        raw = await _read_log_bytes(
+            workspace, f"{state_path}/sessions/{session_id}/{name}",
+            workspace_id=sess.workspace_id, session_id=session_id,
+        )
         return raw.decode("utf-8", errors="replace").splitlines()
 
     timeline = build_turn_timeline(
