@@ -324,7 +324,7 @@ function TS_ConnectResult({ row, isEdit, probing, probe }) {
       <div style={{ padding: "4px 2px" }} data-testid="toolset-connect-result">
         <div className="field-help" data-testid="toolset-created-note">
           {isEdit ? "Saved" : "Created"} <span className="mono">{row.id}</span>.
-          {row.provider === "python" ? " A Python toolset" : " This toolset"} has no connection to check, and no tools until you write its source: the editor opens next.
+          {row.provider === "python" ? " A Python toolset" : " This toolset"} has no connection to check{isEdit ? "." : ", and no tools until you write its source: the editor opens next."}
         </div>
       </div>
     );
@@ -542,7 +542,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
       footer={
         createdRow ? (
           <Btn kind="primary" icon="check" onClick={() => onCreate(createdRow)} disabled={probing} data-testid="toolset-connect-done">
-            {probing ? "Connecting…" : (TS_hasConnection(createdRow) ? "Done" : "Open the editor")}
+            {probing ? "Connecting…" : (TS_hasConnection(createdRow) || isEdit ? "Done" : "Open the editor")}
           </Btn>
         ) : (
           <>
