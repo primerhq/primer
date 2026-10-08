@@ -154,3 +154,60 @@ async def test_the_eocd_count_is_read_from_a_zip64_end_record(tree, monkeypatch)
     with pytest.raises(PayloadTooLargeError) as exc:
         await import_zip(tree, collection_id="c1", data=data)
     assert exc.value.limit_entries == 3
+
+
+# ---- review round 2: a hostile end record ---------------------------------------
+
+
+async def test_a_zip64_locator_with_an_overflowing_offset_is_a_400_not_a_500(tree):
+    """A 40-byte upload whose zip64 locator points past 2**63 must not crash the pre-check."""
+    data = (
+        b"PK\x06\x07" + struct.pack("<IQI", 0, 2**64 - 1, 1)
+        + b"PK\x05\x06" + struct.pack("<HHHHIIH", 0, 0, 0xFFFF, 0xFFFF, 0, 0, 0)
+    )
+    with pytest.raises(BadRequestError):
+        await import_zip(tree, collection_id="c1", data=data)
+
+
+async def test_a_lying_entry_count_is_caught_by_the_central_directory_size(tree, monkeypatch):
+    """zipfile walks the central directory by its SIZE and never reads the count fields, so a count of 1
+    must not let a large directory through: every central header is at least 46 bytes."""
+    monkeypatch.setattr(importer, "MAX_ENTRIES", 3)
+    raw = bytearray(_zip({f"d{i}.md": b"x" for i in range(4)}))
+    eocd = raw.rfind(b"PK\x05\x06")
+    struct.pack_into("<HH", raw, eocd + 8, 1, 1)
+    monkeypatch.setattr(importer.zipfile, "ZipFile", _never)
+    with pytest.raises(PayloadTooLargeError) as exc:
+        await import_zip(tree, collection_id="c1", data=bytes(raw))
+    assert exc.value.limit_entries == 3
+
+
+async def test_a_zip64_record_behind_a_small_classic_count_is_still_read(tree, monkeypatch):
+    """zipfile prefers a zip64 end record whenever its locator is present, whatever the classic count says."""
+    monkeypatch.setattr(importer, "MAX_ENTRIES", 3)
+    raw = bytearray(_zip({f"d{i}.md": b"x" for i in range(4)}))
+    eocd = raw.rfind(b"PK\x05\x06")
+    cd_size, cd_offset = struct.unpack_from("<II", raw, eocd + 12)
+    rec = struct.pack("<4sQHHIIQQQQ", b"PK\x06\x06", 44, 45, 45, 0, 0, 4, 4, cd_size, cd_offset)
+    loc = struct.pack("<4sIQI", b"PK\x06\x07", 0, eocd, 1)
+    end = bytearray(raw[eocd:])
+    struct.pack_into("<HH", end, 8, 1, 1)  # the classic record claims one entry
+    data = bytes(raw[:eocd]) + rec + loc + bytes(end)
+    monkeypatch.setattr(importer.zipfile, "ZipFile", _never)
+    with pytest.raises(PayloadTooLargeError):
+        await import_zip(tree, collection_id="c1", data=data)
+
+
+async def test_the_parsed_entry_count_is_checked_when_the_end_record_cannot_be_read_first(tree, monkeypatch):
+    """The post-parse check is the backstop for an end record the pre-check could not read.
+
+    With a readable record it cannot be reached: size_cd // 46 >= the real number of entries, so the size
+    bound already refuses any archive the parse would. So the pre-check is made to read nothing here.
+    """
+    monkeypatch.setattr(importer, "MAX_ENTRIES", 3)
+    monkeypatch.setattr(importer, "_central_directory_bounds", lambda source: None)
+    data = _zip({f"d{i}.md": b"x" for i in range(4)})
+    with pytest.raises(PayloadTooLargeError) as exc:
+        await import_zip(tree, collection_id="c1", data=data)
+    assert exc.value.limit_entries == 3
+    await _nothing_created(tree, "d0", "d1", "d2", "d3")
