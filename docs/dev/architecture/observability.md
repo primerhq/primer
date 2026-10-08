@@ -133,7 +133,11 @@ The instrumentation plumbing lives in `primer/observability/`:
   `uvicorn.error` loggers (uvicorn logs those through its own handlers with
   `propagate=False`, so the root handler never sees them). It masks query
   credentials (`key`, `api_key`, `apikey`, `token`, `access_token`, `refresh_token`,
-  `id_token`, `client_secret`, `secret`, `password` become `[REDACTED]`), Telegram
+  `id_token`, `client_secret`, `secret`, `password` become `[REDACTED]`), the
+  userinfo of a URL (`http://user:pw@host` becomes `http://[REDACTED]@host`: it runs
+  to the last `@` before the first `/`, `?` or `#`, so a password with an apostrophe or
+  a raw `@` is covered and an `@` in a path, query or fragment is left alone, ticket
+  01a11c0d-dd9a), Telegram
   `/bot<id>:<secret>` segments (`/bot[REDACTED]`) and webhook capability tokens
   (`/v1/webhooks/***<last4>`) in the message (a non-str message such as
   `logger.warning(exc)` too), each arg, every string extra (`extra={"path": ...}`,
@@ -169,7 +173,8 @@ The turn-log surface lives in `primer/observability/turn_log_writer.py`:
   `error_id` (uuid4 hex), never the traceback: the envelope is served to every
   reader of the session (the messages `ERROR` record, the turn log, the tap), and a
   traceback exposes server file paths and internals. `detail` passes through
-  `redact_url_secrets`, since an upstream error message can embed a `?key=` URL.
+  `redact_url_secrets`, since an upstream error message can embed a `?key=` URL or the
+  `user:password@` of a Base URL.
   `to_problem_details` logs the failure once on `primer.observability.turn_log_writer`
   as `error_id=<id> <Class>: <message>`, so an operator finds it in the server log by
   the id the console shows: a mapped `PrimerError` subclass (an expected failure
