@@ -512,6 +512,19 @@ function NV_MobileSpaces(props) {
 
   return (
     <div className="nv-mob-spaces" data-testid="nv-mobile-panel:spaces">
+      <div className="nv-mob-sp-head">
+        <h1 className="nv-mob-ib-h">Spaces</h1>
+        {/* The command palette is the console's only search (workspaces, sessions, files, verbs); a phone has no keyboard chord for it. */}
+        <button type="button" className="nv-mob-search touch-target" data-testid="nv-mob-search"
+          aria-label="Search" title="Search"
+          onClick={function () { if (con.paletteRef && con.paletteRef.current) con.paletteRef.current.open(); }}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5" />
+            <path d="M10.5 10.5 14 14" />
+          </svg>
+        </button>
+      </div>
       <div className="card-list" data-testid="nv-mob-ws-tree">
         {!workspaces.length ? (
           <div className="card-list-empty">No workspaces yet.</div>
@@ -555,6 +568,8 @@ function NV_MobileSpaces(props) {
                     var sid = s.session_id;
                     var ident = NV_identity(s.binding);
                     var isAttention = !!(attentionSidsByWs[w.id] && attentionSidsByWs[w.id][sid]);
+                    // The same words as the session header's chip (Running / Waiting / Parked / Paused / Ready / Ended).
+                    var stateView = window.NV_sessionStateChipView(s);
                     return (
                       <button type="button" key={sid}
                         className="card card-interactive nv-mob-session-row"
@@ -567,6 +582,8 @@ function NV_MobileSpaces(props) {
                           </svg>
                           <div className="card-title-wrap">
                             <div className="card-title">{s.name || sid}</div>
+                            <div className="card-subtitle" data-testid={"nv-mob-session-state:" + sid}
+                              data-state={stateView.state}>{stateView.label}</div>
                           </div>
                           {isAttention ? (
                             <span className="nv-dot-attention" title="needs you" />

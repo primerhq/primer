@@ -5767,7 +5767,19 @@ button.nv-rail-ws-session {
   bottom: calc(var(--tap-min) + var(--mobile-pad-y) + env(safe-area-inset-bottom));
 }
 
-/* Spaces: workspace tree, expand -> sessions. */
+/* Spaces: workspace tree, expand -> sessions. Console review C-037: the title row carries the search button; the rows are <button>s, whose text is
+   centred by default, so they are left aligned like a list; the panel keeps room under its last row for the floating "+", which sits one
+   --mobile-pad-y above the tab bar and is --fab-size tall. */
+.nv-mob-spaces { padding-bottom: calc(var(--fab-size) + 2 * var(--mobile-pad-y) + env(safe-area-inset-bottom)); }
+.nv-mob-sp-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: var(--mobile-pad-y) var(--mobile-pad-x) 0;
+}
+.nv-mob-search {
+  border: none; background: transparent; color: var(--text-2); cursor: pointer; border-radius: var(--r-8);
+}
+.nv-mob-search:hover { background: var(--bg-hover); color: var(--text); }
+.nv-mob-ws-row, .nv-mob-session-row { text-align: left; }
 .nv-mob-ws-group { display: flex; flex-direction: column; gap: 4px; }
 .nv-mob-ws-sessions {
   display: flex; flex-direction: column; gap: 6px;
