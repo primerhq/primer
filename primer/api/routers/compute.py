@@ -43,11 +43,11 @@ from primer.api.routers._references import ReferenceCheck
 from primer.common.context_overflow import output_cap_warning
 from primer.common.entity_checks import EntityCheckError
 from primer.model.agent import Agent
-from primer.model.except_ import NotFoundError, PrimerError
+from primer.model.except_ import ConflictError, NotFoundError, PrimerError
 from primer.model.graph import Graph
 from primer.model.problem_details import record_without_traceback
 from primer.model.workspace_session import GraphSessionBinding, WorkspaceSession
-from primer.storage.references import AGENT_REFERENCES, GRAPH_REFERENCES
+from primer.storage.references import AGENT_REFERENCES, GRAPH_REFERENCES, default_agent_refusal
 
 
 # ---- Agent router ----------------------------------------------------------
@@ -84,6 +84,18 @@ async def _agent_pre_update(entity: Agent, existing: Agent, request: Request) ->
         raise _agent_check_as_rest_error(exc) from exc
 
 
+async def _agent_pre_delete(entity: Agent, request: Request) -> None:
+    """The system default agent cannot be deleted while it is the default (the seeded operator excepted). Runs after the reference blocks.
+
+    ``default_agent_id`` is a ``system_state`` column, not an entity, so it is not one of ``AGENT_REFERENCES``; the system ``delete_agent``
+    tool asks the same function (``primer.storage.references.default_agent_refusal``), so the two say the same sentence."""
+    from primer.bootstrap.defaults import RESERVED_OPERATOR_AGENT
+
+    refusal = await default_agent_refusal(get_storage_provider(request), entity.id, exempt=RESERVED_OPERATOR_AGENT)
+    if refusal is not None:
+        raise ConflictError(refusal)
+
+
 agent_router = make_crud_router(
     model_cls=Agent,
     storage_dep=get_agent_storage,
@@ -97,6 +109,7 @@ agent_router = make_crud_router(
     # A graph node, a session that is not ended and a trigger subscription still name the agent: refuse the delete (409 in_use_by)
     # rather than strand them. The list is shared with the system delete_agent tool (primer.storage.references).
     references=[ReferenceCheck.from_spec(spec) for spec in AGENT_REFERENCES],
+    on_pre_delete=_agent_pre_delete,
 )
 
 
