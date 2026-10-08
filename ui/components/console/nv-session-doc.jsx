@@ -13,6 +13,18 @@ function NV_sessionIsOver(session) {
   return !!session && session.status === "ended";
 }
 
+// A session whose workspace cannot be READ answers a typed 503 (/errors/workspace-unreachable) from the messages read (A-08); it used to
+// answer an empty list, which the console drew as an empty conversation. Only this typed error gets a banner: any other failure keeps
+// its old handling. The data is presumably intact, so say so, and say what to check.
+function NV_historyProblem(error) {
+  if (!error || error.type !== "/errors/workspace-unreachable") return null;
+  return {
+    kind: "unreachable",
+    text: "This session's workspace is unreachable, so its conversation cannot be read right now. It is not lost.",
+    next: "Check the workspace's status under Workspaces, then try again.",
+  };
+}
+
 // How long the polled row must keep contradicting a live tap status before the status is dropped (C-008/C-011): the detail
 // resource polls every 2 s, so this is at least two polls that agree, and a turn that is just starting (the tap echoes the
 // user's message before the row flips to claimable) never loses its strip to one stale read.
@@ -2168,6 +2180,9 @@ function NV_SessionDoc(props) {
       };
   }
   var degraded = !!(gatesSnap && gatesSnap.degraded);
+  // Below `degraded` on purpose: test_console_session_doc.py slices the statements between `rowBusy` and `degraded` out and
+  // evaluates them on their own.
+  var historyProblem = NV_historyProblem(history.error);
   // Stop is acknowledged: this click's own pending state, or the served flag (the worker
   // clears interrupt_requested when the Stop lands, which ends the state and brings the
   // button back). Kept below `degraded` on purpose: test_console_session_doc.py slices the
@@ -2711,6 +2726,17 @@ function NV_SessionDoc(props) {
         onCompact={function () {
           NV_doCompact(con.wid, sid, refetchAll, con.toast);
         }} />
+      {historyProblem ? (
+        <div className="nv-doc-problem" role="alert"
+          data-testid="nv-history-problem" data-kind={historyProblem.kind}>
+          <div className="nv-doc-problem-body">
+            <div>{historyProblem.text}</div>
+            <div className="nv-doc-problem-next">{historyProblem.next}</div>
+          </div>
+          <button type="button" className="nv-btn-secondary"
+            onClick={function () { history.refetch(); }}>Try again</button>
+        </div>
+      ) : null}
       {nodeFilter ? (
         <div className="nv-node-filter" data-testid="graph-node-filter">
           <span>Showing <span className="nv-mono">{nodeFilter}</span> only</span>
