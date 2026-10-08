@@ -332,7 +332,7 @@ class TestUrlSecretRedaction:
         assert "Server error '500 Internal Server Error' for url " in out
         assert "http://[REDACTED]@127.0.0.1:8123/v1/models'" in out
 
-    @pytest.mark.parametrize("scheme", ["HTTP", "https", "git+ssh", "postgresql", "redis"])
+    @pytest.mark.parametrize("scheme", ["HTTP", "https", "git+ssh", "mongodb+srv", "postgresql+asyncpg", "redis"])
     def test_userinfo_is_hidden_whatever_the_scheme(self, scheme):
         """A scheme may be upper case or carry ``+``: the pattern is not tied to http."""
         from primer.common.log import redact_url_secrets
@@ -340,6 +340,46 @@ class TestUrlSecretRedaction:
         out = redact_url_secrets(f"failed {scheme}://svc:s3cr3t-pw@db.example:5432/app")
         assert "s3cr3t-pw" not in out
         assert out == f"failed {scheme}://[REDACTED]@db.example:5432/app"
+
+    # The redactor runs on EVERY log record, including uvicorn.access, which logs the request path of an unauthenticated request. A pattern that is
+    # quadratic on a run of scheme characters ("a.a.a." makes each letter a new word start) let one GET stall the event loop (#580 review, B1): 100k
+    # characters took 24 s against 0.4 ms before the userinfo pattern.
+    @pytest.mark.parametrize("name,text", [
+        ("letters and dots", "a." * 20_000),
+        ("letters and plus signs", "a+" * 20_000),
+        ("letters and dashes", "a-" * 20_000),
+        ("a scheme-like run ending in ://", "a." * 20_000 + "://"),
+        ("a scheme and a long authority with no @", "a://" + "b" * 40_000),
+        ("many schemes", "a://" * 10_000),
+        ("a request path", "GET /" + "a." * 20_000 + " HTTP/1.1"),
+    ])
+    def test_the_redactor_is_linear_on_hostile_input(self, name, text):
+        import time
+
+        from primer.common.log import redact_url_secrets
+
+        started = time.perf_counter()
+        redact_url_secrets(text)
+        took = time.perf_counter() - started
+
+        assert took < 1.0, f"{name}: {took:.2f}s for {len(text)} characters"
+
+    def test_a_hostile_request_path_does_not_stall_the_log_call(self):
+        import time
+
+        buf = _configured_stream()
+        started = time.perf_counter()
+        logging.getLogger("uvicorn.access").info('%s - "%s %s HTTP/%s" %d', "10.0.0.1:5555", "GET", "/" + "a." * 20_000, "1.1", 404)
+        took = time.perf_counter() - started
+
+        assert took < 1.0, f"{took:.2f}s"
+        assert buf.getvalue()
+
+    def test_text_that_cannot_hold_userinfo_is_returned_as_it_is(self):
+        from primer.common.log import redact_url_secrets
+
+        for text in ("no url here", "http://host/path", "someone@example.com", "a" * 1000):
+            assert redact_url_secrets(text) == text
 
     def test_userinfo_with_no_path_is_hidden(self):
         from primer.common.log import redact_url_secrets

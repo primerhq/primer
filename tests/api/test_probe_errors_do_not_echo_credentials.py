@@ -99,19 +99,30 @@ class TestDraftProbe:
     @pytest.mark.parametrize("url", [
         "http://svc:s3cr3t-pw@/v1",
         "http://svc:s3cr3t-pw@127.0.0.1:99999/v1",
+        # pydantic cuts a long input to its first 25 and last 24 characters, which removes the "@" and leaves a slice of the password readable
+        "http://admin:s3cr3t-pwhunter2hunter2@llm.example.com:808080/v1",
+        # a raw "/", "?" or "#" in the password ends the userinfo for any URL-shaped mask, so the URL is not printed at all
+        "http://svc:s3cr3t-pw/more@127.0.0.1:99999/v1",
+        "http://svc:s3cr3t-pw?more@127.0.0.1:99999/v1",
+        "http://svc:s3cr3t-pw#more@127.0.0.1:99999/v1",
     ])
     async def test_a_url_that_does_not_validate_does_not_echo_the_password(
         self, client, url,
     ) -> None:
-        """pydantic prints ``input_value='<the URL as typed>'``."""
+        """pydantic prints ``input_value='<the URL as typed>'``: the draft's detail is built without the input."""
         r = await client.post(
             "/v1/llm_providers/_discover_models",
             json={"provider": "openchat", "config": {"url": url, "flavor": "other"}},
         )
         assert r.status_code == 400, r.text
         _assert_clean(r.text)
-        assert "Draft provider failed validation" in r.json()["detail"]
-        assert "http://[REDACTED]@" in r.json()["detail"]
+        detail = r.json()["detail"]
+        for part in ("admin", "hunter2", "s3cr3t", "svc", "more@"):
+            assert part not in detail, f"{part!r} in {detail!r}"
+        assert "input_value" not in detail
+        assert detail.startswith("Draft provider failed validation: 1 validation error for LLMProvider\n"), detail
+        assert "\nurl\n  " in detail, "the field is still named, on its own line, with the reason indented under it"
+        assert "[type=url_parsing, input_type=str]" in detail
 
 
 class TestSavedProbe:
