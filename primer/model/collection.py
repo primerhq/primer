@@ -107,7 +107,7 @@ class Collection(Describeable):
     )
     system: bool = Field(
         default=False,
-        description="System-owned; read-only to users through every path. Set by the platform only: a create that sets it and an update that changes it are refused.",
+        description="System-owned: its documents cannot be written and the collection cannot be deleted through any user path, but its description and search config can still be edited. Set by the platform only: a create that sets it and an update that changes it are refused.",
     )
     harness_id: str | None = Field(
         default=None,
