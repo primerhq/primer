@@ -92,7 +92,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.workspace.reserved import reserved_tree, reserved_trees
+from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
 from primer.workspace.diagnostic import (
     DIAGNOSTIC_COMMANDS,
     DiagnosticCommandError,
@@ -2169,17 +2169,18 @@ def _is_runtime_marker(entry_path: str) -> bool:
 
 
 def _is_admin(user: Any) -> bool:
-    """Same predicate as the events feed: ``require_user`` always yields a
-    user on HTTP; ``None`` only reaches here outside a request."""
-    return user is None or getattr(user, "role", None) == "admin"
+    """``require_user`` always yields a user on HTTP; an unknown caller
+    (``None``) is not an admin: fail closed, as the tools do."""
+    return user is not None and getattr(user, "role", None) == "admin"
 
 
 def _refuse_reserved_read(ws: Any, path: str, user: Any) -> None:
     """403 ``forbidden_role`` when a non-admin names a path in the runtime's
-    ``.state`` / ``.tmp`` trees (A-22). Admins may read them, for debugging."""
+    ``.state`` / ``.tmp`` trees (A-22). Admins may read them, for debugging.
+    The path is classified the way the backend resolves it."""
     if _is_admin(user):
         return
-    tree = reserved_tree(path, reserved_trees(ws))
+    tree = reserved_tree_for(ws, path)
     if tree is not None:
         raise HTTPException(
             status_code=403,
@@ -2508,6 +2509,15 @@ async def write_file(
         except Exception as exc:  # noqa: BLE001 - base64.binascii.Error
             raise BadRequestError(f"invalid base64 content: {exc}") from exc
     if_unmodified_since_hdr = request.headers.get("if-unmodified-since")
+    # Writes into the reserved trees are refused for everyone (the backend's
+    # _refuse_reserved). Refuse BEFORE the precondition stat below, or
+    # 404-vs-412 tells a caller whether a .state / .tmp file exists (A-22).
+    reserved = reserved_tree_for(ws, path)
+    if reserved is not None:
+        raise BadRequestError(
+            f"refusing to mutate path inside reserved tree {reserved!r}: "
+            f"{path!r}"
+        )
     if etag is not None or if_unmodified_since_hdr is not None:
         try:
             entry = await ws.file_info(path)

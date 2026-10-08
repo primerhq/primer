@@ -20,6 +20,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, Request
 
+from primer.api.errors import register_error_handlers
 from primer.api.deps import get_event_bus, get_scheduler, get_workspace_registry
 from primer.api.routers import workspaces as ws_router
 from primer.model.user import User
@@ -100,6 +101,7 @@ class _Registry:
 
 def _app(role: str) -> tuple[FastAPI, _Registry]:
     app = FastAPI()
+    register_error_handlers(app)  # PrimerError -> RFC 7807, as in the real app
     registry = _Registry()
     user = User(
         id=f"u-{role}", username=role, password_hash="!x",
