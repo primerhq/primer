@@ -101,11 +101,58 @@ def test_the_count_uses_the_pages_noun_and_says_how_many_a_filter_hides(shown: i
 # ---- every page has a noun, and the call sites use the helpers ----------------------------------------------------------------
 
 
-def test_every_platform_page_declares_its_noun() -> None:
-    pages = len(re.findall(r"\bcreateLabel:", PLAT[PLAT.index("var NV_PLAT_PAGES"):]))
-    nouns = len(re.findall(r'\bnoun: \["[a-z ]+", "[a-z ]+"\]', PLAT))
+def _pages_ctx():
+    """The helpers AND the page table, evaluated as written (no JSX in that stretch of the file)."""
+    from py_mini_racer import MiniRacer
 
-    assert pages >= 12 and nouns == pages, f"{nouns} nouns for {pages} pages"
+    ctx = MiniRacer()
+    _OPEN_CONTEXTS.append(ctx)
+    ctx.eval("var window = globalThis;")
+    ctx.eval(PLAT[PLAT.index("function NV_fact("):PLAT.index("var NV_PLAT_PAGE_SIZE")])
+    return ctx
+
+
+def test_every_platform_page_declares_its_noun() -> None:
+    """Every KEY of the table, not every entry that has a create button: the Tools page has none, and the page renders the count for every key."""
+    ctx = _pages_ctx()
+
+    keys = json.loads(ctx.eval("JSON.stringify(Object.keys(NV_PLAT_PAGES))"))
+
+    assert len(keys) >= 13 and "tools" in keys, keys
+    for key in keys:
+        noun = json.loads(ctx.eval(f"JSON.stringify(NV_PLAT_PAGES[{json.dumps(key)}].noun)"))
+        assert isinstance(noun, list) and len(noun) == 2 and all(isinstance(w, str) and w for w in noun), (key, noun)
+
+
+@pytest.mark.parametrize("noun", ["undefined", "null", "[]", '["only"]', '"agents"', "[1, 2]", '["", ""]'])
+def test_a_missing_or_malformed_noun_degrades_to_item_items_instead_of_crashing(noun: str) -> None:
+    """A page that forgets its noun must not blank the console (the page calls these helpers on every render, with no error boundary around it)."""
+    ctx = _ctx()
+
+    assert ctx.eval(f'NV_emptyText({noun}, "", 0)') == "No items yet."
+    assert ctx.eval(f'NV_emptyText({noun}, "x", 3)') == 'No items match "x".'
+    assert ctx.eval(f"NV_countText({noun}, 1, 1)") == "1 item"
+    assert ctx.eval(f"NV_countText({noun}, 2, 5)") == "2 of 5 items"
+
+
+def test_the_mobile_list_says_nothing_empty_while_loading_or_after_an_error() -> None:
+    """"No triggers yet." while the list is still loading, or after the fetch failed, states something nobody has verified."""
+    block = MOBILE[MOBILE.index("function NV_MobilePlatform("):MOBILE.index("function NV_MobileMore(")]
+
+    assert re.search(r"!visible\.length && !res\.loading && !res\.error", block), "the empty text needs the same guard as the desktop page"
+    assert re.search(r"res\.error \?[\s\S]{0,200}res\.error\.(detail|message)", block), "a failed fetch must say so instead of drawing a blank list"
+
+
+def test_both_pickers_pass_the_unfiltered_row_count_as_the_total() -> None:
+    """`visible.length` as the total would call a filter that hides everything "No agents or graphs yet."."""
+    for name, source in (("mobile shell", MOBILE), ("overlays", OVERLAYS)):
+        assert re.search(
+            r'NV_emptyText\(\s*\["agent or graph", "agents or graphs"\], q, rows\.length\)', source
+        ), f"{name}: the new-session picker must pass rows.length (the list before the filter)"
+
+
+def test_the_clear_filter_button_has_a_test_id() -> None:
+    assert re.search(r'data-testid="nv-plat-clear-filter"[\s\S]{0,300}Clear filter', PLAT)
 
 
 def test_the_helpers_are_exported_for_the_mobile_shell_and_the_overlays() -> None:

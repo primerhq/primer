@@ -72,7 +72,7 @@ def test_a_filter_that_hides_every_card_says_nothing_matches_and_clears(page, ba
         expect(empty.get_by_role("button", name="New toolset")).to_have_count(0)
         expect(page.get_by_test_id("nv-plat-count")).to_contain_text(" of ")  # "0 of N toolsets": it says how many a filter hides
 
-        empty.get_by_role("button", name="Clear filter").click()
+        page.get_by_test_id("nv-plat-clear-filter").click()
 
         expect(page.get_by_test_id("nv-plat-empty")).to_have_count(0)
         expect(page.get_by_test_id("nv-plat-filter")).to_have_value("")
@@ -120,3 +120,27 @@ def test_the_phone_list_says_nothing_matches_a_filter_that_hides_every_row(page,
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             c.delete(f"/v1/toolsets/{toolset_id}")
+
+
+def test_the_tools_page_renders_with_a_count_and_says_nothing_matches_a_filter(page, console_url: str) -> None:
+    """The Tools page has no create button, so an earlier check that counted create buttons never noticed it had no `noun`. The page computes its
+    count and empty text for EVERY page, so a page without a noun threw on render and blanked the whole console (no error boundary)."""
+    _open_platform_page(page, console_url, "tools")
+
+    expect(page.get_by_test_id("nv-plat-count")).to_contain_text("tool", timeout=15_000)
+    expect(page.get_by_test_id("nv-plat-count")).not_to_contain_text("entit")
+
+    page.get_by_test_id("nv-plat-filter").fill("zzz-no-such-tool")
+
+    expect(page.get_by_test_id("nv-plat-empty")).to_contain_text('No tools match "zzz-no-such-tool".', timeout=10_000)
+    expect(page.get_by_test_id("nv-plat-count")).to_contain_text(" of ")
+
+
+def test_the_phone_tools_list_says_nothing_matches_a_filter_instead_of_crashing(page, console_url: str) -> None:
+    _phone(page)
+    open_mobile_platform_nav(page, console_url, "tools")
+    expect(page.locator("[data-testid^='nv-mob-plat-row:']").first).to_be_visible(timeout=15_000)
+
+    page.get_by_test_id("nv-mob-plat-filter").fill("zzz-no-such-tool")
+
+    expect(page.get_by_test_id("nv-mob-plat-empty:tools")).to_have_text('No tools match "zzz-no-such-tool".', timeout=10_000)
