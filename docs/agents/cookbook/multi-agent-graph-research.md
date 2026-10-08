@@ -73,8 +73,11 @@ Populate it with reference material before the first run.
     "edges": [
       { "kind": "static", "from_node": "begin", "to_node": "researcher" },
       { "kind": "static", "from_node": "researcher", "to_node": "fact-checker" },
-      { "kind": "conditional", "from_node": "fact-checker", "to_node": "researcher", "condition": "bad_sources non-empty" },
-      { "kind": "static", "from_node": "fact-checker", "to_node": "writer" },
+      { "kind": "conditional", "from_node": "fact-checker", "router": {
+          "kind": "json_path",
+          "branches": [ { "conditions": [ { "path": "bad_sources[0]", "op": "exists" } ], "to_node": "researcher" } ],
+          "default_to": "writer"
+      } },
       { "kind": "static", "from_node": "writer", "to_node": "end" }
     ]
   }
@@ -84,7 +87,7 @@ Response:
 ```json
 { "id": "research-pipeline" }
 ```
-The conditional edge is followed when `bad_sources` is non-empty (loop back to `researcher`); the static `fact-checker` to `writer` edge is the default forward path. Set a max-iterations limit on the graph so the back-edge cannot loop indefinitely when no good sources exist.
+The conditional edge sends the run back to `researcher` while the fact-checker's output has a first `bad_sources` entry (`bad_sources[0]` exists, that is, the list is non-empty) and on to `writer` otherwise (`default_to`). Set a max-iterations limit on the graph so the back-edge cannot loop indefinitely when no good sources exist.
 
 ### 4. Confirm the graph saved
 `system::get_graph`
@@ -93,7 +96,7 @@ The conditional edge is followed when `bad_sources` is non-empty (loop back to `
 ```
 Response:
 ```json
-{ "id": "research-pipeline", "nodes": [ { "id": "researcher" } ], "edges": [ { "from_node": "fact-checker", "to_node": "researcher" } ] }
+{ "id": "research-pipeline", "nodes": [ { "id": "researcher" } ], "edges": [ { "kind": "conditional", "from_node": "fact-checker" } ] }
 ```
 Verify the nodes and the conditional back-edge are present before running.
 

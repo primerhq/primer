@@ -131,8 +131,10 @@ both the verb-style operations and plain listing/fetching.
 
 ### Registration
 
-- `harness::harness__register` - create a draft row. Body: `id`, `slug`,
-  `git_url`, `ref`, optional `git_token`, optional `overrides`.
+- `harness::harness__register` - create a draft row. Body: `name`, `slug`,
+  `git_url`, optional `ref`, `subpath`, `description` and `git_token`. The
+  `id` is assigned by the server and overrides are set afterwards with
+  `harness::harness__update_overrides`.
   Does NOT fetch - explicit `harness::harness__fetch` next.
 - `harness::harness__update` - partial update. Editing `git_url` / `ref`
   while installed marks the row outdated; sync to apply.
@@ -174,10 +176,23 @@ installed at the latest 1.x tag.
 {
   "tool": "harness::harness__register",
   "arguments": {
-    "id": "h-code-review",
+    "name": "Code review",
     "slug": "code-review",
     "git_url": "https://github.com/example/primer-code-review.git",
-    "ref": "v1.4.0",
+    "ref": "v1.4.0"
+  }
+}
+```
+
+Status is `draft`. The row carries a server-assigned `id` (the later calls
+write it as `h-code-review`); set the overrides with
+`harness::harness__update_overrides`, not at registration:
+
+```json
+{
+  "tool": "harness::harness__update_overrides",
+  "arguments": {
+    "id": "h-code-review",
     "overrides": {
       "llm_provider_id": "lp-claude",
       "max_concurrent_reviews": 3
@@ -185,8 +200,6 @@ installed at the latest 1.x tag.
   }
 }
 ```
-
-Status is `draft`.
 
 2. Fetch:
 

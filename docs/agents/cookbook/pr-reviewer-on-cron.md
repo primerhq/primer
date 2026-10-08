@@ -76,7 +76,7 @@ Thread `id` ("ws-1") into the subscription config. Wait until `phase` is `runnin
 {
   "slug": "pr-review-hourly",
   "name": "PR review hourly",
-  "config": { "kind": "scheduled", "cron": "0 * * * *", "catchup": "skip" },
+  "config": { "kind": "scheduled", "cron": "0 * * * *", "catchup": "none" },
   "enabled": true
 }
 ```
@@ -84,7 +84,7 @@ Response:
 ```json
 { "id": "trg-1", "slug": "pr-review-hourly" }
 ```
-`0 * * * *` fires at the top of every UTC hour. `catchup: "skip"` stops missed ticks during downtime causing a burst of review runs. Thread `id` ("trg-1") into the subscription.
+`0 * * * *` fires at the top of every UTC hour. `catchup: "none"` stops missed ticks during downtime causing a burst of review runs. Thread `id` ("trg-1") into the subscription.
 
 ### 5. Attach an agent_fresh_session subscription
 `trigger::create_subscription`

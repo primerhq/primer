@@ -102,12 +102,18 @@ Create the `channel` trigger that anchors inbound events for the room:
   "enabled": true
 }
 ```
+Response (the created trigger):
+```json
+{ "id": "tr-3f2a9c1d4b7e", "slug": "ops-help-anchor", "name": "Slack #ops-help", "enabled": true }
+```
+Thread `id` ("tr-3f2a9c1d4b7e", the surrogate id, not the slug) into the binding.
+
 Then the binding that maps a matcher to an action:
 
 `system::create_channel_binding`
 ```json
 {
-  "trigger_id": "ops-help-anchor",
+  "trigger_id": "tr-3f2a9c1d4b7e",
   "event_matcher": { "event_type": "message.posted", "mentions_bot": true },
   "config": { "kind": "agent_fresh_session", "workspace_id": "ws-1", "agent_id": "answer-bot" },
   "reply_target": "source_thread",
