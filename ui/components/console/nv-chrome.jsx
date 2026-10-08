@@ -89,6 +89,33 @@ function NV_ActivityBar() {
   );
 }
 
+// C-027: an open menu closes on Escape and gives focus back to the button that opened it, and closes when focus moves to something outside it and
+// its button (a keyboard user who tabs out of a menu used to leave it hanging open over the page). It listens only while open, and it does not
+// touch Escape when no menu is open: the palette and the overlays keep theirs.
+function NV_useMenuDismiss(con, name, triggerTestId) {
+  var open = con.openMenu === name;
+  React.useEffect(function () {
+    if (!open) return undefined;
+    function onKey(ev) {
+      if (ev.key !== "Escape" || ev.defaultPrevented) return;
+      ev.preventDefault();
+      con.toggleMenu(null);
+      var trigger = document.querySelector('[data-testid="' + triggerTestId + '"]');
+      if (trigger) trigger.focus();
+    }
+    document.addEventListener("keydown", onKey);
+    return function () { document.removeEventListener("keydown", onKey); };
+  }, [open]);
+}
+
+// Focus moved to another element (relatedTarget is that element; null is a click on a non-focusable part of the menu, which stays) that is neither
+// inside the menu's container nor the button that opened it: close.
+function NV_menuFocusLeft(ev, triggerTestId) {
+  var next = ev.relatedTarget;
+  if (!next || ev.currentTarget.contains(next)) return false;
+  return !(next.getAttribute && next.getAttribute("data-testid") === triggerTestId);
+}
+
 function NV_ProfileMenu() {
   var con = NV_useConsole();
   var theme = document.documentElement.getAttribute("data-theme") || "dark";
@@ -102,7 +129,8 @@ function NV_ProfileMenu() {
   }
   return (
     <div className="nv-profile-menu" data-testid="nv-profile-menu"
-      onClick={function (ev) { ev.stopPropagation(); }}>
+      onClick={function (ev) { ev.stopPropagation(); }}
+      onBlur={function (ev) { if (NV_menuFocusLeft(ev, "nv-profile-btn")) con.toggleMenu(null); }}>
       <div className="nv-profile-head">
         <div className="nv-avatar">{String(con.username || "?").slice(0, 2).toLowerCase()}</div>
         <div style={{ minWidth: 0 }}>
@@ -165,10 +193,12 @@ function NV_ProfileMenu() {
 // "ws" until now, so the chord/palette verb was silently a no-op.
 function NV_WorkspaceChip() {
   var con = NV_useConsole();
+  NV_useMenuDismiss(con, "ws", "nv-ws-chip");
   var workspaces = con.workspaces || [];
   var active = workspaces.filter(function (w) { return w.id === con.wid; })[0];
   return (
-    <div className="nv-ws-wrap">
+    <div className="nv-ws-wrap"
+      onBlur={function (ev) { if (con.openMenu === "ws" && NV_menuFocusLeft(ev, "nv-ws-chip")) con.toggleMenu(null); }}>
       <button type="button" className="nv-ws-chip" title="Switch workspace"
         data-verb="workspace.switch" data-testid="nv-ws-chip"
         onClick={function (ev) { ev.stopPropagation(); con.toggleMenu("ws"); }}>
@@ -216,6 +246,7 @@ function NV_WorkspaceChip() {
 
 function NV_Topbar() {
   var con = NV_useConsole();
+  NV_useMenuDismiss(con, "profile", "nv-profile-btn");
   return (
     <div className="nv-topbar" data-testid="nv-topbar" role="banner">
       {con.view.name === "studio" ? <NV_WorkspaceChip /> : null}
