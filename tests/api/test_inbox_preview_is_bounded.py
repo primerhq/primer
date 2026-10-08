@@ -94,6 +94,20 @@ _HOSTILE = {
     "partial secret words": "passw" * 8000,
     "key flags": "--key " * 6600,
     "dashes": "-" * 40000,
+    # the shapes the pass/pw, mysql -p and -u user:password rules could be tripped by (ticket 01a11b7d)
+    "pass words": "pass" * 10000,
+    "pass components": "pass-" * 8000,
+    "pass assignments": "db_pass " * 5000,
+    "pass flags": "--pass " * 5700,
+    "pw assignments": "pw=" * 13000,
+    "mysql commands": "mysql " * 6600,
+    "mysql with a bare -p": "mysql -p " * 4400,
+    "mysql with attached -p": "mysql -pa " * 4000,
+    "mysql then a long option run": "mysql" + " x" * 20000,
+    "mysql with a separator in each": "mysql a ; " * 4000,
+    "user flags": "-u a:" * 10000,
+    "user flags with values": "--user a:b " * 3600,
+    "user flags without a colon": "-u ab " * 6600,
 }
 
 
