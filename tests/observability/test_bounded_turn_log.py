@@ -85,3 +85,17 @@ async def test_closing_never_raises_and_never_hangs() -> None:
         finally:
             inner.release.set()
         assert inner.closed == 1
+
+
+async def test_closing_a_broken_turn_log_does_not_touch_the_dead_connection_again() -> None:
+    """Once an entry has missed the bound the connection is treated as dead; closing the inner log would only wait the bound again."""
+    inner = _Inner(hang=True)
+    try:
+        async with asyncio.timeout(HARD_BOUND_S):
+            log = _bounded(inner)
+            await log.append(_event())                 # misses the bound: the wrapper is broken
+            await log.aclose()
+    finally:
+        inner.release.set()
+
+    assert inner.closed == 0, "a broken turn log still closed the inner writer over the dead connection"

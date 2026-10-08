@@ -193,3 +193,36 @@ async def test_finish_persists_last_seq_even_when_its_own_flush_gives_up(monkeyp
 
     row = await pool._storage.get_storage(WorkspaceSession).get(session.id)
     assert row.last_seq == 6, f"the flush failed and finish skipped last_seq: the row says {row.last_seq}"
+
+
+@pytest.mark.asyncio
+async def test_finish_does_not_pull_last_seq_back_below_a_row_that_moved_after_its_read() -> None:
+    """``finish`` re-read the row and advanced it with a whole-document ``update`` from that snapshot: a steer that took a higher seq between
+    the read and the write was erased, ``last_seq`` included. A field-scoped write fenced on the value read leaves it."""
+    from tests.conftest import _FakeStorageProvider
+
+    pool = _FakePool()
+    pool._storage = _FakeStorageProvider()
+    session = _session().model_copy(update={"last_seq": 5})
+    sessions = pool._storage.get_storage(WorkspaceSession)
+    await sessions.create(session)
+    tap = await _ResumeDrainTap.create(pool, session, node_tool_call_seq=None)
+    await tap.observe(ToolCallStart(id="call-1", name="tool_a", index=0))
+    await tap.observe(ToolCallEnd(id="call-1", arguments={}, index=0))          # spends seq 6
+
+    real_get = sessions.get
+    real_update = sessions.update
+    raced = {"done": False}
+
+    async def get(session_id):
+        row = await real_get(session_id)
+        if not raced["done"]:
+            raced["done"] = True
+            await real_update(row.model_copy(update={"last_seq": 9}))           # a steer takes seq 9 after finish's read
+        return row
+
+    sessions.get = get  # type: ignore[method-assign]
+
+    await tap.finish()
+
+    assert (await real_get(session.id)).last_seq == 9, "finish took last_seq back below what another writer committed"

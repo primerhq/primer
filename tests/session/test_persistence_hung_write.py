@@ -369,3 +369,31 @@ def test_a_write_timeout_is_a_503_not_a_500() -> None:
     status = next(status for cls, status, _uri, _title in _PRIMER_ERROR_MAP if isinstance(exc, cls))
     assert status == 503
     assert exc.message == "the workspace did not accept a batch" and exc.status_code is None
+
+
+# ---- a batch sent late under the cap still gets a minimum answer window (follow-up of #545) --------------------------------------------
+
+
+def test_a_batch_sent_late_under_the_cap_still_gets_a_minimum_answer_window(monkeypatch) -> None:
+    """The cap (four bounds after the hand-over) used to cut the answer window to nothing for a batch whose lock was taken just before it:
+    a healthy slow commit that held the lock for almost the whole cap would then lose the records. Floor: a quarter of a bound after the
+    request was sent. A pure function of the clock's state, so no timing is involved."""
+    monkeypatch.setattr(persistence, "_WRITE_TIMEOUT_S", 10.0)
+    monkeypatch.setattr(persistence, "_QUEUE_CAP_FACTOR", 4)
+    writer = WorkspaceMessageWriter(workspace_io=object(), session_id="s1")
+    from primer.session import write_clock
+
+    clock = write_clock.WriteClock()
+    writer._write_clock = clock
+    writer._write_started_at = 100.0                       # the cap is 100 + 4 * 10 = 140
+
+    clock.queued = False
+    assert writer._limit() == 110.0, "a backend that does not report keeps the clock from the hand-over"
+    clock.queued = True
+    assert writer._limit() == 140.0, "waiting for the lock: the cap"
+    clock.sent_at = 105.0
+    assert writer._limit() == 115.0, "sent early: a full bound after it was sent"
+    clock.sent_at = 139.0
+    assert writer._limit() == 141.5, "sent just before the cap: still a quarter of a bound to answer"
+    clock.sent_at = 200.0
+    assert writer._limit() == 210.0, "sent after the cap (the hand-over was long ago): a full bound, never less than the floor"
