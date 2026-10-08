@@ -708,13 +708,17 @@ function SetupWizardGate({ onDone }) {
 
   const rerunSeed = () => {
     setBusy("seed");
+    // A failed seed still re-reads the state, so the checklist shows what is true (and its Re-run seed) instead of whatever was read last.
     window.primerApi.apiFetch("POST", "/setup/seed", null, {}).then(
-      load, (err) => setError(SW_errorText(err)),
+      load, (err) => load().then(() => setError(SW_errorText(err))),
     ).finally(() => setBusy(null));
   };
 
   const afterProviderStep = () => {
     setConfiguring(false);
+    // The state in hand was read BEFORE the wizard ran and says no provider is configured; drawing it until the post-seed read arrives showed a red
+    // failure right after the operator fixed it (console review C-039). No state is "Loading..." and the Enter button is off.
+    setState(null);
     // Seeding needs the profile step 2 just created (amendment C3).
     rerunSeed();
   };
