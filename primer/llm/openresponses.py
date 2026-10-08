@@ -711,6 +711,9 @@ def _translate_event(  # noqa: C901  (intentional dispatch table)
         ]
 
     if etype == "error":
+        # Not fatal: per the Open Responses spec an error "will be followed by a ``response.failed`` event" (the failed ``Done`` above), so one
+        # more event follows, which is what ``Error.fatal=False`` says. Per the spec, not observed against a real provider (ticket 01a11c07).
+        # The agent loop still fails the turn on the first Done/Error it holds, so this never recovers a turn.
         return [
             ChatError(
                 fatal=False,
