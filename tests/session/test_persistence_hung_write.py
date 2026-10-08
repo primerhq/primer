@@ -396,4 +396,4 @@ def test_a_batch_sent_late_under_the_cap_still_gets_a_minimum_answer_window(monk
     clock.sent_at = 139.0
     assert writer._limit() == 141.5, "sent just before the cap: still a quarter of a bound to answer"
     clock.sent_at = 200.0
-    assert writer._limit() == 210.0, "sent after the cap (the hand-over was long ago): a full bound, never less than the floor"
+    assert writer._limit() == 202.5, "sent after the cap: the floor applies (not reachable in practice, the waiter gave up at the cap)"

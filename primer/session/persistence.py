@@ -333,8 +333,9 @@ class WorkspaceMessageWriter:
 
         ``_WRITE_TIMEOUT_S`` after the request was SENT, when the backend reports it (the wait for the session's messages_lock, which
         a turn persist holds across its git commit, is not the workspace being dead); and in all at most ``_QUEUE_CAP_FACTOR`` bounds
-        after the hand-over, so a lock holder that never lets go cannot hold the batch for ever. A backend that does not report keeps
-        the clock from the hand-over.
+        after the hand-over, so a lock holder that never lets go cannot hold the batch for ever. A request that was sent only just
+        before the cap still gets a quarter of a bound to answer (a healthy slow commit that held the lock for nearly the whole cap
+        must not then lose its records). A backend that does not report keeps the clock from the hand-over.
         """
         start = self._write_started_at
         clock = self._write_clock
@@ -343,7 +344,7 @@ class WorkspaceMessageWriter:
         cap = start + _WRITE_TIMEOUT_S * _QUEUE_CAP_FACTOR
         if clock.sent_at is None:
             return cap
-        return min(clock.sent_at + _WRITE_TIMEOUT_S, cap)
+        return max(min(clock.sent_at + _WRITE_TIMEOUT_S, cap), clock.sent_at + _WRITE_TIMEOUT_S / 4)
 
     def _break_on(self, write: asyncio.Task[None]) -> None:
         """Abandon the unanswered ``write``: log the loss once, drop the buffer, close the writer."""

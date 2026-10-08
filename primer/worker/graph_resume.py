@@ -428,16 +428,14 @@ class _ResumeDrainTap:
         if spent is None:
             return
         # Whatever the flush did, the seqs the writer numbered are spent: a row that keeps the old last_seq hands them to the next
-        # writer (duplicate seqs, and since_seq hides the new records). Re-read the row and only ADVANCE it, so the write cannot
-        # revert anything else that changed during the drain.
+        # writer (duplicate seqs, and since_seq hides the new records). One field-scoped patch_if of last_seq, fenced on the value read
+        # and advance-only, so it cannot revert anything else that changed during the drain.
         try:
             if self._pool._storage is not None:
                 from primer.model.workspace_session import WorkspaceSession
+                from primer.session.seq_reservation import advance_last_seq
 
-                storage = self._pool._storage.get_storage(WorkspaceSession)
-                fresh = await storage.get(self._session.id)
-                if fresh is not None and spent > fresh.last_seq:
-                    await storage.update(fresh.model_copy(update={"last_seq": spent}))
+                await advance_last_seq(self._pool._storage.get_storage(WorkspaceSession), self._session.id, spent)
         except Exception:  # noqa: BLE001 - best-effort, see class docstring
             logger.exception(
                 "resume: failed to persist last_seq for graph resume-drain tap of "

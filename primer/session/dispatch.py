@@ -2241,18 +2241,19 @@ async def _persist_last_seq(
     Seeds the NEXT turn's :class:`WorkspaceMessageWriter` (and any later
     ``wake_session`` / ``reset_session``) so ``(session_id, seq)`` stays
     strictly monotonic across turns instead of every turn restarting at
-    seq=1. Re-reads the fresh row and only ADVANCES ``last_seq`` (never
-    downgrades) so a concurrent steer that already wrote a higher USER_INPUT
-    seq is not clobbered. Always called from inside a
-    ``session_lifecycle_lock`` critical section — the same lock
-    ``wake_session``/``reset_session`` use for their own ``last_seq`` writes —
-    so this read-modify-write cannot interleave with a racing seq write.
+    seq=1. Only ADVANCES ``last_seq`` (never downgrades) so a concurrent steer
+    that already wrote a higher USER_INPUT seq is not clobbered: ONE
+    field-scoped ``patch_if`` fenced on the value read
+    (:func:`primer.session.seq_reservation.advance_last_seq`), not a ``get`` +
+    whole-document ``update``, which would write a row that moved in between
+    back over. Called from inside a ``session_lifecycle_lock`` critical
+    section, the same lock ``wake_session``/``reset_session`` use for their own
+    ``last_seq`` writes; the fence is what protects it from a writer that does
+    not take that lock.
     """
-    fresh = await session_storage.get(session_id)
-    if fresh is not None and seq > fresh.last_seq:
-        await session_storage.update(
-            fresh.model_copy(update={"last_seq": seq})
-        )
+    from primer.session.seq_reservation import advance_last_seq
+
+    await advance_last_seq(session_storage, session_id, seq)
 
 
 async def _advance_drain_cursor(session_storage, session_id: str) -> None:
