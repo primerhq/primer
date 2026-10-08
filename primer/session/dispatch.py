@@ -1367,25 +1367,31 @@ async def run_one_session_turn(
     # The row was ended by something else while the turn finished (a force-delete, the pool's preempt
     # convergence, the reconciler) and the write was skipped: announce what the ROW says, so the durable
     # event log does not contradict it, and relay no answer for a session that was ended under the turn.
-    overridden = not written.landed and (written.status, written.ended_reason) != (new_status, ended_reason)
+    overridden = _ended_by_another_path(written, new_status, ended_reason)
     # A turn the agent's max_tool_turns stopped is counted under its own status: it is neither a normal completion
-    # (WAITING/None interactive, ENDED/tool_turn_cap autonomous) nor a failure.
+    # (WAITING/None interactive, ENDED/tool_turn_cap autonomous) nor a failure. A turn that was overridden is counted
+    # once under its own status too (ticket 01a1134b-2cb8): it ran, but the row says something else ended the session, so
+    # it is not a completion a dashboard should add up.
     _observe_turn(
         session,
-        "failed" if ended_reason == "failed"
+        "overridden" if overridden
+        else "failed" if ended_reason == "failed"
         else "tool_turn_cap" if last_done_reason == "tool_turn_cap"
         else "completed",
         _turn_started_at,
     )
-    await _event_recorder(deps).emit(
-        "session.replied",
-        workspace_id=session.workspace_id,
-        session_id=session_id,
-        payload={
-            "turn_no": session.turn_no,
-            "finish_reason": last_done_reason,
-        },
-    )
+    if not overridden:
+        # No reply is announced for a session the row says was ended under the turn: the durable event log must not say
+        # both (``session.ended`` below carries the row's own reason).
+        await _event_recorder(deps).emit(
+            "session.replied",
+            workspace_id=session.workspace_id,
+            session_id=session_id,
+            payload={
+                "turn_no": session.turn_no,
+                "finish_reason": last_done_reason,
+            },
+        )
     await _publish_terminal(
         deps, session, written.status, written.ended_reason,
     )
