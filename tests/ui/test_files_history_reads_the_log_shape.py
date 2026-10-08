@@ -12,6 +12,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 CONSOLE = ROOT / "ui" / "components" / "console"
 API = ROOT / "ui" / "components" / "shell" / "sh-api.jsx"
@@ -30,34 +32,36 @@ REAL_LOG_BODY = {
 }
 
 
-def _api():
+@pytest.fixture(scope="module")
+def api():
+    """One V8 isolate for the module, closed on teardown (tests/ui leaks undisposed isolates otherwise)."""
     from py_mini_racer import MiniRacer
 
     ctx = MiniRacer()
     ctx.eval("var window = globalThis; window.primerApi = { apiFetch: function () {} };")
     ctx.eval(API.read_text(encoding="utf-8"))
-    return ctx
+    yield ctx
+    ctx.close()
 
 
 def _rows(ctx, body) -> list[dict]:
     return json.loads(ctx.eval("JSON.stringify(window.SH_api.commitRows(" + json.dumps(body) + "))"))
 
 
-def test_the_rows_of_the_real_log_response_are_its_commits() -> None:
-    rows = _rows(_api(), REAL_LOG_BODY)
+def test_the_rows_of_the_real_log_response_are_its_commits(api) -> None:
+    rows = _rows(api, REAL_LOG_BODY)
     assert [r["subject"] for r in rows] == ["turn[2] write notes.md", "turn[1] init"]
     assert rows[0]["sha"] == "a" * 40 and rows[0]["session_id"] == "sess-1" and rows[0]["op"] == "write"
 
 
-def test_an_items_shaped_body_is_not_a_commit_log() -> None:
+def test_an_items_shaped_body_is_not_a_commit_log(api) -> None:
     """The list envelope other routes use is NOT the log's: a fixture shaped like it is what hid this bug."""
-    assert _rows(_api(), {"items": REAL_LOG_BODY["commits"]}) == []
+    assert _rows(api, {"items": REAL_LOG_BODY["commits"]}) == []
 
 
-def test_a_missing_or_empty_log_has_no_rows() -> None:
-    ctx = _api()
+def test_a_missing_or_empty_log_has_no_rows(api) -> None:
     for body in (None, {}, {"commits": []}, {"commits": None}):
-        assert _rows(ctx, body) == [], body
+        assert _rows(api, body) == [], body
 
 
 def test_both_sidebars_take_their_rows_from_the_log_helper() -> None:
