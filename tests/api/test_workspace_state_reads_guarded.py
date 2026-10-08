@@ -20,7 +20,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, Request
 
-from primer.api.deps import get_workspace_registry
+from primer.api.deps import get_event_bus, get_scheduler, get_workspace_registry
 from primer.api.routers import workspaces as ws_router
 from primer.model.user import User
 from primer.model.workspace import FileEntry
@@ -38,6 +38,10 @@ RESERVED_SPELLINGS = [
     ".tmp/s1/tool_1.txt",
     "./.tmp/s1/tool_1.txt",
     "a/../.tmp/s1/tool_1.txt",
+    # The sandbox resolver turns a backslash into a separator.
+    ".state\\sessions\\s1\\messages.jsonl",
+    "a\\..\\.state\\sessions\\s1\\messages.jsonl",
+    ".tmp\\s1\\tool_1.txt",
 ]
 
 
@@ -110,6 +114,8 @@ def _app(role: str) -> tuple[FastAPI, _Registry]:
     app.include_router(ws_router.files_router, prefix="/v1")
     app.include_router(ws_router.log_router, prefix="/v1")
     app.dependency_overrides[get_workspace_registry] = lambda: registry
+    app.dependency_overrides[get_scheduler] = lambda: None
+    app.dependency_overrides[get_event_bus] = lambda: None
     return app, registry
 
 
@@ -187,6 +193,42 @@ async def test_the_commit_diff_serves_no_state_files_to_a_user():
     assert body["files"] == []
     assert body.get("files_hidden") is True
     assert "Traceback" not in resp.text
+
+
+@pytest.mark.parametrize("role", ["user", "admin"])
+@pytest.mark.parametrize(
+    "header", [{"If-Unmodified-Since": "Mon, 01 Jan 2001 00:00:00 GMT"}, {}],
+)
+async def test_a_conditional_put_into_a_reserved_tree_is_refused_before_any_stat(role, header):
+    """PUT with etag / If-Unmodified-Since used to stat the path first:
+    404 vs 412 told a caller whether a .state file exists. The reserved
+    check (writes there are refused for everyone) now runs first."""
+    app, registry = _app(role)
+    stats: list[str] = []
+    orig = registry.ws.file_info
+
+    async def _counting(path):
+        stats.append(path)
+        return await orig(path)
+
+    registry.ws.file_info = _counting
+    params = {"path": "./.state/sessions/s1/messages.jsonl"}
+    if not header:
+        params["etag"] = "stale"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        resp = await c.put(
+            "/v1/workspaces/w/files", params=params, headers=header,
+            json={"content": "x", "encoding": "text"},
+        )
+    assert resp.status_code in (400, 403), resp.text
+    assert resp.status_code != 412
+    assert stats == []
+
+
+def test_an_unknown_caller_is_not_an_admin():
+    """Fail closed, as the tools do: no user is not an admin."""
+    assert ws_router._is_admin(None) is False
 
 
 async def test_the_commit_diff_serves_files_to_an_admin():
