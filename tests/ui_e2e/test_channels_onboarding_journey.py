@@ -226,6 +226,12 @@ def test_u0108_channels_operator_onboarding_journey(
         modal = page.locator(".modal").first
         expect(modal).to_be_visible(timeout=5_000)
 
+        # ADM-19: the form speaks of SESSIONS like the rest of the console, not of "chats" (the config key and the test id keep their code name).
+        expect(modal).to_contain_text("Inbound messages")
+        expect(modal).to_contain_text("Start sessions from inbound messages")
+        for retired in ("Chats config", "Chats enabled", "chat messages"):
+            expect(modal).not_to_contain_text(retired)
+
         # id (auto-generated placeholder)
         modal.get_by_placeholder("auto-generated", exact=False).first.fill(ch_id)
 
