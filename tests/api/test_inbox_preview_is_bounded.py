@@ -199,7 +199,7 @@ def test_a_credential_used_as_a_nested_name_is_scrubbed() -> None:
 
 
 def test_a_credential_used_as_a_name_inside_a_json_string_is_scrubbed() -> None:
-    got = _preview({"payload": '{"%s": 1}' % GHP})
+    got = _preview({"payload": f'{{"{GHP}": 1}}'})
     assert "abcdefghijklmnopqrstuvwxyz" not in got["arguments"]
 
 
