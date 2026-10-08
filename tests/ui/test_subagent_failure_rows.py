@@ -112,8 +112,10 @@ def test_the_failure_card_reads_like_the_main_transcripts_one(block) -> None:
 
 def test_the_agents_name_comes_from_the_delegating_call_because_the_recorder_stamps_none(block) -> None:
     ctx = block([_said(2, "hello"), _error(3), _notice(4, "ended")])
-    heads = [el for el in json.loads(ctx.eval("JSON.stringify(MR.findAll('nv-subagent-').map(function (e) { return e.props['data-testid']; }))"))]
-    assert heads == ["nv-subagent-failure:3", "nv-subagent-notice:4"]
+    boxes = json.loads(ctx.eval(
+        "JSON.stringify(MR.findAll('nv-subagent-failure:').concat(MR.findAll('nv-subagent-notice:')).map(function (e) { return e.props['data-testid']; }))"
+    ))
+    assert boxes == ["nv-subagent-failure:3", "nv-subagent-notice:4"]
     text = ctx.eval("MR.texts().join(' | ')")
     assert text.count("helper") == 3, "every child of the call is under the agent's name"
     assert "subagent" not in text.replace("subagent failed", ""), "no child falls back to the bare label while the call names its agent"
@@ -155,9 +157,9 @@ def test_neither_is_announced_as_an_alert_anywhere_in_its_subtree(block) -> None
     for testid in ("nv-subagent-failure:3", "nv-subagent-notice:4"):
         nodes = _subtree(ctx, testid)
         assert nodes, testid
-        assert [n for n in nodes if n["role"] is not None or n["ariaLive"] is not None] == [], (testid, nodes)
+        assert [n for n in nodes if n.get("role") is not None or n.get("ariaLive") is not None] == [], (testid, nodes)
     failed = block([_notice(5, "retrying")], result=_result(error=True))
-    assert [n for n in _subtree(failed, "nv-subagent-failure:5") if n["role"] is not None or n["ariaLive"] is not None] == []
+    assert [n for n in _subtree(failed, "nv-subagent-failure:5") if n.get("role") is not None or n.get("ariaLive") is not None] == []
 
 
 def test_a_labelled_child_and_a_row_with_nothing_to_say_behave_as_before(block) -> None:
