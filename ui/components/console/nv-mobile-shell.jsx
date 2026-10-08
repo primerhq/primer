@@ -794,15 +794,23 @@ function NV_MobileFiles() {
   var workspaces = con.workspaces || [];
   var ws = workspaces.find(function (w) { return w.id === wid; });
 
+  // C-019: one read of the workspace's own row; a 404 is the card below, and the polls of the missing workspace stop (null keys).
+  var wsRow = window.primerApi.useResource(
+    wid ? SH_api.keys.workspace(wid) : null,
+    function (signal) { return SH_api.workspace(wid, signal); },
+    { pollMs: 0, deps: [wid] }
+  );
+  var wsGone = typeof window.NV_isWorkspaceGone === "function" && window.NV_isWorkspaceGone(wsRow.error);
+
   var tree = window.primerApi.useResource(
-    SH_api.keys.tree(wid || "_", "."),
+    wsGone ? null : SH_api.keys.tree(wid || "_", "."),
     function (signal) {
       return wid ? SH_api.filesTree(wid, ".", signal) : Promise.resolve({ items: [] });
     },
     { pollMs: 5000, deps: [wid] }
   );
   var commits = window.primerApi.useResource(
-    SH_api.keys.log(wid || "_"),
+    wsGone ? null : SH_api.keys.log(wid || "_"),
     function (signal) {
       return wid ? SH_api.commitLog(wid, 50, signal) : Promise.resolve({ commits: [] });
     },
@@ -860,6 +868,14 @@ function NV_MobileFiles() {
           <NV_Mobile_FilesSubtree wid={wid} path={entry.path} depth={depth + 1} row={row} />
         ) : null}
       </React.Fragment>
+    );
+  }
+
+  if (wsGone && typeof window.NV_WorkspaceGone === "function") {
+    return (
+      <div className="nv-mob-files" data-testid="nv-mobile-panel:files">
+        <window.NV_WorkspaceGone wid={wid} workspaces={workspaces} onOpen={pickWorkspace} />
+      </div>
     );
   }
 
