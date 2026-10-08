@@ -12,6 +12,8 @@ import json
 import pytest
 from playwright.sync_api import Page, expect
 
+from tests.ui_e2e._shell_helpers import open_gate
+
 
 @pytest.mark.timeout(120)
 def test_a_failed_status_read_is_an_error_with_a_retry_and_never_a_register_form(page: Page, console_url: str) -> None:
@@ -30,7 +32,7 @@ def test_a_failed_status_read_is_an_error_with_a_retry_and_never_a_register_form
             route.continue_()
 
     page.route("**/v1/auth/status", handler)
-    page.goto(console_url, wait_until="domcontentloaded")
+    open_gate(page, console_url)
 
     failure = page.get_by_test_id("auth-unreachable")
     expect(failure).to_have_text("Cannot reach the server", timeout=15_000)
