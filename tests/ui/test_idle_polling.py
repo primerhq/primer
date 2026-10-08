@@ -70,6 +70,9 @@ def test_a_session_at_rest_with_a_live_tap_is_calm(ctx) -> None:
     {"row": {"status": "waiting"}},                            # a row that does not say it is idle says nothing
     {"row": {"status": "waiting", "turn_status": "idle", "interrupt_requested": True}},
     {"row": {"status": "waiting", "turn_status": "idle", "pause_requested": True}},
+    {"row": {"status": "waiting", "turn_status": "idle", "cancel_requested": True}},      # a Cancel is landing: the worker has not finished it
+    {"row": {"status": "running", "turn_status": "idle"}},                                 # the row says running even though no turn is
+    {"row": {"status": "running", "turn_status": "idle", "interrupt_requested": False, "pause_requested": False}},
 ])
 def test_anything_in_flight_or_unknown_keeps_the_fast_cadence(ctx, over) -> None:
     assert _calm(ctx, **over) is False, over
