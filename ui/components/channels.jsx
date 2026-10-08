@@ -1011,6 +1011,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
 window.ChannelProvidersPage = ChannelProvidersPage;
 window.ChannelProviderDetail = ChannelProviderDetail;
 window.ChannelsPage = ChannelsPage;
+window.NewChannelModal = NewChannelModal;
 // Legacy mock export kept as empty stub — app.jsx reads
 // `window.CHANNELS_DATA` for the sidebar count.
 window.CHANNELS_DATA = [];

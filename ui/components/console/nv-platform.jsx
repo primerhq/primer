@@ -196,6 +196,25 @@ function NV_nounOf(noun) {
   return ok ? noun : ["item", "items"];
 }
 
+// What the channel create host shows, from its fetch of the channel providers
+// (the dialog needs the list). Data wins over everything: a background refetch
+// or a failed refetch keeps the dialog it already has. No data and an error is
+// an error; no data yet is loading; data with no provider is the dead end of
+// ADM-07, which the host turns into an action instead of prose.
+function NV_channelCreateState(res) {
+  if (res && res.data) return (res.data.items || []).length ? "ready" : "none";
+  if (res && res.error) return "error";
+  return "loading";
+}
+
+// The way out of "New channel" with no channel provider: the Platform page's
+// own Providers catalogue (it is mounted inline, not as an overlay, since the
+// IA restructure; it opens on every family and the Channels chip is one click
+// away, because the address has no slot for a family on an inline page).
+function NV_addChannelProvider(con) {
+  con.goView("platform", "providers");
+}
+
 // Per-entity page config. list() returns a promise of {items}; card()
 // maps a row to the prototype's card VM; open() addresses the shared
 // overlays; create() either hosts the entity's form on this page
@@ -452,7 +471,7 @@ var NV_PLAT_PAGES = {
       };
     },
     open: function (con, row) { con.openOverlay("channels", null, row.id); },
-    create: function (con) { con.openOverlay("channels", null, null); },
+    create: function (con, setModal) { setModal({ kind: "channel" }); },
     delPath: function (row) { return "/channels/" + encodeURIComponent(row.id); },
     extraNav: { label: "Rules", run: function (con) { con.openOverlay("channels", "rules", null); } },
   },
@@ -811,6 +830,67 @@ function NV_CollectionCreateHost(props) {
         window.KN_rememberJustCreated(row);
         props.onCreated(row);
       }} />
+  );
+}
+
+// The channel dialog needs the channel provider list, so the host fetches it.
+// With no provider the dialog would be a form with an empty select (the legacy
+// list disabled its button and said so in prose, ADM-07): the host explains
+// and offers the way out. NewChannelModal calls onCreated() with no row and the
+// channels overlay has no per-channel detail, so the host says "Channel
+// created" itself and the page just refreshes the cards.
+function NV_ChannelCreateHost(props) {
+  var providers = window.primerApi.useResource(
+    "nv-plat:channel-providers",
+    function (signal) {
+      return window.primerApi.apiFetch(
+        "GET", "/channel_providers?limit=200", null, { signal: signal });
+    },
+    { pollMs: 0 }
+  );
+  var state = NV_channelCreateState(providers);
+  if (state === "loading") return null;
+  if (state === "ready") {
+    var Dialog = window.NewChannelModal;
+    return (
+      <Dialog
+        providers={providers.data.items}
+        pushToast={window.primerApi.toastPush}
+        onClose={props.onClose}
+        onCreated={function () {
+          window.primerApi.toastPush({ kind: "success", title: "Channel created" });
+          props.onCreated();
+        }} />
+    );
+  }
+  var failed = state === "error";
+  return (
+    <Modal title="New channel" onClose={props.onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={props.onClose}>Cancel</Btn>
+          {failed ? null : (
+            <Btn kind="primary" data-testid="nv-plat-add-channel-provider"
+              onClick={function () { props.onClose(); NV_addChannelProvider(props.con); }}>
+              Add a channel provider
+            </Btn>
+          )}
+        </>
+      }>
+      <div className="nv-modal-form" data-testid="nv-plat-channel-no-provider">
+        {failed ? (
+          <div className="nv-form-error">
+            {providers.error.detail || providers.error.message}
+          </div>
+        ) : (
+          <p>
+            A channel binds one Slack, Telegram or Discord conversation to a
+            channel provider, and there is no channel provider yet. Add one,
+            then come back to create the channel.
+          </p>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -1350,6 +1430,11 @@ function NV_PlatListPage(props) {
               setModal(null);
               NV_createdRow(con, function () { res.refetch(); }, "collections", row);
             }} />
+        ) : null}
+        {modal && modal.kind === "channel" ? (
+          <NV_ChannelCreateHost con={con}
+            onClose={function () { setModal(null); }}
+            onCreated={function () { setModal(null); res.refetch(); }} />
         ) : null}
         {cards.length > NV_PLAT_PAGE_SIZE ? (
           <div className="nv-pager">
