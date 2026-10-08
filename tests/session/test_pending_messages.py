@@ -16,6 +16,7 @@ from primer.session.pending_messages import (
     realize_next_pending,
     store_pending_steer,
 )
+from tests.conftest import _InMemoryStorage
 
 
 class _PendingStorage:
@@ -48,10 +49,12 @@ class _SP:
 
     def __init__(self):
         self.pending = _PendingStorage()
+        # The cap's announcement reserves its seq on the session row (01a11cd8), so the provider also serves the session storage.
+        self.sessions = _InMemoryStorage(WorkspaceSession)
 
     def get_storage(self, cls):
-        assert cls is PendingSessionMessage
-        return self.pending
+        assert cls in (PendingSessionMessage, WorkspaceSession)
+        return self.pending if cls is PendingSessionMessage else self.sessions
 
 
 def _row(session_id: str = "sess-1") -> WorkspaceSession:
@@ -207,6 +210,7 @@ async def test_over_cap_drops_oldest_and_records_it():
     ws = _FakeWorkspace()
     registry = _FakeRegistry(ws)
     session = _row("s")
+    await sp.sessions.create(session)
     # Seeded rows are all placed in the past, so the "fresh" row stored via
     # store_pending_steer below (a real datetime.now() call) reliably sorts
     # AFTER every one of them -- anchoring base at "now" would instead let
@@ -262,6 +266,7 @@ async def test_over_cap_by_several_drops_all_of_the_oldest():
     ws = _FakeWorkspace()
     registry = _FakeRegistry(ws)
     session = _row("s")
+    await sp.sessions.create(session)
     base = datetime.now(UTC) - timedelta(hours=1)
     for i in range(_MAX_PENDING_PER_SESSION + 4):
         ts = base + timedelta(seconds=i)
@@ -304,6 +309,7 @@ async def test_missing_workspace_registry_skips_the_record_not_the_drop():
 
     sp = _SP()
     session = _row("s")
+    await sp.sessions.create(session)
     for i in range(_MAX_PENDING_PER_SESSION + 1):
         await store_pending_steer(
             storage_provider=sp, session=session, text=f"msg-{i}",

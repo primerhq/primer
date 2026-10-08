@@ -41,6 +41,7 @@ from primer.model.workspace_session import (
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import WorkspaceMessageWriter, WorkspaceWriteTimeout
 from primer.session.reset import _reopen_ended_locked
+from primer.session.seq_reservation import reserve_next_seq
 from primer.session.title import derive_title_from_text
 
 logger = logging.getLogger(__name__)
@@ -325,6 +326,9 @@ async def _record_pause_superseded(
     (the divider tick above, wake_session's own claimable/tick publishes)
     -- an operator losing the ANNOUNCEMENT of a pause change must not
     also cost them the wake or the queued message it's reporting on.
+
+    The record's seq is RESERVED on the row (``reserve_next_seq``) before it is written, and ``row.last_seq`` is brought up to it, so the
+    next writer on the row does not repeat it (ticket 01a11cd8).
     """
     if deps.workspace_registry is None:
         return
@@ -332,8 +336,13 @@ async def _record_pause_superseded(
         ws = await deps.workspace_registry.get_workspace(workspace_id)
         if ws is None:
             return
+        reserved = await reserve_next_seq(deps.storage_provider.get_storage(WorkspaceSession), session_id)
+        if reserved is None:
+            logger.warning("wake_session: no seq could be reserved to record pause-superseded (%s) for %s", action, session_id)
+            return
+        row.last_seq = max(row.last_seq, reserved)
         writer = WorkspaceMessageWriter(
-            workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
+            workspace_io=ws, session_id=session_id, start_seq=reserved - 1,
         )
         seq = await writer.append(SessionMessageRecord(
             seq=1,  # overwritten by the writer's monotonic counter

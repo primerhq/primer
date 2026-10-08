@@ -23,6 +23,18 @@ class _FakeStorage:
         self._row = row
         return row
 
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        """The guarded field patch of ``Storage.patch_if`` for the top-level equality guards these tests use (a seq reservation)."""
+        row = await self.get(id)
+        if row is None:
+            from primer.model.except_ import NotFoundError
+
+            raise NotFoundError(f"no entity with id {id!r}")
+        if any(getattr(row, field) not in allowed for field, allowed in where.items()):
+            return None
+        self._row = row.model_copy(update=patch)
+        return self._row
+
 
 class _FakeSP:
     async def get_system_state(self):
