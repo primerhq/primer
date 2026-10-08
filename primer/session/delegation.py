@@ -124,7 +124,10 @@ class DelegationRecorder:
         # everything the call started, so it is the one thing every such event can be asked.
         if _abandoned():
             return
-        state = self._states.setdefault(self._run_key(delegate_tool_call_id, delegate_run_id), _CoalesceState())
+        key = self._run_key(delegate_tool_call_id, delegate_run_id)
+        state = self._states.get(key)
+        if state is None:
+            state = self._states[key] = _CoalesceState()
         records: list[Any] = []
         if isinstance(ev, Error) and ev.fatal:
             # A fatal Error is the end of this run's stream: what it had streamed is not going to reach a Done, so it becomes its own record now,
@@ -145,15 +148,20 @@ class DelegationRecorder:
         delegate_run_id: str | None = None,
         delegate_parent_run_id: str | None = None,
         delegate_depth: int | None = None,
+        flush: bool = True,
     ) -> None:
         """A run is over, however it ended: write what it streamed and never got to flush, and forget its coalescing state.
 
         Called by the invoke loops in a ``finally``, so a run that raised, was stopped, or parked still leaves its text as its own record (a run that
         reached its ``Done`` has nothing buffered and writes nothing). A call that was abandoned by a Stop writes nothing (stop slice B1). Best effort: a
         failure to write must not replace the exception the run is already ending with.
+
+        ``flush=False`` only forgets the run. The invoke loops pass it when the run ends by a CANCELLATION: a lost lease, a cancel the row does not flag, a
+        force-deleted row all require the log to be left alone (the session may belong to another worker now), and when the cancel is one the turn does land,
+        dispatch's cancelled exit decides what partial output is the turn's to write.
         """
         state = self._states.pop(self._run_key(delegate_tool_call_id, delegate_run_id), None)
-        if state is None or _abandoned():
+        if state is None or not flush or _abandoned():
             return
         try:
             await self._append(

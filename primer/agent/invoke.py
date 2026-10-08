@@ -305,6 +305,7 @@ async def run_subagent(
     capped: list[bool] = []
     run_token = _RUN_ID.set(run_id)
     _sink = None
+    _cancelled = False
     try:
         from primer.session.delegation import current_delegation_sink
 
@@ -334,14 +335,19 @@ async def run_subagent(
             context=context,
         )
         raise
+    except asyncio.CancelledError:
+        _cancelled = True
+        raise
     finally:
         _RUN_ID.reset(run_token)
         if _sink is not None:
             # However the run ended (an answer, an exception, a Stop, a park), what it streamed and never flushed becomes its own record, under its own
-            # run, instead of waiting in the recorder to be glued onto the next run's text (ticket 01a11ca9).
+            # run, instead of waiting in the recorder to be glued onto the next run's text (ticket 01a11ca9). A CANCELLATION is the exception: it only
+            # forgets the run, because a cancel the turn must not land (a lost lease, an unflagged cancel, a force-deleted row) leaves the log alone, and
+            # one it does land is dispatch's cancelled exit to write.
             await _sink.finish_run(
                 delegate_tool_call_id=invoke_tool_call_id, delegate_run_id=run_id,
-                delegate_parent_run_id=parent_run_id, delegate_depth=_DEPTH.get(),
+                delegate_parent_run_id=parent_run_id, delegate_depth=_DEPTH.get(), flush=not _cancelled,
             )
 
     if interrupted:
@@ -467,6 +473,7 @@ async def resume_subagent(
     parent_run_id = getattr(context, "delegate_parent_run_id", None)
     run_token = _RUN_ID.set(run_id)
     _sink = None
+    _cancelled = False
     try:
         with _depth_set(depth):
             from primer.session.delegation import current_delegation_sink
@@ -500,12 +507,15 @@ async def resume_subagent(
             context=context,
         )
         raise
+    except asyncio.CancelledError:
+        _cancelled = True
+        raise
     finally:
         _RUN_ID.reset(run_token)
         if _sink is not None:
             await _sink.finish_run(
                 delegate_tool_call_id=invoke_tool_call_id, delegate_run_id=run_id,
-                delegate_parent_run_id=parent_run_id, delegate_depth=depth,
+                delegate_parent_run_id=parent_run_id, delegate_depth=depth, flush=not _cancelled,
             )
 
     if capped:
