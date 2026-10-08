@@ -391,6 +391,39 @@ def test_the_trace_ordinal_still_splits_turns_at_the_sessions_own_terminals() ->
     assert [ordinals[str(i)] for i in (11, 12, 13)] == [4, 4, 5]
 
 
+def test_the_console_numbers_turns_like_the_server_for_every_fatal_variant_of_an_error() -> None:
+    """Ticket 01a11bf6: the server no longer counts an ERROR with an explicit ``fatal: false`` as a turn end (a recoverable stream error
+    is a notice), and ``SH_closesTurn`` is the console's mirror of ``closes_turn``: the trace is asked for under the ordinal counted
+    here, so the two must agree record for record. Compared against the REAL server predicate, not a copy of it."""
+    from primer.session.terminals import closes_turn
+
+    payloads = [
+        {"fatal": False},
+        {"fatal": True},
+        {"fatal": None},
+        {},
+        {"fatal": False, "delegated": True},
+        {"fatal": True, "delegated": True},
+    ]
+    records: list[dict] = []
+    for payload in payloads:
+        records.append({"seq": len(records) + 1, "kind": "user_input", "payload": {}})
+        records.append({"seq": len(records) + 1, "kind": "error", "payload": payload})
+    records.append({"seq": len(records) + 1, "kind": "user_input", "payload": {}})
+    records.append({"seq": len(records) + 1, "kind": "done", "payload": {"stop_reason": "stop"}})
+
+    expected: dict[str, int] = {}
+    ordinal = 0
+    for rec in records:
+        expected[str(rec["seq"])] = ordinal
+        if closes_turn(rec):
+            ordinal += 1
+
+    ordinals = json.loads(_ctx().eval("JSON.stringify(SH_turnOfSeq(" + json.dumps(records) + "))"))
+
+    assert ordinals == expected, f"the console and the server number the turns differently: {ordinals} vs {expected}"
+
+
 def test_the_session_doc_takes_its_trace_ordinal_from_the_shared_function() -> None:
     doc = (ROOT / "ui" / "components" / "console" / "nv-session-doc.jsx").read_text(encoding="utf-8")
     assert "SH_turnOfSeq(flat)" in doc
