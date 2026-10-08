@@ -64,3 +64,31 @@ def test_a_subagents_failure_renders_inside_its_block_and_a_failed_calls_notice_
 
     # (3) nothing else is a red card: the parent's turn did not fail.
     expect(page.locator(".nv-turn-error")).to_have_count(2)
+
+
+def test_a_grandchilds_notice_is_the_failure_of_the_helpers_call_not_a_line_that_says_it_carried_on(
+    base_url, console_url, page, tmp_path, unique_suffix,
+) -> None:
+    """The recorder writes the helper's own tool result (an ERROR, quoting the notice) with the SAME scoped id as the parent's call, and the parent's own result is OK.
+    Paired by the id alone, the helper's call showed the parent's OK result and its grandchild's notice read "carried on" (review of #575, round 2)."""
+    wid, sid = _seed_session(base_url, tmp_path, unique_suffix)
+    seeded = seed.build_nested_notice()
+    log = tmp_path / wid / ".state" / "sessions" / sid / "messages.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("".join(json.dumps(r) + "\n" for r in seeded.records), encoding="utf-8")
+
+    open_session_in_studio(page, console_url, wid, sid, kind="agent")
+    expect(page.get_by_text(seed.PARENT_FINAL, exact=False).first).to_be_visible(timeout=20_000)
+
+    helpers_rows = page.get_by_test_id(f"nv-subagent-rows:{seeded.parent_call_seq}").get_by_test_id(f"nv-subagent-rows:{seeded.child_call_seq}")
+    expect(helpers_rows).to_be_visible(timeout=20_000)
+    card = helpers_rows.get_by_test_id(f"nv-subagent-failure:{seeded.delegated_notice_seq}")
+    expect(card).to_be_visible()
+    expect(card.locator(".nv-turn-error")).to_contain_text(seed.GRAND_NOTICE)
+    expect(card.locator(".nv-subagent-name")).to_have_text("grand")
+    expect(page.get_by_text("carried on")).to_have_count(0)
+    expect(page.get_by_text("the turn is continuing")).to_have_count(0)
+    # Each call shows ITS OWN run's result: the helper's call failed, the parent's call did not.
+    expect(page.get_by_test_id(f"nv-tool:{seeded.child_call_seq}")).to_contain_text("failed")
+    expect(page.get_by_test_id(f"nv-tool:{seeded.parent_call_seq}")).not_to_contain_text("failed")
+    expect(page.locator(".nv-turn-error")).to_have_count(1)
