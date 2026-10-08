@@ -42,6 +42,7 @@ from primer.model.except_ import (
 )
 from primer.session.default_binding import resolve_initial_binding
 from primer.model.problem_details import record_without_traceback
+from primer.session.usage_cache import UsageCache
 from primer.model.workspace_session import (
     PendingSessionMessage,
     WorkspaceSession,
@@ -901,6 +902,9 @@ class SessionDetail(WorkspaceSession):
 
 # A pathological queue must not make a detail read unbounded.
 _PENDING_PAGE = 100
+
+# The session detail's usage totals, kept per log identity (see ``_session_usage_totals``; architecture review A-05).
+USAGE_CACHE = UsageCache()
 
 
 async def _session_usage_totals(
