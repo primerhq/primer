@@ -198,37 +198,35 @@ function ADM_AdminUsersPage() {
 // already-disabled account, because Enable only restores access. The auth
 // middleware (primer/api/middleware/auth.py) treats a disabled account as
 // unauthenticated, on the cookie path, the API-key path and over MCP alike,
-// but it checks ONCE when a request or a connection opens. So the prompt
-// says that new requests and connections are refused from the very next one
-// (an API key of theirs included), that a connection already open, such as a
-// terminal, is NOT cut off, and that nothing is deleted. It does not claim the
-// session is destroyed: the middleware refuses the requests, it does not end
-// the session, so the existing sign-in works again after Enable.
+// but it checks ONCE when a request or a connection opens, and the disable
+// writes one field only (PATCH /admin/users/{id}: `disabled`, no epoch bump).
+// So the prompt says that new requests and connections are refused starting
+// with the very next one (an API key of theirs included), that a connection
+// already open, such as a terminal, is NOT cut off, nor is work already
+// running for them (their triggers, running sessions, scheduled fires), and
+// that nothing is deleted. It does not claim the session is destroyed: the
+// middleware refuses the requests, it does not end the session, so the
+// existing sign-in works again after Enable.
 // Pure: tests/ui/test_admin_users_disable_confirm.py runs it in MiniRacer.
 function ADM_toggleConfirm(user) {
   if (user.disabled) return null;
   return {
     title: "Disable " + user.username + "?",
     message: "New requests and connections from this account are refused "
-      + "from its very next request, including with an API key; a "
-      + "connection already open, such as a terminal, is not cut off. "
-      + "Nothing is deleted: Enable restores access, and their existing "
-      + "sign-in works again.",
+      + "starting with the very next one, including with an API key; a "
+      + "connection already open, such as a terminal, is not cut off, and "
+      + "neither is work already running for them (their triggers, running "
+      + "sessions and scheduled fires). Nothing is deleted: Enable restores "
+      + "access, and their existing sign-in works again.",
     confirmLabel: "Disable",
     danger: true,
   };
 }
 
-// What a click on a row's Disable/Enable does: nothing while this row's prompt
-// is already open, otherwise ask with the prompt above, or send straight away
-// when there is none. The row is not busy until the answer is yes, so without
-// this a double-click calls confirmDialog twice; it is ONE global slot
-// (shared.jsx), so the second call replaces the first dialog and leaves the
-// first call's promise pending for good. Ignoring the second click keeps the
-// first dialog, and its handler, as the one that is answered.
-// Pure, run in MiniRacer by the same test.
-function ADM_toggleStep(user, asking) {
-  if (asking) return { kind: "ignore" };
+// What a click on a row's Disable/Enable does: ask with the prompt above, or
+// send straight away when there is none. Pure, run in MiniRacer by the same
+// test.
+function ADM_toggleStep(user) {
   const prompt = ADM_toggleConfirm(user);
   return prompt ? { kind: "ask", prompt: prompt } : { kind: "send" };
 }
@@ -238,22 +236,10 @@ function ADM_UserRow({ user, onEdit, onDelete, onKeys, onChanged }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [rotated, setRotated] = React.useState(null); // plaintext password | null
-  // A ref, not state: the second click of a double-click must see it before React re-renders.
-  const asking = React.useRef(false);
 
   const toggleDisabled = async () => {
-    const step = ADM_toggleStep(user, asking.current);
-    if (step.kind === "ignore") return;
-    if (step.kind === "ask") {
-      asking.current = true;
-      let confirmed = false;
-      try {
-        confirmed = await confirmDialog(step.prompt);
-      } finally {
-        asking.current = false;
-      }
-      if (!confirmed) return;
-    }
+    const step = ADM_toggleStep(user);
+    if (step.kind === "ask" && !(await confirmDialog(step.prompt))) return;
     setBusy(true);
     setError(null);
     try {
@@ -842,7 +828,7 @@ function ADM_DeleteUserDialog({ user, onClose, onDeleted }) {
       <div data-testid="adm-delete-confirm">
         <p>This permanently removes <span className="mono">{user.username}</span>. Their sessions stay for audit.</p>
         <ul>
-          <li>Any active browser session for this user is invalidated on their next request.</li>
+          <li>New requests from this account are refused starting with the very next one, so their browser sign-in stops working; a connection already open, such as a terminal, is not cut off.</li>
           <li>The server refuses this if it would remove the last enabled admin.</li>
           <li>This action cannot be undone.</li>
         </ul>
