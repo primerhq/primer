@@ -593,7 +593,7 @@ def test_two_graph_nodes_failing_with_the_same_words_are_both_kept(error_rows) -
     assert [r["seq"] for r in rows] == [3, 4], rows
 
 
-# --- delegated (subagent) failures fold only with their own run, and a non-fatal error is a row like any other (follow-up to #480) ----
+# --- delegated (subagent) failures fold only with their own run (follow-up to #480) ----
 
 _DELEGATED = (
     '{seq: 3, kind: "error", created_at: "t3", payload: {message: "Ollama server error (500)", code: "server_error", fatal: true, '
@@ -653,12 +653,120 @@ def test_a_parent_marker_that_came_first_is_not_removed_by_a_subagents_cause(err
     assert [r["seq"] for r in rows] == [2, 3], rows
 
 
-def test_a_non_fatal_error_is_a_row_like_any_other_and_the_fatal_one_with_the_same_words_folds_into_it(error_rows) -> None:
-    """A recoverable error ({fatal: false}) is persisted as an error row and drawn as one. When the stream then fails for good with the same
-    words the two are one failure: the first row is kept, so the card may carry fatal=false. (Pinned as it is; a retry notice that is
-    followed by recovery still draws a card, tracked separately.)"""
-    nonfatal = '{seq: 2, kind: "error", created_at: "t2", payload: {message: "Ollama server error (500)", code: "server_error", fatal: false}}'
-    fatal = '{seq: 3, kind: "error", created_at: "t3", payload: {message: "Ollama server error (500)", code: "server_error", fatal: true}}'
-    rows = error_rows("[" + _USER + ", " + nonfatal + ", " + fatal + "]")
-    assert [r["seq"] for r in rows] == [2], rows
-    assert rows[0]["payload"]["fatal"] is False
+# --- a non-fatal stream Error is a retry notice, not a failure (ticket 01a11bcc, lead ruling 2026-10-08) --------------------------------
+# The stream writes an Error row for a recoverable error ({fatal: false}, "more events follow"). Drawn as the red failure card it read as a
+# failure in a turn that went on to succeed. It is now its own transcript row kind: never an error card, never the cause a later failure
+# folds into, and it says whether the turn recovered (output or an ending came after it in the same turn and scope).
+
+
+def _r(seq: int, kind: str, node_id: str | None = None, **payload) -> str:
+    import json
+
+    rec = {"seq": seq, "kind": kind, "created_at": f"t{seq}", "payload": payload}
+    if node_id:
+        rec["node_id"] = node_id
+    return json.dumps(rec)
+
+
+def _records(*parts: str) -> str:
+    return "[" + ", ".join(parts) + "]"
+
+
+_NOTICE = {"message": "Provider hiccup", "code": "server_error", "fatal": False}
+_SUB = {"delegated": True, "delegate_tool_call_id": "call-1", "delegate_run_id": "run-1"}
+
+
+@pytest.fixture
+def transcript(_adapter_ctx):
+    import json
+
+    def rows(records_js: str) -> list[dict]:
+        _adapter_ctx.eval("var records = " + records_js + "; var out = window.SA_toTranscript(records, {id: 's1'});")
+        return json.loads(_adapter_ctx.eval("JSON.stringify(out)"))
+
+    return rows
+
+
+def _kinds(rows: list[dict]) -> list[str]:
+    return [r["kind"] for r in rows]
+
+
+def test_a_non_fatal_error_is_a_retry_notice_and_not_an_error_card(transcript) -> None:
+    rows = transcript(_records(_USER, _r(2, "error", **_NOTICE)))
+    assert _kinds(rows) == ["user_message", "retry_notice"], rows
+    assert rows[1]["payload"]["message"] == "Provider hiccup" and rows[1]["payload"]["fatal"] is False, "it is still the record, persisted as it was"
+
+
+def test_an_error_that_does_not_say_it_is_non_fatal_is_still_a_failure_card(transcript) -> None:
+    """Only an explicit {fatal: false} is a notice: older records carry no flag at all, and {fatal: true} is the stream giving up."""
+    for payload in ({"message": "x", "code": "server_error"}, {"message": "x", "code": "server_error", "fatal": True}):
+        rows = transcript(_records(_USER, _r(2, "error", **payload)))
+        assert _kinds(rows) == ["user_message", "error"], (payload, rows)
+
+
+@pytest.mark.parametrize(("after", "state"), [
+    (None, "retrying"),                                          # nothing followed yet: the turn is (as far as the records say) still going
+    (("assistant_token", {"text": "here you go"}), "recovered"),
+    (("reasoning", {"text": "hm"}), "recovered"),
+    (("tool_call", {"name": "bash", "arguments": {}}), "recovered"),
+    (("done", {"stop_reason": "end_turn"}), "recovered"),         # the turn ended done
+    (("cancelled", {}), "ended"),
+    (("user_input", {"text": "never mind"}), "ended"),            # the next turn began and nothing came of this one
+])
+def test_the_notice_says_whether_the_turn_recovered(transcript, after, state: str) -> None:
+    parts = [_USER, _r(2, "error", **_NOTICE)]
+    if after is not None:
+        parts.append(_r(3, after[0], **after[1]))
+    rows = transcript(_records(*parts))
+    assert rows[1]["kind"] == "retry_notice" and rows[1]["noticeState"] == state, rows
+
+
+def test_a_failure_with_the_same_words_after_the_notice_is_its_own_red_card(transcript) -> None:
+    """The notice was never the cause, so the failure does not fold into it: the card carries fatal=true and the notice says the turn ended."""
+    fatal = _r(3, "error", message="Provider hiccup", code="server_error", fatal=True)
+    rows = transcript(_records(_USER, _r(2, "error", **_NOTICE), fatal))
+    assert _kinds(rows) == ["user_message", "retry_notice", "error"], rows
+    assert rows[1]["noticeState"] == "ended" and rows[2]["payload"]["fatal"] is True
+
+
+def test_output_after_the_notice_wins_over_a_later_unrelated_failure(transcript) -> None:
+    rows = transcript(_records(
+        _USER, _r(2, "error", **_NOTICE), _r(3, "assistant_token", text="partial"), _r(4, "error", message="disk full", code="x", fatal=True),
+    ))
+    assert _kinds(rows) == ["user_message", "retry_notice", "assistant_message", "error"], rows
+    assert rows[1]["noticeState"] == "recovered"
+
+
+def test_a_bare_terminal_marker_after_a_notice_is_still_a_card_and_the_notice_is_ended(transcript) -> None:
+    """A turn that failed with nothing but the marker to say so: the marker is the only evidence and is not folded into the notice."""
+    rows = transcript(_records(_USER, _r(2, "error", **_NOTICE), _r(3, "error", reason="unknown", terminal=True)))
+    assert _kinds(rows) == ["user_message", "retry_notice", "error"], rows
+    assert rows[1]["noticeState"] == "ended"
+
+
+def test_a_notice_in_an_earlier_turn_is_not_recovered_by_the_next_turns_output(transcript) -> None:
+    rows = transcript(_records(
+        _USER, _r(2, "error", **_NOTICE), _r(3, "user_input", text="again"), _r(4, "assistant_token", text="fine this time"),
+    ))
+    assert rows[1]["noticeState"] == "ended", "the output belongs to another turn"
+
+
+def test_a_subagents_notice_is_recovered_only_by_its_own_runs_output(transcript) -> None:
+    sub_notice = _r(2, "error", **_NOTICE, **_SUB)
+    parent_text = _r(3, "assistant_token", text="the parent talks on")
+    own_text = _r(4, "assistant_token", text="the subagent carries on", **_SUB)
+    other_run = _r(5, "assistant_token", text="another run", **{**_SUB, "delegate_run_id": "run-2"})
+    assert transcript(_records(_USER, sub_notice, parent_text))[1]["noticeState"] == "retrying", "the parent's output is not the subagent's"
+    assert transcript(_records(_USER, sub_notice, other_run))[1]["noticeState"] == "retrying", "nor is another run's"
+    assert transcript(_records(_USER, sub_notice, own_text))[1]["noticeState"] == "recovered"
+
+
+def test_a_parents_notice_is_not_recovered_by_a_subagents_output(transcript) -> None:
+    rows = transcript(_records(_USER, _r(2, "error", **_NOTICE), _r(3, "assistant_token", text="from a subagent", **_SUB)))
+    assert rows[1]["noticeState"] == "retrying"
+
+
+def test_a_notice_is_never_the_cause_a_subagents_failure_folds_into(transcript) -> None:
+    """Both parent and subagent, same words: the notice (parent scope) and the subagent's red card are two rows."""
+    rows = transcript(_records(_USER, _r(2, "error", **_NOTICE), _r(3, "error", message="Provider hiccup", code="server_error", fatal=True, **_SUB)))
+    assert _kinds(rows) == ["user_message", "retry_notice", "error"], rows
