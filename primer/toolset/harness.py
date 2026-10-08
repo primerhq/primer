@@ -44,6 +44,7 @@ from primer.model.harness import (
     validate_git_ref,
     validate_git_url,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolContext
 from primer.model.storage import (
     FieldRef,
@@ -75,6 +76,21 @@ HARNESS_TOOLSET_ID = "harness"
 def _harness_dict(harness: Harness) -> dict:
     """Serialize harness to JSON-safe dict with SecretStr redacted."""
     return harness.model_dump(mode="json")
+
+
+def _requester(ctx: ToolContext | None) -> PrincipalRef | None:
+    """Who asked for an install or sync, for the worker's toolset admin rule.
+
+    An agent run carries it on ``ctx.initiated_by``. The MCP endpoint dispatches with no ``ToolContext``, but it has resolved
+    the caller into :data:`primer.mcp.server.current_actor` for the duration of the call, so that caller is recorded. Neither
+    known records nobody, which fails closed for a bundle that would write a stdio toolset.
+    """
+    if ctx is not None:
+        return ctx.initiated_by
+    from primer.mcp.server import current_actor  # noqa: PLC0415 - the MCP SDK import stays off the toolset's import path
+
+    actor = current_actor.get()
+    return PrincipalRef.from_principal(actor) if actor is not None else None
 
 
 def _refuse_if_outbound(harness: Harness, operation: str) -> ToolCallResult | None:
@@ -647,9 +663,7 @@ def _make_install_handler(
             )
 
         harness.pending_operation = HarnessOperation.INSTALL
-        # Who asked, for the worker's toolset admin rule. No ToolContext (the MCP endpoint dispatches without one) records
-        # nobody, which fails closed for a bundle that would write a stdio toolset.
-        harness.operation_requested_by = ctx.initiated_by if ctx is not None else None
+        harness.operation_requested_by = _requester(ctx)
         updated = await storage.update(harness)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
@@ -694,9 +708,7 @@ def _make_sync_handler(
             )
 
         harness.pending_operation = HarnessOperation.SYNC
-        # Who asked, for the worker's toolset admin rule. No ToolContext (the MCP endpoint dispatches without one) records
-        # nobody, which fails closed for a bundle that would write a stdio toolset.
-        harness.operation_requested_by = ctx.initiated_by if ctx is not None else None
+        harness.operation_requested_by = _requester(ctx)
         updated = await storage.update(harness)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))

@@ -337,7 +337,8 @@ async def update_harness(
             git_token=body.git_token,
         )
     except GitTokenRequired as exc:
-        return JSONResponse(status_code=422, content={"code": "git_token_required", "detail": str(exc)})
+        # RFC7807 problem+json through the shared HTTPException handler (``code`` lands in the extensions).
+        raise HTTPException(status_code=422, detail={"code": "git_token_required", "message": str(exc)}) from exc
 
     overrides_dirty = harness.overrides_dirty
 
