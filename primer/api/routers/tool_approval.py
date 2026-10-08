@@ -27,6 +27,7 @@ from primer.agent.approval_checks import check_approval_config, check_policy_uni
 from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.session.approvers import APPROVER_MISMATCH, may_decide
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
 from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
@@ -155,28 +156,21 @@ def _enforce_approvers(metadata: dict, user: Any) -> None:
     resolved spec, so enforcement must check the gate actually being
     decided rather than whichever one happens to be projected first.
 
-    The spec was resolved and stamped at park time (policy row default,
-    or the evaluator's per-call override). No spec means anyone.
-    Admins always pass (see :class:`ApproverSpec.allows`); a malformed
-    stored spec fails OPEN to anyone rather than wedging the park.
+    The rule itself is :func:`primer.session.approvers.may_decide`, shared
+    with every other path that answers a gate (the channel inbox): no
+    stamped spec means anyone; admins always pass; a spec that cannot be
+    read fails CLOSED to admin-only.
     """
     if user is None:  # WS scope / auth-disabled synthetic admin absent
         return
-    raw = metadata.get("approvers")
-    if not raw:
-        return
-    try:
-        spec = ApproverSpec.model_validate(raw)
-    except Exception:  # noqa: BLE001
-        logger.warning("malformed stored approvers %r; allowing anyone", raw)
-        return
-    if not spec.allows(
-        username=getattr(user, "username", ""),
-        role=getattr(user, "role", ""),
+    if not may_decide(
+        metadata,
+        username=getattr(user, "username", None),
+        role=getattr(user, "role", None),
     ):
         raise HTTPException(
             status_code=403,
-            detail={"error": "approver_mismatch"},
+            detail={"error": APPROVER_MISMATCH},
         )
 
 
