@@ -1001,22 +1001,28 @@ async def test_t0335_document_get_after_delete_returns_404(
 
 
 # ============================================================================
-# T0336 — Chained collection→document survives collection DELETE
+# T0336 - Collection DELETE deletes the documents it owns
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0336_collection_delete_does_not_break_child_document_get(
+async def test_t0336_collection_delete_deletes_its_documents(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0336 — Create a Collection + Document referencing it; DELETE
-    the Collection. The Document GET still resolves (referential
-    integrity is NOT enforced — orphan-tolerated like T0068);
-    /v1/collections/{id}/documents on the now-missing collection
-    responds cleanly (404 per T0204 pattern).
+    """T0336 - DELETE of a Collection deletes the Documents it owns: their
+    entity rows, their bodies and their vector chunks (ticket 01a1131f "F").
+
+    This used to pin the opposite (orphan-tolerated like T0068): the child
+    Document GET still answered 200 after the delete, and a collection created
+    later under the same id (ids are the caller's) found the old documents
+    waiting. Now the Document GET answers 404, `documents/find` by
+    collection_id returns nothing, the grep search over the bodies finds
+    nothing once the id is reused, and the listing of the missing collection
+    stays a clean envelope (not a 5xx).
     """
     coll_id = f"coll-t0336-{unique_suffix}"
     doc_id = f"doc-t0336-{unique_suffix}"
+    token = f"t0336marker{unique_suffix.replace('-', '')}"
 
     coll = await client.post(
         "/v1/collections",
@@ -1038,24 +1044,73 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
     )
     assert doc.status_code in (200, 201), doc.text
 
+    # A path-addressed document too: it has a body row (UNIQUE(collection_id,
+    # path)) that must go with the collection, and a body the grep can find.
+    body = await client.put(
+        f"/v1/collections/{coll_id}/documents",
+        params={"path": "notes/t0336.md"},
+        json={"content": f"the body carries {token}"},
+    )
+    assert body.status_code in (200, 201), body.text
+
+    recreated = False
     try:
+        found = await client.get(f"/v1/collections/{coll_id}/grep", params={"q": token})
+        assert found.status_code == 200 and found.json()["hits"], found.text  # precondition
+
         # DELETE the parent collection
         rm = await client.delete(f"/v1/collections/{coll_id}")
         assert rm.status_code == 204, rm.text
 
-        # Document GET still resolves (orphan-tolerated)
+        # The child Document is gone with it
         got = await client.get(f"/v1/documents/{doc_id}")
-        assert got.status_code == 200, got.text
-        assert got.json()["collection_id"] == coll_id
+        assert got.status_code == 404, got.text
+        assert got.json()["type"] == "/errors/not-found", got.text
 
-        # /v1/collections/{C}/documents on the now-missing C is
-        # gated (T0204 confirmed gating); pin clean envelope
+        # ... and the database-level search by collection_id finds nothing
+        find = await client.post(
+            "/v1/documents/find",
+            json={
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "collection_id"},
+                    "right": {"kind": "value", "value": coll_id},
+                },
+                "page": {"kind": "offset", "offset": 0, "length": 50},
+            },
+        )
+        assert find.status_code == 200, find.text
+        assert find.json()["items"] == [], find.text
+
+        # /v1/collections/{C}/documents on the now-missing C is gated
+        # (T0204 confirmed gating); pin a clean envelope
         listing = await client.get(f"/v1/collections/{coll_id}/documents")
         assert listing.status_code != 500, listing.text
         envelope = listing.json() if listing.content else {}
         assert envelope.get("type") != "/errors/internal", listing.text
+
+        # A collection created again under the same id starts EMPTY: no
+        # document, no body at the old path, nothing for the grep to find.
+        again = await client.post(
+            "/v1/collections", json={"id": coll_id, "description": "T0336 again"},
+        )
+        assert again.status_code in (200, 201), again.text
+        recreated = True
+        relisted = await client.get(f"/v1/collections/{coll_id}/documents")
+        assert relisted.status_code == 200, relisted.text
+        assert relisted.json()["documents"] == [], relisted.text
+        old_path = await client.get(
+            f"/v1/collections/{coll_id}/documents", params={"path": "notes/t0336.md"},
+        )
+        assert old_path.status_code == 404, old_path.text
+        regrep = await client.get(f"/v1/collections/{coll_id}/grep", params={"q": token})
+        assert regrep.status_code == 200, regrep.text
+        assert regrep.json()["hits"] == [], regrep.text
     finally:
         await client.delete(f"/v1/documents/{doc_id}")
+        if recreated:
+            await client.delete(f"/v1/collections/{coll_id}")
 
 
 # ============================================================================
