@@ -720,6 +720,18 @@ class Tool(Describeable):
             "In-memory metadata only; excluded from serialization."
         ),
     )
+    preview_args: tuple[str, ...] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Dotted paths into this tool's arguments that an approval card may show (the Inbox preview allowlist, "
+            "primer/common/preview_paths.py). A path allows its whole subtree and a list is transparent; every argument "
+            "not named is withheld. None means the tool declares nothing (the default rule applies: only arguments whose "
+            "schema is a closed set are shown); an empty tuple means show no value. Declared at the make_tool call site "
+            "and checked against args_schema there; the operator's ToolApprovalPolicy.preview_args overrides it. "
+            "In-memory metadata only; excluded from serialization."
+        ),
+    )
     required_role: str | None = Field(
         default=None,
         exclude=True,

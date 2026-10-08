@@ -12,8 +12,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, ClassVar, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from primer.common.preview_paths import MAX_PATHS, path_syntax_error
 from primer.model.common import Identifiable
 
 
@@ -165,6 +166,28 @@ class ToolApprovalPolicy(Identifiable):
             "returning an 'approvers' object in its verdict."
         ),
     )
+    preview_args: list[str] | None = Field(
+        default=None,
+        max_length=MAX_PATHS,
+        description=(
+            "Which arguments of a gated call the approval card may show, as dotted paths into the tool's arguments "
+            "(path, entity.id, entity.model.profile_id; a path allows its whole subtree and a list is transparent). "
+            "Every argument not named is withheld from the card (shown as its name and <hidden>); the full call is "
+            "still one 'show all' away for anyone who may decide it. None means the policy declares nothing: the tool's "
+            "own declaration applies, else only arguments whose schema is a closed set (boolean, number, enum) are "
+            "shown. An empty list shows no value. Each path must name an argument of the tool; a path that does not is "
+            "refused when the policy is written."
+        ),
+    )
+
+    @field_validator("preview_args")
+    @classmethod
+    def _preview_paths_are_well_formed(cls, value: list[str] | None) -> list[str] | None:
+        for path in value or ():
+            problem = path_syntax_error(path)
+            if problem is not None:
+                raise ValueError(problem)
+        return value
 
 
 ApprovalDecision = Literal["approved", "rejected", "timeout", "cancelled"]
