@@ -162,7 +162,8 @@ class DownloadArgs(BaseModel):
         description=(
             "Optional per-call maximum download size in bytes. The download "
             "is rejected (nothing is written) the moment the stream exceeds "
-            "this cap. Defaults to the toolset's configured cap when omitted."
+            "this cap. Can only LOWER the toolset's configured cap, which is "
+            "what applies when this is omitted or larger."
         ),
     )
 
@@ -366,7 +367,8 @@ def make_http_request_handler(
                     body_bytes, truncated = await read_capped(response, response_body_byte_cap)
         except EgressRefused as exc:
             return ToolCallResult(output=f"http-request {exc}", is_error=True)
-        except httpx.RequestError as exc:
+        except (httpx.RequestError, httpx.InvalidURL) as exc:
+            # InvalidURL (a redirect to ``data:...``, a Location httpx cannot join) is not an HTTPError, so it is named here.
             logger.warning(
                 "http-request transport failure",
                 extra={
@@ -519,7 +521,8 @@ def make_download_handler(
                 )
             dest = f"{args.path}{url_name}" if args.path else url_name
 
-        cap = args.max_bytes if args.max_bytes is not None else byte_cap
+        # ``max_bytes`` lowers the operator's cap and never raises it (the agent chooses its arguments, the operator the bound).
+        cap = byte_cap if args.max_bytes is None else min(args.max_bytes, byte_cap)
 
         # Stream with a hard cap. A truncated file is corrupt, so reject (write nothing) when the DECODED body goes past the cap: the body is read
         # through ``read_capped``, which bounds every decode step (a gzip chunk is not inflated whole before the cap can see it), and a stacked or
@@ -548,7 +551,7 @@ def make_download_handler(
             return ToolCallResult(output=f"download {exc}", is_error=True)
         except UnsupportedContentEncoding as exc:
             return ToolCallResult(output=f"download failed: {exc}", is_error=True)
-        except httpx.RequestError as exc:
+        except (httpx.RequestError, httpx.InvalidURL) as exc:
             return ToolCallResult(
                 output=f"download failed: {type(exc).__name__}: {exc}",
                 is_error=True,
