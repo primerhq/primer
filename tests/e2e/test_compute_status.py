@@ -67,57 +67,61 @@ def _toolset_body(entity_id: str) -> dict:
 
 
 # ============================================================================
-# T0022 — Agent status flags missing LLMProvider
+# T0022 - Creating an Agent that names a ModelProfile that does not exist is refused
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0022_agent_status_missing_llm_provider(
+async def test_t0022_agent_create_missing_profile_refused(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
+    """T0022 - an agent whose ``model.profile_id`` names no stored ModelProfile
+    (and so no provider) is refused at create with a 422 naming the profile
+    (A-09). It used to be accepted and only flagged later by ``/status``; the
+    status path for a provider deleted AFTER the agent exists is T0033 / T0344 /
+    T0715. Nothing is stored.
+    """
     agent_id = f"agent-t0022-{unique_suffix}"
     missing_provider_id = f"does-not-exist-{unique_suffix}"
-    create = await client.post(
-        "/v1/agents",
-        json=_agent_body(agent_id, provider_id=missing_provider_id, tools=[]),
-    )
-    assert create.status_code == 201, create.text
-    try:
-        resp = await client.get(f"/v1/agents/{agent_id}/status")
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["ok"] is False, f"expected ok=false, got {body!r}"
-        issues = body["issues"]
-        assert isinstance(issues, list) and issues
-        # At least one issue must mention the missing provider id so an
-        # operator can act on it.
-        assert any(missing_provider_id in str(i) for i in issues), (
-            f"no issue references missing provider {missing_provider_id!r}: "
-            f"{issues!r}"
-        )
-    finally:
-        await client.delete(f"/v1/agents/{agent_id}")
+    body = _agent_body(agent_id, provider_id=missing_provider_id, tools=[])
+    profile_id = body["model"]["profile_id"]
+
+    create = await client.post("/v1/agents", json=body)
+
+    assert create.status_code == 422, create.text
+    problem = create.json()
+    assert problem["type"] == "/errors/validation-error", problem
+    assert problem["extensions"]["error"] == "model_profile_not_found", problem
+    assert problem["extensions"]["field"] == "model.profile_id", problem
+    assert profile_id in problem["detail"], problem
+    got = await client.get(f"/v1/agents/{agent_id}")
+    assert got.status_code == 404, got.text
 
 
 # ============================================================================
-# T0023 — Agent status flags missing toolset (with provider present)
+# T0023 - Creating an Agent whose tools name a toolset that does not exist is refused
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0023_agent_status_missing_toolset(
+async def test_t0023_agent_create_missing_toolset_refused(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
+    """T0023 - an agent whose scoped tool id names a toolset with no row is
+    refused at create with a 422 naming the toolset (A-09), and the profile (which
+    exists here) is not blamed. It used to be accepted and only flagged later by
+    ``/status``; the status path for a toolset deleted AFTER the agent exists is
+    T0045 / T0413. Nothing is stored.
+    """
     provider_id = f"llm-{unique_suffix}"
     agent_id = f"agent-t0023-{unique_suffix}"
     missing_toolset_id = f"missing-ts-{unique_suffix}"
 
-    # Real provider so the only issue is the toolset miss.
+    # Real provider (and so profile) so the only fault is the toolset.
     pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
-        # Tool ids are scoped: "<toolset_id>__<bare_name>". The status
-        # check splits on '__' and resolves the toolset_id portion.
+        # Tool ids are scoped: "<toolset_id>__<bare_name>".
         scoped_tool = f"{missing_toolset_id}__some_tool"
         ag = await client.post(
             "/v1/agents",
@@ -125,29 +129,21 @@ async def test_t0023_agent_status_missing_toolset(
                 agent_id, provider_id=provider_id, tools=[scoped_tool],
             ),
         )
-        assert ag.status_code == 201, ag.text
-        try:
-            resp = await client.get(f"/v1/agents/{agent_id}/status")
-            assert resp.status_code == 200, resp.text
-            body = resp.json()
-            assert body["ok"] is False, f"expected ok=false, got {body!r}"
-            issues = body["issues"]
-            assert any(missing_toolset_id in str(i) for i in issues), (
-                f"no issue references missing toolset "
-                f"{missing_toolset_id!r}: {issues!r}"
-            )
-            # Provider is present, so it must NOT appear in issues.
-            assert not any(provider_id in str(i) for i in issues), (
-                f"provider {provider_id!r} should not be flagged: {issues!r}"
-            )
-        finally:
-            await client.delete(f"/v1/agents/{agent_id}")
+        assert ag.status_code == 422, ag.text
+        problem = ag.json()
+        assert problem["type"] == "/errors/validation-error", problem
+        assert problem["extensions"]["error"] == "toolset_not_found", problem
+        assert problem["extensions"]["field"] == "tools", problem
+        assert missing_toolset_id in problem["detail"], problem
+        assert provider_id not in problem["detail"], problem
+        got = await client.get(f"/v1/agents/{agent_id}")
+        assert got.status_code == 404, got.text
     finally:
         await client.delete(f"/v1/llm_providers/{provider_id}")
 
 
 # ============================================================================
-# T0045 — Multi-toolset Agent status reports ONLY the missing toolset
+# T0045 - Multi-toolset Agent status reports ONLY the missing toolset
 # ============================================================================
 
 
@@ -155,15 +151,18 @@ async def test_t0023_agent_status_missing_toolset(
 async def test_t0045_agent_status_multi_toolset_only_missing_flagged(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0045 — when an Agent references two toolsets via scoped tool ids
-    and one toolset row exists while the other does not, the status
+    """T0045 - when an Agent references two toolsets via scoped tool ids
+    and one toolset row is deleted while the other stays, the status
     response must:
 
     - report `ok=false`
-    - have exactly ONE issue (not two — the present toolset must not
+    - have exactly ONE issue (not two - the present toolset must not
       be flagged)
     - the single issue must reference the missing toolset_id
     - it must NOT reference the present toolset_id
+
+    Both toolsets exist when the agent is created (the create refuses a tool of
+    a toolset with no row, A-09); one is deleted afterwards.
     """
     provider_id = f"llm-multi-{unique_suffix}"
     present_toolset_id = f"ts-present-{unique_suffix}"
@@ -173,8 +172,9 @@ async def test_t0045_agent_status_multi_toolset_only_missing_flagged(
     pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
-        ts = await client.post("/v1/toolsets", json=_toolset_body(present_toolset_id))
-        assert ts.status_code == 201, ts.text
+        for toolset_id in (present_toolset_id, missing_toolset_id):
+            ts = await client.post("/v1/toolsets", json=_toolset_body(toolset_id))
+            assert ts.status_code == 201, ts.text
         try:
             ag = await client.post(
                 "/v1/agents",
@@ -189,13 +189,20 @@ async def test_t0045_agent_status_multi_toolset_only_missing_flagged(
             )
             assert ag.status_code == 201, ag.text
             try:
+                pre = await client.get(f"/v1/agents/{agent_id}/status")
+                assert pre.status_code == 200, pre.text
+                assert pre.json()["ok"] is True, pre.json()
+
+                rm = await client.delete(f"/v1/toolsets/{missing_toolset_id}")
+                assert rm.status_code == 204, rm.text
+
                 resp = await client.get(f"/v1/agents/{agent_id}/status")
                 assert resp.status_code == 200, resp.text
                 body = resp.json()
                 assert body["ok"] is False, body
                 issues = body["issues"]
                 assert isinstance(issues, list)
-                # Exactly ONE issue — for the missing toolset only.
+                # Exactly ONE issue - for the missing toolset only.
                 # If the implementation accidentally surfaces the
                 # present toolset (e.g. by failing to short-circuit
                 # on hit), this assertion will catch it.
@@ -217,6 +224,7 @@ async def test_t0045_agent_status_multi_toolset_only_missing_flagged(
                 await client.delete(f"/v1/agents/{agent_id}")
         finally:
             await client.delete(f"/v1/toolsets/{present_toolset_id}")
+            await client.delete(f"/v1/toolsets/{missing_toolset_id}")
     finally:
         await client.delete(f"/v1/llm_providers/{provider_id}")
 
@@ -373,23 +381,25 @@ async def test_t0106_agent_unicode_description_round_trip(
 
 
 # ============================================================================
-# T0076 — Agent PUT adding an unknown scoped tool id flips status.ok=false
+# T0076 - Agent PUT adding a scoped tool id of an unknown toolset is refused
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0076_agent_put_with_unknown_tool_flips_status(
+async def test_t0076_agent_put_with_unknown_tool_refused(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0076 — start with an Agent referencing valid tools (status.ok),
-    PUT-update it adding a scoped tool id whose toolset doesn't exist,
-    and assert the status report flips to ok=false with a missing-toolset
-    issue.
+    """T0076 - start with an Agent referencing a present toolset (status.ok),
+    PUT-update it adding a scoped tool id whose toolset doesn't exist, and
+    assert the PUT is refused with a 422 naming ONLY the added toolset (A-09),
+    the stored agent is unchanged, and its status stays ok. (It used to be
+    accepted and flip the status to ok=false.)
     """
     provider_id = f"llm-put-{unique_suffix}"
     present_toolset_id = f"ts-put-{unique_suffix}"
     missing_toolset_id = f"missing-put-{unique_suffix}"
     agent_id = f"agent-put-{unique_suffix}"
+    present_tool = f"{present_toolset_id}__alpha"
 
     pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
@@ -397,14 +407,10 @@ async def test_t0076_agent_put_with_unknown_tool_flips_status(
         ts = await client.post("/v1/toolsets", json=_toolset_body(present_toolset_id))
         assert ts.status_code == 201, ts.text
         try:
-            # Step 1 — Agent referencing only the present toolset, status ok
+            # Step 1 - Agent referencing only the present toolset, status ok
             ag = await client.post(
                 "/v1/agents",
-                json=_agent_body(
-                    agent_id,
-                    provider_id=provider_id,
-                    tools=[f"{present_toolset_id}__alpha"],
-                ),
+                json=_agent_body(agent_id, provider_id=provider_id, tools=[present_tool]),
             )
             assert ag.status_code == 201, ag.text
             try:
@@ -412,33 +418,28 @@ async def test_t0076_agent_put_with_unknown_tool_flips_status(
                 assert ok.status_code == 200, ok.text
                 assert ok.json()["ok"] is True, ok.json()
 
-                # Step 2 — PUT adding a scoped tool id with a missing
-                # toolset_id portion
+                # Step 2 - PUT adding a scoped tool id with a missing
+                # toolset_id portion: refused, and only the added toolset is named
                 put = await client.put(
                     f"/v1/agents/{agent_id}",
                     json=_agent_body(
                         agent_id,
                         provider_id=provider_id,
-                        tools=[
-                            f"{present_toolset_id}__alpha",
-                            f"{missing_toolset_id}__beta",
-                        ],
+                        tools=[present_tool, f"{missing_toolset_id}__beta"],
                     ),
                 )
-                assert put.status_code == 200, put.text
+                assert put.status_code == 422, put.text
+                problem = put.json()
+                assert problem["extensions"]["error"] == "toolset_not_found", problem
+                assert missing_toolset_id in problem["detail"], problem
+                assert present_toolset_id not in problem["detail"], problem
 
-                # Step 3 — status now ok=false with the missing-toolset issue
-                broken = await client.get(f"/v1/agents/{agent_id}/status")
-                assert broken.status_code == 200, broken.text
-                body = broken.json()
-                assert body["ok"] is False, body
-                assert any(
-                    missing_toolset_id in str(i) for i in body["issues"]
-                ), body
-                # The present toolset must still NOT be flagged
-                assert not any(
-                    present_toolset_id in str(i) for i in body["issues"]
-                ), body
+                # Step 3 - the stored agent is unchanged and still healthy
+                got = await client.get(f"/v1/agents/{agent_id}")
+                assert got.status_code == 200, got.text
+                assert got.json()["tools"] == [present_tool], got.json()
+                still = await client.get(f"/v1/agents/{agent_id}/status")
+                assert still.json()["ok"] is True, still.json()
             finally:
                 await client.delete(f"/v1/agents/{agent_id}")
         finally:

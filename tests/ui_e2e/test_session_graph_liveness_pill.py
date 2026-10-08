@@ -22,6 +22,7 @@ from __future__ import annotations
 import httpx
 from playwright.sync_api import expect
 
+from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
 from tests._support.smk import smk  # noqa: E402
 from tests.ui_e2e._studio_helpers import open_session_in_studio
 
@@ -31,19 +32,31 @@ pytestmark = smk("SMK-UI-02")
 def _seed(base_url: str, suffix: str, tmp_path):
     """Seed agent + workspace + graph + a CREATED graph session.
 
-    Returns (session_id, cleanup_urls). No LLM provider is needed: the
-    session stays CREATED (auto_start=False) so no node is ever
-    dispatched and the agent's model is never resolved.
+    Returns (session_id, cleanup_urls). The session stays CREATED
+    (auto_start=False) so no node is ever dispatched and the agent's
+    model is never called. The agent must still name a STORED model
+    profile (the create is refused otherwise, A-09), so a placeholder
+    provider and its one profile are seeded.
     """
+    provider_id = f"llm-gl-{suffix}"
     aid = f"ag-gl-{suffix}"
     wp_id = f"wp-gl-{suffix}"
     tpl_id = f"tpl-gl-{suffix}"
     gid = f"gr-gl-{suffix}"
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = seed_llm_provider_with(c, {
+            "id": provider_id,
+            "provider": "ollama",
+            "config": {"url": "http://127.0.0.1:9999"},
+            "models": [{"name": "fake-model", "context_length": 4096}],
+            "limits": {"max_concurrency": 1},
+        })
+        assert r.status_code == 201, f"seed LLM failed: {r.text}"
+
         r = c.post("/v1/agents", json={
             "id": aid,
             "description": "ui-e2e liveness probe agent",
-            "model": {"profile_id": "none--none"},
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [],
             "system_prompt": ["test"],
         })
@@ -98,6 +111,8 @@ def _seed(base_url: str, suffix: str, tmp_path):
         f"/v1/workspace_templates/{tpl_id}",
         f"/v1/workspace_providers/{wp_id}",
         f"/v1/agents/{aid}",
+        f"/v1/model_profiles/{profile_id_for(provider_id, 'fake-model')}",
+        f"/v1/llm_providers/{provider_id}",
     ]
     return wid, sid, cleanup
 
