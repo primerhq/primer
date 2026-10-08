@@ -71,6 +71,7 @@ from primer.session.persistence import (
     TurnInvariantError,
     WorkspaceIO,
     WorkspaceMessageWriter,
+    WorkspaceWriteTimeout,
     _CoalesceState,
     _create_tool_call_task_idempotent,
     flush_partial_output,
@@ -1997,8 +1998,20 @@ async def _flush_and_tick(
     buffered record, not just the last one appended. Every exit that flushes a turn's tail goes through here (the clean
     completion, a failed stream, both parks), so a record is never made durable without a tick that follows it; the
     cancelled exit flushes in ``_write_cancelled_record`` and publishes its tick after the lifecycle lock is released.
+
+    The flush is bounded by the writer (``WorkspaceMessageWriter`` abandons a batch the workspace has not answered within
+    ``_WRITE_TIMEOUT_S`` and breaks): a workspace that never answers used to hold every one of these exits, and with them the lease
+    release and the session's lifecycle, for ever. The records the workspace did not take are lost (the writer logged which seqs); the
+    exit still lands and the tick still goes out, naming what the writer numbered, since the tap only reads the log up to where it
+    really goes. A write that FAILS (not a timeout) still raises, as before.
     """
-    await writer.flush()
+    try:
+        await writer.flush()
+    except WorkspaceWriteTimeout:
+        logger.warning(
+            "session %s: the turn's last records were not made durable (the workspace is not accepting writes); the exit carries on",
+            session_id,
+        )
     seq = writer.last_seq
     await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
     return seq
