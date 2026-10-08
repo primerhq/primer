@@ -305,7 +305,7 @@ async def test_lookup_warns_and_resolves_the_first_on_a_genuine_collision(
     await bus.initialize()
     try:
         inbox = ChannelInbox(event_bus=bus, storage_provider=sp)
-        with caplog.at_level(logging.WARNING, logger="primer.channel.inbox"):
+        with caplog.at_level(logging.WARNING):
             event = await _handle_and_capture(
                 inbox,
                 ResponseEnvelope(
@@ -315,12 +315,11 @@ async def test_lookup_warns_and_resolves_the_first_on_a_genuine_collision(
                 ),
                 bus,
             )
-        assert event.event_key in (
-            "tool_approval:s-4:worker[0]:call_0",
-            "tool_approval:s-4:worker[1]:call_0",
-        )
+        # The first match, whose key the reply is also CHECKED against (the inbox resolves the gate once, through
+        # resolve_pending_gate, which logs the collision; it used to be the inbox's own matcher that logged it).
+        assert event.event_key == "tool_approval:s-4:worker[0]:call_0"
         assert any(
-            "2 pending entries match" in r.message for r in caplog.records
+            "2 pending entries share" in r.message for r in caplog.records
         )
     finally:
         await bus.aclose()

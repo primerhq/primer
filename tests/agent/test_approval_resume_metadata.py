@@ -46,7 +46,9 @@ def test_the_verdicts_per_call_routing_wins_over_the_policys_and_none_is_stamped
     assert "approvers" in open_ and open_["approvers"] is None
 
 
-@pytest.mark.parametrize("key", ["approvers", "policy_id", "approval_type", "gate_reason", "original_call"])
+# `original_call`, `policy` and `verdict` are named parameters, so Python itself refuses a second value for them; the stamped keys that
+# `extra` could reach are these.
+@pytest.mark.parametrize("key", ["approvers", "policy_id", "approval_type", "gate_reason"])
 def test_an_extra_key_cannot_overwrite_a_stamped_one(key):
     with pytest.raises(ValueError, match=key):
         approval_resume_metadata(

@@ -116,14 +116,23 @@ class ChannelInbox:
             raise BadRequestError(
                 f"unknown ResponseEnvelope kind {env.kind!r}"
             )
-        if env.kind == "tool_approval":
-            await self._enforce_approvers(env)
-        event_key = await self._resolve_event_key(env)
+        # An approval reply is judged against ONE pending gate, resolved ONCE here: the same entry supplies the approver spec the reply
+        # is checked against, the event_key it is published to and the data of the audit record. (The check and the publish used to
+        # read the row separately through two matchers, so they could land on different entries when two gates share a tool_call_id.)
+        captured = (
+            await self._resolve_approval_gate(env)
+            if env.kind == "tool_approval" else None
+        )
+        if captured is not None:
+            self._enforce_approvers(env, captured["gate"])
+        event_key = (
+            captured["gate"].get("event_key") if captured is not None else None
+        ) or await self._resolve_event_key(env)
         payload: dict = (
             {"response": env.response} if env.kind == "ask_user"
             else {"decision": env.decision, "reason": env.reason}
         )
-        # 01a07be5 gate-review-2 finding 4: capture the gate's data BEFORE
+        # 01a07be5 gate-review-2 finding 4: the gate's data was captured BEFORE
         # publish, not after. A post-publish re-read can resolve a
         # SUCCESSOR gate re-parked under the same tool_call_id (e.g. a
         # nested continuation minting a fresh pending entry that reuses
@@ -131,10 +140,6 @@ class ChannelInbox:
         # is processed synchronously within this same tick. Capturing
         # first guarantees the record describes the gate actually being
         # decided right now, not whatever is pending by the time we look.
-        captured = (
-            await self._capture_gate_for_record(env)
-            if env.kind == "tool_approval" else None
-        )
         logger.info(
             "channel inbox publishing %s for session=%s tool_call=%s "
             "event_key=%s",
@@ -146,7 +151,7 @@ class ChannelInbox:
         # left a permanently WRONG "decided" record on the books: the
         # gate then genuinely times out, the resume-time synthesis tries
         # to write the TRUE ("rejected", "timed-out") verdict, loses the
-        # gate_event_key race to this earlier wrong write, and that
+        # gate_event_key race to that earlier wrong write, and that
         # ConflictError used to be swallowed as an ordinary benign dedup
         # no-op. Publishing first means a raise here skips the record
         # entirely (no decision reached the system, nothing to record);
@@ -160,87 +165,59 @@ class ChannelInbox:
                 env, captured, event_key=event_key,
             )
 
-    async def _enforce_approvers(self, env: ResponseEnvelope) -> None:
-        """Refuse a reply that the gate's stamped approver spec does not admit (ticket 01a11b64), BEFORE anything is published.
+    async def _resolve_approval_gate(self, env: ResponseEnvelope) -> "dict | None":
+        """The SPECIFIC pending approval gate ``env`` answers, read ONCE, before anything is published.
 
-        The envelope carries only a chat-platform user id, which maps to no primer account, so the decider is UNIDENTIFIED and
-        :func:`primer.session.approvers.may_decide` admits it only on a gate with no restriction; a restricted gate (specific users,
-        a role, admins only, the duplicate-policy fallback included) is decided in the console. The spec is read from the SPECIFIC
-        gate the reply names (a graph park can hold several, each with its own), exactly as the REST respond route does.
-
-        A session that does not exist or has no such gate (a chat surface) has nothing to enforce here: the publish goes ahead as
-        before. A session lookup that FAILS refuses the reply (fail closed): it cannot be shown that the gate is unrestricted.
-        Without a storage_provider (a lightweight test app) there is no gate to read; production always wires one.
+        Returns ``{"gate", "agent_id", "parked_at"}``, or ``None`` when there is no gate to judge: no storage_provider wired (a
+        lightweight test app; production always wires one), no such session (a chat surface), or no pending ``_approval`` entry for the
+        tool_call_id (a park shape this lookup does not model, answered as before). A lookup that FAILS raises (ticket 01a11b64): it
+        cannot be shown that the gate is unrestricted, so the reply is refused and nothing is published.
         """
         if self._storage_provider is None:
-            return
+            return None
         from primer.model.workspace_session import WorkspaceSession
-        from primer.session.approvers import ensure_may_decide
         from primer.session.pending_gates import resolve_pending_gate
 
         row = await self._storage_provider.get_storage(WorkspaceSession).get(env.session_id)
         if row is None:
-            return
+            return None
         gate = resolve_pending_gate(
             getattr(row, "parked_state", None) or {}, tool_call_id=env.tool_call_id, kind="_approval",
         )
         if gate is None:
-            return
+            return None
+        return {
+            "gate": gate,
+            "agent_id": getattr(row.binding, "agent_id", None),
+            "parked_at": getattr(row, "parked_at", None),
+        }
+
+    def _enforce_approvers(self, env: ResponseEnvelope, gate: dict) -> None:
+        """Refuse a reply that the gate's stamped approver spec does not admit (ticket 01a11b64), BEFORE anything is published.
+
+        The envelope carries only a messaging-platform user id, which maps to no primer account, so the decider is UNIDENTIFIED and
+        :func:`primer.session.approvers.may_decide` admits it only on a gate with no restriction; a restricted gate (specific users,
+        a role, admins only, the duplicate-policy fallback) is decided in the console. The spec is read from the SPECIFIC gate the
+        reply names, exactly as the REST respond route does.
+        """
+        from primer.session.approvers import ensure_may_decide
+
         try:
             ensure_may_decide(gate.get("resume_metadata") or {}, username=None, role=None)
         except Exception:
             logger.warning(
                 "channel inbox: refused a %s reply for session=%s tool_call=%s: the gate is routed to specific approvers and a "
-                "chat-platform user is not one primer can identify (platform metadata: %s)",
+                "messaging-platform user is not one primer can identify (platform metadata: %s)",
                 env.decision, env.session_id, env.tool_call_id, env.platform_metadata,
             )
             raise
-
-    async def _capture_gate_for_record(
-        self, env: ResponseEnvelope,
-    ) -> "dict | None":
-        """Resolve the SPECIFIC pending gate ``env`` answers, read BEFORE
-        the publish (finding 4 above). Returns ``None`` on any problem
-        (no storage_provider wired, session lookup failing, or the gate
-        not resolving) -- the caller then simply skips the record, same
-        as the old single-function version did.
-        """
-        if self._storage_provider is None:
-            return None
-        try:
-            from primer.model.workspace_session import WorkspaceSession
-            from primer.session.pending_gates import resolve_pending_gate
-
-            row = await self._storage_provider.get_storage(
-                WorkspaceSession,
-            ).get(env.session_id)
-            if row is None:
-                return None
-            blob = getattr(row, "parked_state", None) or {}
-            gate = resolve_pending_gate(
-                blob, tool_call_id=env.tool_call_id, kind="_approval",
-            )
-            if gate is None:
-                return None
-            return {
-                "gate": gate,
-                "agent_id": getattr(row.binding, "agent_id", None),
-                "parked_at": getattr(row, "parked_at", None),
-            }
-        except Exception:  # noqa: BLE001 -- advisory; must never block the publish
-            logger.exception(
-                "channel inbox: failed to capture gate data before "
-                "publish for session=%s tool_call=%s",
-                env.session_id, env.tool_call_id,
-            )
-            return None
 
     async def _write_captured_record(
         self, env: ResponseEnvelope, captured: dict, *, event_key: str,
     ) -> None:
         """Persist a durable ToolApprovalRecord for a channel-answered gate,
         using data captured BEFORE the publish (see
-        :meth:`_capture_gate_for_record`).
+        :meth:`_resolve_approval_gate`).
 
         01a06b82: the REST respond route (tool_approval.py's
         _publish_decision) has written this record at decision time since
