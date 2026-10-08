@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, FormField */
 
 // Agents page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -519,6 +519,18 @@ function AG_validateNewAgent(id, description) {
   return problems;
 }
 
+// The locked summary of a harness-managed agent: read-only values under their captions, so a definition list (a caption names a value, not a control).
+function AG_ManagedSummary({ existing }) {
+  return (
+    <dl className="col" style={{ gap: 10, marginTop: 14, marginBottom: 0 }}>
+      <div><dt className="field-label">Name</dt><dd className="mono" style={{ margin: 0 }}>{existing.id}</dd></div>
+      <div><dt className="field-label">Description</dt><dd style={{ margin: 0 }}>{existing.description}</dd></div>
+      <div><dt className="field-label">Model profile</dt><dd className="mono" style={{ margin: 0 }}>{existing.model?.profile_id || "\u2014"}</dd></div>
+      <div><dt className="field-label">Tools</dt><dd style={{ margin: 0 }}>{(existing.tools || []).length} registered</dd></div>
+    </dl>
+  );
+}
+
 function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
@@ -746,12 +758,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
       >
         <Banner kind="info" title={`Managed by harness ${existing.harness_id}`}
           detail="Direct edits are blocked - update the harness's sync/uninstall flow instead." />
-        <div className="col" style={{ gap: 10, marginTop: 14 }}>
-          <div><span className="field-label">Name</span><div className="mono">{existing.id}</div></div>
-          <div><span className="field-label">Description</span><div>{existing.description}</div></div>
-          <div><span className="field-label">Model profile</span><div className="mono">{existing.model?.profile_id || "—"}</div></div>
-          <div><span className="field-label">Tools</span><div>{(existing.tools || []).length} registered</div></div>
-        </div>
+        <AG_ManagedSummary existing={existing} />
       </Modal>
     );
   }
@@ -825,10 +832,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
               <div className="field-help" style={{ color: "var(--red)" }} data-testid="na-description-error">{fieldErrors["body.description"]}</div>
             )}
           </div>
-          <div className="field">
-            <label className="field-label" id="na-model-profile-label">
-              Model profile <span className="hint">default, overridable per run</span>
-            </label>
+          <FormField label="Model profile" hint="default, overridable per run">
             <AG_ProfilePicker
               profiles={profileOptions}
               loading={profiles.loading}
@@ -843,7 +847,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             {fieldErrors["body.model.profile_id"] && (
               <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.profile_id"]}</div>
             )}
-          </div>
+          </FormField>
           {/* uiv2 Wave 2 (a-11): the numerics live right under the
               profile picker, not tucked behind Advanced - they gate the
               same model call the profile does. */}
@@ -871,10 +875,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
                 value={maxOutputTokens} onChange={(e) => setMaxOutputTokens(e.target.value)} style={{ width: "100%" }} />
             </div>
           </div>
-          <div className="field">
-            <label className="field-label">
-              System prompt <span className="hint">optional · parts</span>
-            </label>
+          <FormField label="System prompt" hint="optional · parts">
             {/* Platform wave P1b item 8: repeatable textarea list - one
                 array element per part, no delimiter tricks. Agent.
                 system_prompt is already list[str] (primer/model/agent.py:
@@ -884,6 +885,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
               <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-start", marginBottom: 6 }}>
                 <textarea
                   data-testid={`agent-system-prompt-part-${i}`}
+                  aria-label={`System prompt part ${i + 1}`}
                   className="textarea"
                   style={{ flex: 1 }}
                   value={part}
@@ -910,7 +912,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
               onClick={() => setSystemPromptParts(systemPromptParts.concat([""]))}>
               Add part
             </Btn>
-          </div>
+          </FormField>
           {/* uiv2 Wave 2 (b-2): a separately-labeled field, not a second
               unlabeled textarea under the System prompt heading - the
               schema already treats these as distinct concepts
@@ -989,12 +991,9 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
           )}
         </div>
         <div className="col" style={{ gap: 12, minWidth: 0 }}>
-          <div>
-            <label className="field-label">
-              Tools <span className="hint">scoped ids — never whole toolsets</span>
-            </label>
+          <FormField label="Tools" hint={"scoped ids \u2014 never whole toolsets"}>
             <window.ToolPicker selected={selectedScopedIds} onChange={setSelectedScopedIds} pageSize={6} />
-          </div>
+          </FormField>
           {isEdit && <AG_SessionsPanel agentId={existing.id} />}
           <AG_AdvancedDisclosure open={showAdvanced} onToggle={() => setShowAdvanced((v) => !v)}>
             <AG_Toggle
