@@ -31,9 +31,13 @@ Limits, stated on purpose:
   still safe against guessing, but one attacker can then keep an account in backoff for everybody.
 * **Per username, not per address.** One address trying one password against many usernames makes one attempt per key and is never
   throttled. This is a brake on guessing one account, not a defence against password spraying.
-* **Bounded memory.** At most ``max_entries`` keys are tracked. When full, the oldest key that is not currently waiting is evicted
-  (a waiting key is only evicted if none of the oldest 64 keys is idle), so flooding with invented usernames can age out an idle
-  key but not release one that is locked.
+* **Bounded memory.** At most ``max_entries`` keys are tracked. When full, the oldest key that is not currently waiting is evicted,
+  looking at the oldest 64 keys; only when all 64 are waiting is the oldest of them evicted, waiting or not. So flooding with
+  invented usernames ages out idle keys first, and forgets a locked one only when the table is full AND the 64 oldest keys are all
+  waiting. An attacker who locks 64 keys of their own and then fills the table (``max_entries`` requests, one counted attempt each) can
+  steer eviction onto the oldest waiting key, which may be the one it wants released: that key loses its wait and its count and gets its
+  free attempts back. The wait it loses is usually short (a key's wait grows only by attempts made after the previous wait elapsed), but
+  this is a hole in "a locked key stays locked" and is NOT closed here (ticket 01a118e0).
 """
 
 from __future__ import annotations
@@ -63,6 +67,8 @@ class _Entry:
     attempts: int
     blocked_until: float
     touched: float
+    # Whether a refusal in the CURRENT wait has already been announced (see LoginThrottle.first_refusal); a new wait resets it.
+    announced: bool = False
 
 
 class LoginThrottle:
@@ -113,8 +119,23 @@ class LoginThrottle:
         if entry.attempts >= self._free_attempts:
             exponent = min(entry.attempts - self._free_attempts, _MAX_EXPONENT)
             entry.blocked_until = now + min(self._base_delay * 2**exponent, self._max_delay)
+            entry.announced = False
         self._entries.move_to_end(key)
         return 0
+
+    def first_refusal(self, username: str, client: str) -> bool:
+        """Whether a refusal of ``(username, client)`` that :meth:`reserve` has just answered is the FIRST of the current wait.
+
+        True once per wait, then False until a counted attempt sets the next one, so a caller that logs a refusal logs one line per wait
+        and not one per request: a client hammering a locked key costs the log nothing more than the wait already set. Call it right
+        after a :meth:`reserve` that returned a wait (it never awaits, so nothing can interleave); a key that is not waiting is not
+        announced.
+        """
+        entry = self._entries.get((username[:_USERNAME_KEY_LIMIT], client))
+        if entry is None or entry.announced or entry.blocked_until <= self._clock():
+            return False
+        entry.announced = True
+        return True
 
     def succeeded(self, username: str, client: str) -> None:
         """Forget ``(username, client)``: the next failures start counting from zero."""
