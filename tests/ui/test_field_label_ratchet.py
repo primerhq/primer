@@ -58,6 +58,16 @@ def audit():
         ('<label className="field-label"><input type="checkbox" /> <span>auto</span></label>', 0),
         ('<label className="field-label">Pick <select><option>a</option></select></label>', 0),
         ('<label className="field-label"><textarea /></label>', 0),
+        # an element only STYLED as a label names nothing either (the overlays' div label hid from the count)
+        ('<div className="nv-field-label">Name</div>', 1),
+        ('<span className="field-label">Name</span>', 1),
+        ('<div className="field mono field-label" id="x">Name</div>', 1),
+        ('<div\n  className="nv-field-label"\n  style={{ margin: 0 }}\n>Name</div>', 1),
+        # a component handed the class name draws no such element itself, and a class that merely CONTAINS the name is another class
+        ('<FormField labelClassName="nv-field-label" />', 0),
+        ('<div className="field-label-row">x</div>', 0),
+        ('<div className="my-field-label">x</div>', 0),
+        ('<div className="nv-field">x</div>', 0),
         # a comment that starts a line may quote the pattern; code after it still counts
         ('// the old row: <label className="field-label">Name</label>\n<label className="field-label">X</label>', 1),
         ('/* <label className="field-label">Name</label>\n   <label className="field-label">Other</label> */\nconst x = 1;', 0),
@@ -76,8 +86,14 @@ def test_the_scanner_finds_labels_in_the_real_tree(audit) -> None:
     assert sum(counts.values()) > 0 and all(rel.endswith(".jsx") for rel in counts), "a scan that finds nothing would pass the ratchet vacuously"
 
 
-def test_the_scanner_skips_vendored_code(audit) -> None:
-    assert not any(rel.startswith("vendor/") for rel in audit.scan())
+def test_the_scanner_skips_vendored_code(audit, tmp_path) -> None:
+    """On a synthetic tree, so it can fail: the real ``ui/vendor`` holds no field labels, where a skip that did nothing would pass the same."""
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "components").mkdir()
+    bare = '<label className="field-label">Name</label><input />'
+    (tmp_path / "vendor" / "lib.jsx").write_text(bare)
+    (tmp_path / "components" / "form.jsx").write_text(bare)
+    assert audit.scan(tmp_path) == {"components/form.jsx": 1}
 
 
 # ---- the ratchet -------------------------------------------------------------------------------------------------------------------------------------
