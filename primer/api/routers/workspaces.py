@@ -64,6 +64,7 @@ from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.api.registries import WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
 from primer.api.routers._crud import make_crud_router
+from primer.common.preview_paths import MAX_PATHS, classify, path_syntax_error
 from primer.model.common import preserve_masked_secrets
 from primer.api.routers._references import ReferenceCheck
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
@@ -3365,7 +3366,84 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
     return value, False
 
 
-def _approval_preview(original_call: Any) -> dict[str, Any] | None:
+# What an approval card draws for an argument the allowlist withholds. Its word is DIFFERENT from ``_REDACTED``: ``<redacted>`` says the scrubber FOUND a secret in
+# a value it read; ``<hidden>`` says the value was never read at all (design note 01a11cd3-66b0).
+_HIDDEN = "<hidden>"
+_PREVIEW_SOURCES = frozenset({"policy", "tool", "default"})
+_NO_ALLOWLIST = object()           # the scrubber alone: what the unit tests of the scrubber call; the API always passes a stamp or None
+_HIDDEN_PATHS_KEPT = 64
+
+
+def _preview_stamp(metadata: Any) -> dict[str, Any] | None:
+    """The allowlist the park stamped into ``resume_metadata["preview"]`` (``{"paths": [...], "source": "policy" | "tool" | "default"}``), or ``None`` when the
+    row has no usable stamp (parked before the field existed, by a site that does not stamp, or a malformed one): the caller then applies the default rule."""
+    stamp = metadata.get("preview") if isinstance(metadata, dict) else None
+    if not isinstance(stamp, dict):
+        return None
+    paths, source = stamp.get("paths"), stamp.get("source")
+    if source not in _PREVIEW_SOURCES or not isinstance(paths, list) or len(paths) > MAX_PATHS:
+        return None
+    if any(path_syntax_error(path) is not None for path in paths):
+        return None
+    return {"paths": list(paths), "source": source}
+
+
+def _allow_only(args: dict, paths: "list[str]") -> tuple[dict, list[str]]:
+    """``args`` with every member the allowlist does not name replaced by ``_HIDDEN``, and the dotted paths that were withheld (each once, in the order met).
+
+    A path allows its whole subtree and a list is transparent (``classify``). A container with an allowed path deeper inside is walked member by member; a member
+    that is not allowed is replaced WITHOUT being looked at: it is not stringified, measured, iterated or compared, so a withheld value cannot leak through
+    anything this function does. The walk is bounded by the same constants as the scrubber's (depth, members per container)."""
+    hidden: list[str] = []
+
+    def withhold(path: str) -> str:
+        if len(hidden) < _HIDDEN_PATHS_KEPT and path not in hidden:
+            hidden.append(path)
+        return _HIDDEN
+
+    def walk(value: Any, path: str, depth: int) -> Any:
+        kind = classify(paths, path)
+        if kind == "all":
+            return value
+        if kind == "none" or depth > _REDACT_MAX_DEPTH:
+            return withhold(path)
+        if isinstance(value, dict):
+            out: dict[Any, Any] = {}
+            for index, (key, inner) in enumerate(value.items()):
+                if index >= _REDACT_MAX_ITEMS:
+                    out["..."] = f"<{len(value) - index} more>"
+                    break
+                out[key] = walk(inner, f"{path}.{key}", depth + 1)
+            return out
+        if isinstance(value, (list, tuple)):
+            items: list[Any] = []
+            for index, member in enumerate(value):
+                if index >= _REDACT_MAX_ITEMS:
+                    items.append(f"<{len(value) - index} more>")
+                    break
+                items.append(walk(member, path, depth + 1))
+            return items
+        return withhold(path)          # a deeper path was allowed but the value is a scalar: there is no part of it to show
+
+    return {key: walk(inner, str(key), 1) for key, inner in args.items()}, hidden
+
+
+def _value_rule(args: dict) -> tuple[dict, list[str]]:
+    """The default rule for a row with NO stamp (design ruling D5), by the VALUE's type since there is no schema to ask: a boolean, a number or ``null`` is shown, text and
+    containers are withheld (not looked at). ``args`` with the withheld paths, like :func:`_allow_only`."""
+    hidden: list[str] = []
+    out: dict[Any, Any] = {}
+    for key, value in args.items():
+        if value is None or isinstance(value, (bool, int, float)):
+            out[key] = value
+        else:
+            out[key] = _HIDDEN
+            if len(hidden) < _HIDDEN_PATHS_KEPT:
+                hidden.append(str(key))
+    return out, hidden
+
+
+def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[str, Any] | None:
     """``{tool_name, arguments, truncated, argument_keys}`` for the call an ``_approval`` park is waiting on, or ``None`` when the
     park does not say.
 
@@ -3377,6 +3455,12 @@ def _approval_preview(original_call: Any) -> dict[str, Any] | None:
 
     ``argument_keys`` is the argument NAMES in the same order (at most 12, each cut to 40 characters): what the passive desktop rail
     line shows instead of any value.
+
+    ``preview`` is the allowlist the park stamped (:func:`_preview_stamp`): a dict applies it (an argument not allowed is drawn as its name and
+    ``<hidden>``, never read), ``None`` is a row with no stamp and takes the default rule (:func:`_value_rule`, design ruling D5). Either way the
+    result also carries ``hidden_keys`` (what was withheld, as dotted paths, at most 12) and ``preview`` (who decided: ``policy``, ``tool``,
+    ``default``, or ``unstamped``), and ``truncated`` is true when anything was withheld. The default argument is the scrubber alone, for the tests of
+    the scrubber: the API never uses it (a static test checks every caller).
     """
     if not isinstance(original_call, dict) or not original_call.get("name"):
         return None
@@ -3387,8 +3471,15 @@ def _approval_preview(original_call: Any) -> dict[str, Any] | None:
             args = document
     budget = [_REDACT_BUDGET]          # one budget for the whole preview, however many arguments there are
     truncated = False
+    withheld: list[str] = []
+    if preview is not _NO_ALLOWLIST:
+        if isinstance(args, dict):
+            args, withheld = _value_rule(args) if preview is None else _allow_only(args, preview["paths"])
+        elif args is not None and args != "":
+            args, truncated = _HIDDEN, True        # no path can name a bare value: it is withheld whole
     keys: list[str] = []
     if isinstance(args, dict):
+        truncated = bool(withheld)
         lead = [k for k in _LEAD_ARG_KEYS if k in args and k not in _BULKY_ARG_KEYS]
         rest = sorted(k for k in args if k not in lead and k not in _BULKY_ARG_KEYS)
         bulky = sorted(k for k in args if k in _BULKY_ARG_KEYS)
@@ -3401,7 +3492,9 @@ def _approval_preview(original_call: Any) -> dict[str, Any] | None:
                 truncated = True
                 break
             shown = _display_name(key)
-            if _SECRET_ARG_KEY.search(str(key)[:_NAME_SCAN_CHARS]) or (pair_names_a_secret and str(key).lower() in _PAIR_VALUE_KEYS):
+            if args[key] is _HIDDEN:
+                parts.append(f"{shown}={_HIDDEN}")
+            elif _SECRET_ARG_KEY.search(str(key)[:_NAME_SCAN_CHARS]) or (pair_names_a_secret and str(key).lower() in _PAIR_VALUE_KEYS):
                 parts.append(f"{shown}={_REDACTED}")
                 truncated = True
             else:
@@ -3413,18 +3506,27 @@ def _approval_preview(original_call: Any) -> dict[str, Any] | None:
                 parts.append(f"{shown}={text}")
             size += len(parts[-1]) + 2
         for key in bulky:
-            parts.append(f"{_display_name(key)}=<{_chars_of(args[key])} chars>")
+            if args[key] is _HIDDEN:
+                parts.append(f"{_display_name(key)}={_HIDDEN}")        # a withheld value is not measured either
+            else:
+                parts.append(f"{_display_name(key)}=<{_chars_of(args[key])} chars>")
             truncated = True
         line = ", ".join(parts)
     elif args is None or args == "":
         line = ""
+    elif args is _HIDDEN:
+        line = _HIDDEN
     else:
         value, hidden = _redact(args, 0, budget)
         truncated = hidden
         line = _one_line(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
     if len(line) > _ATTENTION_TEXT_CHARS:
         line, truncated = _cut(line, _ATTENTION_TEXT_CHARS), True
-    return {"tool_name": str(original_call["name"]), "arguments": line, "truncated": truncated, "argument_keys": keys}
+    result = {"tool_name": str(original_call["name"]), "arguments": line, "truncated": truncated, "argument_keys": keys}
+    if preview is not _NO_ALLOWLIST:
+        result["hidden_keys"] = [_display_name(path) for path in withheld[:_ATTENTION_KEY_COUNT]]
+        result["preview"] = "unstamped" if preview is None else preview["source"]
+    return result
 
 
 @yields_pending_router.get(
@@ -3544,7 +3646,7 @@ async def list_pending_attention(
         }
         metadata: dict = yielded_blob.get("resume_metadata") or {}
         if kind == "approval":
-            row["approval"] = _approval_preview(metadata.get("original_call"))
+            row["approval"] = _approval_preview(metadata.get("original_call"), _preview_stamp(metadata))
             row["approvers"] = metadata.get("approvers")
         else:
             row["prompt"] = _attention_prompt(_extract_yield_prompt(tool_name, metadata))

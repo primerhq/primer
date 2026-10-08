@@ -85,7 +85,7 @@ def test_a_list_is_transparent_in_a_path() -> None:
         {"id": "n1", "agent_id": "a1", "input_template": "<hidden>"},
         {"id": "n2", "agent_id": "a2", "input_template": "<hidden>"},
     ]
-    assert hidden == ["entity.nodes.input_template", "entity.nodes.input_template"]
+    assert hidden == ["entity.nodes.input_template"], "a path is listed once however many list members it was withheld from"
 
 
 def test_a_deeper_path_where_the_value_is_not_a_container_withholds_it() -> None:
