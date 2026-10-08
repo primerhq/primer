@@ -162,7 +162,16 @@ def real() -> dict[str, str]:
         out["http_401"] = await probe(providers_router._probe_openai_compatible_models, {"url": f"http://127.0.0.1:{port}/rejects"})
         out["http_404"] = await probe(providers_router._probe_openai_compatible_models, {"url": f"http://127.0.0.1:{port}/missing"})
         out["http_500"] = await probe(providers_router._probe_openai_compatible_models, {"url": f"http://127.0.0.1:{port}/boom"})
-        out["http_500_creds"] = await probe(providers_router._probe_openai_compatible_models, {"url": f"http://user:pass@127.0.0.1:{port}/boom"})
+        creds = {"url": f"http://user:pass@127.0.0.1:{port}/boom"}
+        out["http_500_creds"] = await probe(providers_router._probe_openai_compatible_models, creds)
+        # What a server sends that does not clean its probe errors yet (an older one, or a row stamped before the cleaning): the real
+        # httpx text with the redaction switched off. The banner must hold against it too.
+        patch = pytest.MonkeyPatch()
+        patch.setattr(providers_router, "redact_url_secrets", lambda text: text)
+        try:
+            out["http_500_creds_uncleaned"] = await probe(providers_router._probe_openai_compatible_models, creds)
+        finally:
+            patch.undo()
         out["refused"] = await probe(providers_router._probe_openai_compatible_models, {"url": "http://127.0.0.1:1"})
         out["ollama_refused"] = await probe(providers_router._probe_ollama_models, {"url": "http://127.0.0.1:1"})
         out["ollama_401"] = await probe(providers_router._probe_ollama_models, {"url": f"http://127.0.0.1:{ollama_port}"})
@@ -423,13 +432,24 @@ def test_any_other_error_status_is_reported_as_an_answer_not_as_silence(real) ->
 # ---- a Base URL with credentials is never echoed back -------------------------------------------------------------------------------------------------------------------
 
 
-def test_the_real_error_message_does_echo_the_credentials_so_the_strip_is_needed(real) -> None:
+def test_httpx_still_echoes_the_credentials_so_the_strip_stays_needed(real) -> None:
     """Guards the premise: if httpx stopped echoing the URL, the tests below would pass for nothing."""
-    assert "user:pass@" in real["http_500_creds"]
+    assert "user:pass@" in real["http_500_creds_uncleaned"]
+
+
+def test_the_server_cleans_the_credentials_out_of_the_real_message(real) -> None:
+    """Ticket 01a11c0d-dd9a: the probe's own 400 masks the userinfo, and the banner of that text shows the address and nothing else."""
+    assert "user:pass" not in real["http_500_creds"]
+    assert "http://[REDACTED]@127.0.0.1" in real["http_500_creds"]
+    f = _failure(real["http_500_creds"])
+
+    assert f["title"] == ANSWERED
+    assert "REDACTED" not in f["detail"] and "@127.0.0.1" not in f["detail"]
+    assert "127.0.0.1" in f["detail"]
 
 
 def test_credentials_in_the_base_url_are_not_shown_in_an_error_detail(real) -> None:
-    f = _failure(real["http_500_creds"])
+    f = _failure(real["http_500_creds_uncleaned"])
 
     assert f["title"] == ANSWERED
     assert "user:pass" not in f["detail"] and "pass@" not in f["detail"] and "@127.0.0.1" not in f["detail"]
