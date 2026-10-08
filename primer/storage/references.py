@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -37,10 +38,28 @@ Lookup = Callable[[Any, str], Awaitable[Any | None]]
 # The storage layer caps a page at this many rows; a walk over every row asks for full pages.
 _PAGE = 200
 
-# What a storage backend raises while building a page that holds a row which no longer decodes into the model: the JSON is not JSON, the
-# model rejects its shape, or the JSON is not an object (the decode writes the row id into it, which fails for an array, a string or
-# null with a TypeError). The call is the storage's own ``list`` and nothing else runs inside the ``try``.
-_UNREADABLE = (ValidationError, json.JSONDecodeError, TypeError)
+# What a storage backend raises while building a page that holds a row which no longer decodes into the model: the JSON is not JSON, or
+# the model rejects its shape. These two can only come from decoding a row.
+_DECODE_ERRORS = (ValidationError, json.JSONDecodeError)
+
+# The name of the method both backends decode a row in (``SqliteStorage._from_row`` and ``PostgresStorage._from_row``).
+_ROW_DECODER = "_from_row"
+
+
+def _is_row_decode_failure(exc: BaseException) -> bool:
+    """Whether ``exc``, raised by ``storage.list``, means a stored row could not be decoded (as opposed to a bug or an outage).
+
+    A ``ValidationError`` or ``JSONDecodeError`` can only come from the decode. A ``TypeError`` is what the decode raises for JSON that
+    is not an object (it writes the row id into it, which fails for an array, a string or null), but it can also be a bug anywhere in
+    the storage call; it counts only when it was raised under the backend's row decoder, so it is never reported as a corrupt graph
+    row when it is not. If a backend renamed its decoder this would turn that case back into an error, and the real-SQLite tests for
+    non-object JSON would fail.
+    """
+    if isinstance(exc, _DECODE_ERRORS):
+        return True
+    if isinstance(exc, TypeError):
+        return any(frame.name == _ROW_DECODER for frame in traceback.extract_tb(exc.__traceback__))
+    return False
 
 
 async def first_referencing_row(
@@ -116,7 +135,9 @@ async def _first_graph_with_node(
     while True:
         try:
             page = await storage.list(CursorPage(cursor=cursor, length=length))
-        except _UNREADABLE as exc:
+        except Exception as exc:
+            if not _is_row_decode_failure(exc):
+                raise
             if length > 1:
                 length = 1
                 continue

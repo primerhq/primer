@@ -222,7 +222,11 @@ Agents are managed via standard CRUD plus the semantic search tool.
   trigger subscription targets it (a disabled subscription still blocks);
   delete or end those first (an ended session never blocks). A graph row
   the server cannot read also blocks, because it may be the one that names
-  the agent; the answer names the readable graph before it. Two residuals:
+  the agent; the answer names the readable graph before it ("unreadable
+  graph row after g-2"). That row blocks every agent and graph delete until
+  an administrator repairs or removes it in the database (table `graph`; the
+  developer docs, `architecture/rest-api.md`, give the query), so report it
+  to one. Two residuals:
   an ended session can be re-opened later with `reset_session` (back to
   created) after its agent was deleted, and then fails at its next turn
   (`POST .../resume` itself answers 409 for an ended session); and
