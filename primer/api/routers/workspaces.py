@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import email.utils
 import hashlib
+import json
 import logging
 import posixpath
 import uuid
@@ -2854,6 +2855,59 @@ async def list_pending_yields(
     return {"items": items}
 
 
+# The Inbox row says what it is waiting on (console review C-033). An approval carries the tool and a short preview of its decisive
+# arguments, so a card (above all the phone's inline Approve) never asks for a decision on a call it does not describe; the other kinds
+# carry the question or the wait. Previews are bounded: this route is polled by every open console.
+_ATTENTION_TEXT_CHARS = 240
+_ATTENTION_ARG_CHARS = 80
+# The arguments that say WHAT a call acts on, in the order they lead the preview.
+_LEAD_ARG_KEYS = ("path", "file_path", "filepath", "command", "cmd", "url", "target", "name", "id", "query")
+# Arguments that are payload, not target: counted as "<N chars>" instead of shipped.
+_BULKY_ARG_KEYS = frozenset({"content", "contents", "text", "body", "data", "new_string", "old_string", "patch", "diff", "input"})
+
+
+def _cut(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters, ending in an ellipsis when it was cut."""
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
+
+def _approval_preview(original_call: Any) -> dict[str, Any] | None:
+    """``{tool_name, arguments, truncated}`` for the call an ``_approval`` park is waiting on, or ``None`` when the park does not say.
+
+    ``arguments`` is a one-line ``key=value`` list: the keys that name a target lead (``path`` before ``command``...), the rest
+    follow alphabetically, and payload keys (``content``, ``text``...) come last as ``<N chars>``. A value past 80 characters is cut,
+    and the whole line is capped at 240. ``truncated`` is true whenever anything was left out, which is what the card's "show all"
+    keys on; the full call is one ``GET .../yields/pending`` away.
+    """
+    if not isinstance(original_call, dict) or not original_call.get("name"):
+        return None
+    args = original_call.get("arguments")
+    truncated = False
+    if isinstance(args, dict):
+        lead = [k for k in _LEAD_ARG_KEYS if k in args and k not in _BULKY_ARG_KEYS]
+        rest = sorted(k for k in args if k not in lead and k not in _BULKY_ARG_KEYS)
+        bulky = sorted(k for k in args if k in _BULKY_ARG_KEYS)
+        parts: list[str] = []
+        for key in lead + rest:
+            value = args[key]
+            text = value if isinstance(value, str) else json.dumps(value)
+            if len(text) > _ATTENTION_ARG_CHARS:
+                text, truncated = _cut(text, _ATTENTION_ARG_CHARS), True
+            parts.append(f"{key}={text}")
+        for key in bulky:
+            value = args[key]
+            parts.append(f"{key}=<{len(value if isinstance(value, str) else json.dumps(value))} chars>")
+            truncated = True
+        line = ", ".join(parts)
+    elif args in (None, ""):
+        line = ""
+    else:
+        line = str(args)
+    if len(line) > _ATTENTION_TEXT_CHARS:
+        line, truncated = _cut(line, _ATTENTION_TEXT_CHARS), True
+    return {"tool_name": str(original_call["name"]), "arguments": line, "truncated": truncated}
+
+
 @yields_pending_router.get(
     "/yields/pending",
     summary="Aggregated pending attention across all workspaces (Inbox / System dashboard)",
@@ -2887,6 +2941,12 @@ async def list_pending_attention(
                     "agent_binding": dict,
                     "created_at": str,   # ISO-8601; parked_at, falling back
                                          # to the session's created_at
+                    "tool_call_id": str | None,   # the parked call a decision names
+                    "approval": {"tool_name", "arguments", "truncated"} | None,
+                                         # approval rows only; None when the park
+                                         # does not say what it is waiting on
+                    "prompt": str,       # ask / parked rows only: the question or
+                                         # the wait, cut to 240 characters
                 },
                 …
             ],
@@ -2950,20 +3010,22 @@ async def list_pending_attention(
 
         created_at = sess.parked_at if sess.parked_at is not None else sess.created_at
 
-        rows.append(
-            (
-                created_at,
-                {
-                    "workspace_id": sess.workspace_id,
-                    "workspace_name": await _workspace_name(sess.workspace_id),
-                    "session_id": sess.id,
-                    "session_name": sess.name,
-                    "kind": kind,
-                    "agent_binding": sess.binding.model_dump(mode="json"),
-                    "created_at": created_at.isoformat(),
-                },
-            )
-        )
+        row = {
+            "workspace_id": sess.workspace_id,
+            "workspace_name": await _workspace_name(sess.workspace_id),
+            "session_id": sess.id,
+            "session_name": sess.name,
+            "kind": kind,
+            "agent_binding": sess.binding.model_dump(mode="json"),
+            "created_at": created_at.isoformat(),
+            "tool_call_id": _tool_call_id_from_blob(blob),
+        }
+        metadata: dict = yielded_blob.get("resume_metadata") or {}
+        if kind == "approval":
+            row["approval"] = _approval_preview(metadata.get("original_call"))
+        else:
+            row["prompt"] = _cut(_extract_yield_prompt(tool_name, metadata), _ATTENTION_TEXT_CHARS)
+        rows.append((created_at, row))
 
     rows.sort(key=lambda row: row[0], reverse=True)
     items = [row[1] for row in rows]
