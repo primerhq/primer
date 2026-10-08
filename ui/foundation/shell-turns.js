@@ -248,10 +248,13 @@ function SH_isTerminal(kind) {
 // numbers its turn windows by: the trace is asked for under the number counted here, so the two must agree. A subagent's
 // terminal (payload.delegated) is the end of the subagent's turn and never the session's (ticket 01a11232); a model call
 // that ended in a tool call ends a round, not the turn (the adapter already drops those rows; kept here so the rule is whole).
+// An error that says, with an EXPLICIT fatal: false, that the stream went on from it is a notice inside the turn, not its end
+// (ticket 01a11bf6); no flag, fatal: true and fatal: null still end it.
 function SH_closesTurn(row) {
   if (!row || !SH_isTerminal(row.kind)) return false;
   var payload = row.payload || {};
   if (payload.delegated) return false;
+  if (row.kind === "error" && payload.fatal === false) return false;
   if (row.kind === "done" && payload.stop_reason === "tool_use") return false;
   return true;
 }
