@@ -40,25 +40,11 @@ function MC_relTime(iso) {
   return future ? `in ${body}` : `${body} ago`;
 }
 
-// Extract a {code, message} from an ApiError envelope. Mirrors
-// ADM_extractError/AT_extractError (R5 fix): primer/api/errors.py's
-// _http_exception_handler reduces a raw HTTPException({code, message})
-// dict detail to RFC7807's own STRING `detail` - the dict survives
-// verbatim under `extensions`, never under `detail` itself, so the old
-// `envDetail && typeof envDetail === "object"` check here could never
-// be true and `code` was always null.
+// {code, message} of a failed request, from the ONE reader in ui/foundation/api.js (window.primerApi.readRefusal: ticket 01a11cd1-7aaf). It looks in
+// every place the API puts a refusal's pieces, so this page cannot disagree with the others about where the code is or what a bare auth code means.
 function MC_extractError(err) {
-  const env = err && err.envelope;
-  const ext = env && env.extensions;
-  let code = null;
-  let msg = null;
-  if (ext && typeof ext === "object") {
-    code = ext.code || ext.error || null;
-    msg = ext.message || null;
-  }
-  if (!msg && typeof err.detail === "string") msg = err.detail;
-  if (!msg) msg = (err && (err.title || err.message)) || "Request failed";
-  return { code, message: msg };
+  const r = window.primerApi.readRefusal(err);
+  return { code: r.code, message: r.message };
 }
 
 // Copy text to the clipboard with a graceful fallback for browsers

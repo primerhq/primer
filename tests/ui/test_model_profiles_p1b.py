@@ -130,10 +130,12 @@ def test_delete_guard_surfaces_the_real_error_detail_not_an_invented_shape() -> 
     structured {child_kind, count} payload despite that hook's own
     docstring example. Pin that the UI reads err.detail verbatim
     rather than a names list or a parsed JSON shape the wire never
-    sends."""
+    sends. The words come from the one refusal reader (window.primerApi.readRefusal, ticket 01a11cd1-7aaf), which says the
+    `in_use_by: ...` sentence in plain words (ADM-12) from the same string; it reads no `child_kind`, no names list."""
     card = _card_src()
-    assert "e.detail" in card
-    assert "e.message" in card
+    delete = card.split("const doDelete")[1].split("finally")[0]
+    assert "window.primerApi.readRefusal(e" in delete
+    assert "child_kind" not in delete and "JSON.parse" not in delete, "no structured shape is read from the refusal"
 
 
 def test_delete_confirm_flow_has_a_confirm_and_cancel_step() -> None:

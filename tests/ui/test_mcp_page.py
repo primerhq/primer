@@ -79,12 +79,13 @@ def test_extract_error_reads_extensions_not_detail() -> None:
     _http_exception_handler), the {code, message} dict this used to
     check `typeof ... === "object"` against lives under
     envelope.extensions - code was always null."""
-    src = _src()
-    start = src.index("function MC_extractError(")
-    end = src.index("\n}", start)
-    body = src[start:end]
-    assert "env.extensions" in body
-    assert "env.detail" not in body
+    # Now one reader (ui/foundation/api.js readRefusal, ticket 01a11cd1-7aaf): run the page's function on the shape the handler really sends.
+    from tests._support.refusal_reader_js import call_extractor
+
+    envelope = {"type": "/errors/conflict", "title": "Conflict", "status": 409, "detail": "tool already allowed",
+                "extensions": {"code": "tool_already_allowed", "message": "tool already allowed"}}
+
+    assert call_extractor("components/mcp.jsx", "MC_extractError", envelope) == {"code": "tool_already_allowed", "message": "tool already allowed"}
 
 
 def test_search_filter_present() -> None:

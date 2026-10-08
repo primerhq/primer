@@ -54,12 +54,15 @@ def _text(envelope: dict, fallback: str) -> str:
 
 
 # What the dialogs pass as the fallback: every `TR_refusalText(err, "<fallback>")` and `TR_writeErrorText(err, "<fallback>")` in the source.
-FALLBACKS = sorted(set(re.findall(r'TR_(?:refusalText|writeErrorText)\(err, "([^"]+)"\)', SRC)))
+FALLBACKS = sorted(set(re.findall(r'TR_(?:refusalText|writeErrorText)\(\w+, "([^"]+)"\)', SRC)))
 
 
 def test_the_dialogs_pass_the_fallbacks_this_file_covers() -> None:
     """Guards the parametrisation: the create wizard, the edit dialog, Fire now, the subscription dialog, Rotate token, Clear HMAC and the HMAC dialog."""
-    assert {"Request failed", "Fire failed", "Rotate failed", "Could not clear the HMAC secret", "Save failed"} <= set(FALLBACKS), FALLBACKS
+    assert {
+        "Request failed", "Fire failed", "Rotate failed", "Could not clear the HMAC secret", "Save failed",
+        "The subscription could not be updated.", "The trigger could not be deleted.",
+    } <= set(FALLBACKS), FALLBACKS
 
 
 # ---- the real envelopes really look like this ----------------------------------------------------------------------------------------------------------------

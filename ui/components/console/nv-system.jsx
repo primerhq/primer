@@ -364,17 +364,18 @@ function NV_SysDashboard() {
 // the code invalid_credentials (in the problem envelope's detail and in extensions.error), which the page used to print as it came. The same
 // code also answers an account that has no password (single sign-on only) and a lost race with another change, so the sentence says "not
 // right" and names that case. The mapping is on the CODE: an expired session answers 401 too, with another detail, and keeps the server's own
-// words. A bare machine code that is not known is never the sentence. tests/ui/test_profile_page_messages.py runs this in MiniRacer.
+// words. A bare machine code that is not known is never the sentence (the person is told which refusal it was, in brackets), except the auth
+// gate's two, which the one reader (window.primerApi.readRefusal) has sentences for, and a field error, which names its field.
+// tests/ui/test_profile_page_messages.py runs this in MiniRacer.
 function NV_passwordChangeMessage(err) {
-  var env = err && err.envelope;
-  var code = (env && env.extensions && env.extensions.error) || (err && typeof err.detail === "string" ? err.detail : "");
-  if (code === "invalid_credentials") {
+  var r = window.primerApi.readRefusal(err, "Could not change the password.");
+  if (r.code === "invalid_credentials") {
     return "The current password is not right. (An account that only signs in through single sign-on has no password to change.)";
   }
-  var text = (err && typeof err.detail === "string" && err.detail) || (err && err.message) || "";
-  if (!text) return "Could not change the password.";
-  if (/^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(text)) return "Could not change the password (" + text + ").";
-  return text;
+  if (!r.sentence && r.code && !r.field && r.code !== "auth_required" && r.code !== "forbidden_role") {
+    return "Could not change the password (" + r.code + ").";
+  }
+  return r.message;
 }
 
 function NV_SysProfile() {

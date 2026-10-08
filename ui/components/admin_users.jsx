@@ -32,28 +32,11 @@ const ADM_ROLE_OPTIONS = [
 // Helpers
 // ============================================================================
 
-// {code, message} out of an ApiError envelope. The server wraps a raw
-// HTTPException({error, message}) dict detail (anti-lockout / duplicate
-// username / not-found) as RFC7807's own string `detail` PLUS the full
-// dict verbatim under `extensions` (primer/api/errors.py's
-// _http_exception_handler + _detail_from_mapping) - `envelope.detail` is
-// therefore always a STRING here, never the {error, message} object this
-// used to check `typeof ... === "object"` against, so `code` was
-// silently always null (R5 fix: the message still rendered correctly
-// via the string fallback below, so this was invisible in the UI - only
-// the "(code)" suffix on the banner title was ever missing).
+// {code, message} of a failed request, from the ONE reader in ui/foundation/api.js (window.primerApi.readRefusal: ticket 01a11cd1-7aaf). It looks in
+// every place the API puts a refusal's pieces, so this page cannot disagree with the others about where the code is or what a bare auth code means.
 function ADM_extractError(err) {
-  const env = err && err.envelope;
-  const ext = env && env.extensions;
-  let code = null;
-  let msg = null;
-  if (ext && typeof ext === "object") {
-    code = ext.error || ext.code || null;
-    msg = ext.message || null;
-  }
-  if (!msg && typeof err.detail === "string") msg = err.detail;
-  if (!msg) msg = (err && (err.title || err.message)) || "Request failed";
-  return { code, message: msg };
+  const r = window.primerApi.readRefusal(err);
+  return { code: r.code, message: r.message };
 }
 
 // Pill colour per role: admin=green, restricted=red, user=grey.

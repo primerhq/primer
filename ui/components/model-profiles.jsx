@@ -124,18 +124,15 @@ function MP_ProfileCard({ profile, onOpen, onDeleted, providerDown }) {
       setConfirmDelete(false);
       if (onDeleted) onDeleted();
     } catch (e) {
-      // Item 3: the backend's ReferenceCheck (routers/model_profiles.py)
-      // 409s with a PLAIN FORMATTED STRING in `detail` -
-      // "in_use_by: N agent(s) reference '<id>' (first: '<id>')" - not a
-      // structured {child_kind, count} payload (that shape only lives in
-      // build_reference_block_hook's own docstring, not its actual
-      // raise). It names exactly ONE blocking reference, never a full
-      // list of "names" - surfaced verbatim rather than inventing a
-      // names list or a JSON shape the wire does not send. 01a067c4:
-      // this also covers the NEW "member of an aggregate" reference kind
-      // (model_profiles.py's second ReferenceCheck) - same string shape,
-      // no separate branch needed.
-      setErr((e && e.detail) || (e && e.message) || String(e));
+      // The backend's ReferenceCheck (routers/model_profiles.py) 409s with a
+      // PLAIN FORMATTED STRING in `detail` - "in_use_by: N agent(s) reference
+      // '<id>' (first: '<id>')" - not a structured payload, and it names ONE
+      // blocking reference (the count is the size of a one-row page: "at
+      // least one"). The one reader (window.primerApi.readRefusal) says it in
+      // words (admin review ADM-12); this also covers the "member of an
+      // aggregate" reference kind (model_profiles.py's second ReferenceCheck),
+      // which has the same shape. The referrer is named, not linked.
+      setErr(window.primerApi.readRefusal(e, String(e)).message);
     } finally {
       setBusy(false);
     }
@@ -389,9 +386,9 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
       // on the right control (single: provider_id/model_name; aggregated:
       // members - model_profiles.py's _aggregation_error always names
       // "members" as the field, whichever of the five checks fired).
-      if (err.envelope?.extensions?.field) {
-        fe[`body.${err.envelope.extensions.field}`] =
-          err.envelope.extensions.message || err.detail;
+      const refused = window.primerApi.readRefusal(err);
+      if (refused.field && refused.sentence) {
+        fe[`body.${refused.field}`] = refused.sentence;
       }
       setFieldErrors(fe);
       if (Object.keys(fe).length === 0) throw err;

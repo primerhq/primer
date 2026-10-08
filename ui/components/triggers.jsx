@@ -84,18 +84,12 @@ function TR_cronShapeError(expr) {
     + n + (n === 1 ? " field." : " fields.");
 }
 
-// The schedule refusal of a failed create as {field, message} (field "cron" or "timezone"), or null when the failure is about something
-// else. The API puts the code in the problem envelope's extensions (an HTTPException with a {code, message} detail; `detail` itself is then
-// a plain string); older shapes had it in detail.code.
+// The schedule refusal of a failed create as {field, message} (field "cron" or "timezone"), or null when the failure is about something else. The code
+// comes from the one reader (window.primerApi.readRefusal), wherever the API put it.
 function TR_scheduleFault(err) {
-  var env = err && err.envelope;
-  if (!env) return null;
-  var ext = env.extensions || {};
-  var det = env.detail && typeof env.detail === "object" ? env.detail : {};
-  var code = ext.code || det.code || null;
-  if (code !== "cron_invalid" && code !== "timezone_invalid") return null;
-  var message = ext.message || det.message || (typeof err.detail === "string" ? err.detail : "") || err.message || "";
-  return { field: code === "cron_invalid" ? "cron" : "timezone", message: message };
+  var r = window.primerApi.readRefusal(err);
+  if (r.code !== "cron_invalid" && r.code !== "timezone_invalid") return null;
+  return { field: r.code === "cron_invalid" ? "cron" : "timezone", message: r.sentence || (err && err.message) || "" };
 }
 
 // Auto-slug a free-text name (lowercase, hyphenate, trim length).
@@ -182,54 +176,23 @@ var TR_REMEDIES = {
   timezone_invalid: "{message}. Pick a timezone from the list.",
 };
 
-// What to say when the server sent a code and no sentence. The auth gate (require_user) answers {"error": "auth_required"} / {"error": "forbidden_role"}
-// with no message, and the problem's `detail` is then the code itself: a session that ended, a reset password or a sign-out everywhere (401), a
-// restricted role (403). tests/ui/test_trigger_refusals_real_envelopes.py feeds the real envelopes of that gate.
-var TR_BARE = {
-  auth_required: "Your session has ended; sign in again.",
-  forbidden_role: "Your role does not allow this.",
-};
+// The code, the field and the server's own sentence of a failed write are read by the ONE reader in ui/foundation/api.js (window.primerApi.readRefusal,
+// ticket 01a11cd1-7aaf): where the API puts them (extensions.code, extensions.error for the auth gate, an older detail object, a detail that is only a code),
+// what a bare auth code means (a session that ended, a role that may not write) and what is not a sentence. tests/ui/test_trigger_refusals_real_envelopes.py
+// feeds it the real envelopes of the auth gate and of this router.
 
-// The code of a failed write, from where the API puts it: extensions.code (the routers raise HTTPException(detail={code, message})), extensions.error (the
-// auth gate), an older detail object, or a `detail` that is only a snake_case code.
-function TR_codeOf(err) {
-  var env = err && err.envelope;
-  var ext = (env && env.extensions) || {};
-  var det = env && env.detail && typeof env.detail === "object" ? env.detail : {};
-  var code = ext.code || ext.error || det.code || det.error;
-  if (code) return code;
-  var bare = err && typeof err.detail === "string" ? err.detail.trim() : "";
-  return /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(bare) ? bare : null;
-}
-
-// The server's own sentence for a refusal, or "" when it sent none or only the code. A message equal to the code is not a sentence; one that merely
-// looks like a code is kept when the code is known and different (the not-found message is a bare id, and an id may hold an underscore).
-function TR_serverSentence(err) {
-  var env = err && err.envelope;
-  var ext = (env && env.extensions) || {};
-  var det = env && env.detail && typeof env.detail === "object" ? env.detail : {};
-  var code = TR_codeOf(err);
-  var options = [ext.message, det.message, err && typeof err.detail === "string" ? err.detail : ""];
-  for (var i = 0; i < options.length; i++) {
-    var m = options[i];
-    if (typeof m === "string" && m.trim() && m.trim() !== code) return m;
-  }
-  return "";
-}
-
-// The code and the message of a failed trigger write, from the thrown ApiError. The API raises HTTPException(detail={code, message}); the problem
-// envelope that reaches the browser has `detail` as the MESSAGE string and the code in extensions.code (an older shape had it in a detail object, and
-// the auth gate puts it in extensions.error). With no sentence from the server the message is the HTTP title, then the error's message, then the fallback.
+// The code and the message of a failed trigger write, from the thrown ApiError. With no sentence from the server the message is the HTTP title, then the
+// error's message, then the fallback.
 function TR_refusal(err, fallback) {
-  var message = TR_serverSentence(err) || (err && (err.title || err.message)) || fallback || "Request failed";
-  return { code: TR_codeOf(err), message: message };
+  var r = window.primerApi.readRefusal(err, fallback);
+  return { code: r.code, message: r.message };
 }
 
-// The banner's detail for a refused write: the server's message worked into one sentence about what to do. A code with no template shows the
-// message alone; a code with no sentence from the server (the auth gate) gets its own sentence; the code itself is never part of the text.
+// The banner's detail for a refused write: the server's message worked into one sentence about what to do. A code with no template shows the message
+// alone; a code with no sentence from the server (the auth gate) gets the reader's own sentence; the code itself is never part of the text.
 function TR_refusalText(err, fallback) {
-  var r = TR_refusal(err, fallback);
-  if (!TR_serverSentence(err)) return (r.code && TR_BARE[r.code]) || r.message;
+  var r = window.primerApi.readRefusal(err, fallback);
+  if (!r.sentence) return r.message;
   var template = r.code ? TR_REMEDIES[r.code] : "";
   if (!template) return r.message;
   return template.replace("{message}", String(r.message).replace(/[.\s]+$/, ""));
@@ -318,7 +281,7 @@ function TR_TriggerList() {
         <Banner
           kind="error"
           title={list.error.title || "Couldn't load triggers"}
-          detail={list.error.detail || list.error.message}
+          detail={window.primerApi.readRefusal(list.error).message}
           actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
         />
       )}
@@ -1441,7 +1404,7 @@ function TR_TriggerDetail({ id }) {
         <Banner
           kind="error"
           title={detail.error.title || "Couldn't load trigger"}
-          detail={detail.error.detail || detail.error.message}
+          detail={window.primerApi.readRefusal(detail.error).message}
           actions={<Btn size="sm" icon="chevron-left" onClick={() => navigate("/triggers")}>Back to list</Btn>}
         />
       </div>

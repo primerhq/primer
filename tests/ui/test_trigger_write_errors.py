@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 TRIGGERS = (Path(__file__).resolve().parents[2] / "ui" / "components" / "triggers.jsx").read_text(encoding="utf-8")
+# The helpers read a refusal through the one reader in the foundation (ticket 01a11cd1-7aaf).
+API = (Path(__file__).resolve().parents[2] / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
 
 
 @pytest.fixture
@@ -22,6 +24,8 @@ def words():
     from py_mini_racer import MiniRacer
 
     ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(API)
     start = TRIGGERS.index("function TR_writeErrorText(")
     end = TRIGGERS.index("\n}\n", TRIGGERS.index("function TR_refusalText(", start)) + len("\n}\n")
     ctx.eval(TRIGGERS[start:end])

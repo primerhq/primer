@@ -42,6 +42,8 @@ def _run(source: str, name: str, expression: str):
     end = source.index("\n}\n", start) + 3
     ctx = MiniRacer()
     _OPEN_CONTEXTS.append(ctx)
+    ctx.eval("var window = {};")
+    ctx.eval((ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8"))   # NV_passwordChangeMessage reads the refusal through the one reader
     ctx.eval(source[start:end])
     return json.loads(ctx.eval(f"JSON.stringify({expression})"))
 

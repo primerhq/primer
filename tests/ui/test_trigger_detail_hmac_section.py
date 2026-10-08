@@ -16,8 +16,12 @@ from tests.ui._mini_react import mini_react_context, transpile
 
 TRIGGERS = Path(__file__).resolve().parents[2] / "ui" / "components" / "triggers.jsx"
 REASON = "Only the trigger's owner or an admin may change a webhook trigger's secrets."
+# The page reads a refusal through the one reader of the foundation (ticket 01a11cd1-7aaf): the REAL api.js is loaded first and its reader is handed to the
+# stand-in primerApi below (loading it after would replace the stand-in's apiFetch).
+API = (Path(__file__).resolve().parents[2] / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
 
-_PRELUDE = """
+_PRELUDE = API + """
+var __readRefusal = window.primerApi.readRefusal;
 window.location = { origin: "http://x", search: "", hash: "", pathname: "/console/" };
 var document = { title: "", addEventListener: function () {}, removeEventListener: function () {} };
 var __trigger = { id: "t1", slug: "hook", name: "hook", enabled: true, config: { kind: "webhook", token: "a".repeat(32), hmac_secret: "set" }, owner: null };
@@ -29,6 +33,7 @@ globalThis.Icon = function () { return null; };
 globalThis.Banner = function () { return null; };
 globalThis.Modal = function (props) { return React.createElement("div", { "data-testid": "modal" }, props.children, props.footer); };
 window.primerApi = {
+  readRefusal: __readRefusal,
   apiFetch: function (method, path, body) {
     __calls.push(method + " " + path);
     if (method === "PUT" && __failure) return Promise.reject(__failure);
