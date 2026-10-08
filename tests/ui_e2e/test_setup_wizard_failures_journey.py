@@ -159,6 +159,8 @@ def test_a_server_that_needs_a_key_and_a_base_url_with_credentials(page: Page, c
         shown = page.locator(".setup-steps").inner_text()
         assert "500" in shown and "127.0.0.1" in shown
         assert "user:pass" not in shown and "pass@" not in shown, "the credentials of the Base URL were echoed back"
+        # The server masks the userinfo as [REDACTED]@ (ticket 01a11c0d-dd9a) and the banner drops that too: only the address is left.
+        assert "REDACTED" not in shown, "the server's mask was printed into the banner"
     finally:
         server.shutdown()
         server.server_close()
