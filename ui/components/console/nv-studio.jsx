@@ -1,4 +1,4 @@
-/* global React, NV_useConsole */
+/* global React, NV_useConsole, SH_api */
 // The Studio frame (uiv2 R2 cutover, US-011a): left rail (Inbox +
 // workspace tree, NV_Rail), center tab groups, always-visible right
 // Files sidebar (notes 2.5), terminal panel and events sidebar slots.
@@ -97,8 +97,42 @@ function NV_renderStudioDoc(con, tab) {
   return null;
 }
 
+// A workspace that does not exist (C-019): a deleted or mistyped id. Only a 404 on the workspace's own row says so; a blip, a refusal or a
+// server error is not the workspace ceasing to exist, and the Studio keeps drawing what it has.
+function NV_isWorkspaceGone(error) {
+  return !!error && error.status === 404;
+}
+
+// What the center shows instead of a tab group and a Files sidebar full of false empty states: the id that was not found and a way back
+// to a real workspace (the rail still lists them all; these are the shortcut).
+function NV_WorkspaceGone(props) {
+  var list = (props.workspaces || []).slice(0, 8);
+  return (
+    <div className="nv-ws-gone nv-rail-empty" data-testid="nv-ws-gone" role="status">
+      <div className="nv-ws-gone-title">{"Workspace '" + props.wid + "' was not found"}</div>
+      <div className="nv-ws-gone-sub">
+        {list.length ? "It was deleted, or the link is wrong. Open one of yours:" : "It was deleted, or the link is wrong."}
+      </div>
+      {list.map(function (w) {
+        return (
+          <button type="button" key={w.id} className="nv-rail-iconbtn"
+            data-testid={"nv-ws-gone-open:" + w.id}
+            onClick={function () { props.onOpen(w.id); }}>{w.name || w.id}</button>
+        );
+      })}
+    </div>
+  );
+}
+
 function NV_Studio() {
   var con = NV_useConsole();
+  // One read of the workspace's own row (cached by id, no poll). No key, so no request, without a workspace id.
+  var wsRow = window.primerApi.useResource(
+    con.wid ? SH_api.keys.workspace(con.wid) : null,
+    function (signal) { return SH_api.workspace(con.wid, signal); },
+    { pollMs: 0, deps: [con.wid] }
+  );
+  var wsGone = NV_isWorkspaceGone(wsRow.error);
 
   function renderDoc(tab) { return NV_renderStudioDoc(con, tab); }
 
@@ -153,20 +187,28 @@ function NV_Studio() {
         />
       </div>
       <div className="nv-center" data-testid="nv-center">
-        <window.NV_TabGroups
-          model={con.tgModel}
-          onModelChange={con.onTgModelChange}
-          renderDoc={renderDoc}
-          resolveSessionMeta={con.resolveSessionMeta}
-        />
-        {con.panels.terminal && typeof window.NV_Terminal === "function"
+        {wsGone ? (
+          <NV_WorkspaceGone wid={con.wid} workspaces={con.workspaces}
+            onOpen={function (id) {
+              var verb = con.registry.get("workspace.switch");
+              if (verb) verb.run({ wid: id });
+            }} />
+        ) : (
+          <window.NV_TabGroups
+            model={con.tgModel}
+            onModelChange={con.onTgModelChange}
+            renderDoc={renderDoc}
+            resolveSessionMeta={con.resolveSessionMeta}
+          />
+        )}
+        {!wsGone && con.panels.terminal && typeof window.NV_Terminal === "function"
           ? <window.NV_Terminal />
           : null}
       </div>
       {/* Always-visible only WITH a workspace: the panel's tree/log polls
           key off con.wid, and mounting it wid-less fires literal
           /workspaces/null/... fetches (404 noise on every bare route). */}
-      {con.wid && typeof window.NV_FilesSidebar === "function"
+      {con.wid && !wsGone && typeof window.NV_FilesSidebar === "function"
         ? <window.NV_FilesSidebar />
         : null}
     </div>
@@ -196,3 +238,4 @@ window.NV_usageOf = NV_usageOf;
 window.NV_GLYPHS = NV_GLYPHS;
 window.NV_identity = NV_identity;
 window.NV_Studio = NV_Studio;
+window.NV_isWorkspaceGone = NV_isWorkspaceGone;
