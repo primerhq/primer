@@ -30,6 +30,7 @@ import json
 import logging
 import posixpath
 import re
+import shlex
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -3127,12 +3128,82 @@ def _pair_names_a_secret(mapping: dict) -> bool:
     )
 
 
+def _is_command_line(members: "list | tuple") -> bool:
+    """Whether ``members`` reads as the words of ONE command: at least two of them, every one (of the first ``_REDACT_MAX_ITEMS``, the only ones
+    ever looked at) a string or a number, and at least one a string. A list that holds an object or a list is data, not an argv, and a list of
+    one has no program word for a flag rule to hang on."""
+    if len(members) < 2:
+        return False
+    head = list(itertools.islice(members, _REDACT_MAX_ITEMS))
+    return all(isinstance(m, (str, int, float)) for m in head) and any(isinstance(m, str) for m in head)
+
+
+def _redact_command_line(members: "list | tuple", depth: int, budget: "list[int]") -> tuple[Any, bool]:
+    """A list of words scrubbed as the command line it is: ``["mysql", "-u", "root", "-phunter2"]``.
+
+    The flag rules (``-p<value>`` after mysql, ``-u user:password``, ``--pass value``, ``Bearer value``) read TEXT, so walking the members one by
+    one showed each rule a single word and none of them matched. The words are joined the way a shell would write them (``shlex.quote``: a word
+    with a space stays one word) and scrubbed ONCE. Nothing found: the list comes back as it was. Something found: the list comes back with the
+    scrubbed words (``["mysql", "-u", "root", "-p<redacted>", "db"]``); the scrubbed line is split back into words to do that, and when the split
+    does not give the same number of words (a word that holds a quote character can unbalance it) the scrubbed command line itself comes back as a
+    string. Either way the preview was changed, so it is marked as truncated.
+
+    A word that is a JSON document is walked as the document it is first (``curl -d '{"password": "x"}'``). The walk is bounded like the
+    others: at most ``_REDACT_MAX_ITEMS`` words, each cut to ``_REDACT_MAX_TEXT``, and the line handed to the scrubber is at most
+    ``_REDACT_MAX_TEXT`` characters in all (the same ceiling a single string has; a preview draws 240 of them), with the QUOTED length of each
+    word charged to ``budget``. A word that does not fit is not looked at, so it is not shown: the result ends in ``<N more>`` for the words left
+    out.
+    """
+    shown: list[Any] = []
+    quoted: list[str] = []
+    used = 0
+    changed = False
+    for member in members:
+        if len(shown) >= _REDACT_MAX_ITEMS or budget[0] <= 0:
+            break
+        budget[0] -= _REDACT_MEMBER_COST
+        if isinstance(member, str):
+            word = _bounded(member, min(_REDACT_MAX_TEXT, max(budget[0], 1)))
+            document = _parse_container(word)
+            if document is not None:
+                inner, inner_changed = _redact(document, depth + 1, budget)
+                if inner_changed:
+                    word, changed = json.dumps(inner, ensure_ascii=False, default=str), True
+            shown_word: Any = word
+        else:
+            word, shown_word = str(member), member
+        part = shlex.quote(word)
+        if used + len(part) + 1 > _REDACT_MAX_TEXT:
+            if quoted:
+                break
+            part, changed = _bounded(part, _REDACT_MAX_TEXT), True       # one word that alone is past the ceiling: its head is all there is
+        if isinstance(member, str) and len(word) < len(member):
+            changed = True
+        shown.append(shown_word)
+        quoted.append(part)
+        used += len(part) + 1
+        budget[0] -= len(part)
+    left_out = len(members) - len(shown)
+    marker = [f"<{left_out} more>"] if left_out else []
+    line = " ".join(quoted)
+    scrubbed = _scrub_text(line)
+    if scrubbed == line and not changed:
+        return shown + marker, bool(left_out)
+    try:
+        words = shlex.split(scrubbed)
+    except ValueError:
+        words = []
+    if len(words) == len(shown):
+        return [member if str(member) == word else word for member, word in zip(shown, words)] + marker, True
+    return " ".join([scrubbed, *marker]), True
+
+
 def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tuple[Any, bool]:
     """``value`` with every secret in it replaced, and whether anything was.
 
     Secret-looking KEY names at any depth, a name/value pair (``{"name": "Authorization", "value": ...}``, ``["Authorization", ...]``)
-    whose name is secret, a JSON document inside a string at any depth, secret-shaped text in any string (see ``_scrub_text``), and a
-    credential used as a NAME. Bounded by constants: nothing past ``_REDACT_MAX_DEPTH`` levels, ``_REDACT_MAX_ITEMS`` members (a cut
+    whose name is secret, a JSON document inside a string at any depth, secret-shaped text in any string (see ``_scrub_text``), a list of
+    words scrubbed as the command line it is (see ``_redact_command_line``), and a credential used as a NAME. Bounded by constants: nothing past ``_REDACT_MAX_DEPTH`` levels, ``_REDACT_MAX_ITEMS`` members (a cut
     container ends in a "<N more>" marker), ``_REDACT_MAX_TEXT`` characters of one string, or ``budget`` (a one-element list holding the
     characters one walk may still look at; callers walking several values share one) is looked at, and what is not looked at is hidden.
     """
@@ -3165,6 +3236,8 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
             return _REDACTED, True
         if len(value) == 2 and isinstance(value[0], str) and _SECRET_ARG_KEY.search(value[0][:_NAME_SCAN_CHARS]):
             return [_display_name(value[0]), _REDACTED], True
+        if _is_command_line(value):
+            return _redact_command_line(value, depth, budget)
         items: list[Any] = []
         changed = False
         for index, member in enumerate(value):
