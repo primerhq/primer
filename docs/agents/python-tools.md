@@ -22,7 +22,7 @@ An agent that holds the `crud` toolset (the builder) manages python toolsets wit
 `crud::create_python_toolset`, `crud::update_python_toolset_source` and
 `crud::list_python_tools`; the first two are admin-gated. They apply the same rules as the
 REST route. A python toolset runs its source on the Primer host, so creating or changing one
-requires the admin role on every surface: `POST` / `PUT /v1/toolsets` answer 403 below admin,
+requires the admin role on every surface: `POST /v1/toolsets` / `PUT /v1/toolsets/{id}` answer 403 below admin,
 and `system::create_toolset` / `system::update_toolset` answer `type=forbidden` unless the run
 was started by an admin (always over `/v1/mcp`, where the caller's role is not known). Creating a toolset with a reserved id (`external`, `workspace`,
 `workspace_ext`) returns `type=conflict`, and so does editing the source of a
