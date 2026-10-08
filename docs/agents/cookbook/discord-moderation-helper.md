@@ -117,11 +117,10 @@ Then the binding that maps a matcher to an action:
   "event_matcher": { "event_type": "message.posted", "surface": ["channel"] },
   "config": { "kind": "agent_fresh_session", "workspace_id": "ws-1", "agent_id": "moderator" },
   "reply_target": "source_thread",
-  "payload_template": "{{ event.text }}",
-  "parallelism": "queue"
+  "payload_template": "{{ event.text }}"
 }
 ```
-Response: the created Subscription. Every message in the room starts a `moderator` session in `ws-1` (`parallelism: "queue"` gives each message its own session even while an earlier one is still running). `reply_target: "source_thread"` makes the session's gates (`ask_user`, tool approval, `inform`) forward to the Discord thread, so the approval prompt for a parked `delete_message` call is delivered there. To forward every session of the workspace to the channel regardless of how it started, also bind the workspace with `system::set_reply_binding`.
+Response: the created Subscription. Every message in the room starts a `moderator` session in `ws-1` (a channel event never busy-skips, so sessions for different messages run side by side with no `parallelism` setting). `reply_target: "source_thread"` makes the session's gates (`ask_user`, tool approval, `inform`) forward to the Discord thread, so the approval prompt for a parked `delete_message` call is delivered there. To forward every session of the workspace to the channel regardless of how it started, also bind the workspace with `system::set_reply_binding`.
 
 ### 6. Create the required approval policy on delete_message
 `system::create_tool_approval_policy`

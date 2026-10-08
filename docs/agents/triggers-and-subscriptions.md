@@ -97,7 +97,9 @@ A `Subscription` row:
   resolved target becomes the session's reply binding.
 - `parallelism` - `skip | queue`. With `skip` (default), if the
   prior fire is still being processed, the new fire is a no-op for
-  this sub. With `queue`, always fire.
+  this sub. With `queue`, always fire. A fire that carries an inbound
+  channel event is exempt: it never skips, so for a channel binding
+  the two values behave the same.
 - `enabled` - bool.
 
 ### The `channel` trigger kind
@@ -314,16 +316,17 @@ off the `triage-incident` agent.
       "workspace_id": "ws-incidents"
     },
     "reply_target": "source_thread",
-    "payload_template": "{{ event.text }}",
-    "parallelism": "queue"
+    "payload_template": "{{ event.text }}"
   }
 }
 ```
 
-`parallelism: queue` means every matching message produces its own
-session even if a prior triage is still running. The fire context
-carries the firing event under `event`, so the payload template can
-reference `event.text`.
+Every matching message in a thread that has no session yet produces
+its own session, even if a prior triage is still running: a channel
+event never busy-skips, so no `parallelism` setting is needed. (A
+message in a thread that already has a session goes to that session.)
+The fire context carries the firing event under `event`, so the
+payload template can reference `event.text`.
 
 ### Workflow 3 - inbound webhook fires a fresh agent session
 
@@ -396,7 +399,10 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   each subscription decides whether to act on that fire. `skip`
   drops the fire for that sub if its prior invocation is still
   running; `queue` always acts. So a high-frequency trigger with
-  `skip` subs effectively rate-limits per-sub.
+  `skip` subs effectively rate-limits per-sub. The exception is a fire
+  that carries an inbound channel event (a channel binding): it never
+  skips, because a skip there would silently drop the first message of
+  a new thread.
 - **`parked_session` subscriptions are dynamic and one-shot.** They
   exist only between the moment a `subscribe_to_trigger` yields
   and the moment the trigger fires (or the timeout sweeper times

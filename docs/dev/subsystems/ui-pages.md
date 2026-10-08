@@ -116,7 +116,7 @@ Page-by-page index follows. The first column is the overlay target that reaches 
 | `providers:workspace` | WorkspaceProvidersPage | `workspaces/providers.jsx` | `GET /v1/workspace_providers` |
 | `providers:channel` | ChannelProvidersPage | `channels.jsx` | `GET /v1/channel_providers` |
 | `channels` | ChannelsPage | `channels.jsx` | `GET /v1/channels` |
-| `channels:rules` | ChannelRulesPage | `channel_rules.jsx` | `GET /v1/triggers?kind=channel`, `GET` and `POST /v1/triggers/{id}/subscriptions`, `DELETE /v1/triggers/{id}/subscriptions/{sid}` |
+| `channels:rules` | ChannelRulesPage | `channel_rules.jsx` | `GET` and `POST /v1/triggers` (the `POST` find-or-creates the room's channel trigger; the `GET` lists them with `?kind=channel`), `GET` and `POST /v1/triggers/{id}/subscriptions`, `DELETE /v1/triggers/{id}/subscriptions/{sid}` |
 | `approvals` | ApprovalsPage | `approvals.jsx` | `POST /v1/sessions/find`, `.../tool_approval/pending`, `/v1/tool_approval_policies` |
 | `triggers[::<id>]` | TR_TriggersPage | `triggers.jsx` | `GET /v1/triggers`, `.../subscriptions`, `POST .../fire_now` |
 | `harnesses[::<id>]` | HarnessesPage | `harnesses.jsx` | `GET /v1/harnesses` (+ harness instance/outbound sub-forms) |
