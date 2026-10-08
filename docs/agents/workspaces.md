@@ -25,6 +25,7 @@ mcp_tools:
   - workspaces::get_workspace_log
   - workspaces::create_workspace_session
   - workspaces::get_workspace_session
+  - workspaces::read_workspace_session_messages
   - workspaces::list_workspace_sessions
   - workspaces::cancel_workspace_session
   - workspaces::interrupt_workspace_session
@@ -168,7 +169,9 @@ it's called from a context with no implicit session.
   call over MCP carries no run identity, so it is always refused
   there. The same rule applies to `get_workspace_file_info` and
   `list_workspace_files`; a recursive listing simply leaves those
-  entries out. Session-bound tools (`read`, `ls`, `write` inside a
+  entries out. To read a session's transcript use
+  `workspaces::read_workspace_session_messages`, not the raw
+  `.state/sessions/<id>/messages.jsonl` path. Session-bound tools (`read`, `ls`, `write` inside a
   session) are not affected: Workflow 2 below still works.
 - `workspaces::write_workspace_file` - write file. Body:
   `workspace_id`, `path`, `content`, optional `mode`
@@ -206,7 +209,8 @@ how the routing works.
 Sessions on a workspace are run with
 `workspaces::create_workspace_session`, inspected with
 `workspaces::get_workspace_session` /
-`workspaces::list_workspace_sessions`, ended with
+`workspaces::list_workspace_sessions`, read (their transcript) with
+`workspaces::read_workspace_session_messages`, ended with
 `workspaces::cancel_workspace_session`, or have only the turn they are running
 stopped (the session stays alive) with
 `workspaces::interrupt_workspace_session`. See

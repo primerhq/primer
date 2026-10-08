@@ -6,6 +6,7 @@ related: [workspaces, agents, yielding, tool-approval, graphs]
 mcp_tools:
   - workspaces::create_workspace_session
   - workspaces::get_workspace_session
+  - workspaces::read_workspace_session_messages
   - workspaces::list_workspace_sessions
   - workspaces::pause_workspace_session
   - workspaces::resume_workspace_session
@@ -361,10 +362,14 @@ Returns the session with its `id` and a `status` of `running`: `{"id": "sid-abc"
 }
 ```
 
-When `status` is `ended`, the session has finished. The output lives in
-the workspace - tool outputs are in `.tmp/sid-abc/`, the LLM
-history is in `.state/sessions/sid-abc/`, and any files the agent
-wrote are wherever it wrote them.
+When `status` is `ended`, the session has finished. Read what it said
+with `workspaces::read_workspace_session_messages` (`{workspace_id,
+session_id}`, optional `after_seq` / `limit` / `tail`): the same
+transcript `GET /v1/sessions/{id}/messages` serves. Any files the agent
+wrote are wherever it wrote them (`workspaces::read_workspace_file`).
+The runtime keeps the transcript under `.state/sessions/sid-abc/` and
+large tool outputs under `.tmp/sid-abc/`, but raw reads of `.state/`
+and `.tmp/` are admin-only; use the transcript tool instead.
 
 ### Workflow 2 - read why a session is stuck
 
@@ -383,10 +388,11 @@ know what it's waiting on.
 Returns `status="waiting"`, `parked_status="parked"`,
 `parked_event_key="ask_user:sid-xyz:tc-42"`.
 
-2. Read the `waiting.json` to see the prompt. (This requires
-   workspace file access; if the operator isn't exposed
-   `workspaces::read_workspace_file` they read it via REST.) The
-   file body might be:
+2. Read the prompt with `GET /v1/sessions/{session_id}/ask_user/pending`
+   (below), or read the session's latest records with
+   `workspaces::read_workspace_session_messages` (`tail: true`). Do not
+   read `.state/sessions/<id>/waiting.json` directly: raw `.state` reads
+   are admin-only. The pending prompt might be:
 
 ```json
 {

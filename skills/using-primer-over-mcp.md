@@ -236,7 +236,9 @@ Once you have picked an agent or graph (see the capability index and
 3. Poll `workspaces::get_workspace_session` until `status` is `ended`
    (`ended_reason: completed`). A `waiting` status means the agent parked on a
    yielding tool; see `cookbook/monitor-and-resume-a-parked-session`.
-4. Read results with `workspaces::read_workspace_file`.
+4. Read output files with `workspaces::read_workspace_file`, and what the session said with
+   `workspaces::read_workspace_session_messages` (poll with `after_seq`). Never read
+   `.state/` or `.tmp/` paths: raw reads there are admin-only.
 5. End a run with `workspaces::cancel_workspace_session`; to stop only its current turn and keep the
    session, use `workspaces::interrupt_workspace_session` (a success answer alone is not a Stop: check
    `interrupt_requested` in it). Clean up with `workspaces::delete_workspace`.
