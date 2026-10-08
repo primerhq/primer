@@ -37,8 +37,10 @@ Lookup = Callable[[Any, str], Awaitable[Any | None]]
 # The storage layer caps a page at this many rows; a walk over every row asks for full pages.
 _PAGE = 200
 
-# What a storage backend raises while building a page that holds a row which no longer decodes into the model.
-_UNREADABLE = (ValidationError, json.JSONDecodeError)
+# What a storage backend raises while building a page that holds a row which no longer decodes into the model: the JSON is not JSON, the
+# model rejects its shape, or the JSON is not an object (the decode writes the row id into it, which fails for an array, a string or
+# null with a TypeError). The call is the storage's own ``list`` and nothing else runs inside the ``try``.
+_UNREADABLE = (ValidationError, json.JSONDecodeError, TypeError)
 
 
 async def first_referencing_row(
