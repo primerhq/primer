@@ -140,3 +140,67 @@ async def test_a_user_run_cannot_update_an_admin_webhook_trigger(fake_storage_pr
     assert token not in result.output
     after = await fake_storage_provider.get_storage(Trigger).get(tid)
     assert (after.name, after.config.token, after.owner) == (before.name, token, before.owner)
+
+
+# ---------------------------------------------------------------------------
+# Lead review of #491, round 3
+# ---------------------------------------------------------------------------
+
+
+async def test_an_admin_update_that_echoes_the_token_it_read_still_gets_a_new_token(fake_storage_provider) -> None:
+    from primer.model.principal import PrincipalRef
+    from primer.model.yield_ import ToolContext
+
+    tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
+    created = await tools.call(
+        tool_name="create", arguments={"slug": "user-hook", "name": "hook", "config": {"kind": "webhook"}}, ctx=caller("user"),
+    )
+    tid, token = json.loads(created.output)["id"], json.loads(created.output)["config"]["token"]
+    other_admin = ToolContext(
+        tool_call_id="tc", session_id="s", workspace_id="w",
+        initiated_by=PrincipalRef(type="user", id="admin-2", display="admin-2", role="admin", source="local"),
+    )
+
+    read = json.loads((await tools.call(tool_name="get", arguments={"id": tid}, ctx=other_admin)).output)
+    assert read["config"]["token"] == token
+    updated = await tools.call(tool_name="update", arguments={"id": tid, "config": read["config"]}, ctx=other_admin)
+
+    assert not updated.is_error, updated.output
+    stored = await fake_storage_provider.get_storage(Trigger).get(tid)
+    assert stored.owner.id == "admin-2"
+    assert stored.config.token != token and len(stored.config.token) == 32
+
+
+async def test_two_unattributed_callers_are_not_the_same_owner(fake_storage_provider) -> None:
+    """``PrincipalRef.unattributed()`` is a stand-in for "nobody known", not an identity: one unattributed run may not see or
+    change what another saved."""
+    from primer.model.principal import PrincipalRef
+    from primer.model.yield_ import ToolContext
+    from primer.trigger.owner import may_manage_trigger, same_owner
+
+    nobody = ToolContext(tool_call_id="tc", session_id="s", workspace_id="w", initiated_by=PrincipalRef.unattributed())
+    tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
+    created = await tools.call(
+        tool_name="create", arguments={"slug": "nobody-hook", "name": "hook", "config": {"kind": "webhook"}}, ctx=nobody,
+    )
+    assert not created.is_error, created.output
+    tid = json.loads(created.output)["id"]
+    stored = await fake_storage_provider.get_storage(Trigger).get(tid)
+
+    assert not await same_owner(PrincipalRef.unattributed(), PrincipalRef.unattributed(), fake_storage_provider)
+    assert not await may_manage_trigger(stored, PrincipalRef.unattributed(), fake_storage_provider)
+    got = json.loads((await tools.call(tool_name="get", arguments={"id": tid}, ctx=nobody)).output)
+    assert got["config"]["token"] == MASK
+    updated = await tools.call(tool_name="update", arguments={"id": tid, "name": "x"}, ctx=nobody)
+    assert updated.is_error and json.loads(updated.output).get("type") == "forbidden", updated.output
+
+
+async def test_the_get_tool_shows_a_non_manager_only_the_owner_display_and_role(fake_storage_provider) -> None:
+    tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
+    tid, _ = await _admin_webhook(tools)
+
+    got = json.loads((await tools.call(tool_name="get", arguments={"id": tid}, ctx=caller("user", kind="api_token"))).output)
+    listed = json.loads((await tools.call(tool_name="list", arguments={}, ctx=None)).output)
+
+    assert got["owner"] == {"display": "user", "role": "admin"}
+    assert [r["owner"] for r in listed if r["id"] == tid] == [{"display": "user", "role": "admin"}]

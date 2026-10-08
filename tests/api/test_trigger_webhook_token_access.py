@@ -177,3 +177,66 @@ async def test_the_owner_re_saving_keeps_the_token_and_the_mask_in_a_body_keeps_
 
     assert renamed.status_code == 200 and masked.status_code == 200, (renamed.text, masked.text)
     assert (await _stored(app, tid)).config.token == token
+
+
+# ---------------------------------------------------------------------------
+# Lead review of #491, round 3
+# ---------------------------------------------------------------------------
+
+
+async def test_an_admin_put_that_echoes_the_stored_token_still_gets_a_new_token(client, app):
+    """GET then a modified PUT carries the token it read. A change of owner must still re-mint it: the old owner knows it."""
+    await _setup(client, app)
+    await _as_user(client)
+    tid, token = await _create_webhook(client, "user-hook")
+
+    await _as_admin(client)
+    read = (await client.get(f"/v1/triggers/{tid}")).json()
+    assert read["config"]["token"] == token
+    resp = await client.put(f"/v1/triggers/{tid}", json={"name": "adopted", "config": read["config"]})
+
+    assert resp.status_code == 200, resp.text
+    stored = await _stored(app, tid)
+    assert stored.owner.role == "admin"
+    assert stored.config.token != token and len(stored.config.token) == 32
+
+
+async def test_the_hmac_secret_mask_in_a_put_body_keeps_the_stored_secret(client, app):
+    await _setup(client, app)
+    await _as_user(client)
+    tid, token = await _create_webhook(client, "user-hook")
+    set_secret = await client.put(f"/v1/triggers/{tid}", json={"config": {"kind": "webhook", "hmac_secret": "s3cret-value"}})
+    assert set_secret.status_code == 200, set_secret.text
+
+    read = (await client.get(f"/v1/triggers/{tid}")).json()
+    assert read["config"]["hmac_secret"] == "**********"
+    resp = await client.put(f"/v1/triggers/{tid}", json={"config": read["config"]})
+
+    assert resp.status_code == 200, resp.text
+    stored = await _stored(app, tid)
+    assert stored.config.hmac_secret.get_secret_value() == "s3cret-value"
+    assert stored.config.token == token
+
+
+async def test_a_caller_who_cannot_manage_a_trigger_sees_only_the_owner_display_and_role(client, app):
+    await _setup(client, app)
+    await _as_admin(client)
+    tid, _ = await _create_webhook(client, "admin-hook")
+    sub = await client.post(
+        f"/v1/triggers/{tid}/subscriptions",
+        json={"config": {"kind": "agent_fresh_session", "workspace_id": "ws-1", "agent_id": "ag-1"}},
+    )
+    assert sub.status_code == 201, sub.text
+    sid = sub.json()["id"]
+    full = (await client.get(f"/v1/triggers/{tid}")).json()["owner"]
+    assert {"type", "id", "display", "role"} <= set(full)
+
+    await _as_user(client)
+    rows = [
+        (await client.get(f"/v1/triggers/{tid}")).json(),
+        next(t for t in (await client.get("/v1/triggers")).json()["items"] if t["id"] == tid),
+        (await client.get(f"/v1/triggers/{tid}/subscriptions/{sid}")).json(),
+        next(s for s in (await client.get(f"/v1/triggers/{tid}/subscriptions")).json()["items"] if s["id"] == sid),
+    ]
+    for row in rows:
+        assert row["owner"] == {"display": full["display"], "role": "admin"}, row
