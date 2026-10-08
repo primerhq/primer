@@ -2232,8 +2232,11 @@ async def list_files(
     # walking (and therefore paying for) the whole tree regardless of
     # page size. Fine for "browse/recent", not a fit for bulk export
     # (download_archive already exists for that).
+    #
+    # One extra entry is walked on top of the page: the runtime's ready marker is dropped after the walk (it is plumbing, see
+    # ``_is_runtime_marker``), and a walk capped at exactly offset+limit that met it would otherwise leave the page one entry short.
     max_entries = (
-        min(offset + limit, _MAX_RECURSIVE_WALK_ENTRIES) if recursive else None
+        min(offset + limit, _MAX_RECURSIVE_WALK_ENTRIES) + 1 if recursive else None
     )
     entries = await ws.list_files(path, recursive=recursive, max_entries=max_entries)
     entries = [e for e in entries if not _is_runtime_marker(e.path)]
