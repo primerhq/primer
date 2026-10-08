@@ -1,5 +1,26 @@
 /* global React, Icon, Btn, Modal, relativeTime, fmtDate */
 
+// Worker load. A worker that has not reported its load (one from before load reporting, or one that has not yet sent a heartbeat with a
+// load) serves `in_flight: null`: it is not idle, it is UNKNOWN. The page used to turn the missing number into 0, so such a worker drew an
+// empty bar and "0 / 4 slots in use", and a fleet of them summed to a confident idle total.
+function WK_loadText(inFlight, capacity) {
+  return (inFlight == null ? "?" : inFlight) + " / " + capacity;
+}
+
+// Totals over the workers that can run something (a dead worker is a tombstone). `flight` is the sum of what was REPORTED; `unknown` is how
+// many of those workers reported nothing, and `known` is whether the total can be trusted as the whole fleet's load.
+function WK_fleetLoad(workers) {
+  const out = { flight: 0, cap: 0, unknown: 0, known: true };
+  (workers || []).forEach((w) => {
+    if (w.status === "dead") return;
+    out.cap += w.capacity || 0;
+    if (typeof w.in_flight === "number") out.flight += w.in_flight;
+    else out.unknown += 1;
+  });
+  out.known = out.unknown === 0;
+  return out;
+}
+
 function WorkersPage({ pushToast }) {
   const { useResource, useMutation, useViewport, apiFetch } = window.primerApi;
   const { isMobile } = useViewport();
@@ -37,7 +58,7 @@ function WorkersPage({ pushToast }) {
     // Real WorkerInfo: {id, host, pid, capacity, started_at, last_heartbeat, status}
     // The Designer's row expects: in_flight, heartbeat (seconds-ago number).
     ...w,
-    in_flight: typeof w.in_flight === "number" ? w.in_flight : 0,
+    in_flight: typeof w.in_flight === "number" ? w.in_flight : null,
     heartbeat: w.last_heartbeat
       ? Math.max(0, (Date.now() - new Date(w.last_heartbeat).getTime()) / 1000)
       : 0,
@@ -118,24 +139,21 @@ function WorkersPage({ pushToast }) {
     }
   );
 
+  const load = WK_fleetLoad(workers);
   const totals = workers.reduce(
     (acc, w) => {
-      // Capacity and in-flight count only for workers that can actually
-      // run something. A dead worker is a tombstone: its process is gone,
-      // so folding its slots into the total advertises parallelism that
-      // does not exist (a registry with 144 dead rows reported 441 slots
-      // when 3 live workers offered 9).
-      if (w.status !== "dead") {
-        acc.cap += w.capacity || 0;
-        acc.flight += w.in_flight || 0;
-      }
+      // Capacity and in-flight are counted by WK_fleetLoad, only for workers that can actually run something. A dead worker is a
+      // tombstone: its process is gone, so folding its slots into the total advertises parallelism that does not exist (a registry
+      // with 144 dead rows reported 441 slots when 3 live workers offered 9).
       if (w.status === "active") acc.active += 1;
       if (w.status === "draining") acc.draining += 1;
       if (w.status === "dead") acc.dead += 1;
       return acc;
     },
-    { cap: 0, flight: 0, active: 0, draining: 0, dead: 0 }
+    { active: 0, draining: 0, dead: 0 }
   );
+  totals.cap = load.cap;
+  totals.flight = load.flight;
 
   // Client-side filter: status chip + free-text over id / host.
   const q = filterText.trim().toLowerCase();
@@ -185,9 +203,11 @@ function WorkersPage({ pushToast }) {
         />
         <SummaryStat
           label="Running now"
-          value={`${totals.flight} / ${totals.cap}`}
-          sub={`${totals.flight} task${totals.flight === 1 ? "" : "s"} · ${totals.cap} parallel slot${totals.cap === 1 ? "" : "s"}`}
-          accent={totals.cap > 0 && totals.flight / totals.cap > 0.8 ? "amber" : "green"}
+          value={load.known ? `${totals.flight} / ${totals.cap}` : `? / ${totals.cap}`}
+          sub={load.known
+            ? `${totals.flight} task${totals.flight === 1 ? "" : "s"} · ${totals.cap} parallel slot${totals.cap === 1 ? "" : "s"}`
+            : `${load.unknown} worker${load.unknown === 1 ? "" : "s"} not reporting its load · ${totals.cap} parallel slot${totals.cap === 1 ? "" : "s"}`}
+          accent={!load.known ? undefined : totals.cap > 0 && totals.flight / totals.cap > 0.8 ? "amber" : "green"}
           title={
             "Left number: how many leases (agent turns, graph runs, harness ops, "
             + "trigger fires) are being processed right now across all active workers.\n"
@@ -347,7 +367,12 @@ function WorkersPage({ pushToast }) {
         >
           Sending a drain signal to <strong className="mono" style={{ fontFamily: "inherit" }}>{drainTarget.id}</strong>.
           <ul>
-            <li><strong>{drainTarget.in_flight} in-flight session{drainTarget.in_flight === 1 ? "" : "s"}</strong> on this worker will finish before drain completes.</li>
+            <li>
+              {drainTarget.in_flight == null
+                ? <strong>Its in-flight sessions</strong>
+                : <strong>{drainTarget.in_flight} in-flight session{drainTarget.in_flight === 1 ? "" : "s"}</strong>}
+              {" "}on this worker will finish before drain completes.
+            </li>
             <li>The scheduler will stop assigning new sessions to this worker.</li>
             <li>The worker process exits cleanly once all turns finish.</li>
             <li>This action is idempotent — calling on an already-draining worker is a no-op.</li>
@@ -403,7 +428,7 @@ function WorkersPage({ pushToast }) {
 
 function WorkerDetail({ w }) {
   const capacity = w.capacity || 0;
-  const inFlight = w.in_flight || 0;
+  const inFlight = typeof w.in_flight === "number" ? w.in_flight : null;
   const heartbeatAge = w.heartbeat ?? 0;
   const heartbeatBad = heartbeatAge > 30;
   const hbAbs = w.last_heartbeat ? fmtDate(new Date(w.last_heartbeat)) : "—";
@@ -426,7 +451,9 @@ function WorkerDetail({ w }) {
       <DetailRow label="Capacity">
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ width: 140 }}><CapacityBar inFlight={inFlight} capacity={capacity} /></div>
-          <span className="mono muted text-sm">{inFlight} / {capacity} slots in use</span>
+          <span className="mono muted text-sm">
+            {inFlight == null ? "load not reported" : `${inFlight} / ${capacity} slots in use`}
+          </span>
         </div>
       </DetailRow>
       <DetailRow label="Last heartbeat">
@@ -459,7 +486,7 @@ function WorkerRow({ w, onSelect, selected, onDrain, onDelete, draining, deletin
   const heartbeatAge = w.heartbeat ?? 0;
   const heartbeatBad = heartbeatAge > 30;
   const capacity = w.capacity || 0;
-  const inFlight = w.in_flight || 0;
+  const inFlight = typeof w.in_flight === "number" ? w.in_flight : null;
   // Real WorkerInfo.started_at is an ISO string — relativeTime expects
   // seconds-ago. Compute the delta defensively.
   const startedAtSecondsAgo = w.started_at
@@ -495,7 +522,7 @@ function WorkerRow({ w, onSelect, selected, onDrain, onDelete, draining, deletin
       <td>
         <CapacityBar inFlight={inFlight} capacity={capacity} />
         <div className="mono muted text-sm" style={{ marginTop: 2 }}>
-          {inFlight} / {capacity}
+          {WK_loadText(inFlight, capacity)}
         </div>
       </td>
       <td className={heartbeatBad ? "mono" : "mono muted"} style={{ color: heartbeatBad ? "var(--red)" : undefined }}>
@@ -540,10 +567,11 @@ function WorkerRow({ w, onSelect, selected, onDrain, onDelete, draining, deletin
 function CapacityBar({ inFlight, capacity }) {
   const safe = Math.max(0, capacity | 0);
   const segments = Array.from({ length: safe });
+  const unknown = inFlight == null;
   return (
-    <div className="cv-auto" style={{ display: "flex", gap: 2 }}>
+    <div className="cv-auto" style={{ display: "flex", gap: 2 }} title={unknown ? "Load not reported" : undefined}>
       {segments.map((_, i) => {
-        const filled = i < inFlight;
+        const filled = !unknown && i < inFlight;
         return (
           <div
             key={i}
@@ -552,7 +580,7 @@ function CapacityBar({ inFlight, capacity }) {
               height: 8,
               borderRadius: 2,
               background: filled ? (safe > 0 && inFlight / safe > 0.8 ? "var(--amber)" : "var(--accent)") : "var(--bg-2)",
-              border: "1px solid " + (filled ? "transparent" : "var(--border)"),
+              border: (unknown ? "1px dashed " : "1px solid ") + (filled ? "transparent" : "var(--border)"),
             }}
           />
         );

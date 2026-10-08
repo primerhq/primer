@@ -18,13 +18,15 @@ function HealthPage({ sessions }) {
   const wp = data.worker_pool || {};
   const sched = data.scheduler || {};
   const status = data.status;
-  const inFlight = typeof wp.in_flight === "number" ? wp.in_flight : 0;
+  // null = the fleet has not (all) reported its load: unknown, not idle (see workers.jsx). Never drawn or charted as zero.
+  const inFlight = typeof wp.in_flight === "number" ? wp.in_flight : null;
   const capacity = typeof wp.capacity === "number" && wp.capacity > 0 ? wp.capacity : 0;
 
   // Client-side history for in_flight — seeded zero, appended on each poll.
   const [history, setHistory] = React.useState(() => Array.from({ length: 60 }, () => 0));
   React.useEffect(() => {
     if (health.data == null) return;
+    if (inFlight == null) return;
     setHistory((h) => [...h.slice(-59), inFlight]);
   }, [health.data, inFlight]);
 
@@ -45,7 +47,7 @@ function HealthPage({ sessions }) {
   ];
 
   const poolMetrics = [
-    { k: "in_flight", v: inFlight, emphasis: capacity > 0 && inFlight / capacity > 0.8 ? "amber" : null },
+    { k: "in_flight", v: inFlight == null ? "n/a" : inFlight, emphasis: inFlight != null && capacity > 0 && inFlight / capacity > 0.8 ? "amber" : null },
     { k: "capacity_total", v: capacity || "—" },
     { k: "sessions_completed_total", v: fmt(poolMetricsRaw["primer_worker_sessions_completed_total"]) },
     { k: "sessions_failed_total", v: fmt(poolMetricsRaw["primer_worker_sessions_failed_total"]) },
@@ -92,7 +94,7 @@ function HealthPage({ sessions }) {
           <span>in_flight</span>
           <span className="sub">· last 5 min · 5s tick · client-side only</span>
           <div className="right">
-            <span className="mono tabular" style={{ fontSize: 20, fontWeight: 600 }}>{inFlight}</span>
+            <span className="mono tabular" style={{ fontSize: 20, fontWeight: 600 }}>{inFlight == null ? "n/a" : inFlight}</span>
             <span className="muted mono">/ {capacity || "—"}</span>
           </div>
         </div>

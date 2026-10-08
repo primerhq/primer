@@ -134,15 +134,15 @@ def test_bundle_transpiles_with_workers() -> None:
 
 
 def test_capacity_totals_exclude_dead_workers() -> None:
+    """The accumulation lives in WK_fleetLoad now (so an unreported load can be told from zero); the not-dead gate must still come BEFORE
+    both accumulators. tests/ui/test_worker_load_unknown.py evaluates it."""
     src = _src()
-    assert 'if (w.status !== "dead") {' in src, (
-        "capacity/in_flight accumulation must be gated on the worker not "
-        "being dead"
-    )
-    # The gate has to wrap BOTH accumulators, not just capacity.
-    gated = src.split('if (w.status !== "dead") {', 1)[1].split("}", 1)[0]
-    assert "acc.cap +=" in gated, "capacity must be inside the not-dead gate"
-    assert "acc.flight +=" in gated, "in_flight must be inside the not-dead gate"
+    fleet = src[src.index("function WK_fleetLoad"):]
+    fleet = fleet[:fleet.index("\n}\n")]
+    gate = 'if (w.status === "dead") return;'
+    assert gate in fleet, "dead workers are skipped before anything is added"
+    assert fleet.index(gate) < fleet.index("out.cap +=") < fleet.index("out.flight +=")
+    assert "const load = WK_fleetLoad(workers);" in src
 
 
 def test_dead_workers_are_still_counted_for_the_dead_tile() -> None:
