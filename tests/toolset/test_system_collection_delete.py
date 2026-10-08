@@ -8,11 +8,14 @@ cannot drift again.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from primer.model.collection import Collection, Document
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
+from primer.storage.sqlite import SqliteDocumentContentStore
 
 # Re-export so pytest can resolve the real-sqlite system toolset with a search-enabled collection ("kb-1") and a recording vector store.
 from tests.toolset.test_system_document_tools import _call, _put, world  # noqa: F401
@@ -143,3 +146,140 @@ async def test_a_system_collection_cannot_be_deleted_and_nothing_is_cascaded(wor
     assert await sp.get_storage(Collection).get("sys-1") is not None
     assert [d.path for d in await _documents_of(sp, "sys-1")] == ["map.md"]
     assert await sp.get_content_store().resolve_id("sys-1", "map.md") is not None
+
+
+@pytest.mark.asyncio
+async def test_the_cascade_runs_before_the_collection_row_is_deleted(world, monkeypatch) -> None:
+    """A failure part-way must leave a collection that deleting again finishes, never documents without a collection: the row goes last."""
+    sp, toolset, store = world
+    await _put(toolset, "a.md")
+    await _put(toolset, "b.md")
+    log: list[str] = []
+
+    def around(label, real):
+        async def wrapper(*args, **kwargs):
+            log.append(label)
+            return await real(*args, **kwargs)
+        return wrapper
+
+    _watch_drops(store)  # the world's store drops nothing by itself
+    monkeypatch.setattr(store, "drop_collection", around("vectors", store.drop_collection))
+    docs, colls = sp.get_storage(Document), sp.get_storage(Collection)
+    monkeypatch.setattr(docs, "delete", around("document", docs.delete))
+    monkeypatch.setattr(colls, "delete", around("row", colls.delete))
+    real_content = SqliteDocumentContentStore.delete
+
+    async def content_delete(self, *args, **kwargs):
+        log.append("content")
+        return await real_content(self, *args, **kwargs)
+
+    monkeypatch.setattr(SqliteDocumentContentStore, "delete", content_delete)
+
+    is_error, body = await _call(toolset, "delete_collection", id="kb-1")
+
+    assert not is_error, body
+    assert log.count("row") == 1 and log[-1] == "row", f"the row was not the last thing removed: {log}"
+    assert log[0] == "vectors", f"the vector namespace was not dropped first: {log}"
+    assert log.count("document") == 2 and log.count("content") == 2
+
+
+@pytest.mark.asyncio
+async def test_chunks_written_by_an_indexing_pass_that_lands_mid_purge_are_dropped_too(world, monkeypatch) -> None:
+    sp, toolset, store = world
+    dropped = _watch_drops(store)
+    await _put(toolset, "a.md")
+    docs = sp.get_storage(Document)
+    real, landed = docs.delete, []
+
+    async def indexing_lands(id, *, conn=None):
+        if not landed:
+            landed.append(id)
+            store.records[("kb-1", id, "late")] = SimpleNamespace(collection_id="kb-1", document_id=id, chunk_id="late")
+        return await real(id, conn=conn)
+
+    monkeypatch.setattr(docs, "delete", indexing_lands)
+
+    is_error, body = await _call(toolset, "delete_collection", id="kb-1")
+
+    assert not is_error, body
+    assert landed, "the scenario never ran"
+    assert store.doc_ids() == set(), "a chunk written mid-purge survived the delete"
+    assert len(dropped) >= 2, "the namespace was dropped only before the documents, not after"
+
+
+@pytest.mark.asyncio
+async def test_a_collection_that_keeps_receiving_documents_is_not_deleted_and_says_so(world) -> None:
+    sp, toolset, store = world
+    dropped = _watch_drops(store)
+    await _put(toolset, "a.md")
+    drop = store.drop_collection
+
+    async def writer_that_never_stops(collection_id):
+        await drop(collection_id)
+        if len(dropped) >= 2:
+            await _put(toolset, f"late-{len(dropped)}.md")
+
+    store.drop_collection = writer_that_never_stops
+
+    is_error, body = await _call(toolset, "delete_collection", id="kb-1")
+
+    assert is_error and body["type"] == "conflict", body
+    assert "kb-1" in body["message"]
+    assert len(dropped) <= 6, "the purge chased the writer without a bound"
+    assert await sp.get_storage(Collection).get("kb-1") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_delete_that_removes_nothing_is_a_storage_error_not_a_vector_store_fault(world, monkeypatch) -> None:
+    sp, toolset, store = world
+    _watch_drops(store)
+    await _put(toolset, "a.md")
+
+    async def removes_nothing(id, *, conn=None):
+        return None
+
+    monkeypatch.setattr(sp.get_storage(Document), "delete", removes_nothing)
+
+    is_error, body = await _call(toolset, "delete_collection", id="kb-1")
+
+    assert is_error and body["type"] == "storage-error", body
+    assert await sp.get_storage(Collection).get("kb-1") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_document_deleted_concurrently_counts_as_already_deleted(world, monkeypatch) -> None:
+    sp, toolset, store = world
+    _watch_drops(store)
+    await _put(toolset, "a.md")
+    await _put(toolset, "b.md")
+    docs = sp.get_storage(Document)
+    real, raced = docs.delete, []
+
+    async def deleted_by_someone_else_first(id, *, conn=None):
+        if not raced:
+            raced.append(id)
+            await real(id)
+        return await real(id, conn=conn)
+
+    monkeypatch.setattr(docs, "delete", deleted_by_someone_else_first)
+
+    is_error, body = await _call(toolset, "delete_collection", id="kb-1")
+
+    assert not is_error, body
+    assert raced, "the scenario never ran"
+    assert await _documents_of(sp, "kb-1") == []
+
+
+@pytest.mark.asyncio
+async def test_content_rows_with_no_document_entity_are_removed_with_the_collection(world) -> None:
+    sp, toolset, store = world
+    _watch_drops(store)
+    content = sp.get_content_store()
+    await content.upsert(document_id="ghost-1", collection_id="kb-1", path="ghost.md", content="no entity row")
+    await content.upsert(document_id="ghost-2", collection_id="elsewhere", path="ghost.md", content="another collection's")
+
+    is_error, body = await _call(toolset, "delete_collection", id="kb-1")
+
+    assert not is_error, body
+    assert await content.resolve_id("kb-1", "ghost.md") is None, "an entity-less content row outlived its collection"
+    assert await content.resolve_id("elsewhere", "ghost.md") == "ghost-2", "another collection's content row was removed"
