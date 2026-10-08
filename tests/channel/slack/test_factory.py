@@ -582,3 +582,85 @@ async def test_slack_factory_without_connection_skips_handlers(monkeypatch):
         _provider("cp-y"), _channel(), object())
     assert isinstance(adapter, _FakeAdapter)
     assert installed == []
+
+
+# --------------------------------------------------------------------------- #
+# a refused approval is reported to the clicker (ticket 01a11b6c)
+# --------------------------------------------------------------------------- #
+NOTICE = "routed to specific approvers"
+
+
+@pytest.mark.asyncio
+async def test_action_approve_refused_tells_the_clicker_and_does_not_mark_the_message_decided(monkeypatch):
+    """The relay raised on a restricted gate, the decided edit was skipped, and the clicker saw nothing."""
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=False)
+    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
+    client = SimpleNamespace(chat_update=AsyncMock(), chat_postEphemeral=AsyncMock())
+    body = {
+        "actions": [{"value": "approve:ws1:sid1:tc1"}],
+        "channel": {"id": "C123"}, "user": {"id": "U9"},
+        "message": {"ts": "111.222", "blocks": [{"type": "actions"}]},
+    }
+
+    await app.actions["approve"](AsyncMock(), body, client)
+
+    client.chat_update.assert_not_awaited()
+    client.chat_postEphemeral.assert_awaited_once()
+    kw = client.chat_postEphemeral.await_args.kwargs
+    assert kw["channel"] == "C123" and kw["user"] == "U9" and NOTICE in kw["text"]
+
+
+@pytest.mark.asyncio
+async def test_action_approve_accepted_is_not_told_anything_extra(monkeypatch):
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=True)
+    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
+    client = SimpleNamespace(chat_update=AsyncMock(), chat_postEphemeral=AsyncMock())
+    body = {
+        "actions": [{"value": "approve:ws1:sid1:tc1"}],
+        "channel": {"id": "C123"}, "user": {"id": "U9"},
+        "message": {"ts": "111.222", "blocks": [{"type": "actions"}]},
+    }
+
+    await app.actions["approve"](AsyncMock(), body, client)
+
+    client.chat_update.assert_awaited_once()
+    client.chat_postEphemeral.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_view_reject_modal_refused_tells_the_clicker_and_leaves_the_message(monkeypatch):
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=False)
+    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
+    client = SimpleNamespace(
+        conversations_history=AsyncMock(return_value={"messages": [{"blocks": []}]}),
+        chat_update=AsyncMock(), chat_postEphemeral=AsyncMock())
+    view = {
+        "private_metadata": "reject:ws:sid:tc:C123:111.2",
+        "state": {"values": {"reason": {"reason_text": {"value": "no good"}}}},
+    }
+
+    await app.views[slack_factory.REJECT_MODAL_CALLBACK_ID](AsyncMock(), {"user": {"id": "U1"}}, view, client)
+
+    client.chat_update.assert_not_awaited()
+    client.chat_postEphemeral.assert_awaited_once()
+    kw = client.chat_postEphemeral.await_args.kwargs
+    assert kw["channel"] == "C123" and kw["user"] == "U1" and NOTICE in kw["text"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_notice_does_not_break_the_handler(monkeypatch):
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=False)
+    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
+    client = SimpleNamespace(chat_update=AsyncMock(), chat_postEphemeral=AsyncMock(side_effect=RuntimeError("slack down")))
+    body = {
+        "actions": [{"value": "approve:ws1:sid1:tc1"}],
+        "channel": {"id": "C123"}, "user": {"id": "U9"}, "message": {"ts": "1.2", "blocks": []},
+    }
+
+    await app.actions["approve"](AsyncMock(), body, client)          # must not raise
+
+    client.chat_update.assert_not_awaited()

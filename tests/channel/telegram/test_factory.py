@@ -496,3 +496,79 @@ async def test_telegram_factory_without_connection_skips_handlers(monkeypatch):
         tg_factory, "TELEGRAM_CONNECTIONS", _FakeRegistry(None))
     await tg_factory._telegram_factory(_provider("cp-y"), _channel(), object())
     assert installed == []
+
+
+# --------------------------------------------------------------------------- #
+# a refused approval is reported to the clicker (ticket 01a11b6c)
+# --------------------------------------------------------------------------- #
+NOTICE = "routed to specific approvers"
+
+
+@pytest.mark.asyncio
+async def test_callback_approve_refused_alerts_the_clicker_and_does_not_mark_the_message_approved(monkeypatch):
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=False)
+    adapter._resolve_tag = AsyncMock(return_value={"workspace_id": "w", "session_id": "s", "tool_call_id": "t"})
+    on_callback, _ = _install(monkeypatch, _FakeEntry({"100": adapter}))
+    ctx = _context()
+    cq = _cq("a:TAG")
+
+    await on_callback(SimpleNamespace(callback_query=cq), ctx)
+
+    ctx.bot.edit_message_text.assert_not_awaited()
+    cq.answer.assert_awaited_once()
+    kw = cq.answer.await_args.kwargs
+    assert NOTICE in kw.get("text", "") and kw.get("show_alert") is True
+
+
+@pytest.mark.asyncio
+async def test_callback_approve_accepted_is_answered_once_without_an_alert(monkeypatch):
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=True)
+    adapter._resolve_tag = AsyncMock(return_value={"workspace_id": "w", "session_id": "s", "tool_call_id": "t"})
+    on_callback, _ = _install(monkeypatch, _FakeEntry({"100": adapter}))
+    ctx = _context()
+    cq = _cq("a:TAG")
+
+    await on_callback(SimpleNamespace(callback_query=cq), ctx)
+
+    ctx.bot.edit_message_text.assert_awaited_once()
+    cq.answer.assert_awaited_once()
+    assert not cq.answer.await_args.kwargs.get("show_alert")
+
+
+@pytest.mark.asyncio
+async def test_callback_is_answered_once_whatever_the_branch(monkeypatch):
+    on_callback, _ = _install(monkeypatch, _FakeEntry({"999": _mock_adapter()}))      # chat 100 is not registered
+    cq = _cq("a:TAG", chat_id=100)
+
+    await on_callback(SimpleNamespace(callback_query=cq), _context())
+
+    cq.answer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_message_reply_reject_refused_replies_with_the_notice(monkeypatch):
+    """The Reject button asks for a reason; the reason is relayed as the rejection, which a restricted gate refuses."""
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=False)
+    adapter.resolve_reply_target = MagicMock(return_value={
+        "kind": "reject", "workspace_id": "w", "session_id": "s", "tool_call_id": "t"})
+    _, on_message = _install(monkeypatch, _FakeEntry({"100": adapter}))
+
+    class Corr:
+        def __init__(self, sp):
+            pass
+
+        async def lookup(self, cid, key):
+            return None
+
+    monkeypatch.setattr("primer.channel.correlation.CorrelationStore", Corr)
+    ctx = _context()
+    msg = _msg(text="because reasons", reply_to=SimpleNamespace(message_id=44))
+
+    await on_message(SimpleNamespace(message=msg), ctx)
+
+    ctx.bot.send_message.assert_awaited_once()
+    kw = ctx.bot.send_message.await_args.kwargs
+    assert kw["chat_id"] == 100 and NOTICE in kw["text"] and kw.get("reply_to_message_id") == 5
