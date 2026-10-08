@@ -923,7 +923,9 @@ async def _session_usage_totals(
     # The fold is a pure function of the log, so it is kept per log identity (architecture review A-05): the file's size and modification time as
     # the workspace reports them, and the row's last_seq and turn_no. The stat comes BEFORE the read: a log that grows in between is stored under
     # the older identity and refolded by the next request, which is safe; the reverse order could file stale totals under a newer identity. A
-    # workspace that cannot stat the file (or has no file_info) is never cached: the full read and fold, as before.
+    # workspace that cannot stat the file (or has no file_info) is never cached: the full read and fold, as before. The key is sufficient only
+    # because the log GROWS (every writer appends; the state repo's whole-file rewrites keep the earlier content and add the new records), so a
+    # changed log differs in size: a trim, a rotation or any rewrite that keeps or shrinks the size must change this key.
     key = None
     try:
         info = await workspace.file_info(rel)

@@ -42,17 +42,24 @@ class _Workspace:
         self.modified = datetime(2026, 10, 8, tzinfo=UTC)
         self.reads = 0
         self.stats = 0
+        self.grows_after_read: str | None = None
         self._can_stat = can_stat
 
-    def append(self, text: str) -> None:
+    def append(self, text: str, *, moves_modified: bool = True) -> None:
         self.content += text.encode()
-        self.modified += timedelta(seconds=1)
+        if moves_modified:
+            self.modified += timedelta(seconds=1)
 
     async def read_file(self, path: str) -> bytes:
         if path != LOG:
             raise NotFoundError(path)
         self.reads += 1
-        return self.content
+        snapshot = self.content
+        if self.grows_after_read is not None:
+            # The log grows right after the snapshot this read returns: a record lands between the read and whatever is stat'ed next.
+            grown, self.grows_after_read = self.grows_after_read, None
+            self.append(grown)
+        return snapshot
 
     async def file_info(self, path: str) -> FileEntry:
         self.stats += 1
@@ -93,6 +100,7 @@ async def test_an_unchanged_log_is_read_and_folded_once_across_detail_reads(clie
 
     assert first == second == third and first["total_input_tokens"] == 1000
     assert workspace.reads == 1, f"the log was read {workspace.reads} times for three detail reads of an unchanged session"
+    assert workspace.stats == 3, "a hit costs exactly one stat and no read"
 
 
 @pytest.mark.asyncio
@@ -109,8 +117,39 @@ async def test_an_appended_record_is_in_the_next_read(client, app, fake_storage_
 
 
 @pytest.mark.asyncio
+async def test_an_append_inside_one_modification_tick_is_refolded_by_its_size(client, app, fake_storage_provider):
+    """Two appends within one tick of a coarse clock (1 s on some network and FUSE filesystems) differ only in size, and the row has not moved."""
+    workspace = _Workspace()
+    await _serve(client, app, fake_storage_provider, workspace)
+    assert (await _usage(client))["total_input_tokens"] == 1000
+
+    workspace.append(SECOND_TURN, moves_modified=False)
+    after = await _usage(client)
+
+    assert after["total_input_tokens"] == 1200 and after["turns"] == 2
+    assert workspace.reads == 2
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_lands_between_the_stat_and_the_read_is_in_the_next_read(client, app, fake_storage_provider):
+    """The stat comes BEFORE the read. The first request reads a snapshot that misses a record landing right after it and files it under the
+    identity it stat'ed; the next request sees the grown log under a new identity and refolds. Stat'ing after the read would file the old totals
+    under the grown log's identity and serve them from then on."""
+    workspace = _Workspace()
+    workspace.grows_after_read = SECOND_TURN
+    await _serve(client, app, fake_storage_provider, workspace)
+
+    first = await _usage(client)
+    second = await _usage(client)
+
+    assert first["total_input_tokens"] == 1000, "premise: the first read is the snapshot taken before the record landed"
+    assert second["total_input_tokens"] == 1200 and second["turns"] == 2
+    assert workspace.reads == 2
+
+
+@pytest.mark.asyncio
 async def test_a_log_that_changed_without_changing_size_or_time_is_still_refolded_when_the_row_moved(client, app, fake_storage_provider):
-    """A rewrite that keeps the size and the second (a rewind marker the backend stamps with a coarse clock) still moves the row's last_seq."""
+    """The row's ``last_seq`` is part of the key: a change the row records but the file's size and time do not show (the fake keeps both) is refolded."""
     workspace = _Workspace()
     await _serve(client, app, fake_storage_provider, workspace)
     await _usage(client)
