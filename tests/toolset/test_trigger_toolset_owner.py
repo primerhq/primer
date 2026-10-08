@@ -91,3 +91,52 @@ async def test_create_channel_binding_records_the_owner(fake_storage_provider) -
 
     sub = await fake_storage_provider.get_storage(Subscription).get(json.loads(result.output)["id"])
     assert _owner(sub) == ("user", "user-1", "user")
+
+
+# ---------------------------------------------------------------------------
+# The webhook token through the tools (lead review of #491, round 2)
+# ---------------------------------------------------------------------------
+
+MASK = "•••redacted•••"
+
+
+async def _admin_webhook(tools) -> tuple[str, str]:
+    created = await tools.call(
+        tool_name="create", arguments={"slug": "tool-hook", "name": "hook", "config": {"kind": "webhook"}}, ctx=caller("admin"),
+    )
+    assert not created.is_error, created.output
+    body = json.loads(created.output)
+    return body["id"], body["config"]["token"]
+
+
+async def test_the_get_and_list_tools_mask_the_token_for_anyone_but_its_owner_or_an_admin(fake_storage_provider) -> None:
+    tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
+    tid, token = await _admin_webhook(tools)
+
+    def _token_of(result) -> str:
+        body = json.loads(result.output)
+        if isinstance(body, dict) and "items" in body:
+            body = body["items"]
+        rows = body if isinstance(body, list) else [body]
+        return next(r["config"]["token"] for r in rows if r["id"] == tid)
+
+    # caller("user") shares the admin caller's id: the same identity at a lower rank (a capped run) is not the owner.
+    for ctx, expected in ((caller("admin"), token), (caller("user"), MASK), (caller("user", kind="api_token"), MASK), (None, MASK)):
+        got = await tools.call(tool_name="get", arguments={"id": tid}, ctx=ctx)
+        listed = await tools.call(tool_name="list", arguments={}, ctx=ctx)
+        assert not got.is_error and not listed.is_error, (got.output, listed.output)
+        assert _token_of(got) == expected, ctx
+        assert _token_of(listed) == expected, ctx
+
+
+async def test_a_user_run_cannot_update_an_admin_webhook_trigger(fake_storage_provider) -> None:
+    tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
+    tid, token = await _admin_webhook(tools)
+    before = await fake_storage_provider.get_storage(Trigger).get(tid)
+
+    result = await tools.call(tool_name="update", arguments={"id": tid, "name": "mine"}, ctx=caller("user"))
+
+    assert result.is_error and json.loads(result.output).get("type") == "forbidden", result.output
+    assert token not in result.output
+    after = await fake_storage_provider.get_storage(Trigger).get(tid)
+    assert (after.name, after.config.token, after.owner) == (before.name, token, before.owner)
