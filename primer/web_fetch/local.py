@@ -127,7 +127,7 @@ class LocalAdapter(WebFetchAdapter):
             f"unsupported content type {ct!r}; use http-request for raw bytes"
         )
 
-    async def _get(self, url: str) -> tuple[bytes, str, str, int]:
+    async def _get(self, url: str) -> tuple[bytearray, str, str, int]:
         """GET ``url``, following redirects BY HAND, and return ``(body, content type, final url, status)``.
 
         ``follow_redirects=True`` makes httpx read the whole body of every 3xx before it follows it (a 302 offering 40 MiB was pulled
@@ -159,7 +159,7 @@ class LocalAdapter(WebFetchAdapter):
         raise WebFetchProviderError(f"local fetch: too many redirects (more than {_MAX_REDIRECTS})")
 
     def _extract_html(
-        self, raw: bytes, ct: str, final_url: str, status: int,
+        self, raw: bytes | bytearray, ct: str, final_url: str, status: int,
     ) -> FetchedPage:
         import lxml.html as lh
         import trafilatura
@@ -174,7 +174,7 @@ class LocalAdapter(WebFetchAdapter):
         # extract_metadata may prefer the first heading over the title element.
         title = ""
         try:
-            tree = lh.fromstring(raw)
+            tree = lh.fromstring(bytes(raw))        # lxml takes bytes or str, not the bytearray ``read_capped`` returns
             nodes = tree.xpath("//title/text()")
             if nodes:
                 title = nodes[0].strip()
