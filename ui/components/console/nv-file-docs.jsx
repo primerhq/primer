@@ -53,6 +53,25 @@ function NV_FileDoc(props) {
     return function () { window.removeEventListener("keydown", onKey); };
   });
 
+  // A refused read (403: a non-admin naming the runtime's .state / .tmp,
+  // or any other failure) shows why instead of an empty editor that a
+  // save would turn into a write.
+  if (read.error && !read.data) {
+    var e = read.error;
+    var why = (typeof e.detail === "string" ? e.detail
+      : (e.detail && e.detail.message)) || e.message || e.title
+      || "the read failed";
+    return (
+      <div className="nv-filedoc" data-testid={"nv-file-doc:" + path}>
+        <div className="nv-rail-empty" data-testid="nv-file-doc-error">
+          <div>
+            Can't open {path}: {String(why)}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (binary || tooBig) {
     return (
       <div className="nv-filedoc" data-testid={"nv-file-doc:" + path}>
@@ -148,7 +167,12 @@ function NV_DiffDoc(props) {
             </section>
           );
         })}
-        {!files.length ? (
+        {!files.length && commit.data && commit.data.files_hidden ? (
+          <div className="nv-rail-empty" data-testid="nv-diff-hidden">
+            <div>This commit changes the workspace runtime's state; its file changes are visible to admins only.</div>
+          </div>
+        ) : null}
+        {!files.length && !(commit.data && commit.data.files_hidden) ? (
           <div className="nv-rail-empty"><div>Empty commit.</div></div>
         ) : null}
       </div>

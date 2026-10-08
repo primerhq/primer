@@ -33,6 +33,19 @@ def test_legacy_commit_diff_says_hidden_files_are_admin_only():
     assert "admins only" in body
 
 
+def test_both_edited_components_still_transpile():
+    from primer.api._jsx_bundle import JSXBundler
+
+    ui = UI.parent
+    b = JSXBundler(ui_dir=ui, babel_source=(ui / "vendor" / "babel.min.js").read_text())
+    for rel, marker in (
+        ("components/console/nv-file-docs.jsx", "NV_DiffDoc"),
+        ("components/workspaces.jsx", "WS_CommitDiff"),
+    ):
+        code = b._transform((ui / rel).read_text(encoding="utf-8"), rel)
+        assert code and marker in code
+
+
 def test_console_file_doc_renders_a_refused_read():
     body = _fn(FDOCS, "NV_FileDoc")
     assert "read.error" in body
