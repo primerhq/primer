@@ -273,6 +273,9 @@ function HarnessOutboundBuilder({ onClose, onCreated, initialStep, initialHarnes
         </div>
       }
     >
+      <div className="field-help warn" data-testid="harness-outbound-admin-only" style={{ marginBottom: 12 }}>
+        Admin only: creating an outbound harness, changing its tracked entities, building and pushing it needs the admin role. Any other role gets a 403.
+      </div>
       {step === 1 && (
         <HOB_Step1Metadata
           name={name} onNameChange={onNameChange}
