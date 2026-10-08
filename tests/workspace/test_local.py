@@ -1097,7 +1097,12 @@ class TestWorkspaceAclose:
             await ws.end_all_sessions()
 
         assert await second.status() == SessionStatus.ENDED, "one failing session stopped the rest from being ended"
-        assert any("ending a session failed" in r.getMessage() for r in caplog.records)
+        # Worded like the sandbox variant's line, so one search finds both, and carrying the three fields an operator needs to find the session.
+        failed = [r for r in caplog.records if r.getMessage() == "LocalWorkspace: aclose on session failed"]
+        assert len(failed) == 1, [r.getMessage() for r in caplog.records]
+        assert failed[0].workspace_id == ws.id
+        assert failed[0].session_id == first.session_id
+        assert "the state repo is gone" in failed[0].error
 
     async def test_aclose_idempotent_via_destroy(
         self, provider: LocalWorkspaceBackend
