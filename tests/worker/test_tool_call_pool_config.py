@@ -170,6 +170,9 @@ async def test_a_failing_scheduler_heartbeat_does_not_skip_the_engine_heartbeat(
         async def heartbeat_worker(self, worker_id):
             raise RuntimeError("scheduler down")
 
+        async def report_worker_load(self, worker_id, *, in_flight):
+            return None
+
     class Engine:
         def __init__(self):
             self.calls = 0

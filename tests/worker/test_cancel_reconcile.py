@@ -426,6 +426,9 @@ async def test_the_heartbeat_loop_never_reconciles(monkeypatch):
         async def heartbeat_worker(self, worker_id):
             return None
 
+        async def report_worker_load(self, worker_id, *, in_flight):
+            return None
+
     pool = _pool(scheduler=Scheduler())
     calls = []
 
@@ -449,6 +452,9 @@ async def test_the_heartbeat_loop_never_reconciles(monkeypatch):
 async def test_a_lost_lease_still_forces_a_cancel_into_a_turn_that_is_already_unwinding(monkeypatch):
     class Scheduler:
         async def heartbeat_worker(self, worker_id):
+            return None
+
+        async def report_worker_load(self, worker_id, *, in_flight):
             return None
 
     class Engine:

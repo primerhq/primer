@@ -77,3 +77,31 @@ async def test_signal_cancel_routes_to_subscribers(sched):
     await sched.signal_cancel("s1")
     sid = await asyncio.wait_for(task, timeout=1.0)
     assert sid == "s1"
+
+
+async def test_a_worker_has_not_reported_its_load_until_it_does(sched):
+    """Lead sweep M2: unknown (None) is not idle (0), so a fleet total can tell a worker that never reported from a quiet one."""
+    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
+    [fresh] = await sched.list_workers()
+    assert fresh.in_flight is None
+
+    await sched.report_worker_load("w1", in_flight=3)
+    assert [w.in_flight for w in await sched.list_workers()] == [3]
+
+    await sched.report_worker_load("w1", in_flight=0)
+    assert [w.in_flight for w in await sched.list_workers()] == [0]
+
+
+async def test_registering_again_forgets_the_old_report(sched):
+    """A restarted worker re-registers under the same id: the previous process's load is not its load."""
+    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
+    await sched.report_worker_load("w1", in_flight=4)
+
+    await sched.register_worker(worker_id="w1", host="h", pid=2, capacity=4)
+
+    assert [w.in_flight for w in await sched.list_workers()] == [None]
+
+
+async def test_reporting_the_load_of_an_unknown_worker_is_a_no_op(sched):
+    await sched.report_worker_load("nobody", in_flight=1)
+    assert await sched.list_workers() == []
