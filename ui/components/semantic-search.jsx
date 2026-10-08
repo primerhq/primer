@@ -693,14 +693,18 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider }) {
 }
 
 function FieldRow({ label, hint, err, children }) {
+  // The label is tied to the row's first native control, as WS_FieldRow does (workspaces/shared.jsx WS_fieldControls; console review C-003).
+  var uid = React.useId();
+  var ids = { label: uid + "l", control: uid + "c", err: uid + "e" };
+  var wired = window.WS_fieldControls ? window.WS_fieldControls(children, ids, !!err) : { children: children, found: true, controlId: null };
   return (
-    <div className="field">
-      <label className="field-label">
+    <div className="field" role={wired.found ? undefined : "group"} aria-labelledby={wired.found ? undefined : ids.label}>
+      <label className="field-label" id={ids.label} htmlFor={wired.found ? wired.controlId : undefined}>
         {label}
         {hint && <span className="hint">{hint}</span>}
       </label>
-      {children}
-      {err && <div className="field-help" style={{ color: "var(--red)" }}>
+      {wired.children}
+      {err && <div className="field-help" id={ids.err} role="alert" style={{ color: "var(--red)" }}>
         <Icon name="x-circle" size={11} style={{ verticalAlign: -1, marginRight: 3 }} />
         {err}
       </div>}
