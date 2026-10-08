@@ -1200,7 +1200,7 @@ async def _read_log_bytes(
             "workspace %s could not be read for %s (%s): %s",
             workspace_id or "?", relative_path, type(exc).__name__, exc, exc_info=True,
         )
-        what = f"session {session_id!r}'s log" if session_id else "this log"
+        what = f"the log of session {session_id}" if session_id else "this log"
         where = f"Workspace {workspace_id!r}" if workspace_id else "The workspace"
         raise WorkspaceUnreachableError(
             f"{where} could not be reached, so {what} cannot be read right now. Nothing is lost; try again once the workspace is back."
