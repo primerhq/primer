@@ -19,7 +19,7 @@ An operator messages a Slack channel with a deploy command. The agent plans the 
 ## Prerequisites
 - A Slack app with App (`xapp-...`) and Bot (`xoxb-...`) tokens.
 - A `deploy-tools` toolset registered with a `deploy_prod` tool and a `channels` toolset for posting results back.
-- An LLM provider configured and a workspace template available.
+- A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`), and a workspace template available.
 
 ## Steps
 ### 1. Create the Slack channel provider
@@ -72,7 +72,7 @@ Wait until `phase` is `running`.
   "entity": {
     "id": "deploy-bot",
     "description": "Plans a deploy then calls deploy_prod, posting the outcome back to the channel",
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" },
+    "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" },
     "tools": ["deploy-tools__deploy_prod", "channels__post_message"],
     "system_prompt": ["You are a deploy coordinator. Given a deploy target, produce a concise plan (services, migrations, cache flushes), then call deploy_prod with the target. After it resolves, post the outcome back to the originating channel. If the call is rejected, report the rejection and end cleanly."]
   }

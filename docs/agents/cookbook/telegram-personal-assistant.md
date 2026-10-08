@@ -19,7 +19,7 @@ A Telegram bot you DM to get a personal assistant. The channel trigger routes ea
 ## Prerequisites
 - A Telegram bot token from `@BotFather`, in the `<id>:<hash>` shape (at least 20 characters).
 - Your numeric Telegram user ID (send any message to `@userinfobot` to get it); this is the channel's `external_id`.
-- An LLM provider configured and a workspace template available.
+- A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`), and a workspace template available.
 
 ## Steps
 ### 1. Create the Telegram channel provider
@@ -77,7 +77,7 @@ Wait until `phase` is `running`. Thread `id` ("ws-1") into the binding below.
   "entity": {
     "id": "personal-assistant",
     "description": "Concise personal assistant that tracks to-do items",
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" },
+    "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" },
     "tools": ["web__web_search"],
     "system_prompt": ["You are a personal assistant. Be concise. Track to-do items the user mentions in the conversation."]
   }

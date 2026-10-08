@@ -18,6 +18,7 @@ Treat a workspace as a disposable build environment. Create a template carrying 
 
 ## Prerequisites
 - A Docker (or other container) workspace provider registered, with the `rust:1.83-slim` image reachable from the provider's daemon.
+- A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`).
 - Permission to create workspace templates, agents, workspaces, and sessions over MCP.
 
 ## Steps
@@ -49,7 +50,7 @@ Response:
     "id": "rust-builder",
     "description": "Clones a repo, runs cargo test, reports pass/fail",
     "system_prompt": ["Clone the repo at the given URL, check out the given SHA, run cargo test, and write the full test output plus a pass/fail line to build-result.txt in the workspace root."],
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" }
+    "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" }
   }
 }
 ```

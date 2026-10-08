@@ -19,7 +19,7 @@ Wire a Slack channel to an agent so that mentioning the bot with a question runs
 ## Prerequisites
 - A Slack app with both tokens: the App token (`xapp-...`, for Socket Mode) and the Bot token (`xoxb-...`).
 - A knowledge collection (e.g. `company-docs`) already populated with the documents the bot should answer from; create one with `system::create_collection` if needed.
-- An LLM provider configured (its id goes in the agent's `model.provider_id`).
+- A ModelProfile for the model the agent runs on, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`); it names a configured LLM provider.
 - A workspace template to materialise the agent's workspace from.
 
 ## Steps
@@ -78,7 +78,7 @@ Wait until `phase` is `running`. Thread `id` ("ws-1") into the binding below.
   "entity": {
     "id": "answer-bot",
     "description": "Answers questions from the company-docs collection",
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" },
+    "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" },
     "tools": ["system__find_documents", "system__get_document"],
     "system_prompt": ["Answer questions from company-docs. If the answer is not in the collection, say so plainly."]
   }
