@@ -38,6 +38,7 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router
+from primer.api.routers._references import ReferenceCheck
 from primer.common.context_overflow import output_cap_warning
 from primer.common.entity_checks import EntityCheckError
 from primer.model.agent import Agent
@@ -45,6 +46,7 @@ from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.graph import Graph
 from primer.model.problem_details import record_without_traceback
 from primer.model.workspace_session import GraphSessionBinding, WorkspaceSession
+from primer.storage.references import AGENT_REFERENCES, GRAPH_REFERENCES
 
 
 # ---- Agent router ----------------------------------------------------------
@@ -85,6 +87,9 @@ agent_router = make_crud_router(
     search_fields=["id", "description"],
     on_pre_create=_agent_pre_create,
     on_pre_update=_agent_pre_update,
+    # A graph node, a session that is not ended and a trigger subscription still name the agent: refuse the delete (409 in_use_by)
+    # rather than strand them. The list is shared with the system delete_agent tool (primer.storage.references).
+    references=[ReferenceCheck.from_spec(spec) for spec in AGENT_REFERENCES],
 )
 
 
@@ -193,6 +198,9 @@ graph_router = make_crud_router(
     cdc_kind="graph",
     managed_by_field="harness_id",
     search_fields=["id", "description"],
+    # Another graph's sub-graph node, a session that is not ended and a trigger subscription still name the graph (shared with the
+    # system delete_graph tool).
+    references=[ReferenceCheck.from_spec(spec) for spec in GRAPH_REFERENCES],
 )
 
 

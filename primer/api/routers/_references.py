@@ -31,7 +31,7 @@ from fastapi import Request
 
 from primer.model.except_ import ConflictError
 from primer.model.storage import Op
-from primer.storage.references import first_referencing_row
+from primer.storage.references import Lookup, ReferenceSpec, first_referencing_row
 
 
 @dataclass(frozen=True)
@@ -63,6 +63,13 @@ class ReferenceCheck:
     error_code:
         The string placed in the ``error`` key of the 409 response body.
         Defaults to ``"in_use_by"``.
+    lookup:
+        For a reference the field query cannot express (a session that counts
+        only while it is not ended; an agent named inside a graph's ``nodes``
+        list): an async ``(child storage, parent id) -> row | None``. When set
+        it replaces the ``child_field`` / ``op`` query, and ``child_field`` only
+        documents where the reference lives. See
+        :mod:`primer.storage.references`.
     """
 
     child_kind: str
@@ -70,6 +77,22 @@ class ReferenceCheck:
     child_field: str
     op: Op = field(default=Op.EQ)
     error_code: str = field(default="in_use_by")
+    lookup: Lookup | None = field(default=None)
+
+    @classmethod
+    def from_spec(cls, spec: ReferenceSpec) -> "ReferenceCheck":
+        """Build the check for a declaration shared with the system tools (:mod:`primer.storage.references`)."""
+
+        def _storage(request: Request) -> Any:
+            return request.app.state.storage_provider.get_storage(spec.child_model)
+
+        return cls(
+            child_kind=spec.child_kind,
+            child_storage=_storage,
+            child_field=spec.child_field,
+            op=spec.op,
+            lookup=spec.lookup,
+        )
 
 
 def build_reference_block_hook(
@@ -107,9 +130,12 @@ def build_reference_block_hook(
             storage = check.child_storage(request)
             # The query is shared with the system CRUD tools (primer.storage.references), so the two surfaces cannot
             # drift on how a reference is looked for.
-            child = await first_referencing_row(
-                storage, field=check.child_field, op=check.op, parent_id=entity_id,
-            )
+            if check.lookup is not None:
+                child = await check.lookup(storage, entity_id)
+            else:
+                child = await first_referencing_row(
+                    storage, field=check.child_field, op=check.op, parent_id=entity_id,
+                )
             if child is not None:
                 # RFC7807 conflict envelope (consistent with every other
                 # error surface). The detail names the blocking child kind,

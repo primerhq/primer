@@ -5,15 +5,19 @@ Backlog item:
 * T0737 — Create a graph-bound session with ``auto_start=true`` so the
   worker pool dispatches a ``WorkspaceGraphExecutor`` immediately;
   race a ``DELETE /v1/graphs/{gid}`` against that dispatch. The
-  contract: ``DELETE`` returns a clean 204 (or, in the unlikely event
-  the worker already removed it, 404); the session converges to a
-  terminal status (``ended`` / ``failed`` / ``cancelled``) within
-  ~20s; ``last_error.type`` (if present) never references
-  ``/errors/internal``.
+  contract: while the session is not ended the graph is in use, so
+  ``DELETE`` is REFUSED with a clean 409 ``in_use_by`` (finding A-09;
+  it used to return 204 and strand the running session on a deleted
+  row). If the run had already finished by the time the DELETE landed
+  it returns 204, and a 404 is still clean (the row was already gone).
+  The session converges to a terminal status (``ended`` / ``failed`` /
+  ``cancelled``) within ~20s; ``last_error.type`` (if present) never
+  references ``/errors/internal``; and once the session has ended the
+  graph can be deleted.
 
   Pins the documented "DELETE-during-execute race" — a destructive
-  signal must not leak ``/errors/internal`` even when the executor is
-  mid-flight against the same row that was just removed.
+  signal must not leak ``/errors/internal`` while the executor is
+  mid-flight against the row it names.
 """
 
 from __future__ import annotations
@@ -95,10 +99,14 @@ async def test_t0737_delete_graph_during_running_graph_session(
 
     Hard assertions:
 
-    * ``DELETE /v1/graphs/{gid}`` returns 204 (success). A 404 is
-      also clean (the executor's load path removed it first — still
-      a documented envelope, not a 5xx leak).
+    * ``DELETE /v1/graphs/{gid}`` returns 409 ``in_use_by`` while the
+      session is live (the expected case: the run is in flight), or 204
+      if the run had already ended. A 404 is also clean (the executor's
+      load path removed it first - still a documented envelope, not a
+      5xx leak).
     * Session reaches a terminal status within 20s.
+    * A refused delete is repeated once the session is terminal and
+      then returns 204.
     * If ``last_error`` is populated, its ``type`` MUST NOT contain
       the substring ``internal`` (no ``/errors/internal`` envelope
       leak under the race).
@@ -194,14 +202,18 @@ async def test_t0737_delete_graph_during_running_graph_session(
         # gone before worker touches it).
         await asyncio.sleep(1.5)
 
-        # DELETE the graph. Acceptable: 204 (normal) or 404 (the
-        # worker's load path removed the row first, e.g. via a
-        # cascading cleanup).
+        # DELETE the graph. Acceptable: 409 (the session is live and
+        # names the graph: the normal case), 204 (the run had already
+        # ended) or 404 (the worker's load path removed the row first,
+        # e.g. via a cascading cleanup).
         r = await client.delete(f"/v1/graphs/{gid}")
-        assert r.status_code in (204, 404), (
+        assert r.status_code in (204, 404, 409), (
             f"DELETE /v1/graphs/{gid} returned unexpected "
             f"{r.status_code}: {r.text}"
         )
+        refused = r.status_code == 409
+        if refused:
+            assert "in_use_by" in r.text and sid in r.text, r.text
 
         # Poll the session top-level GET until it reaches a terminal
         # status, OR 20s elapses. The placeholder LLM + missing
@@ -238,6 +250,15 @@ async def test_t0737_delete_graph_during_running_graph_session(
             assert "internal" not in err_type, (
                 f"last_error.type contains 'internal': "
                 f"{last_error!r} — DELETE-during-execute leaked a 500."
+            )
+
+        # A refused delete is retried now that the session has ended:
+        # it is history, no longer a user of the graph.
+        if refused:
+            r = await client.delete(f"/v1/graphs/{gid}")
+            assert r.status_code == 204, (
+                f"DELETE /v1/graphs/{gid} after the session ended returned "
+                f"{r.status_code}: {r.text}"
             )
 
         # Sanity: the graph row is gone via the API.

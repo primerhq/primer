@@ -29,7 +29,13 @@ from typing import TYPE_CHECKING, Any
 from primer.model.chat import ToolCallResult
 from primer.model.storage import Op
 from primer.model.tool_approval import ToolApprovalPolicy
-from primer.storage.references import first_referencing_row
+from primer.storage.references import (
+    AGENT_REFERENCES,
+    GRAPH_REFERENCES,
+    Lookup,
+    ReferenceSpec,
+    first_referencing_row,
+)
 from primer.toolset._helpers import err as _err
 
 if TYPE_CHECKING:
@@ -49,6 +55,12 @@ class ToolReference:
     child_field: str
     op: Op = Op.EQ
     error_code: str = "in_use_by"
+    lookup: Lookup | None = None
+
+    @classmethod
+    def from_spec(cls, spec: ReferenceSpec) -> "ToolReference":
+        """Build the reference for a declaration shared with the REST routers (:mod:`primer.storage.references`)."""
+        return cls(spec.child_kind, spec.child_model, spec.child_field, spec.op, lookup=spec.lookup)
 
 
 @dataclass(frozen=True)
@@ -122,10 +134,13 @@ async def refuse_delete_if_referenced(
 ) -> ToolCallResult | None:
     """The first child kind that still references ``existing`` blocks the delete, as REST's reference-block hook."""
     for reference in guards.references:
-        child = await first_referencing_row(
-            storage_provider.get_storage(reference.child_model),
-            field=reference.child_field, op=reference.op, parent_id=existing.id,
-        )
+        storage = storage_provider.get_storage(reference.child_model)
+        if reference.lookup is not None:
+            child = await reference.lookup(storage, existing.id)
+        else:
+            child = await first_referencing_row(
+                storage, field=reference.child_field, op=reference.op, parent_id=existing.id,
+            )
         if child is not None:
             return _err(
                 f"{reference.error_code}: 1 {reference.child_kind}(s) reference {existing.id!r} (first: {child.id!r})",
@@ -137,8 +152,15 @@ async def refuse_delete_if_referenced(
 # The managed-row declarations for the two entities whose generic create/update tools are exposed by MORE than one toolset: the system
 # toolset's table and the ``crud`` (builder) toolset's re-homed descriptors. One definition each, because the factory's default is
 # no guards, so every caller has to pass them (a structural test requires ``guards=`` on every call of ``_crud_tools_for``).
-AGENT_GUARDS = CrudGuards(kind="agent", managed_by_field="harness_id")
-GRAPH_GUARDS = CrudGuards(kind="graph", managed_by_field="harness_id")
+#
+# What blocks their DELETE (a graph, a live session, a trigger subscription) is declared once in :mod:`primer.storage.references` and the
+# REST routers build their checks from the same lists, so the tool and the route cannot disagree about what blocks.
+AGENT_GUARDS = CrudGuards(
+    kind="agent", managed_by_field="harness_id", references=tuple(ToolReference.from_spec(s) for s in AGENT_REFERENCES),
+)
+GRAPH_GUARDS = CrudGuards(
+    kind="graph", managed_by_field="harness_id", references=tuple(ToolReference.from_spec(s) for s in GRAPH_REFERENCES),
+)
 
 
 def toolset_guards() -> CrudGuards:
