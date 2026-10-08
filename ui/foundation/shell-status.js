@@ -203,6 +203,7 @@ var SH_UNCLEAN_DONE = {
   content_filter: "■ blocked by the content filter",
   error: "■ ended with an error",
   tool_turn_cap: "■ stopped at the tool-turn cap",
+  other: "■ ended for another reason",
 };
 
 function SH_lifecycleLabel(kind, payload) {
