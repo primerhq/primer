@@ -95,8 +95,15 @@ class PostgresScheduler(Scheduler):
                 async with conn.transaction():
                     await conn.execute(_DDL_WORKERS)
                     # Added after the table shipped (Lead sweep M2): nullable, no default, so a worker from before load reporting
-                    # reads as "never reported" (NULL), not as idle. Idempotent; safe against a rolling upgrade.
-                    await conn.execute("ALTER TABLE workers ADD COLUMN IF NOT EXISTS in_flight INT")
+                    # reads as "never reported" (NULL), not as idle. Idempotent; safe against a rolling upgrade. Checked first because
+                    # ALTER TABLE takes an ACCESS EXCLUSIVE lock even when ``IF NOT EXISTS`` then does nothing, and that would queue
+                    # behind (and block) every heartbeat and health read on every boot of every process.
+                    has_load_column = await conn.fetchval(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() AND table_name = 'workers' AND column_name = 'in_flight'"
+                    )
+                    if not has_load_column:
+                        await conn.execute("ALTER TABLE workers ADD COLUMN IF NOT EXISTS in_flight INT")
                     # Boot-time recovery: mark dead any worker rows that
                     # haven't heartbeat in 5 minutes.
                     await conn.execute(
