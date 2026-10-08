@@ -7,7 +7,9 @@ gone and the seed re-creates it). The setting is read through the storage provid
 table, not a ``Storage`` entity, so it is not one of ``AGENT_REFERENCES``).
 
 Note on reachability: no route or tool sets the default; the seed pass stamps it to the operator, so another agent can be the default only if
-it was written to the database directly. The refusal is for that state, and its message says what to do.
+it was written to the database directly. The refusal is for that state, and its message says what to do: the only reset is the seed pass
+(``POST /v1/setup/seed``, or a server restart), which stamps the default back to the operator. It used to say "point the default agent at
+another agent", which nothing can do.
 """
 
 from __future__ import annotations
@@ -42,6 +44,24 @@ async def test_the_current_default_agent_cannot_be_deleted(client, app) -> None:
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == default_agent_detail("ag-1")
     assert await app.state.storage_provider.get_storage(Agent).get("ag-1") is not None, "the default agent was deleted anyway"
+
+
+@pytest.mark.asyncio
+async def test_the_remedy_the_refusal_names_is_one_that_works(client, app) -> None:
+    """The 409 names ``POST /v1/setup/seed`` (and a restart); running it must really make the agent deletable. A sentence that sends the
+    caller to a step that does nothing is the defect this pins."""
+    await _seed(app, agent_row("ag-1"))
+    await app.state.storage_provider.set_default_agent_id("ag-1")
+    refused = await client.delete("/v1/agents/ag-1")
+    assert refused.status_code == 409, refused.text
+    assert "POST /v1/setup/seed" in refused.json()["detail"], refused.json()["detail"]
+    assert "restart the server" in refused.json()["detail"], refused.json()["detail"]
+    assert "another agent" not in refused.json()["detail"], "the old advice names a step no route or tool offers"
+
+    assert (await client.post("/v1/setup/seed")).status_code == 200
+    assert (await app.state.storage_provider.get_system_state()).default_agent_id == RESERVED_OPERATOR_AGENT
+
+    assert (await client.delete("/v1/agents/ag-1")).status_code == 204
 
 
 @pytest.mark.asyncio

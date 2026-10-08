@@ -79,4 +79,7 @@ async def test_the_delete_agent_descriptor_names_the_default_agent_refusal(world
     description = tools["delete_agent"].description
 
     assert "default agent" in description and "operator" in description, description
+    # "POST /v1/setup/seed" is already in the note for the operator's re-create, so require the sentence that ties it to the default.
+    assert "resets the default to" in description and "POST /v1/setup/seed" in description, description
+    assert "point the default at another agent" not in description, "nothing offers that step"
     assert "default agent" not in tools["delete_graph"].description

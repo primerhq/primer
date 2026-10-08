@@ -119,5 +119,6 @@ def default_agent_detail(agent_id: str) -> str:
     """The sentence both the route (409 detail) and the tool (message) answer with when the agent is the system default."""
     return (
         f"in_use_by: agent {agent_id!r} is the system default agent, which sessions created without a binding run; "
-        "point the default agent at another agent before deleting it"
+        "no route or tool sets the default, so run POST /v1/setup/seed (or restart the server) to reset it to 'operator', "
+        f"then delete {agent_id!r} again"
     )
