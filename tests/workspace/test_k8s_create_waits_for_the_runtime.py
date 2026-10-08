@@ -78,11 +78,16 @@ class _Attempt:
 class _Script:
     """Hands out the scripted clients in order and remembers every one of them."""
 
-    def __init__(self, *fails: BaseException | None) -> None:
+    def __init__(self, *fails: BaseException | None, max_attempts: int | None = None) -> None:
         self.attempts = [_Attempt(f) for f in fails]
         self.made: list[_Attempt] = []
+        self.max_attempts = max_attempts
 
     def __call__(self, **kwargs) -> _Attempt:
+        if self.max_attempts is not None and len(self.made) >= self.max_attempts:
+            # Not a "runtime not serving yet" error, so the code under test re-raises it at once: a build that ignores its
+            # deadline FAILS here, fast, instead of retrying for ever (``_bounded`` cannot stop that loop).
+            raise AssertionError(f"deadline ignored: {len(self.made) + 1} attempts")
         client = self.attempts[len(self.made)] if len(self.made) < len(self.attempts) else _Attempt(self.attempts[-1].fail)
         self.made.append(client)
         return client
@@ -149,8 +154,9 @@ async def test_a_real_aiohttp_connector_error_is_retried(monkeypatch, build) -> 
 
 @BUILDS
 async def test_a_runtime_that_is_already_up_is_connected_once_without_waiting(monkeypatch, build) -> None:
-    """Proved structurally, not by the clock: a build that waits has to go through ``asyncio.sleep`` (the pause between
-    attempts, or the pod-phase poll), so a recorder on it that stays empty means the build never entered a wait."""
+    """Proved structurally, not by the clock: the pause between connect attempts goes through ``asyncio.sleep``, so a recorder
+    on it that stays empty means ``create``/``_reattach``/``_connect_runtime`` did not sleep. It does NOT cover the pod-phase
+    poll: ``_backend()`` stubs ``_wait_for_pod_running`` with an AsyncMock."""
     script = _use(monkeypatch, _Script(None))
     real_sleep = asyncio.sleep
     sleeps: list[float] = []
@@ -198,10 +204,11 @@ async def test_an_error_that_is_not_the_runtime_starting_fails_at_once(monkeypat
 @BUILDS
 async def test_a_runtime_that_never_listens_fails_within_the_deadline_and_says_why(monkeypatch, build) -> None:
     monkeypatch.setattr(k8s_backend, "_RUNTIME_READY_TIMEOUT_S", 0.3)
-    script = _use(monkeypatch, _Script(REFUSED))
+    # 0.3 s of deadline with pauses of 0.01-0.02 s allows about 30 attempts; 100 is a wide margin, and no clock is read.
+    script = _use(monkeypatch, _Script(REFUSED, max_attempts=100))
     backend = _backend()
 
-    # Boundedness is proved by ``_bounded``: an unbounded wait raises its TimeoutError, not the ConfigError expected here.
+    # Boundedness is proved by the attempt cap above (a guard-less loop raises AssertionError, not the ConfigError expected).
     with pytest.raises(ConfigError) as raised:
         await _bounded(build, backend)
 
