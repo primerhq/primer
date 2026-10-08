@@ -9,6 +9,8 @@ The setup API is the in-test fake of ``test_setup_wizard_resume_journey`` behind
 
 from __future__ import annotations
 
+import json
+
 from playwright.sync_api import expect
 
 from tests.ui_e2e.test_setup_wizard_resume_journey import _FakeSetupApi, _connect_step_one, _open_wizard
@@ -19,10 +21,10 @@ _ARM = """
 () => {
   window.__stale = 0;
   new MutationObserver(() => {
-    if (document.body.innerText.indexOf(%r) >= 0) window.__stale += 1;
+    if (document.body.innerText.indexOf(__STALE__) >= 0) window.__stale += 1;
   }).observe(document.body, { subtree: true, childList: true, characterData: true });
 }
-""" % STALE
+""".replace("__STALE__", json.dumps(STALE))
 
 
 def _to_step_two(page, console_url: str, api: _FakeSetupApi) -> None:
