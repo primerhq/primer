@@ -1534,6 +1534,13 @@ function WS_CommitDiff({ wid, sha }) {
     );
   }
   const files = diff.data?.files || [];
+  if (files.length === 0 && diff.data?.files_hidden) {
+    return (
+      <div className="muted text-sm" style={{ padding: "8px 28px" }}>
+        This commit changes the workspace runtime's state; its file changes are visible to admins only.
+      </div>
+    );
+  }
   if (files.length === 0) {
     return (
       <div className="muted text-sm" style={{ padding: "8px 28px" }}>
