@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.authz import _role_allows
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import (
     BadRequestError,
@@ -84,6 +85,7 @@ from primer.toolset._system_guards import (
     refuse_update,
 )
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
+from primer.workspace.reserved import reserved_tree, reserved_trees
 
 
 if TYPE_CHECKING:
@@ -112,6 +114,30 @@ def _err_from_validation(exc: ValidationError) -> ToolCallResult:
 
 def _err_from_primer(exc: PrimerError, *, error_type: str) -> ToolCallResult:
     return _err(getattr(exc, "message", str(exc)), error_type=error_type)
+
+
+def _caller_is_admin(ctx: ToolContext | None) -> bool:
+    """The run's ``initiated_by`` under the floor's own predicate (an admin,
+    or the internal ``system`` / ``trigger`` actors). No ToolContext (the
+    MCP endpoint dispatches without one) means no known role: not admin."""
+    return ctx is not None and _role_allows(ctx.initiated_by, "admin")
+
+
+def _refuse_reserved_read(
+    ws: Any, path: str, ctx: ToolContext | None,
+) -> ToolCallResult | None:
+    """A ``forbidden`` error when a non-admin names a path in the runtime's
+    ``.state`` / ``.tmp`` trees (A-22), else ``None``."""
+    if _caller_is_admin(ctx):
+        return None
+    tree = reserved_tree(path, reserved_trees(ws))
+    if tree is None:
+        return None
+    return _err(
+        f"{path!r} is inside the workspace runtime's reserved {tree!r} tree; "
+        "only an admin may read it",
+        error_type="forbidden",
+    )
 
 
 #: Work carried on after its caller was cancelled. A strong reference: asyncio keeps tasks weakly, so without this a
@@ -1702,13 +1728,18 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     # ------------------- Files sub-resource ---------------------------
-    async def _list_files(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _list_files(
+        arguments: dict[str, Any], ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _ListFilesArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
+            refused = _refuse_reserved_read(ws, args.path, ctx)
+            if refused is not None:
+                return refused
             # 01a0645c: recursive=True used to walk the ENTIRE subtree
             # before this call got a chance to slice it - same cost risk
             # the files route (01a0644b, above in this same PR) already
@@ -1742,6 +1773,10 @@ def build_workspaces_toolset(
         truncated = walk_cap is not None and len(entries) > walk_cap
         if truncated:
             entries = entries[:walk_cap]
+        if not _caller_is_admin(ctx):
+            # A recursive walk from the root descends into .state / .tmp.
+            trees = reserved_trees(ws)
+            entries = [e for e in entries if reserved_tree(e.path, trees) is None]
         sliced = entries[args.offset : args.offset + args.limit]
         result: dict[str, Any] = {
             "items": [e.model_dump(mode="json") for e in sliced],
@@ -1790,13 +1825,18 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _file_info(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _file_info(
+        arguments: dict[str, Any], ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _WorkspacePathArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
+            refused = _refuse_reserved_read(ws, args.path, ctx)
+            if refused is not None:
+                return refused
             info = await ws.file_info(args.path)
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
@@ -1826,7 +1866,9 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _read_file(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _read_file(
+        arguments: dict[str, Any], ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _ReadFileArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -1838,6 +1880,9 @@ def build_workspaces_toolset(
             )
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
+            refused = _refuse_reserved_read(ws, args.path, ctx)
+            if refused is not None:
+                return refused
             raw = await ws.read_file(args.path)
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
