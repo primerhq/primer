@@ -16,12 +16,19 @@ def _refuse(error: str, message: str) -> HTTPException:
 def _check_discovery_url_shape(entity: OidcProvider) -> None:
     """A discovery URL is a full http(s) URL. Checked on every save, enabled or not, and without any network call.
 
-    The URL is trimmed first (and stored trimmed). ``urlsplit`` itself raises ``ValueError`` on a malformed bracketed host
-    (``https://[idp.example.com/x``), which would be a 500; it is refused like any other malformed URL."""
+    The URL is trimmed first (and stored trimmed). Three kinds of malformed URL used to get past ``urlsplit`` alone and surface as a 500
+    or as a ``discovery_failed`` later: a bracketed host (``https://[idp.example.com/x``), where ``urlsplit`` raises ``ValueError``; a
+    port that is not a number or is out of range (``https://idp.example.com:abc/``), where ``urlsplit`` only fails when ``.port`` is READ
+    and httpx would raise ``InvalidURL``; and a space or control character inside the URL. All are refused like any other malformed URL."""
     entity.discovery_url = (entity.discovery_url or "").strip()
     try:
         parts = urlsplit(entity.discovery_url)
-        well_formed = parts.scheme in ("http", "https") and bool(parts.netloc)
+        _ = parts.port                                # reading it raises ValueError for a non-numeric or out-of-range port
+        well_formed = (
+            parts.scheme in ("http", "https")
+            and bool(parts.netloc)
+            and not any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in entity.discovery_url)
+        )
     except ValueError:
         well_formed = False
     if not well_formed:
