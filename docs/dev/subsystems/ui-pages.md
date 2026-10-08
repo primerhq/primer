@@ -310,3 +310,5 @@ The `tests/ui_e2e/` suite (gated behind `PRIMER_RUN_UI_E2E=1`, with mobile suite
 The shell's session document mounts `window.ExternalPendingBanner`
 (`ui/components/external-tools.jsx`), and the agent editor exposes the
 `allow_external_tools` toggle. See [external-tools](external-tools.md).
+
+**A failed `ask_user` call is a failed tool call, not an answer.** `NV_toolCallElement` (`nv-session-doc.jsx`) draws an `ask_user` call that has a result as the answered card (`NV_AnsweredAskCard`: the question and the operator's answer, or "Timed out" or "Cancelled", which the tool returns on purpose with `error` false) only when the result is not flagged `error`. A call that failed (for example the model gave a wrong argument name and the result is the tool's validation error) goes to the ordinary tool block, which carries the "failed" tag every failed call has, instead of a green "Resolved" card showing the raw error JSON as the answer (console review C-013). A still-pending `ask_user` call has no result yet and is drawn by the live attention surface, as before.
