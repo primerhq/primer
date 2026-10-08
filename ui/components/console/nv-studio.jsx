@@ -239,3 +239,4 @@ window.NV_GLYPHS = NV_GLYPHS;
 window.NV_identity = NV_identity;
 window.NV_Studio = NV_Studio;
 window.NV_isWorkspaceGone = NV_isWorkspaceGone;
+window.NV_WorkspaceGone = NV_WorkspaceGone;
