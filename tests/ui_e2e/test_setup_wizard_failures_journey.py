@@ -11,8 +11,10 @@ real request, none of them can succeed, and so nothing is ever saved.
 
 from __future__ import annotations
 
+import http.server
 import json
 import re
+import threading
 
 from playwright.sync_api import Page, expect
 
@@ -111,3 +113,52 @@ def test_step_one_names_what_failed_at_the_field_it_failed_on(page: Page, consol
     expect(page.get_by_test_id("setup-key-error")).to_be_visible(timeout=5_000)
     expect(_title(page)).to_have_text("Enter the API key")
     assert len(probes) == 2, "a missing key must not be sent to the server either"
+
+
+class _Upstream(http.server.BaseHTTPRequestHandler):
+    """An OpenAI-compatible server that wants a key: GET /v1/models answers 401, GET /boom/models answers 500."""
+
+    def do_GET(self):  # noqa: N802
+        self.send_response(500 if self.path.startswith("/boom/") else 401)
+        self.end_headers()
+
+    def log_message(self, *args):  # noqa: D401
+        pass
+
+
+def test_a_server_that_needs_a_key_and_a_base_url_with_credentials(page: Page, console_url: str) -> None:
+    """Follow-up round of the lead review: a blank key refused with 401 says the provider needs one (under the key field), editing the field answers the failure, a typed key
+    that is refused is a rejected key, and credentials in the Base URL are never echoed back in the error."""
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Upstream)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    try:
+        _stub_reads(page)
+        _open_step_one(page, console_url)
+        url = page.locator("#setup-url")
+        key = page.locator("#setup-key")
+
+        url.fill(f"http://127.0.0.1:{port}/v1")
+        _connect(page)
+        expect(_title(page)).to_have_text("This provider needs an API key", timeout=15_000)
+        expect(page.get_by_test_id("setup-key-error")).to_be_visible()
+
+        # Editing the field answers that failure: the banner that named it goes with the message under the field.
+        key.fill("sk-wrong")
+        expect(page.get_by_test_id("setup-key-error")).to_have_count(0)
+        expect(_title(page)).to_have_count(0)
+
+        _connect(page)
+        expect(_title(page)).to_have_text("The provider rejected the API key", timeout=15_000)
+        expect(page.get_by_test_id("setup-key-error")).to_have_count(0)
+
+        # The Base URL carries credentials and the server answers 500: the address is shown, the credentials are not.
+        url.fill(f"http://user:pass@127.0.0.1:{port}/boom")
+        _connect(page)
+        expect(_title(page)).to_have_text("The provider answered with an error", timeout=15_000)
+        shown = page.locator(".setup-steps").inner_text()
+        assert "500" in shown and "127.0.0.1" in shown
+        assert "user:pass" not in shown and "pass@" not in shown, "the credentials of the Base URL were echoed back"
+    finally:
+        server.shutdown()
+        server.server_close()

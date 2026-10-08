@@ -10,10 +10,14 @@ Three things were wrong on step 1:
 * ADM-05: "Connect and list models" was disabled while the Base URL was empty and said nothing about why; it is now enabled, and pressing it with a required field empty says which.
 
 ``POST /v1/llm_providers/_discover_models`` answers every failure with a 400 and a plain detail, so only the text tells a rejected draft from an unreachable server. The pure
-helpers that read it (``SW_probeFailure``, ``SW_missingField``, ``SW_urlHint``, ``SW_keyHint``) run here in MiniRacer on the real source, and the details they are given are
-the ones the REAL backend produces (the draft validator and the probe functions are called for real, against a local 127.0.0.1 server), so a change in the backend's wording
-or in pydantic's format turns this file red instead of silently returning the wizard to one generic title. How the component calls them is JSX, so that is a source check
-(this checkout has no render harness); ``tests/ui_e2e/test_setup_wizard_failures_journey.py`` drives the real page against the real endpoint.
+helpers that read it (``SW_probeFailure``, ``SW_missingField``, ``SW_urlHint``, ``SW_keyHint``, ``SW_tidy``) run here in MiniRacer on the real source, and the details they are given are
+the ones the REAL backend produces (the draft validator and the probe functions are called for real, against local 127.0.0.1 servers; the hosted providers' discover functions are made
+to raise a real ``httpx.HTTPStatusError`` and ``_probe_llm_models`` turns it into its own wording), so a change in the backend's wording or in pydantic's format turns this file red
+instead of silently returning the wizard to one generic title. How the component calls them is JSX, so that is a source check (this checkout has no render harness);
+``tests/ui_e2e/test_setup_wizard_failures_journey.py`` drives the real page against the real endpoint.
+
+Follow-up round (the lead's review of #546): a Base URL with credentials is never echoed back, a 401 or 403 on a request that carried no key says the provider needs one, the HTTP
+status is read before bare words in a body, and editing a field answers a failure that was about a field.
 """
 
 from __future__ import annotations
@@ -34,6 +38,9 @@ _HELPERS_END = "// ---- end of the resume helpers"
 _OPEN_CONTEXTS: list = []
 
 COULD_NOT_REACH = "Could not reach that provider"
+REJECTED = "The provider rejected the API key"
+NEEDS_KEY = "This provider needs an API key"
+ANSWERED = "The provider answered with an error"
 LEAKS = ["pydantic", "[type=", "validation error", "LLMProvider", "Draft provider failed", "errors.pydantic.dev", "developer.mozilla.org", "input_value"]
 
 
@@ -59,9 +66,9 @@ def _call(expression: str):
     return json.loads(_ctx().eval(f"JSON.stringify({expression})"))
 
 
-def _failure(detail, type_: str = "openchat") -> dict:
+def _failure(detail, type_: str = "openchat", key: str = "") -> dict:
     err = "null" if detail is None else json.dumps({"detail": detail})
-    return _call(f"SW_probeFailure({err}, {json.dumps(type_)})")
+    return _call(f"SW_probeFailure({err}, {json.dumps(type_)}, {json.dumps(key)})")
 
 
 def _text(failure: dict) -> str:
@@ -73,7 +80,22 @@ def _text(failure: dict) -> str:
 
 class _Upstream(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        self.send_response(401 if self.path.startswith("/rejects/") else 404)
+        if self.path.startswith("/rejects/"):
+            code = 401
+        elif self.path.startswith("/boom/"):
+            code = 500
+        else:
+            code = 404
+        self.send_response(code)
+        self.end_headers()
+
+    def log_message(self, *args):  # noqa: D401
+        pass
+
+
+class _AlwaysUnauthorized(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        self.send_response(401)
         self.end_headers()
 
     def log_message(self, *args):  # noqa: D401
@@ -83,6 +105,8 @@ class _Upstream(http.server.BaseHTTPRequestHandler):
 @pytest.fixture(scope="module")
 def real() -> dict[str, str]:
     """The detail the real backend raises for each failure class the wizard can hit; nothing leaves 127.0.0.1."""
+    import httpx
+
     from primer.api.routers import providers as providers_router
     from primer.model.except_ import BadRequestError
     from primer.model.provider import LLMProvider
@@ -104,6 +128,17 @@ def real() -> dict[str, str]:
     server = http.server.HTTPServer(("127.0.0.1", 0), _Upstream)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
+    ollama_server = http.server.HTTPServer(("127.0.0.1", 0), _AlwaysUnauthorized)
+    threading.Thread(target=ollama_server.serve_forever, daemon=True).start()
+    ollama_port = ollama_server.server_address[1]
+
+    def status_error(code: int, body: str) -> httpx.HTTPStatusError:
+        request = httpx.Request("GET", "https://api.example.test/v1/models")
+        try:
+            httpx.Response(code, text=body, request=request).raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            return exc
+        raise AssertionError("expected an error status")
 
     async def probe(fn, config: dict) -> str:
         try:
@@ -112,17 +147,39 @@ def real() -> dict[str, str]:
             return str(exc)
         raise AssertionError(f"{config} was expected to fail")
 
+    async def hosted(provider: str, discover: str, exc: Exception) -> str:
+        async def _raise(*args, **kwargs):
+            raise exc
+
+        patch = pytest.MonkeyPatch()
+        patch.setattr(providers_router, discover, _raise)
+        try:
+            return await probe(lambda config: providers_router._probe_llm_models(provider, config), {"api_key": "k"})
+        finally:
+            patch.undo()
+
     async def go() -> None:
         out["http_401"] = await probe(providers_router._probe_openai_compatible_models, {"url": f"http://127.0.0.1:{port}/rejects"})
         out["http_404"] = await probe(providers_router._probe_openai_compatible_models, {"url": f"http://127.0.0.1:{port}/missing"})
+        out["http_500"] = await probe(providers_router._probe_openai_compatible_models, {"url": f"http://127.0.0.1:{port}/boom"})
+        out["http_500_creds"] = await probe(providers_router._probe_openai_compatible_models, {"url": f"http://user:pass@127.0.0.1:{port}/boom"})
         out["refused"] = await probe(providers_router._probe_openai_compatible_models, {"url": "http://127.0.0.1:1"})
         out["ollama_refused"] = await probe(providers_router._probe_ollama_models, {"url": "http://127.0.0.1:1"})
+        out["ollama_401"] = await probe(providers_router._probe_ollama_models, {"url": f"http://127.0.0.1:{ollama_port}"})
+        out["anthropic_401"] = await hosted("anthropic", "_discover_anthropic_models", status_error(401, '{"type":"error"}'))
+        out["anthropic_500_words"] = await hosted("anthropic", "_discover_anthropic_models", status_error(500, "upstream said: unauthorized forbidden"))
+        out["gemini_401"] = await hosted("gemini", "_discover_gemini_models", status_error(401, "denied"))
+        out["gemini_404"] = await hosted("gemini", "_discover_gemini_models", status_error(404, "no such model list"))
+        out["openrouter_403"] = await hosted("openrouter", "_discover_openrouter_models", status_error(403, "blocked by WAF"))
+        out["openrouter_network"] = await hosted("openrouter", "_discover_openrouter_models", httpx.ConnectError("All connection attempts failed"))
 
     try:
         asyncio.run(go())
     finally:
         server.shutdown()
         server.server_close()
+        ollama_server.shutdown()
+        ollama_server.server_close()
     return out
 
 
@@ -215,6 +272,14 @@ def test_the_example_under_a_mistyped_address_follows_the_provider_type(real) ->
     assert "http://localhost:11434" in _failure(real["bad_url"], "ollama")["message"]
 
 
+def test_a_type_without_a_base_url_does_not_borrow_ollamas_address_as_its_example(real) -> None:
+    f = _failure(real["bad_url"], "anthropic")
+
+    assert f["field"] == "url"
+    assert "11434" not in f["message"] and "localhost" not in f["message"]
+    assert "http" in f["message"], "it still says what a full URL looks like"
+
+
 def test_a_missing_address_is_named_not_reported_as_unreachable(real) -> None:
     f = _failure(real["no_url"])
 
@@ -244,38 +309,136 @@ def test_any_other_rejected_setting_is_named_by_field_and_reason_without_the_dum
     assert not any(leak in _text(f) for leak in LEAKS), _text(f)
 
 
-def test_a_rejected_key_is_not_reported_as_an_unreachable_provider(real) -> None:
-    f = _failure(real["http_401"])
+# ---- a refused key: with a key sent, and without one -----------------------------------------------------------------------------------------------------------------
 
-    assert f["title"] == "The provider rejected the API key"
+
+def test_a_rejected_key_is_not_reported_as_an_unreachable_provider(real) -> None:
+    f = _failure(real["http_401"], key="sk-wrong")
+
+    assert f["title"] == REJECTED
     assert f["field"] is None
+    assert f["detail"].startswith("Check the key and connect again."), f["detail"]
+    assert "401" in f["detail"], "the advice is followed by what the server actually said"
     assert not any(leak in _text(f) for leak in LEAKS), _text(f)
 
 
+def test_a_401_on_a_request_that_carried_no_key_says_the_provider_needs_one(real) -> None:
+    """openchat/openresponses/ollama may run without a key; pointed at a server that needs one, a blank key is what the 401 answers."""
+    f = _failure(real["http_401"], key="")
+
+    assert f["title"] == NEEDS_KEY
+    assert f["field"] == "apiKey", "the error goes under the key field"
+    assert "401" in f["detail"]
+    assert not any(leak in _text(f) for leak in LEAKS), _text(f)
+
+
+def test_a_key_made_of_spaces_counts_as_no_key(real) -> None:
+    assert _failure(real["http_401"], key="   ")["title"] == NEEDS_KEY
+
+
 @pytest.mark.parametrize(
-    "detail",
-    [
-        "Gemini API key invalid or unauthorized (HTTP 403); check the key from Google AI Studio.",
-        'Anthropic discover failed: HTTP 401 {"type":"error","error":{"type":"authentication_error"}}',
-    ],
+    "key,title,field",
+    [("k", REJECTED, None), ("", NEEDS_KEY, "apiKey")],
 )
-def test_the_hosted_providers_own_key_rejections_read_the_same(detail: str) -> None:
-    assert _failure(detail, "anthropic")["title"] == "The provider rejected the API key"
+def test_a_403_from_a_proxy_keeps_what_it_said_after_the_advice(real, key: str, title: str, field) -> None:
+    """A WAF or proxy answering 403 is not necessarily about the key: the operator must still see its own words."""
+    f = _failure(real["openrouter_403"], "openrouter", key)
+
+    assert f["title"] == title and f["field"] == field
+    assert "blocked by WAF" in _text(f)
+
+
+def test_the_hosted_providers_own_key_rejections_read_the_same(real) -> None:
+    assert _failure(real["anthropic_401"], "anthropic", "k")["title"] == REJECTED
+    assert _failure(real["gemini_401"], "gemini", "k")["title"] == REJECTED
+
+
+def test_ollama_behind_auth_is_a_key_problem_too(real) -> None:
+    """The real text is ``ollama probe failed: ResponseError:  (status code: 401)``, which carries no word at all, only the status."""
+    assert _failure(real["ollama_401"], "ollama", "k")["title"] == REJECTED
+    assert _failure(real["ollama_401"], "ollama", "")["title"] == NEEDS_KEY
+
+
+# ---- the HTTP status is read before bare words ------------------------------------------------------------------------------------------------------------------------
+
+
+def test_a_500_whose_body_says_unauthorized_is_still_an_answer_not_a_key_problem(real) -> None:
+    f = _failure(real["anthropic_500_words"], "anthropic", "k")
+
+    assert f["title"] == ANSWERED
+    assert "500" in f["detail"]
+
+
+def test_a_404_whose_body_says_forbidden_is_still_an_answer() -> None:
+    assert _failure("OpenRouter discover failed: HTTP 404 forbidden by policy", "openrouter", "k")["title"] == ANSWERED
+
+
+@pytest.mark.parametrize("detail", ["proxy said: Unauthorized", "access Forbidden here", "the key invalid"])
+def test_a_denial_in_words_with_no_status_is_still_a_key_problem(detail: str) -> None:
+    assert _failure(detail, "openchat", "k")["title"] == REJECTED
+
+
+@pytest.mark.parametrize("detail", ["unauthorized_access_log is full", "forbiddenness of things", "monkey invalidated the cache"])
+def test_the_words_are_anchored_and_do_not_match_inside_other_words(detail: str) -> None:
+    assert _failure(detail, "openchat", "k")["title"] == COULD_NOT_REACH
 
 
 def test_a_404_points_at_the_base_url_path(real) -> None:
     f = _failure(real["http_404"])
 
-    assert f["title"] == "The provider answered with an error"
+    assert f["title"] == ANSWERED
     assert "404" in f["detail"] and "/v1" in f["detail"], f["detail"]
     assert not any(leak in _text(f) for leak in LEAKS), _text(f)
 
 
-def test_any_other_error_status_is_reported_as_an_answer_not_as_silence() -> None:
-    f = _failure("Anthropic discover failed: HTTP 500 upstream exploded", "anthropic")
+def test_the_v1_hint_is_not_offered_to_a_provider_that_has_no_base_url(real) -> None:
+    f = _failure(real["gemini_404"], "gemini", "k")
 
-    assert f["title"] == "The provider answered with an error"
+    assert f["title"] == ANSWERED
+    assert "404" in f["detail"] and "/v1" not in f["detail"] and "Base URL" not in f["detail"]
+
+
+def test_any_other_error_status_is_reported_as_an_answer_not_as_silence(real) -> None:
+    f = _failure(real["http_500"])
+
+    assert f["title"] == ANSWERED
     assert "500" in f["detail"]
+
+
+# ---- a Base URL with credentials is never echoed back -------------------------------------------------------------------------------------------------------------------
+
+
+def test_the_real_error_message_does_echo_the_credentials_so_the_strip_is_needed(real) -> None:
+    """Guards the premise: if httpx stopped echoing the URL, the tests below would pass for nothing."""
+    assert "user:pass@" in real["http_500_creds"]
+
+
+def test_credentials_in_the_base_url_are_not_shown_in_an_error_detail(real) -> None:
+    f = _failure(real["http_500_creds"])
+
+    assert f["title"] == ANSWERED
+    assert "user:pass" not in f["detail"] and "pass@" not in f["detail"] and "@127.0.0.1" not in f["detail"]
+    assert "127.0.0.1" in f["detail"], "the address itself is still shown, so the operator can see what was tried"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("see https://user:pass@host.example/v1/models now", "see https://host.example/v1/models now"),
+        ("http://user@host/x", "http://host/x"),
+        ("http://user:p@ss@host/x", "http://host/x"),
+        ("a http://a:b@one/x and ftp://c:d@two:21/y", "a http://one/x and ftp://two:21/y"),
+        ("for url 'http://u:p@127.0.0.1:8/b/models'", "for url 'http://127.0.0.1:8/b/models'"),
+        ("no credentials at http://host:80/path?x=1", "no credentials at http://host:80/path?x=1"),
+        ("write to someone@example.com about it", "write to someone@example.com about it"),
+        ("http://host/path@x", "http://host/path@x"),
+    ],
+)
+def test_tidy_strips_credentials_from_every_url_and_leaves_the_rest(text: str, expected: str) -> None:
+    assert _call(f"SW_tidy({json.dumps(text)})") == expected
+
+
+# ---- unreachable, and the rest -----------------------------------------------------------------------------------------------------------------------------------------
 
 
 def test_a_refused_connection_keeps_the_unreachable_title(real) -> None:
@@ -294,8 +457,11 @@ def test_ollama_refusing_the_connection_is_unreachable_too(real) -> None:
     assert "Failed to connect to Ollama" in f["detail"]
 
 
-def test_a_network_error_from_a_hosted_provider_is_unreachable() -> None:
-    assert _failure("OpenRouter discover network error: ConnectTimeout: ", "openrouter")["title"] == COULD_NOT_REACH
+def test_a_network_error_from_a_hosted_provider_is_unreachable(real) -> None:
+    f = _failure(real["openrouter_network"], "openrouter", "k")
+
+    assert f["title"] == COULD_NOT_REACH
+    assert "All connection attempts failed" in f["detail"]
 
 
 @pytest.mark.parametrize("detail", [None, "", "   "])
@@ -308,7 +474,7 @@ def test_no_detail_still_reads_cleanly(detail) -> None:
 
 
 def test_a_failure_with_only_a_message_uses_it() -> None:
-    f = _call('SW_probeFailure({message: "Failed to fetch"}, "openchat")')
+    f = _call('SW_probeFailure({message: "Failed to fetch"}, "openchat", "")')
 
     assert f["title"] == COULD_NOT_REACH
     assert f["detail"] == "Failed to fetch"
@@ -343,17 +509,33 @@ def test_the_submit_names_a_missing_field_before_it_asks_the_server() -> None:
 def test_the_probe_failure_is_read_through_the_tested_function_and_the_old_title_is_gone_from_the_component() -> None:
     body = _steps()
 
-    assert re.search(r"catch \(e2\) \{[\s\S]*?SW_probeFailure\(e2, type\)", body), "the probe's failure must be classified by the tested function"
+    assert re.search(r"catch \(e2\) \{[\s\S]*?SW_probeFailure\(e2, type, apiKey\)", body), "the probe's failure must be classified by the tested function, with the key that was sent"
     assert COULD_NOT_REACH not in body, "the component must not title every failure itself"
 
 
-def test_each_field_shows_its_own_error_and_clears_it_when_edited() -> None:
+def test_a_failure_about_a_field_is_shown_under_that_field() -> None:
+    body = _steps()
+
+    assert "if (failure.field) setFieldErr({ [failure.field]: failure.message });" in body
+
+
+def test_each_field_shows_its_own_error_marks_itself_invalid_and_clears_it_when_edited() -> None:
     body = _steps()
 
     for field, testid, setter in (("url", "setup-url-error", "setUrl"), ("apiKey", "setup-key-error", "setApiKey")):
         assert f'"auth-field" + (fieldErr.{field} ? " has-err" : "")' in body, f"the {field} field is marked"
         assert f'data-testid="{testid}"' in body, f"the {field} error has a test id"
-        assert re.search(setter + r"\(e\.target\.value\);\s*setFieldErr\(\{\}\);", body), f"editing the {field} field must clear its error"
-    assert re.search(r"setType\(e\.target\.value\);\s*setFieldErr\(\{\}\);", body), "a type change moves the example, so it clears the error"
+        assert f"aria-invalid={{!!fieldErr.{field}}}" in body, f"the {field} input says it is invalid to assistive technology"
+        assert re.search(setter + r"\(e\.target\.value\);\s*clearFieldFailure\(\);", body), f"editing the {field} field must answer its failure"
+    assert re.search(r"setType\(e\.target\.value\);\s*clearFieldFailure\(\);", body), "a type change moves the example, so it answers the failure too"
     submit = body[body.index("const submitProvider = async"):body.index("const submitProfile = async")]
     assert "setFieldErr({})" in submit, "a new submit starts from no field error"
+
+
+def test_answering_a_field_failure_clears_the_banner_that_named_it_and_nothing_else() -> None:
+    """The banner and the message under the field are one failure. A banner with no field error (the resume notice, an unreachable provider) is not about the field being edited."""
+    body = _steps()
+
+    handler = re.search(r"const clearFieldFailure = \(\) => \{[\s\S]*?\n  \};", body)
+    assert handler, "clearFieldFailure is gone"
+    assert re.search(r"if \(Object\.keys\(fieldErr\)\.length === 0\) return;\s*setFieldErr\(\{\}\);\s*setErr\(null\);", handler.group(0))
