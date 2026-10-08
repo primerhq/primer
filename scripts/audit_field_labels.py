@@ -50,6 +50,7 @@ _NATIVE_CONTROL = re.compile(r"<(input|select|textarea)\b")
 _COMMENT_BLOCK = re.compile(r"^[ \t]*/\*.*?\*/", re.S | re.M)
 _COMMENT_LINE = re.compile(r"^[ \t]*//.*$", re.M)
 _OPEN_TAG = re.compile(r"<(label|div|span)(?=[ \t\r\n])")
+# Only a double-quoted literal is read: ``className={"nv-field-label " + x}``, a template string or a variable passes unseen (a parser would be needed to see them).
 _CLASS_LITERAL = re.compile(r'className="([^"]*)"')
 _LABEL_CLASSES = {"field-label", "nv-field-label"}
 
