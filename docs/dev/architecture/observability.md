@@ -415,8 +415,22 @@ Specifics:
 - `_mount_metrics(app, config)` mounts `prometheus_client.make_asgi_app(registry)` at
   `/metrics` when `enabled` and `metrics_enabled` are both `True`. The mount happens
   before the error handlers are registered, so `/metrics` does not pass through
-  FastAPI's exception machinery, and it carries no auth (operators firewall it).
+  FastAPI's exception machinery. It is wrapped in `MetricsGate` (`primer/api/metrics_gate.py`), so it is
+  NOT anonymous by default (architecture review A-11; see the next bullet).
   When metrics are disabled the mount is skipped and `GET /metrics` returns 404.
+- **`GET /metrics` needs a signed-in admin.** The registry names workspaces, providers, profiles, models,
+  tools and workers and how busy each is, and an anonymous `GET` on the shipped ingress used to answer 200.
+  `AuthMiddleware` runs first for the whole app, mounts included, and leaves the authenticated user on
+  `scope["state"]`; `MetricsGate` answers `401` problem+json (with `WWW-Authenticate: Bearer`) when there is
+  none, `403` when the user is below admin, and otherwise passes the request to the metrics app. The caller
+  is a session cookie or an admin's API token as a bearer token, which is exactly what a Prometheus
+  `authorization` block sends (mint the token as the admin, then
+  `scrape_configs: [{job_name: primer, metrics_path: /metrics/, authorization: {type: Bearer, credentials_file: /etc/prometheus/primer.token}}]`;
+  the path is `/metrics/` because the mount redirects the bare path). A refusal is answered by the gate, so
+  its body carries no metric. With auth disabled the middleware's synthetic admin passes, as everywhere
+  else. A deployment whose network already protects the port sets `observability.metrics_public: true`
+  (default `false`) and the gate lets everything through. **Upgrade effect:** an existing anonymous scraper
+  gets `401` until it is given a token or the switch is set. Pinned by `tests/observability/test_metrics_gate.py`.
 - A background task in the lifespan (`sample_claim_gauges`,
   `primer/api/_app_lifespan_phases.py`) samples `claim_queue_depth{kind}` and
   `claim_active_count{kind}` every 10 seconds when the claim engine is a
