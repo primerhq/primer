@@ -13,7 +13,7 @@ SRC = Path(__file__).resolve().parents[2] / "ui" / "components" / "toolsets.jsx"
 def test_the_stdio_form_states_the_admin_rule_beside_the_command_field() -> None:
     src = SRC.read_text(encoding="utf-8")
     note = src.index('data-testid="toolset-stdio-admin-only"')
-    command_label = src.index('<label className="field-label">Command</label>')
+    command_label = src.index('<FormField label="Command"')
     environment = src.index('label="Environment"')
     assert command_label < note < environment, "the note must sit inside the stdio branch, under the command field"
     assert "needs the admin role" in src[note:environment]
