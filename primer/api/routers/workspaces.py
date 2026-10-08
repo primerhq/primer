@@ -1549,6 +1549,8 @@ async def switch_session_binding(
                 sessions=sessions, workspace_io=io_shim, row=abandoned, request=request,
                 resolve_snapshot=_resolve, guard={"parked_status": [None]},
                 changed="the session changed after its gate was closed; the gate is closed and the switch was not applied, retry",
+                timed_out="the workspace did not answer in time; the session's gate is already closed (its parked turn was rejected) "
+                          "and the switch was not applied, retry",
             )
 
     if row.turn_status in ("claimable", "running"):
@@ -1574,16 +1576,21 @@ async def switch_session_binding(
             sessions=sessions, workspace_io=io_shim, row=fresh, request=request, resolve_snapshot=_resolve,
             guard={"turn_status": ["idle"], "parked_status": [None]},
             changed="the session changed while the switch was being applied; nothing was changed, retry",
+            timed_out="the workspace did not answer in time; the switch was not applied, retry",
         )
 
 
 async def _apply_switch_in_lock(
-    *, sessions, workspace_io, row, request, resolve_snapshot, guard, changed: str,
+    *, sessions, workspace_io, row, request, resolve_snapshot, guard, changed: str, timed_out: str,
 ) -> WorkspaceSession:
     """Run the shared switch protocol from a route that already holds the session's lifecycle lock.
 
     Bounded by ``mutation_lock.IN_LOCK_IO_TIMEOUT_S`` (an unreachable workspace must not hold the lock every Cancel and
-    steer of the session queue behind); a timeout or a rejected reservation is a 409 and the switch was not applied.
+    steer of the session queue behind); a timeout or a rejected reservation is a 409. ``timed_out`` and ``changed`` are the
+    caller's messages, because what a 409 means differs: the abandon branch has already closed the gate. The deadline covers the
+    whole protocol, the guarded ``patch_if``s included, so a timeout that lands just after the closing write committed still
+    answers 409 although the switch took effect: the retry then finds the new binding in place and switches to the same target
+    again (one more marker and one more epoch bump).
     """
     import asyncio
 
@@ -1597,9 +1604,7 @@ async def _apply_switch_in_lock(
                 resolve_snapshot=resolve_snapshot, guard=guard,
             )
     except TimeoutError:
-        raise ConflictError(
-            "the workspace did not answer in time; the switch was not applied, retry"
-        ) from None
+        raise ConflictError(timed_out) from None
     if applied is None:
         raise ConflictError(changed)
     return applied

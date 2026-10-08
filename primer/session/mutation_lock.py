@@ -72,7 +72,8 @@ class KeyedLock:
 
 
 #: How long workspace I/O may take while a writer holds a session's lifecycle lock. ONE deadline for every in-lock
-#: writer that appends to a session's log (the checkpoint switch, the binding route, compact and rewind): a workspace
+#: writer that appends to a session's log (today the checkpoint switch and the binding route; compact and rewind take it
+#: when S2a PR-5b moves them under the lock): a workspace
 #: whose runtime connection dropped blocks a write until it reconnects, which may be never, and every Cancel, Stop,
 #: steer, pause, resume and switch of the session queues behind the lock. Long enough for a slow healthy write, short
 #: enough that the session is not wedged. Read as ``mutation_lock.IN_LOCK_IO_TIMEOUT_S`` at the call (not imported by

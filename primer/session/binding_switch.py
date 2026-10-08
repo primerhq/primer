@@ -127,9 +127,22 @@ async def apply_binding_switch(
 
     Returns the row as written, or ``None`` when the switch was NOT applied:
     the reservation was rejected (the row changed since it was read; NOTHING
-    was written) or the closing write was (a park committed after the
-    reservation; in one process the lock rules that out, so this is the
-    multi-process residual, and the marker stays in the log unapplied).
+    was written) or the closing write was (the row changed after the
+    reservation, and the marker stays in the log unapplied). Two things can do
+    that: a park committed by another process, and, in ONE process, the
+    busy-queue branch of ``switch_session_binding``, which still writes the
+    WHOLE row outside the lock from a row it read earlier (S2a PR-12b makes
+    it a ``patch_if`` of ``pending_binding_switch`` alone): a stale write
+    landing after the reservation puts ``last_seq`` back below the marker, so
+    the next record any writer appends takes the marker's seq
+    (``tests/api/test_session_binding_reservation.py``, the strict xfail).
+
+    Declared, pre-existing: the closing write sets ``next_unprocessed_seq`` to
+    ``seq + 1`` unconditionally, so when a steer's USER_INPUT at ``seq - 1`` is
+    still unprocessed the drain cursor passes it. Advancing only when the cursor
+    already equals ``seq`` would stop that, but then the marker is left ahead of
+    the cursor for the slow path to classify; neither that nor the fix is traced
+    or done here.
     """
     if not request:
         return row
