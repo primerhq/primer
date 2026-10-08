@@ -151,10 +151,11 @@ def test_a_list_with_a_nested_member_is_still_walked_member_by_member() -> None:
 
 
 def test_a_word_with_an_open_quote_is_not_an_error_and_not_rewritten() -> None:
-    """The words are never re-split by a shell parser, so an unbalanced quote cannot raise (the first version split with ``shlex`` and had to fall back)."""
-    assert _redact(["curl", "password='"]) == (["curl", "password='"], False)
+    """The words are never re-split by a shell parser, so an unbalanced quote cannot raise (the first version split with ``shlex`` and had to fall back). A quote after
+    ``password=`` is part of the value for the scan (a ``'`` inside a secret must not end it), so it is hidden: the safe direction."""
+    assert _redact(["curl", "password='"]) == (["curl", "password=<redacted>"], True)
     assert _redact(["curl", '"', "it's", "a b"]) == (["curl", '"', "it's", "a b"], False)
-    assert _preview({"command": ["curl", "password='"]})["truncated"] is False
+    assert _preview({"command": ["curl", "password='"]})["truncated"] is True
 
 
 def test_a_json_document_among_the_words_is_still_walked_as_a_document() -> None:
