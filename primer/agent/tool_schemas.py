@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from primer.model.chat import Tool
 from primer.workspace.local import tools as _local_tools
 
 if TYPE_CHECKING:
@@ -44,21 +45,29 @@ WORKSPACE_TOOL_ARGS: dict[str, type[BaseModel]] = {
 }
 
 
-async def find_tool_schema(provider_registry: "ProviderRegistry", toolset_id: str, tool_name: str) -> dict[str, Any] | None:
-    """The ``args_schema`` of tool ``tool_name`` of toolset ``toolset_id``, or ``None`` when it cannot be found (an unknown toolset or tool, a toolset that fails to
-    list, or one that does not answer within :data:`LIST_TIMEOUT_S`). Never raises for those: the caller turns ``None`` into a refusal that says so."""
-    if toolset_id == WORKSPACE_TOOLSET:
-        model = WORKSPACE_TOOL_ARGS.get(tool_name)
-        return model.model_json_schema() if model is not None else None
+async def find_tool(provider_registry: "ProviderRegistry", toolset_id: str, tool_name: str) -> Tool | None:
+    """The descriptor of tool ``tool_name`` in toolset ``toolset_id`` of the registry, or ``None`` when it cannot be found (an unknown toolset or tool, a toolset that fails
+    to list, or one that does not answer within :data:`LIST_TIMEOUT_S`). Never raises for those: a caller turns ``None`` into a refusal that says so (the policy write check)
+    or into "every argument withheld" (the approval park of ``call_tool``). The ``workspace`` toolset is no registry's and has no descriptors here: see :func:`find_tool_schema`."""
     try:
         provider = await provider_registry.get_toolset(toolset_id)
         async with asyncio.timeout(LIST_TIMEOUT_S):
             async for tool in provider.list_tools(principal=None):
                 if tool.id == tool_name:
-                    return tool.args_schema
-    except Exception as exc:  # noqa: BLE001 - one broken toolset must not fail a policy write; the check reports "cannot be checked"
-        logger.warning("tool schema lookup for %s::%s failed: %s: %s", toolset_id, tool_name, type(exc).__name__, exc)
+                    return tool
+    except Exception as exc:  # noqa: BLE001 - one broken toolset must not fail a policy write or an approval park
+        logger.warning("tool lookup for %s::%s failed: %s: %s", toolset_id, tool_name, type(exc).__name__, exc)
     return None
 
 
-__all__ = ["LIST_TIMEOUT_S", "WORKSPACE_TOOL_ARGS", "WORKSPACE_TOOLSET", "find_tool_schema"]
+async def find_tool_schema(provider_registry: "ProviderRegistry", toolset_id: str, tool_name: str) -> dict[str, Any] | None:
+    """The ``args_schema`` of tool ``tool_name`` of toolset ``toolset_id``, or ``None`` when it cannot be found (see :func:`find_tool`; the ``workspace`` toolset resolves
+    from the argument models of its tools)."""
+    if toolset_id == WORKSPACE_TOOLSET:
+        model = WORKSPACE_TOOL_ARGS.get(tool_name)
+        return model.model_json_schema() if model is not None else None
+    tool = await find_tool(provider_registry, toolset_id, tool_name)
+    return tool.args_schema if tool is not None else None
+
+
+__all__ = ["LIST_TIMEOUT_S", "WORKSPACE_TOOL_ARGS", "WORKSPACE_TOOLSET", "find_tool", "find_tool_schema"]
