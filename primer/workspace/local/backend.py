@@ -218,6 +218,8 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         if ws is None:
             raise NotFoundError(f"workspace {workspace_id!r} not found")
         try:
+            # The workspace is going away, so the sessions on it end with it; a plain aclose() only releases the handle.
+            await ws.end_all_sessions()
             await ws.aclose()
         except Exception as exc:  # noqa: BLE001
             logger.warning(

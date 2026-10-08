@@ -252,6 +252,20 @@ async def close_shielded(closable: object, *, what: str) -> None:
     await _run_in_background(aclose(), what=what, verb="aclose", wait_s=_CLOSE_WAIT_S)
 
 
+async def end_sessions_shielded(workspace: object, *, what: str) -> None:
+    """End the sessions still on a workspace that is being destroyed, bounded and on its own task (architecture review A-24).
+
+    ``aclose`` used to do this as a side effect of releasing the handle, which also ended them at every shutdown; it now only
+    releases, so a destroy asks for it by name. Same contract as :func:`close_shielded`: a second cancel cannot leave it half
+    done, the caller waits at most ``_CLOSE_WAIT_S`` (ending a session commits ``session.json`` over the runtime connection, which a
+    silent peer would hold open), and a failure is logged and never replaces the error that is ending the teardown.
+    """
+    end = getattr(workspace, "end_all_sessions", None)
+    if end is None:
+        return
+    await _run_in_background(end(), what=what, verb="end sessions", wait_s=_CLOSE_WAIT_S)
+
+
 async def roll_back_shielded(rollback: "Awaitable[None]", *, what: str) -> None:
     """Undo what a ``create`` that did not finish left behind (a container and its volume, the cluster objects it made).
 

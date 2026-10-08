@@ -764,7 +764,18 @@ class LocalWorkspace(Workspace):
         await asyncio.to_thread(_write)
 
     async def aclose(self) -> None:
-        """End any non-ENDED sessions, then release backend resources."""
+        """Release this handle: forget the cached session handles. Ends NO session.
+
+        Closing a handle is a PROCESS event (API or worker shutdown, a workspace-provider invalidate), not a statement about the sessions
+        on it: the durable row is untouched by it, so ending their slots here left a parked or running session with a dead
+        ``session.json`` (a wake raised ``ConflictError``, a reclaimed turn refused to run). A fresh handle reads each slot as it was.
+        :meth:`end_all_sessions` is the call for a workspace that is going away (architecture review A-24).
+        """
+        async with self._lock:
+            self._sessions.clear()
+
+    async def end_all_sessions(self) -> None:
+        """End every cached session that is not already ENDED (as ``completed``). For a workspace that is being destroyed."""
         async with self._lock:
             for session in list(self._sessions.values()):
                 try:
@@ -772,7 +783,6 @@ class LocalWorkspace(Workspace):
                 except ConflictError:
                     # already ended; fine
                     pass
-            self._sessions.clear()
 
     def _refuse_reserved(self, resolved: Path, original: str) -> None:
         """Block writes / deletes inside ``.state`` and ``.tmp``."""

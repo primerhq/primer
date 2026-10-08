@@ -1065,6 +1065,18 @@ class TestWorkspaceAclose:
 
         assert await s.status() == SessionStatus.ENDED
 
+    async def test_end_all_sessions_ends_what_is_live_and_tolerates_what_has_ended(
+        self, provider: LocalWorkspaceBackend,
+    ) -> None:
+        ws = await provider.create(_template())
+        live = await ws.start_session(_binding())
+        done = await ws.start_session(_binding())
+        await done.aclose()
+
+        await ws.end_all_sessions()
+
+        assert await live.status() == SessionStatus.ENDED and await done.status() == SessionStatus.ENDED
+
     async def test_aclose_idempotent_via_destroy(
         self, provider: LocalWorkspaceBackend
     ) -> None:
