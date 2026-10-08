@@ -117,7 +117,7 @@ def test_the_dialog_is_reachable_from_the_platform_page() -> None:
 
 
 def test_the_host_fetches_the_providers_and_hosts_the_dialog_or_the_way_out() -> None:
-    host = re.search(r"function NV_ChannelCreateHost[\s\S]{0,2200}", PLAT)
+    host = re.search(r"function NV_ChannelCreateHost\([\s\S]*?\n\}\n", PLAT)
     assert host, "the page needs a host for the channel dialog"
     text = host.group(0)
     assert "/channel_providers?limit=200" in text, "the dialog needs the provider list, which the host has to fetch"
@@ -131,18 +131,20 @@ def test_the_host_fetches_the_providers_and_hosts_the_dialog_or_the_way_out() ->
 
 
 def test_the_page_mounts_the_host_and_refreshes_the_cards_when_a_channel_is_created() -> None:
-    shown = re.search(r"modal\.kind === \"channel\"[\s\S]{0,700}", PLAT)
+    shown = re.search(r"modal\.kind === \"channel\" \? \([\s\S]*?\) : null\}", PLAT)  # this mount's own block, up to its `) : null}`
     assert shown and "<NV_ChannelCreateHost" in shown.group(0)
     block = shown.group(0)
-    assert block.count("setModal(null)") >= 2, "the dialog must close on Cancel and on a created channel"
-    assert "res.refetch()" in block, "a created channel must appear in the grid behind"
-    # No per-channel detail exists (the overlay draws the list for any id), so the created channel does not open an overlay.
+    assert re.search(r"onClose=\{function \(\) \{ setModal\(null\); \}\}", block), "the dialog must close on Cancel"
+    # A created channel closes the dialog and refreshes the grid behind it; no per-channel detail exists (the overlay draws the list for any id),
+    # so nothing opens.
+    assert re.search(r"onCreated=\{function \(\) \{ setModal\(null\); res\.refetch\(\); \}\}", block), "a created channel must close the dialog and refresh the cards"
     assert "NV_createdRow(" not in block and "openOverlay(" not in block
+    assert "con={con}" in block, "the dead-end action navigates through the console, so the host needs it"
 
 
 def test_the_add_provider_action_closes_the_dialog_before_it_navigates() -> None:
     """Otherwise the Providers overlay would open behind a dialog that still says there is no provider."""
-    host = re.search(r"function NV_ChannelCreateHost[\s\S]{0,2200}", PLAT).group(0)
+    host = re.search(r"function NV_ChannelCreateHost\([\s\S]*?\n\}\n", PLAT).group(0)
     action = re.search(r"onClick=\{function \(\) \{[^}]*NV_addChannelProvider\([^}]*\}\}", host)
     assert action, "the action must call NV_addChannelProvider from its click handler"
     assert action.group(0).index("props.onClose()") < action.group(0).index("NV_addChannelProvider("), action.group(0)
