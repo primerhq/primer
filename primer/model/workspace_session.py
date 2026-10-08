@@ -272,7 +272,8 @@ class SessionInfo(BaseModel):
         default=None,
         description=(
             "Refinement of ``ended_reason`` (for example ``never_started``). Served from the DB row, which is the one truth "
-            "about how a session ended; the runtime never writes it to ``session.json``, so a bare slot read has ``None``."
+            "about how a session ended: the runtime does not set it, so ``session.json`` carries ``null`` here and a reader "
+            "that wants the real value overlays the row (``primer.session.slot_view``)."
         ),
     )
     parent_session_id: str | None = Field(

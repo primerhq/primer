@@ -16,7 +16,10 @@ ways:
 Every reader that serves the slot to a person or a tool therefore passes it through :func:`overlay_row_on_info` (one session) or
 :func:`overlay_rows_on_infos` (a page) first, so two routes can never tell two stories. The overlay owns the LIFECYCLE fields only
 (``status``, ``ended_reason``, ``ended_detail``, ``ended_at``); everything else in the slot (name, agent, timestamps) is served as it
-is. A slot with no row, or whose row belongs to another workspace, is served unchanged: there is nothing to derive it from.
+is. It corrects exactly three disagreements: a row that is ENDED (the row's end, whatever the slot says), a slot that says ENDED under a
+row that is not, and a slot still RUNNING under a WAITING row. Every OTHER disagreement between two live states (a slot WAITING or
+PAUSED under a RUNNING row, a slot RUNNING under a CREATED row) is left alone on purpose: those are in-turn states the executor writes to
+the slot first, nothing shows the row is more current there, and the claim here is about how a session ENDED, not a general merge. A slot with no row, or whose row belongs to another workspace, is served unchanged: there is nothing to derive it from.
 
 This does not rewrite ``session.json``. Readers that DECIDE something from the slot (``WorkspaceAgentExecutor.invoke``, a wake's
 ``append_instruction``) still read it directly; the write side is a separate finding.
