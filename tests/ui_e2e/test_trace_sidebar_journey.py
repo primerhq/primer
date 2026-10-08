@@ -168,3 +168,35 @@ def test_trace_rows_are_one_line_and_maximize_overlay_expands(
     # --- The overlay close button works ----------------------------------------
     overlay.get_by_test_id("nv-trace-maximize-close").click()
     expect(overlay).to_have_count(0)
+
+
+@pytest.mark.timeout(90)
+def test_a_finished_turn_ends_in_the_trace_button_not_in_the_word_done(
+    page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path,
+):
+    """Console review C-016: every turn used to end in a faint "· done", an internal record's name. The row stays (it is the turn
+    boundary and holds the trace button) and the word goes."""
+    registry, mock_base_url = mock_llm_lan
+    suffix = uuid.uuid4().hex[:8]
+    ids = _seed(base_url, mock_base_url, suffix, tmp_path)
+    wid = ids["workspace"]
+    registry.register(ids["model_name"], [Rule(emit_text="All finished.")])
+
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        r = client.post(f"/v1/workspaces/{wid}/sessions", json={
+            "binding": {"kind": "agent", "agent_id": ids["agent"]},
+            "initial_instructions": "clean-done-journey: just answer",
+            "auto_start": True,
+        })
+        assert r.status_code == 201, f"create session failed: {r.status_code} {r.text}"
+        sid = r.json()["id"]
+        _wait_for_turn_to_settle(client, sid)
+
+    open_session_in_studio(page, console_url, wid, sid)
+
+    done_row = page.locator('.nv-lifecycle[data-kind="done"]')
+    expect(done_row.first).to_be_visible(timeout=10_000)
+    expect(done_row.first.locator('[data-testid^="nv-trace-open:"]')).to_be_visible()
+    expect(page.get_by_text("All finished.")).to_be_visible()
+    assert done_row.first.inner_text().strip() == "", done_row.first.inner_text()
+    expect(page.get_by_text("· done")).to_have_count(0)
