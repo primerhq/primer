@@ -21,9 +21,9 @@ ollama, httpx, etc.) inherits this configuration. The application can
 silence or re-route specific logger names afterwards via stdlib
 ``logging``.
 
-Credentials carried in URLs (``?key=``, ``?token=``, Telegram
-``/bot<token>/``, webhook ``/v1/webhooks/<token>``) are masked on the
-configured handler and on uvicorn's self-handled loggers, so the httpx
+Credentials carried in URLs (``?key=``, ``?token=``, the ``user:password@``
+of a Base URL, Telegram ``/bot<token>/``, webhook ``/v1/webhooks/<token>``)
+are masked on the configured handler and on uvicorn's self-handled loggers, so the httpx
 INFO request line and the uvicorn access line never write them out.
 """
 
@@ -62,6 +62,16 @@ _URL_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         r"\1[REDACTED]",
     ),
+    # Userinfo of a URL: https://user:password@host/... httpx prints a Base URL
+    # whole, credentials included, in an error ("Server error '500 ...' for url
+    # '...'") and in its INFO request line. The userinfo runs to the LAST "@"
+    # before the first "/", "?" or "#", because a password may hold an apostrophe
+    # and, in a hand-built string, a raw "@". An "@" after the authority (a path,
+    # a query, a fragment) is not userinfo. The scheme and the host stay.
+    (
+        re.compile(r'(\b[a-z][a-z0-9+.-]*://)[^/?#\s"]*@', re.IGNORECASE),
+        r"\1[REDACTED]@",
+    ),
     # Telegram Bot API: https://api.telegram.org/bot<id>:<secret>/method
     (re.compile(r"(/bot)\d+:[A-Za-z0-9_-]+"), r"\1[REDACTED]"),
     # Webhook capability tokens: keep the last 4 chars for correlation.
@@ -73,8 +83,8 @@ _URL_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 
 def redact_url_secrets(text: str) -> str:
-    """Mask URL-borne credentials (query keys, Telegram bot tokens,
-    webhook capability tokens) in ``text``."""
+    """Mask URL-borne credentials (userinfo, query keys, Telegram bot
+    tokens, webhook capability tokens) in ``text``."""
     for pattern, repl in _URL_SECRET_PATTERNS:
         text = pattern.sub(repl, text)
     return text
