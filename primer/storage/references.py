@@ -16,20 +16,29 @@ so the route and the tool cannot disagree about WHAT blocks, any more than about
 
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
 from primer.model.graph import Graph
-from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.model.storage import CursorPage, FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.trigger import Subscription
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
+
+logger = logging.getLogger(__name__)
 
 # ``(storage of the child kind, parent id) -> a referencing row or None``, for references the field query cannot express.
 Lookup = Callable[[Any, str], Awaitable[Any | None]]
 
 # The storage layer caps a page at this many rows; a walk over every row asks for full pages.
 _PAGE = 200
+
+# What a storage backend raises while building a page that holds a row which no longer decodes into the model.
+_UNREADABLE = (ValidationError, json.JSONDecodeError)
 
 
 async def first_referencing_row(
@@ -65,27 +74,63 @@ async def first_live_session_bound_to_graph(storage: Any, parent_id: str) -> Any
     )
 
 
+@dataclass(frozen=True)
+class UnreadableRow:
+    """Stands in for a stored row the model cannot decode (a shape that drifted, a hand edit), where a referencing row is expected.
+
+    A storage backend decodes a page before it returns it, so a row that does not decode has no id the typed API can hand back.
+    Such a row is treated as a blocker, the safe direction for a delete guard (it may be the very row that names the parent), and is
+    named by its position: the last graph that did read, which it follows in the walk's order.
+    """
+
+    id: str
+
+
 async def _first_graph_with_node(
     storage: Any, parent_id: str, *, node_kind: str, id_attr: str, skip_own_row: bool,
 ) -> Any | None:
     """Walk EVERY graph and return the first whose ``nodes`` holds a node of ``node_kind`` whose ``id_attr`` is ``parent_id``.
 
-    ``nodes`` is a list of objects, which the predicate language cannot match into, so the graphs are read a page at a time. The
-    lookup is exact on the node's ``kind``: a sub-graph node whose ``graph_id`` happens to equal an agent id is not a reference to
-    that agent. ``skip_own_row`` leaves out the parent's own row: a graph that names itself must stay deletable.
+    ``nodes`` is a list of objects, which the predicate language cannot match into, so the graphs are read a page at a time, by cursor
+    (an offset walk skips a row when one before the page boundary is deleted mid-walk). The lookup is exact on the node's ``kind``: a
+    sub-graph node whose ``graph_id`` happens to equal an agent id is not a reference to that agent. ``skip_own_row`` leaves out the
+    parent's own row: a graph that names itself must stay deletable.
+
+    A page that holds a row the model cannot decode raises as a whole. Instead of letting that fail every agent and graph delete, the
+    walk goes on from the same cursor one row at a time: the readable rows are still checked, and the first unreadable one is
+    returned as an :class:`UnreadableRow` (logged, and named by the graph before it) so the delete is refused rather than risked.
     """
-    offset = 0
+
+    def names_parent(graph: Any) -> bool:
+        if skip_own_row and graph.id == parent_id:
+            return False
+        return any(
+            getattr(node, "kind", None) == node_kind and getattr(node, id_attr, None) == parent_id for node in graph.nodes
+        )
+
+    cursor: str | None = None
+    last_readable: str | None = None
+    length = _PAGE
     while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE))
-        for graph in page.items:
-            if skip_own_row and graph.id == parent_id:
+        try:
+            page = await storage.list(CursorPage(cursor=cursor, length=length))
+        except _UNREADABLE as exc:
+            if length > 1:
+                length = 1
                 continue
-            for node in graph.nodes:
-                if getattr(node, "kind", None) == node_kind and getattr(node, id_attr, None) == parent_id:
-                    return graph
-        if len(page.items) < _PAGE:
+            where = f"after {last_readable}" if last_readable is not None else "that comes first"
+            logger.warning(
+                "references: a graph row (%s) cannot be decoded; it blocks the delete of %r until it is fixed or removed",
+                where, parent_id, exc_info=exc,
+            )
+            return UnreadableRow(id=f"unreadable graph row {where}")
+        for graph in page.items:
+            if names_parent(graph):
+                return graph
+            last_readable = graph.id
+        if page.next_cursor is None:
             return None
-        offset += _PAGE
+        cursor = page.next_cursor
 
 
 async def first_graph_with_agent_node(storage: Any, parent_id: str) -> Any | None:
@@ -129,6 +174,7 @@ __all__ = [
     "GRAPH_REFERENCES",
     "Lookup",
     "ReferenceSpec",
+    "UnreadableRow",
     "first_graph_with_agent_node",
     "first_graph_with_subgraph_node",
     "first_live_session_bound_to_agent",
