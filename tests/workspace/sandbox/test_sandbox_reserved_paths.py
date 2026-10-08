@@ -84,3 +84,24 @@ async def test_lookalike_names_outside_the_reserved_trees_are_written(path: str)
     ws, sandbox = _ws()
     await ws.write_file(path, b"x")
     assert sandbox.calls == [("write", f"/workspace/{path}")]
+
+
+class _DirSandbox(_RecordingSandbox):
+    """Every path is an (empty) directory, so a recursive delete would reach the sandbox."""
+
+    async def stat(self, path: str):
+        return types.SimpleNamespace(path=path, kind="dir")
+
+    async def list_dir(self, path: str):
+        return []
+
+
+@pytest.mark.parametrize("path", [".", "/", "x/..", "./", "a/b/../.."])
+async def test_delete_file_refuses_the_workspace_root(path: str) -> None:
+    """A path that normalises to the root would take .state and .tmp with it (LocalWorkspace refuses it too)."""
+    ws, _ = _ws()
+    sandbox = _DirSandbox()
+    ws._sandbox = sandbox  # type: ignore[attr-defined]
+    with pytest.raises(BadRequestError, match="workspace root"):
+        await ws.delete_file(path, recursive=True)
+    assert sandbox.calls == []
