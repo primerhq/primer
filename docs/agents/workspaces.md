@@ -122,11 +122,16 @@ Provisioning is async (claim-based, like sessions and harnesses).
 Workspace create returns 202; poll `workspaces::get_workspace` until
 `status=ready`.
 
-Sessions run inside a workspace. A workspace destroyed while
-sessions are active cascades to cancel them. The cancel is
-async - sessions get a `cancelled` marker, parked tools get
-`YieldCancelled` payloads, the workspace then transitions to
-`terminated`.
+Sessions run inside a workspace. Destroying a workspace
+(`DELETE /v1/workspaces/{id}`, which answers 204) is synchronous and
+deletes everything in it: the backend teardown takes the workspace's
+files and every session's history (`.state/sessions/<sid>/`, closed
+sessions included) with it (on docker the container and its volume, on
+a local provider the workspace root, on Kubernetes the PVC), and every
+open session on it ends `workspace_lost`, which is permanent. A
+workspace on a local provider this deployment refuses loses only its
+row: its files stay on the provider's disk. See "Workspace delete is
+synchronous" under Gotchas.
 
 ## MCP tools
 
@@ -142,8 +147,10 @@ it's called from a context with no implicit session.
   optional `template_id`. Returns 202.
 - `workspaces::get_workspace` - fetch by id.
 - `workspaces::list_workspaces` - paginated.
-- `workspaces::delete_workspace` - cascade-cancels in-flight
-  sessions. Returns 202.
+- `workspaces::delete_workspace` - destroys the workspace: its
+  files and every session's history are deleted with it and its open
+  sessions end `workspace_lost`. Returns once the teardown has been
+  requested (the REST route answers 204).
 
 ### Providers and templates
 
@@ -418,7 +425,12 @@ session is outside the group, so it is not killed.
   issued, not that the pod has finished terminating. Open
   sessions on the workspace are not cancelled: they end
   `workspace_lost`, and with the workspace destroyed there is
-  nothing for them to come back to.
+  nothing for them to come back to. The teardown also deletes the
+  workspace's files and every session's history (the transcripts live
+  in `.state/sessions/<sid>/` inside it): docker removes the container
+  and its volume, a local provider's root is removed, Kubernetes
+  deletes the PVC. The one exception is a workspace on a local
+  provider this deployment refuses, which loses only its row.
 - **A failed create leaves nothing behind.** The workspace row is
   written last, with `phase="running"`, and a failure after the
   live instance exists tears it down again, so there is no

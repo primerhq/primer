@@ -87,23 +87,38 @@ function NV_deleteConfirm(nav, row) {
   var message = "Permanently delete " + id
     + "? Referenced entities refuse deletion.";
   if (nav === "workspaces") {
-    message = "Permanently delete " + id + "? This tears down the "
-      + "workspace's environment (the container, or on Kubernetes the pod "
-      + "and its storage) and ends every open session on it as "
-      + "workspace_lost; those sessions cannot be resumed.";
+    // Every backend deletes the files with the environment (docker: the
+    // container AND its volume; local: rmtree of the root; kubernetes: the
+    // PVC), and every session's history lives inside the workspace
+    // (.state/sessions/<sid>/), so it goes too. A workspace whose local
+    // provider is refused on this deployment loses only its row
+    // (WorkspaceRegistry.destroy); the card cannot tell the two apart.
+    message = "Permanently delete " + id + "? This deletes the workspace's "
+      + "files and every session's history (the transcripts live inside "
+      + "it), tears down its environment (the container and its volume, or "
+      + "on Kubernetes the pod and its storage), and ends every open "
+      + "session on it as workspace_lost; those sessions cannot be "
+      + "resumed. If the workspace's provider is refused on this "
+      + "deployment, only its row is dropped and its files are left on the "
+      + "provider's disk.";
   } else if (nav === "collections") {
     message = "Permanently delete " + id + "? Every document in it, their "
       + "content and its search index are deleted with it, and this cannot "
       + "be undone. A new collection with the same id starts empty.";
   } else if (nav === "triggers") {
     message = "Permanently delete " + id + "? Its subscriptions are deleted "
-      + "with it, so nothing that trigger was routing will run again.";
+      + "with it, so nothing that trigger was routing will run again, and a "
+      + "session parked waiting on it will never be woken by it.";
   } else if (nav === "services") {
     // The public URL is built from the name, and the card shows the
     // generated id: the prompt gives the name the operator knows.
     var svc = row.name || id;
-    message = "Permanently delete " + svc + "? Every published version and "
-      + "its files are deleted, and /svc/" + svc + "/ stops answering.";
+    // The resolver caches name -> service per process for a few seconds
+    // (RESOLVE_TTL_SECONDS, primer/service/serve.py), so the URL can answer
+    // briefly after the delete.
+    message = "Permanently delete " + svc + "? Every version and its files "
+      + "are deleted, and /svc/" + svc + "/ stops answering (a server "
+      + "process may keep answering from its cache for a few seconds).";
   }
   if (nav === "agents" && NV_SETUP_AGENT_IDS.indexOf(row.id) !== -1) {
     message = id + " is a built-in agent that setup checks for. "
