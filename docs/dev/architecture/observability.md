@@ -300,10 +300,15 @@ leave its families behind:
 - `turns_total{binding_ref,status}` and
   `turn_duration_seconds{binding_ref,status}` are written by `_observe_turn` at all
   four exits of `run_one_session_turn` (`primer/session/dispatch.py`): parked,
-  failed, cancelled, completed. The completion exit counts a turn the agent's
+  failed, cancelled, completed (and `overridden`, below). The completion exit counts a turn the agent's
   `max_tool_turns` stopped (`last_done_reason == "tool_turn_cap"`, interactive or
   autonomous) as `status="tool_turn_cap"`, neither a normal `completed` nor a
   `failed`: a dashboard that sums `completed` no longer includes those turns.
+  A completion whose terminal write was skipped because another path ended the
+  row meanwhile (a force-delete, the pool's preempt convergence, the reconciler)
+  is counted once as `status="overridden"` and emits no `session.replied`
+  (ticket 01a1134b-2cb8), so `completed` is not inflated by sessions that were
+  ended under the turn.
   `binding_ref` is the bound agent or graph id,
   bounded by the number of definitions rather than by session volume.
 - `sessions_active{workspace_id}` is inc/dec'd around the turn body in the same

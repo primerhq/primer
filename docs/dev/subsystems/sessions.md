@@ -127,10 +127,12 @@ Four rules make that safe:
   ended reason), and the callers that announce the outcome use that, not the
   outcome they computed: the terminal event (and so `session.ended` in the
   durable event log) carries the row's own reason, and the final-result relay
-  stays quiet for a session that was ended under the turn. What is NOT
-  changed: the turn is still counted by its own outcome, and the
-  `session.replied` event still describes the turn's own reply (its
-  `finish_reason`); only the terminal event and the relay follow the row. The
+  stays quiet for a session that was ended under the turn. The same turn
+  emits no `session.replied` (the durable event log must not say a session
+  replied that it also says was ended by something else) and is counted once
+  under `turns_total{status="overridden"}`, not `completed` (ticket
+  01a1134b-2cb8); `TurnLogCompleted` is still written, as the model call did
+  finish. A turn nobody ended replies and counts as before. The
   on-disk slot follows the ROW when the write is skipped: the pool's
   `_end_session` ends a row without touching the slot, so the reason is
   mirrored onto `session.json` when the slot accepts it (`completed`, `failed`,
