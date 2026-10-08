@@ -13,13 +13,15 @@
 // the console inside SetupWizardGate. SetupWaitingScreen is what non-admins see
 // while an admin finishes setup.
 
+// urlHint is the example under Base URL (a type that takes no URL has none); needsKey marks the hosted providers, which cannot be
+// used without a key, where a self-hosted server may run without one (admin review ADM-03, ADM-05).
 const SETUP_PROVIDER_TYPES = [
-  { id: "openchat", label: "OpenAI-compatible (chat completions)", needsUrl: true },
-  { id: "openresponses", label: "OpenAI-compatible (responses)", needsUrl: true },
-  { id: "ollama", label: "Ollama", needsUrl: true },
-  { id: "anthropic", label: "Anthropic", needsUrl: false },
-  { id: "gemini", label: "Gemini", needsUrl: false },
-  { id: "openrouter", label: "OpenRouter", needsUrl: false },
+  { id: "openchat", label: "OpenAI-compatible (chat completions)", needsUrl: true, urlHint: "https://api.openai.com/v1", needsKey: false },
+  { id: "openresponses", label: "OpenAI-compatible (responses)", needsUrl: true, urlHint: "https://api.openai.com/v1", needsKey: false },
+  { id: "ollama", label: "Ollama", needsUrl: true, urlHint: "http://localhost:11434", needsKey: false },
+  { id: "anthropic", label: "Anthropic", needsUrl: false, urlHint: "", needsKey: true },
+  { id: "gemini", label: "Gemini", needsUrl: false, urlHint: "", needsKey: true },
+  { id: "openrouter", label: "OpenRouter", needsUrl: false, urlHint: "", needsKey: true },
 ];
 
 function _setupDraftConfig(type, url, apiKey) {
@@ -124,6 +126,101 @@ function SW_loadResume(apiFetch) {
     );
   }).catch(function () { return { step: 1 }; });
 }
+
+// ---- what the operator is told when step 1 cannot go on (admin review ADM-02, ADM-03, ADM-05) -----------------------------------------
+//
+// POST /llm_providers/_discover_models answers EVERY failure with a 400 and a plain-text detail, so only the text tells a draft the
+// provider model rejected ("Draft provider failed validation: ..." or "invalid <X> config: ...", pydantic's dump) from the upstream's
+// own failure ("<X> probe failed: ...", "<X> discover failed: HTTP n ...", "<X> discover network error: ..."). The class is read from
+// that text here, in one place, and tests/ui/test_setup_wizard_failures.py feeds it the REAL backend's wording, so a change there turns
+// that file red instead of quietly returning the wizard to one generic title.
+
+function SW_typeSpec(type) {
+  return SETUP_PROVIDER_TYPES.filter(function (t) { return t.id === type; })[0] || null;
+}
+
+// The example under Base URL for the selected type ("" for a type that takes none).
+function SW_urlHint(type) {
+  var spec = SW_typeSpec(type);
+  return spec && spec.needsUrl ? spec.urlHint : "";
+}
+
+// The API key placeholder: a hosted provider cannot be used without one, a self-hosted server may run without.
+function SW_keyHint(type) {
+  var spec = SW_typeSpec(type);
+  return spec && spec.needsKey ? "required for this provider" : "leave blank for unauthenticated servers";
+}
+
+// What pressing Connect with a required field empty says, or null. The button is not disabled for it: a disabled button never says why.
+function SW_missingField(type, url, apiKey) {
+  var spec = SW_typeSpec(type);
+  if (!spec) return null;
+  if (spec.needsUrl && !String(url || "").trim()) {
+    return { field: "url", title: "Enter the server's address", message: "A full URL, for example " + spec.urlHint };
+  }
+  if (spec.needsKey && !String(apiKey || "").trim()) {
+    return { field: "apiKey", title: "Enter the API key", message: "Paste the key from the provider's dashboard." };
+  }
+  return null;
+}
+
+// A backend detail without the links and pydantic's "[type=..., input_value=..., input_type=...]" noise (which also echoes the input).
+function SW_tidy(text) {
+  return String(text || "")
+    .replace(/\s*For further information visit \S+/g, "")
+    .replace(/\s*For more information check: \S+/g, "")
+    .replace(/\s*\[type=[^\n]*?input_type=[^\]\n]*\]/g, "")
+    .trim();
+}
+
+// pydantic's "<loc>\n  <reason>" pairs from a validation dump: [{loc, reason}].
+function SW_validationFields(text) {
+  var tidy = SW_tidy(text);
+  var re = /\n(\S+)\n[ \t]+([^\n]+)/g;
+  var out = [];
+  var m;
+  while ((m = re.exec(tidy))) out.push({ loc: m[1], reason: m[2].trim() });
+  return out;
+}
+
+// {title, detail, field, message} for a failed probe: the title says what failed; a problem with one input is shown under that input
+// (field "url" | "apiKey", with its message) instead of in a banner; anything else keeps its tidied detail in the banner.
+function SW_probeFailure(err, type) {
+  var raw = String((err && (err.detail || err.message)) || "").trim();
+  if (/^(Draft provider failed validation|invalid [\w ]+ config):/i.test(raw)) {
+    var fields = SW_validationFields(raw);
+    var urlProblem = fields.filter(function (f) { return /(^|\.)url$/.test(f.loc); })[0];
+    var keyProblem = fields.filter(function (f) { return /(^|\.)api_key$/.test(f.loc); })[0];
+    if (urlProblem) {
+      var missing = /Field required/i.test(urlProblem.reason);
+      return {
+        field: "url", detail: "",
+        title: missing ? "Enter the server's address" : "That address is not valid",
+        message: "A full URL, for example " + (SW_urlHint(type) || "http://localhost:11434"),
+      };
+    }
+    if (keyProblem) {
+      return { field: "apiKey", detail: "", title: "Enter the API key", message: "Paste the key from the provider's dashboard." };
+    }
+    return {
+      field: null, message: "", title: "Those settings are not valid",
+      detail: fields.length
+        ? fields.map(function (f) { return f.loc + ": " + f.reason; }).join("; ")
+        : SW_tidy(raw.replace(/^[^:]+:\s*/, "")),
+    };
+  }
+  if (/HTTP\s+40[13]\b|'40[13] |status code:\s*40[13]|unauthori[sz]ed|forbidden|key invalid/i.test(raw)) {
+    return { field: null, message: "", title: "The provider rejected the API key", detail: "Check the key and connect again." };
+  }
+  var status = /HTTP\s+(\d{3})\b/.exec(raw) || /'(\d{3}) [A-Za-z ]+'/.exec(raw) || /status code:\s*(\d{3})/.exec(raw);
+  if (status) {
+    var more = status[1] === "404"
+      ? " Check the Base URL: an OpenAI-compatible server usually answers at an address ending in /v1."
+      : "";
+    return { field: null, message: "", title: "The provider answered with an error", detail: SW_tidy(raw) + more };
+  }
+  return { field: null, message: "", title: "Could not reach that provider", detail: SW_tidy(raw) };
+}
 // ---- end of the resume helpers
 
 function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
@@ -145,6 +242,8 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
   );
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState(null);
+  // A problem with one input, shown under it: { url: "...", apiKey: "..." } (admin review ADM-02, ADM-05).
+  const [fieldErr, setFieldErr] = React.useState({});
   // The docs harness starts a capture at a given step and never reads the server; the console reads what is already saved first.
   const [ready, setReady] = React.useState(!!initialStep);
   const [resumed, setResumed] = React.useState(false);
@@ -177,6 +276,14 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
   const submitProvider = async (e) => {
     e.preventDefault();
     setErr(null);
+    setFieldErr({});
+    // A required field left empty is named here, not by a disabled button and not by a round trip.
+    const missing = SW_missingField(type, url, apiKey);
+    if (missing) {
+      setErr({ title: missing.title });
+      setFieldErr({ [missing.field]: missing.message });
+      return;
+    }
     setBusy(true);
     try {
       const config = _setupDraftConfig(type, url, apiKey);
@@ -188,7 +295,10 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
         );
         models = (probe && probe.models) || [];
       } catch (e2) {
-        setErr({ title: "Could not reach that provider", detail: e2 && (e2.detail || e2.message) });
+        // The title says what failed (SW_probeFailure reads the backend's text); a bad input is shown under that input.
+        const failure = SW_probeFailure(e2, type);
+        setErr({ title: failure.title, detail: failure.detail });
+        if (failure.field) setFieldErr({ [failure.field]: failure.message });
         return;
       }
       if (!models.length) {
@@ -265,7 +375,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
               id="setup-type"
               className="mono"
               value={type}
-              onChange={(e) => setType(e.target.value)}
+              onChange={(e) => { setType(e.target.value); setFieldErr({}); }}
             >
               {SETUP_PROVIDER_TYPES.map((t) => (
                 <option key={t.id} value={t.id}>{t.label}</option>
@@ -273,33 +383,37 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
             </select>
           </div>
           {spec && spec.needsUrl && (
-            <div className="auth-field">
+            <div className={"auth-field" + (fieldErr.url ? " has-err" : "")}>
               <label htmlFor="setup-url">Base URL</label>
               <input
                 id="setup-url"
                 className="mono"
                 value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="http://localhost:11434"
+                onChange={(e) => { setUrl(e.target.value); setFieldErr({}); }}
+                placeholder={SW_urlHint(type)}
+                aria-invalid={!!fieldErr.url}
                 autoFocus
               />
+              {fieldErr.url && <div className="field-err" data-testid="setup-url-error">{fieldErr.url}</div>}
             </div>
           )}
-          <div className="auth-field">
+          <div className={"auth-field" + (fieldErr.apiKey ? " has-err" : "")}>
             <label htmlFor="setup-key">API key</label>
             <input
               id="setup-key"
               className="mono"
               type="password"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="leave blank for unauthenticated servers"
+              onChange={(e) => { setApiKey(e.target.value); setFieldErr({}); }}
+              placeholder={SW_keyHint(type)}
+              aria-invalid={!!fieldErr.apiKey}
             />
+            {fieldErr.apiKey && <div className="field-err" data-testid="setup-key-error">{fieldErr.apiKey}</div>}
           </div>
           <button
             type="submit"
             className="auth-submit touch-target"
-            disabled={busy || (spec && spec.needsUrl && !url)}
+            disabled={busy}
           >
             {busy ? (<><span className="spinner" /><span>Checking…</span></>) : <span>Connect and list models</span>}
           </button>
