@@ -62,6 +62,8 @@ from primer.model.except_ import (
     DimensionMismatchError,
     NotFoundError,
 )
+from primer.common.entity_checks import EntityCheckError
+from primer.knowledge.checks import check_collection_system_flag
 from primer.knowledge.grep import grep_collection
 from primer.knowledge.importer import import_zip
 from primer.knowledge.lifecycle import (
@@ -124,6 +126,22 @@ class _CollectionSearchBody(BaseModel):
 # ---- Collection router -----------------------------------------------------
 
 
+async def _collection_on_pre_create(entity: Collection, request: Request) -> None:
+    """Refuse a create that sets the ``system`` flag (403): the platform writes system collections to storage, not through here."""
+    try:
+        check_collection_system_flag(entity)
+    except EntityCheckError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+
+
+async def _collection_on_pre_update(entity: Collection, existing: Collection, request: Request) -> None:
+    """Refuse an update that changes the ``system`` flag (403), or the delete guard below is one PUT away from being bypassed."""
+    try:
+        check_collection_system_flag(entity, existing)
+    except EntityCheckError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+
+
 async def _collection_on_pre_delete(existing: Collection, request: Request) -> None:
     """Delete what the collection owns BEFORE its row goes (ticket 01a1131f "F"); refuse a system collection (403).
 
@@ -156,6 +174,8 @@ collection_router = make_crud_router(
     tag="collections",
     cdc_kind="collection",
     managed_by_field="harness_id",
+    on_pre_create=_collection_on_pre_create,
+    on_pre_update=_collection_on_pre_update,
     on_pre_delete=_collection_on_pre_delete,
 )
 
