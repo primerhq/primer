@@ -299,8 +299,11 @@ reachable from `begin`.
   the same 409 the REST route answers) while another graph has a
   sub-graph (`graph`) node naming it, a session that is not ended is
   bound to it, or a trigger subscription targets it (an ended session
-  never blocks, and a graph that names itself does not block its own
-  delete).
+  never blocks, a disabled subscription still does, and a graph that names
+  itself does not block its own delete). A graph row the server cannot read
+  also blocks, because it may be the one that names this graph. Residual: an
+  ended session can be re-opened later with `reset_session` (back to created)
+  after its graph was deleted, and then fails at its next turn.
 - `system::find_graphs` - predicate query.
 
 ### Discovery (search toolset)

@@ -219,8 +219,16 @@ Agents are managed via standard CRUD plus the semantic search tool.
 - `system::delete_agent` - refused with a `conflict` error (`in_use_by`,
   the same 409 the REST route answers) while a graph has an agent node
   naming the agent, a session that is not ended is bound to it, or a
-  trigger subscription targets it; delete or end those first (an ended
-  session never blocks). Deleting the seeded `operator` or `builder` agent is
+  trigger subscription targets it (a disabled subscription still blocks);
+  delete or end those first (an ended session never blocks). A graph row
+  the server cannot read also blocks, because it may be the one that names
+  the agent; the answer names the readable graph before it. Two residuals:
+  an ended session can be re-opened later with `reset_session` (back to
+  created) after its agent was deleted, and then fails at its next turn
+  (`POST .../resume` itself answers 409 for an ended session); and
+  the system default agent (`default_agent_id`, the seeded `operator` unless
+  changed) is not checked, so deleting it leaves session creation without a
+  binding failing until it is set again. Deleting the seeded `operator` or `builder` agent is
   allowed but marks the install as not set up (admins are sent to the
   setup checklist, every other user waits on a setup screen) until
   `POST /v1/setup/seed` or the next server start re-creates it with its
