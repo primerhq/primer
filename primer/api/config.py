@@ -93,6 +93,37 @@ class AuthConfig(BaseModel):
     cookie_samesite: str = "lax"
 
 
+class RequestLimitsConfig(BaseModel):
+    """Request-body size caps enforced app-wide by ``BodySizeLimitMiddleware`` (FS-05).
+
+    A body over its route's cap answers 413 problem+json, whether the client declares the size
+    (Content-Length) or streams it chunked: the bytes actually received are counted. Two routes take
+    legitimately big bodies and carry their own caps; every other route gets ``max_body_bytes``.
+    """
+
+    max_body_bytes: int = Field(
+        default=32 * 1024 * 1024,
+        gt=0,
+        description=(
+            "Largest request body any route accepts, in bytes (default 32 MiB). Covers JSON bodies, "
+            "multipart uploads (audio transcription, collection zip import) and MCP posts."
+        ),
+    )
+    workspace_file_max_body_bytes: int = Field(
+        default=128 * 1024 * 1024,
+        gt=0,
+        description=(
+            "Cap for PUT /v1/workspaces/{id}/files (default 128 MiB). The body is JSON, and a base64 "
+            "file grows by a third on the wire, so this admits a file of roughly 96 MiB."
+        ),
+    )
+    service_publish_max_body_bytes: int = Field(
+        default=128 * 1024 * 1024,
+        gt=0,
+        description="Cap for POST /v1/services/{id}/versions, the gzipped tar bundle (default 128 MiB).",
+    )
+
+
 class LocalWorkspacesConfig(BaseModel):
     """Where a workspace on a local provider may be used (ticket 01a1072f).
 
@@ -203,6 +234,11 @@ class AppConfig(BaseSettings):
         description=(
             "Where workspaces on a local provider may be used; see LocalWorkspacesConfig."
         ),
+    )
+
+    limits: RequestLimitsConfig = Field(
+        default_factory=RequestLimitsConfig,
+        description="Request-body size caps; see RequestLimitsConfig.",
     )
 
     # --- MCP toolset stdio safety ----------------------------------------
@@ -439,4 +475,4 @@ class AppConfig(BaseSettings):
         return tuple(sources)
 
 
-__all__ = ["AppConfig", "ObservabilityConfig"]
+__all__ = ["AppConfig", "ObservabilityConfig", "RequestLimitsConfig"]

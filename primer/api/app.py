@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 
-from primer.api.config import AppConfig
+from primer.api.config import AppConfig, RequestLimitsConfig
 from primer.api.errors import register_error_handlers
 from primer.api.registries import (
     ProviderRegistry,
@@ -92,6 +92,7 @@ from primer.api._app_middleware import (
     _mount_metrics,
 )
 from primer.api._app_routes import _mount_routers
+from primer.api.middleware.body_limit import BodySizeLimitMiddleware, body_limit_options
 
 
 if TYPE_CHECKING:
@@ -131,6 +132,9 @@ def create_app(config: AppConfig) -> FastAPI:
     # scope). Binary downloads (application/octet-stream) pass through
     # with a small CPU hit but no corruption.
     app.add_middleware(_GZipExceptMcp, minimum_size=1024)
+    # Inside the security-header and request-id middleware, so a 413 for an oversized body (FS-05)
+    # still carries both; outside the routes, so it runs before FastAPI buffers the body.
+    app.add_middleware(BodySizeLimitMiddleware, **body_limit_options(config.limits))
     _install_security_headers(app)
     _install_console_csp(app)
     _install_request_id(app)
@@ -170,6 +174,7 @@ def create_test_app(
         version=APP_VERSION,
         contact={"name": "primer"},
     )
+    app.add_middleware(BodySizeLimitMiddleware, **body_limit_options(RequestLimitsConfig()))
     _install_request_id(app)
     _install_auth_middleware(app)
     # secret_provider omitted: this lightweight app path does not wire
