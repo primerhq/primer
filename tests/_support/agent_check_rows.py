@@ -39,3 +39,15 @@ def profile_missing_message(profile_id: str) -> str:
 def toolsets_missing_message(*toolset_ids: str) -> str:
     names = ", ".join(repr(t) for t in sorted(set(toolset_ids)))
     return f"tools name toolsets that do not exist: {names}; create them first or remove those tools"
+
+
+# The words of the two field refusals of a NEW agent (an id that is not a name, a blank description), defined once like the two above.
+def agent_id_message(agent_id: str) -> str:
+    shown = repr(agent_id) if len(agent_id) <= 40 else repr(agent_id[:40]) + "..."
+    return (
+        f"{shown} is not a valid agent id: it must start with a lowercase letter or a digit and use only lowercase letters, digits, "
+        "hyphens and underscores, at most 63 characters (for example refund-triage); leave the id out to have one generated"
+    )
+
+
+AGENT_DESCRIPTION_MESSAGE = "the description must not be blank: other agents find an agent by its description"

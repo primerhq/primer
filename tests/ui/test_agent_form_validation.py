@@ -160,3 +160,29 @@ def test_the_status_strip_does_not_print_the_endpoint_or_the_poll_interval() -> 
     assert "Checked automatically while this window is open" in panel
     assert "polled every 30s" in panel, "the technical detail is kept, in a tooltip"
     assert re.search(r'title=\{`GET /v1/agents/\$\{id\}/status, polled every 30s`\}', panel)
+
+
+# ---- the console's rule and the backend's are one rule (ticket 01a11c1c) ------------------------------------------------------------------------------------------
+
+
+def test_the_console_id_pattern_is_the_backends_pattern() -> None:
+    """The form's regex is a copy of the backend's ``AGENT_ID_PATTERN`` (the backend now enforces it on create); a change to either must turn this red."""
+    from primer.agent.agent_checks import AGENT_ID_PATTERN
+
+    literal = re.search(r"if \(name && !/(.+)/\.test\(name\)\)", SRC)
+    assert literal, "AG_validateNewAgent no longer tests the typed name against a regex literal"
+    assert literal.group(1) == AGENT_ID_PATTERN
+
+
+@pytest.mark.parametrize(
+    "id_",
+    ["refund-triage", "a", "0day", "my_agent_1", "a" * 63, "a" * 64, "Bad Name!", "RefundTriage", "-lead", "_lead", "a/b", "a.b", "naïve", "a__b", "", "   ", "  refund-triage  "],
+)
+def test_the_console_and_the_backend_accept_and_refuse_the_same_ids(id_: str) -> None:
+    """What the form sends is the TRIMMED id, and a blank one is left out (the backend generates it): on that, the two agree."""
+    from primer.agent.agent_checks import AGENT_ID_PATTERN
+
+    sent = id_.strip()
+    backend_refuses = bool(sent) and re.fullmatch(AGENT_ID_PATTERN, sent) is None
+
+    assert ("body.id" in _check(id_, "does a thing")) == backend_refuses
