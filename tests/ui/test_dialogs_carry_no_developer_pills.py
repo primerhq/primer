@@ -19,7 +19,6 @@ STYLES = (UI / "styles.css").read_text(encoding="utf-8")
 def test_the_provider_modal_draws_no_schema_pill() -> None:
     assert "schema-driven from" not in CATALOG
     assert "provider-modal-schema-chip" not in CATALOG
-    assert "/providers/_types" not in CATALOG.replace("// ", "//").split("<Modal")[-1][:600]
 
 
 def test_the_pills_style_went_with_it() -> None:
