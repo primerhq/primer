@@ -161,6 +161,14 @@ The agent should:
 
 ## Gotchas
 
+- **A tool called over MCP carries no run identity into what it
+  starts.** The MCP endpoint checks your role against the tool's floor,
+  but hands the handler no run context. So a session started with
+  `workspaces__create_workspace_session`, a subagent started with
+  `system__invoke_agent`, and a trigger or subscription saved through
+  the trigger tools all run (or fire) as an ordinary `user`, whatever
+  your own role: admin-only tools inside them are refused. Use the REST
+  routes (or the console) when the work needs admin rank.
 - **Hard-deny is empty in v1.** Earlier prototypes had a hardcoded
   block on `system::call_tool` and `web__http_request`. That's been
   removed - the operator owns exposure decisions. The constant
