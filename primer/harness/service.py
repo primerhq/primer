@@ -438,15 +438,15 @@ async def _refuse_toolsets(
 ) -> str | None:
     """Run the shared toolset checks on every Toolset ``entries`` would write; a JSON error refusing the whole bundle, or None.
 
-    The REST toolset routes and the system CRUD tools refuse a reserved toolset id, and a stdio MCP toolset (created, or an
-    existing one changed) to anyone below admin (:func:`primer.toolset.toolset_checks.toolset_needs_admin`). An install writes
+    The REST toolset routes and the system CRUD tools refuse a reserved toolset id, and a stdio MCP or python toolset (created,
+    or an existing one changed) to anyone below admin (:func:`primer.toolset.toolset_checks.toolset_admin_reason`). An install writes
     rows straight to storage, so it applies the same rules here, against whoever enqueued it
     (``harness.operation_requested_by``, under the tool floor's own predicate: an admin, or the internal system / trigger actors;
     unknown fails closed). The harness routes and tools are admin-only, so this is belt and braces.
     """
     from primer.api.registries.provider_registry import RESERVED_TOOLSET_SCOPE_IDS  # noqa: PLC0415 - import cycle
     from primer.authz import _role_allows  # noqa: PLC0415
-    from primer.toolset.toolset_checks import toolset_needs_admin  # noqa: PLC0415
+    from primer.toolset.toolset_checks import toolset_admin_reason  # noqa: PLC0415
 
     storage = _storage_for_kind(storage_provider, "toolset")
     for entry in entries:
@@ -460,13 +460,12 @@ async def _refuse_toolsets(
             })
         entity = _entity_from_entry(entry, harness_id=harness.id)
         existing = await storage.get(entry.resolved_id)
-        if toolset_needs_admin(entity, existing) and not _role_allows(harness.operation_requested_by, "admin"):
+        reason = toolset_admin_reason(entity, existing)
+        if reason is not None and not _role_allows(harness.operation_requested_by, "admin"):
+            # The code stays ``toolset_needs_admin`` (the error code #478 shipped); the message is the shared rule's reason.
             return json.dumps({
                 "code": "toolset_needs_admin",
-                "message": (
-                    f"template {entry.template_name!r} would create or change an MCP toolset on the stdio transport, which "
-                    "launches a command on the server host: only an admin may install or sync it"
-                ),
+                "message": f"template {entry.template_name!r}: {reason} Only an admin may install or sync it.",
                 "template_name": entry.template_name,
             })
     return None
