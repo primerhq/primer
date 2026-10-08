@@ -1186,6 +1186,41 @@ function NV_subagentRows(row, resultFor, running) {
             </div>
           );
         }
+        // A failure and a recoverable problem carry no label (their words are in payload.message), so the label rule below dropped them and a
+        // subagent that failed showed nothing in its block (ticket 01a11c1e). They are drawn as the main transcript draws them, with the same words
+        // (NV_errorView, NV_noticeView), inside the subagent's box and under its name. Neither is announced as an alert: it arrives inside a block the
+        // reader may not be looking at, and the parent turn's own failure is what the page announces. No trace button: a trace belongs to the session's turn.
+        if (child.kind === "error" || child.kind === "retry_notice") {
+          var isFailure = child.kind === "error";
+          var failureView = isFailure ? NV_errorView(child) : NV_noticeView(child);
+          return (
+            <div key={child.seq} className="nv-subagent"
+              data-testid={(isFailure ? "nv-subagent-failure:" : "nv-subagent-notice:") + child.seq}>
+              <div className="nv-subagent-head">
+                <span className="nv-subagent-name">
+                  {(child.payload && child.payload.agent_id) || "subagent"}
+                </span>
+              </div>
+              {isFailure ? (
+                <div className="nv-turn-error nv-turn-error-nested">
+                  <span className="nv-turn-error-body">
+                    <span>{failureView.text}</span>
+                    {failureView.detail ? (
+                      <span className="nv-turn-error-detail">{failureView.detail}</span>
+                    ) : null}
+                  </span>
+                </div>
+              ) : (
+                <div className="nv-turn-note nv-turn-note-nested" data-state={child.noticeState}>
+                  <span>{failureView.text}</span>
+                  {failureView.detail ? (
+                    <span className="nv-turn-note-detail">{failureView.detail}</span>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          );
+        }
         if (!child.label) return null;
         return (
           <div key={child.seq} className="nv-subagent">
