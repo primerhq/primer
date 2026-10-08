@@ -718,10 +718,13 @@ def test_reject_button_always_reads_reject_with_feedback():
     click - the reference shows the enriched label at rest too. The
     second-click confirm flow (rejOpen gates whether the click opens the
     reason textarea vs actually submits) is UNCHANGED - only the label
-    text stopped varying."""
+    text stopped varying. Console review C-018: once the box IS open the
+    same button reads "Send rejection" (it is the confirm, and a Cancel
+    folds the form); the resting label is still "Reject with feedback",
+    and tests/ui/test_decision_card_reject_form.py runs both states."""
     card = DOC[DOC.index("function NV_DecisionCard"):
                DOC.index("function NV_AskCard")]
-    assert '}}>Reject with feedback</button>' in card
+    assert '{rejOpen ? "Send rejection" : "Reject with feedback"}' in card
     assert "Reject…" not in card
     assert '{rejOpen ? "Reject with feedback" : "Reject…"}' not in card
     # The flow itself: first click only opens the reason box (no request
