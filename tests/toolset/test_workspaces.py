@@ -1681,3 +1681,48 @@ class TestReconcileSessionInfo:
         body = json.loads(result.output)
         assert body["status"] == "ended"
         assert body["info"]["ended_reason"] == "tool_turn_cap"
+
+    @pytest.mark.asyncio
+    async def test_a_row_of_another_workspace_is_ignored_by_both_tools(self, toolset, seeded, sp) -> None:
+        """The same id on another workspace is not this session's row: the slot is served as it is."""
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(
+            sp, status=SessionStatus.ENDED, sid="sess-1", workspace_id="some-other-workspace",
+            ended_reason="failed", ended_detail="never_started",
+        )
+
+        got = await toolset.call(
+            tool_name="get_workspace_session", arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        listed = await toolset.call(tool_name="list_workspace_sessions", arguments={"workspace_id": seeded})
+
+        assert not got.is_error and not listed.is_error, (got.output, listed.output)
+        for info in (json.loads(got.output)["info"], json.loads(listed.output)["items"][0]):
+            assert (info["status"], info["ended_reason"], info["ended_detail"]) == ("running", None, None)
+
+    @pytest.mark.asyncio
+    async def test_a_session_row_store_that_cannot_be_reached_serves_the_slot_not_an_error(
+        self, toolset, seeded, sp,
+    ) -> None:
+        """The overlay is advisory, as it always was: a storage that cannot hand out the row store (not just one that fails a
+        read) must degrade to the slot view, not turn into a tool error."""
+        from primer.model.workspace_session import WorkspaceSession
+
+        real_get_storage = sp.get_storage
+
+        def get_storage(cls):
+            if cls is WorkspaceSession:
+                raise RuntimeError("the session store is unreachable")
+            return real_get_storage(cls)
+
+        sp.get_storage = get_storage
+
+        got = await toolset.call(
+            tool_name="get_workspace_session", arguments={"workspace_id": seeded, "session_id": "sess-1"},
+        )
+        listed = await toolset.call(tool_name="list_workspace_sessions", arguments={"workspace_id": seeded})
+
+        assert not got.is_error and not listed.is_error, (got.output, listed.output)
+        assert json.loads(got.output)["status"] == "running"
+        assert json.loads(listed.output)["items"][0]["status"] == "running"
