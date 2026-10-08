@@ -336,3 +336,69 @@ class TestUrlSecretRedaction:
         assert _WEBHOOK_TOKEN not in out
         assert "/v1/webhooks/***cdef?x=1" in out
         assert "202" in out
+
+    def test_a_raising_str_in_an_arg_does_not_escape_to_the_caller(self):
+        """Filters run outside Handler.handleError's guard: a raising
+        __str__ inside the filter would surface at the logger.info call."""
+        class _Boom:
+            def __str__(self) -> str:
+                raise RuntimeError("no str for you")
+
+        _configured_stream()
+        # Must not raise. (The formatter's own str() failure is logging's
+        # business: Handler.handleError reports it on stderr.)
+        logging.getLogger("primer.test").info("value %s", _Boom())
+
+    def test_a_raising_str_in_a_non_str_msg_does_not_escape(self):
+        class _Boom:
+            def __str__(self) -> str:
+                raise RuntimeError("no str for you")
+
+        _configured_stream()
+        logging.getLogger("primer.test").warning(_Boom())
+
+    def test_string_extras_are_redacted(self):
+        """errors.py logs extra={'path': request.url.path} on a 500; on
+        /v1/webhooks/<token> that is the capability."""
+        buf = _configured_stream(json_format=True)
+        logging.getLogger("primer.test").error(
+            "unhandled exception in API request",
+            extra={
+                "path": f"/v1/webhooks/{_WEBHOOK_TOKEN}",
+                "upstream": f"https://g.example/m?key={_GEMINI_KEY}",
+                "count": 3,
+            },
+        )
+        out = buf.getvalue()
+        assert _WEBHOOK_TOKEN not in out and _GEMINI_KEY not in out
+        record = json.loads(out.strip())
+        assert record["path"] == "/v1/webhooks/***cdef"
+        assert record["count"] == 3
+
+    def test_a_non_str_msg_without_args_is_redacted(self):
+        """logger.warning(exc): msg is the exception object itself."""
+        buf = _configured_stream()
+        logging.getLogger("primer.test").warning(RuntimeError(
+            f"failed for url 'https://g.example/m?key={_GEMINI_KEY}'"
+        ))
+        out = buf.getvalue()
+        assert "failed for url" in out
+        assert _GEMINI_KEY not in out
+
+
+def test_python_m_primer_api_configures_logging(monkeypatch):
+    """`python -m primer.api` must install the same redacting pipeline as
+    `primer api`, or its uvicorn access line logs webhook tokens."""
+    import primer.api.__main__ as entry
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        entry, "configure_logging", lambda **kw: calls.append(kw),
+    )
+    monkeypatch.setattr(entry, "create_app", lambda config: object())
+    monkeypatch.setattr(entry.uvicorn, "run", lambda *a, **kw: None)
+    entry.main()
+    assert len(calls) == 1
+    assert calls[0]["level"] in (
+        logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR,
+    )
