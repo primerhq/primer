@@ -307,6 +307,86 @@ class TestUrlSecretRedaction:
         assert "401 Unauthorized" in out
         assert _GEMINI_KEY not in out
 
+    # The password a Base URL carries (ticket 01a11c0d): httpx prints the
+    # whole URL, userinfo included, in an error ("Server error '500 ...' for
+    # url 'http://user:pw@host/v1/models'") and in its INFO request line.
+    @pytest.mark.parametrize("userinfo", [
+        "svc:s3cr3t-pw",
+        "token-only",
+        # httpx writes the password's "@" as %40 and keeps an apostrophe raw.
+        "us'er:p%40ss",
+        # A raw "@" in the password: the userinfo runs to the LAST "@" before
+        # the path, not the first one.
+        "us'er:p@ss",
+    ])
+    def test_userinfo_in_a_url_is_hidden(self, userinfo):
+        from primer.common.log import redact_url_secrets
+
+        text = (
+            "openai-compatible probe failed: HTTPStatusError: Server error "
+            f"'500 Internal Server Error' for url 'http://{userinfo}@127.0.0.1:8123/v1/models'"
+        )
+        out = redact_url_secrets(text)
+        for secret in ("s3cr3t-pw", "token-only", "p%40ss", "p@ss", "us'er"):
+            assert secret not in out
+        assert "Server error '500 Internal Server Error' for url " in out
+        assert "http://[REDACTED]@127.0.0.1:8123/v1/models'" in out
+
+    def test_userinfo_with_no_path_is_hidden(self):
+        from primer.common.log import redact_url_secrets
+
+        out = redact_url_secrets("connect to http://svc:s3cr3t-pw@127.0.0.1:8123 failed")
+        assert "s3cr3t-pw" not in out
+        assert out == "connect to http://[REDACTED]@127.0.0.1:8123 failed"
+
+    @pytest.mark.parametrize("text", [
+        # An "@" after the authority is not userinfo.
+        "https://example.com/users/a@b",
+        "http://host:80?mail=a@b.com",
+        "http://host:80#frag@x",
+        # Not a URL with an authority.
+        "mailto:someone@example.com",
+        "contact someone@example.com about http://host:80/x",
+        "http://[::1]:8080/x",
+    ])
+    def test_an_at_sign_that_is_not_userinfo_is_left_alone(self, text):
+        from primer.common.log import redact_url_secrets
+
+        assert redact_url_secrets(text) == text
+
+    def test_masking_userinfo_twice_changes_nothing(self):
+        from primer.common.log import redact_url_secrets
+
+        once = redact_url_secrets("for url 'http://svc:s3cr3t-pw@h.example/v1'")
+        assert redact_url_secrets(once) == once
+
+    def test_httpx_request_line_with_userinfo_hides_the_password(self):
+        import httpx
+
+        buf = _configured_stream()
+        url = httpx.URL("http://svc:s3cr3t-pw@127.0.0.1:8123/v1/models")
+        logging.getLogger("httpx").info(
+            'HTTP Request: %s %s "%s %d %s"',
+            "GET", url, "HTTP/1.1", 500, "Internal Server Error",
+        )
+        out = buf.getvalue()
+        assert "HTTP Request: GET" in out
+        assert "s3cr3t-pw" not in out
+        assert "http://[REDACTED]@127.0.0.1:8123/v1/models" in out
+
+    def test_exception_text_with_userinfo_is_hidden(self):
+        buf = _configured_stream()
+        try:
+            raise RuntimeError(
+                "Server error '500 Internal Server Error' for url "
+                "'http://svc:s3cr3t-pw@127.0.0.1:8123/v1/models'"
+            )
+        except RuntimeError:
+            logging.getLogger("primer.test").exception("probe failed")
+        out = buf.getvalue()
+        assert "500 Internal Server Error" in out
+        assert "s3cr3t-pw" not in out
+
     def test_uvicorn_access_line_masks_the_webhook_token(self):
         """uvicorn.access logs through uvicorn's own handler (propagate
         False), so the redaction sits on the logger itself, and must keep
