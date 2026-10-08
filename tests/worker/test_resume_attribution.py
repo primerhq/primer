@@ -24,6 +24,8 @@ from __future__ import annotations
 from primer.model_profile import ResolvedModel
 from primer.model.model_profile import ModelProfileConfig
 
+from datetime import datetime, timezone
+
 import pytest
 
 from primer.claim.in_memory import InMemoryClaimEngine
@@ -191,6 +193,53 @@ async def test_resume_historical_row_without_initiated_by_fails_closed_to_an_ord
     driver = await pool._build_executor(session, workspace)
 
     identity = driver._executor._execution_context.identity
+    assert identity is not None
+    assert identity.type != "system"
+    assert identity.role == "user"
+
+
+@pytest.mark.asyncio
+async def test_graph_build_of_an_unattributed_row_fails_closed_to_an_ordinary_user(tmp_path) -> None:
+    """The graph builder's fallback (``build_graph_executor``) matches the agent builder's: a graph session with no
+    ``initiated_by`` hands its executor (and every per-node tool manager) an ordinary-user identity, never the system
+    principal (security review A-20)."""
+    from primer.model.graph import Graph, _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge
+    from primer.model.workspace_session import GraphSessionBinding, SessionStatus
+    from primer.workspace.local.state import LocalStateRepo
+
+    graph = Graph(
+        id="g-unattr", description="unattributed graph",
+        nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="start", agent_id="ag-1"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="start"), _StaticEdge(from_node="start", to_node="end")],
+    )
+    session = WorkspaceSession(
+        id="sess-graph-unattr", workspace_id="ws-1",
+        binding=GraphSessionBinding(graph_id="g-unattr", graph_snapshot=graph),
+        status=SessionStatus.RUNNING, created_at=datetime.now(timezone.utc), turn_no=0,
+    )
+    assert session.initiated_by is None  # sanity: historical row shape
+    repo = LocalStateRepo(tmp_path / "state", workspace_id="ws-1")
+    await repo.initialize()
+
+    class _LocalWsStub:
+        id = "ws-1"
+        state_repo = repo
+
+        async def get_session(self, session_id):
+            return None
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=None,  # type: ignore[arg-type]
+        storage=None,  # type: ignore[arg-type]
+        workspace_registry=None,  # type: ignore[arg-type]
+        provider_registry=None,  # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={}),
+    )
+
+    driver = await pool._build_executor(session, _LocalWsStub())
+
+    identity = driver._executor._identity
     assert identity is not None
     assert identity.type != "system"
     assert identity.role == "user"

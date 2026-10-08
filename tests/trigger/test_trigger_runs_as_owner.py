@@ -13,7 +13,7 @@ to a :class:`ToolExecutionManager` holding the real system toolset, the way the 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -24,10 +24,12 @@ from primer.model.api_token import ApiToken
 from primer.model.chat import ToolCallPart
 from primer.model.principal import PrincipalRef
 from primer.model.provider import Toolset
-from primer.model.trigger import Subscription, Trigger
+from primer.model.trigger import ChannelTriggerConfig, Subscription, Trigger
 from primer.model.user import User
 from primer.model.workspace_session import WorkspaceSession
+from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
+from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.trigger.subscribers import DispatchDeps
 from primer.trigger.subscribers.agent_fresh_session import AgentFreshSessionDispatcher
 from primer.trigger.subscribers.graph_fresh_session import GraphFreshSessionDispatcher
@@ -261,4 +263,154 @@ async def test_a_revoked_api_token_owner_fails_closed(fake_storage_provider, dep
 
     result = await _run_creates_stdio_toolset(fake_storage_provider, await _fire(fake_storage_provider, sub, deps, kind="agent"))
 
+    assert _refused(result), result.output
+
+
+async def test_a_token_whose_user_is_disabled_fails_closed(fake_storage_provider, deps, seeded_workspace, seeded_agent):
+    await _seed_user(fake_storage_provider, "u-admin", "admin", disabled=True)
+    await fake_storage_provider.get_storage(ApiToken).create(ApiToken(
+        id="tok-1", user_id="u-admin", name="ci", token_hash="a" * 64, prefix="abcdefgh",
+        created_at=datetime.now(timezone.utc),
+    ))
+    owner = PrincipalRef(type="api_token", id="tok-1", display="ci", role="admin", source="internal")
+    sub = await _seed(fake_storage_provider, kind="agent", target_id=seeded_agent.id, trigger_owner=owner, sub_owner=owner)
+
+    session = await _fire(fake_storage_provider, sub, deps, kind="agent")
+    result = await _run_creates_stdio_toolset(fake_storage_provider, session)
+
+    assert session.initiated_by.role == "user"
+    assert _refused(result), result.output
+
+
+async def test_an_expired_api_token_owner_fails_closed(fake_storage_provider, deps, seeded_workspace, seeded_agent):
+    await _seed_user(fake_storage_provider, "u-admin", "admin")
+    now = datetime.now(timezone.utc)
+    await fake_storage_provider.get_storage(ApiToken).create(ApiToken(
+        id="tok-1", user_id="u-admin", name="ci", token_hash="a" * 64, prefix="abcdefgh",
+        created_at=now - timedelta(days=2), expires_at=now - timedelta(days=1),
+    ))
+    owner = PrincipalRef(type="api_token", id="tok-1", display="ci", role="admin", source="internal")
+    sub = await _seed(fake_storage_provider, kind="agent", target_id=seeded_agent.id, trigger_owner=owner, sub_owner=owner)
+
+    session = await _fire(fake_storage_provider, sub, deps, kind="agent")
+    result = await _run_creates_stdio_toolset(fake_storage_provider, session)
+
+    assert session.initiated_by.role == "user"
+    assert _refused(result), result.output
+
+
+# ---------------------------------------------------------------------------
+# A capped run cannot raise its own rank by re-saving (lead review of #491)
+# ---------------------------------------------------------------------------
+
+
+def _as_run(session: WorkspaceSession) -> ToolContext:
+    """The ToolContext a tool sees inside ``session``'s run: the run's own ``initiated_by``."""
+    return ToolContext(
+        tool_call_id="tc-resave", session_id=session.id, workspace_id=session.workspace_id,
+        initiated_by=session.initiated_by,
+    )
+
+
+async def _capped_run(fake_storage_provider, deps, seeded_agent) -> WorkspaceSession:
+    """User U owns the trigger, admin A owns the subscription: the run is A's identity capped at U's ``user`` rank."""
+    user = await _seed_user(fake_storage_provider, "u-plain", "user")
+    admin = await _seed_user(fake_storage_provider, "u-admin", "admin")
+    sub = await _seed(fake_storage_provider, kind="agent", target_id=seeded_agent.id, trigger_owner=user, sub_owner=admin)
+    session = await _fire(fake_storage_provider, sub, deps, kind="agent")
+    assert (session.initiated_by.id, session.initiated_by.role) == ("u-admin", "user")
+    return session
+
+
+def _agent_sub_args(trigger_id: str, agent_id: str) -> dict:
+    return {
+        "trigger_id": trigger_id, "parallelism": "queue",
+        "config": {"kind": "agent_fresh_session", "workspace_id": "ws-1", "agent_id": agent_id},
+    }
+
+
+async def _fire_sub_by_id(fake_storage_provider, deps, sub_id: str) -> WorkspaceSession:
+    sub = await fake_storage_provider.get_storage(Subscription).get(sub_id)
+    return await _fire(fake_storage_provider, sub, deps, kind="agent")
+
+
+async def test_a_capped_run_that_re_saves_its_trigger_stays_capped(fake_storage_provider, deps, seeded_workspace, seeded_agent):
+    session = await _capped_run(fake_storage_provider, deps, seeded_agent)
+    tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
+
+    resaved = await tools.call(tool_name="update", arguments={"id": "tr-own-1", "name": "mine now"}, ctx=_as_run(session))
+    assert not resaved.is_error, resaved.output
+
+    again = await _fire_sub_by_id(fake_storage_provider, deps, "sb-own-1")
+    result = await _run_creates_stdio_toolset(fake_storage_provider, again)
+
+    assert again.initiated_by.role == "user", again.initiated_by
+    assert _refused(result), result.output
+    assert await fake_storage_provider.get_storage(Toolset).get("ts-pwn") is None
+
+
+async def test_a_capped_run_that_creates_its_own_trigger_and_subscription_stays_capped(
+    fake_storage_provider, deps, seeded_workspace, seeded_agent,
+):
+    session = await _capped_run(fake_storage_provider, deps, seeded_agent)
+    tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
+    ctx = _as_run(session)
+    fire_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+
+    created = await tools.call(
+        tool_name="create",
+        arguments={"slug": "self-made", "name": "self", "config": {"kind": "delayed", "fire_at": fire_at}},
+        ctx=ctx,
+    )
+    assert not created.is_error, created.output
+    made = await tools.call(
+        tool_name="create_subscription", arguments=_agent_sub_args(json.loads(created.output)["id"], seeded_agent.id), ctx=ctx,
+    )
+    assert not made.is_error, made.output
+
+    again = await _fire_sub_by_id(fake_storage_provider, deps, json.loads(made.output)["id"])
+    result = await _run_creates_stdio_toolset(fake_storage_provider, again)
+
+    assert again.initiated_by.role == "user", again.initiated_by
+    assert _refused(result), result.output
+
+
+async def test_a_capped_run_that_creates_a_channel_binding_stays_capped(
+    fake_storage_provider, deps, seeded_workspace, seeded_agent,
+):
+    session = await _capped_run(fake_storage_provider, deps, seeded_agent)
+    await fake_storage_provider.get_storage(Trigger).create(Trigger(
+        id="trg-ch-1", slug="ch-trigger", name="ch", created_at=datetime.now(timezone.utc),
+        config=ChannelTriggerConfig(provider_id="cp-1"), owner=_ref("u-admin", "admin"),
+    ))
+    registry = ProviderRegistry(
+        fake_storage_provider, llm_factory=lambda p: object(), embedder_factory=lambda p: object(),
+        cross_encoder_factory=lambda p: object(), toolset_factory=lambda p: object(),
+    )
+    system = build_system_toolset(storage_provider=fake_storage_provider, provider_registry=registry)
+
+    made = await system.call(
+        tool_name="create_channel_binding", arguments=_agent_sub_args("trg-ch-1", seeded_agent.id), ctx=_as_run(session),
+    )
+    assert not made.is_error, made.output
+
+    again = await _fire_sub_by_id(fake_storage_provider, deps, json.loads(made.output)["id"])
+    result = await _run_creates_stdio_toolset(fake_storage_provider, again)
+
+    assert again.initiated_by.role == "user", again.initiated_by
+    assert _refused(result), result.output
+
+
+async def test_a_promotion_after_the_save_needs_a_re_save(fake_storage_provider, deps, seeded_workspace, seeded_agent):
+    """The recorded role is a ceiling: an owner saved as ``user`` and promoted later stays ``user`` until re-saved."""
+    await _seed_user(fake_storage_provider, "u-promoted", "admin")
+    saved_as_user = _ref("u-promoted", "user")
+    sub = await _seed(
+        fake_storage_provider, kind="agent", target_id=seeded_agent.id, trigger_owner=saved_as_user, sub_owner=saved_as_user,
+    )
+
+    session = await _fire(fake_storage_provider, sub, deps, kind="agent")
+    result = await _run_creates_stdio_toolset(fake_storage_provider, session)
+
+    assert session.initiated_by.role == "user"
     assert _refused(result), result.output
