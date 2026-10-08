@@ -2951,7 +2951,8 @@ _BULKY_ARG_KEYS = frozenset({"content", "contents", "text", "body", "data", "new
 # An argument whose NAME looks like a credential is never shown in a preview, at any depth. A broad match on purpose (it also catches
 # "author"). "key" is a whole word (key, api_key, ssh-key; not keyword or monkey); "session_id" is a target, "session_token" is not.
 _SECRET_ARG_KEY = re.compile(
-    r"secret|token|passw|passphrase|(?<![a-z])(?:pwd|pass|pw|pswd)(?![a-z])|api[_-]?key|access[_-]?key|private[_-]?key|authoriz|auth|credential|cookie"
+    r"secret|token|passw|passphrase|(?<![a-z])(?:pwd|pass|pw|pswd)(?![a-z])|(?-i:(?<=[a-z0-9])(?:Pass|Pw|Pwd|Pswd)(?![a-z]))"
+    r"|api[_-]?key|access[_-]?key|private[_-]?key|authoriz|auth|credential|cookie"
     r"|session[_-]?(?:token|key|cookie|secret)|sessionid|(?:^|[^a-z0-9])key(?:$|[^a-z0-9])",
     re.IGNORECASE,
 )
@@ -2975,10 +2976,11 @@ _NAME_SCAN_CHARS = 200             # and so is an argument name
 _BIG_DOCUMENT_CHARS = 1_000_000    # a JSON string bigger than this is text, not a document to parse
 
 # "pass", "pw" and "pswd" are credentials only as a whole name component (DB_PASS, login-pw, --pass), never inside another word (bypass, compass,
-# passenger): a letter on either side means it is part of a longer word.
+# passenger): a letter on either side means it is part of a longer word. A camelCase component counts too (dbPass, adminPw, rootPwd, sshPass: a capital
+# right after a lowercase letter or a digit, case-sensitive inside the case-insensitive pattern, so "Bypass" and "trespass" stay words).
 _SECRET_WORDS = (
-    r"(?:secret|token|passw\w*|passphrase|pwd|(?<![A-Za-z])(?:pass|pw|pswd)(?![A-Za-z])|api[_-]?key|access[_-]?key|private[_-]?key"
-    r"|authoriz\w*|credential\w*|cookie)"
+    r"(?:secret|token|passw\w*|passphrase|pwd|(?<![A-Za-z])(?:pass|pw|pswd)(?![A-Za-z])|(?-i:(?<=[a-z0-9])(?:Pass|Pw|Pwd|Pswd)(?![a-z]))"
+    r"|api[_-]?key|access[_-]?key|private[_-]?key|authoriz\w*|credential\w*|cookie)"
 )
 # "api_key=abc", "Authorization: Bearer abc", '"password": "x"', "?token=abc&": the value after a secret-looking name.
 #
@@ -2996,16 +2998,22 @@ _SECRET_FLAG = re.compile(
     re.IGNORECASE,
 )
 # "mysql -u root -phunter2 db": mysql's -p takes its password ATTACHED (a separate word would be the database), so after a mysql-family command
-# an attached -p<value> is a password, digits included (-P is the port). Only after such a command: ssh -p22, nc -p80 and find -print are not.
-# At most 12 words between the command and the flag and none of them a command separator, so the scan is bounded and ends at "&&", ";" and "|".
+# (mysql, mysqldump, mysqladmin, mariadb, mariadb-dump, ...: the command NAME is case-insensitive, the flag is NOT, because -P is the port) an attached
+# -p<value> is a password, digits included. Only after such a command: ssh -p22, nc -p80 and find -print are not. At most 32 words between the command and the
+# flag and none of them a command separator, so the scan is bounded and ends at "&&", ";" and "|". Known false positives, accepted (a click on "Show all"):
+# "find /var/lib/mysql -print" and "docker run -p3306:3306 mysql" read -p as the password.
 _MYSQL_ATTACHED_PASSWORD = re.compile(
-    r"(?P<lead>(?<![\w\-])(?:mysql|mariadb)\w*(?:\s+[^\s;&|]+){0,12}?\s+-p)(?=\S)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)",
-    re.IGNORECASE,
+    r"(?P<lead>(?<![\w\-])(?i:mysql|mariadb)[\w\-]*(?:\s+[^\s;&|]+){0,32}?\s+-p)(?=\S)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)",
 )
-# "curl -u admin:hunter2", "--user admin:hunter2", "--user=admin:hunter2", "--proxy-user ...": a user:password pair after the flag. Without a colon
-# the tool prompts (curl -u admin), and a digits-only user is a uid:gid (docker run -u 1000:1000), so neither is a credential.
+# "curl -u admin:hunter2", "-uadmin:hunter2", "-u :hunter2", "-U user:pass" (short for --proxy-user), "--user admin:hunter2", "--user=admin:hunter2",
+# "--proxy-user ...": a user:password pair after the flag, quoted ("-u 'deploy:correct horse'") or not, with the user empty, attached or numeric. A match
+# starts only after whitespace, a quote, "=" or the start of the text, and every run is bounded by the next separator or quote with no nested quantifier
+# (possessive), so it is linear; "=" is not allowed in the user part, which made the first version quadratic on "-u=" repeated. Without a colon the tool
+# prompts (curl -u admin), and a value of the form digits:digits is a uid:gid (docker run -u 1000:1000), so neither is a credential. Accepted false
+# positive: "docker run -u root:root" reads as user:password.
 _USER_PASSWORD_FLAG = re.compile(
-    r"(?P<lead>(?<![\w\-])(?:-u|--user|--proxy-user)(?:\s+|=)[\"']?)(?![0-9]+:)[^\s:'\"<>]+:[^\s'\"<>]+",
+    r"(?P<lead>(?<![^\s'\"=])(?:-[uU]|--(?:proxy-)?user)(?:\s+|=)?)"
+    r"(?:\"(?!\d+:\d+\")[^\":]*+:[^\"]*+\"|'(?!\d+:\d+')[^':]*+:[^']*+'|(?!\d+:\d+(?:\s|$))[^\s:'\"<>=]*+:[^\s'\"<>]+)",
 )
 _BEARER = re.compile(r"\b(bearer)\s+[^\s'\"<>]+", re.IGNORECASE)
 # "Basic" is also a plain word ("basic Authentication"): only a base64-looking word after it is a credential, one with a digit, padding, "+" or "/", or a
