@@ -1313,6 +1313,39 @@ class TestApprovalPreviewScrubsWhatItShows:
         got = self._args({"command": "a b c\u0085d\x0be"})
         assert got["arguments"] == "command=a b c d e"
 
+    # --- a name/value pair at the TOP level, and the word "basic" -----------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        ("arguments", "secret"),
+        [
+            ({"name": "DB_PASSWORD", "value": "hunter2"}, "hunter2"),
+            ({"header": "Authorization", "value": "Bearer abcdef123"}, "abcdef123"),
+            ({"key": "API_TOKEN", "val": "tok-1234"}, "tok-1234"),
+            ('{"name": "DB_PASSWORD", "value": "hunter2"}', "hunter2"),
+            ([{"name": "DB_PASSWORD", "value": "hunter2"}], "hunter2"),
+        ],
+    )
+    def test_a_name_value_pair_at_the_top_level_has_its_value_redacted(self, arguments, secret: str) -> None:
+        """``_redact`` already hid the value of a pair nested in an argument; the arguments themselves were walked key by key and never
+        looked at as a pair, so ``{"name": "DB_PASSWORD", "value": "hunter2"}`` showed ``value=hunter2``."""
+        got = self._args(arguments)
+        assert secret not in got["arguments"], got
+        assert "<redacted>" in got["arguments"] and got["truncated"] is True
+
+    def test_the_top_level_pair_keeps_its_name_and_leaves_a_harmless_pair_alone(self) -> None:
+        assert self._args({"name": "DB_PASSWORD", "value": "hunter2"})["arguments"] == "name=DB_PASSWORD, value=<redacted>"
+        harmless = self._args({"name": "region", "value": "eu-west-1"})
+        assert harmless["arguments"] == "name=region, value=eu-west-1" and harmless["truncated"] is False
+
+    @pytest.mark.parametrize("prose", ["basic Authentication is enabled", "Basic Settings page", "the basic plan", "Basic HTTP auth"])
+    def test_the_word_basic_before_ordinary_prose_is_not_a_credential(self, prose: str) -> None:
+        got = self._args({"note": prose})
+        assert got["arguments"] == "note=" + prose and got["truncated"] is False
+
+    def test_basic_before_a_base64_credential_still_is(self) -> None:
+        assert self._args({"note": "Basic dXNlcjpwYXNz"})["arguments"] == "note=Basic <redacted>"
+        assert self._args({"note": "basic aGVsbG8="})["arguments"] == "note=basic <redacted>"
+
     # --- the keys the passive rail line shows ------------------------------------------------------------------------------------
 
     def test_the_preview_lists_the_argument_names_in_display_order(self) -> None:

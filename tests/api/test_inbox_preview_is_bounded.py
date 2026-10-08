@@ -232,3 +232,87 @@ def test_a_container_at_the_cap_exactly_is_not_marked() -> None:
 
     got, changed = _redact(list(range(50)))
     assert changed is False and len(got) == 50
+
+
+# --- the bounds themselves are pinned, not only their effect on speed (review of PR 503 round 3) ------------------------------------
+# Every pattern is linear now, so a missing bound would no longer show up as a slow test; it shows up as a scrubber that is handed text it was
+# never meant to see. These watch what the scrubber is given.
+
+
+def _recording_scrubber(monkeypatch) -> list[int]:
+    from primer.api.routers import workspaces as w
+
+    seen: list[int] = []
+    real = w._scrub_text
+
+    def recording(text: str) -> str:
+        seen.append(len(text))
+        return real(text)
+
+    monkeypatch.setattr(w, "_scrub_text", recording)
+    return seen
+
+
+def test_the_prompt_is_cut_before_the_scrubber_is_given_it(monkeypatch) -> None:
+    from primer.api.routers import workspaces as w
+
+    seen = _recording_scrubber(monkeypatch)
+    w._attention_prompt("word " * 20_000)
+    assert seen and max(seen) <= w._PROMPT_SCAN_CHARS, f"the scrubber was handed {max(seen)} characters"
+
+
+def test_one_preview_hands_the_scrubber_a_bounded_total(monkeypatch) -> None:
+    """200 members of 1 500 characters each: the walk's budget, not the size of the call, decides how much text is scrubbed (the names add a
+    little: each is cut to 200 characters before it is looked at)."""
+    from primer.api.routers import workspaces as w
+
+    seen = _recording_scrubber(monkeypatch)
+    arguments = {f"k{i:03d}": "word " * 300 for i in range(200)}
+    w._approval_preview({"name": "t", "arguments": arguments})
+    assert sum(seen) <= w._REDACT_BUDGET + 4000, f"{sum(seen)} characters were scrubbed for one preview"
+    assert max(seen) <= w._REDACT_MAX_TEXT
+
+
+def test_a_string_is_cut_to_its_cap_before_the_scrubber_is_given_it(monkeypatch) -> None:
+    from primer.api.routers import workspaces as w
+
+    seen = _recording_scrubber(monkeypatch)
+    w._redact("word " * 5_000)
+    assert seen == [w._REDACT_MAX_TEXT] or max(seen) <= w._REDACT_MAX_TEXT
+
+
+# --- a cut never leaves half a secret --------------------------------------------------------------------------------------------
+
+_DIGEST = "0123456789abcdef" * 4
+# Nine 100-character tokens (each becomes "<redacted> " and shrinks the text a lot), then padding, then a 64-character digest that the cut
+# lands inside after 21 characters: too short for the 33-character rule, and (since the scrubbed text is short) well inside what is drawn.
+_CUT_INSIDE_A_DIGEST = ("sk-" + "a" * 97 + " ") * 9 + " " * 70 + _DIGEST
+
+
+def test_a_prompt_cut_inside_a_token_does_not_show_the_front_half_of_it() -> None:
+    from primer.api.routers import workspaces as w
+
+    assert len(_CUT_INSIDE_A_DIGEST) > w._PROMPT_SCAN_CHARS
+    shown = w._attention_prompt(_CUT_INSIDE_A_DIGEST)
+    assert "0123456789" not in shown, f"half a digest is drawn: {shown!r}"
+
+
+def test_a_string_cut_inside_a_token_does_not_show_the_front_half_of_it() -> None:
+    from primer.api.routers import workspaces as w
+
+    text = ("sk-" + "a" * 97 + " ") * 19 + " " * 70 + _DIGEST        # 1989 characters before the digest: the 2000-character cap lands inside it
+    scrubbed, changed = w._redact(text)
+    assert changed is True and "0123456789" not in scrubbed
+
+
+@pytest.mark.parametrize(("text", "limit", "kept"), [
+    ("alpha beta gamma", 8, "alpha"),                 # the cut lands inside "beta": the partial token goes
+    ("alpha beta gamma", 10, "alpha beta"),           # the cut lands on the space after "beta": nothing is lost
+    ("alpha beta gamma", 99, "alpha beta gamma"),     # under the limit: untouched
+    ("alpha beta\tgamma", 7, "alpha"),                # any whitespace is a boundary
+    ("x" * 50, 10, "x" * 10),                         # one token longer than the limit: its head is all there is
+])
+def test_the_bounding_helper_never_ends_on_half_a_token(text: str, limit: int, kept: str) -> None:
+    from primer.api.routers import workspaces as w
+
+    assert w._bounded(text, limit) == kept
