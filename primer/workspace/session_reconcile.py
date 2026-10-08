@@ -43,9 +43,14 @@ async def reconcile_sessions_to_workspace_lost(
     be updated. Returns the number of sessions reconciled.
 
     Every open session is read before any is changed (the ticket 01a11b93 bug: one page of 200 rows, ENDED ones included, so a workspace with more
-    sessions than that kept its open ones past page 1 running against a workspace the destroy was about to delete). The read pages by cursor
-    over "this workspace AND not ended"; nothing is written while it pages, so ending a row cannot move the cursor under it. If a later page
-    cannot be read, the sessions already read are still reconciled and the failure is logged.
+    sessions than that kept its open ones past page 1 running against a workspace whose runtime the destroy had just torn down). The read pages by
+    cursor over "this workspace AND not ended"; nothing is written while it pages, so ending a row cannot move the cursor under it. If a later
+    page cannot be read, the sessions already read are still reconciled and the failure is logged.
+
+    A read that fails is not a reason for a destroy to refuse or retry (decided under ticket 01a11b93): the backend is already torn down when this
+    runs, so refusing would leave a row without a runtime, a retry inside the request cannot make a failing query work, and the probe cannot rescue
+    the sessions later because the row is gone. The failure is logged ("failed to query sessions"), the sessions already read are ended, and the
+    destroy goes on; the sessions a failed read leaves open are the cost.
     """
     try:
         session_storage = sp.get_storage(WorkspaceSession)
