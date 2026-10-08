@@ -37,6 +37,7 @@ from tests.ui_e2e._shell_helpers import (
     open_shell,
     run_verb,
     session_row,
+    shell_state,
     shell_url,
 )
 
@@ -278,6 +279,11 @@ def open_provider_catalog(
     hashchange/popstate, which is the only thing nv-shell.jsx's URL-sync
     listener reacts to. Direct hash assignment is the browser's own
     primitive that unambiguously queues one.
+
+    01a11b72: this journey has failed with ``nv-overlay-body`` never visible after the hash was assigned and the cause is not known (it did not
+    reproduce on a fresh instance in ~140 attempts). So the helper waits for ``nv-root`` first (the shell listens for ``hashchange`` only once it has
+    mounted, a real precondition), assigns the hash ONCE (no retry: a second assignment would turn a real "the first hash does not open the overlay"
+    bug into a pass) and, on a miss, says what the page looked like (``shell_state``).
     """
     if via == "url":
         # RETARGET (IA restructure 01a04d6a): the "providers" overlay
@@ -294,11 +300,18 @@ def open_provider_catalog(
         current_origin = page.url.split("#", 1)[0].rstrip("/")
         console_origin = console_url.rstrip("/")
         if current_origin == console_origin:
+            try:
+                expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=timeout)
+            except AssertionError as exc:
+                raise AssertionError(f"the console shell never mounted, so the catalog could not be opened: {shell_state(page)}\n{exc}") from exc
             page.evaluate("(h) => { window.location.hash = h; }", fragment)
         else:
             page.goto(f"{console_url}{fragment}")
         body = page.get_by_test_id("nv-overlay-body")
-        expect(body).to_be_visible(timeout=timeout)
+        try:
+            expect(body).to_be_visible(timeout=timeout)
+        except AssertionError as exc:
+            raise AssertionError(f"the providers overlay did not open after {fragment!r}: {shell_state(page)}\n{exc}") from exc
         return body
 
     # RETARGET (IA restructure 01a04d6a): the pointer path used to be
