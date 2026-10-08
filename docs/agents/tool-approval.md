@@ -208,6 +208,15 @@ but require human review for any other host.
   Keep one policy per tool: the gate looks up a single policy for the
   tool, so a leftover duplicate would make which one applies depend on
   storage order.
+- **Who may decide a gate is part of the gate.** A policy can name approvers (`approvers`: specific users, or roles; admins can
+  always decide), and a Rego or judge verdict can route one call to others. The effective spec is recorded when the call parks,
+  for every park (the agent loop and `call_tool` alike), and EVERY way of deciding it is checked against it: `POST
+  .../tool_approval/respond`, `POST .../yields/{tool_call_id}/cancel` on an approval gate (a cancel is a rejection) and a reply
+  from a channel. A user the spec does not admit gets `403 approver_mismatch`. **A channel reply is refused on a gate restricted
+  to specific approvers**: a Slack, Discord or Telegram user is not an identified primer user, so such a gate is decided in the
+  console by an approver or an admin; a gate with no restriction can still be decided from the channel. A spec that cannot be
+  read is admin-only, and so is a `call_tool` gate that was parked before approvers were recorded. When several enabled policies
+  exist for one tool, the gate trips unconditionally and only an admin decides it until the extra row is deleted.
 - **A new user turn supersedes a pending approval.** If a session is
   parked on approval and the user sends another message, the approval
   is auto-rejected with reason "superseded by new user input". The
