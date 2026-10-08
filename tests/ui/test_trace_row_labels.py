@@ -122,5 +122,5 @@ def test_a_tool_call_row_has_no_token_column(ctx) -> None:
 def test_both_surfaces_draw_the_badge_and_the_tokens_through_the_shared_pieces() -> None:
     """The sidebar one-liner and the overlay's expandable row must not each carry their own copy of the badge or the tokens."""
     assert DOC.count("<NV_TraceGlyph") == 2
-    assert DOC.count("NV_traceTokens(n)") == 2
+    assert DOC.count('<span className="nv-trace-tokens"') == 2
     assert 'className="nv-trace-glyph"' in _function("NV_TraceGlyph") and DOC.count('className="nv-trace-glyph"') == 1

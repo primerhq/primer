@@ -1152,8 +1152,10 @@ def test_trace_line_is_one_line_and_never_expandable_via_mini_racer():
     assert "onClick" not in line["props"]
     tree = json.dumps(tool, ensure_ascii=False)
     assert '"T"' in tree
-    assert "nv-trace-glyph" in tree
-    assert '"data-kind": "tool"' in tree
+    # The badge is the shared NV_TraceGlyph component since C-017 (its own markup is pinned in test_trace_row_labels.py): this stub does not expand
+    # components, so what it sees is the glyph handed to it.
+    assert '"title": "Tool call"' in tree
+    assert '"kind": "tool"' in tree
     assert "bash" in tree
     assert "1s" in tree
     assert "nv-trace-args" not in tree, "the sidebar never shows arguments inline"
@@ -1164,7 +1166,7 @@ def test_trace_line_is_one_line_and_never_expandable_via_mini_racer():
     )
     tree = json.dumps(agent, ensure_ascii=False)
     assert '"A"' in tree
-    assert '"data-kind": "agent"' in tree
+    assert '"kind": "agent"' in tree
     assert "operator" in tree, "a plain agent-bound session shows its own agent name"
 
 

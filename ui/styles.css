@@ -4339,6 +4339,7 @@ button.nv-trace-line { cursor: pointer; }
 .nv-trace-ts { color: var(--text-4); font-size: 10px; white-space: nowrap; flex-shrink: 0; }
 .nv-trace-label { color: var(--text-2); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nv-trace-dur { color: var(--text-4); font-size: 10px; white-space: nowrap; }
+.nv-trace-tokens { color: var(--text-4); font-size: 10px; white-space: nowrap; font-family: var(--font-mono); margin-right: 6px; }
 .nv-trace-args {
   margin: 4px 0 0 20px; padding: 6px 8px; border-radius: var(--r-6);
   background: var(--bg-2); color: var(--text-2, var(--text));
