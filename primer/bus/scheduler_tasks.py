@@ -476,6 +476,10 @@ def _never_started(session, grace_seconds: float) -> bool:
         return False
     if session.parked_status is not None:
         return False
+    if session.last_turn_error is not None:
+        # A first turn that FAILED and left the session resting (C-024): a failed turn does not bump turn_no and its release drops the lease, so
+        # it has every other mark of a session that never started. The row says it did.
+        return False
     ref = session.started_at or session.created_at
     if ref is None:
         return False

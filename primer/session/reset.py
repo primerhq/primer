@@ -141,6 +141,7 @@ async def _reopen_ended_locked(
         "parked_state": None,
         "turn_status": "idle",
         "turn_started_at": None,
+        "last_turn_error": None,
         "last_seq": new_seq,
         "metadata": md,
     })

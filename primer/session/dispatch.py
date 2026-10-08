@@ -628,6 +628,8 @@ async def run_one_session_turn(
                 session_id,
             )
         async with session_lifecycle_lock().acquire(session_id):
+            # BEFORE the status moves: a reader that sees the row after the transition must see why (C-024).
+            await _record_last_turn_error(session_storage, session_id, exc)
             written = await _transition_session_status(
                 session_storage,
                 session,
@@ -2485,6 +2487,23 @@ async def _release_settled_row(session_storage, row: WorkspaceSession, where: st
 _RUNNING_FLIP_ATTEMPTS = 3
 
 
+async def _record_last_turn_error(session_storage, session_id: str, exc: BaseException) -> None:
+    """Stamp ``last_turn_error`` (the failure's code and time) on the row: ONE ``patch_if`` of that field, guarded on the row not being ENDED.
+
+    The code is the model call's own (``TurnStreamFailure.ended_detail_code``: the stream's code, else ``llm_stream_error``), else ``turn_failed`` for
+    a turn that raised something that is not a model error. Advisory: the failure exit's job is to release the lease, so a write that cannot land is
+    logged and the exit goes on. Called under the lifecycle lock, before the status transition. Cleared by :func:`_flip_to_running` at the next turn.
+    """
+    code = exc.ended_detail_code if isinstance(exc, _NamesWhyItEndedTheTurn) else "turn_failed"
+    patch = to_jsonable_python({"last_turn_error": {"code": code, "at": _now()}})
+    try:
+        await session_storage.patch_if(session_id, patch, where={"status": NON_ENDED_STATUSES()})
+    except NotFoundError:
+        logger.warning("session %s vanished before its failed turn could be recorded on the row", session_id)
+    except Exception:  # noqa: BLE001 -- advisory; the lease must still be released
+        logger.exception("session %s: could not record the turn's failure (%s) on the row", session_id, code)
+
+
 async def _flip_to_running(
     session_storage, session: WorkspaceSession, stamp: datetime,
 ) -> tuple[WorkspaceSession | None, ReleaseOutcome | None]:
@@ -2512,6 +2531,8 @@ async def _flip_to_running(
         # A turn that starts is past any earlier refusal of its workspace (ticket 01a1072f); the refusal arm writes it
         # again if this attempt is refused too.
         "workspace_refusal": None,
+        # Likewise the last turn's failure (C-024): this turn is past it, and the failure exit writes it again if this one fails too.
+        "last_turn_error": None,
     })
     for _ in range(_RUNNING_FLIP_ATTEMPTS):
         try:
