@@ -245,6 +245,16 @@ class WorkspaceRegistry:
         transition to ``phase == "failed"`` -- with the row already
         gone, that transition can never be observed, so sessions in a
         destroyed workspace were silently orphaned instead of ending).
+
+        The order is: tear the runtime down (``backend.destroy``), end every
+        open session, delete the row. The session read pages through ALL of
+        the workspace's open sessions (ticket 01a11b93), and it is
+        best-effort: if the read fails, the destroy does NOT refuse and does
+        NOT retry. The runtime is already gone when it runs, so refusing
+        would leave a row without a runtime, a retry inside the request
+        cannot make a failing query work, and the probe cannot end the
+        sessions later (the row is deleted). The failure is logged ("session
+        reconcile: failed to query sessions") and the destroy goes on.
         """
         row = await self.get_workspace_row(workspace_id)
         try:
