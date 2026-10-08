@@ -49,6 +49,9 @@ def test_an_empty_list_says_it_is_empty_with_or_without_a_filter(page, base_url:
     page.get_by_test_id("nv-plat-filter").fill("zzz")
     expect(page.get_by_test_id("nv-plat-empty")).to_contain_text("No triggers yet.")
     expect(page.get_by_test_id("nv-plat-empty")).not_to_contain_text("match")
+    # ... and there is still nothing to clear: the way out is to create one, not a "Clear filter" for rows that do not exist.
+    expect(page.get_by_test_id("nv-plat-empty").get_by_role("button", name="New trigger")).to_be_visible()
+    expect(page.get_by_test_id("nv-plat-empty").get_by_role("button", name="Clear filter")).to_have_count(0)
 
 
 def test_a_filter_that_hides_every_card_says_nothing_matches_and_clears(page, base_url: str, console_url: str, unique_suffix: str) -> None:
