@@ -69,6 +69,7 @@ from primer.api.registries.provider_registry import (
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.common.entity_checks import EntityCheckError
+from primer.common.log import redact_url_secrets
 from primer.model.common import preserve_masked_secrets
 from primer.toolset.toolset_checks import check_python_toolset, own_python_source_version, toolset_admin_reason
 from primer.model.provider import (
@@ -157,6 +158,19 @@ class _DiscoverModelsBody(BaseModel):
     )
 
 
+def _probe_failure(message: str) -> BadRequestError:
+    """The 400 a probe raises, with URL-borne credentials masked out of ``message``.
+
+    A probe's text carries what the library printed about the failed call,
+    and httpx prints the whole request URL, the ``user:password@`` of a Base
+    URL included (pydantic does the same with a URL that does not validate).
+    The message goes on to the response, to the ``last_error`` stamped on the
+    stored row (kept until the next probe) and to the ``llm_provider``
+    predicate of ``GET /v1/setup/state``, so it is cleaned where it is made.
+    """
+    return BadRequestError(redact_url_secrets(message))
+
+
 def _build_stub_provider(
     model_cls: type,
     *,
@@ -180,7 +194,7 @@ def _build_stub_provider(
             "limits": {"max_concurrency": 1},
         })
     except ValidationError as e:
-        raise BadRequestError(
+        raise _probe_failure(
             "Draft provider failed validation: " + str(e),
         ) from e
 
@@ -700,19 +714,19 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
         try:
             draft = OpenRouterConfig.model_validate(config)
         except ValidationError as exc:
-            raise BadRequestError(
+            raise _probe_failure(
                 f"invalid OpenRouter config: {exc}",
             ) from exc
         try:
             catalogue = await _discover_openrouter_models(draft)
         except httpx.HTTPStatusError as exc:
-            raise BadRequestError(
+            raise _probe_failure(
                 f"OpenRouter discover failed: HTTP {exc.response.status_code} "
                 f"{exc.response.text[:200]}",
             ) from exc
         except httpx.RequestError as exc:
             # Connect / timeout / read errors that are not HTTP responses.
-            raise BadRequestError(
+            raise _probe_failure(
                 f"OpenRouter discover network error: {type(exc).__name__}: "
                 f"{exc}",
             ) from exc
@@ -721,19 +735,19 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
         try:
             ant_draft = AnthropicConfig.model_validate(config)
         except ValidationError as exc:
-            raise BadRequestError(
+            raise _probe_failure(
                 f"invalid Anthropic config: {exc}",
             ) from exc
         try:
             catalogue = await _discover_anthropic_models(ant_draft)
         except httpx.HTTPStatusError as exc:
-            raise BadRequestError(
+            raise _probe_failure(
                 f"Anthropic discover failed: HTTP {exc.response.status_code} "
                 f"{exc.response.text[:200]}",
             ) from exc
         except httpx.RequestError as exc:
             # Connect / timeout / read errors that are not HTTP responses.
-            raise BadRequestError(
+            raise _probe_failure(
                 f"Anthropic discover network error: {type(exc).__name__}: "
                 f"{exc}",
             ) from exc
@@ -742,7 +756,7 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
         try:
             gem_draft = GoogleConfig.model_validate(config)
         except ValidationError as exc:
-            raise BadRequestError(
+            raise _probe_failure(
                 f"invalid Gemini config: {exc}",
             ) from exc
         try:
@@ -754,13 +768,13 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
                     "Gemini API key invalid or unauthorized (HTTP "
                     f"{status}); check the key from Google AI Studio.",
                 ) from exc
-            raise BadRequestError(
+            raise _probe_failure(
                 f"Gemini discover failed: HTTP {status} "
                 f"{exc.response.text[:200]}",
             ) from exc
         except httpx.RequestError as exc:
             # Connect / timeout / read errors that are not HTTP responses.
-            raise BadRequestError(
+            raise _probe_failure(
                 f"Gemini discover network error: {type(exc).__name__}: "
                 f"{exc}",
             ) from exc
@@ -897,7 +911,7 @@ async def _probe_ollama_models(config: dict[str, Any]) -> dict:
     try:
         resp = await client.list()
     except Exception as exc:  # pragma: no cover — network paths
-        raise BadRequestError(
+        raise _probe_failure(
             f"ollama probe failed: {type(exc).__name__}: {exc}",
         ) from exc
     finally:
@@ -956,7 +970,7 @@ async def _probe_openai_compatible_models(config: dict[str, Any]) -> dict:
             r.raise_for_status()
             data = r.json()
     except Exception as exc:  # pragma: no cover — network paths
-        raise BadRequestError(
+        raise _probe_failure(
             f"openai-compatible probe failed: {type(exc).__name__}: {exc}",
         ) from exc
     items = data.get("data") or []
