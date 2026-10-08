@@ -987,6 +987,13 @@ def _approval_state(tcid: str, original_call: dict | None, *, tool_name: str = "
     }
 
 
+def _stamped(state: dict, *paths: str, source: str = "tool") -> dict:
+    """``state`` with the allowlist the park stamps (design 01a11cd3-66b0): these tests are about how the card LINE is composed, not about what it may show; the stamp
+    and the unstamped default rule are tests/api/test_inbox_preview_allowlist.py."""
+    state["yielded"]["resume_metadata"]["preview"] = {"paths": list(paths), "source": source}
+    return state
+
+
 class TestAttentionRowsDescribeTheCall:
     """The Inbox row says WHAT it is waiting on (console review C-033).
 
@@ -1009,7 +1016,7 @@ class TestAttentionRowsDescribeTheCall:
     @pytest.mark.asyncio
     async def test_an_approval_row_names_the_tool_its_call_id_and_the_decisive_arguments(self, client, sp) -> None:
         call = {"id": "tc-1", "name": "workspaces__write_workspace_file", "arguments": {"content": "x" * 3000, "path": "src/config/webhooks.ts"}}
-        row = await self._row(client, sp, "sess-d-1", _approval_state("tc-1", call))
+        row = await self._row(client, sp, "sess-d-1", _stamped(_approval_state("tc-1", call), "path", "content"))
         assert row["tool_call_id"] == "tc-1"
         assert row["approval"]["tool_name"] == "workspaces__write_workspace_file"
         assert row["approval"]["arguments"] == "path=src/config/webhooks.ts, content=<3000 chars>", (
@@ -1020,13 +1027,15 @@ class TestAttentionRowsDescribeTheCall:
     @pytest.mark.asyncio
     async def test_a_short_call_is_shown_whole_and_not_marked_truncated(self, client, sp) -> None:
         call = {"id": "tc-2", "name": "bash", "arguments": {"command": "ls -la"}}
-        row = await self._row(client, sp, "sess-d-2", _approval_state("tc-2", call))
-        assert row["approval"] == {"tool_name": "bash", "arguments": "command=ls -la", "truncated": False, "argument_keys": ["command"]}
+        row = await self._row(client, sp, "sess-d-2", _stamped(_approval_state("tc-2", call), "command"))
+        assert row["approval"] == {
+            "tool_name": "bash", "arguments": "command=ls -la", "truncated": False, "argument_keys": ["command"], "hidden_keys": [], "preview": "tool",
+        }
 
     @pytest.mark.asyncio
     async def test_a_call_with_no_arguments_has_an_empty_preview(self, client, sp) -> None:
-        row = await self._row(client, sp, "sess-d-3", _approval_state("tc-3", {"id": "tc-3", "name": "bash", "arguments": {}}))
-        assert row["approval"] == {"tool_name": "bash", "arguments": "", "truncated": False, "argument_keys": []}
+        row = await self._row(client, sp, "sess-d-3", _stamped(_approval_state("tc-3", {"id": "tc-3", "name": "bash", "arguments": {}}), "command"))
+        assert row["approval"] == {"tool_name": "bash", "arguments": "", "truncated": False, "argument_keys": [], "hidden_keys": [], "preview": "tool"}
 
     @pytest.mark.asyncio
     async def test_an_approval_whose_call_is_unknown_has_no_preview_so_the_card_cannot_offer_a_blind_approve(self, client, sp) -> None:
