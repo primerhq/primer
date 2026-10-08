@@ -503,7 +503,8 @@ function AG_SessionsPanel({ agentId }) {
 // server 422 share one display. The id is optional (the backend assigns agent-<hex> when it is blank), but a typed one is permanent and sits
 // in URLs and references, so it is lowercase letters, digits, hyphens and underscores, starting with a letter or digit, at most 63 characters;
 // surrounding spaces are not part of it, and a whitespace-only id is a blank one. The description is required: it is how OTHER agents find
-// an agent. Create only: an existing agent keeps what it has, and the model is not changed. tests/ui/test_agent_form_validation.py runs this.
+// an agent. The id is checked on CREATE only (an existing agent's id is locked, so the edit passes a blank one); the description on create and
+// on edit. The model is not changed. tests/ui/test_agent_form_validation.py runs this.
 function AG_validateNewAgent(id, description) {
   var problems = {};
   var name = String(id || "").trim();
@@ -657,10 +658,10 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   const submit = async () => {
     setFieldErrors({});
     setResponseFormatError(null);
-    if (!isEdit) {
-      const problems = AG_validateNewAgent(id, description);
-      if (Object.keys(problems).length) { setFieldErrors(problems); return; }
-    }
+    // An existing agent's id is locked, so an edit passes a blank one and can only be refused for its description (a blank one used to be replaced
+    // by a placeholder text and saved).
+    const problems = AG_validateNewAgent(isEdit ? "" : id, description);
+    if (Object.keys(problems).length) { setFieldErrors(problems); return; }
     // response_format: parse the textarea once here so a malformed
     // schema is caught client-side (jump to Advanced + show the error)
     // before the request goes out. Empty text == no structured output.
@@ -680,7 +681,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     const body = {
       // On edit the id is locked but still sent (PUT-replace contract).
       ...(isEdit ? { id: existing.id } : (id.trim() ? { id: id.trim() } : {})),
-      description: description || "(no description)",
+      description: description.trim(),
       model: { profile_id: profileId },
       tools,
       // Empty parts dropped on save - an add-then-leave-blank part must
