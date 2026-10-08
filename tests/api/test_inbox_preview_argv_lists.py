@@ -467,8 +467,9 @@ _STRUCTURES = [{"a": 1}, {"password": "hunter2"}, ["l"], ["mysql", "-phunter2"],
 
 
 def _random_argv(rng: random.Random) -> list:
+    """Three to eight words: a list of exactly two whose first word names a secret is the name/value pair rule's (``["--pass", x]``), which runs before the command line does."""
     argv: list = []
-    for _ in range(rng.randint(2, 8)):
+    for _ in range(rng.randint(3, 8)):
         r = rng.random()
         argv.append(rng.choice(_WORDS) if r < 0.78 else rng.choice(_SCALARS) if r < 0.88 else rng.choice(_STRUCTURES))
     if not any(isinstance(m, str) for m in argv):
