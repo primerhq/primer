@@ -391,6 +391,8 @@ records so rewinds and compactions are right for free:
   usage envelope; `total_*`: the sums over every `done` that did, delegated
   runs included (they cost the session).
 
+**The detail read folds the log only when the log changed (architecture review A-05).** The usage is a pure function of `messages.jsonl`, and every `GET /v1/sessions/{sid}` used to read, parse and replay-fold the whole file (across the sandbox boundary on a docker or k8s workspace). `_session_usage_totals` (`primer/api/routers/sessions.py`) now keeps the totals in a bounded process-local cache (`primer/session/usage_cache.py`, 512 entries, least recently used out) keyed by the identity of the log: the workspace, the session, the file's `size_bytes` and `modified_at` as `Workspace.file_info` reports them, and the row's `last_seq` and `turn_no`. The stat is taken BEFORE the read, so a log that grows in between is stored under the older identity and refolded by the next request, never the reverse. A workspace that cannot stat the file, or has no `file_info`, is never cached and takes the full read and fold as before. Each API process has its own cache; an entry is a handful of integers and a hit returns a copy.
+
 **`turns` changed meaning with 01a1138d.** It used to count every visible
 `done`, so a one-tool-round turn read `turns: 2`; that number is now
 `model_calls`. A client that read `usage.turns` for the old number must read

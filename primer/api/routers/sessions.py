@@ -920,9 +920,26 @@ async def _session_usage_totals(
         return None
     state_path = getattr(workspace, "state_path", ".state")
     rel = f"{state_path}/sessions/{session.id}/messages.jsonl"
+    # The fold is a pure function of the log, so it is kept per log identity (architecture review A-05): the file's size and modification time as
+    # the workspace reports them, and the row's last_seq and turn_no. The stat comes BEFORE the read: a log that grows in between is stored under
+    # the older identity and refolded by the next request, which is safe; the reverse order could file stale totals under a newer identity. A
+    # workspace that cannot stat the file (or has no file_info) is never cached: the full read and fold, as before.
+    key = None
+    try:
+        info = await workspace.file_info(rel)
+        key = (session.workspace_id, session.id, info.size_bytes, info.modified_at, session.last_seq, session.turn_no)
+    except Exception:  # noqa: BLE001 - no identity, no cache; the read below reports the real problem
+        key = None
+    if key is not None:
+        cached = USAGE_CACHE.get(key)
+        if cached is not None:
+            return cached
     raw = await workspace.read_file(rel)
     text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-    return build_usage_frame(text.splitlines())
+    usage = build_usage_frame(text.splitlines())
+    if key is not None:
+        USAGE_CACHE.put(key, usage)
+    return usage
 
 
 # Dogfood round 2: providers.py's discovery probes used to seed exactly
