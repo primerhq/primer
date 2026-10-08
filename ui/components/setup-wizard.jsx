@@ -166,10 +166,12 @@ function SW_missingField(type, url, apiKey) {
 
 // A backend detail without the links, pydantic's "[type=..., input_value=..., input_type=...]" noise (which also echoes the input) and
 // the credentials of any URL in it: a Base URL such as http://user:pass@host/v1 comes back in httpx's error message, and a secret must not
-// be printed into a banner. The userinfo runs to the LAST "@" before the first "/", because a password may contain one.
+// be printed into a banner. The userinfo runs to the LAST "@" before the first "/", because a password may contain one, and it may contain an
+// apostrophe too (RFC 3986 allows it, pydantic's HttpUrl accepts it unencoded and httpx keeps it raw in its error), so the class does not stop at
+// one; only a space, a slash or a double quote ends it.
 function SW_tidy(text) {
   return String(text || "")
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\/\s'"]*@/gi, "$1")
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\/\s"]*@/gi, "$1")
     .replace(/\s*For further information visit \S+/g, "")
     .replace(/\s*For more information check: \S+/g, "")
     .replace(/\s*\[type=[^\n]*?input_type=[^\]\n]*\]/g, "")
@@ -186,10 +188,15 @@ function SW_validationFields(text) {
   return out;
 }
 
-// The HTTP status a backend detail reports ("HTTP 404 ...", httpx's "Client error '404 Not Found' for url ...", ollama's
-// "(status code: 401)"), or "" when it names none.
+// The HTTP status a backend detail reports, or "" when it names none. Each wording is read where the backend puts it, so a status quoted in
+// the SERVER'S words (a body, a proxy's page) cannot replace the real one: ollama's message ends in "(status code: n)" after the server's
+// words, so that suffix comes first; the hosted providers say "<X> discover failed: HTTP n ..."; Gemini's key message says "(HTTP n)"; and
+// httpx says "Client error 'n Reason' for url ..." (or Server or Redirect). tests/ui/test_setup_wizard_failures.py feeds it each wording.
 function SW_httpStatus(raw) {
-  var m = /HTTP\s+(\d{3})\b/.exec(raw) || /'(\d{3}) [A-Za-z ]+'/.exec(raw) || /status code:\s*(\d{3})/.exec(raw);
+  var m = /\(status code:\s*(\d{3})\)\s*$/.exec(raw)
+    || /\bfailed:\s+HTTP\s+(\d{3})\b/.exec(raw)
+    || /\(HTTP\s+(\d{3})\)/.exec(raw)
+    || /\b(?:Client|Server|Redirect) error '(\d{3}) [A-Za-z ]+'/.exec(raw);
   return m ? m[1] : "";
 }
 
@@ -345,7 +352,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
           { id, provider: type, config, limits: { max_concurrency: 4 } },
         );
       } catch (e3) {
-        setErr({ title: "Could not save the provider", detail: e3 && (e3.detail || e3.message) });
+        setErr({ title: "Could not save the provider", detail: SW_tidy(e3 && (e3.detail || e3.message)) });
         return;
       }
       setProviderId(id);
@@ -373,7 +380,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
       });
       await onComplete();
     } catch (e2) {
-      setErr({ title: "Could not register that model", detail: e2 && (e2.detail || e2.message) });
+      setErr({ title: "Could not register that model", detail: SW_tidy(e2 && (e2.detail || e2.message)) });
     } finally {
       setBusy(false);
     }
