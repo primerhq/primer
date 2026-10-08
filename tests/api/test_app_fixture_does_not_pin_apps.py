@@ -50,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import os
+import sys
 import types
 
 import pytest
@@ -185,11 +186,15 @@ def _describe_apps(apps: list[FastAPI]) -> str:
     app's own wiring. Printed as a tree: each line is a referrer of the line above it with less indentation.
     """
     lines: list[str] = []
-    ignore: set[int] = {id(apps), id(lines)}  # the walk's own containers and the caller's list of apps, never reported
+    # The walk's own containers and the caller's list of apps are never reported. They are kept ALIVE in ``keep`` until the walk ends
+    # (an id of a freed list can be handed to a later object, which would then be skipped by mistake).
+    keep: list[object] = []
+    ignore: set[int] = {id(apps), id(lines), id(keep)}
     this_file = os.path.realpath(__file__)
 
     def walk(child: object, depth: int, seen: set[int]) -> None:
         refs = gc.get_referrers(child)
+        keep.append(refs)
         ignore.add(id(refs))
         shown = 0
         for ref in refs:
@@ -204,16 +209,17 @@ def _describe_apps(apps: list[FastAPI]) -> str:
                 walk(ref, depth + 1, seen)
             if shown >= _REFERRERS_PER_OBJECT:
                 break
-        del refs
 
     for number in range(1, min(len(apps), _APPS_SHOWN) + 1):  # indexed, so no slice or iterator of the apps is left lying around
         lines.append(f"lingering app #{number} (title={getattr(apps[number - 1], 'title', '?')!r}):")
         seen = _own_graph(apps[number - 1])
+        keep.append(seen)
         ignore.add(id(seen))
         walk(apps[number - 1], 1, seen)
-        del seen
+    text = "\n".join(lines)
+    keep.clear()
     ignore.clear()
-    return "\n".join(lines)
+    return text
 
 
 _guard = _Guard()
@@ -314,6 +320,7 @@ def test_a_deliberate_leak_is_counted_flagged_and_its_pin_is_named() -> None:
         assert "deliberate-leak-1" in report
         assert f"list[{len(_deliberate_leak)}]" in report, report
         assert "'_deliberate_leak'" in report, report  # the module dict names the global that holds the list
+        assert os.path.basename(__file__) + ":" not in report, report  # this test's own frames are the measuring, not the pin
     finally:
         _deliberate_leak.clear()
         _collect()
@@ -327,6 +334,7 @@ def test_a_pin_through_an_attribute_is_named_by_its_attribute() -> None:
 
     assert "held-by-an-attribute" in report
     assert "_Holder" in report and "'apps'" in report, report
+    assert os.path.basename(__file__) + ":" not in report, report  # this test's own frame holds `holder`; it must not be reported
 
 
 def test_apps_that_are_dropped_are_not_counted() -> None:
@@ -353,7 +361,10 @@ async def test_an_app_that_is_released_a_moment_late_is_not_a_leak() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_app_that_is_never_released_is_still_a_leak_after_settling() -> None:
+async def test_an_app_that_is_never_released_is_still_a_leak_after_settling(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two rounds, not the production ten: a leak pays every round before it is believed (0.2 s here instead of 1 s plus the collections),
+    # and the sweep is already near its time limit.
+    monkeypatch.setattr(sys.modules[__name__], "_SETTLE_ROUNDS", 2)
     guard = _Guard()
     guard.observe(*_counts())
     try:
