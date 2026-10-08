@@ -84,6 +84,11 @@ def problems_in(call: Call) -> list[str]:
         return []
     validator = jsonschema.Draft202012Validator(tool.args_schema)
     problems = []
+    # A tool's argument model ignores a name it does not declare, and the schema does not forbid one, so a misspelt or invented argument
+    # (the harness register example passed an ``id`` and ``overrides`` that the tool never read) validates. Top-level names must be declared.
+    declared = tool.args_schema.get("properties")
+    if isinstance(declared, dict) and tool.args_schema.get("additionalProperties") is not True and isinstance(call.arguments, dict):
+        problems.extend(f"{call.label()} {name}: not an argument of this tool" for name in call.arguments if name not in declared)
     for error in validator.iter_errors(call.arguments):
         if isinstance(error.instance, str) and _PLACEHOLDER.match(error.instance):
             continue
@@ -147,3 +152,17 @@ def test_a_placeholder_is_accepted_and_a_missing_required_argument_is_not() -> N
 
 def test_a_call_to_a_toolset_not_built_here_is_not_checked() -> None:
     assert problems_in(Call("deploy-tools", "deploy_prod", {"anything": 1})) == []
+
+
+def test_an_argument_the_tool_does_not_declare_is_refused() -> None:
+    """The harness register example passed an ``id`` and ``overrides`` that the tool never reads: its schema does not forbid extra names,
+    so only the declared-names rule sees them."""
+    call = Call(
+        "harness", "harness__register",
+        {"name": "n", "slug": "my-slug", "git_url": "u", "id": "h-1", "overrides": {"a": 1}},
+    )
+
+    problems = problems_in(call)
+
+    assert any("id: not an argument" in p for p in problems) and any("overrides: not an argument" in p for p in problems), problems
+    assert problems_in(Call("harness", "harness__register", {"name": "n", "slug": "my-slug", "git_url": "u"})) == []
