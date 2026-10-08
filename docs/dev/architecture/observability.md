@@ -175,9 +175,13 @@ The turn-log surface lives in `primer/observability/turn_log_writer.py`:
   the id the console shows: a mapped `PrimerError` subclass (an expected failure
   class such as `NetworkError` or `ProviderError`) as one WARNING without a
   traceback, anything else (the bare `PrimerError` catch-all included) at ERROR with
-  the traceback. Rows written before this change still hold `extensions.traceback`
-  on disk; `_read_workspace_turn_log` (`primer/api/routers/sessions.py`) strips it on
-  read. The map is duplicated here so the module does not import
+  the traceback (no extra DEBUG traceback for mapped errors: `log_level` defaults to
+  `debug`, so it would bring the traceback back on every default deployment). String
+  values in `problem_extensions` are redacted like `detail`. Rows written before this
+  change still hold `extensions.traceback` on disk; `record_without_traceback`
+  (`primer/model/problem_details.py`) strips it in every reader of those rows: the
+  REST JSONL reader, the tap's record parse and the TapEvent builder (see
+  [sessions](../subsystems/sessions.md)). The map is duplicated here so the module does not import
   upward into the api layer.
 
 The event model is `TurnLogEvent` (`primer/model/turn_log.py`), a Pydantic
