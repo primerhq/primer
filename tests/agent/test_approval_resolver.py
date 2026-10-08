@@ -102,6 +102,14 @@ def _rego(source: str = _ALLOWS) -> PolicyApprovalConfig:
     return PolicyApprovalConfig(policy=source)
 
 
+# `roles` with no roles: ApproverSpec.allows admits only an admin (admins are always admitted, whatever the kind), the narrowest spec there is.
+_ADMIN_ONLY = ApproverSpec(kind="roles", roles=[])
+_ROUTES_TO_ALICE = (
+    "package primer.tool_approval\n"
+    "default required := true\n"
+    "approvers := {\"kind\": \"users\", \"users\": [\"alice\"]}\n"
+)
+
 _CONTEXT = ApprovalContext(
     tool_name="shell_exec", toolset_id="system", arguments={}, agent_id=None, session_id=None, chat_id=None,
     requested_at=datetime.now(UTC),
@@ -140,9 +148,10 @@ async def test_two_conditional_duplicates_gate_unconditionally_whatever_the_orde
 
 
 @pytest.mark.asyncio
-async def test_the_gate_of_a_duplicate_keeps_the_identity_timeout_and_approvers_of_a_real_row():
-    """Failing closed changes WHETHER the call is gated, not who decides it or when it times out: those come from a stored row."""
-    a = _policy("p-a", _rego(), timeout_seconds=42.0, approvers=ApproverSpec(kind="roles", roles=["admin"]))
+async def test_the_gate_of_a_duplicate_keeps_the_identity_and_timeout_of_a_real_row_and_is_decided_by_an_admin_only():
+    """Failing closed changes WHETHER the call is gated and WHO may decide it, not its identity or timeout: those come from a stored row.
+    (An earlier version of this test expected the lowest-id row's approvers to carry over, which let a duplicate WIDEN who may decide.)"""
+    a = _policy("p-a", _rego(), timeout_seconds=42.0, approvers=ApproverSpec(kind="roles", roles=["ops"]))
     b = _policy("p-b", _rego(), timeout_seconds=7.0)
     resolver = ApprovalResolver(storage=_FakeStorage([b, a]))
 
@@ -150,7 +159,7 @@ async def test_the_gate_of_a_duplicate_keeps_the_identity_timeout_and_approvers_
 
     assert chosen.id == "p-a" and chosen.timeout_seconds == 42.0
     verdict = await evaluate_approval_gate(policy=chosen, context=_CONTEXT, provider_registry=None)
-    assert effective_approvers(chosen, verdict) == ApproverSpec(kind="roles", roles=["admin"])
+    assert effective_approvers(chosen, verdict) == _ADMIN_ONLY
 
 
 @pytest.mark.asyncio
@@ -202,3 +211,94 @@ async def test_on_real_storage_a_raced_duplicate_never_weakens_the_gate(tmp_path
         assert chosen is not None and chosen.id == "p-b-strict" and chosen.approval.type is ApprovalType.REQUIRED
     finally:
         await sp.aclose()
+
+
+# ---- who may decide: a duplicate must not widen it (review of #531) -------------------------------------------------------------
+#
+# A conditional policy can route a call to specific approvers PER CALL (the verdict's `approvers`), and a row has its own `approvers`.
+# Failing closed on the gate by replacing the approval with `required` discards the per-call routing, and a duplicate with
+# approvers=None would let ANY user decide what a single row restricted to alice. Whenever the choice is made among duplicates and
+# they are not all unconditional with one identical approver spec, only an admin (always admitted, whatever the spec) may decide.
+
+
+async def _may_decide(chosen, username: str, role: str) -> bool:
+    verdict = await evaluate_approval_gate(policy=chosen, context=_CONTEXT, provider_registry=None)
+    return (effective_approvers(chosen, verdict) or ApproverSpec()).allows(username=username, role=role)
+
+
+@pytest.mark.asyncio
+async def test_a_single_row_that_routes_to_alice_is_decided_by_alice_or_an_admin_only():
+    """The baseline the duplicate cases are measured against."""
+    only = _policy("p-only", _rego(_ROUTES_TO_ALICE))
+    chosen = await ApprovalResolver(storage=_FakeStorage([only])).find(toolset_id="system", tool_name="shell_exec")
+
+    assert await _may_decide(chosen, "alice", "user") and await _may_decide(chosen, "root", "admin")
+    assert not await _may_decide(chosen, "bob", "user")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True], ids=["a-first", "b-first"])
+async def test_two_conditional_duplicates_that_route_to_alice_are_decided_by_an_admin_only(reverse):
+    rows = [_policy("p-a", _rego(_ROUTES_TO_ALICE)), _policy("p-b", _rego(_ROUTES_TO_ALICE))]
+    chosen = await ApprovalResolver(storage=_FakeStorage(rows[::-1] if reverse else rows)).find(
+        toolset_id="system", tool_name="shell_exec",
+    )
+
+    assert not await _may_decide(chosen, "bob", "user"), "a duplicate let any user decide what each row restricts to alice"
+    assert not await _may_decide(chosen, "carol", "user")
+    assert await _may_decide(chosen, "root", "admin")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True], ids=["conditional-first", "unconditional-first"])
+async def test_an_unconditional_duplicate_without_approvers_does_not_widen_a_conditional_rows_routing(reverse):
+    conditional = _policy("p-a", _rego(_ROUTES_TO_ALICE), approvers=ApproverSpec(kind="users", users=["alice"]))
+    unconditional = _policy("p-b", RequiredApprovalConfig())  # approvers=None: anyone
+    rows = [unconditional, conditional] if reverse else [conditional, unconditional]
+
+    chosen = await ApprovalResolver(storage=_FakeStorage(rows)).find(toolset_id="system", tool_name="shell_exec")
+
+    assert chosen.id == "p-b" and chosen.approval.type is ApprovalType.REQUIRED, "the unconditional gate still wins"
+    assert not await _may_decide(chosen, "bob", "user"), "the unconditional row's empty approvers widened who may decide"
+    assert await _may_decide(chosen, "root", "admin")
+
+
+@pytest.mark.asyncio
+async def test_unconditional_duplicates_with_the_same_approvers_keep_them():
+    """Nothing to widen: every candidate says the same, so the spec carries over unchanged (not narrowed to admin-only)."""
+    spec = ApproverSpec(kind="roles", roles=["ops"])
+    rows = [_policy("p-a", RequiredApprovalConfig(), approvers=spec), _policy("p-b", RequiredApprovalConfig(), approvers=spec)]
+
+    chosen = await ApprovalResolver(storage=_FakeStorage(rows)).find(toolset_id="system", tool_name="shell_exec")
+
+    assert chosen.id == "p-a" and chosen.approvers == spec
+    assert await _may_decide(chosen, "olive", "ops") and not await _may_decide(chosen, "bob", "user")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True], ids=["a-first", "b-first"])
+async def test_unconditional_duplicates_with_different_approvers_are_decided_by_an_admin_only(reverse):
+    rows = [
+        _policy("p-a", RequiredApprovalConfig(), approvers=ApproverSpec(kind="roles", roles=["ops"])),
+        _policy("p-b", RequiredApprovalConfig()),
+    ]
+
+    chosen = await ApprovalResolver(storage=_FakeStorage(rows[::-1] if reverse else rows)).find(
+        toolset_id="system", tool_name="shell_exec",
+    )
+
+    assert not await _may_decide(chosen, "olive", "ops") and not await _may_decide(chosen, "bob", "user")
+    assert await _may_decide(chosen, "root", "admin")
+
+
+@pytest.mark.asyncio
+async def test_the_gate_reason_names_the_duplicate_fallback():
+    """The approval card and the record show the reason: without it a gate that appears out of nowhere reads as the policy's own."""
+    rows = [_policy("p-a", _rego()), _policy("p-b", _rego())]
+    chosen = await ApprovalResolver(storage=_FakeStorage(rows)).find(toolset_id="system", tool_name="shell_exec")
+
+    verdict = await evaluate_approval_gate(policy=chosen, context=_CONTEXT, provider_registry=None)
+
+    assert verdict.required and verdict.reason, "the fallback gate carries no reason"
+    assert "duplicate" in verdict.reason and "p-a" in verdict.reason and "p-b" in verdict.reason, verdict.reason
+    assert "admin" in verdict.reason, "it should say who may decide it"
