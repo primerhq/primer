@@ -418,7 +418,9 @@ def build_system_toolset(
             "definition, not your edits. That delete is allowed. Any agent delete is refused (``type=conflict``, ``in_use_by``) while "
             "a graph's agent node, a session that is not ended or a trigger subscription still names the agent: remove or end those first. "
             f"It is also refused while the agent is the system default agent (the one a session created without a binding runs), "
-            f"except the seeded ``{RESERVED_OPERATOR_AGENT}``: point the default at another agent first."
+            f"except the seeded ``{RESERVED_OPERATOR_AGENT}``. No route or tool sets the default, so another agent is the default only if it "
+            f"was written to the database directly; ``POST /v1/setup/seed`` (or the next server start) resets the default to "
+            f"``{RESERVED_OPERATOR_AGENT}``, and then the delete goes through."
         ),
         "graph": (
             "The delete is refused (``type=conflict``, ``in_use_by``) while another graph's sub-graph node, a session that is not ended "
