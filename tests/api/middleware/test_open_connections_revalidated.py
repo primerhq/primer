@@ -66,6 +66,15 @@ def probed(app):  # noqa: F811
 
     app.add_api_route("/v1/_probe/stream", stream, methods=["GET"])
     app.add_api_route("/v1/_probe/one_shot", one_shot, methods=["GET"])
+
+    # A MOUNTED sub-app, the way the MCP server is mounted: the middleware is outermost for the whole app, so its streams are covered too.
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    async def mounted_stream(request):
+        return StreamingResponse(_probe_stream(), media_type="text/event-stream")
+
+    app.mount("/v1/_probe_mounted", Starlette(routes=[Route("/stream", mounted_stream)]))
     return app
 
 
@@ -192,6 +201,19 @@ async def test_a_stream_ends_when_its_user_is_disabled(probed) -> None:
         assert await conn.ended_within(), "a disabled account kept its open stream"
         assert conn.completed, "the response is completed cleanly, not left half-written"
         assert conn.error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_stream_of_a_mounted_sub_app_ends_when_its_user_is_disabled(probed) -> None:
+    """The MCP server is a mounted ASGI app whose GET streams are long-lived; the middleware wraps the mount, so they are cut off too."""
+    _, other_cookie = await _cookies(probed)
+    async with _Http(probed, "/v1/_probe_mounted/stream", _cookie_header(other_cookie)) as conn:
+        assert conn.status == 200
+        await asyncio.sleep(INTERVAL * 3)
+        assert not conn.task.done()
+        await _change(probed, "other", disabled=True)
+        assert await conn.ended_within(), "a mounted app's open stream outlived its disabled user"
 
 
 @pytest.mark.asyncio
@@ -400,13 +422,17 @@ async def test_an_app_that_raises_still_raises_through_the_watcher(probed) -> No
 # --- the real terminal WebSocket --------------------------------------------------------------------------------------------------------
 
 
-def _drain_until_closed(ws) -> WebSocketDisconnect | None:
-    """Read frames until the server closes the socket; the PTY's own output is ignored."""
-    try:
-        for _ in range(2000):
-            ws.receive()
-    except WebSocketDisconnect as exc:
-        return exc
+def _drain_until_closed(ws) -> int | None:
+    """Read frames until the server closes the socket and return its close code; the PTY's own output is ignored.
+
+    ``receive()`` hands back the raw ``websocket.close`` message (only ``receive_text``/``receive_bytes`` raise), so look at the type."""
+    for _ in range(5000):
+        try:
+            message = ws.receive()
+        except WebSocketDisconnect as exc:
+            return exc.code
+        if message.get("type") == "websocket.close":
+            return message.get("code")
     return None
 
 
@@ -422,8 +448,32 @@ def test_a_terminal_websocket_closes_4401_when_its_user_is_disabled(fake_storage
             started = time.monotonic()
             sclient.portal.call(lambda: _change(app_, "testuser", disabled=True))
             closed = _drain_until_closed(ws)
-        assert closed is not None and closed.code == 4401, f"the shell stayed open: {closed!r}"
+        assert closed == 4401, f"the shell stayed open: {closed!r}"
         assert time.monotonic() - started < WITHIN
+
+
+@pytest.mark.skipif(not _LINUX, reason="PTY requires a POSIX/Linux pseudo-terminal")
+@pytest.mark.timeout(60)
+def test_a_revoked_terminal_leaves_no_reader_or_writer_task_behind(fake_storage_provider, fake_provider_registry_t, tmp_path) -> None:
+    """The handler is cancelled while it waits on its two loops; it must cancel them itself, not leave them to die when the socket does."""
+    app_ = _build_app(fake_storage_provider, fake_provider_registry_t, root=str(tmp_path))
+    app_.state.config.auth.revalidate_interval_s = INTERVAL
+
+    def loops() -> list[str]:
+        return sorted(t.get_coro().__qualname__ for t in asyncio.all_tasks() if t.get_coro().__qualname__ in ("_recv_loop", "_send_loop"))
+
+    async def alive():
+        return loops()
+
+    with SyncTestClient(app_) as sclient:
+        _login(sclient)
+        with sclient.websocket_connect("/v1/workspaces/ws-1/terminal") as ws:
+            ws.send_bytes(b"echo up\n")
+            assert sclient.portal.call(alive) == ["_recv_loop", "_send_loop"], "the terminal's two loops are running"
+            sclient.portal.call(lambda: _change(app_, "testuser", disabled=True))
+            assert _drain_until_closed(ws) == 4401
+            time.sleep(0.3)
+            assert sclient.portal.call(alive) == [], "the reader and writer tasks outlived the connection that was cut off"
 
 
 @pytest.mark.skipif(not _LINUX, reason="PTY requires a POSIX/Linux pseudo-terminal")
@@ -442,7 +492,7 @@ def test_a_terminal_websocket_closes_4401_when_the_session_epoch_moves(fake_stor
 
             sclient.portal.call(bump)
             closed = _drain_until_closed(ws)
-        assert closed is not None and closed.code == 4401
+        assert closed == 4401
 
 
 @pytest.mark.skipif(not _LINUX, reason="PTY requires a POSIX/Linux pseudo-terminal")
@@ -455,7 +505,7 @@ def test_a_terminal_websocket_closes_when_an_admin_is_demoted(fake_storage_provi
         with sclient.websocket_connect("/v1/workspaces/ws-1/terminal") as ws:
             sclient.portal.call(lambda: _change(app_, "testuser", role="user"))
             closed = _drain_until_closed(ws)
-        assert closed is not None and closed.code == 4401
+        assert closed == 4401
 
 
 @pytest.mark.skipif(not _LINUX, reason="PTY requires a POSIX/Linux pseudo-terminal")
