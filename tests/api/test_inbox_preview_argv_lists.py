@@ -4,22 +4,16 @@ The scrubber's flag rules look at TEXT: ``mysql ... -phunter2``, ``curl -u admin
 array (``["mysql", "-u", "root", "-phunter2"]``) was walked member by member, so each rule saw one word and none matched: the password sat in the
 preview in the clear. The same list in a JSON string, in a list of commands, or as the whole ``arguments`` leaked the same way.
 
-A list whose members are strings (numbers are allowed among them: ``["curl", "--max-time", 10, ...]``) is joined into the command line it is,
-each member quoted the way a shell would, and scrubbed once as text. When nothing was found the list is shown as it was; when something was, the
-list comes back with the scrubbed words (``["mysql", "-u", "root", "-p<redacted>", "db"]``) and the preview is marked as truncated, so the card
-offers "show all". When a rule swallows a whole word (``Authorization: Bearer x`` becomes ``Authorization: <redacted>``) the words no longer line
-up with the members, and the scrubbed command line comes back as a string instead. The scrubber is handed at most ``_REDACT_MAX_TEXT``
-characters of one command line, as it is for any single string; words past that are not looked at, so they are not shown (``<N more>``).
+Safe by construction (review of #618, round 3). Two earlier designs let the line pass REPLACE a word's scrub, and each leaked something main's per-member scrub hid
+(shlex quoting; then a joined-line version that lost the quoted-value rules, and a string fallback built from the line alone). Now:
 
-Review of #618 (security): the first version joined the words with ``shlex.quote``, which rewrites a quote inside a word (``'`` becomes ``'"'"'``) and wraps any word
-with a character outside ``[\\w@%+=:,./-]`` (``-pS3cr3t!``, ``-phunter$2``, ``Bearer tok~abc``). Every quoted-value alternative of the rules then failed, and a secret that
-main's per-member scrub hid was SHOWN (``["sh", "-c", "curl -u 'admin:hunter2' https://x"]``). Now:
-
-* each string word is scrubbed ALONE first, exactly as before the first fix (a floor: the result is never worse than main's), and the scrubbed words are what joins;
-* the words are joined with the unit separator ``\\x1f``, which every rule sees as whitespace (it is ``str.isspace()``) and no word holds, so the line splits back into
-  the SAME words; a word is never rewritten. A word with spaces and no quote is wrapped in single quotes for the line only (so ``-u 'deploy:correct horse'`` is one
-  value) and unwrapped again; the quote characters of a word with no space are swapped for private-use stand-ins for the scan, so a ``'`` inside a secret does not end it;
-* numbers, ``None``, booleans, objects and lists are words too (a ``None`` or an object between a flag and its value no longer breaks the command line).
+* every word of the list is the FLOOR: exactly what the member-by-member walk always gave it (``_redact`` of the member), and nothing else is ever shown for it;
+* the words are also joined into one line (``\x1f`` between them, a word with spaces and no quote wrapped in single quotes, the quotes of a word with no space swapped
+  for private-use stand-ins) and scrubbed ONCE with a length-preserving mark (``_scrub_text(line, mark)``: every replacement becomes as many marks as it replaced);
+* a word whose marks in the line are not the marks its own text gets alone was found to hold a secret only because of its neighbours: it is shown as the literal
+  ``<redacted>``, never as text derived from the line. So the line pass can only hide MORE than the floor, whatever it finds, and the result is always a list;
+* the work is bounded by construction: only the words that fit in ``_REDACT_MAX_TEXT`` characters of line are taken (the rest are counted in ``<N more>``), and every
+  character handed to the scrubber was charged to the walk's shared budget.
 
 Kept limits, on purpose: a list of fewer than two members, or with no string in it, is walked member by member (there is no program word for a flag rule to hang on).
 The accepted false positives of the text rules (``find /var/lib/mysql -print``, ``--no-password db``, ``--password-stdin registry``) apply to a list in the same way.
@@ -28,10 +22,18 @@ The accepted false positives of the text rules (``find /var/lib/mysql -print``, 
 from __future__ import annotations
 
 import json
+import random
 
 import pytest
 
-from primer.api.routers.workspaces import _approval_preview, _redact
+from primer.api.routers.workspaces import (
+    _REDACT_BUDGET,
+    _REDACT_MAX_TEXT,
+    _approval_preview,
+    _bounded,
+    _redact,
+    _scrub_text,
+)
 from tests.api.test_inbox_preview_is_bounded import _HOSTILE, _LINEAR_BACKSTOP_S, _recording_scrubber, _timed_in_a_child
 
 
@@ -85,12 +87,12 @@ def test_an_argv_array_is_scrubbed_as_the_command_line_it_is(argv, secret, place
 @pytest.mark.parametrize(
     ("argv", "line"),
     [
-        (["mysql", "-u", "root", "-phunter2", "db"], 'command=["mysql", "-u", "root", "-p<redacted>", "db"]'),
+        (["mysql", "-u", "root", "-phunter2", "db"], 'command=["mysql", "-u", "root", "<redacted>", "db"]'),
         (["deploy", "--pass", "hunter2"], 'command=["deploy", "--pass", "<redacted>"]'),
         (["curl", "-u", "admin:hunter2", "https://x/y"], 'command=["curl", "-u", "<redacted>", "https://x/y"]'),
         (["curl", "-u", "deploy:correct horse battery", "https://x/y"], 'command=["curl", "-u", "<redacted>", "https://x/y"]'),
         (["curl", "--max-time", 10, "-u", "admin:hunter2", "https://x/y"], 'command=["curl", "--max-time", 10, "-u", "<redacted>", "https://x/y"]'),
-        (["Authorization:", "Bearer", "abc123def456"], "command=Authorization: <redacted>"),
+        (["Authorization:", "Bearer", "abc123def456"], 'command=["Authorization:", "<redacted>", "<redacted>"]'),
     ],
 )
 def test_a_scrubbed_argv_array_keeps_its_words_and_only_the_secret_changes(argv, line) -> None:
@@ -100,7 +102,7 @@ def test_a_scrubbed_argv_array_keeps_its_words_and_only_the_secret_changes(argv,
 def test_the_scrub_result_for_an_argv_array_is_the_list_with_the_secret_replaced_and_a_changed_flag() -> None:
     got, changed = _redact(["mysql", "-u", "root", "-phunter2", "db"])
 
-    assert (got, changed) == (["mysql", "-u", "root", "-p<redacted>", "db"], True)
+    assert (got, changed) == (["mysql", "-u", "root", "<redacted>", "db"], True)
 
 
 def test_a_list_given_as_json_text_keeps_the_shape_the_mapping_walk_always_gave_it() -> None:
@@ -110,11 +112,11 @@ def test_a_list_given_as_json_text_keeps_the_shape_the_mapping_walk_always_gave_
     assert got["arguments"] == '["Bearer <redacted>", "ok"]' and got["truncated"] is True
 
 
-def test_a_rule_that_swallows_a_whole_word_gives_the_scrubbed_command_line_as_a_string() -> None:
-    """``Authorization: Bearer x`` is one match: the word ``Bearer`` goes with it, so the words no longer line up with the members."""
+def test_a_rule_that_swallows_a_whole_word_still_gives_a_list() -> None:
+    """``Authorization: Bearer x`` is one match that spans three words: each word the match touches is ``<redacted>``, and the result is never a string built from the line."""
     got, changed = _redact(["Authorization:", "Bearer", "abc123def456"])
 
-    assert (got, changed) == ("Authorization: <redacted>", True)
+    assert (got, changed) == (["Authorization:", "<redacted>", "<redacted>"], True)
 
 
 # --- command lines that hold no secret are left as they were -----------------------------------------------------------------------
@@ -152,8 +154,9 @@ def test_a_list_with_a_nested_member_is_still_walked_member_by_member() -> None:
 
 def test_a_word_with_an_open_quote_is_not_an_error_and_not_rewritten() -> None:
     """The words are never re-split by a shell parser, so an unbalanced quote cannot raise (the first version split with ``shlex`` and had to fall back). A quote after
-    ``password=`` is part of the value for the scan (a ``'`` inside a secret must not end it), so it is hidden: the safe direction."""
-    assert _redact(["curl", "password='"]) == (["curl", "password=<redacted>"], True)
+    ``password=`` is part of the value for the scan (a ``'`` inside a secret must not end it), so the line pass finds a value the word alone does not have, and the
+    word is hidden whole: the safe direction."""
+    assert _redact(["curl", "password='"]) == (["curl", "<redacted>"], True)
     assert _redact(["curl", '"', "it's", "a b"]) == (["curl", '"', "it's", "a b"], False)
     assert _preview({"command": ["curl", "password='"]})["truncated"] is True
 
@@ -305,8 +308,6 @@ _TEXT_FLOOR = [
 
 @pytest.mark.parametrize(("text", "secret"), _TEXT_FLOOR)
 def test_a_word_holding_a_command_hides_what_the_text_form_hides(text: str, secret: str) -> None:
-    from primer.api.routers.workspaces import _scrub_text
-
     assert not [p for p in secret.split() if p in _scrub_text(text)], "the corpus entry is hidden by the text rules today"
     for argv in (["sh", "-c", text], ["x", text], [text, "y"], ["bash", "-lc", text, "--"], ["a", "b", text, "c", "d"]):
         shown = json.dumps(_redact(argv)[0], ensure_ascii=False) + " || " + _preview({"command": argv})["arguments"]
@@ -316,13 +317,13 @@ def test_a_word_holding_a_command_hides_what_the_text_form_hides(text: str, secr
 
 def test_the_separator_is_whitespace_to_every_rule() -> None:
     """The words join with U+001F: if a rule stopped treating it as a gap, a flag and its value would stop being neighbours."""
-    from primer.api.routers.workspaces import _scrub_text
-
     assert "\x1f".isspace()
     assert _scrub_text("mysql\x1f-u\x1froot\x1f-phunter2\x1fdb") == "mysql\x1f-u\x1froot\x1f-p<redacted>\x1fdb"
     assert _scrub_text("deploy\x1f--pass\x1fhunter2") == "deploy\x1f--pass\x1f<redacted>"
-    # _BEARER and _BASIC write a plain space between the word and the placeholder, so those two words come back as ONE (the line is then returned as a string).
+    # _BEARER and _BASIC write a plain space between the word and the placeholder (a plain scrub; the marking scrub keeps the separator, so words keep their places).
     assert _scrub_text("fetch\x1fBearer\x1ftok~abc123") == "fetch\x1fBearer <redacted>"
+    assert _scrub_text("fetch\x1fBearer\x1ftok~abc123", "\ue003") == "fetch\x1fBearer\x1f" + "\ue003" * 10
+    assert _scrub_text("mysql\x1f-u\x1froot\x1f-phunter2\x1fdb", "\ue003") == "mysql\x1f-u\x1froot\x1f-p" + "\ue003" * 7 + "\x1fdb"
 
 
 def test_no_shell_quoting_reaches_the_approver() -> None:
@@ -346,7 +347,7 @@ def test_a_word_with_spaces_and_no_quote_stays_one_word_in_the_result() -> None:
 
 
 def test_an_object_among_the_words_stays_an_object_and_the_words_around_it_are_scrubbed() -> None:
-    assert _redact(["mysql", "-phunter2", {"a": 1}]) == (["mysql", "-p<redacted>", {"a": 1}], True)
+    assert _redact(["mysql", "-phunter2", {"a": 1}]) == (["mysql", "<redacted>", {"a": 1}], True)
     assert _redact(["curl", None, "-u", "admin:hunter2"]) == (["curl", None, "-u", "<redacted>"], True)
     assert _redact(["sleep", 5, True, None, "x"]) == (["sleep", 5, True, None, "x"], False)
     assert _redact(["curl", {"password": "hunter2"}, "https://x/y"]) == (["curl", {"password": "<redacted>"}, "https://x/y"], True)
@@ -368,8 +369,6 @@ def test_a_json_document_among_the_words_is_still_json_when_it_is_scrubbed() -> 
 )
 def test_the_false_positives_of_the_text_rules_apply_to_a_list_the_same_way(argv, shown) -> None:
     """Accepted (a click on show all): the flag rule reads ``--no-password`` and ``--password-stdin`` as a secret flag and hides the word after it, in text and in a list."""
-    from primer.api.routers.workspaces import _scrub_text
-
     assert _scrub_text(" ".join(argv)).split(" ") == shown, "the text form does the same"
     assert _redact(argv) == (shown, True)
 
@@ -410,3 +409,227 @@ def test_an_argv_array_of_quote_heavy_words_is_linear_and_bounded(word: str, mon
     w._redact([word] * 50)
     assert max(seen) <= w._REDACT_MAX_TEXT, f"the scrubber was handed {max(seen)} characters at once"
     assert sum(seen) <= w._REDACT_BUDGET + 4000, f"{sum(seen)} characters were scrubbed"
+
+
+# ---- review of #618, round 3 (security): the per-word scrub is a FLOOR, and the line pass may only hide MORE ---------------------------------------------------------
+
+_MARK = ""
+
+
+@pytest.mark.parametrize(
+    ("text", "marked"),
+    [
+        ("mysql -u root -phunter2 db", "mysql -u root -p" + _MARK * 7 + " db"),
+        ("deploy --pass hunter2", "deploy --pass " + _MARK * 7),
+        ("Authorization: Bearer abc123", "Authorization: " + _MARK * 13),
+        ("fetch Bearer tok~abc123", "fetch Bearer " + _MARK * 10),
+        ("git clone https://user:hunter2@host/r.git", "git clone https://" + _MARK * 12 + "@host/r.git"),
+        ("echo sk-abcdefghijkl", "echo " + _MARK * 15),
+    ],
+)
+def test_the_marking_scrub_replaces_each_piece_with_as_many_marks_as_it_had(text: str, marked: str) -> None:
+    assert _scrub_text(text, _MARK) == marked
+
+
+_PIECES = [
+    "mysql", "-u", "-p", "-phunter2", "--password", "--pass", "hunter2", "Bearer", "abc123def456", "Authorization:", "token:", "password=", "admin:hunter2",
+    "https://user:pw@host/x", "sk-abcdefghijkl", "A1b2C3d4" * 6, "'", '"', " ", "\x1f", ";", "&", ",", "<", ">", "=", ":", "x", "y z", "", "", "",
+]
+
+
+def test_the_marking_scrub_keeps_the_length_and_marks_exactly_when_the_plain_scrub_changes_the_text() -> None:
+    """The line pass reads WHERE the marks fall, so a replacement that did not keep the length would shift every word after it onto the wrong span."""
+    rng = random.Random(618)
+    marked_some = 0
+    for _ in range(4000):
+        text = "".join(rng.choice(_PIECES) for _ in range(rng.randint(1, 9)))
+        marked = _scrub_text(text, _MARK)
+        assert len(marked) == len(text), (text, marked)
+        assert (_MARK in marked) == (_scrub_text(text) != text), (text, marked)
+        assert all(m == o for m, o in zip(marked, text, strict=True) if m != _MARK), (text, marked)
+        marked_some += _MARK in marked
+    assert marked_some > 500, "the corpus has to find secrets, or the checks above say nothing"
+
+
+def _floor(member):
+    """What the member-by-member walk gives ``member`` on its own: the floor a word of a command line never drops below."""
+    return _redact(member, 1, [_REDACT_BUDGET])[0]
+
+
+_WORDS = [
+    "mysql", "mysqldump", "-u", "root", "-p", "-phunter2", "-p'hunter2'", "--password", "--pass", "--api-key", "hunter2", "Bearer", "abc123def456", "Authorization:", "token:",
+    "curl", "-H", "admin:hunter2", "deploy:correct horse", "PGPASSWORD='hun;ter2'", 'DB_PASS="x,ysecret"', "password='x;hunter2' z", "--password='a&bsecret'",
+    "https://user:pw@host/x", "sk-abcdefghijkl", '{"k": "v"}', '{"password": "hunter2"}', "[1]", "'", '"', "a b", "it's", "x", ";", "&", "=", ":", "\x1f", "", "",
+    "", "", "sh", "-c", "mysql -u root -phunter2 db", "curl -u admin:hunter2 https://x", "export DB_PASSWORD='hunter2'; run",
+]
+_SCALARS = [None, True, 5, 2.5]
+_STRUCTURES = [{"a": 1}, {"password": "hunter2"}, ["l"], ["mysql", "-phunter2"], {"cmd": ["x", "--pass", "hunter2"]}]
+
+
+def _random_argv(rng: random.Random) -> list:
+    argv: list = []
+    for _ in range(rng.randint(2, 8)):
+        r = rng.random()
+        argv.append(rng.choice(_WORDS) if r < 0.78 else rng.choice(_SCALARS) if r < 0.88 else rng.choice(_STRUCTURES))
+    if not any(isinstance(m, str) for m in argv):
+        argv.append("x")
+    return argv
+
+
+def test_every_word_of_a_list_is_its_floor_or_the_literal_redacted() -> None:
+    """The differential property of the review (2 543 of 22 213 lists showed a secret main hides): whatever the line pass finds, a word is either what the
+    member-by-member walk shows for it, or ``<redacted>``. Never text derived from the line, never a string for the whole list."""
+    rng = random.Random(618)
+    hid_more = 0
+    for _ in range(4000):
+        argv = _random_argv(rng)
+        got, changed = _redact(argv)
+        assert isinstance(got, list) and len(got) == len(argv), (argv, got)
+        for member, shown in zip(argv, got, strict=True):
+            floor = _floor(member)
+            assert shown == floor or shown == "<redacted>", (argv, member, shown, floor)
+            hid_more += shown != floor
+        assert changed is True or got == argv, (argv, got)
+        assert isinstance(_preview({"command": argv})["arguments"], str)
+    assert hid_more > 300, "the line pass has to find things beyond the floor, or the property above says nothing"
+
+
+def test_a_secret_the_word_alone_hides_is_hidden_wherever_the_word_sits() -> None:
+    """The review's fuzz: a secret holding ``, ; & < >`` or a quote, in a word the per-member scrub hides, beside neighbours of every kind."""
+    rng = random.Random(618)
+    names = ["PGPASSWORD", "DB_PASS", "password", "api_key", "token", "--password", "--db-password", "secret"]
+    seps = ["", ";", "&", ",", "<", ">", "|", " ", "'", '"', "\\", "\x1f", "", "!", "$"]
+    pool = ["sh", "-c", "env", "token:", "--pass", "Authorization:", "Bearer", "x", "-H", '{"a":1}', None, 5, True, {"k": "v"}, ["l"], "a b", "it's", "--", "mysql", "-u", "root"]
+    cases = 0
+    for _ in range(3000):
+        secret = "Zq" + "".join(rng.choice("abcdefghk0123456789") for _ in range(6))
+        eq = rng.choice(["=", ": ", "="])
+        name = rng.choice(names)
+        if name.startswith("--") and rng.random() < 0.5:
+            eq = " "
+        quote = rng.choice(["'", '"', ""])
+        word = f"{name}{eq}{quote}{rng.choice(['', 'ab', 'x y', 'p'])}{rng.choice(seps)}{secret}{quote}"
+        if secret in _scrub_text(word):
+            continue
+        argv = [rng.choice(pool) for _ in range(rng.randint(0, 4))]
+        argv.insert(rng.randint(0, len(argv)), word)
+        if len(argv) < 2:
+            argv.append("y")
+        cases += 1
+        shown = json.dumps(_redact(argv)[0], ensure_ascii=False, default=str) + " || " + _preview({"command": argv})["arguments"]
+        assert secret not in shown, (argv, shown)
+    assert cases > 1500
+
+
+_FLOOR_HIDES = [
+    pytest.param(["env", "PGPASSWORD='hun;ter2'", "psql"], ["ter2"], id="F1 a quoted secret holding a semicolon"),
+    pytest.param(["deploy", "--password='a&bsecret'"], ["bsecret"], id="F2 an ampersand"),
+    pytest.param(["run", 'DB_PASS="x,ysecret"'], ["ysecret"], id="F3 a comma"),
+    pytest.param(["run", "token=x'password=';hunter2'"], ["hunter2"], id="F4 a second assignment inside the first"),
+    pytest.param(["-H", "token:", "password='x;hunter2' z"], ["hunter2"], id="F5 beside a cross-word anchor"),
+    pytest.param(["Authorization:", "Bearer", "x", "PGPASSWORD='hun;ter2'"], ["ter2"], id="F6 beside the words of a header"),
+    pytest.param(["env", "API_KEY='abc<def>ghi'", "x"], ["ghi"], id="F7 angle brackets"),
+    pytest.param(["sh", "-c", "PGPASSWORD='hun;ter2' psql"], ["ter2"], id="F8 as one spaced word"),
+    pytest.param(["app", '--db-password="p&ssw0rd"'], ["ssw0rd"], id="F9 a double-quoted ampersand"),
+    pytest.param(["kubectl", "create", "secret", "generic", "db", "--from-literal=password='S3cr3t&x9'"], ["x9"], id="K1 --from-literal"),
+    pytest.param(["docker", "run", "-e", "POSTGRES_PASSWORD='p;w0rdTail'", "postgres"], ["w0rdTail"], id="K2 docker -e"),
+    pytest.param(["env", "PGPASSWORD='&hunter2'", "psql"], ["hunter2"], id="K3 a secret that starts with an ampersand"),
+    pytest.param(["x", '"password":"hunter2"'], ["hunter2"], id="K4 the floor alone (the line swaps the quotes and misses it)"),
+]
+
+
+@pytest.mark.parametrize(("argv", "secrets"), _FLOOR_HIDES)
+def test_a_secret_main_hides_is_never_shown_because_the_line_pass_saw_it_differently(argv, secrets) -> None:
+    assert not [s for s in secrets if s in json.dumps([_floor(m) for m in argv], ensure_ascii=False)], "the corpus entry is hidden by the per-member scrub today"
+    shown = json.dumps(_redact(argv)[0], ensure_ascii=False, default=str) + " || " + _preview({"command": argv})["arguments"]
+    leaked = [s for s in secrets if s in shown]
+    assert not leaked, f"{leaked} show: {shown}"
+
+
+def test_the_floor_alone_case_keeps_the_words_main_shows() -> None:
+    assert _redact(["x", '"password":"hunter2"']) == (["x", '"password":<redacted>'], True)
+
+
+_LINE_FINDS = [
+    pytest.param(["deploy", "--pass", "hun\x1fter2"], ["hun", "ter2"], id="G2 a value holding the separator"),
+    pytest.param(["deploy", "--pass", "abc'hunter2"], ["hunter2"], id="G3 a quote inside the value"),
+    pytest.param(["mysql", "\x1f", "-phunter2"], ["hunter2"], id="G7a a word that is the separator"),
+    pytest.param(["password", "=", "hunter2"], ["hunter2"], id="H1 name, equals sign and value as three words"),
+    pytest.param(["--password", "'a b", "c d'", "e"], ["a b", "c d"], id="H4 a quote opened in one word and closed in the next"),
+]
+
+
+@pytest.mark.parametrize(("argv", "secrets"), _LINE_FINDS)
+def test_what_only_the_neighbours_show_is_hidden_whole(argv, secrets) -> None:
+    shown = json.dumps(_redact(argv)[0], ensure_ascii=False, default=str) + " || " + _preview({"command": argv})["arguments"]
+    leaked = [s for s in secrets if s in shown]
+    assert not leaked, f"{leaked} show: {shown}"
+
+
+def test_a_word_with_a_secret_and_nothing_cross_word_keeps_what_main_shows_of_it() -> None:
+    """The line pass hides a word only for what ITS NEIGHBOURS add. A script given to ``sh -c`` is scrubbed as it always was (the secret replaced, the rest readable)."""
+    assert _redact(["sh", "-c", "export DB_PASSWORD='hunter2'; run"]) == (["sh", "-c", "export DB_PASSWORD=<redacted>; run"], True)
+    assert _redact(["curl", "-H", "Authorization: Bearer abc123def456", "https://x/y"]) == (["curl", "-H", "Authorization: <redacted>", "https://x/y"], True)
+    assert _redact(["git", "clone", "https://user:hunter2@host/r.git"]) == (["git", "clone", "https://<redacted>@host/r.git"], True)
+
+
+# --- a JSON-document word that was cut is never shown whole ---------------------------------------------------------------------------
+
+
+def test_a_json_document_cut_at_the_ceiling_does_not_show_what_lies_past_the_cut() -> None:
+    """A bulk body of two JSON lines: the head parses as a document and is unchanged, and the old code answered with the ORIGINAL member (secret and all)."""
+    body = '{"index":{}}\n{"password":"hunter2","data":"' + "A" * 2000 + '"}'
+    got, changed = _redact(["curl", "-H", "Content-Type: application/x-ndjson", "-d", body, "https://es/_bulk"])
+
+    assert changed is True
+    assert "hunter2" not in json.dumps(got)
+    assert all(len(w) <= _REDACT_MAX_TEXT for w in got if isinstance(w, str)), [len(w) for w in got if isinstance(w, str)]
+    assert "hunter2" not in _preview({"command": ["curl", "-d", body]})["arguments"]
+
+
+def test_a_cut_word_is_shown_cut_even_when_what_is_left_is_a_document() -> None:
+    padded = "[1]" + " " * 1997 + " password=hunter2"
+    got, _ = _redact(["curl", "-d", padded])
+    assert "hunter2" not in json.dumps(got)
+
+    got, _ = _redact(["curl", "-d", "[1] " + "x" * 50_000])
+    assert len(json.dumps(got)) < 2_500, len(json.dumps(got))
+    assert got[2] == _bounded("[1] " + "x" * 50_000, _REDACT_MAX_TEXT)
+
+
+# --- the work is bounded by construction ------------------------------------------------------------------------------------------------
+
+
+def _nested_bearer_lists(levels: int) -> list:
+    inner: object = {f"k{i}": '"' * 2000 for i in range(5)}
+    for _ in range(levels):
+        inner = ["Authorization:", "Bearer", "x", inner]
+    return inner  # type: ignore[return-value]
+
+
+_BOUNDED_CASES = {
+    "a 10 MB word after a header": lambda: ["Authorization:", "Bearer", "x", "[1] " + "token" * 2_000_000],
+    "a 10 MB word and nothing to find": lambda: ["curl", "-d", "[1] " + "token" * 2_000_000],
+    "seven nested lists around 10 000 quotes": lambda: _nested_bearer_lists(7),
+    "forty-seven huge words after a header": lambda: ["Authorization:", "Bearer", "x"] + ["[1] " + "x" * 100_000] * 47,
+    "fifty hostile words": lambda: ["[1] " + "token" * 400] * 50,
+}
+
+
+@pytest.mark.parametrize("case", sorted(_BOUNDED_CASES))
+def test_a_command_line_is_scrubbed_in_bounded_work_whatever_its_words_hold(case: str, monkeypatch) -> None:
+    from primer.api.routers import workspaces as w
+
+    command = _BOUNDED_CASES[case]()
+    call = {"name": "t", "arguments": {"command": command}}
+    elapsed = _timed_in_a_child("_approval_preview", call)
+    assert elapsed is not None and elapsed < _LINEAR_BACKSTOP_S, f"the preview took {elapsed} s"
+
+    seen = _recording_scrubber(monkeypatch)
+    w._approval_preview(call)
+    assert max(seen) <= w._REDACT_MAX_TEXT, f"the scrubber was handed {max(seen)} characters at once"
+    assert sum(seen) <= w._REDACT_BUDGET + 4000, f"{sum(seen)} characters were scrubbed for one preview"
+    seen.clear()
+    got, _ = w._redact(command)
+    assert max(seen) <= w._REDACT_MAX_TEXT and sum(seen) <= w._REDACT_BUDGET + 4000, (max(seen), sum(seen))
+    assert len(json.dumps(got, default=str)) < 3 * w._REDACT_BUDGET, "what comes back is bounded too"

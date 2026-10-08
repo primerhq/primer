@@ -303,9 +303,9 @@ def _recording_scrubber(monkeypatch) -> list[int]:
     seen: list[int] = []
     real = w._scrub_text
 
-    def recording(text: str) -> str:
+    def recording(text: str, *args: Any, **kwargs: Any) -> str:
         seen.append(len(text))
-        return real(text)
+        return real(text, *args, **kwargs)
 
     monkeypatch.setattr(w, "_scrub_text", recording)
     return seen
