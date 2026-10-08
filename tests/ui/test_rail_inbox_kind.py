@@ -59,3 +59,37 @@ def test_bundle_transpiles_with_the_fix() -> None:
 
     etag, body = build_jsx_bundle(ROOT / "ui")
     assert etag and body
+
+
+def _line():
+    from py_mini_racer import MiniRacer
+
+    start = RAIL.index("function NV_Rail_inboxLine")
+    end = RAIL.index("\n}\n", start) + len("\n}\n")
+    ctx = MiniRacer()
+    ctx.eval(RAIL[start:end])
+    return ctx
+
+
+def test_a_rail_row_says_what_it_is_about() -> None:
+    """Console review C-033: an approval row read only "approval" next to a session name."""
+    import json
+
+    ctx = _line()
+    try:
+        def line(item):
+            return ctx.eval("NV_Rail_inboxLine(" + json.dumps(item) + ")")
+
+        approval = {"kind": "approval", "approval": {"tool_name": "bash", "arguments": "command=ls -la", "truncated": False}}
+        assert line(approval) == "bash command=ls -la"
+        assert line({"kind": "approval", "approval": {"tool_name": "bash", "arguments": ""}}) == "bash"
+        assert line({"kind": "approval", "approval": None}) == "", "nothing to say, so no line is drawn"
+        assert line({"kind": "ask", "prompt": "Which environment?"}) == "Which environment?"
+        assert line({"kind": "parked"}) == "" and line({"kind": "parked", "prompt": "30s"}) == "30s"
+    finally:
+        ctx.close()
+
+
+def test_the_rail_draws_the_line_only_when_there_is_one() -> None:
+    assert 'data-testid={"nv-rail-inbox-line:" + it.session_id}' in RAIL
+    assert "NV_Rail_inboxLine(it) ? (" in RAIL
