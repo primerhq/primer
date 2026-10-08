@@ -1103,23 +1103,12 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       {formOpen ? (
         <Modal
           width={720}
-          // Designer reconciliation: title is now "{name} — {kind}" once
-          // an id exists (edit) or "New {type} provider — {kind}" before
-          // it does (create) - the schema badge moves INLINE beside it
-          // (Modal renders `title` as-is inside its own title span, so a
-          // fragment here works with no change to the shared component)
-          // rather than as a separate line inside the form body below.
-          title={(
-            <React.Fragment>
-              {editingRow
-                ? `${editingRow.id} — ${draft.provider || formKlass.key}`
-                : `New ${formKlass.key} provider — ${draft.provider || ""}`}
-              <span className="pc-modal-chip-inline mono text-sm muted"
-                data-testid="provider-modal-schema-chip">
-                schema-driven from /providers/_types
-              </span>
-            </React.Fragment>
-          )}
+          // Title is "{name} - {kind}" once an id exists (edit) or "New {type} provider - {kind}" before it does (create). A plain string:
+          // the dialog is named by it, and it carries no developer annotation (a pill saying where the form's schema comes from was
+          // removed: a user cannot act on an internal endpoint path).
+          title={editingRow
+            ? `${editingRow.id} \u2014 ${draft.provider || formKlass.key}`
+            : `New ${formKlass.key} provider \u2014 ${draft.provider || ""}`}
           onClose={closeForm}
         >
           <window.PC_ProviderForm

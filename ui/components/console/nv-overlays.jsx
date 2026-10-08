@@ -906,7 +906,7 @@ function NV_LegacyOverlay(props) {
   // uiv2 Wave 2 ("Overlay geometry: centered modal, not near-fullscreen
   // sheet, for both overlays"): the agent editor and collection browser
   // DETAIL sub-views (overlay.id set) now render their own complete
-  // Modal chrome (title/verb-chip/close/footer) instead of the shared
+  // Modal chrome (title/close/footer) instead of the shared
   // wrapper's wide sheet + breadcrumb row - stacking the shared VISIBLE
   // chrome around an already-complete inner Modal would produce two
   // title bars and two close buttons. The nv-overlay-body/nv-overlay:
