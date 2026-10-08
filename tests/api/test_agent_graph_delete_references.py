@@ -215,3 +215,43 @@ async def test_when_everything_blocks_the_answer_names_a_graph_first_then_a_sess
     assert "1 session(s) reference 'ag-1' (first: 's-1')" in (await _delete(client, "agents", "ag-1")).json()["detail"]
     await app.state.storage_provider.get_storage(WorkspaceSession).delete("s-1")
     assert "1 trigger subscription(s) reference 'ag-1' (first: 'sub-1')" in (await _delete(client, "agents", "ag-1")).json()["detail"]
+
+
+# ---- a subscription that is switched off, and a graph row that cannot be read ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_subscription_still_blocks_the_agent_and_the_graph(client, app) -> None:
+    """The block is on the reference, not on whether the subscription would fire: switching it back on would fail the same way."""
+    await _seed(app, agent_row("ag-1"))
+    await _seed(app, graph_row("g-1"))
+    await _seed(app, subscription_for_agent("sub-1", "ag-1").model_copy(update={"enabled": False}))
+    await _seed(app, subscription_for_graph("sub-2", "g-1").model_copy(update={"enabled": False}))
+
+    assert (await _delete(client, "agents", "ag-1")).status_code == 409
+    assert (await _delete(client, "graphs", "g-1")).status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,parent", [("agents", "ag-1"), ("graphs", "g-2")])
+async def test_a_graph_row_that_cannot_be_read_blocks_the_delete_instead_of_failing_it(client, app, monkeypatch, kind, parent) -> None:
+    """A graph row the model cannot decode used to make EVERY agent and graph delete raise. It is a blocker now, named by the readable
+    graph before it (the typed storage API returns no id for a row it cannot decode). The in-memory fake never decodes, so its ``list``
+    is wrapped to raise the way SQLite and Postgres do for such a row: on any wide page, and on the one-row step that reaches it."""
+    await _seed(app, agent_row("ag-1"))
+    await _seed(app, graph_row("g-1"))
+    await _seed(app, graph_row("g-2"))
+    storage = app.state.storage_provider.get_storage(Graph)
+    real_list = storage.list
+
+    async def unreadable_after_the_first_row(page, **kwargs):
+        if getattr(page, "length", 1) > 1 or getattr(page, "cursor", None):
+            Graph.model_validate({"nodes": "not a list"})  # raises ValidationError, as the storage decode does for the bad row
+        return await real_list(page, **kwargs)
+
+    monkeypatch.setattr(storage, "list", unreadable_after_the_first_row)
+
+    r = await _delete(client, kind, parent)
+
+    assert r.status_code == 409, r.text
+    assert "unreadable graph row after g-1" in r.json()["detail"], r.json()
