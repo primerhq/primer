@@ -89,3 +89,135 @@ async def test_reconcile_skips_already_ended_sessions(
     assert reconciled == 0
     row = await storage.get("s-done")
     assert row.ended_reason == "completed"
+
+
+# ---- every session of the workspace, not the first page of them (ticket 01a11b93, found in the #541 review) -------------------------------------------------------
+
+
+def _row(session_id: str, workspace_id: str, status: SessionStatus) -> WorkspaceSession:
+    return WorkspaceSession(
+        id=session_id,
+        workspace_id=workspace_id,
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=status,
+        ended_reason="completed" if status == SessionStatus.ENDED else None,
+        created_at=_now(),
+        turn_status="running" if status == SessionStatus.RUNNING else "idle",
+    )
+
+
+async def _statuses(storage, workspace_id: str) -> dict[str, tuple[SessionStatus, str | None]]:
+    from primer.model.storage import CursorPage
+
+    rows = []
+    cursor = None
+    while True:
+        page = await storage.list(CursorPage(cursor=cursor, length=200))
+        rows.extend(page.items)
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+    return {r.id: (r.status, r.ended_reason) for r in rows if r.workspace_id == workspace_id}
+
+
+@pytest.mark.asyncio
+async def test_open_sessions_beyond_the_first_page_are_ended_too(fake_storage_provider) -> None:
+    """The function read ONE page of 200 rows. A workspace with more sessions than that, ENDED ones included, kept every open session past the first page
+    running against a workspace that no longer exists (the row and the files are deleted by the destroy that called this)."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    # 250 ended sessions first (they sort first by id), then 230 open ones: a single page of 200 holds ended rows only.
+    for i in range(250):
+        await storage.create(_row(f"a-{i:04d}", "w-gone", SessionStatus.ENDED))
+    for i in range(230):
+        await storage.create(_row(f"b-{i:04d}", "w-gone", SessionStatus.RUNNING if i % 2 else SessionStatus.WAITING))
+
+    reconciled = await reconcile_sessions_to_workspace_lost(fake_storage_provider, "w-gone")
+
+    assert reconciled == 230
+    after = await _statuses(storage, "w-gone")
+    still_open = sorted(i for i, (status, _) in after.items() if status != SessionStatus.ENDED)
+    assert still_open == [], f"{len(still_open)} open sessions were not ended, e.g. {still_open[:3]}"
+    assert all(reason == "workspace_lost" for i, (status, reason) in after.items() if i.startswith("b-"))
+    assert all(reason == "completed" for i, (status, reason) in after.items() if i.startswith("a-")), "an ended session's own reason was overwritten"
+
+
+@pytest.mark.asyncio
+async def test_more_than_one_page_of_open_sessions_are_all_ended(fake_storage_provider) -> None:
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    for i in range(450):
+        await storage.create(_row(f"s-{i:04d}", "w-gone", SessionStatus.RUNNING))
+
+    reconciled = await reconcile_sessions_to_workspace_lost(fake_storage_provider, "w-gone")
+
+    assert reconciled == 450
+    assert all(status == SessionStatus.ENDED for status, _ in (await _statuses(storage, "w-gone")).values())
+
+
+@pytest.mark.asyncio
+async def test_other_workspaces_are_left_alone(fake_storage_provider) -> None:
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    for i in range(210):
+        await storage.create(_row(f"gone-{i:04d}", "w-gone", SessionStatus.RUNNING))
+    for i in range(210):
+        await storage.create(_row(f"kept-{i:04d}", "w-kept", SessionStatus.RUNNING))
+
+    await reconcile_sessions_to_workspace_lost(fake_storage_provider, "w-gone")
+
+    kept = await _statuses(storage, "w-kept")
+    assert len(kept) == 210 and all(status == SessionStatus.RUNNING for status, _ in kept.values())
+
+
+@pytest.mark.asyncio
+async def test_one_session_that_cannot_be_updated_does_not_stop_the_rest(fake_storage_provider) -> None:
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    for i in range(205):
+        await storage.create(_row(f"s-{i:04d}", "w-gone", SessionStatus.RUNNING))
+    real_update = storage.update
+
+    async def flaky_update(entity):
+        if entity.id == "s-0003":
+            raise RuntimeError("row is locked")
+        return await real_update(entity)
+
+    storage.update = flaky_update
+
+    reconciled = await reconcile_sessions_to_workspace_lost(fake_storage_provider, "w-gone")
+
+    assert reconciled == 204
+    after = await _statuses(storage, "w-gone")
+    assert after["s-0003"][0] == SessionStatus.RUNNING and after["s-0204"][0] == SessionStatus.ENDED
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_cannot_be_read_part_way_still_ends_what_was_read(fake_storage_provider) -> None:
+    """Best-effort, as before: a failing query is logged and swallowed, and the sessions already read are not abandoned with it."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    for i in range(450):
+        await storage.create(_row(f"s-{i:04d}", "w-gone", SessionStatus.RUNNING))
+    real_find = storage.find
+    calls = {"n": 0}
+
+    async def find_then_fail(predicate, page, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("database went away")
+        return await real_find(predicate, page, **kwargs)
+
+    storage.find = find_then_fail
+
+    reconciled = await reconcile_sessions_to_workspace_lost(fake_storage_provider, "w-gone")
+
+    assert reconciled == 200, "the first page was read and must be reconciled even though the second could not be read"
+
+
+@pytest.mark.asyncio
+async def test_the_first_page_failing_reconciles_nothing_and_does_not_raise(fake_storage_provider) -> None:
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_row("s-1", "w-gone", SessionStatus.RUNNING))
+
+    async def broken_find(predicate, page, **kwargs):
+        raise RuntimeError("database went away")
+
+    storage.find = broken_find
+
+    assert await reconcile_sessions_to_workspace_lost(fake_storage_provider, "w-gone") == 0
