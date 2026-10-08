@@ -56,6 +56,30 @@ def test_a_platform_view_link_opens_that_section_on_the_phone(page: Page, base_u
 
 
 @pytest.mark.ui_e2e
+def test_the_palette_opens_the_section_again_after_back(page: Page, base_url: str, console_url: str) -> None:
+    """At ``?view=platform:agents`` the URL keeps naming the section after Back. Picking an Agents row from the palette (which
+    navigates to the same platform view again) must open the section again, not leave the section list on screen. The
+    view-object half of this (a repeated goView with the same name and nav) is pinned in V8 by
+    ``tests/ui/test_mobile_more_reachability.py``; the palette also sets an overlay, so this journey would pass without that
+    half and is the user-visible check, not its mutant killer."""
+    wid = _a_workspace_id(base_url)
+    page.set_viewport_size(PHONE)
+    page.goto(f"{console_url}#/w/{wid}?view=platform:agents")
+    expect(page.get_by_test_id("nv-mob-plat-page:agents")).to_be_visible(timeout=15_000)
+    page.get_by_test_id("nv-mob-plat-back").click()
+    expect(page.get_by_test_id("nv-mob-plat-sections")).to_be_visible()
+
+    page.keyboard.press("Control+k")
+    palette_input = page.get_by_test_id("nv-palette-input")
+    expect(palette_input).to_be_visible(timeout=10_000)
+    palette_input.fill("operator")
+    page.get_by_test_id("nv-palette-row").filter(has_text="agent").first.click()
+
+    expect(page.get_by_test_id("nv-mob-plat-page:agents")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("nv-mob-profile")).to_have_count(0)
+
+
+@pytest.mark.ui_e2e
 def test_log_out_is_reachable_on_a_phone(page: Page, console_url: str) -> None:
     page.set_viewport_size(PHONE)
     _open_more(page, console_url)
