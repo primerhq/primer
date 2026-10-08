@@ -129,9 +129,10 @@ the admin role: an install writes agents, graphs, collections,
 documents and toolsets, and a fetch runs git with the harness's
 token. A run started by a lower role is refused; only `list` and
 `get` are open to every user. An install or sync whose bundle would
-create or change an MCP toolset on the stdio transport also needs the
-run itself to come from an admin: called over MCP (no run identity)
-it fails with `toolset_needs_admin` in `last_operation_error`.
+create or change an MCP toolset on the stdio transport also needs
+whoever asked for it (the run's initiator, or the MCP caller over
+`/v1/mcp`) to be an admin; otherwise it fails with
+`toolset_needs_admin` in `last_operation_error`.
 
 ### Discovery and inspection
 
