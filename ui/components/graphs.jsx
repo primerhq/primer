@@ -94,7 +94,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
       : { nodes: [], edges: [] };
     const body = {
       ...(id ? { id } : {}),
-      description: description || "(no description)",
+      description: description.trim(),
       ...skeleton,
     };
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
@@ -332,7 +332,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
               return (
                 <Card
                   title={g.id}
-                  subtitle={g.description || null}
+                  subtitle={g.description || "No description"}
                   pill={statusPill}
                   meta={metaParts.join(" · ")}
                   onClick={() => onOpen(g.id)}
@@ -1773,7 +1773,7 @@ function GR_GraphFields({ draft, onSetGraph }) {
           />
         </>
       ) : (
-        <div className="muted text-sm">{draft.description}</div>
+        <div className="muted text-sm">{draft.description || "No description"}</div>
       )}
     </div>
   );
