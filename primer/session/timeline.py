@@ -105,11 +105,32 @@ def turn_windows(message_lines: list[str]) -> list[dict[str, Any]]:
 
 
 
+# Turn-log kinds that end an envelope of the session's own turn, and the ones that begin the next. A park ends one (``yielded``) and its
+# resume begins the next with ``resumed`` and then ``started``.
+_ENVELOPE_ENDS = frozenset({
+    TurnLogKind.COMPLETED.value, TurnLogKind.FAILED.value, TurnLogKind.CANCELLED.value, TurnLogKind.YIELDED.value,
+})
+_ENVELOPE_STARTS = frozenset({TurnLogKind.STARTED.value, TurnLogKind.RESUMED.value})
+
+
 def turn_envelopes(turn_log_lines: list[str]) -> list[list[dict[str, Any]]]:
-    """Group turn-log events by ``turn_no``, ascending, seq-ordered within.
+    """Group turn-log events into envelopes, ascending by ``turn_no``, seq-ordered within.
 
     The turn log is observability data, not a contract: unparseable lines
     and events with no turn_no are skipped rather than raising.
+
+    A ``turn_no`` can hold more than one envelope: a FAILED turn does not bump
+    it (``SessionClaimAdapter.on_release`` bumps on success only), so the turn
+    that follows (a message to the failed session reopens it) writes under the
+    same one. An envelope that has ended (completed, failed, cancelled or
+    yielded) and meets a ``started`` or ``resumed`` of the session's own turn
+    (no ``node_id``) closes there and the event opens the next. Without that
+    the failed turn and its successor were one group whose last event is the
+    successor's ``completed``, so the failed turn's trace read "completed" and
+    every later window was served another turn's envelope (ticket 01a11ce4).
+    A park and its resume on one ``turn_no`` split the same way and are put
+    back together by :func:`envelopes_for_window` (a group that closes with
+    ``yielded`` is continued by the next).
     """
     by_turn: dict[int, list[dict[str, Any]]] = {}
     for line in turn_log_lines:
@@ -126,10 +147,20 @@ def turn_envelopes(turn_log_lines: list[str]) -> list[list[dict[str, Any]]]:
         if not isinstance(turn_no, int):
             continue
         by_turn.setdefault(turn_no, []).append(obj)
-    return [
-        sorted(by_turn[turn_no], key=lambda e: e.get("seq") or 0)
-        for turn_no in sorted(by_turn)
-    ]
+    groups: list[list[dict[str, Any]]] = []
+    for turn_no in sorted(by_turn):
+        current: list[dict[str, Any]] = []
+        ended = False
+        for event in sorted(by_turn[turn_no], key=lambda e: e.get("seq") or 0):
+            own = event.get("node_id") is None
+            if ended and own and event.get("kind") in _ENVELOPE_STARTS:
+                groups.append(current)
+                current, ended = [], False
+            current.append(event)
+            if own and event.get("kind") in _ENVELOPE_ENDS:
+                ended = True
+        groups.append(current)
+    return groups
 
 
 def envelopes_for_window(
