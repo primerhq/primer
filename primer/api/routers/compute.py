@@ -37,6 +37,7 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+from primer.model.problem_details import record_without_traceback
 from primer.api.routers._crud import make_crud_router
 from primer.common.context_overflow import output_cap_warning
 from primer.model.agent import Agent
@@ -613,7 +614,8 @@ def _record_to_event_dict(rec) -> dict:
         "iteration": rec.iteration,
         "superstep_id": rec.superstep_id,
     }
-    base.update(rec.payload or {})
+    # A legacy FAILED row's error.extensions.traceback is never served.
+    base.update(record_without_traceback(rec.payload or {}))
     return base
 
 
