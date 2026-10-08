@@ -20,6 +20,11 @@ leaves no committed orphan: either both rows land or neither does.
 Search indexing (P1 keeps search on) is an optional, best-effort hook:
 when an ``indexer`` callable is supplied it is invoked AFTER a successful
 write so the entity + body are durable before any embedding work begins.
+The same holds for the other two: an ``unindexer`` drops a deleted document's
+chunks and a ``path_rewriter`` rewrites a moved document's chunk paths, each
+AFTER the transaction and best-effort (the rows are the truth). Without them a
+deleted document stayed searchable and a moved one kept its old path in search
+(ticket 01a1131f), whichever door it was deleted through.
 """
 
 from __future__ import annotations
@@ -40,6 +45,10 @@ from primer.storage.q import Q
 # Optional best-effort search-indexing hook. Called with the freshly
 # persisted document + its body after a successful upsert.
 Indexer = Callable[..., Awaitable[None]]
+# Best-effort per-document vector cleanup, called with ``document_id=``, ``collection_id=`` after a delete commits.
+Unindexer = Callable[..., Awaitable[None]]
+# Best-effort chunk path-metadata rewrite, called with ``document_id=``, ``collection_id=``, ``new_path=`` after a move commits.
+PathRewriter = Callable[..., Awaitable[None]]
 
 
 class _TransactionalProvider(Protocol):
@@ -92,7 +101,14 @@ class DocumentService:
     authority for ``(collection_id, path) -> document_id`` resolution.
     """
 
-    def __init__(self, storage_provider: _TransactionalProvider, *, indexer: Indexer | None = None) -> None:
+    def __init__(
+        self,
+        storage_provider: _TransactionalProvider,
+        *,
+        indexer: Indexer | None = None,
+        unindexer: Unindexer | None = None,
+        path_rewriter: PathRewriter | None = None,
+    ) -> None:
         self._sp = storage_provider
         self._docs: Storage[Document] = storage_provider.get_storage(Document)
         self._content: DocumentContentStore = storage_provider.get_content_store()
@@ -100,6 +116,9 @@ class DocumentService:
         # successful write to (re)index the body for search. ``None`` disables
         # indexing (the unit-test / search-off configuration).
         self._indexer = indexer
+        # The matching hooks for a delete and a move (``None`` disables them, as for the indexer).
+        self._unindexer = unindexer
+        self._path_rewriter = path_rewriter
 
     async def _emit_document_event(
         self, event_type: str, *, collection_id: str, path: str,
@@ -257,6 +276,10 @@ class DocumentService:
             "collection.document_deleted",
             collection_id=collection_id, path=path, document_id=doc_id,
         )
+        # The rows are gone; now the document's chunks, so it stops being returned by collection search. Best-effort: the hook logs and
+        # swallows its own failure.
+        if self._unindexer is not None:
+            await self._unindexer(document_id=doc_id, collection_id=collection_id)
 
     async def move(self, *, collection_id: str, src: str, dst: str) -> None:
         """Move the document from ``src`` to ``dst`` within a collection.
@@ -284,6 +307,9 @@ class DocumentService:
                 )
             moved = doc.model_copy(update={"path": dst})
             await self._docs.update(moved, conn=conn)
+        # Chunk metadata carries the path, so a move rewrites it (metadata only: the vectors are unchanged, nothing re-embeds).
+        if self._path_rewriter is not None:
+            await self._path_rewriter(document_id=doc_id, collection_id=collection_id, new_path=dst)
 
 
 __all__ = ["DocumentService", "ReadResult"]
