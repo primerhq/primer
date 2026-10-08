@@ -400,6 +400,60 @@ class TestFileTree:
         assert ".state" in names_hidden
 
     @pytest.mark.asyncio
+    async def test_tree_hides_the_runtimes_tmp_tree_by_default_for_an_admin_too(self, client, wsr) -> None:
+        """Console review C-007: a new workspace's Files tree showed a collapsed ``.tmp`` (the output-truncation cache), so the empty state
+        could never appear. The first user is an admin, so this is the admin path; ``.state`` was already hidden, ``.tmp`` was not."""
+        wid, ws = await _setup(client, wsr)
+        ws._dirs.add(".tmp")
+        ws._dirs.add(".state")
+        ws._files["notes.txt"] = b"mine"
+
+        resp = await client.get(f"/v1/workspaces/{wid}/files/tree")
+        assert resp.status_code == 200
+        names = [item["name"] for item in resp.json()["items"]]
+        assert names == ["notes.txt"], names
+
+        resp_hidden = await client.get(f"/v1/workspaces/{wid}/files/tree", params={"hidden": "true"})
+        assert resp_hidden.status_code == 200
+        assert {".tmp", ".state", "notes.txt"} <= {item["name"] for item in resp_hidden.json()["items"]}
+
+    @pytest.mark.asyncio
+    async def test_tree_of_a_workspace_with_only_its_runtime_trees_is_empty(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._dirs.add(".tmp")
+        ws._dirs.add(".state")
+
+        resp = await client.get(f"/v1/workspaces/{wid}/files/tree")
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+    @pytest.mark.asyncio
+    async def test_tree_hides_the_configured_reserved_paths_not_only_the_default_names(self, client, wsr) -> None:
+        """A template can move the state and tmp trees (``state_path``, ``tmp_path``); the listing must hide where they ARE."""
+        from types import SimpleNamespace
+
+        wid, ws = await _setup(client, wsr)
+        ws.template = SimpleNamespace(state_path=".keep-state", tmp_path=".keep-tmp")
+        ws._dirs.update({".keep-state", ".keep-tmp"})
+        ws._files["readme.md"] = b"mine"
+
+        names = [item["name"] for item in (await client.get(f"/v1/workspaces/{wid}/files/tree")).json()["items"]]
+        assert names == ["readme.md"], names
+
+        shown = (await client.get(f"/v1/workspaces/{wid}/files/tree", params={"hidden": "true"})).json()["items"]
+        assert {".keep-state", ".keep-tmp"} <= {item["name"] for item in shown}
+
+    @pytest.mark.asyncio
+    async def test_tree_shows_a_tmp_dir_below_the_root_as_the_users_own(self, client, wsr) -> None:
+        """Only the ROOT ``.tmp`` is the runtime's; ``sub/.tmp`` is an ordinary directory of the user's."""
+        wid, ws = await _setup(client, wsr)
+        ws._dirs.update({"sub", "sub/.tmp"})
+
+        resp = await client.get(f"/v1/workspaces/{wid}/files/tree", params={"path": "sub"})
+        assert resp.status_code == 200
+        assert [item["name"] for item in resp.json()["items"]] == [".tmp"]
+
+    @pytest.mark.asyncio
     async def test_tree_ordinary_dotfiles_shown(self, client, wsr) -> None:
         wid, ws = await _setup(client, wsr)
         ws._files[".gitignore"] = b"*.pyc\n"
