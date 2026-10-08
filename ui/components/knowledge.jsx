@@ -917,6 +917,14 @@ function KN_NewCollectionModal({ pushToast, onClose, onCreate }) {
 // left to grow unbounded.
 const KN_justCreatedCache = {};
 
+// The Platform page hosts KN_NewCollectionModal (ADM-06) and primes this cache
+// with the created row before it opens that collection's detail overlay, for
+// the same reason CollectionsPage's own onCreate does (see the comment on
+// `addressed` below). A row with no id is not stored: never under "undefined".
+function KN_rememberJustCreated(row) {
+  if (row && row.id) KN_justCreatedCache[row.id] = row;
+}
+
 function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
   const { useResource, useRouter, useViewport, apiFetch, usePagedList, Pager } = window.primerApi;
   const { isMobile } = useViewport();
@@ -1107,3 +1115,5 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
 }
 
 window.CollectionsPage = CollectionsPage;
+window.KN_NewCollectionModal = KN_NewCollectionModal;
+window.KN_rememberJustCreated = KN_rememberJustCreated;

@@ -330,7 +330,7 @@ var NV_PLAT_PAGES = {
       };
     },
     open: function (con, row) { con.openOverlay("collections", null, row.id); },
-    create: function (con) { con.openOverlay("collections", null, null); },
+    create: function (con, setModal) { setModal({ kind: "collection" }); },
     delPath: function (row) {
       return row.system ? null
         : "/collections/" + encodeURIComponent(row.id);
@@ -720,6 +720,23 @@ function NV_TriggerCreateHost(props) {
 function NV_ServiceCreateHost(props) {
   var Dialog = window.SV_ServiceModal;
   return <Dialog onClose={props.onClose} onSaved={props.onCreated} />;
+}
+
+// The collection dialog confirms itself ("Collection created") only through
+// the pushToast it is given. The just-created cache is primed BEFORE the row is
+// handed on: the detail overlay can open on a list that does not have it yet
+// (knowledge.jsx, KN_rememberJustCreated).
+function NV_CollectionCreateHost(props) {
+  var Dialog = window.KN_NewCollectionModal;
+  return (
+    <Dialog
+      pushToast={window.primerApi.toastPush}
+      onClose={props.onClose}
+      onCreate={function (row) {
+        window.KN_rememberJustCreated(row);
+        props.onCreated(row);
+      }} />
+  );
 }
 
 // Model-profile create/edit, inline on the platform page. The form is
@@ -1225,6 +1242,14 @@ function NV_PlatPage() {
             onCreated={function (row) {
               setModal(null);
               NV_createdRow(con, function () { res.refetch(); }, "services", row);
+            }} />
+        ) : null}
+        {modal && modal.kind === "collection" ? (
+          <NV_CollectionCreateHost
+            onClose={function () { setModal(null); }}
+            onCreated={function (row) {
+              setModal(null);
+              NV_createdRow(con, function () { res.refetch(); }, "collections", row);
             }} />
         ) : null}
         {cards.length > NV_PLAT_PAGE_SIZE ? (
