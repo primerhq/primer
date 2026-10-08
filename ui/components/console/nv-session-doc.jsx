@@ -145,6 +145,11 @@ function NV_failToast(toast, what, err) {
     kind: "error", requestId: (err && (err.requestId || err.request_id)) || null,
   });
 }
+// Whether Park can do anything: not for an ended session (the route answers 409) and not for one that is already paused (a no-op that
+// would toast "paused" and leave a stale pause_requested flag). One predicate for the rail row, the overflow row and the palette verb.
+function NV_canPark(session) {
+  return !session || (session.status !== "paused" && session.status !== "ended");
+}
 // Park, End and Delete back the rail's context menu, the session header's overflow menu (the only menu a phone has) and the
 // palette verbs. Each resolves {ok: true}, {cancelled: true} (the user said no) or {failed: true} (already toasted); none rejects.
 // Park is the pause route and asks nothing first: sending a message resumes the session. A RUNNING session is only flagged (the
@@ -463,7 +468,7 @@ function NV_SessionHeader(props) {
     if (name == null || name === (session && session.name)) return;
     SH_api.renameSession(con.wid, sid, name || null).then(
       props.onChanged,
-      function (err) { con.toast("Rename failed: " + (err.detail || err.message)); }
+      function (err) { NV_failToast(con.toast, "Rename", err); }
     );
   }
 
@@ -566,7 +571,7 @@ function NV_SessionHeader(props) {
                 props.onExport();
               }}>Export transcript</button>
             <div className="nv-menu-sep" />
-            {!NV_sessionIsOver(session) && !(session && session.status === "paused") ? (
+            {NV_canPark(session) ? (
               <button type="button" className="nv-menu-row"
                 data-testid="nv-session-park" data-verb="session.park"
                 onClick={function () {
@@ -2153,7 +2158,7 @@ function NV_SessionDoc(props) {
       contexts: ["session"], requiresLive: true,
       // Offered while the session can still be paused: the pause route answers 409 for an ended one and a paused one has
       // nothing left to park.
-      available: function (ctx) { return !(ctx.session && ctx.session.status === "paused"); },
+      available: function (ctx) { return NV_canPark(ctx.session); },
       surfaces: ["palette", "tab-menu"],
       run: function () {
         var f = focused(); if (!f) return;
@@ -2997,6 +3002,7 @@ function NV_SessionDoc(props) {
 window.NV_SessionDoc = NV_SessionDoc;
 window.NV_doInterrupt = NV_doInterrupt;
 window.NV_doRename = NV_doRename;
+window.NV_canPark = NV_canPark;
 window.NV_doPark = NV_doPark;
 window.NV_doEnd = NV_doEnd;
 window.NV_doDelete = NV_doDelete;
