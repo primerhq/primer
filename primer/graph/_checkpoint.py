@@ -74,6 +74,10 @@ class _CheckpointMixin:
                     "name": tool_id,
                     "arguments": first.arguments,
                 }
+                # The Inbox card's allowlist the gate stamped (design 01a11cd3-66b0): this block is rebuilt from the node, so the stamp the pending call
+                # kept is passed on or the card of a graph approval would fall back to the default rule.
+                if "preview" in first.resume_metadata:
+                    resume_meta["preview"] = first.resume_metadata["preview"]
         else:
             first_ay = self._pending_agent_yields[0]
             primary_event_key = first_ay.event_key
@@ -322,7 +326,7 @@ class _CheckpointMixin:
             node_def = self._resolve_node_def(p.node_id)
         except KeyError:
             node_def = None
-        return {
+        entry: dict[str, Any] = {
             "kind": "_approval",
             "node_id": p.node_id,
             "tool_call_id": p.tool_call_id,
@@ -334,6 +338,10 @@ class _CheckpointMixin:
                 },
             },
         }
+        # The Inbox card's allowlist the gate stamped (design 01a11cd3-66b0): passed on from the pending call, see _build_pending_park_yield.
+        if "preview" in p.resume_metadata:
+            entry["resume_metadata"]["preview"] = p.resume_metadata["preview"]
+        return entry
 
     def restore_state(self, payload: dict[str, Any]) -> None:
         """Inverse of :meth:`snapshot_state` — repopulate executor attrs.
