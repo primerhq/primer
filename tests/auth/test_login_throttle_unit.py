@@ -7,6 +7,8 @@ memory bound.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 from httpx import ASGITransport
@@ -178,3 +180,50 @@ async def test_the_refusal_is_documented_in_the_openapi_schema(app):
 
     login = schema["paths"]["/v1/auth/login"]["post"]["responses"]
     assert "429" in login and "401" in login
+
+
+def test_only_the_first_refusal_of_a_wait_is_announced(clock):
+    """The route logs a refusal once per wait: a client hammering a locked key must not write a line per request (review of #466)."""
+    throttle = LoginThrottle(clock=clock)
+    who = ("alice", "10.0.0.1")
+    assert _attempts(throttle, 5) == [0] * 5
+
+    assert throttle.reserve(*who) > 0 and throttle.first_refusal(*who) is True
+    assert throttle.reserve(*who) > 0 and throttle.first_refusal(*who) is False
+    assert throttle.reserve(*who) > 0 and throttle.first_refusal(*who) is False
+
+    clock.now += 3  # the 2 s wait has elapsed: this attempt is counted and sets a longer wait, a new window
+    assert throttle.reserve(*who) == 0
+    assert throttle.reserve(*who) > 0 and throttle.first_refusal(*who) is True
+    assert throttle.reserve(*who) > 0 and throttle.first_refusal(*who) is False
+
+
+def test_each_key_announces_its_own_first_refusal(clock):
+    throttle = LoginThrottle(clock=clock)
+    for who in (("alice", "10.0.0.1"), ("alice", "10.0.0.2"), ("bob", "10.0.0.1")):
+        _attempts(throttle, 5, who)
+        assert throttle.reserve(*who) > 0 and throttle.first_refusal(*who) is True, who
+
+
+def test_a_key_that_is_not_waiting_announces_nothing(clock):
+    throttle = LoginThrottle(clock=clock)
+
+    assert throttle.first_refusal("nobody", "10.0.0.1") is False
+    throttle.reserve("alice", "10.0.0.1")
+    assert throttle.first_refusal("alice", "10.0.0.1") is False
+
+
+@pytest.mark.asyncio
+async def test_hammering_a_locked_key_logs_one_throttled_line_per_wait(client, app, clock, caplog):
+    app.state.login_throttle = LoginThrottle(clock=clock)
+    await _register(client)
+    for _ in range(5):
+        assert (await client.post("/v1/auth/login", json={"username": "alice", "password": "WRONG"})).status_code == 401
+
+    with caplog.at_level(logging.INFO, logger="primer.api.routers.auth"):
+        refused = [await client.post("/v1/auth/login", json={"username": "alice", "password": "WRONG"}) for _ in range(8)]
+
+    assert {r.status_code for r in refused} == {429}
+    lines = [r.getMessage() for r in caplog.records if "auth.login throttled" in r.getMessage()]
+    assert len(lines) == 1, f"a line per refused request: {lines}"
+    assert "username=alice" in lines[0] and "retry_after=" in lines[0]
