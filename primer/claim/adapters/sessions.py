@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic_core import to_jsonable_python
 
@@ -161,7 +161,7 @@ class SessionClaimAdapter(ClaimAdapter):
         # mode: dispatch.py's own except-block write can't run if the
         # worker process that would run it is the thing that died.
         if not outcome.success and self._workspace_registry is not None:
-            await self._write_terminal_record(written, outcome)
+            await self._write_terminal_record(written, outcome, conn)
 
     async def _patch_owned(self, entity_id: str, sess, conn, owned: dict, *, bump: bool):
         """One ``patch_if`` of the branch's ``owned`` fields (plus the fenced ``turn_no`` bump).
@@ -198,11 +198,17 @@ class SessionClaimAdapter(ClaimAdapter):
         )
 
     async def _write_terminal_record(
-        self, session: "WorkspaceSession", outcome: ReleaseOutcome,
+        self, session: "WorkspaceSession", outcome: ReleaseOutcome, conn: Any = None,
     ) -> None:
-        """Append a synthetic error-kind SessionMessageRecord to messages.jsonl."""
+        """Append a synthetic error-kind SessionMessageRecord to messages.jsonl.
+
+        The record's seq is RESERVED on the row first, through the release's own ``conn`` (a separate connection would wait on the row
+        lock this transaction holds): ``on_release`` never writes ``last_seq`` otherwise, and the next writer on the row, seeded from
+        it, would put its record at the seq this one took (ticket 01a11cd8).
+        """
         from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
         from primer.session.persistence import WorkspaceMessageWriter
+        from primer.session.seq_reservation import reserve_next_seq
 
         try:
             workspace_io = await self._workspace_registry.get_workspace(
@@ -221,6 +227,13 @@ class SessionClaimAdapter(ClaimAdapter):
         if workspace_io is None:
             return
 
+        reserved = await reserve_next_seq(self._storage, session.id, conn=conn)
+        if reserved is None:
+            logger.warning(
+                "on_release: no seq could be reserved for the failure record of session %s (%s); it was not written",
+                session.id, outcome.last_error or "unknown",
+            )
+            return
         reason = outcome.last_error or "unknown"
         record = SessionMessageRecord(
             seq=1,  # WorkspaceMessageWriter overwrites this
@@ -235,7 +248,7 @@ class SessionClaimAdapter(ClaimAdapter):
             # start_seq=0 landed this record at seq=1, silently OVERWRITING
             # whatever real message already held that seq on any session
             # that errors out after messages exist (pool.py:596's pattern).
-            start_seq=session.last_seq,
+            start_seq=reserved - 1,
         )
         new_seq = await writer.append(record)
         await writer.flush()

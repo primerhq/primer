@@ -33,6 +33,7 @@ from primer.model.workspace_session import (
 )
 from primer.session.enqueue import wake_session
 from primer.session.persistence import WorkspaceMessageWriter
+from primer.session.seq_reservation import reserve_next_seq
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ async def _enforce_pending_cap(
         await _record_dropped_pending(
             workspace_registry=workspace_registry,
             event_bus=event_bus,
+            storage_provider=storage_provider,
             session=session,
             dropped_text=text,
             enqueued_at=row.enqueued_at,
@@ -139,6 +141,7 @@ async def _record_dropped_pending(
     *,
     workspace_registry: Any,
     event_bus: Any | None,
+    storage_provider: Any,
     session: WorkspaceSession,
     dropped_text: str,
     enqueued_at: datetime,
@@ -149,6 +152,9 @@ async def _record_dropped_pending(
     write failure here must not block the steer that triggered it, but it
     IS logged (unlike a plain advisory) because a swallowed exception here
     would defeat the entire point of this function.
+
+    The record's seq is RESERVED on the row before it is written (``session`` is the caller's snapshot, possibly stale, and the
+    row's ``last_seq`` has to move so the next writer does not repeat the seq: ticket 01a11cd8).
     """
     if workspace_registry is None:
         return
@@ -156,8 +162,12 @@ async def _record_dropped_pending(
         ws = await workspace_registry.get_workspace(session.workspace_id)
         if ws is None:
             return
+        reserved = await reserve_next_seq(storage_provider.get_storage(WorkspaceSession), session.id)
+        if reserved is None:
+            logger.warning("pending_messages: no seq could be reserved to record a dropped pending message for session %s", session.id)
+            return
         writer = WorkspaceMessageWriter(
-            workspace_io=ws, session_id=session.id, start_seq=session.last_seq,
+            workspace_io=ws, session_id=session.id, start_seq=reserved - 1,
         )
         seq = await writer.append(SessionMessageRecord(
             seq=1,  # overwritten by the writer's monotonic counter
