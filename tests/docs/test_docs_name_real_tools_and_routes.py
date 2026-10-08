@@ -82,16 +82,20 @@ def _built_in_tools() -> dict[str, frozenset[str]]:
     return asyncio.run(collect())
 
 
-def _tool_references(doc: Path) -> list[tuple[int, str, str]]:
+def _tool_refs_in(text: str) -> list[tuple[int, str, str]]:
     """``(line, toolset id, tool name)`` for every reference to a tool of a toolset that is built here."""
     toolsets = _built_in_tools()
     pattern = re.compile(r"\b(" + "|".join(sorted(toolsets)) + r")(?:::|__)([a-z][a-z0-9_]*)")
     found = []
-    for number, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+    for number, line in enumerate(text.splitlines(), 1):
         for toolset_id, name in pattern.findall(line):
             if not name.endswith("_"):  # a stem such as ``find_``, written as ``find_<kind>``
                 found.append((number, toolset_id, name))
     return found
+
+
+def _tool_references(doc: Path) -> list[tuple[int, str, str]]:
+    return _tool_refs_in(doc.read_text(encoding="utf-8"))
 
 
 def test_the_built_in_toolsets_are_not_empty_so_the_check_cannot_pass_vacuously() -> None:
@@ -159,12 +163,10 @@ def _doc_files() -> list[Path]:
     return [f for f in files if f.exists() and "superpowers" not in f.parts]
 
 
-def _route_references(doc: Path) -> list[tuple[int, str, str]]:
-    relative = str(doc.relative_to(REPO))
-    if relative.startswith(_NOT_A_CONTRACT):
-        return []
+def _route_refs_in(text: str) -> list[tuple[int, str, str]]:
+    """``(line, METHOD, normalised path)`` for every endpoint a document names that the live schema is expected to have."""
     found = []
-    for number, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+    for number, line in enumerate(text.splitlines(), 1):
         for method, path in _ROUTE.findall(line):
             normalised = _normalise(path)
             if _is_a_placeholder(normalised) or (method, normalised) in _OUTSIDE_THE_SCHEMA:
@@ -173,6 +175,12 @@ def _route_references(doc: Path) -> list[tuple[int, str, str]]:
                 continue
             found.append((number, method, normalised))
     return found
+
+
+def _route_references(doc: Path) -> list[tuple[int, str, str]]:
+    if str(doc.relative_to(REPO)).startswith(_NOT_A_CONTRACT):
+        return []
+    return _route_refs_in(doc.read_text(encoding="utf-8"))
 
 
 def test_the_live_schema_is_not_empty_so_the_route_check_cannot_pass_vacuously() -> None:
@@ -190,3 +198,41 @@ def test_docs_name_only_endpoints_that_exist(doc: Path) -> None:
 def test_the_route_reference_scan_finds_references_at_all() -> None:
     total = sum(len(_route_references(doc)) for doc in _doc_files())
     assert total > 80, f"only {total} endpoint references found in the docs"
+
+
+# ---- the scans themselves -------------------------------------------------------------------------------------------------------
+
+
+def test_both_spellings_of_a_scoped_tool_are_found() -> None:
+    """``toolset::tool`` is how the docs write a tool, ``toolset__tool`` how an agent's ``tools`` list does; both are checked."""
+    found = _tool_refs_in("call system::nope_one, then list system__nope_two in `tools`")
+
+    assert [(toolset, name) for _, toolset, name in found] == [("system", "nope_one"), ("system", "nope_two")]
+
+
+def test_a_documented_stem_and_a_toolset_not_built_here_are_not_references() -> None:
+    assert _tool_refs_in("system::find_<kind> and system::get_ and search::search_agents and kb::anything") == []
+
+
+def test_a_route_is_normalised_so_placeholder_names_do_not_matter() -> None:
+    assert _route_refs_in("`PUT /v1/workspaces/{workspace_id}/reply_binding` and `PUT /v1/workspaces/<wid>/reply_binding`.") == [
+        (1, "PUT", "/v1/workspaces/{}/reply_binding"),
+        (1, "PUT", "/v1/workspaces/{}/reply_binding"),
+    ]
+
+
+def test_placeholders_the_mcp_mount_and_the_test_routes_are_not_expected_in_the_schema() -> None:
+    text = "GET /v1/{plural}/{id} POST /v1/<resource> GET /v1/x POST /v1/mcp GET /v1/_test/anything GET /v1/{llm"
+
+    assert _route_refs_in(text) == []
+
+
+def test_an_invented_route_is_reported_with_its_line() -> None:
+    assert _route_refs_in("fine\nDELETE /v1/nope/{id}.") == [(2, "DELETE", "/v1/nope/{}")]
+
+
+def test_a_vision_document_is_not_a_contract() -> None:
+    vision = next((REPO / "docs" / "dev" / "vision").glob("09-*.md"))
+
+    assert _route_refs_in(vision.read_text(encoding="utf-8")), "the fixture must name a route, or this test proves nothing"
+    assert _route_references(vision) == []
