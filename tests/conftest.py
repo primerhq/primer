@@ -351,6 +351,12 @@ class _FakeContentStore:
     async def delete(self, document_id, *, conn=None) -> None:
         self._rows.pop(document_id, None)
 
+    async def delete_collection(self, collection_id, *, conn=None) -> int:
+        gone = [k for k, row in self._rows.items() if row.collection_id == collection_id]
+        for key in gone:
+            del self._rows[key]
+        return len(gone)
+
     async def move(self, document_id, new_path, *, conn=None) -> None:
         row = self._rows.get(document_id)
         if row is None:

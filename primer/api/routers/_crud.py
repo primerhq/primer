@@ -174,6 +174,9 @@ def make_crud_router(
     on_pre_delete: _OnPreDeleteHook = None,
     on_pre_delete_id: _OnPreDeleteIdHook = None,
     extra_get_responses: dict[int, dict[str, Any]] | None = None,
+    extra_create_responses: dict[int, dict[str, Any]] | None = None,
+    extra_update_responses: dict[int, dict[str, Any]] | None = None,
+    extra_delete_responses: dict[int, dict[str, Any]] | None = None,
     scope_field: str | None = None,
     parent_path_segment: str | None = None,
     managed_by_field: str | None = None,
@@ -222,6 +225,11 @@ def make_crud_router(
     extra_get_responses
         Extra response codes documented for the GET-by-id route (in
         addition to the standard 404).
+    extra_create_responses / extra_update_responses / extra_delete_responses
+        Extra response codes documented for the unscoped create, replace and
+        delete routes (in addition to the standard ones), for the refusals
+        a pre-write hook can give: a 403 from a guard, a 502 from a hook that
+        calls a provider. They only document; the hooks raise the errors.
     scope_field
         When set alongside ``parent_path_segment``, the router mounts
         under ``/v1/{parent_path_segment}/{parent_id}/{plural}`` and
@@ -537,7 +545,7 @@ def make_crud_router(
             response_model=model_cls,
             status_code=status.HTTP_201_CREATED,
             summary=f"Create {model_cls.__name__}",
-            responses=common_responses(409, 422, 500),
+            responses={**common_responses(409, 422, 500), **(extra_create_responses or {})},
         )
         async def _create(
             request: Request,
@@ -589,7 +597,7 @@ def make_crud_router(
             f"/{plural}/{{entity_id}}",
             response_model=model_cls,
             summary=f"Replace {model_cls.__name__}",
-            responses=common_responses(404, 409, 422, 500),
+            responses={**common_responses(404, 409, 422, 500), **(extra_update_responses or {})},
         )
         async def _update(
             request: Request,
@@ -624,7 +632,7 @@ def make_crud_router(
             f"/{plural}/{{entity_id}}",
             status_code=status.HTTP_204_NO_CONTENT,
             summary=f"Delete {model_cls.__name__}",
-            responses=common_responses(404, 500),
+            responses={**common_responses(404, 500), **(extra_delete_responses or {})},
         )
         async def _delete(
             request: Request,

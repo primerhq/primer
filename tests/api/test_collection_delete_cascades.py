@@ -6,7 +6,9 @@ and the chunks were still searchable. ``collection_router`` is a bare ``make_cru
 later under the same id (ids are chosen by the caller) found the old documents and chunks waiting for it.
 
 The cascade runs BEFORE the collection row is removed and in this order: the vector namespace (one ``drop_collection``, so the cost does not
-grow with the collection), then the documents with their content rows in batches of one transaction each, then the row. It is synchronous:
+grow with the collection), then the documents with their content rows in batches of one transaction each, the namespace again and a last look
+at the documents (a write in flight during the delete recreates the namespace or adds a document; bounded rounds, then a 409), a sweep of the
+content rows by collection id, then the row. It is synchronous:
 collections are text-only and bounded (a 1 MiB cap per document), the vector side is one call, and the caller learns the outcome from the
 response, as ``PUT .../search`` (the backfill) already does. A vector store that cannot be reached REFUSES the delete (502) and changes
 nothing, because swallowing it would leave chunks that resurface under a reused id; a provider or namespace that is simply gone does not block
@@ -132,7 +134,8 @@ async def test_deleting_a_collection_removes_its_vector_chunks(client, collectio
     resp = await client.delete(f"/v1/collections/{collection_id}")
 
     assert resp.status_code == 204, resp.text
-    assert vectors.dropped == [collection_id], "the collection's vector namespace was not dropped"
+    # Twice on purpose: before the documents, and again after them for the chunks of an indexing pass that was in flight (see below).
+    assert vectors.dropped == [collection_id, collection_id], "the collection's vector namespace was not dropped before and after"
     assert vectors.chunks_of(collection_id) == [], "a deleted collection's chunks are still searchable"
 
 
@@ -290,6 +293,13 @@ def _record_order(monkeypatch, provider, vectors) -> list[str]:
         return await real_content(self, *args, **kwargs)
 
     monkeypatch.setattr(SqliteDocumentContentStore, "delete", content_delete)
+    real_sweep = SqliteDocumentContentStore.delete_collection
+
+    async def content_sweep(self, *args, **kwargs):
+        log.append("sweep")
+        return await real_sweep(self, *args, **kwargs)
+
+    monkeypatch.setattr(SqliteDocumentContentStore, "delete_collection", content_sweep)
     return log
 
 
@@ -304,6 +314,7 @@ async def test_the_cascade_runs_before_the_collection_row_is_deleted(client, pro
     assert log.count("row") == 1 and log[-1] == "row", f"the row was not the last thing removed: {log}"
     assert log[0] == "vectors", f"the vector namespace was not dropped first: {log}"
     assert log.count("document") == 2 and log.count("content") == 2
+    assert log.count("sweep") == 1 and log.index("sweep") == len(log) - 2, f"the content sweep is not the step just before the row: {log}"
 
 
 @pytest.mark.asyncio

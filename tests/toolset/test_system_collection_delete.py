@@ -56,7 +56,8 @@ async def test_deleting_a_collection_through_the_tool_removes_documents_content_
     assert await _documents_of(sp, "kb-1") == [], "the documents outlived their collection"
     content = sp.get_content_store()
     assert [p for p in ("a.md", "notes/b.md") if await content.resolve_id("kb-1", p) is not None] == [], "content rows outlived it"
-    assert dropped == ["kb-1"], "the collection's vector namespace was not dropped"
+    # Twice on purpose: before the documents, and again after them for the chunks of an indexing pass that was in flight.
+    assert dropped == ["kb-1", "kb-1"], "the collection's vector namespace was not dropped before and after"
     assert store.doc_ids() == set(), "a deleted collection's chunks are still searchable"
 
 
@@ -174,10 +175,18 @@ async def test_the_cascade_runs_before_the_collection_row_is_deleted(world, monk
         return await real_content(self, *args, **kwargs)
 
     monkeypatch.setattr(SqliteDocumentContentStore, "delete", content_delete)
+    real_sweep = SqliteDocumentContentStore.delete_collection
+
+    async def content_sweep(self, *args, **kwargs):
+        log.append("sweep")
+        return await real_sweep(self, *args, **kwargs)
+
+    monkeypatch.setattr(SqliteDocumentContentStore, "delete_collection", content_sweep)
 
     is_error, body = await _call(toolset, "delete_collection", id="kb-1")
 
     assert not is_error, body
+    assert log.count("sweep") == 1 and log.index("sweep") == len(log) - 2, f"the content sweep is not the step just before the row: {log}"
     assert log.count("row") == 1 and log[-1] == "row", f"the row was not the last thing removed: {log}"
     assert log[0] == "vectors", f"the vector namespace was not dropped first: {log}"
     assert log.count("document") == 2 and log.count("content") == 2

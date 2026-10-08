@@ -49,6 +49,7 @@ from tests.toolset.test_system import _agent, _ce, _collection, _emb, _llm, _req
 async def world(tmp_path: Path):
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
     await sp.initialize()
+    await sp.get_content_store().ensure_schema()  # deleting a collection sweeps its content rows, so the table must exist (the app does this at boot)
     # The provider the test profiles name (``_profile()`` defaults to anthropic-1): since task 01a111d1 D5 phase 2b the tools refuse a
     # single profile whose provider does not exist, as the REST route does.
     await sp.get_storage(LLMProvider).create(_llm())

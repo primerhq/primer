@@ -170,6 +170,47 @@ async def _drop_vector_namespace(ssr, collection: Collection) -> None:
 # smaller collection that deleting again finishes (every step is idempotent). Matches the 200-row page the rest of this module reads.
 _PURGE_BATCH = 200
 
+# How many times the purge empties the collection, drops the namespace and looks again before it gives up on a writer that keeps adding
+# documents. One round is enough unless something writes during the delete; three is generous for a burst and still bounded.
+_PURGE_ROUNDS = 3
+
+
+async def _delete_documents(storage_provider, collection_id: str) -> int:
+    """Remove the collection's documents and their content rows, batch by batch; returns how many documents were removed."""
+    docs = storage_provider.get_storage(Document)
+    content = storage_provider.get_content_store()
+    predicate = Q(Document).where("collection_id", collection_id).build()
+    removed = 0
+    previous_first: str | None = None
+    while True:
+        # Always the first page: the rows of the previous batch are gone, so offset 0 is the next batch.
+        page = await docs.find(predicate, OffsetPage(offset=0, length=_PURGE_BATCH))
+        if not page.items:
+            return removed
+        if page.items[0].id == previous_first:
+            # The batch we just deleted is back: a delete that removes nothing would otherwise loop here for ever. Not a ProviderError:
+            # that reads as a 502 blaming the vector store, and this is our own storage.
+            raise PrimerError(
+                f"deleting the documents of collection {collection_id!r} made no progress (document {previous_first!r} is still "
+                "there after its batch was deleted); the collection was not deleted"
+            )
+        previous_first = page.items[0].id
+        async with storage_provider.transaction() as conn:
+            for document in page.items:
+                try:
+                    await docs.delete(document.id, conn=conn)
+                except NotFoundError:
+                    pass  # someone else deleted it between our read and this delete: it is gone, which is what we want
+                await content.delete(document.id, conn=conn)
+        removed += len(page.items)
+
+
+async def _has_documents(storage_provider, collection_id: str) -> bool:
+    page = await storage_provider.get_storage(Document).find(
+        Q(Document).where("collection_id", collection_id).build(), OffsetPage(offset=0, length=1),
+    )
+    return bool(page.items)
+
 
 async def purge_collection(storage_provider, ssr, *, collection: Collection) -> int:
     """Remove everything a collection owns except its own row; returns how many documents were removed.
@@ -179,32 +220,32 @@ async def purge_collection(storage_provider, ssr, *, collection: Collection) -> 
     Order: the vector namespace first (:func:`_drop_vector_namespace`, one call whatever the size, and the step that can fail for a
     reason outside the database), then the documents with their content rows, batch by batch.
 
+    A write that was in flight when the namespace was first dropped (an indexing pass of a PUT, say) can recreate the namespace and put
+    chunks after it, and a document can be created while the loop runs. So after the documents the namespace is dropped AGAIN and the
+    documents are looked at once more, for up to :data:`_PURGE_ROUNDS` rounds; a writer that outlasts them gets a
+    :class:`~primer.model.except_.ConflictError` and the collection is left whole for a later retry. The content rows are swept last, by
+    collection id, so a row with no document entity cannot keep a path of the reused id taken. What this does NOT close: a write that
+    lands in the instant between that last look and the row delete by the caller; it would need a tombstone state on the collection that
+    refuses writes while it is being deleted (ticketed, not built).
+
+    After a failure part-way the vector namespace is already gone, so search on the collection finds nothing until the delete is
+    retried; the rows that remain are intact.
+
     Synchronous on purpose: collections are text-only and bounded (a document body is capped at 1 MiB), the vector side is one call, and
     the caller learns the outcome from the response, as the search backfill (``enable_search``) already does.
     """
     await _drop_vector_namespace(ssr, collection)
-    docs = storage_provider.get_storage(Document)
-    predicate = Q(Document).where("collection_id", collection.id).build()
     removed = 0
-    previous_first: str | None = None
-    while True:
-        # Always the first page: the rows of the previous batch are gone, so offset 0 is the next batch.
-        page = await docs.find(predicate, OffsetPage(offset=0, length=_PURGE_BATCH))
-        if not page.items:
+    for _ in range(_PURGE_ROUNDS):
+        removed += await _delete_documents(storage_provider, collection.id)
+        await _drop_vector_namespace(ssr, collection)
+        if not await _has_documents(storage_provider, collection.id):
+            await storage_provider.get_content_store().delete_collection(collection.id)
             return removed
-        if page.items[0].id == previous_first:
-            # The batch we just deleted is back: a delete that removes nothing would otherwise loop here for ever.
-            raise ProviderError(
-                f"deleting the documents of collection {collection.id!r} made no progress (document {previous_first!r} is still "
-                "there after its batch was deleted); the collection was not deleted"
-            )
-        previous_first = page.items[0].id
-        content = storage_provider.get_content_store()
-        async with storage_provider.transaction() as conn:
-            for document in page.items:
-                await docs.delete(document.id, conn=conn)
-                await content.delete(document.id, conn=conn)
-        removed += len(page.items)
+    raise ConflictError(
+        f"documents keep being added to collection {collection.id!r} while it is deleted; stop whatever is writing to it and delete it again "
+        "(the documents already removed stay removed, and its vector index is empty until then)"
+    )
 
 
 async def search_status(storage_provider, ssr, *, collection_id: str) -> SearchStatus:

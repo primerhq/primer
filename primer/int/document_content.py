@@ -90,6 +90,11 @@ class DocumentContentStore(ABC):
         """Remove by stable id. No-op if absent."""
 
     @abstractmethod
+    async def delete_collection(self, collection_id: str, *, conn: Any | None = None) -> int:
+        """Remove every row of one collection in a single statement, whether or not a document entity still names it; returns how many
+        rows went. No-op (0) for an empty or unknown collection."""
+
+    @abstractmethod
     async def move(
         self, document_id: str, new_path: str, *, conn: Any | None = None
     ) -> None:

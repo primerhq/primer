@@ -177,6 +177,11 @@ collection_router = make_crud_router(
     on_pre_create=_collection_on_pre_create,
     on_pre_update=_collection_on_pre_update,
     on_pre_delete=_collection_on_pre_delete,
+    # What the hooks can answer beyond the standard set: 403 (the system flag; a system collection's delete), 409 (a writer that keeps
+    # adding documents), 502 (a vector store that cannot be reached).
+    extra_create_responses=common_responses(403),
+    extra_update_responses=common_responses(403),
+    extra_delete_responses=common_responses(403, 409, 502),
 )
 
 
