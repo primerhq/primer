@@ -44,7 +44,7 @@ def test_a_console_overlay_takes_focus_traps_it_and_gives_it_back(page: Page, ba
     expect(dialog).to_have_attribute("aria-modal", "true")
     labelled_by = dialog.get_attribute("aria-labelledby")
     assert labelled_by, "the dialog has no accessible name"
-    assert page.evaluate("(id) => (document.getElementById(id) || {}).textContent", labelled_by) == "New session"
+    assert page.evaluate("(id) => (document.getElementById(id) || {}).textContent", labelled_by) == "Create session"
 
     # Focus moved INTO the dialog (not onto the dialog box itself, and not left on the "+" behind the scrim).
     page.wait_for_function(_FOCUS_IN_DIALOG, timeout=5_000)

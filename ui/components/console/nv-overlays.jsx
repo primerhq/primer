@@ -25,6 +25,17 @@
 // scrolling body + optional footer. Esc and scrim-click close.
 function NV_OverlayPanel(props) {
   var onClose = props.onClose;
+  var panelRef = React.useRef(null);
+  var titleId = React.useId();
+  // Console review C-028: focus moves into the overlay (the first field or control of its body, not the close button), Tab cycles inside
+  // it, and Escape or Close gives focus back to whatever opened it (foundation/focus-trap.js, the same trap Modal uses).
+  window.primerApi.useFocusTrap(panelRef, true, {
+    initial: function (node) {
+      var body = node.querySelector(".nv-overlay-body");
+      var items = body ? window.primerApi.focusablesOf(body) : [];
+      return items[0] || null;
+    },
+  });
   React.useEffect(function () {
     function onKey(ev) {
       if (ev.key === "Escape") onClose();
@@ -35,7 +46,8 @@ function NV_OverlayPanel(props) {
   return (
     <div className="nv-scrim" data-testid="nv-overlay-scrim"
       onClick={function () { onClose(); }}>
-      <div className="nv-overlay-panel"
+      <div className="nv-overlay-panel" role="dialog" aria-modal="true" aria-labelledby={titleId}
+        tabIndex={-1} ref={panelRef}
         data-wide={props.wide ? "true" : "false"}
         data-testid={props.testid || "nv-overlay-panel"}
         onClick={function (ev) { ev.stopPropagation(); }}>
@@ -43,7 +55,7 @@ function NV_OverlayPanel(props) {
           {/* THE one title (one-title rule), and the page's h1: the
               re-hosted pages render action bars, never headings, and
               the e2e suite addresses surfaces by h1.page-title. */}
-          <h1 className="nv-overlay-title page-title"
+          <h1 className="nv-overlay-title page-title" id={titleId}
             data-testid="nv-overlay-title">{props.title}</h1>
           <span style={{ flex: 1 }} />
           <button type="button" className="nv-overlay-close"
