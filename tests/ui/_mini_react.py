@@ -22,7 +22,8 @@ Where it differs from React, so a green test here is not read as more than it is
   that read it, such as ``NV_useConsole``).
 
 Driver API, inside the context (``MR``): ``MR.mount(Component, props)``, ``MR.rerender(props?)``, ``MR.find(testid)`` (the element
-or null), ``MR.findAll(prefix)``, ``MR.click(testid)``, ``MR.texts()``. The caller owns ``ctx.close()``.
+or null), ``MR.findAll(prefix)``, ``MR.click(testid)``, ``MR.texts()``, ``MR.subtree(testid)`` (every element at or under the one with that
+test id, as ``{type, className, role, ariaLive, testid}``; null when there is none). The caller owns ``ctx.close()``.
 """
 
 from __future__ import annotations
@@ -193,6 +194,18 @@ var window = globalThis;
     mount: function (type, props) { root = { type: type, props: props || {}, tree: null }; flush(); },
     rerender: function (props) { if (props) root.props = props; flush(); },
     find: find, findAll: findAll, texts: texts,
+    subtree: function (testid) {
+      var start = find(testid);
+      if (!start) return null;
+      var out = [];
+      walk(start, function (el) {
+        out.push({
+          type: typeof el.type === "string" ? el.type : "component", className: (el.props && el.props.className) || "",
+          role: el.props && el.props.role, ariaLive: el.props && el.props["aria-live"], testid: el.props && el.props["data-testid"],
+        });
+      });
+      return out;
+    },
     click: function (testid) {
       var el = find(testid);
       if (!el) throw new Error("no element with data-testid " + testid);
