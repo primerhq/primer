@@ -14,8 +14,11 @@
 // How long the gate waits before it asks again after a failed status read.
 const AUTH_RETRY_MS = 5000;
 
-// What a failed ``GET /v1/auth/status`` says. Pure. It states what failed and that the gate is retrying; it never says anything about
-// whether an account exists, because a failed read cannot know.
+// What a failed ``GET /v1/auth/status`` says, and whether the gate should ask again on its own. Pure. It states what failed; it never says
+// anything about whether an account exists, because a failed read cannot know. Asking again can change the answer after a dead connection,
+// a server error (the server is starting, or a proxy is between) and the two 4xx that mean "later" (408, 429). Any other 4xx (a 401, a 403, a
+// 404...) is an answer the server meant: polling it every few seconds for as long as the tab is open changes nothing and only adds load, so
+// the gate shows it and waits for "Try again".
 function AUTH_failureView(err) {
   const status = err && typeof err.status === "number" ? err.status : null;
   const requestId = (err && (err.requestId || err.request_id)) || null;
@@ -25,6 +28,7 @@ function AUTH_failureView(err) {
       title: "Cannot reach the server",
       detail: "Check your connection. Retrying automatically.",
       requestId,
+      retry: true,
     };
   }
   if (status >= 500) {
@@ -32,12 +36,22 @@ function AUTH_failureView(err) {
       title: "The server is not ready",
       detail: "It answered with an error (" + status + "). Retrying automatically.",
       requestId,
+      retry: true,
+    };
+  }
+  if (status === 408 || status === 429) {
+    return {
+      title: "The server is busy",
+      detail: "It answered " + status + ". Retrying automatically.",
+      requestId,
+      retry: true,
     };
   }
   return {
     title: "The server gave an unexpected answer",
-    detail: "It answered " + status + ". Retrying automatically.",
+    detail: "It answered " + status + ". Try again in a moment.",
     requestId,
+    retry: false,
   };
 }
 
@@ -86,8 +100,9 @@ function AuthGate({ children }) {
         }
       } catch (err) {
         if (!cancelled) {
-          setFailure(AUTH_failureView(err));
-          retry = setTimeout(() => setAttempt((n) => n + 1), AUTH_RETRY_MS);
+          const view = AUTH_failureView(err);
+          setFailure(view);
+          if (view.retry) retry = setTimeout(() => setAttempt((n) => n + 1), AUTH_RETRY_MS);
         }
       }
     })();
