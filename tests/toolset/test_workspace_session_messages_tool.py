@@ -76,13 +76,58 @@ async def test_after_seq_and_limit_page_the_transcript():
     assert [i["seq"] for i in body["items"]] == [2]
 
 
+class _TwoWorkspaceRegistry:
+    """Resolves BOTH workspaces, so the only thing that can refuse s1
+    under ws-other is the tool's own row check (a registry that raises
+    for unknown ids would hide a missing check)."""
+
+    def __init__(self, ios: dict) -> None:
+        self._ios = ios
+
+    async def get_workspace(self, workspace_id: str):
+        return self._ios[workspace_id]
+
+
 async def test_a_session_on_another_workspace_is_not_found():
-    ts, provider, _ = await _setup()
+    """s1 lives on ws-1. ws-other is a real, resolvable workspace that
+    ALSO holds a messages.jsonl at s1's path: asking for s1 under
+    ws-other must be not-found and must return none of those records."""
+    from primer.toolset.workspaces import build_workspaces_toolset
+
+    provider = _Provider()
+    await _seed_session(provider.store, "s1")  # on ws-1
+    home, other = _FakeWorkspaceIO(), _FakeWorkspaceIO()
+    log = (
+        _line(1, "user_input", text="Reply with exactly: PONG")
+        + _line(2, "assistant_token", text="PONG-SECRET")
+    )
+    home.write(_msg_path("s1"), log)
+    other.write(_msg_path("s1"), log)
+    ts = build_workspaces_toolset(
+        storage_provider=provider,
+        workspace_registry=_TwoWorkspaceRegistry({_WID: home, "ws-other": other}),
+        tap_router=None,
+    )
     res = await _call(
         ts, {"workspace_id": "ws-other", "session_id": "s1"}, caller("user"),
     )
-    assert res.is_error
+    assert res.is_error, res.output
     assert json.loads(res.output)["type"] == "not-found"
+    assert "PONG-SECRET" not in res.output
+    # Premise: the same registry serves s1 under its own workspace.
+    ok = await _call(ts, {"workspace_id": _WID, "session_id": "s1"}, caller("user"))
+    assert not ok.is_error and "PONG-SECRET" in ok.output
+
+
+async def test_offset_pages_older_from_the_tail_like_rest():
+    ts, _, _ = await _setup()
+    res = await _call(
+        ts,
+        {"workspace_id": _WID, "session_id": "s1", "tail": True, "limit": 1, "offset": 1},
+        caller("user"),
+    )
+    assert not res.is_error, res.output
+    assert [i["seq"] for i in json.loads(res.output)["items"]] == [2]
 
 
 async def test_an_unknown_session_is_not_found():
