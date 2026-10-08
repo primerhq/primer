@@ -264,6 +264,9 @@ function NV_Shell() {
   var markPush = React.useCallback(function () {
     pendingPushRef.current = true;
   }, []);
+  // The listener effect below hands its reader to the write effect, which
+  // reads an address-bar change it has not seen before it writes over it.
+  var readUrlRef = React.useRef(null);
   React.useEffect(function () {
     function onNav() {
       var current = window.location.hash || "";
@@ -282,9 +285,11 @@ function NV_Shell() {
       setOverlay(parsed.overlay);
       setAnchor(parsed.anchor);
     }
+    readUrlRef.current = onNav;
     window.addEventListener("hashchange", onNav);
     window.addEventListener("popstate", onNav);
     return function () {
+      readUrlRef.current = null;
       window.removeEventListener("hashchange", onNav);
       window.removeEventListener("popstate", onNav);
     };
@@ -295,7 +300,18 @@ function NV_Shell() {
     var url = SH_buildUrl({
       wid: wid, view: view, doc: doc, overlay: overlay, anchor: anchor,
     });
-    if ((window.location.hash || "") !== url) {
+    var current = window.location.hash || "";
+    if (current !== url) {
+      // The address bar moved since this shell last read or wrote it (a link
+      // opened, or the hash set, between the first render and now) and the
+      // event for it has not been delivered yet: this state is the stale
+      // side. Read the address bar instead of overwriting it with this
+      // state's URL, which would lose the navigation for good.
+      if (current !== ownHashRef.current) {
+        pendingPushRef.current = false;
+        if (readUrlRef.current) readUrlRef.current();
+        return;
+      }
       ownHashRef.current = url;
       if (pendingPushRef.current) {
         window.history.pushState(null, "", url);
