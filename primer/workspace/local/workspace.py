@@ -456,11 +456,13 @@ class LocalWorkspace(Workspace):
 
     async def delete_file(self, path: str, *, recursive: bool = False) -> None:
         target = self._resolve_path(path)
+        # Refuse a reserved path BEFORE the existence check: 404-vs-400
+        # would tell a caller whether a .state / .tmp file exists (A-22).
+        self._refuse_reserved(target, path)
         if not await asyncio.to_thread(target.exists):
             raise NotFoundError(f"{path!r} not found")
         if target == self._root.resolve():
             raise BadRequestError("refusing to delete workspace root")
-        self._refuse_reserved(target, path)
         _t0 = time.monotonic()
         async with self._locks.hold_write(self._scope_key(target), str(target)):
             _waited = time.monotonic() - _t0
@@ -492,14 +494,16 @@ class LocalWorkspace(Workspace):
         """
         src_target = self._resolve_path(src)
         dst_target = self._resolve_path(dst)
+        # Both endpoints must stay outside the reserved .state / .tmp trees so
+        # the API can't shuffle the backend's bookkeeping around. Refused
+        # BEFORE the existence check, or 404-vs-400 tells a caller whether a
+        # reserved file exists (A-22).
+        self._refuse_reserved(src_target, src)
+        self._refuse_reserved(dst_target, dst)
         if not await asyncio.to_thread(src_target.exists):
             raise NotFoundError(f"{src!r} not found")
         if src_target == self._root.resolve():
             raise BadRequestError("refusing to move workspace root")
-        # Both endpoints must stay outside the reserved .state / .tmp trees so
-        # the API can't shuffle the backend's bookkeeping around.
-        self._refuse_reserved(src_target, src)
-        self._refuse_reserved(dst_target, dst)
         if await asyncio.to_thread(dst_target.exists):
             raise ConflictError(
                 f"{dst!r} already exists; refusing to overwrite it"
