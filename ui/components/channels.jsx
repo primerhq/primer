@@ -281,7 +281,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
           if (pushToast) pushToast({
             kind: "error",
             title: err.title || (isEdit ? "Save failed" : "Create failed"),
-            detail: err.detail || err.message,
+            detail: window.primerApi.readRefusal(err).message,
             requestId: err.requestId,
           });
         }
@@ -868,7 +868,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
           if (pushToast) pushToast({
             kind: "error",
             title: err.title || (isEdit ? "Save failed" : "Create failed"),
-            detail: err.detail || err.message,
+            detail: window.primerApi.readRefusal(err).message,
             requestId: err.requestId,
           });
         }
