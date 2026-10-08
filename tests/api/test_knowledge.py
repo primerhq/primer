@@ -239,15 +239,10 @@ class TestSystemCollectionGuard:
     """Documents cannot be hand-ingested into system collections."""
 
     @pytest.mark.asyncio
-    async def test_create_into_system_collection_rejected(self, client) -> None:
+    async def test_create_into_system_collection_rejected(self, client, fake_storage_provider) -> None:
         await client.post("/v1/ssp", json=_SSP_BODY)
-        sys_coll = _collection(id="_internal_test", system=True).model_dump(
-            mode="json"
-        )
-        # System collections are normally created by internal subsystems;
-        # create one directly through storage for the test by posting it.
-        created = await client.post("/v1/collections", json=sys_coll)
-        assert created.status_code == 201, created.text
+        # System collections are created by internal subsystems straight in storage; the API refuses to create one.
+        await fake_storage_provider.get_storage(Collection).create(_collection(id="_internal_test", system=True))
 
         resp = await client.post(
             "/v1/documents",

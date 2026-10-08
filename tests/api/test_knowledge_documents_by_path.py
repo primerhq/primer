@@ -111,12 +111,11 @@ async def collection_id(client) -> str:
 
 
 @pytest_asyncio.fixture
-async def system_collection_id(client) -> str:
-    body = Collection(
-        id="sys-1", description="system test collection", system=True,
-    ).model_dump(mode="json")
-    created = await client.post("/v1/collections", json=body)
-    assert created.status_code == 201, created.text
+async def system_collection_id(provider) -> str:
+    """A system collection, written straight to storage as the platform writes one: the API refuses to create one."""
+    await provider.get_storage(Collection).create(
+        Collection(id="sys-1", description="system test collection", system=True),
+    )
     return "sys-1"
 
 
