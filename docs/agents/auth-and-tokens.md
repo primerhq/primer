@@ -65,8 +65,17 @@ everywhere" in the profile menu) bump the epoch, so every cookie of
 that account stops working on its next request. A plain `POST
 /v1/auth/logout` only clears the caller's own cookie. None of this
 touches bearer tokens: revoke those through the API-token routes.
-A stream that is already open (the workspace tap's SSE, a terminal
-WebSocket) is not cut by a revocation; it is refused when it reconnects.
+A connection that is already open (the workspace tap's SSE, a terminal
+WebSocket, an MCP GET stream) is re-checked against its account every
+`auth.revalidate_interval_s` (5 s by default, 0 turns it off) and cut when
+the account is disabled or deleted, its epoch moved (cookie sessions), its
+role was weakened (a promotion cuts nothing), its cookie's own lifetime
+(`session_ttl_days` from when it was signed) ran out, or its API token was
+revoked or expired. A WebSocket closes with code 4401 `auth_revoked`; an HTTP
+stream is completed, and the reconnect meets the ordinary 401. An MCP tool
+call that was already started by a POST keeps running to its end (only the
+response is cut). A storage outage cuts WebSockets and GET streams after
+three failed checks and leaves a POST, PUT, PATCH or DELETE in flight alone.
 
 Route-level scope enforcement is via the `require_scope("mcp")`
 dependency. Cookie sessions bypass scope checks (they have implicit
@@ -88,7 +97,8 @@ the socket with WebSocket close code **4401** (`auth_required`). This
 is the WebSocket analogue of an HTTP 401 (the standard close-code
 convention adds 4000 to the HTTP status). Clients should treat a 4401
 close as "authenticate, then reconnect", not as a transient blip to
-retry blindly. When auth is disabled on the deployment, the handshake
+retry blindly (an OPEN socket whose account stopped being valid is closed with
+the same code, reason `auth_revoked`). When auth is disabled on the deployment, the handshake
 connects without credentials (a synthetic operator identity is
 injected), exactly like the HTTP routes.
 
