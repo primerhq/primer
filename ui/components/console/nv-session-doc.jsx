@@ -466,7 +466,7 @@ function NV_BindingChip(props) {
   ((graphs.data && graphs.data.items) || []).forEach(function (g) {
     rows.push({
       key: "g:" + g.id, name: g.id, kind: "graph",
-      desc: g.description || "",
+      desc: g.description || "No description",
       binding: { kind: "graph", graph_id: g.id },
     });
   });

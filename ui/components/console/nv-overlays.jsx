@@ -169,7 +169,7 @@ function NV_CreateSessionOverlay() {
     });
   });
   graphItems.forEach(function (g) {
-    rows.push({ kind: "graph", id: g.id, desc: g.description || "" });
+    rows.push({ kind: "graph", id: g.id, desc: g.description || "No description" });
   });
   var ql = q.trim().toLowerCase();
   var visible = !ql ? rows : rows.filter(function (r) {

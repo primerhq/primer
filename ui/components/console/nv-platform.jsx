@@ -267,7 +267,7 @@ var NV_PLAT_PAGES = {
     },
     card: function (row) {
       return {
-        name: row.id, sub: row.description || "",
+        name: row.id, sub: row.description || "No description",
         glyph: NV_GRAPH_GLYPH.d, color: NV_GRAPH_GLYPH.color,
         chip: null,
         facts: [
