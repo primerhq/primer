@@ -211,8 +211,46 @@ async def test_in_memory_scheduler_with_worker_mode_emits_warning(
     mock_storage_provider: _FakeStorageProvider,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Spec §9.1: in-memory scheduler + non-API mode should log a
-    warning about multi-worker safety."""
+    """Spec §9.1: an in-memory scheduler in a process that only runs a
+    worker has a peer API process with its own claim engine: leases and
+    resumable parks are not shared, so it is degraded and logs why."""
+    import logging
+    monkeypatch.setattr(
+        "primer.api.app._build_storage_provider",
+        lambda _cfg: mock_storage_provider,
+    )
+    cfg = AppConfig(
+        runtime_mode=RuntimeMode.WORKER,
+        scheduler=SchedulerProviderConfig(
+            provider=SchedulerProviderType.IN_MEMORY,
+            config=InMemorySchedulerConfig(),
+        ),
+    )
+    app = create_app(cfg)
+    # Capture at the root (the warning is emitted by the primer.api._app_lifespan
+    # logger, not primer.api.app) so the degraded-scheduler record is visible.
+    with caplog.at_level(logging.WARNING):
+        async with app.router.lifespan_context(app):
+            reason = app.state.scheduler_degraded_reason
+            detail = app.state.scheduler_detail
+    assert reason is not None and "runtime_mode=worker" in reason
+    assert detail is None
+    assert any(
+        "in-memory scheduler" in r.message
+        and ("multi-process" in r.message or "external-worker" in r.message)
+        for r in caplog.records
+    )
+
+
+async def test_in_memory_scheduler_with_api_plus_worker_mode_is_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_storage_provider: _FakeStorageProvider,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """C-036 (01a11d04): the default install is one process running the API
+    and the worker over the in-memory scheduler. Every claim is made and
+    seen by that one process, so nothing is unshared: it is healthy, says
+    what it is, and does not log a warning at every boot."""
     import logging
     monkeypatch.setattr(
         "primer.api.app._build_storage_provider",
@@ -226,16 +264,55 @@ async def test_in_memory_scheduler_with_worker_mode_emits_warning(
         ),
     )
     app = create_app(cfg)
-    # Capture at the root (the warning is emitted by the primer.api._app_lifespan
-    # logger, not primer.api.app) so the degraded-scheduler record is visible.
     with caplog.at_level(logging.WARNING):
         async with app.router.lifespan_context(app):
-            pass
-    assert any(
-        "in-memory scheduler" in r.message
-        and ("multi-process" in r.message or "external-worker" in r.message)
-        for r in caplog.records
+            assert app.state.scheduler_degraded_reason is None
+            assert app.state.scheduler_detail == "in-memory scheduler (single process)"
+    assert not any(
+        "in-memory scheduler" in r.message for r in caplog.records
     )
+
+
+async def test_health_route_reports_the_wired_scheduler_rule(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_storage_provider: _FakeStorageProvider,
+) -> None:
+    """Both sides of the rule, end to end through GET /v1/health: api+worker
+    reads healthy with its detail, a worker-only process reads degraded with
+    the reason and no detail."""
+    import httpx
+
+    monkeypatch.setattr(
+        "primer.api.app._build_storage_provider",
+        lambda _cfg: mock_storage_provider,
+    )
+    served: dict[RuntimeMode, dict] = {}
+    for mode in (RuntimeMode.API_PLUS_WORKER, RuntimeMode.WORKER):
+        cfg = AppConfig(
+            runtime_mode=mode,
+            scheduler=SchedulerProviderConfig(
+                provider=SchedulerProviderType.IN_MEMORY,
+                config=InMemorySchedulerConfig(),
+            ),
+        )
+        app = create_app(cfg)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+                response = await c.get("/v1/health")
+        assert response.status_code == 200, response.text
+        served[mode] = response.json()["scheduler"]
+
+    healthy = served[RuntimeMode.API_PLUS_WORKER]
+    assert healthy["alive"] is True
+    assert healthy["degraded"] is False
+    assert healthy["degraded_reason"] is None
+    assert healthy["detail"] == "in-memory scheduler (single process)"
+
+    degraded = served[RuntimeMode.WORKER]
+    assert degraded["degraded"] is True
+    assert "runtime_mode=worker" in degraded["degraded_reason"]
+    assert degraded["detail"] is None
 
 
 async def test_in_memory_scheduler_with_api_mode_does_not_warn(
