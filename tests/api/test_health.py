@@ -63,9 +63,11 @@ async def test_health_surfaces_worker_pool_in_flight_capacity(client) -> None:
     """/v1/health includes worker_pool.in_flight + worker_pool.capacity.
 
     The test app does not run a real WorkerPool (worker_pool=None) and
-    has no workers registered with the scheduler, so in_flight stays
-    null (no durable equivalent) and capacity falls back to the durable
-    registry's sum — 0 for an empty registry, not null.
+    has no workers registered with the scheduler, so there is no live
+    worker to sum a load over: in_flight is null (unknown; "no workers"
+    is not "0 busy") and capacity falls back to the durable registry's
+    sum — 0 for an empty registry, not null. (A registry WITH reporting
+    workers sums their load: the tests below.)
     """
     response = await client.get("/v1/health")
     body = response.json()
@@ -96,6 +98,7 @@ async def test_health_worker_pool_capacity_falls_back_to_scheduler_registry(
 
     response = await client.get("/v1/health")
     body = response.json()
+    # None because no worker has REPORTED its load here (unknown, not idle); the tests below cover a reporting fleet.
     assert body["worker_pool"]["in_flight"] is None
     assert body["worker_pool"]["capacity"] == 7
 
