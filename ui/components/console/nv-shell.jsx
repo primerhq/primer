@@ -63,11 +63,12 @@ function NV_ToastHost() {
   }, []);
 
   return (
-    <div className="toast-stack" data-testid="nv-toasts">
+    <div className="toast-stack" data-testid="nv-toasts" role="status" aria-live="polite">
       {toasts.map(function (t) {
         var rid = t.requestId || t.reqId;
         return (
-          <div key={t.id} className={"toast toast-" + (t.kind || "info")}>
+          <div key={t.id} className={"toast toast-" + (t.kind || "info")}
+            role={t.kind === "error" ? "alert" : undefined}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="title">{t.title || t.text}</div>
               {t.detail ? <div className="detail">{t.detail}</div> : null}
@@ -580,7 +581,11 @@ function NV_Shell() {
             <window.NV_ActivityBar />
             <div className="nv-main">
               <window.NV_Topbar />
-              <div className="nv-view" data-testid={"nv-view:" + viewName}>
+              <div className="nv-view" data-testid={"nv-view:" + viewName} role="main">
+                {/* The page's heading for assistive tech: the shell draws none of its own (the overlays and pages carry their own). */}
+                <h1 className="nv-sr-only" data-testid="nv-view-heading">
+                  {viewName === "platform" ? "Platform" : viewName === "system" ? "System settings" : "Studio"}
+                </h1>
                 {viewName === "studio" && typeof window.NV_Studio === "function"
                   ? <window.NV_Studio />
                   : null}

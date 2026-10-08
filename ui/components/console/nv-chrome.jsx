@@ -55,7 +55,7 @@ function NV_ActivityBar() {
     } catch (_e) { /* private mode, quota, etc. - non-fatal */ }
   }, [con.username]);
   return (
-    <div className="nv-actbar" data-testid="nv-actbar">
+    <div className="nv-actbar" data-testid="nv-actbar" role="navigation" aria-label="Views">
       <div className="nv-actbar-logo" title="primer"><NV_Logo /></div>
       <button type="button" className="nv-actbar-btn" title="Studio"
         data-verb="view.studio" data-testid="nv-go-studio"
@@ -217,7 +217,7 @@ function NV_WorkspaceChip() {
 function NV_Topbar() {
   var con = NV_useConsole();
   return (
-    <div className="nv-topbar" data-testid="nv-topbar">
+    <div className="nv-topbar" data-testid="nv-topbar" role="banner">
       {con.view.name === "studio" ? <NV_WorkspaceChip /> : null}
       <div className="nv-search-wrap">
         <button type="button" className="nv-search-btn" data-verb="palette.open"

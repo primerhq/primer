@@ -1400,6 +1400,11 @@ input, textarea, select { font: inherit; color: inherit; }
 
 /* ---------- Toast ---------- */
 
+/* Visually hidden, still read by assistive tech (the shell's page heading). */
+.nv-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 .toast-stack {
   position: fixed;
   bottom: 18px;

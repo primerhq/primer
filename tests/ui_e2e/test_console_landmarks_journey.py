@@ -69,7 +69,7 @@ def test_toasts_are_announced_and_an_error_toast_interrupts(page: Page, base_url
 @pytest.mark.ui_e2e
 def test_the_platform_filter_has_a_name(page: Page, base_url: str, console_url: str) -> None:
     wid, _sid = _first_workspace_and_session(base_url)
-    open_view(page, console_url, wid, "platform")
+    open_view(page, console_url, wid, "platform:agents")
     expect(page.get_by_test_id("nv-plat-filter")).to_have_accessible_name(re.compile(r"^Filter"), timeout=15_000)
 
 
