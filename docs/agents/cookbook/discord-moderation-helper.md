@@ -19,7 +19,7 @@ Every new Discord message in a moderated channel runs through a classifier agent
 ## Prerequisites
 - A Discord bot token from the Developer Portal (without the `Bot ` prefix; the adapter adds it). Must be at least 30 characters.
 - A `discord-tools` toolset registered with a `delete_message` tool.
-- An LLM provider configured and a workspace template available.
+- A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`), and a workspace template available.
 
 ## Steps
 ### 1. Create the Discord channel provider
@@ -76,7 +76,7 @@ Wait until `phase` is `running`. Thread `id` ("ws-1") into the association.
   "entity": {
     "id": "moderator",
     "description": "Classifies Discord messages and deletes clear violations",
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" },
+    "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" },
     "tools": ["discord-tools__delete_message"],
     "system_prompt": ["Classify each incoming message. Skip messages whose author is yourself to avoid a loop. Call delete_message only for clear violations; borderline cases will be gated for human review."]
   }

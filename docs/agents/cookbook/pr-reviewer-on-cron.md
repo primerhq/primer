@@ -19,6 +19,7 @@ Stand up an hourly cron trigger whose subscription starts a fresh agent session 
 ## Prerequisites
 - A GitHub MCP server configured and reachable, exposed to the agent via an enabled toolset.
 - A workspace provider id to materialise workspaces from; the template's `init_commands` clone the target repo and install `git`.
+- A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`).
 - Permission to create agents, workspaces, and triggers over MCP.
 
 ## Steps
@@ -30,7 +31,7 @@ Stand up an hourly cron trigger whose subscription starts a fresh agent session 
     "id": "pr-reviewer",
     "description": "Reviews open GitHub PRs and posts comments",
     "system_prompt": ["List open pull requests, review each file diff, and post review comments via the GitHub MCP tools. Keep a consistent review tone across runs."],
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" }
+    "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" }
   }
 }
 ```

@@ -20,6 +20,7 @@ Stand up a tick-driven ingestion pipeline. A trigger fires on a cron schedule; i
 ## Prerequisites
 - An embedding provider and a search provider are configured (needed to create the collection).
 - A workspace template and provider exist to materialise a workspace from.
+- A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`).
 - Permission to create collections, agents, workspaces, and triggers over MCP.
 
 ```callout:info
@@ -53,7 +54,7 @@ The embedder and search provider are fixed at create time. To change either, del
     "id": "ingestion-bot",
     "description": "Normalises an event payload and ingests it",
     "system_prompt": ["You receive an upstream event payload in the session input. Write the raw payload to inbox/<id>.txt in the workspace, normalise it to clean markdown, then call put_document on the ingestion-buffer collection using a stable path derived from the source payload identifier (for example events/<id>.md) and the normalised markdown as content."],
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" }
+    "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" }
   }
 }
 ```

@@ -194,7 +194,7 @@ Agents are managed via standard CRUD plus the semantic search tool.
   `tools`, `response_format`, `llm`.
 - `system::create_agent` - body fields: optional `id`,
   `description`, `system_prompt` (list of strings), `model`
-  (`{provider_id, model_name}`), `tools` (list of
+  (`{profile_id}`, the id of a stored ModelProfile), `tools` (list of
   `<toolset_id>__<tool_name>` strings), optional `temperature` and
   `max_tool_turns` (default 50). Omit `id` and the server assigns
   `agent-<hex>` (e.g. `agent-3f9a1c8d`); supply one to use it
@@ -210,6 +210,41 @@ Agents are managed via standard CRUD plus the semantic search tool.
   `POST /v1/setup/seed` or the next server start re-creates it with its
   default definition, not your edits.
 - `system::find_agents` - predicate query.
+
+### Model profiles (system toolset)
+
+An agent runs under a **ModelProfile**, not under a provider and a model
+name: the profile is the registry of what a provider can serve. A single
+profile carries `provider_id` (a stored LLM provider), `model_name` (the
+provider-side wire name), `context_length` and an optional `config`
+(for example `reasoning`); an aggregated profile (`kind: "aggregated"`) lists
+two or more other profiles in `members` to fail over across. The ids in this
+documentation follow the convention `<provider id>--<model name>` (for
+example `anthropic-1--claude-sonnet-4-6`); primer does not enforce it.
+
+- `system::create_model_profile`, `system::get_model_profile`,
+  `system::list_model_profiles`, `system::find_model_profiles`,
+  `system::update_model_profile`, `system::delete_model_profile` - admin
+  role for the writes (a profile is provider configuration). A single
+  profile whose provider does not exist is refused, and a profile that an
+  agent uses cannot be deleted.
+
+Create the profile before the agent that names it:
+
+```json
+{
+  "tool": "system::create_model_profile",
+  "arguments": {
+    "entity": {
+      "id": "lp-claude--claude-sonnet-4-6",
+      "description": "Claude Sonnet on the lp-claude provider",
+      "provider_id": "lp-claude",
+      "model_name": "claude-sonnet-4-6",
+      "context_length": 200000
+    }
+  }
+}
+```
 
 ### Discovery (search toolset)
 
@@ -229,20 +264,22 @@ in a fresh workspace.
 {
   "tool": "system::create_agent",
   "arguments": {
-    "id": "summarise-document",
-    "description": "Summarises a document file into 200 words or fewer.",
-    "system_prompt": [
-      "You receive a document file path as input. Read the file, produce a concise summary (max 200 words), and write it to summary.md in the same directory."
-    ],
-    "model": {
-      "provider_id": "lp-claude",
-      "model_name": "claude-sonnet-4-6"
-    },
-    "tools": ["system__get_document_content"],
-    "max_tool_turns": 5
+    "entity": {
+      "id": "summarise-document",
+      "description": "Summarises a document file into 200 words or fewer.",
+      "system_prompt": [
+        "You receive a document file path as input. Read the file, produce a concise summary (max 200 words), and write it to summary.md in the same directory."
+      ],
+      "model": {"profile_id": "lp-claude--claude-sonnet-4-6"},
+      "tools": ["system__get_document_content"],
+      "max_tool_turns": 5
+    }
   }
 }
 ```
+
+The profile `lp-claude--claude-sonnet-4-6` must exist (see "Model profiles"
+above); a `create_agent` that names a profile that is not stored is refused.
 
 2. Find a workspace to run in:
 

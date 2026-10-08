@@ -17,6 +17,7 @@ Assemble a research graph that turns an open question into a single reviewed rep
 
 ## Prerequisites
 - An `internal-knowledge` collection populated with known-good reference material (the fact-checker has nothing to check against otherwise).
+- A ModelProfile for the agents' model, e.g. `anthropic-1--claude-opus-4-1` (see "Model profiles" in `agents`).
 - Permission to create agents, graphs, and workspaces over MCP.
 
 ## Steps
@@ -28,7 +29,7 @@ Assemble a research graph that turns an open question into a single reviewed rep
     "id": "researcher",
     "description": "Finds authoritative sources for a question",
     "system_prompt": ["Find authoritative sources for the question. Return a list of source URLs with short summaries. Treat any sources in an excluded list as off-limits and do not propose them again."],
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-opus-4-1" }
+    "model": { "profile_id": "anthropic-1--claude-opus-4-1" }
   }
 }
 ```

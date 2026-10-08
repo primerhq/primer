@@ -19,7 +19,7 @@ Every weekday at 09:00 local time, a scheduled trigger starts a fresh agent sess
 ## Prerequisites
 - A Slack channel provider configured, with a channel bound to the target workspace.
 - An embedding provider id and a vector search provider id for the collection.
-- An LLM provider id for the agent.
+- A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`).
 - A materialised workspace (see `cookbook/create-and-run-a-session`) whose id is threaded into the subscription.
 
 ## Steps
@@ -49,7 +49,7 @@ Populate the collection with incident documents before the first fire. Each docu
     "id": "incident-digest-bot",
     "description": "Posts a severity-grouped overnight incident digest",
     "system_prompt": ["Search the incidents collection for items where started_at is after 22:00 yesterday. Group results by severity and post a plain-text digest to the Slack channel."],
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" }
+    "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" }
   }
 }
 ```
