@@ -247,6 +247,27 @@ class SqliteStorageProvider(StorageProvider):
                 await self.connection.rollback()
                 raise
 
+    @staticmethod
+    async def _begin(conn) -> None:
+        """Issue ``BEGIN`` so that a cancelled task cannot leave a transaction open.
+
+        aiosqlite runs the statement on a worker thread, so a task that is cancelled while it awaits (a browser that leaves a page
+        mid-request, a closed tab) can be cancelled AFTER the thread already ran ``BEGIN`` but before the task saw the result. The
+        task then unwinds before the ``try`` that rolls back, the write lock is released, and the connection stays inside a
+        transaction nothing tracks: every later ``BEGIN`` fails with "cannot start a transaction within a transaction" until the
+        process restarts. So a CANCELLATION here rolls back. The rollback is queued behind the ``BEGIN`` on the same worker thread, so
+        it runs after it, and it is a no-op when ``BEGIN`` never ran.
+
+        Only a cancellation rolls back. A ``BEGIN`` that fails on its own (an ``OperationalError``) propagates and leaves any open
+        transaction alone, as before: rolling back there could discard a statement a bypassing writer has executed and not yet
+        committed on this shared connection (see :meth:`_write_guard`).
+        """
+        try:
+            await conn.execute("BEGIN")
+        except asyncio.CancelledError:
+            await conn.rollback()
+            raise
+
     @asynccontextmanager
     async def transaction(self):
         """Group writes on the shared connection into one atomic transaction.
@@ -274,8 +295,9 @@ class SqliteStorageProvider(StorageProvider):
             conn = self.connection
             # BEGIN before claiming ownership: if BEGIN itself raises we leave
             # ``_txn_task`` None (the lock releases via the context manager) so
-            # the next caller is not wedged into a phantom transaction.
-            await conn.execute("BEGIN")
+            # the next caller is not wedged into a phantom transaction. A
+            # cancellation during BEGIN rolls back (see :meth:`_begin`).
+            await self._begin(conn)
             self._txn_task = asyncio.current_task()
             try:
                 yield conn
@@ -315,7 +337,7 @@ class SqliteStorageProvider(StorageProvider):
             return
         async with self._write_lock:
             conn = self.connection
-            await conn.execute("BEGIN")
+            await self._begin(conn)
             try:
                 yield
             except BaseException:
