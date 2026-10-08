@@ -16,13 +16,13 @@ tool's name (``create_subscription``). Nothing checked, so nothing noticed. Two 
 
 from __future__ import annotations
 
-import asyncio
 import re
 from functools import lru_cache
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
+
+from tests.docs._live_toolsets import built_in_tools
 
 REPO = Path(__file__).resolve().parents[2]
 AGENT_DOCS = sorted(p for p in (REPO / "docs" / "agents").rglob("*.md") if not p.name.startswith("_"))
@@ -36,56 +36,8 @@ TOOL_DOCS = [*AGENT_DOCS, *DEV_DOCS]
 
 @lru_cache(maxsize=1)
 def _built_in_tools() -> dict[str, frozenset[str]]:
-    """The tool names of the built-in toolsets that can be built without a running server: ``{toolset id: {bare tool names}}``."""
-    from primer.api.registries import ProviderRegistry
-    from primer.toolset.crud import build_crud_toolset
-    from primer.toolset.harness import build_harness_toolset_provider
-    from primer.toolset.misc import build_misc_toolset
-    from primer.toolset.system import build_system_toolset
-    from primer.toolset.trigger import build_trigger_toolset_provider
-    from primer.toolset.web import build_web_toolset
-    from primer.toolset.workspace_ext import build_workspace_ext_toolset
-    from primer.toolset.workspaces import build_workspaces_toolset
-    from tests.conftest import _FakeStorageProvider
-
-    sp = _FakeStorageProvider()
-    registry = ProviderRegistry(
-        sp,
-        llm_factory=lambda p: object(),
-        embedder_factory=lambda p: object(),
-        cross_encoder_factory=lambda p: object(),
-        toolset_factory=lambda t: object(),
-    )
-    # Built with every optional collaborator wired (the real app wires them): a tool that exists only then, such as ``web::download``, which
-    # needs a workspace registry, is a real tool. A name is stale only if no wiring has it.
-    providers = {
-        "system": build_system_toolset(
-            storage_provider=sp,
-            provider_registry=registry,
-            semantic_search_registry=MagicMock(),
-            workspace_registry=MagicMock(),
-        ),
-        "crud": build_crud_toolset(storage_provider=sp),
-        "harness": build_harness_toolset_provider(storage_provider=sp),
-        "trigger": build_trigger_toolset_provider(storage_provider=sp),
-        "workspaces": build_workspaces_toolset(storage_provider=sp, workspace_registry=MagicMock()),
-        "workspace_ext": build_workspace_ext_toolset(storage_provider=sp),
-        "web": build_web_toolset(
-            web_search_service=MagicMock(), web_fetch_service=MagicMock(), workspace_registry=MagicMock(),
-        ),
-        "misc": build_misc_toolset(),
-    }
-
-    async def names(toolset_id: str, provider) -> frozenset[str]:
-        # The harness toolset registers its tools under scoped ids (``harness__list``, called ``harness::harness__list`` in the agent docs
-        # and ``harness__list`` as a scoped id in the dev docs); the others use the bare name. Both spellings are the tool.
-        ids = [tool.id async for tool in provider.list_tools()]
-        return frozenset([*ids, *(tool_id.removeprefix(f"{toolset_id}__") for tool_id in ids)])
-
-    async def collect() -> dict[str, frozenset[str]]:
-        return {toolset_id: await names(toolset_id, provider) for toolset_id, provider in providers.items()}
-
-    return asyncio.run(collect())
+    """``{toolset id: {every spelling of each tool's name}}`` for the built-in toolsets (see ``_live_toolsets``)."""
+    return {toolset_id: frozenset(spellings) for toolset_id, spellings in built_in_tools().items()}
 
 
 def _tool_refs_in(text: str) -> list[tuple[int, str, str]]:
