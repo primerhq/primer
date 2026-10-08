@@ -87,6 +87,17 @@ def test_fire_error_chip_decodes_the_json_encoded_string_the_backend_stores() ->
     assert "plain-string message" in chip
 
 
+def test_a_masked_webhook_token_is_not_rendered_as_a_url() -> None:
+    """The server masks a webhook token for anyone but the trigger's owner or an admin (A-20 round 2). The page must not
+    build a copyable URL out of the mask; it says who can see the URL instead."""
+    src = _src()
+    assert 'const TR_TOKEN_MASK = "•••redacted•••";' in src
+    url_fn = src[src.index("function TR_webhookUrl"):]
+    url_fn = url_fn[: url_fn.index("\n}\n")]
+    assert "TR_tokenMasked(trigger)" in url_fn
+    assert "visible only to the trigger's owner or an admin" in src
+
+
 def test_detail_shows_the_owner_and_what_an_ownerless_trigger_fires_as() -> None:
     """Security review A-20: a fired run ranks no higher than the trigger's
     owner, and a trigger saved before owners were recorded fires as an
