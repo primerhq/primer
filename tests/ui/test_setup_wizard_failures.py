@@ -612,3 +612,72 @@ def test_answering_a_field_failure_clears_the_banner_that_named_it_and_nothing_e
     handler = re.search(r"const clearFieldFailure = \(\) => \{[\s\S]*?\n  \};", body)
     assert handler, "clearFieldFailure is gone"
     assert re.search(r"if \(Object\.keys\(fieldErr\)\.length === 0\) return;\s*setFieldErr\(\{\}\);\s*setErr\(null\);", handler.group(0))
+
+
+# ---- every failure the wizard shows goes through the cleaning (the lead's review of #558, round 2) ----------------------------------------------------------------------
+
+_SAVED_URL = "http://user:s3cret@host.example/v1"
+_UPSTREAM_500 = f"openai-compatible probe failed: HTTPStatusError: Server error '500 Internal Server Error' for url '{_SAVED_URL}/models'"
+
+
+def _resume(profiles: str) -> dict:
+    """Drive the REAL SW_loadResume with a saved provider whose Base URL carries credentials and whose upstream now answers 500, as the discovered_models route reports it."""
+    ctx = _ctx()
+    ctx.eval(
+        "var __r = null;"
+        "var apiFetch = function (method, path) {"
+        f'  if (path.indexOf("/llm_providers?") === 0) return Promise.resolve({{items: [{{id: "llm-openchat", provider: "openchat", config: {{url: {json.dumps(_SAVED_URL)}}}}}]}});'
+        f'  if (path.indexOf("/model_profiles?") === 0) return Promise.resolve({{items: {profiles}}});'
+        f'  if (path.indexOf("/discovered_models") >= 0) return Promise.reject({{status: 500, detail: {json.dumps(_UPSTREAM_500)}}});'
+        '  return Promise.reject(new Error("unexpected " + path));'
+        "};"
+        "SW_loadResume(apiFetch).then(function (plan) { __r = JSON.stringify(plan); });"
+    )
+    return json.loads(ctx.eval("__r"))
+
+
+@pytest.mark.parametrize("profiles", ["[]", '[{provider_id: "llm-openchat"}]'], ids=["provider-without-a-profile-resumes-at-step-2", "provider-with-a-profile-reopens-step-1"])
+def test_the_resume_notice_for_a_saved_provider_that_did_not_answer_never_carries_its_credentials(profiles: str) -> None:
+    """A provider saved with a Base URL carrying credentials whose upstream later answers 500: reopening the wizard probes it with its secrets unwrapped, and httpx's message carries
+    `user:s3cret@` into the notice shown under "The saved provider did not answer"."""
+    plan = _resume(profiles)
+
+    assert plan["step"] == 1 and "notice" in plan, plan
+    assert "s3cret" not in plan["notice"] and "user:" not in plan["notice"] and "@host.example" not in plan["notice"], plan["notice"]
+    assert "host.example/v1/models" in plan["notice"], "the address itself is still shown"
+    assert plan["notice"].startswith("The saved provider llm-openchat did not answer: ")
+
+
+def test_a_setup_error_text_is_cleaned_like_every_other_failure() -> None:
+    text = _call(f"SW_errorText({{message: {json.dumps('Could not load: ' + _UPSTREAM_500)}}})")
+
+    assert "s3cret" not in text and "host.example/v1/models" in text
+
+
+def test_the_setup_pages_errors_and_the_predicate_details_go_through_the_cleaning() -> None:
+    """The six setError sites of the Setup page and the gate, and the live-checked predicate's detail (the server fills it with `str(exc)` of the provider probe)."""
+    assert "setError(err && err.message ? err.message : String(err))" not in SRC, "a raw message is shown"
+    assert SRC.count("setError(SW_errorText(err))") >= 6
+    assert '<span className="setup-predicate-detail muted text-sm">{SW_tidy(p.detail)}</span>' in SRC
+
+
+# ---- the status chain: where each wording is read, in this order ------------------------------------------------------------------------------------------------------
+
+
+def test_a_hosted_providers_status_at_the_start_wins_over_an_ollama_looking_suffix_in_its_body() -> None:
+    f = _failure("Anthropic discover failed: HTTP 500 the body ends with (status code: 401)", "anthropic", "k")
+
+    assert f["title"] == ANSWERED and "500" in f["detail"]
+
+
+def test_ollamas_suffix_is_read_before_httpxs_wording_quoted_in_the_servers_words() -> None:
+    f = _failure("ollama probe failed: ResponseError: the proxy said Client error '404 Not Found' (status code: 503)", "ollama", "k")
+
+    assert f["title"] == ANSWERED and "503" in f["detail"]
+
+
+def test_a_hosted_looking_phrase_inside_ollamas_words_is_not_taken_for_the_hosted_status() -> None:
+    """The hosted wording is anchored at the START of the message: quoted mid-text by an ollama server's own words it must not win over ollama's suffix."""
+    detail = "ollama probe failed: ResponseError: upstream said: Anthropic discover failed: HTTP 500 (status code: 401)"
+
+    assert _failure(detail, "ollama", "k")["title"] == REJECTED
