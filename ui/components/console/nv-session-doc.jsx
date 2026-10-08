@@ -684,7 +684,9 @@ function NV_SessionHeader(props) {
         {ovfOpen ? (
           <div className="nv-menu nv-menu-right"
             onClick={function (ev) { ev.stopPropagation(); }}>
-            {/* The title above is click-to-rename, but the phone's top bar names the session and hides the title there. */}
+            {/* The title above is click-to-rename, but the phone's top bar names the session and hides the title there. Two affordances of
+                one verb (the title, and this row) is deliberate: the shell's dual-render guard reads data-verb as a SET, and only one of them is
+                visible at a time. A test that looks one up by data-verb must scope it (the title has data-testid="nv-session-title"). */}
             <button type="button" className="nv-menu-row"
               data-testid="nv-session-rename" data-verb="session.rename"
               onClick={function () {

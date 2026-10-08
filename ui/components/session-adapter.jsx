@@ -319,6 +319,15 @@ function SA_isBareTerminalError(rec) {
   return rec.kind === "error" && p.terminal === true && !p.message && !p.code && !p.title;
 }
 
+// Whose failure an error row is: the PARENT turn's own (null), or one subagent run's. A subagent's records are drawn inside its own block
+// and carry payload.delegated (plus delegate_run_id, or delegate_tool_call_id on records written before runs had ids). Folding across the two
+// would make a turn whose subagent and parent hit the same provider error fail with no card of its own at the top level.
+function SA_failureScope(rec) {
+  var p = rec.payload || {};
+  if (!p.delegated) return null;
+  return String(p.delegate_run_id || p.delegate_tool_call_id || "delegated");
+}
+
 function SA_toTranscript(records, session) {
   var visible = SA_visibleRecords(records);
   var out = [];
@@ -326,30 +335,41 @@ function SA_toTranscript(records, session) {
   // dispatch writes its ERROR record with the same words, then a bare terminal marker; streamed text can sit between any two of
   // them. The first row that carries the cause is the one kept (it has the specific code); a later row with the same message from
   // the same node, or a bare marker, is a copy of it. A turn is whatever lies between two user messages.
+  //
+  // This leans on the order the writers use: the cause is written BEFORE its copies and its marker. A copy that came before its cause
+  // would be kept and the cause folded into it (the first row with the words wins), and a marker that came first is removed when the
+  // cause arrives (below). A row without a node id matches a cause of ANY node (records from before graphs named theirs carry none),
+  // so two graph nodes failing with the same words stay two cards only when both rows name their node.
+  //
+  // Scope: parent and subagent failures never fold into each other (SA_failureScope), and a bare marker belongs to the scope that wrote
+  // it. A non-fatal error ({fatal: false}, a retry notice) is an error row like any other: it is drawn, it can be the cause a later
+  // fatal row with the same words folds into, and then the card carries fatal=false.
   var turnCauses = [];
-  var turnMarker = null;
+  var turnMarkers = {};
   for (var i = 0; i < visible.length; i++) {
     var rec = visible[i];
     if (SA_SKIP_IN_TRANSCRIPT[rec.kind]) continue;
-    if (rec.kind === "user_input") { turnCauses = []; turnMarker = null; }
+    if (rec.kind === "user_input") { turnCauses = []; turnMarkers = {}; }
     var bare = SA_isBareTerminalError(rec);
+    var scope = SA_failureScope(rec);
+    var scopeKey = scope === null ? "" : scope;
     if (rec.kind === "error") {
       var message = (rec.payload || {}).message || null;
       if (bare) {
-        // A marker with a cause anywhere in its turn is that cause's marker. A marker with none is the only evidence and stays.
-        if (turnCauses.length) continue;
+        // A marker with a cause of its own scope anywhere in its turn is that cause's marker. A marker with none is the only evidence and stays.
+        if (turnCauses.some(function (c) { return c.scope === scope; })) continue;
       } else {
         var node = rec.node_id || null;
         var copy = message && turnCauses.some(function (c) {
-          return c.message === message && (!c.node || !node || c.node === node);
+          return c.scope === scope && c.message === message && (!c.node || !node || c.node === node);
         });
         if (copy) continue;
-        turnCauses.push({ message: message, node: node });
-        // A marker that came first gives way to the cause that follows it.
-        if (turnMarker) {
-          var at = out.indexOf(turnMarker);
+        turnCauses.push({ message: message, node: node, scope: scope });
+        // A marker of this scope that came first gives way to the cause that follows it.
+        if (turnMarkers[scopeKey]) {
+          var at = out.indexOf(turnMarkers[scopeKey]);
           if (at >= 0) out.splice(at, 1);
-          turnMarker = null;
+          delete turnMarkers[scopeKey];
         }
       }
     }
@@ -380,7 +400,7 @@ function SA_toTranscript(records, session) {
       bare: bare,
     };
     out.push(row);
-    if (rec.kind === "error" && bare) turnMarker = row;
+    if (rec.kind === "error" && bare) turnMarkers[scopeKey] = row;
   }
   return out;
 }
