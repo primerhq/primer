@@ -89,10 +89,10 @@ async def world(tmp_path: Path):
             vector_store_provider_id="ssp-1",
         ),
     )
-    system = Collection(id="sys-1", description="system", system=True)
-    for coll in (kb, system):
-        r = await toolset.call(tool_name="create_collection", arguments={"entity": coll.model_dump(mode="json")})
-        assert not r.is_error, r.output
+    r = await toolset.call(tool_name="create_collection", arguments={"entity": kb.model_dump(mode="json")})
+    assert not r.is_error, r.output
+    # A system collection is written straight to storage, as the platform does: the tool refuses to create one.
+    await sp.get_storage(Collection).create(Collection(id="sys-1", description="system", system=True))
     yield sp, toolset, store
     await sp.aclose()
 

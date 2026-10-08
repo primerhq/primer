@@ -1,6 +1,8 @@
 """v2 slug-path docs API: CRUD, move, recursive delete, grep, 403s."""
 from __future__ import annotations
 
+from primer.model.collection import Collection
+
 
 async def _mk_collection(client, description="wiki"):
     r = await client.post("/v1/collections", json={"description": description})
@@ -94,12 +96,11 @@ async def test_body_cap_rejected(client):
     assert r.status_code == 422
 
 
-async def test_system_collection_writes_are_403(client):
-    r = await client.post(
-        "/v1/collections",
-        json={"id": "collection-sys", "description": "sys", "system": True},
+async def test_system_collection_writes_are_403(client, fake_storage_provider):
+    # A system collection is written straight to storage, as the platform does: the API refuses to create one.
+    await fake_storage_provider.get_storage(Collection).create(
+        Collection(id="collection-sys", description="sys", system=True),
     )
-    assert r.status_code == 201, r.text
     resp = await client.post(
         "/v1/collections/collection-sys/docs",
         json={"parent": "", "slug": "a", "body": "x"},

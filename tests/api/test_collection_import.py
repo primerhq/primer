@@ -4,6 +4,8 @@ from __future__ import annotations
 import io
 import zipfile
 
+from primer.model.collection import Collection
+
 
 def _zip(entries: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
@@ -51,12 +53,11 @@ async def test_import_reports_binary_entries(client):
     assert body["rejected"][0]["file"] == "logo.png"
 
 
-async def test_import_into_system_collection_is_403(client):
-    r = await client.post(
-        "/v1/collections",
-        json={"id": "collection-sys-import", "description": "sys", "system": True},
+async def test_import_into_system_collection_is_403(client, fake_storage_provider):
+    # A system collection is written straight to storage, as the platform does: the API refuses to create one.
+    await fake_storage_provider.get_storage(Collection).create(
+        Collection(id="collection-sys-import", description="sys", system=True),
     )
-    assert r.status_code == 201, r.text
     data = _zip({"a.md": b"x"})
     resp = await client.post(
         "/v1/collections/collection-sys-import/import",
