@@ -28,6 +28,7 @@ import hashlib
 import json
 import logging
 import posixpath
+import re
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -2857,13 +2858,21 @@ async def list_pending_yields(
 
 # The Inbox row says what it is waiting on (console review C-033). An approval carries the tool and a short preview of its decisive
 # arguments, so a card (above all the phone's inline Approve) never asks for a decision on a call it does not describe; the other kinds
-# carry the question or the wait. Previews are bounded: this route is polled by every open console.
+# carry the question or the wait. Previews are bounded: this route is polled by every open console. They are also shown WITHOUT being
+# asked for (in the rail of every open console), so a secret never rides in one: see _SECRET_ARG_KEY.
 _ATTENTION_TEXT_CHARS = 240
 _ATTENTION_ARG_CHARS = 80
 # The arguments that say WHAT a call acts on, in the order they lead the preview.
 _LEAD_ARG_KEYS = ("path", "file_path", "filepath", "command", "cmd", "url", "target", "name", "id", "query")
 # Arguments that are payload, not target: counted as "<N chars>" instead of shipped.
 _BULKY_ARG_KEYS = frozenset({"content", "contents", "text", "body", "data", "new_string", "old_string", "patch", "diff", "input"})
+# An argument whose NAME looks like a credential is never shown in a preview, at any depth. A broad match on purpose (it also catches
+# "author"): a false positive costs a "show all", a false negative leaks a key into every console's rail.
+_SECRET_ARG_KEY = re.compile(
+    r"secret|token|password|passwd|api[_-]?key|authorization|auth|credential|private[_-]?key", re.IGNORECASE,
+)
+_REDACTED = "<redacted>"
+_LINE_BREAKS = re.compile(r"\s*[\r\n\t\v\f]+\s*")
 
 
 def _cut(text: str, limit: int) -> str:
@@ -2871,17 +2880,48 @@ def _cut(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "\u2026"
 
 
+def _one_line(text: str) -> str:
+    """Line breaks and tabs collapsed to a single space, so a multi-line value cannot pose as several arguments."""
+    return _LINE_BREAKS.sub(" ", text)
+
+
+def _redact(value: Any) -> tuple[Any, bool]:
+    """``value`` with the value of every secret-looking key replaced at any depth, and whether anything was."""
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        changed = False
+        for key, inner in value.items():
+            if _SECRET_ARG_KEY.search(str(key)):
+                out[key], changed = _REDACTED, True
+            else:
+                out[key], inner_changed = _redact(inner)
+                changed = changed or inner_changed
+        return out, changed
+    if isinstance(value, list):
+        items = [_redact(v) for v in value]
+        return [v for v, _ in items], any(c for _, c in items)
+    return value, False
+
+
 def _approval_preview(original_call: Any) -> dict[str, Any] | None:
     """``{tool_name, arguments, truncated}`` for the call an ``_approval`` park is waiting on, or ``None`` when the park does not say.
 
     ``arguments`` is a one-line ``key=value`` list: the keys that name a target lead (``path`` before ``command``...), the rest
-    follow alphabetically, and payload keys (``content``, ``text``...) come last as ``<N chars>``. A value past 80 characters is cut,
-    and the whole line is capped at 240. ``truncated`` is true whenever anything was left out, which is what the card's "show all"
-    keys on; the full call is one ``GET .../yields/pending`` away.
+    follow alphabetically, payload keys (``content``, ``text``...) come last as ``<N chars>``, and a credential-looking key (at any
+    depth) shows ``<redacted>``. Line breaks collapse to a space, a value past 80 characters is cut and the whole line at 240.
+    ``truncated`` is true whenever anything was left out or hidden, which is what the card's "show all" keys on; the full call is one
+    ``GET .../yields/pending`` away. ``arguments`` sent as a JSON string is parsed first so the same rules apply.
     """
     if not isinstance(original_call, dict) or not original_call.get("name"):
         return None
     args = original_call.get("arguments")
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            args = parsed
     truncated = False
     if isinstance(args, dict):
         lead = [k for k in _LEAD_ARG_KEYS if k in args and k not in _BULKY_ARG_KEYS]
@@ -2889,20 +2929,25 @@ def _approval_preview(original_call: Any) -> dict[str, Any] | None:
         bulky = sorted(k for k in args if k in _BULKY_ARG_KEYS)
         parts: list[str] = []
         for key in lead + rest:
-            value = args[key]
-            text = value if isinstance(value, str) else json.dumps(value)
+            if _SECRET_ARG_KEY.search(str(key)):
+                parts.append(f"{key}={_REDACTED}")
+                truncated = True
+                continue
+            value, hidden = _redact(args[key])
+            truncated = truncated or hidden
+            text = _one_line(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))
             if len(text) > _ATTENTION_ARG_CHARS:
                 text, truncated = _cut(text, _ATTENTION_ARG_CHARS), True
             parts.append(f"{key}={text}")
         for key in bulky:
             value = args[key]
-            parts.append(f"{key}=<{len(value if isinstance(value, str) else json.dumps(value))} chars>")
+            parts.append(f"{key}=<{len(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))} chars>")
             truncated = True
         line = ", ".join(parts)
     elif args in (None, ""):
         line = ""
     else:
-        line = str(args)
+        line = _one_line(str(args))
     if len(line) > _ATTENTION_TEXT_CHARS:
         line, truncated = _cut(line, _ATTENTION_TEXT_CHARS), True
     return {"tool_name": str(original_call["name"]), "arguments": line, "truncated": truncated}
@@ -2945,6 +2990,8 @@ async def list_pending_attention(
                     "approval": {"tool_name", "arguments", "truncated"} | None,
                                          # approval rows only; None when the park
                                          # does not say what it is waiting on
+                    "approvers": dict | None,   # approval rows only: who may decide
+                                         # (ApproverSpec); None = anyone
                     "prompt": str,       # ask / parked rows only: the question or
                                          # the wait, cut to 240 characters
                 },
@@ -3023,6 +3070,7 @@ async def list_pending_attention(
         metadata: dict = yielded_blob.get("resume_metadata") or {}
         if kind == "approval":
             row["approval"] = _approval_preview(metadata.get("original_call"))
+            row["approvers"] = metadata.get("approvers")
         else:
             row["prompt"] = _cut(_extract_yield_prompt(tool_name, metadata), _ATTENTION_TEXT_CHARS)
         rows.append((created_at, row))
