@@ -1,4 +1,4 @@
-"""Only a workspace OUTAGE is a 503, and an outage is logged once (follow-up asks on #489, lead 2026-10-08).
+"""Only a workspace OUTAGE is a 503, and an outage is logged once (follow-up asks on #489 and #521, lead 2026-10-08).
 
 ``_read_log_bytes`` (the one read of a session's log files) turned EVERY exception into ``WorkspaceUnreachableError``, so a request the
 workspace understood and refused (a path that is a directory, a conflict) read as "the workspace is down", and a plain bug in a backend
@@ -8,8 +8,11 @@ did too. It also logged a full traceback on every read, which for a console poll
 * a missing file stays an empty log; a domain error the workspace raised (``BadRequestError``, ``ConflictError``, any ``PrimerError``) keeps
   its own status; only transport and OS failures (``OSError`` including ``ConnectionError`` and ``PermissionError``, ``TimeoutError``, the
   runtime client's own errors, aiohttp's) are an outage; anything else is a bug and propagates as one;
-* an outage logs one full traceback per workspace until a read succeeds again (or five minutes pass), and one short line for each read
-  after that.
+* the runtime client's own error is read by its CODE, never passed on raw (it is a plain ``Exception``: unmapped it is a 500 with a
+  traceback on every poll): ``ENOENT`` is a log that was never written (an empty 200), ``EISDIR`` and ``ENOTDIR`` are a path that is not
+  a file (a 400), and every other code, including one this code has never heard of, is an outage, as a local ``PermissionError`` is;
+* an outage is one (workspace, file): it logs one full traceback until a read of that file is answered again (or five minutes pass), and one
+  short line naming the file for each read after that.
 """
 
 from __future__ import annotations
@@ -259,13 +262,66 @@ async def test_a_runtime_error_of_a_transport_kind_is_an_outage(code: str) -> No
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code", ["EACCES", "EISDIR", "ENOTDIR", "EEXIST", "EUNSUPPORTED"])
-async def test_a_runtime_error_that_is_an_answer_is_not_an_outage(code: str) -> None:
-    """The runtime understood the request and refused it (a log that is a directory, a file it may not read): that is not the same
-    as a runtime that did not answer, and a retry loop would be told to wait for something that will not come back."""
-    from primer.workspace.runtime.protocol import ErrorCode
+@pytest.mark.parametrize(("code", "status", "problem"), [
+    ("ENOENT", 200, None),
+    ("EISDIR", 400, "/errors/bad-request"),
+    ("ENOTDIR", 400, "/errors/bad-request"),
+    ("EACCES", 503, "/errors/workspace-unreachable"),          # the same as a local PermissionError
+    ("EEXIST", 503, "/errors/workspace-unreachable"),
+    ("EUNSUPPORTED", 503, "/errors/workspace-unreachable"),
+    ("EPROTOCOL", 503, "/errors/workspace-unreachable"),
+    ("ETIMEDOUT", 503, "/errors/workspace-unreachable"),
+    ("EINTERNAL", 503, "/errors/workspace-unreachable"),
+    ("EWHATEVER", 503, "/errors/workspace-unreachable"),       # a code nobody has heard of defaults to an outage, not to a 500
+])
+async def test_a_runtime_errors_code_decides_the_status_of_the_route(
+    client: httpx.AsyncClient, app, fake_storage_provider, caplog, code: str, status: int, problem: str | None,
+) -> None:
+    """The runtime client's error is a plain Exception, not a PrimerError: passed on raw it is a 500 and a logged traceback on EVERY 2 s poll."""
     from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeClientError
 
-    ws = _RaisingWorkspace(RuntimeClientError(ErrorCode(code), "refused"))
-    with pytest.raises(RuntimeClientError):
+    await _serve(app, fake_storage_provider, "s-code", _RaisingWorkspace(RuntimeClientError(code, "the runtime says " + code)))
+    with caplog.at_level(logging.ERROR):
+        r = await client.get("/v1/sessions/s-code/messages")
+    assert r.status_code == status, (code, r.status_code, r.text)
+    if problem is None:
+        assert r.json()["items"] == [], "a log that was never written is an empty list"
+    else:
+        assert r.json()["type"] == problem
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR], "a classified answer must not log an error on every poll"
+
+
+@pytest.mark.asyncio
+async def test_a_local_permission_error_and_the_runtimes_eacces_are_classified_the_same(client: httpx.AsyncClient, app, fake_storage_provider) -> None:
+    from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeClientError
+
+    await _serve(app, fake_storage_provider, "s-local", _RaisingWorkspace(PermissionError("log is mode 000")))
+    local = await client.get("/v1/sessions/s-local/messages")
+    await _serve(app, fake_storage_provider, "s-remote", _RaisingWorkspace(RuntimeClientError("EACCES", "denied")))
+    remote = await client.get("/v1/sessions/s-remote/messages")
+    assert local.status_code == remote.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_a_runtimes_missing_file_ends_the_outage_like_a_not_found_does(caplog) -> None:
+    from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeClientError
+
+    down = _RaisingWorkspace(ConnectionError("down"))
+    missing = _RaisingWorkspace(RuntimeClientError("ENOENT", "no such file"))
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(WorkspaceUnreachableError):
+            await sessions_router._read_log_bytes(down, ".state/x.jsonl", workspace_id="ws-1")
+        assert await sessions_router._read_log_bytes(missing, ".state/x.jsonl", workspace_id="ws-1") == b""
+        with pytest.raises(WorkspaceUnreachableError):
+            await sessions_router._read_log_bytes(down, ".state/x.jsonl", workspace_id="ws-1")
+    assert len(_warnings_with_traceback(caplog)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_error_for_a_path_that_is_not_a_file_names_the_path() -> None:
+    from primer.model.except_ import BadRequestError
+    from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeClientError
+
+    ws = _RaisingWorkspace(RuntimeClientError("EISDIR", "is a directory"))
+    with pytest.raises(BadRequestError, match=r"\.state/x\.jsonl"):
         await sessions_router._read_log_bytes(ws, ".state/x.jsonl", workspace_id="ws-1")
