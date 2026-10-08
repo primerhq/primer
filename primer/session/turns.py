@@ -29,17 +29,25 @@ from primer.session.terminals import closes_turn
 
 @dataclass
 class TurnCount:
-    """Tally of a scan window: opens, closes, and the high-water seq."""
+    """Tally of a scan window: the input and terminal TOTALS, the turns still open, and the high-water seq.
+
+    ``open_turns`` is what decides whether a turn is open, and it is order-aware: each terminal closes one input that came BEFORE it, so a terminal
+    at the front of the window (the claim adapter's release marker is written at the seq the failure exit moved the cursor to) closes nothing and
+    cannot cancel out an input that arrived after it. ``open_user_inputs - terminals`` is not that: it is the same only when no terminal precedes
+    the input it would close.
+    """
 
     open_user_inputs: int
     terminals: int
     max_seen_seq: int
+    open_turns: int = 0
 
 
 def count_turn_state(raw_lines: list[str], *, cursor: int) -> TurnCount:
-    """Count non-excluded USER_INPUTs against terminals at seq >= cursor."""
+    """Count non-excluded USER_INPUTs against terminals at seq >= cursor, in the order the log holds them."""
     user_inputs = 0
     terminals = 0
+    open_turns = 0
     max_seq = cursor - 1
     for line in raw_lines:
         line = line.strip()
@@ -60,17 +68,18 @@ def count_turn_state(raw_lines: list[str], *, cursor: int) -> TurnCount:
             if (obj.get("payload") or {}).get("_history_excluded"):
                 continue
             user_inputs += 1
+            open_turns += 1
         elif closes_turn(obj):
             terminals += 1
+            open_turns = max(open_turns - 1, 0)   # a terminal closes an input before it; with none open it closes nothing
     return TurnCount(
-        open_user_inputs=user_inputs, terminals=terminals, max_seen_seq=max_seq,
+        open_user_inputs=user_inputs, terminals=terminals, max_seen_seq=max_seq, open_turns=open_turns,
     )
 
 
 def has_open_turn(raw_lines: list[str], cursor: int) -> bool:
-    """True when a user message in the window has no closing terminal."""
-    tc = count_turn_state(raw_lines, cursor=cursor)
-    return tc.open_user_inputs > tc.terminals
+    """True when a user message in the window has no closing terminal after it."""
+    return count_turn_state(raw_lines, cursor=cursor).open_turns > 0
 
 
 __all__ = ["TurnCount", "count_turn_state", "has_open_turn"]
