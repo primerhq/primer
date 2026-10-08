@@ -211,3 +211,25 @@ async def test_the_parsed_entry_count_is_checked_when_the_end_record_cannot_be_r
         await import_zip(tree, collection_id="c1", data=data)
     assert exc.value.limit_entries == 3
     await _nothing_created(tree, "d0", "d1", "d2", "d3")
+
+
+async def test_a_zip64_record_is_honoured_when_the_classic_record_lies_small(tree, monkeypatch):
+    """The classic record claims one entry in a 46-byte directory; only the zip64 record tells the truth.
+
+    No classic sentinel (0xFFFF / 0xFFFFFFFF) is left for the classic bound to catch, so the refusal can
+    only come from reading the zip64 end record.
+    """
+    raw = bytearray(_zip({"a.md": b"x"}))
+    eocd = raw.rfind(b"PK\x05\x06")
+    cd_size, cd_offset = struct.unpack_from("<II", raw, eocd + 12)
+    huge = 1_000_000
+    assert huge > importer.MAX_ENTRIES
+    rec = struct.pack("<4sQHHIIQQQQ", b"PK\x06\x06", 44, 45, 45, 0, 0, huge, huge, cd_size, cd_offset)
+    loc = struct.pack("<4sIQI", b"PK\x06\x07", 0, eocd, 1)
+    end = bytearray(raw[eocd:])
+    struct.pack_into("<HHI", end, 8, 1, 1, 46)  # the classic record: one entry, a 46-byte directory
+    data = bytes(raw[:eocd]) + rec + loc + bytes(end)
+    monkeypatch.setattr(importer.zipfile, "ZipFile", _never)
+    with pytest.raises(PayloadTooLargeError) as exc:
+        await import_zip(tree, collection_id="c1", data=data)
+    assert f"{huge} entries" in exc.value.message
