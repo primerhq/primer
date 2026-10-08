@@ -246,6 +246,8 @@ async def test_two_conditional_duplicates_that_route_to_alice_are_decided_by_an_
 
     assert not await _may_decide(chosen, "bob", "user"), "a duplicate let any user decide what each row restricts to alice"
     assert not await _may_decide(chosen, "carol", "user")
+    # Each row routes to alice, yet the stand-in gate is admin-only: a duplicate is decided by an admin until the extra row is deleted.
+    assert not await _may_decide(chosen, "alice", "user"), "alice, the routed approver of each duplicate, decided a gate that stands for both"
     assert await _may_decide(chosen, "root", "admin")
 
 
