@@ -14,6 +14,31 @@
 // How long the gate waits before it asks again after a failed status read.
 const AUTH_RETRY_MS = 5000;
 
+// The shortest password the server accepts (primer/api/routers/auth.py _MIN_PASSWORD_LEN) and its username rule (_USERNAME_RE, applied after
+// strip().lower()). Checked here too so a bad value is named next to its field before a request, not as a "Validation Error" banner after one.
+const AUTH_MIN_PASSWORD = 8;
+const AUTH_USERNAME_RE = /^[a-z0-9_.-]{1,64}$/;
+
+// Field errors of the registration form, keyed by field. Pure. Every message names the field it is about.
+function AUTH_registerErrors({ username, password, confirm }) {
+  const errs = {};
+  const name = (username || "").trim().toLowerCase();
+  if (!name) errs.username = "username is required";
+  else if (!AUTH_USERNAME_RE.test(name)) errs.username = "username must be 1 to 64 characters: lowercase letters, digits, . _ or - (no spaces)";
+  if (password.length < AUTH_MIN_PASSWORD) errs.password = "password must have at least " + AUTH_MIN_PASSWORD + " characters";
+  if (password !== confirm) errs.confirm = "passwords don't match";
+  return errs;
+}
+
+// Field errors of the forced password change. Pure.
+function AUTH_passwordChangeErrors({ current, next, confirm }) {
+  const errs = {};
+  if (!current) errs.current = "current password is required";
+  if (next.length < AUTH_MIN_PASSWORD) errs.next = "new password must have at least " + AUTH_MIN_PASSWORD + " characters";
+  if (next !== confirm) errs.confirm = "passwords don't match";
+  return errs;
+}
+
 // What a failed ``GET /v1/auth/status`` says, and whether the gate should ask again on its own. Pure. It states what failed; it never says
 // anything about whether an account exists, because a failed read cannot know. Asking again can change the answer after a dead connection,
 // a server error (the server is starting, or a proxy is between) and the two 4xx that mean "later" (408, 429). Any other 4xx (a 401, a 403, a
@@ -368,10 +393,7 @@ function RegisterScreen({ onDone }) {
   const submit = async (e) => {
     e.preventDefault();
     setServer(null);
-    const next = {};
-    if (!username.trim()) next.username = "username is required";
-    if (password.length < 8) next.password = "value must have at least 8 characters";
-    if (password !== confirm) next.confirm = "passwords don't match";
+    const next = AUTH_registerErrors({ username, password, confirm });
     setFieldErrs(next);
     if (Object.keys(next).length > 0) return;
 
@@ -394,7 +416,7 @@ function RegisterScreen({ onDone }) {
           <div className="auth-h">
             <h1 className="title">Create the operator account</h1>
             <div className="sub">
-              This is the only account; SSO and additional users land in a later release.
+              This first account is the administrator. You can add users and set up SSO later under System.
             </div>
             <_InstancePill />
           </div>
@@ -630,10 +652,7 @@ function ADM_MustChangePasswordScreen({ onDone }) {
   const submit = async (e) => {
     e.preventDefault();
     setServer(null);
-    const errs = {};
-    if (!current) errs.current = "current password is required";
-    if (next.length < 8) errs.next = "value must have at least 8 characters";
-    if (next !== confirm) errs.confirm = "passwords don't match";
+    const errs = AUTH_passwordChangeErrors({ current, next, confirm });
     setFieldErrs(errs);
     if (Object.keys(errs).length > 0) return;
 
