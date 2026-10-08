@@ -51,9 +51,11 @@ def _is_row_decode_failure(exc: BaseException) -> bool:
 
     A ``ValidationError`` or ``JSONDecodeError`` can only come from the decode. A ``TypeError`` is what the decode raises for JSON that
     is not an object (it writes the row id into it, which fails for an array, a string or null), but it can also be a bug anywhere in
-    the storage call; it counts only when it was raised under the backend's row decoder, so it is never reported as a corrupt graph
-    row when it is not. If a backend renamed its decoder this would turn that case back into an error, and the real-SQLite tests for
-    non-object JSON would fail.
+    the storage call; it counts only when it was raised under the backend's row decoder, so a ``TypeError`` from the rest of the storage
+    call is not reported as a corrupt graph row. The test is the frame, not the cause: a ``TypeError`` raised under the decoder by
+    anything (a model validator that raises one, which pydantic does not wrap in a ``ValidationError``, as well as non-object JSON)
+    counts as an unreadable row, and that is the intent, since the row is one the decoder could not turn into a model. If a backend
+    renamed its decoder this would turn the non-object-JSON case back into an error, and the real-SQLite tests for it would fail.
     """
     if isinstance(exc, _DECODE_ERRORS):
         return True
@@ -199,6 +201,10 @@ async def default_agent_refusal(storage_provider: Any, agent_id: str, *, exempt:
     read through the provider's ``get_system_state``, not a ``Storage`` entity, so it cannot be one of :data:`AGENT_REFERENCES`; the REST
     route and the system tool both call this after those blocks. ``exempt`` is the seeded operator: it is the default on every install and
     stays deletable (setup reopens without it and the seed re-creates it), so refusing it would make the install undeletable.
+
+    The sentence names the one remedy that exists. No route or tool sets the default, so "point it at another agent" is not a step the
+    caller can take; the seed pass (``POST /v1/setup/seed``, or the next server start) stamps ``default_agent_id`` back to ``exempt``,
+    after which the delete goes through.
     """
     if agent_id == exempt:
         return None
@@ -207,7 +213,8 @@ async def default_agent_refusal(storage_provider: Any, agent_id: str, *, exempt:
         return None
     return (
         f"in_use_by: agent {agent_id!r} is the system default agent, which sessions created without a binding run; "
-        "point the default agent at another agent before deleting it"
+        f"no route or tool sets the default, so run POST /v1/setup/seed (or restart the server) to reset it to {exempt!r}, "
+        f"then delete {agent_id!r} again"
     )
 
 
