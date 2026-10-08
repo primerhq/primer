@@ -378,6 +378,9 @@ def _make_lifespan(config: AppConfig):
         # Set when the wired scheduler/runtime-mode combination is unsafe
         # (surfaced on /v1/health as SchedulerHealth.degraded). None = healthy.
         app.state.scheduler_degraded_reason = None
+        # What a healthy wiring is, in words (SchedulerHealth.detail); None
+        # when there is nothing worth saying.
+        app.state.scheduler_detail = None
         if scheduler_config is not None:
             from primer.scheduler.factory import SchedulerFactory
 
@@ -388,33 +391,42 @@ def _make_lifespan(config: AppConfig):
             logger.info("lifespan: scheduler.initialize() begin")
             await scheduler.initialize()
             logger.info("lifespan: scheduler.initialize() done")
-            # Loud warning: in-memory scheduler is single-process; running it
-            # alongside any worker pool (whether colocated 'api+worker' or
-            # separate 'worker' processes) means cross-process state is not
-            # synchronised — a lease armed in one process is invisible to
-            # another, and parked rows flipped to 'resumable' in shared storage
-            # are never re-claimed. Sessions can be double-claimed or silently
-            # stranded. Production should use the Postgres scheduler. See spec
-            # §9.1. We both log loudly AND surface the condition on /v1/health
+            # An in-memory scheduler keeps its claim engine in this process, so
+            # it is only correct when this process is the only one that claims
+            # or resumes a session. runtime_mode=api+worker (the default
+            # install) is exactly that: the API and the worker pool share the
+            # one scheduler, every lease and every resumable park is made and
+            # seen by the same engine, so there is nothing to be unsynchronised
+            # and the wiring is healthy (C-036). runtime_mode=worker is the
+            # unsafe one: a worker-only process has a peer API process with its
+            # own engine, so a lease armed in one is invisible to the other and
+            # parked rows flipped to 'resumable' in shared storage are never
+            # re-claimed (sessions are double-claimed or silently stranded).
+            # runtime_mode=api runs no worker here, so it claims nothing.
+            # Production topologies beyond one process use the Postgres
+            # scheduler; running several replicas of an api+worker process over
+            # the in-memory scheduler is unsupported, but one process cannot
+            # see its replicas, so that stays an operator rule (docs), not a
+            # signal. We log AND surface the unsafe case on /v1/health
             # (SchedulerHealth.degraded) so a misconfigured deployment is
             # observable, not just buried in boot logs. There is no
             # strict/fail-fast config knob today, so this stays a degraded
             # signal rather than a hard ConfigError; add one here if a strict
-            # mode is introduced.
-            if (
-                scheduler_config.provider == SchedulerProviderType.IN_MEMORY
-                and config.runtime_mode != RuntimeMode.API
-            ):
-                degraded_reason = (
-                    "in-memory scheduler with runtime_mode="
-                    f"{config.runtime_mode.value} is not safe for multi-process "
-                    "or external-worker deployment: each process has its own "
-                    "claim engine, so leases and resumable parks are not shared "
-                    "across processes. Switch to the Postgres scheduler for any "
-                    "topology beyond a single process."
-                )
-                logger.warning("scheduler degraded: %s", degraded_reason)
-                app.state.scheduler_degraded_reason = degraded_reason
+            # mode is introduced. See spec §9.1.
+            if scheduler_config.provider == SchedulerProviderType.IN_MEMORY:
+                if config.runtime_mode == RuntimeMode.WORKER:
+                    degraded_reason = (
+                        "in-memory scheduler with runtime_mode="
+                        f"{config.runtime_mode.value} is not safe for multi-process "
+                        "or external-worker deployment: each process has its own "
+                        "claim engine, so leases and resumable parks are not shared "
+                        "across processes. Switch to the Postgres scheduler for any "
+                        "topology beyond a single process."
+                    )
+                    logger.warning("scheduler degraded: %s", degraded_reason)
+                    app.state.scheduler_degraded_reason = degraded_reason
+                elif config.runtime_mode == RuntimeMode.API_PLUS_WORKER:
+                    app.state.scheduler_detail = "in-memory scheduler (single process)"
         app.state.scheduler = scheduler
 
         # --- Event bus + yield background tasks (M2/M3) -------------

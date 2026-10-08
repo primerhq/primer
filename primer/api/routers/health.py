@@ -47,9 +47,10 @@ class SchedulerHealth(BaseModel):
         default=False,
         description=(
             "True when the wired scheduler/runtime-mode combination is "
-            "unsafe for the deployment topology (e.g. an in-memory "
-            "scheduler in a multi-process or external-worker mode, where "
-            "leases and resumable parks are not shared across processes)."
+            "unsafe for the deployment topology (an in-memory scheduler in "
+            "a worker-only process, where leases and resumable parks are "
+            "not shared with the API process). An in-memory scheduler in "
+            "the default single process (api+worker) is NOT degraded."
         ),
     )
     degraded_reason: str | None = Field(
@@ -57,6 +58,15 @@ class SchedulerHealth(BaseModel):
         description=(
             "Human-readable explanation of the degraded condition, or null "
             "when the scheduler configuration is healthy."
+        ),
+    )
+    detail: str | None = Field(
+        default=None,
+        description=(
+            "What a healthy scheduler is, in words, for a display that wants "
+            "more than 'healthy' (for example 'in-memory scheduler (single "
+            "process)' on the default install). Null when degraded, or when "
+            "there is nothing to add."
         ),
     )
     metrics: dict[str, Any] = Field(
@@ -214,6 +224,7 @@ async def health(request: Request) -> HealthStatus:
     degraded_reason = getattr(
         request.app.state, "scheduler_degraded_reason", None
     )
+    scheduler_detail = getattr(request.app.state, "scheduler_detail", None)
 
     sched_metrics: dict[str, Any] = {}
     if scheduler is not None:
@@ -262,6 +273,7 @@ async def health(request: Request) -> HealthStatus:
             alive=scheduler is not None,
             degraded=degraded_reason is not None,
             degraded_reason=degraded_reason,
+            detail=scheduler_detail if degraded_reason is None else None,
             metrics=sched_metrics,
         ),
         worker_pool=WorkerPoolHealth(

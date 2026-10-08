@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field, computed_field, field_validator
 from primer.model.agent import _validate_response_format_schema
 from primer.model.common import Identifiable
 from primer.model.principal import PrincipalRef
+from primer.model.storage import FieldRef, Op, Predicate, Value
 
 if TYPE_CHECKING:
     from primer.model.agent import Agent
@@ -74,6 +75,10 @@ class SessionStatus(str, Enum):
     WAITING = "waiting"
     PAUSED = "paused"
     ENDED = "ended"
+
+
+SessionState = Literal["waiting", "running", "parked", "ended"]
+"""The served vocabulary of :attr:`WorkspaceSession.session_state`."""
 
 
 def NON_ENDED_STATUSES() -> list[str]:
@@ -786,7 +791,7 @@ class WorkspaceSession(Identifiable):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def session_state(self) -> Literal["waiting", "running", "parked", "ended"]:
+    def session_state(self) -> SessionState:
         """One served truth, derived from the three stored axes.
 
         The stored axes (``status``, ``parked_status``, ``turn_status``)
@@ -860,6 +865,86 @@ class WorkspaceSession(Identifiable):
         ):
             return "parked"
         return "waiting"
+
+
+def _compare(field: str, op: Op, value: Any = None) -> Predicate:
+    return Predicate(left=FieldRef(name=field), op=op, right=Value(value=value))
+
+
+def _all_of(*parts: Predicate) -> Predicate:
+    out = parts[0]
+    for part in parts[1:]:
+        out = Predicate(left=out, op=Op.AND, right=part)
+    return out
+
+
+def _any_of(*parts: Predicate) -> Predicate:
+    out = parts[0]
+    for part in parts[1:]:
+        out = Predicate(left=out, op=Op.OR, right=part)
+    return out
+
+
+def session_state_predicate(state: SessionState) -> Predicate:
+    """The storage predicate matching exactly the rows whose ``session_state`` reads *state*.
+
+    Filtering by the derived state has to be a second statement of
+    :attr:`WorkspaceSession.session_state`'s rule, because the state is
+    computed on read and never stored. Both are written over the same four
+    axes in the same precedence (``status`` ended, then ``parked_status``, then
+    ``turn_status == "running"``, then a resting WAITING/PAUSED session with
+    ``turn_no > 0``, otherwise waiting), and
+    ``tests/storage/test_session_state_filter_parity.py`` stores every
+    combination of them and requires the two to agree row for row on every
+    backend: change the rule in one place and that test fails until the other
+    follows.
+
+    "Not running" is spelled ``turn_status IS NULL OR turn_status != 'running'``
+    (and "not resting" likewise for ``turn_no``): a row written before an axis
+    existed has no such key, the model reads its default, and in SQL a bare
+    ``!=`` against the missing key is NULL, which would drop the row from every
+    state.
+
+    Do not filter on the stored ``session_state`` key instead: ``model_dump``
+    writes a snapshot of it on a whole-row write, and a field-scoped patch of
+    an axis does not refresh it, so it is whatever the last whole-row write
+    computed.
+    """
+    ended = _compare("status", Op.EQ, SessionStatus.ENDED.value)
+    not_ended = _compare("status", Op.NE, SessionStatus.ENDED.value)
+    parked_axis = _compare("parked_status", Op.IS_NOT_NULL)
+    no_parked_axis = _compare("parked_status", Op.IS_NULL)
+    turn_running = _compare("turn_status", Op.EQ, "running")
+    turn_not_running = _any_of(
+        _compare("turn_status", Op.IS_NULL),
+        _compare("turn_status", Op.NE, "running"),
+    )
+    resting = _all_of(
+        _any_of(
+            _compare("status", Op.EQ, SessionStatus.WAITING.value),
+            _compare("status", Op.EQ, SessionStatus.PAUSED.value),
+        ),
+        _compare("turn_no", Op.GT, 0),
+    )
+    not_resting = _any_of(
+        _all_of(
+            _compare("status", Op.NE, SessionStatus.WAITING.value),
+            _compare("status", Op.NE, SessionStatus.PAUSED.value),
+        ),
+        _compare("turn_no", Op.IS_NULL),
+        _compare("turn_no", Op.LE, 0),
+    )
+    if state == "ended":
+        return ended
+    if state == "running":
+        return _all_of(not_ended, no_parked_axis, turn_running)
+    if state == "parked":
+        return _all_of(
+            not_ended, _any_of(parked_axis, _all_of(turn_not_running, resting)),
+        )
+    if state == "waiting":
+        return _all_of(not_ended, no_parked_axis, turn_not_running, not_resting)
+    raise ValueError(f"unknown session state {state!r}")
 
 
 # ===========================================================================

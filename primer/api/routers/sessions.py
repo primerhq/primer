@@ -47,7 +47,9 @@ from primer.model.workspace_session import (
     PendingSessionMessage,
     WorkspaceSession,
     SessionBinding,
+    SessionState,
     SessionStatus,
+    session_state_predicate,
 )
 from primer.model.storage import (
     FieldRef,
@@ -618,6 +620,20 @@ async def list_sessions(
         SessionStatus | None,
         Query(description="Filter by session status."),
     ] = None,
+    session_state: Annotated[
+        SessionState | None,
+        Query(
+            description=(
+                "Filter by the derived ``session_state`` every session row "
+                "serves (``waiting``, ``running``, ``parked`` or ``ended``). "
+                "``running`` means a turn is in flight right now; unlike "
+                "``status=running`` it excludes a session parked on a "
+                "yielding tool and one queued for a worker that has not "
+                "claimed it yet. ANDed with the other filters; ``status`` "
+                "keeps its own meaning."
+            ),
+        ),
+    ] = None,
     workspace_id: Annotated[
         str | None,
         Query(description="Filter by workspace_id."),
@@ -678,6 +694,8 @@ async def list_sessions(
                 right=Value(value=status.value),
             )
         )
+    if session_state is not None:
+        filters.append(session_state_predicate(session_state))
     if workspace_id is not None:
         filters.append(
             Predicate(
