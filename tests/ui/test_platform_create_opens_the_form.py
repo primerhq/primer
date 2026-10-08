@@ -132,22 +132,28 @@ def test_the_platform_page_hosts_the_existing_dialogs() -> None:
     assert "window.TR_CreateTriggerDialog = TR_CreateTriggerDialog;" in TRIGGERS
     assert "window.SV_ServiceModal = SV_ServiceModal;" in SERVICES
     # The host components render the entity page's own dialog, unchanged.
-    assert re.search(r"function NV_ToolsetCreateHost[\s\S]{0,300}window\.TS_NewToolsetModal", PLAT)
-    assert re.search(r"function NV_TriggerCreateHost[\s\S]{0,200}window\.TR_CreateTriggerDialog", PLAT)
-    assert re.search(r"function NV_ServiceCreateHost[\s\S]{0,300}window\.SV_ServiceModal", PLAT)
+    # Each host is bounded at its own closing brace and each mount at its own `) : null}`: a fixed-size window ran from one mount into the next, so the
+    # next mount's lines could satisfy this one's assertions (found on the harness mounts in review of #528).
+    for host_name, dialog in (
+        ("NV_ToolsetCreateHost", "window.TS_NewToolsetModal"),
+        ("NV_TriggerCreateHost", "window.TR_CreateTriggerDialog"),
+        ("NV_ServiceCreateHost", "window.SV_ServiceModal"),
+    ):
+        host = re.search(r"function " + host_name + r"\([\s\S]*?\n\}\n", PLAT)
+        assert host and dialog in host.group(0), f"{host_name} must render the entity page's own dialog, unchanged"
     # The page shows the host for its modal kind, closes it on Cancel and on a created row, and hands the row to the tested helper.
     for kind, host, nav in (
         ("toolset", "NV_ToolsetCreateHost", "toolsets"),
         ("trigger", "NV_TriggerCreateHost", "triggers"),
         ("service", "NV_ServiceCreateHost", "services"),
     ):
-        shown = re.search(r"modal\.kind === \"" + kind + r"\"[\s\S]{0,600}", PLAT)
+        shown = re.search(r"modal\.kind === \"" + kind + r"\" \? \([\s\S]*?\) : null\}", PLAT)
         assert shown and f"<{host}" in shown.group(0), kind
         block = shown.group(0)
-        assert block.count("setModal(null)") >= 2, f"{kind}: the dialog must close on Cancel and on a created row"
-        assert re.search(r"NV_createdRow\(con, [\s\S]{0,60}\"" + nav + r"\", row\)", block), (
-            f"{kind}: a created row must go through the tested hand-off, with the page's own nav"
-        )
+        assert re.search(r"onClose=\{function \(\) \{ setModal\(null\); \}\}", block), f"{kind}: the dialog must close on Cancel"
+        assert re.search(
+            r"onCreated=\{function \(row\) \{\s*setModal\(null\);\s*NV_createdRow\(con, function \(\) \{ res\.refetch\(\); \}, \"" + nav + r"\", row\);\s*\}\}", block
+        ), f"{kind}: a created row must close the dialog and go through the tested hand-off, with the page's own nav"
 
 
 # ---- harnesses: two hosted forms (register from git, build outbound) ---------------------------------------------------------------
