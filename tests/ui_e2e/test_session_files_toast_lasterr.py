@@ -184,6 +184,9 @@ def test_u0032_toast_renders_request_id_on_5xx(
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
         modal.locator("#na-id").fill(f"ag-32-{unique_suffix}")
+        # The create form refuses an empty description before it posts (ADM-14: a description is how other agents find an agent), so without this
+        # the submit would stop on the client and the mocked 500 below would never be sent: no error toast to look at.
+        modal.locator("#na-description").fill("u0032 toast probe")
         # uiv2 Wave 2: the model-profile <select> became a stacked
         # AG_ProfilePicker (one bordered row per profile, click to pick) -
         # same retarget as test_agents_create.py's u0006/u0007.
