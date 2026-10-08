@@ -5899,6 +5899,25 @@ button.nv-mob-ws-picker { cursor: pointer; }
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* Console review C-035: the session screen at desktop density on a phone. Every control is at least --tap-min (44px) and no text is under
+   11px; tests/ui_e2e/test_mobile_tap_targets_journey.py measures both on a real turn. The two dense icon buttons that sit INSIDE a row
+   (rewind, trace) grow their box and take the extra back as a negative margin, so the rows around them do not move; the tool-call row
+   and the header button simply grow, as list rows do on a phone. */
+.nv-mobile-chat .nv-head-iconbtn { width: var(--tap-min); height: var(--tap-min); }
+.nv-mobile-chat .nv-trace-toggle {
+  box-sizing: border-box; min-width: var(--tap-min); min-height: var(--tap-min); margin: -14px;
+}
+.nv-mobile-chat .nv-toolblock-head { box-sizing: border-box; min-height: var(--tap-min); align-items: center; }
+.nv-mobile-chat .nv-composer-field { padding-block: 0; }
+.nv-mobile-chat .nv-composer-field textarea {
+  box-sizing: border-box; min-height: var(--tap-min); padding-block: 12px; line-height: 20px;
+}
+.nv-mobile-chat .nv-user-avatar { width: 26px; height: 26px; font-size: 11px; }
+.nv-mobile-chat .nv-usage-label,
+.nv-mobile-chat .nv-turn-time,
+.nv-mobile-chat .nv-chip-icon,
+.nv-mobile-chat .nv-lifecycle { font-size: 11px; }
+
 /* US-014 M5: the More tab - profile/theme, health cards, Platform
    sections. .nv-profile-head/.nv-avatar/.nv-profile-name/.nv-profile-
    role/.nv-seg (nv-chrome.jsx's own profile popover) reused as-is here -
