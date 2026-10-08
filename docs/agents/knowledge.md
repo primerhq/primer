@@ -93,7 +93,11 @@ A `Collection`:
   Set `search: null` to disable all retrieval augmentation and use
   vanilla vector ranking.
 - `system` - true for the reserved internal collections; user
-  collections are created with `system=false`. The CRUD layer
+  collections are created with `system=false`. The platform alone sets
+  it: a create that sets `system` and an update that changes it
+  (leaving it out counts as `false`) are refused (403 over REST,
+  `type=forbidden` from `create_collection` / `update_collection`), so
+  send back the stored value when you replace a row. The CRUD layer
   refuses to delete system collections.
 
 A `Document`:
@@ -172,7 +176,11 @@ path-addressed document tools, and the per-collection extras.
   changes; disable the collection's search first
   (`DELETE /v1/collections/{id}/search` always works) to delete it anyway.
   A system collection is refused (`type=forbidden`), and so is a
-  harness-managed one (`type=conflict`).
+  harness-managed one (`type=conflict`). If something keeps adding
+  documents while it runs you get `type=conflict`: stop the writer and
+  delete again. If a delete fails part-way, search on that collection
+  returns nothing until you retry (the vectors are dropped first); the
+  documents that remain are intact and deleting again finishes the job.
 - `system::find_collections` - predicate-based query.
 
 ### Document tools (path-addressed)
@@ -320,10 +328,11 @@ searchable via `system::search_collection`.
   rows installed by a harness are tagged with `harness_id`; mutating
   them through the public CRUD endpoints returns 409. Use the
   harness's sync/uninstall instead.
-- **Delete cascade.** Deleting a Collection with any Documents
-  inside returns 409. Either delete the Documents first or use the
-  Collection delete endpoint's cascade flag (operator-only; not
-  exposed as a tool).
+- **Delete cascade.** Deleting a Collection deletes its Documents,
+  their content and its vector chunks with it (`DELETE
+  /v1/collections/{id}` and `system::delete_collection`); there is no
+  409 for a non-empty collection and no cascade flag. A system or
+  harness-managed collection is refused.
 
 ## Related
 
