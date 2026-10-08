@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from primer.model.chat import Done, TextDelta, ToolCallEnd, ToolCallStart
+from primer.model.chat import Done, Error, TextDelta, ToolCallEnd, ToolCallStart
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
 from primer.session.delegation import DelegationRecorder
 from primer.session.persistence import _CoalesceState, translate_stream_event
@@ -31,6 +31,9 @@ CHILD_BEFORE = "child run: looking into it"
 GRANDCHILD = "grandchild run: found the answer"
 CHILD_AFTER = "child run: wrapping up"
 PARENT_FINAL = "parent turn: all done"
+# ``build(failures=True)``: the grandchild run fails for good, and the child run's stream reports a recoverable problem and carries on.
+GRANDCHILD_FAILURE = "grandchild run: the model fell over"
+CHILD_NOTICE = "child run: provider hiccup"
 
 RUN_CHILD = "11111111111111111111111111111111"
 RUN_GRANDCHILD = "22222222222222222222222222222222"
@@ -43,6 +46,8 @@ class Seeded:
     child_call_seq: int
     delegated_assistant_seqs: list[int] = field(default_factory=list)
     top_level_assistant_seqs: list[int] = field(default_factory=list)
+    delegated_failure_seq: int | None = None
+    delegated_notice_seq: int | None = None
 
 
 class _Writer:
@@ -87,7 +92,8 @@ def _run_to_completion(coro):
         return pool.submit(asyncio.run, coro).result()
 
 
-def build() -> Seeded:
+def build(failures: bool = False) -> Seeded:
+    """The seeded session; with ``failures`` the grandchild run ends in a fatal Error and the child run's stream carries a non-fatal one."""
     writer = _Writer()
     parent_state = _CoalesceState()
 
@@ -110,8 +116,15 @@ def build() -> Seeded:
         await recorder.on_event(ToolCallStart(id="call_0", name="system__invoke_agent", index=0), **child)
         await recorder.on_event(ToolCallEnd(id="call_0", arguments={"agent_id": "grand"}, index=0), **child)
         child_call_seq = len(writer.records)
-        await recorder.on_event(TextDelta(index=0, text=GRANDCHILD), **grandchild)
-        await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **grandchild)
+        if failures:
+            # No text before the failure on purpose: the recorder shares one coalescing buffer across runs and flushes it only on a Done, so a
+            # run's text before an Error is not written as its own record (it is merged into the next run's text; see the ticket on the delegation recorder).
+            await recorder.on_event(Error(message=GRANDCHILD_FAILURE, code="server_error", fatal=True), **grandchild)
+        else:
+            await recorder.on_event(TextDelta(index=0, text=GRANDCHILD), **grandchild)
+            await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **grandchild)
+        if failures:
+            await recorder.on_event(Error(message=CHILD_NOTICE, code="provider_warning", fatal=False), **child)
         await recorder.on_event(TextDelta(index=0, text=CHILD_AFTER), **child)
         await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **child)
         return child_call_seq
@@ -128,4 +141,6 @@ def build() -> Seeded:
     records = [r.model_dump(mode="json") for r in writer.records]
     delegated_assistant = [r["seq"] for r in records if r["kind"] == "assistant_token" and r["payload"].get("delegated")]
     top_assistant = [r["seq"] for r in records if r["kind"] == "assistant_token" and not r["payload"].get("delegated")]
-    return Seeded(records, parent_call_seq, child_call_seq, delegated_assistant, top_assistant)
+    failure_seq = next((r["seq"] for r in records if r["kind"] == "error" and r["payload"].get("fatal") is True), None)
+    notice_seq = next((r["seq"] for r in records if r["kind"] == "error" and r["payload"].get("fatal") is False), None)
+    return Seeded(records, parent_call_seq, child_call_seq, delegated_assistant, top_assistant, failure_seq, notice_seq)
