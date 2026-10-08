@@ -5755,6 +5755,12 @@ button.nv-mob-ws-picker { cursor: pointer; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .nv-mob-screen-body { flex: 1; min-height: 0; display: flex; overflow: auto; }
+/* The desktop System pages hosted on the phone (More > System settings): the nav becomes a row of chips above the page. */
+.nv-mob-system-body .nv-plat { flex-direction: column; width: 100%; }
+.nv-mob-system-body .nv-plat-nav { width: auto; flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border); }
+.nv-mob-system-body .nv-plat-main { min-width: 0; overflow: auto; }
+.nv-mob-settings { margin-bottom: 12px; }
+.nv-mob-logout { width: 100%; margin-top: 10px; }
 
 /* Read-only file view (M4: no upload/new/rename/save on mobile this
    phase - see NV_MobileFileView's own comment on why this is not

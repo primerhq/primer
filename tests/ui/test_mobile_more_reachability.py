@@ -69,3 +69,12 @@ def test_a_platform_view_link_lands_on_the_more_tab_with_that_section_open() -> 
     assert 'con.view.name === "platform"' in shell
     effect = shell[shell.index('con.view.name === "platform"') - 400:shell.index('con.view.name === "platform"') + 500]
     assert "setPendingFactSheet(" in effect and 'setActiveTab("more")' in effect
+
+
+def test_a_link_to_a_whole_section_is_consumed_as_soon_as_the_section_opens() -> None:
+    """Left pending until the list had loaded, a Back tap in that first moment re-opened the section: the effect found a pending kind
+    that was not the open nav and set it again (the phone journey caught it)."""
+    platform = SHELL[SHELL.index("function NV_MobilePlatform"):SHELL.index("function NV_MobileSystemScreen")]
+    effect = platform[platform.index("props.pending.kind"):]
+    assert "if (!props.pending.id)" in effect[:600]
+    assert effect.index("if (!props.pending.id)") < effect.index("if (res.loading) return;")

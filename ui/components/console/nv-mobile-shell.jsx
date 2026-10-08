@@ -877,6 +877,14 @@ function NV_mobileSetTheme(con, next) {
   con.bump();
 }
 
+// The rows of the More tab's Settings group (review ADM-29): what the desktop profile menu and Platform nav reach and a phone could not.
+// System settings stays hidden from a restricted user, as in the desktop menu.
+function NV_mobileSettingsRows(role) {
+  var rows = [{ id: "providers", label: "Providers" }];
+  if (role !== "restricted") rows.push({ id: "system", label: "System settings" });
+  return rows;
+}
+
 function NV_MobileProfileTheme() {
   var con = NV_useConsole();
   var theme = document.documentElement.getAttribute("data-theme") || "dark";
@@ -898,6 +906,14 @@ function NV_MobileProfileTheme() {
           data-active={theme === "light" ? "true" : "false"}
           onClick={function () { NV_mobileSetTheme(con, "light"); }}>Light</button>
       </div>
+      <button type="button" className="nv-btn-secondary nv-mob-logout touch-target"
+        data-testid="nv-mob-logout"
+        onClick={function () {
+          fetch("/v1/auth/logout", { method: "POST" }).then(
+            function () { window.location.reload(); },
+            function () { window.location.reload(); }
+          );
+        }}>Log out</button>
     </div>
   );
 }
@@ -989,6 +1005,10 @@ function NV_MobilePlatform(props) {
   var setSheet = sheetState[1];
 
   var page = nav ? window.NV_PLAT_PAGES[nav] : null;
+  // The More tab hides its dashboard (profile, settings, health cards) while a section is open, so the section fills the screen.
+  React.useEffect(function () {
+    if (props.onNavChange) props.onNavChange(!!nav);
+  }, [nav]);
   var res = window.primerApi.useResource(
     nav ? "nv-plat:" + nav : "nv-mob-plat:_none",
     function (signal) {
@@ -1002,6 +1022,12 @@ function NV_MobilePlatform(props) {
     if (!props.pending) return;
     if (nav !== props.pending.kind) {
       setNav(props.pending.kind);
+      return;
+    }
+    // A link to a whole section (no row id) is done once the section is open. Left pending until the list had loaded, a Back tap
+    // in that first moment re-opened the section (the effect saw a pending kind that was not the open nav).
+    if (!props.pending.id) {
+      if (props.onPendingConsumed) props.onPendingConsumed();
       return;
     }
     if (res.loading) return;
@@ -1078,15 +1104,59 @@ function NV_MobilePlatform(props) {
   );
 }
 
-function NV_MobileMore(props) {
+// A system view (System settings, or a pasted ?view=system:* link) fills the phone like the other takeover screens, with a way back.
+// The System pages are the desktop ones, hosted as they are; a read-mostly phone layout for each is a separate piece of work.
+function NV_MobileSystemScreen() {
+  var con = NV_useConsole();
   return (
-    <div className="nv-mob-more" data-testid="nv-mobile-panel:more">
-      <NV_MobileProfileTheme />
-      <div className="nv-mob-more-section-label">System health</div>
-      <NV_HealthCards />
-      <div className="nv-mob-more-section-label">Platform</div>
+    <div className="nv-mob-screen" data-testid="nv-mob-system-screen">
+      <div className="nv-mob-screen-head">
+        <button type="button" className="nv-mob-back touch-target"
+          data-testid="nv-mob-system-back"
+          onClick={function () { con.goView("studio"); }}>&lsaquo; Back</button>
+        <span className="nv-mob-screen-title">System</span>
+      </div>
+      <div className="nv-mob-screen-body nv-mob-system-body">
+        {typeof window.NV_System === "function" ? <window.NV_System /> : null}
+      </div>
+    </div>
+  );
+}
+
+function NV_MobileMore(props) {
+  var con = NV_useConsole();
+  var navOpenState = React.useState(false);
+  var navOpen = navOpenState[0];
+  var setNavOpen = navOpenState[1];
+  var settings = NV_mobileSettingsRows(con.role);
+  return (
+    <div className="nv-mob-more" data-testid="nv-mobile-panel:more"
+      data-section-open={navOpen ? "true" : "false"}>
+      {!navOpen ? (
+        <React.Fragment>
+          <NV_MobileProfileTheme />
+          <div className="card-list nv-mob-settings" data-testid="nv-mob-settings">
+            {settings.map(function (row) {
+              return (
+                <button type="button" key={row.id} className="card card-interactive"
+                  data-testid={"nv-mob-setting:" + row.id}
+                  onClick={function () {
+                    if (row.id === "providers") con.openOverlay("providers");
+                    else con.goView("system");
+                  }}>
+                  <div className="card-title">{row.label}</div>
+                </button>
+              );
+            })}
+          </div>
+          <div className="nv-mob-more-section-label">System health</div>
+          <NV_HealthCards />
+          <div className="nv-mob-more-section-label">Platform</div>
+        </React.Fragment>
+      ) : null}
       <NV_MobilePlatform pending={props.pending}
-        onPendingConsumed={props.onPendingConsumed} />
+        onPendingConsumed={props.onPendingConsumed}
+        onNavChange={setNavOpen} />
     </div>
   );
 }
@@ -1149,6 +1219,16 @@ function NV_MobileShell() {
     con.closeOverlay();
   }, [con.overlay]);
 
+  // A pasted ?view=platform:<nav> link (or the palette's Platform verb) lands on the More tab with that section open; it used to
+  // leave the shell on Inbox. ?view=system:* is a full-screen takeover below.
+  React.useEffect(function () {
+    if (!(con.view && con.view.name === "platform")) return;
+    setActiveTab("more");
+    if (con.view.nav && window.NV_PLAT_PAGES && window.NV_PLAT_PAGES[con.view.nav]) {
+      setPendingFactSheet({ kind: con.view.nav, id: null });
+    }
+  }, [con.view && con.view.name, con.view && con.view.nav]);
+
   var tabs = [
     {
       id: "inbox",
@@ -1186,6 +1266,8 @@ function NV_MobileShell() {
         <NV_MobileChatScreen doc={con.doc} />
       ) : con.doc && (con.doc.kind === "file" || con.doc.kind === "diff") ? (
         <NV_MobileFileScreen doc={con.doc} />
+      ) : con.view && con.view.name === "system" ? (
+        <NV_MobileSystemScreen />
       ) : (
         <window.MobileTabs tabs={tabs} active={activeTab} onSelect={setActiveTab} />
       )}
