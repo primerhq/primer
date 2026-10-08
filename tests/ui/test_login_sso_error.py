@@ -80,13 +80,16 @@ def test_each_code_has_its_own_sentence(code: str, in_title: str, in_detail: str
     assert got["requestId"] is None
 
 
-def test_an_unknown_code_gets_the_generic_sentence_and_the_code_text_is_never_shown() -> None:
+@pytest.mark.parametrize("code", ["<script>alert(1)</script>", "", "nope", "constructor", "__proto__", "toString", "hasOwnProperty"])
+def test_an_unknown_code_gets_the_generic_sentence_and_the_code_text_is_never_shown(code: str) -> None:
+    """Including the names every object inherits: a plain ``table[code]`` lookup would answer a function for them."""
     ctx = _ctx()
 
-    got = _js(ctx, '_ssoSignInError("<script>alert(1)</script>")')
+    got = _js(ctx, f"_ssoSignInError({json.dumps(code)})")
 
     assert got["title"] == "Single sign-on did not complete"
-    assert "script" not in json.dumps(got), "an unknown code must not be echoed into the page"
+    assert got["detail"].startswith("Try again")
+    assert code == "" or code not in json.dumps(got), "an unknown code must not be echoed into the page"
 
 
 def test_the_code_is_read_and_removed_from_the_address_bar_keeping_the_rest_of_the_url() -> None:

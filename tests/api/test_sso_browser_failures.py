@@ -96,6 +96,15 @@ async def test_an_unknown_provider_ends_on_the_login_screen_for_a_browser_and_st
 
 
 @pytest.mark.asyncio
+async def test_the_failure_redirect_never_follows_a_return_to(client, app):
+    """``return_to`` is caller input; the failure page is always the console's own login screen."""
+    for hostile in ("//evil.example/x", "https://evil.example/", "/\\evil.example", "/console/#/w/primer"):
+        r = await _get(client, "/v1/auth/sso/no-such-provider/login", headers=BROWSER, return_to=hostile)
+
+        assert r.headers["location"] == "/console/?sso_error=provider_not_found", hostile
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_a_login_start_that_works_still_redirects_to_the_provider_for_a_browser(client, app, rsa_keypair):
     """The failure path must not catch the success path: a browser still gets the 302 to the IdP and its state cookie."""
@@ -257,3 +266,23 @@ async def test_a_failed_link_keeps_its_json_even_for_a_browser(client, app, rsa_
 
     assert r.status_code == 409, r.text
     assert r.json()["extensions"]["error"] == "identity_already_linked"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_cancelled_link_keeps_its_json_even_for_a_browser(client, app, rsa_keypair):
+    """The cancel raises ``missing_code`` BEFORE the callback reads the state's mode, so the link flag must already be set."""
+    _, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+    await _login_as(client, app, user_id="user-dana", username="dana")
+    link = await _link(client, provider.id)
+    qs = _query(link.headers["location"])
+
+    r = await _get(
+        client, f"/v1/auth/sso/{provider.id}/callback", headers=BROWSER, error="access_denied", state=qs["state"],
+    )
+
+    assert r.status_code == 400, r.text
+    assert r.json()["extensions"]["error"] == "missing_code"

@@ -175,6 +175,92 @@ function _extractServerError(err) {
   };
 }
 
+// BEGIN sso-sign-in-error
+// Why a browser sign-in through an identity provider failed. The server sends a failed /login or /callback navigation
+// back to /console/?sso_error=<code> (primer/api/routers/sso.py, _login_failure_for_browser) and this turns the code into
+// the banner's {title, detail}. tests/ui/test_login_sso_error.py pins every code a login can fail with in that module.
+const _SSO_SIGN_IN_ERRORS = {
+  provider_unreachable: {
+    title: "Single sign-on is unavailable",
+    detail: "The identity provider did not answer. Try again in a moment, or sign in with your username and password.",
+  },
+  provider_not_found: {
+    title: "That sign-in option is no longer available",
+    detail: "Ask an administrator, or sign in with your username and password.",
+  },
+  invalid_state: {
+    title: "Sign-in did not complete",
+    detail: "The sign-in expired or was interrupted. Try again.",
+  },
+  missing_code: {
+    title: "Sign-in was not completed",
+    detail: "The identity provider did not confirm it, for instance because it was cancelled. Try again.",
+  },
+  sso_validation_failed: {
+    title: "The identity provider's answer could not be verified",
+    detail: "Try again. If it keeps happening, ask an administrator to check the provider's settings.",
+  },
+  account_disabled: {
+    title: "This account is disabled",
+    detail: "Ask an administrator to enable it.",
+  },
+  sso_jit_disabled: {
+    title: "No account is linked to this identity",
+    detail: "Ask an administrator to create your account, or to turn on just-in-time provisioning in System > SSO.",
+  },
+  sso_race_unresolved: {
+    title: "Two sign-ins collided",
+    detail: "Try again.",
+  },
+};
+const _SSO_SIGN_IN_FALLBACK = {
+  title: "Single sign-on did not complete",
+  detail: "Try again, or sign in with your username and password.",
+};
+
+// An unknown code, or one that names an Object.prototype member, gets the generic sentence; the code text is never shown.
+function _ssoSignInError(code) {
+  const known = Object.prototype.hasOwnProperty.call(_SSO_SIGN_IN_ERRORS, code)
+    ? _SSO_SIGN_IN_ERRORS[code]
+    : _SSO_SIGN_IN_FALLBACK;
+  return { title: known.title, detail: known.detail, requestId: null };
+}
+
+function _decodeQueryPart(s) {
+  try {
+    return decodeURIComponent(s.replace(/\+/g, " "));
+  } catch (e) {
+    return s;
+  }
+}
+
+// Read the sso_error parameter once and take it out of the address bar (keeping every other parameter and the hash), so a
+// reload or a copied URL does not show a stale failure. Returns the banner or null. Parsed by hand: this runs under
+// MiniRacer in the tests, which has no URLSearchParams.
+function _takeSsoSignInError(loc, hist) {
+  let code = null;
+  const kept = [];
+  String(loc.search || "").replace(/^\?/, "").split("&").forEach(function (pair) {
+    if (!pair) return;
+    const eq = pair.indexOf("=");
+    const key = _decodeQueryPart(eq < 0 ? pair : pair.slice(0, eq));
+    if (key !== "sso_error") {
+      kept.push(pair);
+    } else if (code === null) {
+      code = eq < 0 ? "" : _decodeQueryPart(pair.slice(eq + 1));
+    }
+  });
+  if (code === null) return null;
+  if (hist && typeof hist.replaceState === "function") {
+    hist.replaceState(hist.state, "", loc.pathname + (kept.length ? "?" + kept.join("&") : "") + (loc.hash || ""));
+  }
+  return _ssoSignInError(code);
+}
+// END sso-sign-in-error
+
+// Read at load, before anything else can rewrite the URL; the login screen starts from it.
+const _SSO_LOGIN_ERROR = _takeSsoSignInError(window.location, window.history);
+
 function RegisterScreen({ onDone }) {
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -341,7 +427,7 @@ function LoginScreen({ onDone }) {
   const [password, setPassword] = React.useState("");
   const [remember, setRemember] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
-  const [server, setServer] = React.useState(null);
+  const [server, setServer] = React.useState(_SSO_LOGIN_ERROR);
   const [fieldErrs, setFieldErrs] = React.useState({});
 
   const submit = async (e) => {
