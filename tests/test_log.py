@@ -344,7 +344,7 @@ class TestUrlSecretRedaction:
     # The redactor runs on EVERY log record, including uvicorn.access, which logs the request path of an unauthenticated request. A pattern that is
     # quadratic on a run of scheme characters ("a.a.a." makes each letter a new word start) let one GET stall the event loop (#580 review, B1): 100k
     # characters took 24 s against 0.4 ms before the userinfo pattern.
-    @pytest.mark.parametrize("name,text", [
+    _HOSTILE = [
         ("letters and dots", "a." * 20_000),
         ("letters and plus signs", "a+" * 20_000),
         ("letters and dashes", "a-" * 20_000),
@@ -352,7 +352,16 @@ class TestUrlSecretRedaction:
         ("a scheme and a long authority with no @", "a://" + "b" * 40_000),
         ("many schemes", "a://" * 10_000),
         ("a request path", "GET /" + "a." * 20_000 + " HTTP/1.1"),
-    ])
+        # The substring test ("@" and "://" both present) skips every input above, so the regex's own class is only exercised by text that holds BOTH
+        # (the #580 review r2): without these, putting "+ . -" back in the scheme class stays green.
+        ("an @ then a scheme-like run ending in ://", "@" + "a." * 20_000 + "://"),
+        ("a path with @ and :// then a run", "/x@y://" + "a." * 20_000),
+        ("a request path with @ and ://", "GET /x@y://" + "a." * 20_000 + " HTTP/1.1"),
+        ("plus signs with @ and ://", "x@y://" + "a+" * 20_000),
+        ("dashes with @ and ://", "x@y://" + "a-" * 20_000),
+    ]
+
+    @pytest.mark.parametrize("name,text", _HOSTILE, ids=[case[0] for case in _HOSTILE])
     def test_the_redactor_is_linear_on_hostile_input(self, name, text):
         import time
 
@@ -364,12 +373,13 @@ class TestUrlSecretRedaction:
 
         assert took < 1.0, f"{name}: {took:.2f}s for {len(text)} characters"
 
-    def test_a_hostile_request_path_does_not_stall_the_log_call(self):
+    @pytest.mark.parametrize("path", ["/" + "a." * 20_000, "/x@y://" + "a." * 20_000], ids=["plain path", "path with @ and ://"])
+    def test_a_hostile_request_path_does_not_stall_the_log_call(self, path):
         import time
 
         buf = _configured_stream()
         started = time.perf_counter()
-        logging.getLogger("uvicorn.access").info('%s - "%s %s HTTP/%s" %d', "10.0.0.1:5555", "GET", "/" + "a." * 20_000, "1.1", 404)
+        logging.getLogger("uvicorn.access").info('%s - "%s %s HTTP/%s" %d', "10.0.0.1:5555", "GET", path, "1.1", 404)
         took = time.perf_counter() - started
 
         assert took < 1.0, f"{took:.2f}s"
