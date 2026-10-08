@@ -2,7 +2,7 @@
 
 ADM-14: ``Bad Name!`` was accepted as an agent id (``POST /v1/agents`` answers 201; the model has no id pattern), and one press of Create on an empty form made a nameless agent whose
 description the form had quietly replaced with ``(no description)``. An id is permanent and sits in URLs and in references, so a typo can only be fixed by delete and recreate, and a
-description is how OTHER agents find an agent. The check is client side (the model is not changed); the id is checked when CREATING only (an existing agent's id is locked), the description when creating AND when editing:
+description is how OTHER agents find an agent. The backend now enforces the same two rules on create (ticket 01a11c1c; the last section pins that the two are one rule); the id is checked when CREATING only (an existing agent's id is locked), the description when creating AND when editing:
 
 * the id is optional (the backend assigns ``agent-<hex>`` when it is blank), but when it is typed it is lowercase letters, digits, hyphens and underscores, starting with a letter or digit,
   at most 63 characters, so it needs no URL escaping and cannot be mistaken for something else; surrounding spaces are not part of it and a whitespace-only id is a blank one (it used to be
