@@ -189,6 +189,7 @@ def _set_session_cookie(
     secret = request.app.state.session_secret
     token = sign_session(
         user_id=user.id, username=user.username, secret=secret, src=src,
+        epoch=user.session_epoch,
     )
     # remember=False omits Max-Age so the browser treats it as a
     # session cookie (cleared on browser close). The token's signed
@@ -351,9 +352,39 @@ async def login(
 
 @auth_router.post("/logout", status_code=204)
 async def logout(request: Request, response: Response) -> None:
-    """Clear the session cookie. Idempotent."""
+    """Clear this browser's session cookie. Idempotent.
+
+    Ends only the caller's own session (SEC-05, declared rule): the user's
+    other sessions, and any copy of this cookie taken before, stay valid
+    until they expire. ``POST /v1/auth/logout-all`` ends all of them.
+    """
     cfg = request.app.state.config.auth
     response.delete_cookie(key=cfg.cookie_name, path="/")
+
+
+@auth_router.post(
+    "/logout-all", status_code=204, responses=common_responses(401),
+)
+async def logout_all(
+    request: Request,
+    response: Response,
+    user: User = Depends(require_auth),
+) -> None:
+    """Sign out everywhere: end every session cookie of the caller's account.
+
+    Increments ``User.session_epoch``, so every cookie minted before (this
+    one, other browsers', any stolen copy) is rejected from the next request
+    on, and clears this browser's cookie. API tokens are not sessions and
+    are unaffected; revoke them separately.
+    """
+    cfg = request.app.state.config.auth
+    storage = get_storage_provider(request).get_storage(User)
+    stored = await storage.get(user.id)
+    if stored is not None:
+        # None only for the synthetic user of an auth-disabled deployment, which has no sessions.
+        await storage.update(stored.model_copy(update={"session_epoch": stored.session_epoch + 1}))
+    response.delete_cookie(key=cfg.cookie_name, path="/")
+    logger.info("auth.logout_all username=%s", user.username)
 
 
 class ChangePasswordArgs(BaseModel):
@@ -365,6 +396,7 @@ class ChangePasswordArgs(BaseModel):
 async def change_password(
     body: ChangePasswordArgs,
     request: Request,
+    response: Response,
     user: User = Depends(require_auth),
 ) -> AuthOk:
     """Change the authenticated user's password.
@@ -374,6 +406,11 @@ async def change_password(
     rotation gate stops firing. A wrong current password (or an SSO-only
     account whose ``password_hash`` is ``None``, via the verify_password
     guard) is rejected with 401 ``invalid_credentials``.
+
+    A successful change ends every session of the account (SEC-05): the
+    session epoch is incremented, so cookies minted before the change,
+    including any stolen copy, stop working, and the caller is handed a
+    fresh cookie of the new epoch so it stays signed in.
     """
     if not await verify_password(body.current_password, user.password_hash):
         logger.info(
@@ -386,7 +423,12 @@ async def change_password(
         )
     user.password_hash = await hash_password(body.new_password)
     user.must_change_password = False
+    user.session_epoch += 1
     storage = get_storage_provider(request).get_storage(User)
     await storage.update(user)
+    actor = getattr(request.state, "actor", None)
+    _set_session_cookie(
+        request, response, user, src=getattr(actor, "source", None) or "local",
+    )
     logger.info("auth.change_password success username=%s", user.username)
     return AuthOk(username=user.username)

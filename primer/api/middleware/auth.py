@@ -190,6 +190,12 @@ class AuthMiddleware:
             logger.exception("auth middleware: user lookup failed")
             return None, None
 
+        # Revocation (SEC-05): the user row is read on every request anyway, so comparing the
+        # cookie's session epoch with the stored one costs nothing extra and takes effect on the
+        # very next request after a password change, an admin reset or a sign-out-everywhere.
+        if user is not None and payload.epoch != user.session_epoch:
+            return None, None
+
         return user, payload.src
 
     async def _try_bearer_auth(self, scope, storage_provider):

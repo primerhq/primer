@@ -72,3 +72,13 @@ class User(Identifiable):
         description="If True, the user must set a new password before "
         "continuing to use the app (e.g. after an admin-initiated reset).",
     )
+    session_epoch: int = Field(
+        default=0,
+        ge=0,
+        description="Session generation (SEC-05). Every signed session cookie "
+        "carries the epoch it was minted under, and the auth middleware treats "
+        "a cookie from any other epoch as no session. A password change, an "
+        "admin password reset and 'sign out everywhere' increment it, which "
+        "ends every session of the account at once. Rows written before the "
+        "field existed load as 0, matching legacy cookies without an epoch.",
+    )
