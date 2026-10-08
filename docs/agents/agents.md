@@ -75,9 +75,12 @@ An `Agent` row carries:
   empty list means no tools. (Workspace tools are not listed here;
   they are composed onto the agent automatically when it attaches to
   a workspace.) Every toolset a tool id names must resolve: it is a built-in
-  toolset (`system`, `workspaces`, `misc`, `web`, `harness`, `trigger`,
-  `collections`, `crud`) or a stored `Toolset` row (`search` is a stored row),
-  and a tool id with no `__` is its own toolset. A create naming a toolset
+  toolset (`system`, `workspaces`, `workspace_ext`, `misc`, `web`,
+  `harness`, `trigger`, `collections`, `crud`) or a stored `Toolset` row
+  (`search` is a stored row). A tool id with no `__` is checked as its own
+  toolset at create and in `/status`, but the runtime skips such an id when it
+  resolves an agent's toolsets, so it never provides a tool: always write
+  `<toolset_id>__<tool_name>`. A create naming a toolset
   that does not exist is refused (422 `toolset_not_found`, field `tools`,
   every missing id named once); an update refuses only a toolset it ADDS, so
   an agent whose toolset was deleted later can still be edited.

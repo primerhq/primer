@@ -26,7 +26,6 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel
 
 from primer.agent.agent_checks import check_agent_on_create, check_agent_on_update, missing_toolset_ids
-
 from primer.api.deps import (
     get_agent_storage,
     get_graph_storage,
@@ -64,14 +63,14 @@ def _agent_check_as_rest_error(exc: EntityCheckError) -> HTTPException:
 
 async def _agent_pre_create(entity: Agent, request: Request) -> None:
     try:
-        await check_agent_on_create(entity, storage_provider=request.app.state.storage_provider)
+        await check_agent_on_create(entity, storage_provider=get_storage_provider(request))
     except EntityCheckError as exc:
         raise _agent_check_as_rest_error(exc) from exc
 
 
 async def _agent_pre_update(entity: Agent, existing: Agent, request: Request) -> None:
     try:
-        await check_agent_on_update(entity, existing, storage_provider=request.app.state.storage_provider)
+        await check_agent_on_update(entity, existing, storage_provider=get_storage_provider(request))
     except EntityCheckError as exc:
         raise _agent_check_as_rest_error(exc) from exc
 
