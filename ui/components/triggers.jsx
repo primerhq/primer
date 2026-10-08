@@ -115,12 +115,19 @@ function TR_defaultFireAtLocal() {
   );
 }
 
+// The server serves a webhook token only to the trigger's owner or an admin
+// (security review A-20); everyone else gets this mask in its place.
+const TR_TOKEN_MASK = "•••redacted•••";
+function TR_tokenMasked(trigger) {
+  return trigger?.config?.token === TR_TOKEN_MASK;
+}
+
 // Build the full webhook URL from a trigger object.
 // Uses window.location.origin so it adapts to the deployment URL.
 function TR_webhookUrl(trigger) {
   if (!trigger || trigger.config?.kind !== "webhook") return null;
   const token = trigger.config?.token;
-  if (!token) return null;
+  if (!token || TR_tokenMasked(trigger)) return null;
   const origin = (typeof window !== "undefined" && window.location?.origin) || "";
   return `${origin}/v1/webhooks/${token}`;
 }
@@ -1419,7 +1426,9 @@ function TR_TriggerDetail({ id }) {
                   <dt>Webhook URL</dt>
                   <dd style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span className="mono" style={{ wordBreak: "break-all", fontSize: 11 }} data-testid="webhook-url">
-                      {whUrl || "(loading…)"}
+                      {whUrl || (TR_tokenMasked(t)
+                        ? "visible only to the trigger's owner or an admin"
+                        : "(loading…)")}
                     </span>
                     {whUrl && <TR_CopyButton text={whUrl} label="Copy URL" testId="copy-webhook-url-btn" />}
                   </dd>
