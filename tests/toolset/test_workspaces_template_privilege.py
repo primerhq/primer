@@ -194,3 +194,40 @@ async def test_an_admin_free_template_stays_user_editable_through_the_tool(world
 
     assert not is_error, answer
     assert (await sp.get_storage(WorkspaceTemplate).get("tpl-k")).backend.image == "python:3.12"
+
+
+@pytest.mark.asyncio
+async def test_a_user_run_cannot_delete_a_template_that_holds_admin_only_settings(world) -> None:
+    sp, toolset = world
+    body = _PRIVILEGED["files.secret"]
+    assert not (await _call(toolset, "create_workspace_template", ctx=_ctx("admin"), entity=body))[0]
+
+    is_error, answer = await _call(toolset, "delete_workspace_template", ctx=_ctx("user"), id="tpl-s")
+
+    assert is_error and answer["type"] == "forbidden", answer
+    assert "admin-only settings" in answer["message"]
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-s") is not None
+
+
+@pytest.mark.asyncio
+async def test_an_admin_run_can_delete_a_template_that_holds_admin_only_settings(world) -> None:
+    sp, toolset = world
+    body = _PRIVILEGED["files.secret"]
+    assert not (await _call(toolset, "create_workspace_template", ctx=_ctx("admin"), entity=body))[0]
+
+    is_error, answer = await _call(toolset, "delete_workspace_template", ctx=_ctx("admin"), id="tpl-s")
+
+    assert not is_error, answer
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-s") is None
+
+
+@pytest.mark.asyncio
+async def test_a_user_run_may_delete_an_admin_free_template(world) -> None:
+    sp, toolset = world
+    plain = {"id": "tpl-p", "provider_id": "p-1", "description": "d"}
+    assert not (await _call(toolset, "create_workspace_template", ctx=_ctx("user"), entity=plain))[0]
+
+    is_error, answer = await _call(toolset, "delete_workspace_template", ctx=_ctx("user"), id="tpl-p")
+
+    assert not is_error, answer
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-p") is None
