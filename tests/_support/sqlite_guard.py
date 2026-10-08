@@ -26,29 +26,36 @@ _THIS_FILE = Path(__file__).resolve()
 _CLOSE_JOIN_S = 30.0
 
 
-def _opened_at() -> str:
-    """The first frame under ``tests/`` that is awaiting the ``initialize`` being tracked: the test, or the helper it built the provider in."""
+def _opened_at(test_file: Path | None) -> str:
+    """The first frame under ``tests/`` (or in the running test's own file) that is awaiting the ``initialize`` being tracked: the test, or the helper it built the provider in."""
     frame = sys._getframe(2)
     while frame is not None:
         filename = frame.f_code.co_filename
-        if f"{os.sep}tests{os.sep}" in filename and Path(filename).resolve() != _THIS_FILE:
-            return f"{Path(filename).name}:{frame.f_lineno} ({frame.f_code.co_name})"
+        path = Path(filename).resolve()
+        if path != _THIS_FILE and (f"{os.sep}tests{os.sep}" in filename or path == test_file):
+            return f"{path.name}:{frame.f_lineno} ({frame.f_code.co_name})"
         frame = frame.f_back
     return "a frame outside tests/"
 
 
 class OpenSqliteProviders:
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, test_file: Path | None = None) -> None:
         from primer.storage.sqlite import SqliteStorageProvider
 
         self._open: dict[int, tuple[SqliteStorageProvider, str]] = {}
+        self.close_finished = True
+        test_file = Path(test_file).resolve() if test_file is not None else None
         real_initialize = SqliteStorageProvider.initialize
         real_aclose = SqliteStorageProvider.aclose
         open_ = self._open
 
         async def initialize(provider: SqliteStorageProvider) -> None:
+            # Only an initialize() that OPENED the connection is this test's to close: a repeat call on a provider that was already open (an
+            # idempotent re-initialize, or one a wider-scoped fixture opened before the test) opens nothing.
+            was_closed = provider._conn is None
             await real_initialize(provider)
-            open_.setdefault(id(provider), (provider, _opened_at()))
+            if was_closed:
+                open_.setdefault(id(provider), (provider, _opened_at(test_file)))
 
         async def aclose(provider: SqliteStorageProvider) -> None:
             try:
@@ -60,18 +67,25 @@ class OpenSqliteProviders:
         monkeypatch.setattr(SqliteStorageProvider, "aclose", aclose)
 
     def close_leaked(self) -> list[str]:
-        """Close every provider still open and return where each was opened (empty when the test closed its own)."""
+        """Close every provider still open and return where each was opened (empty when the test closed its own).
+
+        ``close_finished`` says whether the close completed within the join bound; when it did not, the worker thread may still be running.
+        """
         leaked = list(self._open.values())
         self._open.clear()
+        self.close_finished = True
         if leaked:
-            _close_on_a_private_loop([provider for provider, _ in leaked])
+            self.close_finished = _close_on_a_private_loop([provider for provider, _ in leaked])
         return [site for _, site in leaked]
 
 
-def _close_on_a_private_loop(providers) -> None:
+def _close_on_a_private_loop(providers) -> bool:
+    """Close ``providers`` on a loop of their own; True when that finished within ``_CLOSE_JOIN_S``."""
+
     async def close_all() -> None:
         await asyncio.gather(*(provider.aclose() for provider in providers), return_exceptions=True)
 
     closer = threading.Thread(target=lambda: asyncio.run(close_all()), name="close-leaked-sqlite-providers", daemon=True)
     closer.start()
     closer.join(_CLOSE_JOIN_S)
+    return not closer.is_alive()
