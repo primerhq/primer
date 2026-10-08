@@ -331,6 +331,10 @@ async def test_a_graph_input_without_a_question_fails_the_run_before_any_agent_a
 
     assert thread.ended_reason == "failed", (thread.ended_reason, thread.ended_detail)
     assert not models["researcher"].calls
+    # The reason is on the failed node, and it is the template's own: the input has no `question`, not some other failure of the run.
+    state = thread.node_states["researcher"]
+    assert state.status.value == "failed"
+    assert state.error and "render error" in state.error and "question" in state.error, state.error
 
 
 @pytest.mark.asyncio
@@ -345,3 +349,16 @@ async def test_a_loop_that_loses_its_bound_is_stopped_by_the_test_not_left_to_ha
 
     assert thread.ended_reason == "failed", (thread.ended_reason, thread.ended_detail)
     assert len(models["researcher"].calls) == _RUNAWAY_CALLS
+
+
+def test_the_default_input_template_fails_on_a_dict_graph_input() -> None:
+    """The page says the default template walks the input as a list of messages and fails on a dict like the page's graph_input, which is why every
+    node of the cookbook graph has its own template."""
+    from primer.graph.template import render_input_template
+    from primer.model.except_ import BadRequestError
+    from primer.model.graph import _DEFAULT_INPUT_TEMPLATE, GraphContext
+
+    context = GraphContext(initial_input={"question": "q"}, iteration=0, nodes={})
+
+    with pytest.raises(BadRequestError):
+        render_input_template(_DEFAULT_INPUT_TEMPLATE, context=context)
