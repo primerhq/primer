@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from primer.workspace.probe import WorkspaceProbeTask
+from tests._support.reconcile_guard import reconcile_query_must_not_fail  # noqa: F401  (autouse: see the module)
 
 
 def _ws(phase: str, id_: str = "ws-1") -> MagicMock:
@@ -35,6 +36,8 @@ def _storage_provider(items: list) -> MagicMock:
     """Build a StorageProvider mock whose Workspace storage lists ``items``."""
     storage = MagicMock()
     storage.list = AsyncMock(return_value=MagicMock(items=items))
+    # The same mock serves every model, WorkspaceSession included: the session reconcile awaits find() and reads next_cursor off its page.
+    storage.find = AsyncMock(return_value=MagicMock(items=[], next_cursor=None))
     storage.update = AsyncMock()
     sp = MagicMock()
     sp.get_storage = MagicMock(return_value=storage)
@@ -181,7 +184,7 @@ async def test_running_to_failed_reconciles_dependent_sessions() -> None:
     ws_storage.update = AsyncMock()
     sess_storage = MagicMock()
     sess_storage.find = AsyncMock(
-        return_value=MagicMock(items=[sess_running, sess_ended])
+        return_value=MagicMock(items=[sess_running, sess_ended], next_cursor=None)
     )
     sess_storage.update = AsyncMock()
 

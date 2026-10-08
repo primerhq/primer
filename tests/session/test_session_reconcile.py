@@ -192,8 +192,12 @@ async def test_one_session_that_cannot_be_updated_does_not_stop_the_rest(fake_st
 async def test_a_page_that_cannot_be_read_part_way_still_ends_what_was_read(fake_storage_provider) -> None:
     """Best-effort, as before: a failing query is logged and swallowed, and the sessions already read are not abandoned with it."""
     storage = fake_storage_provider.get_storage(WorkspaceSession)
+    # 250 ended sessions that sort first: the status filter must be in the QUERY, or the one page that is read holds ended rows only and nothing is reconciled
+    # (a filter applied after the read is invisible to a test that has fewer ended rows than a page).
+    for i in range(250):
+        await storage.create(_row(f"a-{i:04d}", "w-gone", SessionStatus.ENDED))
     for i in range(450):
-        await storage.create(_row(f"s-{i:04d}", "w-gone", SessionStatus.RUNNING))
+        await storage.create(_row(f"b-{i:04d}", "w-gone", SessionStatus.RUNNING))
     real_find = storage.find
     calls = {"n": 0}
 
@@ -207,7 +211,10 @@ async def test_a_page_that_cannot_be_read_part_way_still_ends_what_was_read(fake
 
     reconciled = await reconcile_sessions_to_workspace_lost(fake_storage_provider, "w-gone")
 
-    assert reconciled == 200, "the first page was read and must be reconciled even though the second could not be read"
+    assert reconciled == 200, "the first page of OPEN sessions was read and must be reconciled even though the second could not be read"
+    after = await _statuses(storage, "w-gone")
+    assert sum(1 for i, (status, reason) in after.items() if i.startswith("b-") and reason == "workspace_lost") == 200
+    assert all(reason == "completed" for i, (status, reason) in after.items() if i.startswith("a-")), "an ended session's own reason was overwritten"
 
 
 @pytest.mark.asyncio

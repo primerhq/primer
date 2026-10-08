@@ -24,7 +24,8 @@ from primer.model.internal import (
     INTERNAL_COLLECTIONS_CONFIG_ID,
     InternalCollectionsConfig,
 )
-from primer.model.storage import OffsetPage, OffsetPageResponse
+from primer.model.storage import CursorPageResponse, OffsetPage, OffsetPageResponse
+from tests._support.reconcile_guard import reconcile_query_must_not_fail  # noqa: F401  (autouse: see the module)
 from primer.model.workspace import (
     LocalWorkspaceConfig,
     WorkspaceProvider,
@@ -90,12 +91,18 @@ class _Storage:
                 total=len(items),
                 items=items[page.offset : page.offset + page.length],
             )
-        return OffsetPageResponse(
-            offset=0, length=len(items), total=len(items), items=items
-        )
+        # A CursorPage gets a cursor response (a handful of rows is one page), like a real backend.
+        return CursorPageResponse(next_cursor=None, items=items)
 
     async def find(self, predicate, page, *, order_by=None):
-        return await self.list(page, order_by=order_by)
+        # The predicate is APPLIED, as a backend does (the session reconcile filters by workspace and status in the query).
+        from tests.conftest import _eval_predicate
+
+        matching = [e for e in self._data.values() if _eval_predicate(e, predicate)] if predicate is not None else list(self._data.values())
+        if isinstance(page, OffsetPage):
+            sliced = matching[page.offset : page.offset + page.length]
+            return OffsetPageResponse(offset=page.offset, length=len(sliced), total=len(matching), items=sliced)
+        return CursorPageResponse(next_cursor=None, items=matching)
 
 
 class _SP:
