@@ -1406,10 +1406,34 @@ function NV_traceRowLabel(node, agentName, isGraph) {
   if (node.kind === "llm_call") return NV_traceAgentName(node, agentName, isGraph);
   return node.label || node.kind || "";
 }
+// A count the way a trace row reads it: exact below a thousand, then 1.2k / 12k / 999k, then 1.2M.
+function NV_traceCompact(n) {
+  if (n < 1000) return String(n);
+  if (n < 10000) return (Math.round(n / 100) / 10) + "k";
+  if (n < 999500) return Math.round(n / 1000) + "k";
+  return (Math.round(n / 100000) / 10) + "M";
+}
+// What a model call cost, from the timeline node's own counts ("1.2k in · 56 out"); "" for any other row or a call that reported none (console review C-017).
+function NV_traceTokens(node) {
+  if (node.kind !== "llm_call") return "";
+  var parts = [];
+  if (node.input_tokens != null) parts.push(NV_traceCompact(node.input_tokens) + " in");
+  if (node.output_tokens != null) parts.push(NV_traceCompact(node.output_tokens) + " out");
+  return parts.join(" · ");
+}
+// The badge's letter, its colour kind and what it stands for (the letters alone said nothing; C-017).
 function NV_traceGlyph(node) {
-  if (node.kind === "tool_call") return { char: "T", kind: "tool" };
-  if (node.kind === "llm_call") return { char: "A", kind: "agent" };
+  if (node.kind === "tool_call") return { char: "T", kind: "tool", title: "Tool call" };
+  if (node.kind === "llm_call") return { char: "A", kind: "agent", title: "Model call" };
   return null;
+}
+// ONE badge for both trace surfaces (the sidebar's one-liner and the overlay's expandable row), so they cannot disagree about what it says.
+function NV_TraceGlyph(props) {
+  var glyph = props.glyph;
+  return (
+    <span className="nv-trace-glyph" data-kind={glyph.kind} role="img"
+      title={glyph.title} aria-label={glyph.title}>{glyph.char}</span>
+  );
 }
 
 // The sidebar's own row: always one line, never expandable (dogfood
@@ -1422,7 +1446,7 @@ function NV_TraceLine(props) {
     <div className="nv-trace-row" style={{ paddingLeft: props.depth * 12 }}>
       <div className="nv-trace-line" data-testid={"nv-trace-line:" + props.index}>
         {glyph ? (
-          <span className="nv-trace-glyph" data-kind={glyph.kind}>{glyph.char}</span>
+          <NV_TraceGlyph glyph={glyph} />
         ) : (
           <span className="nv-trace-icon">{n.kind === "node" ? "◆" : "·"}</span>
         )}
@@ -1431,6 +1455,9 @@ function NV_TraceLine(props) {
           {NV_traceRowLabel(n, props.agentName, props.isGraph)}
         </span>
         <span style={{ flex: 1 }} />
+        {NV_traceTokens(n) ? (
+          <span className="nv-trace-tokens" title="Input and output tokens">{NV_traceTokens(n)}</span>
+        ) : null}
         <span className="nv-trace-dur">{NV_traceElapsed(n.duration_ms)}</span>
       </div>
     </div>
@@ -1552,7 +1579,7 @@ function NV_TraceRow(props) {
           <span className="nv-thought-mark">{open ? "▾" : "▸"}</span>
         ) : null}
         {glyph ? (
-          <span className="nv-trace-glyph" data-kind={glyph.kind}>{glyph.char}</span>
+          <NV_TraceGlyph glyph={glyph} />
         ) : (
           <span className="nv-trace-icon">{n.kind === "node" ? "◆" : "·"}</span>
         )}
@@ -1561,6 +1588,9 @@ function NV_TraceRow(props) {
           {NV_traceRowLabel(n, props.agentName, props.isGraph)}
         </span>
         <span style={{ flex: 1 }} />
+        {NV_traceTokens(n) ? (
+          <span className="nv-trace-tokens" title="Input and output tokens">{NV_traceTokens(n)}</span>
+        ) : null}
         <span className="nv-trace-dur">{NV_traceElapsed(n.duration_ms)}</span>
       </Line>
       {open && n.kind === "tool_call" ? (
